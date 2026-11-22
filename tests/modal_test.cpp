@@ -505,7 +505,7 @@ int wmain(int argc, wchar_t** argv) {
         w2.SetReal({{L"compte.exemple.test", L"camille@exemple.test", L"NE-DOIT-PAS-APPARAITRE", L"", L"Modifié le 12 novembre 2026", 7}}, [&](std::uint64_t) { ++removeCalls; return false; });
         Check(w2.Real() && w2.Accounts().size() == 1 && w2.Accounts()[0].password.empty(), "B05 real: accounts carry no secret");
         Check(w2.Show({0, 0, 900, 700}), "B05 real: shown");
-        Check(!w2.Surface().CurrentSpec().demo && w2.Surface().CurrentSpec().subtitle.find(L"restent proposés par le moteur") != std::wstring::npos, "B05 real: no demo badge, cohabitation note");
+        Check(!w2.Surface().CurrentSpec().demo && w2.Surface().CurrentSpec().subtitle.find(L"Edge propose encore les mots de passe enregistrés avant browser") != std::wstring::npos, "B05 real: no demo badge, cohabitation note");
         w2.Surface().ActivateForTest(Modal::Dialog::AccountHit(0));
         bool reveal = false; std::wstring shown; for (auto& f : w2.Surface().CurrentSpec().fields) if (f.password) { reveal = f.reveal; shown = f.value; }
         Check(!reveal && shown.find(L"NE-DOIT") == std::wstring::npos, "B05 real: detail never shows or reveals a secret");
@@ -513,34 +513,46 @@ int wmain(int argc, wchar_t** argv) {
         Check(removeCalls == 1 && w2.Accounts().size() == 1 && said.find(L"n'a pas pu être supprimé") != std::wstring::npos, "B05 real: a removal the vault did not write is said, the row stays");
         w2.Hide(); w2.Surface().FinishAnimationsForTest();
         w2.SetReal({}, nullptr); Check(w2.Show({0, 0, 900, 700}) && w2.Surface().CurrentSpec().accountsTitle == L"Aucun mot de passe enregistré par browser", "B05 real: empty state"); w2.Hide(); w2.Surface().FinishAnimationsForTest();
-        {   // Owner decision « option A »: the B05 list offers deleting the engine's old passwords; the button asks the host;
-            // after the deletion the list says so and the offer is gone. Renders: build/popups/vault-engine-*.png.
+        {   // Owner decision « option A », user review: plain words (« Edge », never « moteur » / WebView2) and the small-popup
+            // family (A10 « Récupération WebView2 », PUX-0): the offer is the family's 32 DIP link row (label + chevron) right
+            // under its explanation line, above the list; it closes the list and asks the host for the confirmation (one
+            // surface at a time). Renders: build/popups/vault-engine-*.png.
+            auto jargon = [](const std::wstring& t) { return t.find(L"moteur") != std::wstring::npos || t.find(L"WebView2") != std::wstring::npos || t.find(L"engine") != std::wstring::npos; };
             int asked = 0; w2.SetReal({{L"compte.exemple.test", L"camille@exemple.test", L"", L"", L"Modifié le 12 novembre 2026", 7}}, [](std::uint64_t) { return true; });
             w2.SetEngineOffer(true, [&] { ++asked; }); Check(w2.Show({0, 0, 900, 700}), "option A: B05 list with the offer shown");
-            const auto& ls = w2.Surface().CurrentSpec(); int offerAt = -1; for (size_t i = 0; i < ls.buttons.size(); ++i) if (ls.buttons[i].automationId == L"VaultEngineOffer") offerAt = static_cast<int>(i);
-            Check(offerAt >= 0 && ls.buttons[static_cast<size_t>(offerAt)].label == L"Supprimer les anciens mots de passe…" && ls.buttons[static_cast<size_t>(offerAt)].role == Modal::Role::Danger && !ls.notices.empty() && ls.notices[0].text.find(L"Edge WebView2") != std::wstring::npos,
-                  "option A: B05 list: the info line and « Supprimer les anciens mots de passe… » (destructive, leading)");
+            const auto ls = w2.Surface().CurrentSpec(); int linkAt = -1; for (size_t i = 0; i < ls.links.size(); ++i) if (ls.links[i].automationId == L"VaultEngineOffer") linkAt = static_cast<int>(i);
+            bool offerButton = false; for (auto& b : ls.buttons) offerButton = offerButton || b.automationId == L"VaultEngineOffer";
+            Check(linkAt >= 0 && !offerButton && ls.links[static_cast<size_t>(linkAt)].label == L"Supprimer les mots de passe d'Edge…" && ls.notices.size() == 1 && ls.notices[0].text == L"Edge garde encore les mots de passe enregistrés avant browser. Ceux que vous avez gardés en vous connectant sont déjà ici.",
+                  "option A: B05 list: the explanation line, then the popup family's link row « Supprimer les mots de passe d'Edge… » (no destructive button in the list)");
+            Check(!jargon(ls.subtitle) && !jargon(ls.notices[0].text) && !jargon(ls.links[0].label), "option A: no « moteur » / WebView2 in the list's words");
             w2.Surface().FinishAnimationsForTest(); Check(w2.Surface().RenderForTest(root + L"/build/popups/vault-engine-offer-fr.png"), "option A: render B05 list with the offer (FR)");
-            if (offerAt >= 0) { w2.Surface().ArmNowForTest(); w2.Surface().ActivateForTest(Modal::Dialog::ButtonHit(offerAt)); }
-            Check(asked == 1 && w2.Visible(), "option A: the button asks the host (the confirmation), the list stays");
-            w2.EngineDeleted(); const auto& ds = w2.Surface().CurrentSpec(); bool still = false; for (auto& b : ds.buttons) still = still || b.automationId == L"VaultEngineOffer";
-            Check(!still && !ds.notices.empty() && ds.notices[0].text == L"Anciens mots de passe supprimés." && ds.subtitle.find(L"moteur") == std::wstring::npos, "option A: after the deletion the list says so, the offer and the engine note are gone");
+            const auto nodes = w2.Surface().NodesForTest(); bool linkNode = false, noteNode = false; for (auto& n : nodes) { linkNode = linkNode || n.automationId == L"VaultEngineOffer"; noteNode = noteNode || (n.automationId == L"DialogNotice" && n.name == ls.notices[0].text); }
+            Check(linkNode && noteNode, "option A: the link row and its explanation are exposed to screen readers");
+            if (linkAt >= 0) { w2.Surface().ArmNowForTest(); w2.Surface().ActivateForTest(Modal::Dialog::LinkHit(static_cast<size_t>(linkAt))); w2.Surface().FinishAnimationsForTest(); }
+            Check(asked == 1 && !w2.Visible(), "option A: the link closes the list and asks the host (one surface at a time)");
+            w2.SetEngineOffer(false, [] {}); w2.EngineDeleted(); Check(w2.Show({0, 0, 900, 700}), "option A: the list comes back after the deletion");
+            const auto ds = w2.Surface().CurrentSpec();
+            Check(ds.links.empty() && ds.notices.size() == 1 && ds.notices[0].text == L"Mots de passe d'Edge supprimés." && !jargon(ds.subtitle), "option A: after the deletion the list says so and the offer is gone");
             w2.Surface().FinishAnimationsForTest(); Check(w2.Surface().RenderForTest(root + L"/build/popups/vault-engine-deleted-fr.png"), "option A: render B05 list after the deletion (FR)");
             w2.Hide(); w2.Surface().FinishAnimationsForTest();
+            w2.SetEngineOffer(false, [] {}); w2.Show({0, 0, 900, 700}); Check(!jargon(w2.Surface().CurrentSpec().subtitle) && w2.Surface().CurrentSpec().subtitle.find(L"Edge") != std::wstring::npos, "option A: the list's usual subtitle names Edge, not « le moteur »"); w2.Hide(); w2.Surface().FinishAnimationsForTest();
             I18n::SetForProcess(I18n::Locale::En); w2.SetEngineOffer(true, [] {}); w2.Show({0, 0, 900, 700}); w2.Surface().FinishAnimationsForTest();
-            Check(w2.Surface().RenderForTest(root + L"/build/popups/vault-engine-offer-en.png"), "option A: render B05 list with the offer (EN)"); w2.Hide(); w2.Surface().FinishAnimationsForTest(); I18n::SetForProcess(I18n::Locale::Fr);
-            // The confirmation: A5 vocabulary (ECR-0 without period and categories), « Annuler » first and focused.
+            const auto en = w2.Surface().CurrentSpec();
+            Check(!en.links.empty() && en.links[0].label == L"Delete Edge passwords…" && en.notices[0].text == L"Edge still keeps the passwords saved before browser. The ones you kept when signing in are already here." && w2.Surface().RenderForTest(root + L"/build/popups/vault-engine-offer-en.png"), "option A: the list in English, rendered");
+            w2.Hide(); w2.Surface().FinishAnimationsForTest(); I18n::SetForProcess(I18n::Locale::Fr);
+            // The confirmation: the small-popup family (A10, same Modal surface), its danger action kept (A5 vocabulary).
             const auto cs = Modal::DeleteEnginePasswordsSpec();
-            Check(cs.title == L"Supprimer les anciens mots de passe" && cs.buttons.size() == 2 && cs.buttons[0].label == L"Annuler" && cs.buttons[0].initialFocus && cs.buttons[1].role == Modal::Role::Danger && cs.buttons[1].label == cs.title && !cs.buttons[1].isDefault && cs.body.find(L"irréversible") != std::wstring::npos,
-                  "option A: confirmation « Supprimer les anciens mots de passe », Annuler focused, destructive action never the default Entrée");
+            Check(cs.title == L"Supprimer les mots de passe d'Edge ?" && cs.body == L"Les mots de passe enregistrés par Edge sur cet appareil seront supprimés. Ceux de cette liste sont conservés. Cette action est irréversible." && cs.buttons.size() == 2 && cs.buttons[0].label == L"Annuler" && cs.buttons[0].initialFocus && cs.buttons[1].role == Modal::Role::Danger && cs.buttons[1].label == L"Supprimer les mots de passe" && !cs.buttons[1].isDefault && !jargon(cs.body) && !jargon(cs.title),
+                  "option A: confirmation « Supprimer les mots de passe d'Edge ? », plain body, Annuler focused, destructive « Supprimer les mots de passe » never the default Entrée");
             Modal::Dialog cd; cd.Create(hi, owner, root, {}); auto spec = cs; spec.buttons[1].closes = false; int closed = 0;
             cd.Show(spec, Area(), [&](const Modal::Result&) { ++closed; }); cd.FinishAnimationsForTest();
+            Check(std::abs(cd.WidthForTest() - 400) < 0.5f, "option A: the confirmation is the small popups' 400 DIP width (Paper QLT-0)");
             Check(cd.RenderForTest(root + L"/build/popups/vault-engine-confirm-fr.png"), "option A: render the confirmation (FR)");
             cd.SetBusy(true, L"Suppression…"); Check(cd.RenderForTest(root + L"/build/popups/vault-engine-confirm-busy-fr.png"), "option A: render the confirmation while deleting");
-            cd.SetBusy(false); cd.SetError(L"La suppression n'a pas abouti (0x80004005). Réessayez."); Check(cd.RenderForTest(root + L"/build/popups/vault-engine-confirm-failed-fr.png") && closed == 0, "option A: render the failure (the dialog stays)");
+            cd.SetBusy(false); cd.SetError(L"La suppression n'a pas abouti (code 0x80004005). Réessayez."); Check(cd.RenderForTest(root + L"/build/popups/vault-engine-confirm-failed-fr.png") && closed == 0, "option A: render the failure (the dialog stays)");
             cd.Abort(); cd.FinishAnimationsForTest(); cd.Dispose();
             I18n::SetForProcess(I18n::Locale::En); const auto ce = Modal::DeleteEnginePasswordsSpec(); Modal::Dialog ed; ed.Create(hi, owner, root, {}); ed.Show(ce, Area(), [](const Modal::Result&) {}); ed.FinishAnimationsForTest();
-            Check(ce.title == L"Delete old passwords" && ed.RenderForTest(root + L"/build/popups/vault-engine-confirm-en.png"), "option A: confirmation in English, rendered"); ed.Abort(); ed.FinishAnimationsForTest(); ed.Dispose(); I18n::SetForProcess(I18n::Locale::Fr);
+            Check(ce.title == L"Delete Edge passwords?" && ce.buttons[1].label == L"Delete passwords" && ed.RenderForTest(root + L"/build/popups/vault-engine-confirm-en.png"), "option A: confirmation in English, rendered"); ed.Abort(); ed.FinishAnimationsForTest(); ed.Dispose(); I18n::SetForProcess(I18n::Locale::Fr);
         }
         {   // Review F1: removals act on each row's own vault id, whatever the rows' order after earlier removals.
             std::vector<std::uint64_t> removed; w2.SetReal({{L"a.test", L"A", L"", L"", L"", 11}, {L"b.test", L"B", L"", L"", L"", 22}, {L"c.test", L"C", L"", L"", L"", 33}}, [&](std::uint64_t id) { removed.push_back(id); return true; });

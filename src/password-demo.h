@@ -38,7 +38,7 @@ public:
     struct Hooks { std::function<void()> wake; std::function<void(const std::wstring&)> announce; };
     enum class View { List, Detail, Confirm };
 private:
-    enum : int { BackButton = 20, DeleteButton = 21, ConfirmButton = 22, KeepButton = 23, EngineButton = 24 };
+    enum : int { BackButton = 20, DeleteButton = 21, ConfirmButton = 22, KeepButton = 23, EngineLink = 24 };
     Modal::Dialog dialog_; Hooks hooks_; std::vector<Account> accounts_ = SampleAccounts();
     // B05 REAL mode (E8, vault): the vault's accounts WITHOUT any decrypted secret (no reveal), removal
     // through `remove_` (the vault transaction; false = not removed, said so). No « Démonstration » badge.
@@ -55,12 +55,12 @@ private:
     Modal::Spec ListSpec() const {
         Modal::Spec s = Base(); s.automationId = real_ ? L"PasswordList" : L"PasswordDemoList"; s.title = L"Mots de passe";
         s.subtitle = readOnly_ ? L"Lecture seule dans une fenêtre privée : rien ne peut être modifié ici." : real_ ? std::wstring(engineDeleted_ || (engineOffer_ && !readOnly_) ? TR(vault_list_subtitle_short) : TR(vault_list_subtitle))   /* the offer's own line speaks of the engine */ : L"Démonstration : comptes fictifs en mémoire, rien n'est enregistré.";
-        // Option A: no Paper frame for this offer (flagged); B05's own patterns: the PW-COEXIST footer's info line, and the
-        // detail view's destructive « Supprimer ce mot de passe… » action.
+        // Option A: no Paper frame for this offer (flagged). Built from the small popups (A10, PUX-0): the explanation as an
+        // info line (B05's PW-COEXIST footer line), then the family's 32 DIP link row « label  › » (Paper QM2-0) that leads
+        // to the confirmation; both sit together above the list. No destructive button here: the danger is in the dialog.
         if (real_ && !readOnly_ && engineOffer_ && !engineDeleted_) {
             s.notices.push_back({DialogKit::Glyph::info, TR(vault_engine_offer_text), false});
-            Modal::Button del = Modal::Make(EngineButton, TR(vault_engine_offer_action), Modal::Role::Danger, false, false, false, L"VaultEngineOffer"); del.closes = false; del.leading = true;
-            s.buttons = {del}; s.softButtons = true;
+            s.links.push_back({EngineLink, TR(vault_engine_offer_action), L"VaultEngineOffer"});
         } else if (real_ && engineDeleted_) s.notices.push_back({DialogKit::Glyph::checkCircle, TR(vault_engine_deleted), false});
         s.accountsTitle = L"Enregistrés · " + std::to_wstring(accounts_.size()); s.accountsNavigate = true;
         for (auto& a : accounts_) s.accounts.push_back({a.site + L" · " + a.user, std::wstring(12, L'\x2022')});
@@ -92,7 +92,6 @@ private:
         if (id >= Modal::Dialog::AccountHit(0) && id < Modal::Dialog::AccountHit(0) + 700) { current_ = static_cast<size_t>(id - Modal::Dialog::AccountHit(0)); if (current_ < accounts_.size()) Go(View::Detail); return; }
         switch (id) {
         case BackButton: Go(View::List); break;
-        case EngineButton: if (engineOffer_ && !engineDeleted_ && engineAsk_) engineAsk_(); break;
         case DeleteButton: Go(View::Confirm); break;
         case KeepButton: Go(View::Detail); break;
         case ConfirmButton: {
@@ -118,7 +117,9 @@ public:
     bool Show(RECT area, std::function<void()> closed = {}) {
         if (dialog_.Visible()) return false;
         closed_ = std::move(closed); view_ = View::List;
-        return dialog_.Show(ListSpec(), area, [this](const Modal::Result&) { auto c = std::move(closed_); closed_ = nullptr; if (c) c(); });
+        // The offer's link closes the list (one surface at a time) and then asks the host for the confirmation.
+        return dialog_.Show(ListSpec(), area, [this](const Modal::Result& r) { auto c = std::move(closed_); closed_ = nullptr; if (c) c();
+            if (r.button == EngineLink && engineOffer_ && !engineDeleted_ && engineAsk_) { auto ask = engineAsk_; ask(); } });
     }
     void Hide() { dialog_.Abort(); }
     bool Visible() const { return dialog_.Visible(); }

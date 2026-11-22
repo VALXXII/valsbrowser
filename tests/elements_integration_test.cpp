@@ -559,8 +559,8 @@ int main(){
           Expect(VaultEngineOfferDue(),"option A: the offer is back once everything allows it");
           // The B05 list shows the offer with its button (real mode only).
           NativeChrome::PasswordDemo::Window list;list.SetReal({},[](std::uint64_t){return false;});list.SetEngineOffer(true,[]{});
-          auto hasOffer=[&](const MD::Spec& sp){for(auto& b:sp.buttons)if(b.automationId==L"VaultEngineOffer")return true;return false;};
-          Expect(hasOffer(list.ListSpecForTest()),"option A: the B05 list carries « Supprimer les anciens mots de passe… »");
+          auto hasOffer=[&](const MD::Spec& sp){for(auto& l:sp.links)if(l.automationId==L"VaultEngineOffer")return true;return false;};
+          Expect(hasOffer(list.ListSpecForTest()),"option A: the B05 list carries the link row « Supprimer les anciens mots de passe… »");
           list.SetEngineOffer(false,[]{});Expect(!hasOffer(list.ListSpecForTest()),"option A: no button when the offer is not due");
           list.SetReadOnly(true);list.SetEngineOffer(true,[]{});Expect(!hasOffer(list.ListSpecForTest()),"option A: never in a read-only (private) list");list.SetReadOnly(false);
           // The confirmation (A5 pattern): « Annuler » deletes nothing; « Supprimer » deletes; a failure is said with its reason.

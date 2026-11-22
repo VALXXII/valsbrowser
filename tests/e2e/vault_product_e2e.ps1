@@ -140,12 +140,20 @@ try {
   $front = [VP]::Front($hwnd, [uint32]$hp)
   Check $front 'the host window is in the foreground (required by the product path)'
   # B04: capture -> armed prompt -> real click on « Enregistrer »
-  SubmitLogin $hp
-  $save = WaitFind $hp 'PasswordSaveConfirm' ''
-  Check ([bool]$save) 'B04: the real save prompt appears after the submit'
-  Check (-not (Test-Path $vaultFile)) 'nothing written before the explicit choice'
-  # (No new foreground request here: the window is already in front, and deactivating it would dismiss the anchored prompt.)
-  if ($save) { Start-Sleep -Milliseconds 700; "     foreground is the host's: $([VP]::PidOf([VP]::GetForegroundWindow()) -eq $hp)"; $save = Find $hp 'PasswordSaveConfirm' ''; $c = ClickEl $save $hp; "     click « Enregistrer »: $c"; Start-Sleep 1 }
+  # This desktop is shared with other windows (Orca, the user's own browser): when one takes the foreground while the
+  # anchored offer is open, the offer closes or is covered. Such an attempt is printed and the login run again (3 at most).
+  $seenOffer = $false; $writtenBefore = $false
+  for ($attempt = 1; $attempt -le 3 -and -not (Test-Path $vaultFile); $attempt++) {
+    if ([VP]::PidOf([VP]::GetForegroundWindow()) -ne $hp) { [void][VP]::Front($hwnd, [uint32]$hp) }
+    SubmitLogin $hp
+    $save = WaitFind $hp 'PasswordSaveConfirm' ''
+    if ($save) { $seenOffer = $true; $writtenBefore = $writtenBefore -or (Test-Path $vaultFile) }
+    # (No new foreground request while the offer is open: deactivating the window would dismiss the anchored prompt.)
+    if ($save) { Start-Sleep -Milliseconds 700; $fg = [VP]::PidOf([VP]::GetForegroundWindow()) -eq $hp; "     attempt ${attempt}: foreground is the host's: $fg"; $save = Find $hp 'PasswordSaveConfirm' ''; $c = ClickEl $save $hp; "     click « Enregistrer »: $c"; Start-Sleep 1 }
+    if (-not (Test-Path $vaultFile)) { "     attempt $attempt did not save (offer shown: $([bool]$save)); retried"; $l = Find $hp 'PasswordLater' ''; if ($l) { [void](ClickEl $l $hp) }; Start-Sleep 1 }
+  }
+  Check $seenOffer 'B04: the real save prompt appears after the submit'
+  Check (-not $writtenBefore) 'nothing written before the explicit choice'
   $bytes = if (Test-Path $vaultFile) { [IO.File]::ReadAllText($vaultFile) } else { '' }
   Check ($bytes.StartsWith("browser-passwords 2`n") -and $bytes -match "`nend`t1`t[0-9a-f]{64}`n$" -and -not $bytes.Contains($secret) -and -not $bytes.Contains($user)) 'B04 product path: saved after a real click in the foreground window (v2, one account, no plaintext)'
   Check (WaitLog $log 'VAULT saved' 3000) 'B04 product path: the host logs the save'

@@ -1216,13 +1216,15 @@ void VaultEngineDelete(std::function<void(HRESULT,const std::wstring&)> done){
     vaultEngineClearing=true;
     if(vaultEngineClearHook){vaultEngineClearHook(finish);return;}
     Com<ICoreWebView2Profile2> profile;
-    if(!LiveProfile(IID_ICoreWebView2Profile2,(void**)&profile.p)){vaultEngineClearing=false;Log(L"VAULT engine saved passwords NOT deleted: no engine profile");done(E_NOINTERFACE,TR(vault_engine_not_ready));return;}
+    if(!LiveProfile(IID_ICoreWebView2Profile2,(void**)&profile.p)){vaultEngineClearing=false;Log(L"VAULT engine saved passwords NOT deleted: no engine profile (no tab open)");done(E_NOINTERFACE,TR(vault_engine_not_ready));return;}
     auto handler=Callback<ICoreWebView2ClearBrowsingDataCompletedHandler,HRESULT>([finish](HRESULT hr)->HRESULT{finish(hr);return S_OK;});
     const HRESULT hr=profile->ClearBrowsingData(COREWEBVIEW2_BROWSING_DATA_KINDS_PASSWORD_AUTOSAVE,handler);handler->Release();
     if(FAILED(hr))finish(hr);
 }
-// « Supprimer les anciens mots de passe… » (B05 list): the A5-style confirmation, busy while the engine works; a failure
-// stays in the dialog with its reason; success closes it and the list says « Anciens mots de passe supprimés ».
+// « Supprimer les anciens mots de passe d'Edge… » (B05 list link, which closes the list): the confirmation (small-popup
+// family, danger action), busy while Edge works; a failure stays in the dialog with a short reason; whatever the answer,
+// the list comes back (one surface at a time), and after a deletion it says « Anciens mots de passe d'Edge supprimés. ».
+bool vaultEngineJustDeleted=false;void ShowVaultManager(bool keyboard);
 void AskVaultEngineDelete(){
     if(!VaultEngineOfferDue()){Log(L"VAULT engine deletion not offered now: nothing asked");return;}
     auto spec=MD::DeleteEnginePasswordsSpec();spec.buttons[1].closes=false;
@@ -1230,10 +1232,10 @@ void AskVaultEngineDelete(){
         if(id!=MD::AcceptButton)return;
         modal.SetBusy(true,TR(vault_engine_deleting));
         VaultEngineDelete([](HRESULT hr,const std::wstring& reason){
-            if(FAILED(hr)){modal.SetBusy(false);modal.SetError(TRF(vault_engine_delete_failed,reason.empty()?HrText(hr):reason));return;}
-            modal.Finish(MD::AcceptButton);passwordDemo.EngineDeleted();accessibility.Notify('S',TR(vault_engine_deleted),L"VaultEngineDeleted");});
+            if(FAILED(hr)){modal.SetBusy(false);modal.SetError(hr==E_NOINTERFACE&&!reason.empty()?reason:TRF(vault_engine_delete_failed,HrText(hr)));return;}
+            vaultEngineJustDeleted=true;modal.Finish(MD::AcceptButton);accessibility.Notify('S',TR(vault_engine_deleted),L"VaultEngineDeleted");});
     };
-    AskModal(std::move(spec),nullptr,[](const MD::Result&){});
+    AskModal(std::move(spec),nullptr,[](const MD::Result&){Defer([]{if(!passwordDemo.Visible())ShowVaultManager(false);});});
 }
 // « Effacer en quittant » runs ClearBrowsingDataAll: the engine's saved passwords and form entries go too. With the
 // vault active, what the vault keeps stays (only passwords not kept yet, in the engine's old store, go).
@@ -1371,7 +1373,8 @@ void ShowVaultManager(bool keyboard){
         if(r!=ProfileStore::Result::Written&&r!=ProfileStore::Result::Unchanged){Log(L"VAULT removal NOT written");vault=vaultBase;return false;}   // back to what the file holds
         return true;});
     passwordDemo.SetReadOnly(privateWindow);   // §6: no removal from a private window (Vault::Commit refuses anyway)
-    passwordDemo.SetEngineOffer(!privateWindow&&VaultEngineOfferDue(),[]{AskVaultEngineDelete();});   // option A: the engine's old passwords
+    passwordDemo.SetEngineOffer(!privateWindow&&VaultEngineOfferDue(),[]{AskVaultEngineDelete();});   // option A: Edge's old passwords
+    if(vaultEngineJustDeleted){vaultEngineJustDeleted=false;passwordDemo.EngineDeleted();}   // said once, in the list that comes back
     passwordDemo.Show(PageScreenRect());
 }
 HRESULT PageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceivedEventArgs* a){

@@ -340,7 +340,7 @@ struct Select {
 enum class StatusIcon { None, Check, Download, Warning, Busy };
 struct Status { StatusIcon icon = StatusIcon::None; std::wstring title, detail; Button button; bool hasButton = false; };
 struct Info { std::wstring text, trailing; };                 // A6 download in progress row
-struct Link { int id = 0; std::wstring label; };
+struct Link { int id = 0; std::wstring label; std::wstring automationId; };   // a 32 DIP row « label  › » (A10 popups, Paper QM2-0)
 struct Notice { const char* glyph = nullptr; std::wstring text; bool boxed = false; }; // B06 lock box / info line
 // B01/B02 request rows. `toggle` (B02 « Clic sur la puce », EAC-0): -1 none, 1 on, 0 off. A toggle
 // only ever switches off from here (revoking); an off toggle is inert, re-granting needs the site
@@ -1490,7 +1490,7 @@ private:
         if (spec_.hasSelect) { const auto at = add(SelectHit, spec_.select.label, Find(SelectHit), !busy_); nodes[at].expand = 1; if (spec_.select.index >= 0 && spec_.select.index < static_cast<int>(spec_.select.options.size())) nodes[at].help = spec_.select.options[static_cast<size_t>(spec_.select.index)]; }
         for (size_t i = 0; i < spec_.checks.size(); ++i) { const auto at = add(CheckHit(i), spec_.checks[i].label, Find(CheckHit(i)), !spec_.checks[i].disabled && !busy_); nodes[at].toggle = spec_.checks[i].value ? 2 : 1; nodes[at].help = spec_.checks[i].detail; }
         if (spec_.hasStatus && spec_.status.hasButton) { const auto at = add(StatusHit, spec_.status.button.label, Find(StatusHit), Enabled(StatusHit)); nodes[at].help = spec_.status.title + L" · " + spec_.status.detail; }
-        for (size_t i = 0; i < spec_.links.size(); ++i) add(LinkHit(i), spec_.links[i].label, Find(LinkHit(i)), !busy_);
+        for (size_t i = 0; i < spec_.links.size(); ++i) add(LinkHit(i), spec_.links[i].label, Find(LinkHit(i)), !busy_, spec_.links[i].automationId);
         for (size_t i = 0; i < spec_.accounts.size(); ++i) { const auto at = add(AccountHit(i), spec_.accounts[i].user, Find(AccountHit(i)), !spec_.accounts[i].disabled); nodes[at].selected = spec_.accountsSelect && static_cast<int>(i) == spec_.accountSelected; nodes[at].help = spec_.accounts[i].masked; nodes[at].role = Accessibility::Role::ListItem; nodes[at].position = static_cast<int>(i) + 1; nodes[at].count = static_cast<int>(spec_.accounts.size()); }
         if (!spec_.manageLabel.empty()) add(ManageHit, spec_.manageLabel, Find(ManageHit), true);
         if (!spec_.checkLabel.empty()) { const auto at = add(SimpleCheckHit, spec_.checkLabel, Find(SimpleCheckHit), !busy_); nodes[at].toggle = spec_.checkValue ? 2 : 1; }
@@ -1777,14 +1777,15 @@ inline Spec DeleteBookmarksSpec(int count) {
     s.buttons = {Make(CancelButton, TR(common_cancel), Role::Secondary, false, true, true, L"DialogCancel"), Make(AcceptButton, TR(common_delete), Role::Danger, true, false, false, L"DialogDelete")};
     return s;
 }
-// Engine passwords, owner decision « option A » (no Paper frame of its own: the A5 « Effacer les données »
-// confirmation, ECR-0, without its period and categories): title = the action, body = what is deleted and what is
-// kept, « Annuler » first and focused, the destructive action. The host keeps it open in A5's busy footer while the
-// engine works (buttons[1].closes = false + onButton, SetBusy) and says a failure with SetError, like A5.
+// Edge's old passwords, owner decision « option A ». No Paper frame of its own: the small-popup family (A10
+// « Récupération WebView2 », PUX-0 / QLT-0: this same surface at its Paper defaults, 400 wide, padding 16, gap 16, radius
+// 10) with the destructive action of A5 (ECR-0): the question as title, what is deleted and what is kept, « Annuler »
+// first and focused, « Supprimer les mots de passe » (danger, never the default Entrée). The host keeps it open in the
+// busy footer while Edge works (buttons[1].closes = false + onButton, SetBusy) and says a failure with SetError.
 inline Spec DeleteEnginePasswordsSpec() {
     Spec s; s.kind = Kind::EnginePasswords; s.scope = Scope::Window; s.automationId = L"DeleteEnginePasswords";
     s.title = TR(vault_engine_delete_title); s.body = TR(vault_engine_delete_body);
-    s.buttons = {Make(CancelButton, TR(common_cancel), Role::Secondary, false, true, true, L"DialogCancel"), Make(AcceptButton, TR(vault_engine_delete_title), Role::Danger, false, false, false, L"DialogDeleteEnginePasswords")};
+    s.buttons = {Make(CancelButton, TR(common_cancel), Role::Secondary, false, true, true, L"DialogCancel"), Make(AcceptButton, TR(vault_engine_delete_action), Role::Danger, false, false, false, L"DialogDeleteEnginePasswords")};
     return s;
 }
 // A8 states (same vocabulary as the update toast).
