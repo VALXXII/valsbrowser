@@ -206,7 +206,9 @@ def make_root(name, previous=None, pending=True, data=None):
 
 def start(fix, root):
     log = os.path.join(root, 'data', 'browser.log'); size = os.path.getsize(log) if os.path.exists(log) else 0
-    env = dict(os.environ, LOCALAPPDATA=os.path.join(fix, 'lad'))
+    # BROWSER_NO_ONBOARDING: the fixture has no profile registry, which the first-run onboarding (main since PR #100)
+    # reads as a fresh install; a real update always finds the older build's data, so it never sees the onboarding.
+    env = dict(os.environ, LOCALAPPDATA=os.path.join(fix, 'lad'), BROWSER_NO_ONBOARDING='1')
     exe = os.path.join(root, 'versions', version(), 'browser.exe')
     p = subprocess.Popen([exe], cwd=os.path.dirname(exe), env=env)
     hwnd = 0
@@ -401,7 +403,41 @@ def scenario_about():
     check(read(os.path.join(root, 'data', 'release-notes')) is None, f'{name}: opening by hand never writes the read state')
 
 
+def contain_children():
+    """Every process this script starts (browser.exe and its WebView2 children) dies with it: this Python process joins
+    a job object with KILL_ON_JOB_CLOSE, which its children inherit; the handle is closed only when Python exits."""
+    class LIMIT(ctypes.Structure):
+        _fields_ = [('PerProcessUserTimeLimit', ctypes.c_int64), ('PerJobUserTimeLimit', ctypes.c_int64), ('LimitFlags', wt.DWORD),
+                    ('MinimumWorkingSetSize', ctypes.c_size_t), ('MaximumWorkingSetSize', ctypes.c_size_t), ('ActiveProcessLimit', wt.DWORD),
+                    ('Affinity', ctypes.c_size_t), ('PriorityClass', wt.DWORD), ('SchedulingClass', wt.DWORD)]
+    class EXTENDED(ctypes.Structure):
+        _fields_ = [('Basic', LIMIT), ('Io', ctypes.c_uint64 * 6), ('ProcessMemoryLimit', ctypes.c_size_t), ('JobMemoryLimit', ctypes.c_size_t),
+                    ('PeakProcessMemoryUsed', ctypes.c_size_t), ('PeakJobMemoryUsed', ctypes.c_size_t)]
+    k32.CreateJobObjectW.restype = wt.HANDLE
+    k32.GetCurrentProcess.restype = wt.HANDLE
+    job = k32.CreateJobObjectW(None, None)
+    info = EXTENDED(); info.Basic.LimitFlags = 0x2000   # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    ok = job and k32.SetInformationJobObject(wt.HANDLE(job), 9, ctypes.byref(info), ctypes.sizeof(info)) and k32.AssignProcessToJobObject(wt.HANDLE(job), wt.HANDLE(k32.GetCurrentProcess()))
+    print('job object: children die with this script' if ok else 'job object UNAVAILABLE: relying on the kill by exact path', flush=True)
+    return job
+
+
+def kill_fixture_processes():
+    """Last resort: any browser whose image lives in this script's fixture folder (exact path) is ended."""
+    for pid in fixture_processes(BASE):
+        subprocess.run(['taskkill', '/F', '/T', '/PID', str(pid)], capture_output=True)
+        print(f'killed leftover fixture browser {pid}', flush=True)
+
+
 def main():
+    contain_children()
+    try:
+        return run()
+    finally:
+        kill_fixture_processes()
+
+
+def run():
     if not os.path.isfile(os.path.join(SRC, 'browser.exe')):
         print('missing build', SRC); return 2
     if fixture_processes(BASE):
