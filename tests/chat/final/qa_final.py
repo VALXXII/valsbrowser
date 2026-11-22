@@ -420,6 +420,14 @@ def scrollbar_width():
     return page('innerWidth - document.documentElement.clientWidth') or 0
 
 
+def element_at(point):
+    """Screen rectangle of the deepest page element under a screen point (what a click there selects)."""
+    pg = page_area(); k = dpr()
+    x, y = (point[0] - pg[0]) / k, (point[1] - pg[1]) / k
+    r = page("(function(){var e=document.elementFromPoint(%f,%f);if(!e||e===document.body||e===document.documentElement)return null;var b=e.getBoundingClientRect();return [b.left,b.top,b.right,b.bottom]})()" % (x, y))
+    return [int(pg[0] + r[0] * k), int(pg[1] + r[1] * k), int(pg[0] + r[2] * k), int(pg[1] + r[3] * k)] if r else None
+
+
 def scroll_into_view(sel, where='center'):
     page("(function(){var e=document.querySelector(%s);if(e)e.scrollIntoView({block:%s,behavior:'instant'});return 1})()" % (json.dumps(sel), json.dumps(where)))
     time.sleep(0.5)
@@ -807,7 +815,7 @@ class Invariants:
         self.allow_close = False   # set by an action that may close the bubble (Échap, click elsewhere, switch, element gone)
 
     # -- called right after a click on an element in Comment mode (before any other wait)
-    def after_element_click(self, sel, t_click, where, mark=None):
+    def after_element_click(self, sel, t_click, where, mark=None, point=None):
         ms = None
         while time.perf_counter() - t_click < 3.0:
             ok, _ = bubble_shown()
@@ -845,7 +853,8 @@ class Invariants:
         self.m.anchor = (sf[0] - el[0], sf[1] - el[1], sf[3] - el[3]) if sf else None
         self.m.size = (sf[2] - sf[0], sf[3] - sf[1]) if sf else None
         if sf and mark is not None:
-            self.distance(sel, el, sf, st.get('dpr', 1), mark, where)
+            hit = element_at(point) if point else None   # the element the click really selects (a child of `sel` may be under the point)
+            self.distance(sel, hit or el, sf, st.get('dpr', 1), mark, where)
 
     def distance(self, sel, el, sf, k, mark, where):
         """Paper's distance to the element (coordinator, after the user's look): beside it, 12 px CSS from its edge and the
@@ -855,6 +864,8 @@ class Invariants:
         if not found:
             return
         how = found[-1]; pg = page_area(); vis = intersect(el, pg) or el
+        if how.startswith('inside') and re.search(r'bubble over the element slid -?\d+ px', seg):
+            return   # over an element smaller than the bubble, slid to be whole in the visible area (H1, e26c39c): the whole-bubble check is what holds
         slid = re.search(r'bubble slid -?\d+ px along its side to be fully visible', seg)   # no side holds it whole: the alignment gives way (H1)
         css = lambda v: round(v / k, 1)
         if how.startswith('right'):

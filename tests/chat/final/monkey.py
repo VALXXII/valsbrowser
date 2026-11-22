@@ -81,7 +81,7 @@ class Monkey:
         if self.inv.m.layout == 'panel':
             F.click_at(*p); self.picked = getattr(self, 'picked', set()) | {sel}; return f'panel: click on {sel} (a chip)', 0.6
         m = F.log_mark(); t = F.click_at(*p, settle=0.04)
-        self.inv.after_element_click(sel, t, f'#{a["i"]} click {sel}', mark=m)
+        self.inv.after_element_click(sel, t, f'#{a["i"]} click {sel}', mark=m, point=p)
         return f'click on {sel}', 0.2
 
     def click_elsewhere(self, a):
@@ -142,6 +142,8 @@ class Monkey:
 
     def toggle_layout(self, a):
         to = 'panel' if self.inv.m.layout == 'comment' else 'comment'
+        if to == 'panel':   # the panel continues the conversation of the bubble that was open (its title is that element)
+            self.panel_conv = self.inv.m.open
         self.inv.allow_close = True; F.set_layout(to); self.inv.m.layout = to; self.inv.m.open = None; self.inv.m.unknown = False
         return f'layout -> {to}', 0.4
 
@@ -230,8 +232,11 @@ class Monkey:
         F.type_and_send(f'{sc} {token}', kind)
         if kind == 'bubble':
             self.inv.m.conv[self.inv.m.open] = token
-        else:   # the chips of the panel's composer get the conversation (its mark)
+        else:   # the chips of the panel's composer get the conversation (its mark); a panel that continues a bubble's
+            # conversation puts the message in that element's conversation
             self.inv.m.panel_marked |= getattr(self, 'picked', set()); self.picked = set()
+            if getattr(self, 'panel_conv', None):
+                self.inv.m.conv[self.panel_conv] = token
         self.inv.sent(kind, token, f'#{a["i"]} send')
         return f'send « {sc} »', 1.0
 

@@ -69,7 +69,7 @@ class J:
         p = F.element_point(sel, avoid=rb if shown and isinstance(rb, tuple) else None)
         m = F.log_mark(); t = F.click_at(*p, settle=0.05)
         self.n += 1
-        self.inv.after_element_click(sel, t, f'{self.n:02d} {where or "click"}', mark=m)
+        self.inv.after_element_click(sel, t, f'{self.n:02d} {where or "click"}', mark=m, point=p)
         F.wait_log(r'CHAT panel ready|CHAT bubble opened on', m, 5)
         return m
 
