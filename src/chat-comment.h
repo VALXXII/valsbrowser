@@ -43,6 +43,7 @@ struct BubbleState {
     bool hadKeyboard = false;                                        // M4 (a): the bubble had the keyboard when another application came in front
     int roomAreaH = 0;                                               // M15: the page area's height the offered room was measured with
     bool frameKept = false; ChatBubble::Rect frameRel;              // E4: the window of this opening, relative to the surface's fixed corner
+    bool holdForMeasure = false;                                     // H2 6e60162: the click's rectangle was measured in another viewport — shown at the page's first measure
     bool noFollow = false;                                           // C3: opened from the history (its element is gone): no selector followed
     bool lost = false;                                               // C3: its element is not found while its conversation works: kept at its last place
     bool measured = false;                                           // R44: the page measured the element since this opening (the click's rectangle was only a first guess)
@@ -508,7 +509,7 @@ LRESULT CALLBACK BubbleProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == WM_TIMER && w == 0xB5) { KillTimer(h, 0xB5); FlushFollowTrace(); followLastPlaced = FollowPos{}; return 0; }
     if (m == WM_APP + 5) { UiBeat(w); return 0; }   // R39: the UI thread watch
     if (m == WM_TIMER && w == 0xB3) { KeyboardTry(); return 0; }   // M4
-    if (m == WM_TIMER && w == 0xB2) { KillTimer(h, 0xB2); RevealBubble(L"without acknowledgement (safety delay)"); return 0; }   // i18n-exempt: log detail
+    if (m == WM_TIMER && w == 0xB2) { KillTimer(h, 0xB2); if (bubble.holdForMeasure) { bubble.holdForMeasure = false; Diag(L"no measure from the page: shown on the click's rectangle"); } RevealBubble(L"without acknowledgement (safety delay)"); return 0; }   // i18n-exempt: log detail
     if (m == WM_CLOSE) { CloseBubble(true); return 0; }
     {   LRESULT r = 0; if (view.HostMessage(h, m, w, l, r)) return r; }   // R1: the page is a visual of this window: mouse, cursor, UI Automation
     if (m == WM_ERASEBKGND) return 1;   // no redirection surface: what the page does not paint is see-through
@@ -653,6 +654,7 @@ void FollowBubbleElement(bool current) {
 // R18: the window appears once, already at its place and size (the page plays its entrance slide).
 void RevealBubble(const wchar_t* why) {
     if (!bubble.open || !bubble.waitingAck || !bubble.hwnd) return;
+    if (bubble.holdForMeasure) { Diag(L"bubble ready, held until the page measures its element"); return; }   // H2 6e60162: never shown on a stale rectangle   // i18n-exempt: log detail
     UiSlow slow("reveal");
     bubble.waitingAck = false; KillTimer(bubble.hwnd, 0xB2);
     if (bubble.away) { Diag(L"bubble ready at its place, hidden while another application is in front"); return; }   // BubbleBack shows it
@@ -764,6 +766,7 @@ void OnAnchor(const AH::Envelope& e) {
             bubble.anchor = ChatBubble::Anchor{}; bubble.side = ChatBubble::Side::Right;
         }
     }
+    const bool released = bubble.holdForMeasure; if (released) { bubble.holdForMeasure = false; bubble.anchor = ChatBubble::Anchor{}; bubble.side = ChatBubble::Side::Right; }   // H2 6e60162: placed on the page's measure
     const bool scrolling = bubble.known && bubble.anchor.set;   // R39: a known element that moved: the window follows, nothing else
     {   static double lastSy = -1;   // R47 (real window): a scroll = the page's offset changed — not the page reflowing (the agent's edit)
         if (scrolling && e.t > 0 && lastSy >= 0 && std::abs(e.sy - lastSy) > 0.5) bubble.lastScrollAt = Ann::NowMs();
@@ -773,6 +776,7 @@ void OnAnchor(const AH::Envelope& e) {
         followPositions.push_back(FollowPos{++follower.gen, measured, e.t, EpochMs(), e.sy}); while (followPositions.size() > 8) followPositions.pop_front();
         FollowLater();
     } else { followPositions.clear(); bubble.element = measured; PlaceBubble(scrolling); }
+    if (released && bubble.waitingAck && bubble.sizeW >= 0) RevealBubble(L"at the page's first measure");   // H2 6e60162: its acknowledgement came first   // i18n-exempt: log detail
     if (scrolling && e.t > 0) {   // R39: the page's scroll (its clock) -> here, summed over 30 steps   // i18n-exempt: log detail
         static int n = 0; static double sum = 0, worst = 0;
         FILETIME ft; GetSystemTimePreciseAsFileTime(&ft); ULARGE_INTEGER u{}; u.LowPart = ft.dwLowDateTime; u.HighPart = ft.dwHighDateTime;
@@ -1007,6 +1011,9 @@ bool OpenEarly(const std::shared_ptr<Tab>& t, const AnnotationHost::Envelope& en
     const float k = Dpi() * float(Ann::s.zoom > 0 ? Ann::s.zoom : 1.0); const RECT pa = Ann::PageScreen(t);
     const RECT element{pa.left + LONG(std::lround(env.x * k)), pa.top + LONG(std::lround(env.y * k)), pa.left + LONG(std::lround((env.x + env.w) * k)), pa.top + LONG(std::lround((env.y + env.h) * k))};
     const std::string page = ChatBubble::PageKey(U8(t->uri)), label = LabelOfSelector(env.selector);
+    const bool stale = k > 0 && ChatBubble::StaleViewport(env.vw, env.vh, (pa.right - pa.left) / k, (pa.bottom - pa.top) / k);   // H2 6e60162
+    if (stale) Diag(L"the click's rectangle was measured in another viewport (" + std::to_wstring(int(env.vw)) + L"x" + std::to_wstring(int(env.vh)) + L" CSS px, the page area is " +
+                    std::to_wstring(int((pa.right - pa.left) / k)) + L"x" + std::to_wstring(int((pa.bottom - pa.top) / k)) + L"): the bubble is shown at the page's first measure");   // i18n-exempt: log detail
     early = EarlyOpen{true, env.serial, "", Ann::NowMs()}; UiWatchStart();
     Diag(L"the click's « selecting » " + std::to_wstring(env.serial) + L": " + W(env.selector) + L" (" + std::to_wstring(int(env.w)) + L"x" + std::to_wstring(int(env.h)) + L")" +
          (env.px >= 0 ? L" clicked at " + std::to_wstring(int(env.px)) + L"," + std::to_wstring(int(env.py)) : std::wstring()));   // monkey: what the page sent   // i18n-exempt: log detail
@@ -1014,12 +1021,12 @@ bool OpenEarly(const std::shared_ptr<Tab>& t, const AnnotationHost::Envelope& en
         const double now = double(u.QuadPart / 10000ULL) - 11644473600000.0; early.clickLag = std::max(0.0, now - env.at); Diag(L"the click's « selecting » reached the host " + Ann::Ms(early.clickLag) + L" ms after the click"); }
     for (const auto& h : anchored) if (h.origin == site.origin && h.anchorPage == page && h.anchorSelector == env.selector) {   // its conversation
         const std::string id = h.id, l = h.anchorLabel.empty() ? label : h.anchorLabel; early.conv = id;
-        ShowConversation(id, [id, element, l] { OpenBubble(id, &element, ShownSelector(id), false, l); }, nullptr, true);   // opening time: one sending, with the opening
+        ShowConversation(id, [id, element, l, stale] { OpenBubble(id, &element, ShownSelector(id), false, l); if (bubble.open && bubble.conv == id) bubble.holdForMeasure = stale; }, nullptr, true);   // opening time: one sending, with the opening
         Diag(L"bubble opened on the click (selecting " + std::to_wstring(env.serial) + L"), the element's conversation");
         return true;
     }
     const std::string id = NewAnchoredConversation(env.selector, label, page, ""); early.conv = id;
-    OpenBubble(id, &element, env.selector, false, label);
+    OpenBubble(id, &element, env.selector, false, label); if (bubble.open && bubble.conv == id) bubble.holdForMeasure = stale;
     Diag(L"bubble opened on the click (selecting " + std::to_wstring(env.serial) + L")");
     return true;
 }

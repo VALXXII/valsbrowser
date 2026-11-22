@@ -277,6 +277,9 @@ oe = block_after(comment, 'bool OpenEarly(')
 check('if (!forBubble) SwitchedShown(false);' in sc and ', nullptr, true);' in oe, 'opening time: the switch does not send the thread before the opening does (one sending)')
 check('opening time: click -> host' in block_after(comment, 'void RevealBubble(const wchar_t* why) {') and 'UI thread held up' in comment, 'diagnostics: the opening by phase, the UI thread held up while a bubble is open')
 
+# H2 6e60162: a « selecting » measured in another viewport is never shown on that rectangle — the page's first measure
+check('StaleViewport(env.vw, env.vh' in block_after(comment, 'bool OpenEarly(') and 'if (bubble.holdForMeasure)' in block_after(comment, 'void RevealBubble(const wchar_t* why) {') and 'released' in block_after(comment, 'void OnAnchor('), 'selecting: a stale rectangle waits for the first anchor')
+
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

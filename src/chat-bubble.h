@@ -332,4 +332,11 @@ inline int PredictShift(int y0, double t0, int y1, double t1, double leadMs) {
     const double v = (y1 - y0) / dt; const double cap = 1.5 * std::abs(y1 - y0);
     return int(std::lround(std::clamp(v * leadMs, -cap, cap)));
 }
+// H2 (6e60162): « selecting » carries the viewport its rectangle was measured in (vw, vh, CSS px). A click right after the
+// panel closed: the page still had its old width — that rectangle is stale; the bubble waits for the page's first measure
+// (its first « anchor ») before it is shown. vw / vh 0: not said (an older page), trusted.
+inline bool StaleViewport(double vw, double vh, double areaWcss, double areaHcss) {
+    if (vw <= 0 || vh <= 0) return false;
+    return std::abs(vw - areaWcss) > 2 || std::abs(vh - areaHcss) > 2;
+}
 } // namespace ChatBubble
