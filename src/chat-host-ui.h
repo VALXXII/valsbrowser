@@ -293,6 +293,7 @@ void SendHistory(const std::string& query) {
                  SJ::Value m = SJ::Value::Obj(); m.Set("items", std::move(items)); if (!query.empty()) m.Set("query", Str(query)); Send("history", std::move(m));
              });
 }
+void ForgetKept(const std::string& id);   // chat-comment.h
 void SelectHistory(const std::string& id) {
     if (id == convo.data.head.id) { SendState(); SendThread(); return; }
     auto out = std::make_shared<ChatStore::Conversation>(); auto ok = std::make_shared<bool>(false);
@@ -300,6 +301,7 @@ void SelectHistory(const std::string& id) {
              [out, ok] {
                  if (!*ok || out->head.origin != site.origin || turn.active) return;
                  DisposeSession(L"another conversation"); convo = Convo{}; convo.data = std::move(*out); convo.preambleSent = convo.data.head.promptVersion == ChatPrompt::Version;   // i18n-exempt: log reason
+                 ForgetKept(convo.data.head.id);   // a copy kept in memory (opening time) would be an older one from now on
                  if (AgentOf(convo.data.head.agentId)) agentId = convo.data.head.agentId;
                  queue.clear(); RebuildTurnMaps();
                  SendState(); SendThread(); SendQueue(); MaybeStartSession();

@@ -206,7 +206,7 @@ int PlannedHeightPx(float k) {
 }
 void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — the window only follows it, nothing else
     if (!bubble.hwnd || !bubble.open) return;
-    uiLast = scrolling ? "place (scroll)" : "place"; uiWatch.to = bubble.hwnd;
+    UiSlow slowPlace(scrolling ? "place (scroll)" : "place"); uiWatch.to = bubble.hwnd;
     const RECT a = PageArea(); const float k = Dpi();
     int w = bubble.w ? bubble.w : int(std::lround(BubbleWidthCss * k)), h = bubble.h ? bubble.h : int(std::lround(BubbleStartHeightCss * k));
     const ChatBubble::Rect area{a.left, a.top, a.right, a.bottom}; const int margin = int(std::lround(BubbleMarginCss * k)), gap = int(std::lround(BubbleGapCss * k));
@@ -293,7 +293,7 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
         }
         // R39: a move (scroll) is only a move — no z-order, no copy of the old pixels, no WebView bounds
         SetWindowPos(bubble.hwnd, nullptr, wr.left, wr.top, wr.right - wr.left, wr.bottom - wr.top, SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER | (sized ? 0 : SWP_NOSIZE));
-        if (sized) view.Place({0, 0, wr.right - wr.left, wr.bottom - wr.top});
+        if (sized) { UiSlow slowBounds("the WebView's new size"); view.Place({0, 0, wr.right - wr.left, wr.bottom - wr.top}); }
     }
     if (bubble.waitingAck) bubble.region = rg;   // R18: kept for the reveal; the window shows nothing until then
     else if (regionChanges) { bubble.region = rg; if (!bubble.away) SetWindowRgn(bubble.hwnd, CreateRectRgn(rg.left, rg.top, rg.right, rg.bottom), FALSE); }   // R41: no repaint for a region (no flash); the system owns it now
@@ -813,6 +813,21 @@ std::string loadingConv; std::function<void()> loadingThen, loadingMissing;
 // state, thread and queue itself with its opening layout, and starts its agent once it is shown (FinishOpening). The switch
 // no longer sends them first: a long thread was serialized and rendered twice, and the agent started, before the opening.
 bool switchForBubble = false;
+// Opening time (Q's monkey: « conversation switch / reading » 64 ms on a click on an element shown a moment before): the
+// engine's conversation that leaves is kept in memory (it is the newest copy: the host saves it), the last 8 — a click on
+// its element again opens it without reading the disk. Those with a message waiting are never dropped.
+std::deque<std::string> keptOrder;
+void ForgetKept(const std::string& id) { if (!HasQueued(id)) parked.erase(id); keptOrder.erase(std::remove(keptOrder.begin(), keptOrder.end(), id), keptOrder.end()); }
+void KeepInMemory(Convo&& c) {
+    const std::string id = c.data.head.id; if (id.empty() || c.data.items.empty()) return;
+    parked[id] = std::move(c);
+    keptOrder.erase(std::remove(keptOrder.begin(), keptOrder.end(), id), keptOrder.end()); keptOrder.push_back(id);
+    for (std::size_t i = 0; keptOrder.size() > 8 && i < keptOrder.size();) {
+        const std::string old = keptOrder[i];
+        if (HasQueued(old) || old == bubble.conv) { ++i; continue; }
+        parked.erase(old); keptOrder.erase(keptOrder.begin() + std::ptrdiff_t(i));
+    }
+}
 void SwitchedShown(bool forBubble) {   // the engine's conversation changed: the page shows it (unless a bubble opening does)
     if (forBubble && bubble.open) { RefreshWaitStrip(); return; }
     SendState(); SendThread(); SendQueue(); RefreshWaitStrip(); MaybeStartSession();
@@ -826,8 +841,9 @@ void ShowConversation(const std::string& id, std::function<void()> then, std::fu
     if (auto it = parked.find(id); it != parked.end()) {
         Convo c = std::move(it->second); parked.erase(it);
         if (turn.active) { ShowAside(std::move(c)); if (then) then(); return; }
+        UiSlow slow("conversation switch");
         ParkAside(); DisposeSession(L"another element");   // i18n-exempt: log reason
-        convo = std::move(c); RebuildTurnMaps();
+        KeepInMemory(std::move(convo)); convo = std::move(c); RebuildTurnMaps();
         if (!forBubble) SwitchedShown(false);
         if (then) then(); if (forBubble) SwitchedShown(true);
         if (HasQueued(convo.data.head.id)) ProcessQueue(); return;
@@ -847,7 +863,8 @@ void ShowConversation(const std::string& id, std::function<void()> then, std::fu
                  }
                  Convo c; c.data = std::move(*out); c.preambleSent = c.data.head.promptVersion == ChatPrompt::Version;
                  if (turn.active) { ShowAside(std::move(c)); if (then) then(); return; }
-                 ParkAside(); DisposeSession(L"another element"); convo = std::move(c);   // i18n-exempt: log reason
+                 UiSlow slow("conversation switch");
+                 ParkAside(); DisposeSession(L"another element"); KeepInMemory(std::move(convo)); convo = std::move(c);   // i18n-exempt: log reason
                  if (AgentOf(convo.data.head.agentId)) agentId = convo.data.head.agentId;
                  const bool forBubble = switchForBubble; switchForBubble = false;
                  RebuildTurnMaps(); if (!forBubble) SwitchedShown(false);
