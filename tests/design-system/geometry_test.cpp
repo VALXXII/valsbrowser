@@ -79,7 +79,7 @@ int main(){
         Require(few.Closable(0,1)&&!few.SwapsClose(0,0),"wide tabs keep the trailing close on every tab");
         auto narrow=TabStrip::Layout(1180,12,3,0);Require(narrow.tab>=Size::tabIconOnly&&narrow.tab<Size::tabCloseAll&&narrow.Titled(),"12 tabs at 1180 are narrow but titled");
         Require(!narrow.HasClose()&&Near(narrow.Title(3).right,narrow.Surface(3).right-Space::md),"narrow titles take the close room");
-        Require(few.HasClose()&&Near(few.Title(0).right,TabStrip::TitleSlot(few.Surface(0)).right),"wide tabs keep the reserved close slot");
+        Require(few.HasClose()&&Near(few.Title(0).right,few.Surface(0).right-Space::md),"wide tabs: the title runs the full width too (Paper v2, fade under the close)");
         auto locked=TabStrip::Layout(1180,11,0,0,narrow.tab);Require(Near(locked.tab,narrow.tab),"locked width survives a pointer close");
         Require(Near(TabStrip::Layout(1180,13,0,0,narrow.tab).tab,TabStrip::TabWidth(1180,13)),"lock never widens past the fitting width");
     }
@@ -91,7 +91,8 @@ int main(){
     auto fav=TabStrip::FaviconSlot(tab);
     Require(Near(fav.left-tab.left,(tab.right-close.right)+(Size::closeSlot-Size::icon)/2),"favicon leading inset mirrors close glyph trailing inset (8 DIP)");
     auto title=TabStrip::TitleSlot(tab);
-    Require(Near(close.left-title.right,Space::xs)&&title.right>title.left,"title reserves the close slot permanently (no hover shift)");
+    Require(Near(title.left-tab.left,32)&&Near(tab.right-title.right,Space::md)&&title.right>close.left,"title spans 32..tab-8 under the close (Paper v2), constant on hover");
+    Require(Near(TabStrip::titleFade,20)&&close.left-TabStrip::titleFade>title.left,"title fade: 20 DIP just before the close");
     Require(Near(Size::focusStroke,1)&&Near(Focus::stroke,1),"focus ring is exactly 1 DIP");
     Require(Near(Focus::color,1)&&Near(Focus::pointerOpacity,.10f)&&Near(Focus::Opacity(false),.10f),"pointer focus ring is white at 10% alpha");
     Require(Near(Focus::keyboardOpacity,.50f)&&Near(Focus::Opacity(true),.50f),"keyboard focus ring is white at 50% alpha");

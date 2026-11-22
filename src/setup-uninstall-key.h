@@ -10,6 +10,9 @@
 
 #include <string>
 
+#include "default-browser.h"
+#include "i18n.h"
+
 namespace SetupKey {
 
 constexpr const wchar_t* AppKeyName = L"VALXXII.browser";
@@ -49,14 +52,51 @@ inline bool WriteString(HKEY key, const wchar_t* name, const std::wstring& value
                           DWORD((value.size() + 1) * sizeof(wchar_t))) == ERROR_SUCCESS;
 }
 
-// After an update: DisplayVersion follows `current`, only when the entry exists and names exactly this root.
+// After an update: DisplayVersion follows `current` and DisplayName is the product name « Browser » (entries written
+// before the capital B follow at the next update), only when the entry exists and names exactly this root.
 inline void RefreshDisplayVersion(const std::wstring& root, const std::string& version) {
     HKEY key;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, UninstallKey().c_str(), 0, KEY_QUERY_VALUE | KEY_SET_VALUE, &key) != ERROR_SUCCESS) return;
     std::wstring location;
     if (ReadString(key, L"InstallLocation", location) && CompareStringOrdinal(location.c_str(), -1, root.c_str(), -1, TRUE) == CSTR_EQUAL)
-        WriteString(key, L"DisplayVersion", std::wstring(version.begin(), version.end()));
+        WriteString(key, L"DisplayVersion", std::wstring(version.begin(), version.end())) && WriteString(key, L"DisplayName", DefaultBrowser::AppName);
     RegCloseKey(key);
+}
+
+// Where Browser's default-browser registration (src/default-browser.h) lives: "" = the real HKCU\Software keys, in
+// release builds. Test builds write under HKCU\Software\browser-setup-tests\<leaf>\DefaultBrowser, and NOTHING at all
+// without BROWSER_SETUP_TEST_ROOT (a fixture can never touch the person's registration).
+inline bool DefaultBrowserPrefix(std::wstring& prefix) {
+#if defined(SETUP_TESTING) || defined(UPDATE_HELPER_FAULTS)
+    const std::wstring test = TestRoot();
+    if (test.empty()) return false;
+    prefix = L"Software\\browser-setup-tests\\" + test.substr(test.find_last_of(L"\\/") + 1) + L"\\DefaultBrowser";
+    return true;
+#else
+    prefix.clear();
+    return true;
+#endif
+}
+
+// After an install (setup) and after every update (helper): Browser registered with Windows as a web browser for the
+// install at `root`, texts in the process language. Rewritten each time, so existing installs get it at their next
+// update and a repaired or moved root is always current.
+inline bool RegisterDefaultBrowser(const std::wstring& root) {
+    std::wstring prefix;
+    if (!DefaultBrowserPrefix(prefix)) return false;
+    const DefaultBrowser::Texts t{TR(default_browser_description), TR(default_browser_html_type), TR(default_browser_pdf_type), TR(default_browser_url_type)};
+    const bool ok = DefaultBrowser::Write(HKEY_CURRENT_USER, DefaultBrowser::For(root, t, prefix));
+    if (prefix.empty()) DefaultBrowser::NotifyChanged();
+    return ok;
+}
+// Uninstall: removed entirely, unless the registration names another copy (left to that copy).
+inline void UnregisterDefaultBrowser(const std::wstring& root) {
+    std::wstring prefix;
+    if (!DefaultBrowserPrefix(prefix)) return;
+    const DefaultBrowser::Layout l = DefaultBrowser::For(root, {}, prefix);
+    if (DefaultBrowser::Registered(HKEY_CURRENT_USER, prefix) && !DefaultBrowser::Owns(HKEY_CURRENT_USER, l, prefix)) return;
+    DefaultBrowser::Remove(HKEY_CURRENT_USER, l);
+    if (prefix.empty()) DefaultBrowser::NotifyChanged();
 }
 
 }  // namespace SetupKey

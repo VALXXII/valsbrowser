@@ -42,6 +42,8 @@
 #include "profile-editor.h"
 #include "i18n.h"
 #include "ui-language.h"
+#include "onboarding-flow.h"   // the halftone loop (LoopPhase, HalftoneLoopSeconds, ShaderLoops)
+#include "shader-layer.h"     // the onboarding's halftone logo shader, drawn by the « navigateur par défaut » card
 
 namespace NativeChrome {
 namespace SettingsUI {
@@ -53,6 +55,9 @@ enum Hit : int {
     None = 0, Close = 1, Back = 2, EngineBase = 10, More = 20,
     RestoreTabs = 30, Folder = 31, AskWhere = 32, ReduceMotion = 33, Suggestions = 34, Passwords = 35, Autofill = 36, ClearOnExit = 37,
     ClearData = 40, CheckUpdates = 41, ResetAll = 42, ResetSite = 43, ManagePasswords = 44, ImportData = 46,
+    // The « navigateur par défaut » card at the bottom of the root (Paper « 01 · Réglages — racine »): « Plus tard » hides it
+    // for 30 days, « Browser par défaut » opens Windows' Default apps page on Browser.
+    DefaultLater = 47, DefaultMake = 48,
     Tracking = 50, Sleep = 51, Zoom = 52, Permissions = 53, HomePageHit = 54, TabPositionHit = 55, AutoplayHit = 56, BookmarksBarHit = 57,
     ConfirmClose = 38, CloseWithLastTab = 39, AdBlock = 60, HttpsOnly = 61, ThirdPartyCookies = 62, MemorySaver = 63, MuteBackground = 64, GrayscaleText = 65,
     CustomSearchField = 70, HomepageField = 71, SearchField = 72, SearchDismiss = 73,
@@ -97,6 +102,18 @@ inline constexpr float field = 32, fieldHint = 6, fieldRow = field + fieldHint +
 inline constexpr float TwoLine(size_t lines) { return 2 * twoLinePad + 20 + 2 + lines * descriptionLine; }
 // Footer of every settings view: hairline, 12, version (24), 16.
 inline constexpr float footer = 1 + 12 + slot + padBottom;                                        // 53
+// « Navigateur par défaut » card (Paper 1DQM-0, above the version, under the footer's hairline and its 12 DIP): the
+// halftone area (110 high, top corners 22, the shader node 308 x 159 at 0.2 / -3 over a #1D1D1D -> #121212 gradient,
+// then a #171717 radial veil 81 high at 33.2), the question 2 px up into it (14/20 Medium, centred, balanced, #FFFFFFE6),
+// 10, the two buttons (32 high, 12 padding, 10 apart, radius 6), 12, a #FFFFFF14 hairline; 12 more to the version.
+inline constexpr float cardArt = 110, cardRadius = 22, cardShaderW = 308, cardShaderH = 159, cardShaderX = .2f, cardShaderY = -3;
+inline constexpr float cardVeilTop = 33.2f, cardVeilH = 81, cardText = cardArt - 2, cardLine = 20, cardTextWidth = 306;   // Paper's column
+inline constexpr float cardButton = 32, cardButtonPad = 12, cardButtonGap = 10;
+// The question's lines (1 or 2) set the height: 203 with two lines (French), 183 with one (English).
+inline constexpr float CardButtons(size_t lines) { return cardText + lines * cardLine + 10; }
+inline constexpr float CardHeight(size_t lines) { return CardButtons(lines) + cardButton + 12 + 1; }
+inline constexpr float CardBlock(size_t lines) { return CardHeight(lines) + 12; }                       // the card and the gap under it
+static_assert(CardHeight(2) == 203, "Paper 1DQM-0: 203 high with the two French lines");
 // Search results: a card 6 DIP under the field; rows of title + path (8 / 10 / 12 padding).
 inline constexpr float resultGap = 6, resultRow = 8 + 20 + 2 + 18 + 8, resultPadLeft = 10, resultPadRight = 12, maxResults = 7;
 inline constexpr float searchDim = .32f;                                                           // the root behind results (--opacity-browser-disabled)
@@ -531,6 +548,11 @@ public:
         // saveLanguage: write it (true only once it is on disk). The process keeps its language until restarted.
         std::function<I18n::Locale()> savedLanguage;
         std::function<bool(I18n::Locale)> saveLanguage;
+        // The « navigateur par défaut » card (both optional; no card without defaultBrowser or unless it answers 0).
+        // defaultBrowser: -1 this copy is not registered with Windows, 0 not the default, 1 the default (read when the
+        // drawer opens and when the window comes back to the front). setDefaultBrowser: open Windows' Default apps page.
+        std::function<int()> defaultBrowser;
+        std::function<void()> setDefaultBrowser;
     };
 private:
     HWND hwnd_ = nullptr, owner_ = nullptr;
@@ -563,6 +585,14 @@ private:
     BrowserSettings::Autoplay launchAutoplay_ = BrowserSettings::Autoplay::Muted; bool launchCookies_ = false, launchGrayscale_ = false; // engine flags of this run
     int hover_ = 0, pressed_ = 0, focus_ = 0;
     I18n::Locale languageSaved_ = I18n::Current(); bool languageFailed_ = false;   // « Langue »: preference as saved, last save failed
+    int defaultBrowser_ = -1;   // the host's last answer (Hooks::defaultBrowser)
+    // The card shows while Browser is registered but not the default, unless « Plus tard » was answered < 30 days ago.
+    bool CardDue() const { return defaultBrowser_ == 0 && state_ && BrowserSettings::DefaultBrowserCardDue(*state_, NowSeconds()); }
+    bool CardIn(View v) const { return v == View::Main && CardDue(); }
+    // Its halftone: the onboarding's renderer and shader (src/onboarding-shaders.h), one layer, the onboarding's loop.
+    std::wstring root_; Onboarding::Shaders::Renderer gpu_; bool gpuTried_ = false; Onboarding::Shaders::Layer cardLayer_;
+    Motion::Time cardClock_{}; double cardSecondsForTest_ = -1; bool forceSoftwareForTest_ = false;
+    ID2D1PathGeometry* cardMask_ = nullptr; ID2D1RadialGradientBrush* cardVeil_ = nullptr; ID2D1LinearGradientBrush* cardGround_ = nullptr; ID2D1RenderTarget* cardBrushes_ = nullptr;
     // Profiles: the list as last read, the profile open in the detail view and its editor block.
     std::vector<ProfileItem> profiles_; int profileIndex_ = -1; std::wstring profileId_; ProfileEditor::Editor editor_;
     std::vector<std::wstring> profileNoteLines_, lastProfileNoteLines_;
@@ -631,7 +661,7 @@ private:
     // Footer height per view (DIP): main = clear + version; sites = note + "Tout retirer"; site = one danger row.
     float FooterHeight(View v) const {
         if (v == View::Profile) { const auto& note = LastProfile() ? lastProfileNoteLines_ : profileNoteLines_; return 1 + 12 + note.size() * Layout::descriptionLine + 8 + Layout::row + Layout::padBottom; }
-        return v == View::Sites ? 1 + 12 + 40 + 8 + Layout::row + Layout::padBottom : v == View::Site ? 1 + 12 + Layout::row + Layout::padBottom : Layout::footer;
+        return v == View::Sites ? 1 + 12 + 40 + 8 + Layout::row + Layout::padBottom : v == View::Site ? 1 + 12 + Layout::row + Layout::padBottom : Layout::footer + (CardIn(v) ? Layout::CardBlock(CardLines().size()) : 0);
     }
     float ViewBottom(View v) const { return Height() - FooterHeight(v); }
     LayoutInput Input() const {
@@ -1022,6 +1052,133 @@ private:
         pc_->ink = D2D1::ColorF(1, 1, 1, 1);
     }
     void DangerContent(const Slot& s, Motion::Time now) { DangerRow(s.text.c_str(), s.top, s.hit, now, !s.disabled); }
+    // ---- « Navigateur par défaut » card -------------------------------------------------
+    // Shader frames only while someone can see them move: open (not leaving), on the root, the card shown, motion
+    // allowed, a hardware device (WARP draws one still frame). Hidden, the drawer asks the host for no frame at all.
+    bool CardLoops() const { return visible_ && !closing_ && CardIn(Current()) && Onboarding::ShaderLoops(Reduced(), gpu_.Animated(), true, false) && !page_.Moving(Motion::Now()); }
+    // A new halftone picture is due (30 a second, as the onboarding's lattice).
+    bool CardFrameDue(Motion::Time now) const { return CardLoops() && (cardLayer_.shaded == Motion::Time{} || std::chrono::duration<float, std::milli>(now - cardLayer_.shaded).count() >= 1000.f / 30 - 3); }
+    double CardSeconds(Motion::Time now) const {
+        if (cardSecondsForTest_ >= 0) return cardSecondsForTest_;
+        if (Reduced() || !gpu_.Animated()) return 0;   // reduced motion / software device: Paper's still frame
+        return std::chrono::duration<double>(now - cardClock_).count();
+    }
+    void DropCard() { cardLayer_.Drop(); Drop(cardMask_); Drop(cardVeil_); Drop(cardGround_); cardBrushes_ = nullptr; }
+    // Balanced two lines (CSS text-wrap: balance): the break that makes the longer line shortest.
+    // Measured once per drawer (the language is the process's; widths in DIP do not follow the DPI).
+    mutable std::vector<std::wstring> cardLines_;
+    const std::vector<std::wstring>& CardLines() const {
+        if (cardLines_.empty()) { if (pc_->TextWidth(TR(settings_default_browser_question), 14, true, false, 0) > 0) cardLines_ = BalancedLines(Layout::cardTextWidth); else { static std::vector<std::wstring> two(2); return two; } }   // fonts not ready yet: measured later
+        return cardLines_;
+    }
+    std::vector<std::wstring> BalancedLines(float width) const {
+        const std::wstring text = TR(settings_default_browser_question);
+        auto w = [this](const std::wstring& t) { return pc_->TextWidth(t, 14, true, false, 0); };
+        if (w(text) <= width) return {text};
+        std::vector<std::wstring> best; float bestW = 1e9f;
+        for (size_t at = text.find(L' '); at != std::wstring::npos; at = text.find(L' ', at + 1)) {
+            std::wstring a = text.substr(0, at), b = text.substr(at + 1);
+            const float m = std::max(w(a), w(b)); if (m <= width && m < bestW) { bestW = m; best = {a, b}; }
+        }
+        return best.empty() ? std::vector<std::wstring>{text} : best;
+    }
+    struct CardBox { Design::Box card, art, text, later, make; };
+    float CardButtonWidth(const wchar_t* label) const { return std::round((pc_->TextWidth(label, 14, true, false, 0) + 2 * Layout::cardButtonPad) * 4) / 4; }
+    CardBox CardBoxes(float top) const {
+        using namespace Layout; CardBox c;
+        const size_t lines = CardLines().size();
+        c.card = {rowLeft, top, rowRight, top + CardHeight(lines)}; c.art = {rowLeft, top, rowRight, top + cardArt};
+        c.text = {rowLeft, top + cardText, rowRight, top + cardText + lines * cardLine};
+        const float lw = CardButtonWidth(TR(settings_default_browser_later)), mw = CardButtonWidth(TR(settings_default_browser_make));
+        const float left = (rowLeft + rowRight - lw - cardButtonGap - mw) / 2, y = top + CardButtons(lines);
+        c.later = {left, y, left + lw, y + cardButton}; c.make = {left + lw + cardButtonGap, y, left + lw + cardButtonGap + mw, y + cardButton};
+        return c;
+    }
+    void EnsureCardGpu() {
+        if (gpuTried_) return; gpuTried_ = true;
+        namespace S = Onboarding::Shaders; S::Image logo;
+        if (!gpu_.Init(forceSoftwareForTest_)) return;
+        if (S::LoadPng(pc_->Imaging(), root_ + L"\\assets\\onboarding\\halftone-logo.png", logo)) gpu_.SetInput(S::Kind::Halftone, logo);
+    }
+    // The halftone area: ground gradient, the shader node, the veil, clipped to the top-rounded 110 DIP.
+    void CardArt(Design::Box art, Motion::Time now) {
+        using namespace Layout; namespace S = Onboarding::Shaders;
+        auto* t = pc_->RenderTarget(); auto* f = pc_->Factory(); if (!t || !f) return;
+        if (cardBrushes_ != t) { Drop(cardMask_); Drop(cardVeil_); Drop(cardGround_); cardBrushes_ = t; }
+        // Ground: linear-gradient(180deg, #1D1D1D 0%, #121212 51.38%) over the shader node's box.
+        const float nodeLeft = art.left + cardShaderX, nodeTop = art.top + cardShaderY;
+        if (!cardGround_) {
+            ID2D1GradientStopCollection* stops = nullptr; const D2D1_GRADIENT_STOP g[] = {{0, D2D1::ColorF(0x1D1D1D)}, {.5138f, D2D1::ColorF(0x121212)}};
+            if (SUCCEEDED(t->CreateGradientStopCollection(g, 2, &stops))) t->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({0, 0}, {0, cardShaderH}), stops, &cardGround_);
+            Drop(stops);
+        }
+        // Veil: radial-gradient(ellipse 185% 86.245% at 50% 96.45%, #171717 26.83%, #17171700 100%) over 308 x 81.
+        if (!cardVeil_) {
+            ID2D1GradientStopCollection* stops = nullptr; const D2D1_GRADIENT_STOP g[] = {{.2683f, D2D1::ColorF(0x171717, 1)}, {1, D2D1::ColorF(0x171717, 0)}};
+            if (SUCCEEDED(t->CreateGradientStopCollection(g, 2, &stops)))
+                t->CreateRadialGradientBrush(D2D1::RadialGradientBrushProperties({cardShaderW / 2, .9645f * cardVeilH}, {0, 0}, 1.85f * cardShaderW, .86245f * cardVeilH), stops, &cardVeil_);
+            Drop(stops);
+        }
+        // Top corners 22, square bottom: a rounded rectangle reaching 22 below the area, cut by the area's clip.
+        if (!cardMask_ && SUCCEEDED(f->CreatePathGeometry(&cardMask_))) {
+            ID2D1GeometrySink* sink = nullptr; const float w = art.right - art.left, h = cardArt, r = cardRadius;
+            if (SUCCEEDED(cardMask_->Open(&sink))) {
+                sink->BeginFigure({0, h}, D2D1_FIGURE_BEGIN_FILLED); sink->AddLine({0, r});
+                sink->AddArc(D2D1::ArcSegment({r, 0}, {r, r}, 0, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL)); sink->AddLine({w - r, 0});
+                sink->AddArc(D2D1::ArcSegment({w, r}, {r, r}, 0, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL)); sink->AddLine({w, h});
+                sink->EndFigure(D2D1_FIGURE_END_CLOSED); sink->Close(); sink->Release();
+            }
+        }
+        ID2D1Layer* layer = nullptr; D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
+        const auto at = D2D1::Matrix3x2F::Translation(art.left, art.top);
+        if (cardMask_ && SUCCEEDED(t->CreateLayer(nullptr, &layer))) t->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), cardMask_, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, at), layer);
+        else t->PushAxisAlignedClip(R(art), D2D1_ANTIALIAS_MODE_ALIASED);
+        if (cardGround_) { t->SetTransform(D2D1::Matrix3x2F::Translation(nodeLeft, nodeTop) * base); t->FillRectangle(D2D1::RectF(0, 0, cardShaderW, cardShaderH), cardGround_); t->SetTransform(base); }
+        // The shader node at the target's pixel density; a new picture only when the loop moved on.
+        EnsureCardGpu();
+        const D2D1_RECT_F node{nodeLeft, nodeTop, nodeLeft + cardShaderW, nodeTop + cardShaderH};
+        bool drawn = false;
+        if (gpu_.Ready()) {
+            const auto px = t->GetPixelSize(); const auto dip = t->GetSize(); const float scale = px.width / std::max(1.f, dip.width);
+            const unsigned ow = static_cast<unsigned>(std::lround(cardShaderW * scale)), oh = static_cast<unsigned>(std::lround(cardShaderH * scale));
+            const float drift = static_cast<float>(Onboarding::LoopPhase(CardSeconds(now), Onboarding::HalftoneLoopSeconds));
+            auto& l = cardLayer_; const bool current = l.bitmap && l.owner == t && l.frame.width == ow && l.frame.height == oh;
+            if (!current || l.key != drift) {
+                if (gpu_.Render(S::Kind::Halftone, S::HalftoneCard(drift), cardShaderW, cardShaderH, ow, oh, l.frame) && l.Upload(t)) { l.key = drift; l.shaded = now; }
+                else if (!current) l.Drop();
+            }
+            if (l.bitmap && l.owner == t) { t->DrawBitmap(l.bitmap, node, 1, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR); drawn = true; }
+        }
+        if (!drawn) if (auto* logo = pc_->AssetBitmap(L"onboarding\\halftone-logo.png")) {   // no shader: the plain picture, same framing
+            const float side = cardShaderW * .63f, cx = (node.left + node.right) / 2, cy = (node.top + node.bottom) / 2;
+            t->DrawBitmap(logo, D2D1::RectF(cx - side / 2, cy - side / 2, cx + side / 2, cy + side / 2), 1, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        }
+        if (cardVeil_) { t->SetTransform(D2D1::Matrix3x2F::Translation(art.left, art.top + cardVeilTop) * base); t->FillRectangle(D2D1::RectF(0, 0, cardShaderW, cardVeilH), cardVeil_); t->SetTransform(base); }
+        if (layer) { t->PopLayer(); layer->Release(); } else t->PopAxisAlignedClip();
+    }
+    void CardButton(Design::Box box, const wchar_t* label, int hit, bool primary, Motion::Time now) {
+        auto* t = pc_->RenderTarget(); auto* brush = pc_->SolidBrush(); const auto v = Interaction(hit, now);
+        if (primary) { const auto c = Design::Accent::StateColor(Design::Accent::Get(), v.hover, v.press); brush->SetColor(D2D1::ColorF(c.r, c.g, c.b, 1)); }
+        else brush->SetColor(D2D1::ColorF(1, 1, 1, 0x14 / 255.f + hoverTint * v.hover + pressTint * v.press));   // #FFFFFF14
+        t->FillRoundedRectangle(D2D1::RoundedRect(R(box), Design::Radius::control, Design::Radius::control), brush);
+        if (focus_ == hit) pc_->FocusRing(R(box), Design::Radius::control);
+        const float w = pc_->TextWidth(label, 14, true, false, 0), x = (box.left + box.right - w) / 2, y = (box.top + box.bottom - 20) / 2;
+        pc_->Text(label, {x, y, x + w + 1, y + 20}, 14, primary ? 1.f : 0xBF / 255.f + (1 - 0xBF / 255.f) * std::max(v.hover, v.press), false, true, 0);   // #FFFFFF / #FFFFFFBF
+    }
+    void Card(float top, Motion::Time now) {
+        auto* t = pc_->RenderTarget(); auto* brush = pc_->SolidBrush(); if (!t || !brush) return;
+        const auto c = CardBoxes(top);
+        CardArt(c.art, now);
+        const auto& lines = CardLines();
+        for (size_t k = 0; k < lines.size() && k < 2; ++k) {
+            const float w = pc_->TextWidth(lines[k], 14, true, false, 0), x = (c.text.left + c.text.right - w) / 2, y = c.text.top + k * Layout::cardLine;
+            pc_->Text(lines[k], {x, y, x + w + 1, y + Layout::cardLine}, 14, 0xE6 / 255.f, false, true, 0);   // #FFFFFFE6
+        }
+        CardButton(c.later, TR(settings_default_browser_later), DefaultLater, false, now);
+        CardButton(c.make, TR(settings_default_browser_make), DefaultMake, true, now);
+        const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width));
+        brush->SetColor(D2D1::ColorF(1, 1, 1, 0x14 / 255.f)); t->FillRectangle(D2D1::RectF(c.card.left, c.card.bottom - px, c.card.right, c.card.bottom), brush);   // border-bottom #FFFFFF14
+    }
     void Footer(View view, Motion::Time now) {
         const float h = Height(), top = h - FooterHeight(view);
         auto* t = pc_->RenderTarget(); auto* brush = pc_->SolidBrush();
@@ -1041,6 +1198,7 @@ private:
                 pc_->Icon(L"caret", R(chevron), 14, .5f + .3f * v.hover); t->SetTransform(base);
             } else DangerRow(TR(settings_delete_profile), y, ProfileDelete, now, !ProfilesReadOnly());
         } else if (view != View::Sites && view != View::Site) {
+            if (CardIn(view)) Card(top + 13, now);
             // Version + check for updates. The glyph spins while a check runs.
             const auto version = hooks_.version ? hooks_.version() : Version{};
             const float y = h - Layout::padBottom - Layout::slot;
@@ -1159,7 +1317,7 @@ private:
         if (!pc_->RenderTarget()) pc_->Resize();
         auto* target = pc_->RenderTarget(); if (!target) return;
         target->BeginDraw(); Paint(Motion::Now());
-        if (target->EndDraw() == D2DERR_RECREATE_TARGET) { Drop(fade_); Drop(stops_); pc_->RecreateTarget(); }
+        if (target->EndDraw() == D2DERR_RECREATE_TARGET) { Drop(fade_); Drop(stops_); DropCard(); pc_->RecreateTarget(); }
     }
 
     // ---- Input -----------------------------------------------------------------
@@ -1175,6 +1333,7 @@ private:
             if (in(Layout::Row(y))) return LastProfile() ? ProfileClearData : ProfilesReadOnly() ? None : ProfileDelete;
         } else if (view != View::Sites && view != View::Site) {
             if (in(Layout::Trailing(h - Layout::padBottom - Layout::slot, Layout::slot))) return CheckUpdates;
+            if (CardIn(view)) { const auto c = CardBoxes(footerTop + 13); if (in(c.later)) return DefaultLater; if (in(c.make)) return DefaultMake; }
         } else if (view == View::Sites) { if (!sites_.empty() && in(Layout::Row(footerTop + 13 + 40 + 8))) return ResetAll; }
         else if (in(Layout::Row(footerTop + 13))) return ResetSite;
         if (y < Layout::viewTop - Layout::groupGap / 2 || y >= footerTop) return None;
@@ -1201,7 +1360,7 @@ private:
         if (view == View::Main && Searching()) { order.push_back(SearchField); for (size_t i = 0; i < results_.size(); ++i) order.push_back(ResultBase + static_cast<int>(i)); return order; }
         for (const auto& s : Slots(view, Motion::Now())) if (s.hit && s.opacity > .5f && (!s.disabled || s.kind == Kind::Agent)) order.push_back(s.hit);   // a busy agent button keeps the focus
         if (view == View::Profile) { if (LastProfile()) order.push_back(ProfileClearData); else if (!ProfilesReadOnly()) order.push_back(ProfileDelete); }
-        else if (view != View::Sites && view != View::Site) { if (hooks_.version && hooks_.version().canCheck) order.push_back(CheckUpdates); }
+        else if (view != View::Sites && view != View::Site) { if (CardIn(view)) { order.push_back(DefaultLater); order.push_back(DefaultMake); } if (hooks_.version && hooks_.version().canCheck) order.push_back(CheckUpdates); }
         else if (view == View::Sites) { if (!sites_.empty()) order.push_back(ResetAll); }
         else order.push_back(ResetSite);
         return order;
@@ -1437,6 +1596,12 @@ private:
         }
         const float h = Height(), footerTop = h - FooterHeight(view);
         if (view != View::Sites && view != View::Site) {
+            if (CardIn(view)) {
+                const auto c = CardBoxes(footerTop + 13);
+                add(textKey++, Role::Text, TR(settings_default_browser_question), c.text).focusable = false;
+                auto& later = add(DefaultLater, Role::Button, TR(settings_default_browser_later), c.later); later.automationId = L"SettingsDefaultBrowserLater"; later.help = TR(settings_default_browser_later_help);
+                auto& make = add(DefaultMake, Role::Button, TR(settings_default_browser_make), c.make); make.automationId = L"SettingsDefaultBrowser"; make.help = TR(settings_default_browser_help);
+            }
             const auto version = hooks_.version ? hooks_.version() : Version{};
             if (!version.text.empty()) add(textKey++, Role::Text, version.text, {Layout::textLeft, h - Layout::padBottom - Layout::slot, Layout::rowRight, h - Layout::padBottom}).focusable = false;
             if (version.canCheck) add(CheckUpdates, Role::Button, TR(settings_check_updates), Layout::Trailing(h - Layout::padBottom - Layout::slot, Layout::slot)).enabled = !version.checking;
@@ -1641,6 +1806,12 @@ private:
         else if (hit == ClearData) { if (hooks_.clearData) Modal([&] { hooks_.clearData(keyboard); }); }
         else if (hit == ManagePasswords) { if (hooks_.managePasswords) Modal([&] { hooks_.managePasswords(keyboard); }); }
         else if (hit == ImportData) { if (hooks_.importData) Modal([&] { hooks_.importData(keyboard); }); }
+        else if (hit == DefaultMake) { if (hooks_.setDefaultBrowser) hooks_.setDefaultBrowser(); }
+        else if (hit == DefaultLater) {   // away for 30 days; the focus goes on to the version's button
+            state_->defaultBrowserLaterAt = NowSeconds(); if (hooks_.changed) hooks_.changed(Change::DefaultBrowserLater);
+            if (focus_ == DefaultLater || focus_ == DefaultMake) focus_ = keyboard && hooks_.version && hooks_.version().canCheck ? CheckUpdates : 0;
+            hover_ = pressed_ = 0; motion_.ClearInteractions();
+        }
         else if (hit == CheckUpdates) { if (hooks_.version && hooks_.version().canCheck && hooks_.checkUpdates) hooks_.checkUpdates(); Changed(); }
         Repoint(); RefreshTips(); Invalidate(); Schedule(Motion::Now());
     }
@@ -1947,12 +2118,12 @@ public:
         off.RenderTarget()->BeginDraw(); Paint(Motion::Now()); const HRESULT drawn = off.RenderTarget()->EndDraw();
         const bool ok = SUCCEEDED(drawn) && SUCCEEDED(off.SavePng(png.c_str()));
         for (auto& g : glyphs_) Drop(g.second); glyphs_ = std::move(keepGlyphs); Drop(fade_); Drop(stops_); fade_ = keepFade; stops_ = keepStops;
-        pc_ = &chrome_; heightOverride_ = 0; off.Dispose();
+        DropCard(); pc_ = &chrome_; heightOverride_ = 0; off.Dispose();
         return ok;
     }
     ~Drawer() { Dispose(); }
     bool Create(HINSTANCE instance, HWND owner, const std::wstring& root, BrowserSettings::State* state, Hooks hooks) {
-        owner_ = owner; state_ = state; hooks_ = std::move(hooks);
+        owner_ = owner; state_ = state; hooks_ = std::move(hooks); root_ = root;
         if (state_) { launchAutoplay_ = state_->autoplay; launchCookies_ = state_->blockThirdPartyCookies; launchGrayscale_ = state_->grayscaleText; } // engine flags in effect for this run
         motion_.EnablePolish(); pc_->SetMotion(&motion_); pc_->textCacheLimit = 384;
         WNDCLASSW wc{}; wc.lpfnWndProc = Proc; wc.hInstance = instance; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = L"LisiereSettingsDrawer";
@@ -1973,7 +2144,7 @@ public:
         if (editBrush_) { DeleteObject(editBrush_); editBrush_ = nullptr; }
         edit_ = nullptr; editing_ = 0; uia_.Detach(); editor_.Detach();
         for (auto& g : glyphs_) Drop(g.second); glyphs_.clear();
-        Drop(fade_); Drop(stops_); chrome_.Dispose(); tip_.Dispose(); hwnd_ = nullptr; visible_ = false; }
+        Drop(fade_); Drop(stops_); DropCard(); gpu_.Dispose(); gpuTried_ = false; chrome_.Dispose(); tip_.Dispose(); hwnd_ = nullptr; visible_ = false; }
     HWND Window() const { return hwnd_; }
     HWND EditForTest() const { return edit_; }   // the field being edited (search, address fields)
     UINT RenderDpiForTest() const { return chrome_.dpi; }   // the DPI the drawer is drawn at (tests/ui/address_popup_dpi_test.cpp)
@@ -2014,6 +2185,8 @@ public:
             LoadSites(); // the Autorisations row shows how many sites
             LoadAnnotations(); // the « Annotations » row shows the connected agents
             if (hooks_.savedLanguage) { languageSaved_ = hooks_.savedLanguage(); languageFailed_ = false; }   // « Langue »: the preference as stored now
+            defaultBrowser_ = hooks_.defaultBrowser ? hooks_.defaultBrowser() : -1;   // the card: Windows' answer now
+            cardClock_ = now; cardLayer_.shaded = {};                               // its halftone loop starts on Paper's frame
             if (target != View::Main) { views_[1] = target; depth_ = 1; page_.Snap(1); scrolls_[1].Snap(0); }
         }
         { const auto version = hooks_.version ? hooks_.version() : Version{}; SetChecking(version.checking, now); }
@@ -2064,6 +2237,23 @@ public:
         auto order = FocusOrder(); if (focus_ && std::find(order.begin(), order.end(), focus_) == order.end()) focus_ = 0;
         RefreshTips(); Invalidate(); Schedule(now);
     }
+    // The person may have changed the default in Windows' Default apps page: read it again (window back in front).
+    void RefreshDefaultBrowser() {
+        if (!hwnd_ || !visible_ || !hooks_.defaultBrowser) return;
+        const int now = hooks_.defaultBrowser(); if (now == defaultBrowser_) return;
+        defaultBrowser_ = now;
+        if (focus_ == DefaultLater || focus_ == DefaultMake) { const auto order = FocusOrder(); if (std::find(order.begin(), order.end(), focus_) == order.end()) focus_ = 0; }   // the card went
+        Repoint(); RefreshTips(); Invalidate(); Schedule(Motion::Now());
+    }
+    int DefaultBrowserForTest() const { return defaultBrowser_; }
+    // The card: whether it shows, its boxes (DIP, drawer-local), whether its halftone loops, the loop's clock for captures.
+    bool CardShownForTest() const { return visible_ && CardIn(Current()); }
+    CardBox CardForTest() const { return CardBoxes(Height() - FooterHeight(View::Main) + 13); }
+    bool CardLoopsForTest() const { return CardLoops(); }
+    bool CardShaderReadyForTest() const { return gpu_.Ready(); }
+    void CardSecondsForTest(double seconds) { cardSecondsForTest_ = seconds; }
+    void ForceSoftwareShaderForTest() { forceSoftwareForTest_ = true; }
+    Motion::Wake NextWakeForTest() const { return NextWake(Motion::Now()); }
     void SetReducedMotion() { SyncReducedMotion(); Invalidate(); }
     bool Moving(Motion::Time now) const {
         bool moving = slide_.Moving(now) || plate_.Moving(now) || page_.Moving(now) || Spinning(now) || customReveal_.Moving(now) || homeReveal_.Moving(now);
@@ -2074,7 +2264,7 @@ public:
     }
     Motion::Wake NextWake(Motion::Time now) const {
         if (!visible_) return {};
-        auto wake = Motion::Earlier(motion_.NextWake(now), Moving(now) ? Motion::Frame() : Motion::Wake{});
+        auto wake = Motion::Earlier(motion_.NextWake(now), Moving(now) || CardLoops() ? Motion::Frame() : Motion::Wake{});
         if (LoadQuiet(now)) wake = Motion::Earlier(wake, Motion::Deadline(now, loadStart_ + Motion::Milliseconds(loadGraceMs)));   // then « Chargement… »
         return wake;
     }
@@ -2087,7 +2277,7 @@ public:
         // A window keeps only what it is painted with while its region shows it:
         // the entering slide repaints as it uncovers; the exit moves finished pixels.
         const bool content = (Moving(now) && !(closing_ && !page_.Moving(now))) || motion_.NextWake(now).delay.has_value();
-        if (content || animatingPainted_) Invalidate();
+        if (content || animatingPainted_ || CardFrameDue(now)) Invalidate();
         // Rows moved under a still pointer (fold, scroll, navigation): hover follows the layout.
         if (!content && animatingPainted_) { RefreshTips(); Repoint(); }
         animatingPainted_ = content;

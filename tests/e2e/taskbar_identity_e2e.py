@@ -90,7 +90,7 @@ try:
     check(one.get('aumid') == 'ValXXII.browser', f'installed 0.3.1: the window declares the identity ({one})')
     check(two.get('aumid') == one.get('aumid') and two.get('aumid'), f'installed 0.3.2 (after an update): the same identity ({two.get("aumid")})')
     check(one.get('relaunch') == launcher and two.get('relaunch') == launcher, f'pinning a window pins the stable launcher {launcher}, never versions\\<v> ({two.get("relaunch")})')
-    check(two.get('name') == 'browser' and two.get('icon') == f'{root}\\browser.ico,0', 'with the name « browser » and the launcher icon')
+    check(two.get('name') == f'@{root}\\browser.exe,-1' and two.get('icon') == f'{root}\\browser.ico,0', 'with the name « Browser » (the launcher\'s string 1) and the launcher icon')
     p = run(portable / 'browser.exe', portable)
     check(not p.get('aumid') and not p.get('relaunch'), f'portable copy: no identity, Windows groups it by its own path ({p})')
     after = start_menu.stat().st_mtime_ns if start_menu.exists() else None

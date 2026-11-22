@@ -173,8 +173,11 @@ inline constexpr Box Region(int slot){return {left+Size::tabPitch*slot,regionTop
 inline constexpr Box Surface(int slot){return {left+Size::tabPitch*slot+Space::tabGap,top,left+Size::tabPitch*slot+Space::tabGap+Size::tab,bottom};}
 inline constexpr Box CloseSlot(Box tab){return {tab.right-Size::closeInset-Size::closeSlot,tab.top+Size::closeInset,tab.right-Size::closeInset,tab.bottom-Size::closeInset};}
 inline constexpr Box FaviconSlot(Box tab){return {tab.left+Space::md,tab.top+Space::md,tab.left+Space::md+Size::icon,tab.top+Space::md+Size::icon};}
-// Title never changes width with hover/focus: it always reserves the close slot.
-inline constexpr Box TitleSlot(Box tab){return {tab.left+32,tab.top,CloseSlot(tab).left-Space::xs,tab.bottom};}
+// Paper « Titre d'onglet trop long — v2 »: the title runs the full tab width (ends 8 DIP
+// before the edge, « … » when too long) and never changes width with hover/focus; when
+// the close shows, the title dissolves over `titleFade` DIP before it (see Chrome::DrawTabs).
+inline constexpr float titleFade=20;
+inline constexpr Box TitleSlot(Box tab){return {tab.left+32,tab.top,tab.right-Space::md,tab.bottom};}
 // New-tab button keeps the same 6 DIP visible gap after the last tab.
 inline constexpr float NewTabLeft(int shown){return left+Size::tabPitch*shown+Space::tabGap;}
 inline int Capacity(float width){const float room=width-trailingReserve-Left()-Space::tabGap-Size::control;return std::max(1,static_cast<int>(room/Size::tabPitch));}
@@ -210,7 +213,7 @@ struct Strip {
     bool HasClose()const{return tab>=Size::tabCloseAll;}
     // Title reserves the close slot whenever the tab can show one (no hover shift).
     // `...In` take a surface so a dragged (offset) tab lays out the same way.
-    Box TitleIn(Box s)const{auto t=TitleSlot(s);if(!HasClose())t.right=s.right-Space::md;return t;}
+    Box TitleIn(Box s)const{return TitleSlot(s);}
     Box FaviconIn(Box s)const{return Titled()?FaviconSlot(s):IconSlot(s);}
     Box Title(int i)const{return TitleIn(Surface(i));}
     // Tabs too narrow for a trailing close slot swap their favicon for the close glyph

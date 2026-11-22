@@ -19,6 +19,10 @@ int main(){
     {State d;assert(d.annotationConnectPrompt&&d.annotationConnectDeclines==0&&d.annotationRetentionDays==30&&ConnectPromptActive(d));
      // Round trip of every value.
      for(int days:RetentionChoices)for(int n=0;n<=MaxConnectDeclines;++n){State s;s.annotationConnectPrompt=!(n%2);s.annotationConnectDeclines=n;s.annotationRetentionDays=days;std::stringstream io;Write(io,s);assert(Read(io)==s);}
+     // « Plus tard » on the default-browser card: stored, read back, invalid values ignored; away 30 days.
+     {State s;s.defaultBrowserLaterAt=1800000000;std::stringstream io;Write(io,s);assert(Read(io)==s);
+      std::istringstream bad("browser-settings 1\ndefault-browser-later=-5\ndefault-browser-later=12x\n");assert(Read(bad).defaultBrowserLaterAt==0);
+      assert(DefaultBrowserCardDue(State{},0)&&!DefaultBrowserCardDue(s,1800000000+29LL*86400)&&DefaultBrowserCardDue(s,1800000000+30LL*86400)&&!DefaultBrowserCardDue(s,1800000000-10));}
      // A file from before these keys: defaults (missing keys keep them).
      {std::istringstream old("browser-settings 1\nengine=bing\n");State r=Read(old);assert(r.annotationConnectPrompt&&r.annotationConnectDeclines==0&&r.annotationRetentionDays==30);}
      // Invalid values are ignored, valid ones read (CRLF too).

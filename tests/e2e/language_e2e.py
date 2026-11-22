@@ -231,8 +231,8 @@ def main():
     if os.path.isdir(FIX): shutil.rmtree(FIX)   # our own disposable fixture only
     shutil.copytree(SRC, FIX)
     os.makedirs(SHOTS, exist_ok=True)
-    fr = {'names': {'Settings': 'Réglages', 'History': 'Historique', 'NewTab': 'Nouvel onglet'}, 'title': ' — browser'}
-    en = {'names': {'Settings': 'Settings', 'History': 'History', 'NewTab': 'New tab'}, 'title': ' — browser'}
+    fr = {'names': {'Settings': 'Réglages', 'History': 'Historique', 'NewTab': 'Nouvel onglet'}, 'title': ' — Browser'}
+    en = {'names': {'Settings': 'Settings', 'History': 'History', 'NewTab': 'New tab'}, 'title': ' — Browser'}
     print('-- part A: preference file written by the harness', flush=True)
     run_file_step('1-default-french', None, dict(fr, log='UI LANGUAGE fr (missing)'))
     run_file_step('2-english', b'browser-ui-language 1\nlanguage=en\n', dict(en, log='UI LANGUAGE en (ok)'))

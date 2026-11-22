@@ -2053,7 +2053,7 @@ inline Status AboutStatus(int state, const std::wstring& detail = L"", const std
 }
 inline Spec AboutSpec(const std::wstring& version, int state, const std::wstring& detail = L"", const std::wstring& next = L"") {
     Spec s; s.kind = Kind::About; s.scope = Scope::Window; s.automationId = L"AboutBrowser";
-    s.appTile = true; s.closeButton = true; s.title = L"browser";
+    s.appTile = true; s.closeButton = true; s.title = L"Browser";
     s.body = TRF(about_version_line, version.rfind(L"Version ", 0) == 0 ? version.substr(8) : version);   // i18n-exempt: legacy « Version » prefix in the given text
     s.status = AboutStatus(state, detail, next); s.hasStatus = true;
     s.links = {{AboutNotesLink, TR(about_release_notes)}, {AboutLicensesLink, TR(about_licenses)}, {AboutReportLink, TR(about_report)}};

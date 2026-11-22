@@ -51,10 +51,10 @@ private:
     }
     Modal::Spec ListSpec() const {
         Modal::Spec s = Base(); s.automationId = real_ ? L"PasswordList" : L"PasswordDemoList"; s.title = L"Mots de passe";
-        s.subtitle = readOnly_ ? L"Lecture seule dans une fenêtre privée : rien ne peut être modifié ici." : real_ ? L"Enregistrés par browser, chiffrés pour votre session Windows. Les mots de passe enregistrés auparavant restent proposés par le moteur." : L"Démonstration : comptes fictifs en mémoire, rien n'est enregistré.";
+        s.subtitle = readOnly_ ? L"Lecture seule dans une fenêtre privée : rien ne peut être modifié ici." : real_ ? L"Enregistrés par Browser, chiffrés pour votre session Windows. Les mots de passe enregistrés auparavant restent proposés par le moteur." : L"Démonstration : comptes fictifs en mémoire, rien n'est enregistré.";
         s.accountsTitle = L"Enregistrés · " + std::to_wstring(accounts_.size()); s.accountsNavigate = true;
         for (auto& a : accounts_) s.accounts.push_back({a.site + L" · " + a.user, std::wstring(12, L'\x2022')});
-        if (accounts_.empty()) s.accountsTitle = real_ ? L"Aucun mot de passe enregistré par browser" : L"Aucun mot de passe enregistré";
+        if (accounts_.empty()) s.accountsTitle = real_ ? L"Aucun mot de passe enregistré par Browser" : L"Aucun mot de passe enregistré";
         return s;
     }
     Modal::Spec DetailSpec(bool confirm) const {

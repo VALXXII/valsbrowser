@@ -58,6 +58,8 @@ def existing_fixtures() -> None:
     # test-lottie.py: loading, frame clock, lottie, clipboard gate, design system, hover, ui
     run('test-lottie.py (native lottie/ui fixtures)', [sys.executable, ROOT / 'test-lottie.py'])
     fixture('session_test', [*STRICT, 'tests/session_test.cpp'])
+    # Address field model: display, suggestions, and what a typed text opens (links, local paths and file: URLs, searches).
+    fixture('address_test', [*STRICT, 'tests/address_test.cpp'])
     # Interface language (design/browser-languages-plan.md): catalog, formats, plurals, the browser-wide
     # preference (temporary folders only), then Reglages > Langue on the real drawer (FR and EN processes).
     run('i18n coverage gate (catalog parity, no untranslated interface text)', [sys.executable, ROOT / 'tools/i18n/check_strings.py'])
@@ -66,6 +68,13 @@ def existing_fixtures() -> None:
     fixture('adblock_folder_test', [*STRICT, 'tests/adblock_folder_test.cpp'])
     # One taskbar identity for every installed version (src/taskbar-identity.h; e2e: tests/e2e/taskbar_identity_e2e.py).
     fixture('taskbar_identity_test', [*STRICT, 'tests/taskbar_identity_test.cpp', '-lole32', '-luuid', '-lshell32', '-lshlwapi'])
+    # Browser as a selectable default browser (src/default-browser.h: registration under a throwaway HKCU test key only,
+    # faked default status) and the link / file a launch opens (src/launch-args.h).
+    fixture('default_browser_test', [*STRICT, 'tests/default_browser_test.cpp', '-lole32', '-luuid', '-lshell32', '-lshlwapi', '-ladvapi32'])
+    default_browser_evidence = ROOT / 'build/default-browser/captures/settings'
+    default_browser_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('default_browser_settings_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/default_browser_settings_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt'], [ROOT, default_browser_evidence])
     language_evidence = ROOT / 'build/browser-languages/captures/settings'
     language_evidence.mkdir(parents=True, exist_ok=True)
     fixture('language_settings_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/language_settings_test.cpp', 'src/native-lottie.cpp', THORVG,
@@ -256,6 +265,17 @@ def check_app(app: Path) -> None:
             sys.exit(f'{exe.name}: FileVersion/ProductVersion {strings.get("FileVersion")}/{strings.get("ProductVersion")} != {info["version"]}')
         if strings['OriginalFilename'].lower() != exe.name.lower():
             sys.exit(f'{exe.name}: OriginalFilename is {strings["OriginalFilename"]}')
+        # The name Windows shows (Properties, Task Manager, SmartScreen) is the product « Browser », capital B; the
+        # file names keep their lowercase (browser.exe, update-helper.exe: updates and pins rely on them).
+        if strings['ProductName'] != 'Browser' or not strings['FileDescription'].startswith('Browser'):
+            sys.exit(f'{exe.name}: ProductName/FileDescription {strings["ProductName"]!r}/{strings["FileDescription"]!r} do not name « Browser »')
+    # The stable launcher (<root>\browser.exe = update-helper.exe) carries the name a pinned window shows: string 1
+    # (src/taskbar-identity.h NameResource; a plain string would read back « browser », window properties are atoms).
+    import ctypes
+    buf = ctypes.create_unicode_buffer(256)
+    shown = buf.value if ctypes.windll.shlwapi.SHLoadIndirectString(f'@{app / "update-helper.exe"},-1', buf, 256, None) == 0 else None
+    if shown != 'Browser':
+        sys.exit(f'update-helper.exe string 1 is {shown!r}, not « Browser » (pinned window name)')
     # App icon policy (tools/release/version.py): release -> live, dev -> preview. Both executables
     # embed exactly that ICO's 256 px image, never the other one, and assets/browser.ico is that ICO.
     sys.path.insert(0, str(ROOT / 'tools/release'))
