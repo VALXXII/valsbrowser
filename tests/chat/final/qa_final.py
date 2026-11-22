@@ -689,10 +689,25 @@ def panel_widget():
 def real_click_chat(selector=None, text=None, kind='bubble', tries=12):
     for _ in range(tries):
         p = chat_point(selector, text, kind)
+        if p and kind == 'bubble':
+            p = bring_into_view(p, selector, text)   # the bubble may go past the visible area (it grows in place): the user scrolls
         if p:
             click_at(*p); return True
         time.sleep(0.25)
     return False
+
+
+def bring_into_view(p, selector=None, text=None, tries=10):
+    """A point of the bubble below / above the page area: the page is scrolled with the wheel (the bubble follows its
+    element) until the point is in it, then read again."""
+    for _ in range(tries):
+        pg = page_area()
+        if p is None or pg[1] + 6 <= p[1] <= pg[3] - 6:
+            return p
+        u32.SetCursorPos(pg[0] + 20, (pg[1] + pg[3]) // 2); time.sleep(0.05)
+        wheel(1 if p[1] > pg[3] - 6 else -1, 0.05); time.sleep(0.5)
+        p = chat_point(selector, text, 'bubble')
+    return p
 
 
 def composer_end_point(kind='bubble'):
@@ -748,6 +763,9 @@ def close_menus(kind='bubble'):
 
 
 def answer_permission(label='Autoriser', kind='bubble', after=0):
+    # a card below the visible area: the site's page scrolls softly once (H1) — click after that scroll
+    if wait_log(r'a card waits for an action below the visible area', after, 1.5):
+        time.sleep(0.6)
     for _ in range(16):
         real_click_chat(text=label, kind=kind, tries=2)
         if wait_log(r'CHAT permission answered', after, 1):
@@ -826,6 +844,7 @@ class Invariants:
         if not found:
             return
         how = found[-1]; pg = page_area(); vis = intersect(el, pg) or el
+        slid = re.search(r'bubble slid -?\d+ px along its side to be fully visible', seg)   # no side holds it whole: the alignment gives way (H1)
         css = lambda v: round(v / k, 1)
         if how.startswith('right'):
             got = {'gap': css(sf[0] - el[2]), 'top': css(sf[1] - el[1])}; want = {'gap': 12, 'top': -4}
@@ -839,7 +858,7 @@ class Invariants:
             got = {'x': css(sf[0] - vis[0]) if 'left corner' in how else css(vis[2] - sf[2]),
                    'y': css(sf[1] - vis[1]) if 'top ' in how else css(vis[3] - sf[3])}
             want = {'x': 12, 'y': 12}
-        bad = {key: (got[key], want[key]) for key in want if abs(got[key] - want[key]) > 2}
+        bad = {key: (got[key], want[key]) for key in want if abs(got[key] - want[key]) > 2 and not (slid and key in ('top', 'left'))}
         if bad:
             frame = [l for l in seg.splitlines() if 'bubble' in l and ('placed' in l or 'frame' in l or 'shown' in l)][-6:]
             self.r.step(f'{where} · invariant: the bubble at Paper\'s distance from {sel} ({how.split(":")[0]}: 12 px, aligned -4 / 12 px inside)', False,
