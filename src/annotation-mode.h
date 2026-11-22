@@ -317,6 +317,12 @@ void Cmd(const std::shared_ptr<Tab>& t, const std::wstring& op, const std::wstri
 // pointer moves carry no Ctrl flag otherwise: keyboard in the band, the bubble, the panel). The host reads the state of
 // the Ctrl key (GetAsyncKeyState: no hook, nothing else read) at each pointer move over the page (the page asks:
 // « mods ») and every ~30 ms, only while the mode is on and this window is in front, and tells the page the changes.
+// The page's zoom factor, read again when a page message needs it (it changes with Ctrl+= / Ctrl+- while the mode is on).
+void RefreshZoom(const std::shared_ptr<Tab>& t) {
+    if (!t || !t->controller.p) return;
+    double z = 0; if (FAILED(t->controller->get_ZoomFactor(&z)) || !(z > 0)) return;
+    if (std::fabs(z - s.zoom) > 1e-6) { Log(L"ANNOTATE zoom " + std::to_wstring(int(std::lround(s.zoom * 100))) + L" % -> " + std::to_wstring(int(std::lround(z * 100))) + L" %"); s.zoom = z; }
+}
 bool ctrlHeld = false;
 bool OursInFront() { DWORD pid = 0; const HWND fg = GetForegroundWindow(); if (fg) GetWindowThreadProcessId(fg, &pid); return fg && pid == GetCurrentProcessId(); }
 void CtrlPoll() {
@@ -1292,6 +1298,10 @@ bool AnnotationPageMessage(const std::shared_ptr<Tab>& t, ICoreWebView2WebMessag
     if (source != s.source) { LogOnce(L"source"); return true; }
     if (t->navStamp != s.navStamp) { LogOnce(L"navStamp"); return true; }
     const auto c = AH::CheckMessage(utf8, s.nonce, std::int64_t(s.navStamp));
+    // R45 (125 / 150 %): the page's zoom as it is NOW (Ctrl+= / Ctrl+- after the mode started): the bubble's first
+    // placement (« selecting ») converts the element's CSS px with it; a stale 100 % put the bubble over the labels for
+    // a moment (« element 1310x60 » then « 1638x75 »), then the full « select » moved it.
+    if (c.env.op == AH::Op::Selecting || c.env.op == AH::Op::Select || c.env.op == AH::Op::Anchor) RefreshZoom(t);
     switch (c.env.op) {
     case AH::Op::Select: {
         double lag = -1;   // click -> host, from the page's Date.now() (same system clock)
