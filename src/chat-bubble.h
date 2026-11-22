@@ -12,7 +12,7 @@ struct Rect { int left = 0, top = 0, right = 0, bottom = 0; int W() const { retu
 enum class Side { Right, Left, Below, Above, Inside };
 // fromRight / fromBottom: the edge that stays when the bubble changes size (Left: its right edge; Above: its bottom;
 // Inside: the corner it was put in, R44). why: one line for the log (R44: the side chosen and why).
-struct Placement { Rect rect; Side side = Side::Right; bool fromRight = false, fromBottom = false; const char* why = ""; };
+struct Placement { Rect rect; Side side = Side::Right; bool fromRight = false, fromBottom = false; const char* why = ""; int slid = 0; };   // slid: px along its side (decision 1)
 struct Point { int x = 0, y = 0; bool set = false; };
 
 inline int Clamp(int v, int lo, int hi) { return hi < lo ? lo : std::max(lo, std::min(v, hi)); }
@@ -50,6 +50,30 @@ inline Placement Place(const Rect& element, int w, int h, const Rect& area, int 
     auto whole = [&](const Rect& r) { return r.left >= area.left && r.top >= area.top && r.right <= area.right && r.bottom <= area.bottom; };
     if (prefer != Side::Inside) { const auto p = exact(prefer); if (whole(planned(p))) return p; }
     for (Side s : {Side::Right, Side::Left, Side::Below, Side::Above}) { const auto p = exact(s); if (whole(planned(p))) return p; }
+    // decision (1): inside only an element bigger than the bubble (at the height it will have)
+    const Rect vis0{std::max(element.left, area.left), std::max(element.top, area.top), std::min(element.right, area.right), std::min(element.bottom, area.bottom)};
+    if (!(vis0.W() >= w + 2 * corner && vis0.H() >= H + 2 * corner)) {
+        // the side with the most room where the bubble's width (sides) or height (below / above) fits; slid ALONG it just enough to
+        // be whole — the 12 px gap to the element stays exact, only Paper's -4 alignment gives way
+        Placement best; int bestRoom = -1;
+        for (Side s : {Side::Right, Side::Left, Side::Below, Side::Above}) {
+            auto p = exact(s); int room = 0; bool fits = false;
+            switch (s) {
+            case Side::Right: room = area.right - (element.right + gap); fits = room >= w && H <= area.H(); break;
+            case Side::Left: room = (element.left - gap) - area.left; fits = room >= w && H <= area.H(); break;
+            case Side::Below: room = area.bottom - (element.bottom + gap); fits = room >= H && w <= area.W(); break;
+            default: room = (element.top - gap) - area.top; fits = room >= H && w <= area.W(); break;
+            }
+            if (!fits || room <= bestRoom) continue;
+            if (s == Side::Right || s == Side::Left) {
+                const int top0 = p.rect.top, top1 = Clamp(top0, area.top, area.bottom - H); p.rect.top = top1; p.rect.bottom = top1 + h; p.slid = std::abs(top1 - top0);
+            } else {
+                const int l0 = p.rect.left, l1 = Clamp(l0, area.left, area.right - w); p.rect.left = l1; p.rect.right = l1 + w; p.slid = std::abs(l1 - l0);
+            }
+            best = p; bestRoom = room;
+        }
+        if (bestRoom >= 0) return best;
+    }
     // inside: the visible part of the element, its corner nearest to the click (else its top right corner), 12 px from both edges;
     // the other (top / bottom) corner when the planned height fits there and not at the nearest
     const Rect vis{std::max(element.left, area.left), std::max(element.top, area.top), std::min(element.right, area.right), std::min(element.bottom, area.bottom)};

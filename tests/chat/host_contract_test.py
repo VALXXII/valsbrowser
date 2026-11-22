@@ -233,7 +233,7 @@ check('SendState()' in block_after(comment, 'void ForgetUnsent('), 'M6 #86: the 
 
 # Placement = Paper (Q's invariant: +12 / -4 at a side, 12 px inside a corner; never slid to keep room)
 bub = code('chat-bubble.h'); place = bub[bub.find('inline Placement Place('):bub.find('inline bool SentItem(')]   # (its signature has a « {} » default)
-check('element.top - lead' in place and 'element.right + gap' in place and 'whole(planned(p))' in place and place.count('Clamp(') == 2, 'Paper: the side positions are exact (+gap, top - lead), a side only if whole there; a clamp only for the inside fallback')
+check('element.top - lead' in place and 'element.right + gap' in place and 'whole(planned(p))' in place and 'slid' in place, 'Paper: the side positions are exact (+gap, top - lead), a side only if whole there; a clamp only for the inside fallback')
 consts = code('chat-comment.h')
 check('BubbleGapCss = 12' in consts and 'BubbleLeadCss = 4' in consts, 'Paper: gap 12, lead 4 (CSS px)')
 check('OfferedRoomCss(' not in block_after(comment, 'void PlaceBubble(bool scrolling) {'), 'R29 (the user): natural height, never bounded by the room under the fixed edge')
@@ -262,6 +262,8 @@ check('waitingPermissions.empty()' in block_after(comment, 'void RevealCard() {'
 
 # real window (0.3.539): « the user is scrolling » = the page's scroll offset changed (not the page reflowing)
 check('lastSy' in block_after(comment, 'void OnAnchor('), 'R47: a scroll is an offset change, not a reflow (the reveal was skipped during the agent\'s edit)')
+
+check('bubble slid' in block_after(comment, 'void PlaceBubble(bool scrolling) {'), 'decision: « bubble slid N px along its side to be fully visible » in the log')
 
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')

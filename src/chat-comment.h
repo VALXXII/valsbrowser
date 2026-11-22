@@ -204,6 +204,7 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
                               PlannedHeightPx(k), bubble.click, int(std::lround(BubbleGapCss * k)));   // r44: a conversation with content may take 520 (inside: its corner where that fits)
         if (bubble.known) {
             bubble.anchor = ChatBubble::AnchorOf(p, er); placedNow = true; bubble.anchorArea = a;
+            if (p.slid > 0) Diag(L"bubble slid " + std::to_wstring(p.slid) + L" px along its side to be fully visible");   // decision (1)   // i18n-exempt: log detail
             Diag(std::wstring(L"bubble placed ") + W(std::string(p.why)) + L" (element " + std::to_wstring(er.W()) + L"x" + std::to_wstring(er.H()) + L", visible area " + std::to_wstring(area.W()) + L"x" + std::to_wstring(area.H()) + L")");   // i18n-exempt: log detail
         }
     } else { p.side = bubble.anchor.side; p.fromRight = bubble.anchor.fromRight; p.fromBottom = bubble.anchor.fromBottom; p.rect = ChatBubble::Anchored(bubble.anchor, er, w, h); }

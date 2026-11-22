@@ -636,6 +636,25 @@ static void TestBubble() {
         const Rect shown = Clip(f1.region, {area.left - f1.window.left, area.top - f1.window.top, area.right - f1.window.left, area.bottom - f1.window.top});
         Check(after.bottom <= area.bottom && shown.bottom + f1.window.top >= after.bottom - 1 && shown.top + f1.window.top <= after.bottom - 40,
               "R47: after the soft scroll the region shows the bubble's bottom (the « Autoriser » row is clickable)"); }
+    // Decision (1): R44 wins — right, left, below, above at Paper's exact position; inside only if the element is bigger than the
+    // bubble; else the side with the most room, the bubble SLID along it just enough to be whole (the 12 px gap stays exact)
+    {   const float k = 1.25f; auto px = [&](int c0) { return int(c0 * k + .5f); };
+        const Rect area{3, 141, 1840, 931};   // 1470 x 632 CSS
+        const int W = px(320), h = px(104), H = px(520), gap = px(12), lead = px(4), corner = px(12);
+        auto planned = [&](const Placement& p) { return p.fromBottom ? Rect{p.rect.left, p.rect.bottom - H, p.rect.right, p.rect.bottom} : Rect{p.rect.left, p.rect.top, p.rect.right, p.rect.top + H}; };
+        const Rect btn{63, 556, 327, 625};   // a.btn-primary 264 x 69 (CSS 211 x 55) with a long conversation
+        const auto a = Place(btn, W, h, area, gap, 0, Side::Right, lead, H, Point{}, corner);
+        Check(a.side == Side::Right && a.rect.left == btn.right + gap && FullyVisible(planned(a), area) && a.slid > 0,
+              "decision: a.btn-primary 264x69 — no side holds 520 at Paper's position: at its right (the most room), slid up just enough, its 12 px gap exact");
+        const Rect low{63, 860, 327, 900};   // a small element at the bottom, ~600 px above it: « above » is tried
+        const auto ab = Place(low, W, h, area, gap, 0, Side::Right, lead, px(400), Point{}, corner);
+        Check(ab.side == Side::Above && ab.rect.bottom == low.top - gap && ab.slid == 0 && FullyVisible(planned(ab), area), "decision: above is tried (exact, its bottom 12 px above the element)");
+        const Rect plans{65, 410, 1742, 785};   // div.plans 1677 x 375: not taller than the bubble's 650 px — no inside
+        const auto pl = Place(plans, W, h, area, gap, 0, Side::Right, lead, H, Point{200, 760, true}, corner);
+        Check(FullyVisible(planned(pl), area), "decision: div.plans with a long conversation — whole at its opening");
+        const Rect big{65, 150, 1742, 925};   // an element bigger than the bubble: inside, 12 px from the corner nearest to the click
+        const auto in = Place(big, W, h, area, gap, 0, Side::Right, lead, H, Point{200, 300, true}, corner);
+        Check(in.side == Side::Inside && in.rect.left == big.left + corner && in.rect.top == big.top + corner, "decision: inside only an element bigger than the bubble — 12 px from the corner"); }
     // E4: the frame of an opening is carried — a scroll then a new size never changes the inset because the screen's edge got nearer
     {   const Rect screen{0, 0, 1475, 1019}; const Edges none{0, 0, 0, 0}; const float k = 1.25f;
         const Rect s0{342, 536, 742, 641};
