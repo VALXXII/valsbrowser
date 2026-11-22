@@ -283,6 +283,9 @@ check('StaleViewport(env.vw, env.vh' in block_after(comment, 'bool OpenEarly(') 
 # monkey 0.3.561: a click over another element's open bubble opens at the click
 check('EarlyOpenAllowed(bubble.open, bubble.selector, env.selector)' in block_after(comment, 'bool OpenEarly('), 'monkey: a click over another element open bubble opens at the click')
 
+# monkey 0.3.561 #102 / #261: the bubbles' own elements left in `aiming` never block a click (only the panel's chips count)
+tcs = block_after(comment, 'bool TakeCommentSelection(')
+check('aiming.size() >= 10' not in tcs and 'BubbleClickAllowed(chips)' in tcs and 'anchorFor.empty()' in tcs, 'monkey #102 / #261: a click is refused only by 10 chips of the panel, and says so')
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

@@ -345,4 +345,7 @@ inline bool EarlyOpenAllowed(bool open, const std::string& openSelector, const s
     if (clicked.empty()) return false;
     return !open || (!openSelector.empty() && openSelector != clicked);
 }
+// R35 / monkey 0.3.561: a click opens its element's bubble unless 10 of the panel's chips are being aimed (the bubbles'
+// own elements never count: one whose image never came blocked every later click)
+inline bool BubbleClickAllowed(std::size_t chipsAimed) { return chipsAimed < 10; }
 } // namespace ChatBubble

@@ -1089,7 +1089,11 @@ bool TakeCommentSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, b
     // Q pass 1, defect 1 (the user's journey): a click on another element while a bubble is open opens THAT element's bubble
     // (before: it only closed the open one, 3 times out of 4 nothing opened). Only a click right after a close does nothing.
     if (!bubble.open && Ann::NowMs() - bubble.closedAt < 400) { Diag(L"a click right after the bubble closed: nothing opened"); return true; }   // i18n-exempt: log detail
-    if (aiming.size() >= 10) return false;   // R35: the panel's chips are not this bubble's
+    // R35: the panel's chips are not this bubble's — only THEY count (monkey 0.3.561 #102 / #261: the bubbles' own elements
+    // whose image never came stayed in `aiming`; past 10 every click handled here — #qa-card, a click after another
+    // application — opened nothing, silently)
+    {   std::size_t chips = 0; for (const auto& a : aiming) if (a.second.anchorFor.empty()) ++chips;
+        if (!ChatBubble::BubbleClickAllowed(chips)) { Diag(L"a click on an element: 10 chips are being aimed in the panel, no bubble"); return false; } }   // i18n-exempt: log detail
     if (bubble.open) { Diag(L"a click on another element: its bubble opens"); ForgetUnsent(bubble.conv); }   // i18n-exempt: log detail
     const std::string id = NewAnchoredConversation(sel, label, page, "", key);
     Element e = ElementFromMode(serial); e.captureDone = captureImpossible; e.anchorFor = id; aiming[serial] = std::move(e); QuerySource(t, serial);
