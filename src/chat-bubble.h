@@ -73,6 +73,19 @@ inline Placement Place(const Rect& element, int w, int h, const Rect& area, int 
             best = p; bestRoom = room;
         }
         if (bestRoom >= 0) return best;
+        // Q r06 / M15 (0.3.542, div.plans 1678 x 375 with a conversation, page area 665 CSS high): no side holds it whole —
+        // never inside an element smaller than the bubble (it went 84 px under the element, then 150 px above the page area).
+        // Below or above, the one with the most room (below on a tie: what goes past the bottom the user scrolls to), at
+        // Paper's exact gap, slid along it only to stay within the area's width.
+        if (w <= area.W()) {
+            const int below = area.bottom - (element.bottom + gap), above = (element.top - gap) - area.top;
+            if (below > 0 || above > 0) {
+                auto p = exact(below >= above ? Side::Below : Side::Above);
+                const int l0 = p.rect.left, l1 = Clamp(l0, area.left, area.right - w); p.rect.left = l1; p.rect.right = l1 + w; p.slid = std::abs(l1 - l0);
+                p.why = below >= above ? "below the element (no side holds it whole: the most room)" : "above the element (no side holds it whole: the most room)";
+                return p;
+            }
+        }
     }
     // inside: the visible part of the element, its corner nearest to the click (else its top right corner), 12 px from both edges;
     // the other (top / bottom) corner when the planned height fits there and not at the nearest
@@ -298,26 +311,37 @@ inline Kept ScrollFrame(const Rect& surface, bool fromRight, bool fromBottom, bo
     if (!out.ok && winW > 0 && winH > 0) { out.ok = true; out.f = Reframe(surface, inset, winW, winH, k, over); }
     return out;
 }
-// R39 (Q, 0.3.541: up to 41 px behind with the wheel, 134 px with a fast wheel): the follow thread waits for the next
-// composition (DwmFlush) then the window places the positions « on their way to the screen ». F11 took that set when the
-// thread WOKE: a position that arrived during the wait — already on screen at that composition — waited one more cycle,
-// and each cycle then started behind (2 positions a frame: always 2 behind). It is taken AT the composition.
-inline constexpr bool FollowSampleAtComposition = true;
+// R39 (Q, 0.3.541 / 0.3.546): the follow thread waits for the next composition (DwmFlush), then the window moves. Which
+// positions does that move take? F11 took those known when the thread WOKE (a position arriving during the wait waited a
+// cycle more: 41 px behind with the wheel); 753b890 those known AT the composition — still one image late with the
+// scrollbar (61 px = one step): the page's next position arrives right after the composition, before the window's
+// message is handled. 04514f5 (measured green: bar 2/26) took the LATEST position known when the window moves.
+enum class FollowAt { Wake, Composition, Move };
+inline constexpr FollowAt FollowSample = FollowAt::Move;
 // The follow pipeline, modelled (time in screen images, a composition at each whole number): `perFrame` positions arrive
-// per image, the window's thread handles the thread's message `handleDelay` after the composition. Returns, at the worst
-// placement, how many positions that were on their way to the screen at its composition were not placed by it.
-inline int FollowBehind(bool atComposition, int perFrame, double handleDelay, int frames) {
-    auto arrived = [&](double t) { int n = 0; for (int f = 0; f < frames; ++f) for (int j = 0; j < perFrame; ++j) if (f + (j + .5) / perFrame <= t) ++n; return n; };
-    int worst = 0, placed = 0; double wake = .5 / perFrame;
+// per image at `phase` (0..1) of their slot, the window handles the thread's message `handleDelay` after the composition.
+// Returns, at the worst move, how many positions known when the window moved were not used by it.
+inline int FollowBehind(FollowAt at, int perFrame, double handleDelay, int frames, double phase = .5) {
+    auto when = [&](int f, int j) { return f + (j + phase) / perFrame; };
+    auto arrived = [&](double t) { int n = 0; for (int f = 0; f < frames; ++f) for (int j = 0; j < perFrame; ++j) if (when(f, j) <= t) ++n; return n; };
+    int worst = 0, placed = 0; double wake = when(0, 0);
     for (int guard = 0; wake < frames && guard < 10 * frames; ++guard) {
         const double vs = std::floor(wake) + 1;   // the thread's DwmFlush returns at the next composition
-        const int gen = atComposition ? arrived(vs) : arrived(wake);
-        worst = std::max(worst, arrived(vs) - gen); placed = gen;
         const double handled = vs + handleDelay;
+        const int gen = at == FollowAt::Wake ? arrived(wake) : at == FollowAt::Composition ? arrived(vs) : arrived(handled);
+        worst = std::max(worst, arrived(handled) - gen); placed = gen;
         if (arrived(handled) > placed) { wake = handled; continue; }   // more positions: the next wait starts at once
-        double next = -1; for (int f = 0; f < frames && next < 0; ++f) for (int j = 0; j < perFrame; ++j) { const double a = f + (j + .5) / perFrame; if (a > handled) { next = a; break; } }
+        double next = -1; for (int f = 0; f < frames && next < 0; ++f) for (int j = 0; j < perFrame; ++j) if (when(f, j) > handled) { next = when(f, j); break; }
         if (next < 0) break; wake = next;
     }
     return worst;
+}
+// R39, prediction (coordinator: if one image of delay remains by construction): the element's next position from its
+// speed — the last two positions on the page's own clock (t, ms) — `leadMs` ahead; never more than 1.5 of the last step,
+// nothing when the steps are not regular (a stop, a first step) — the caller places the true position after a quiet moment.
+inline int PredictShift(int y0, double t0, int y1, double t1, double leadMs) {
+    const double dt = t1 - t0; if (!(dt >= 4 && dt <= 50) || leadMs <= 0) return 0;
+    const double v = (y1 - y0) / dt; const double cap = 1.5 * std::abs(y1 - y0);
+    return int(std::lround(std::clamp(v * leadMs, -cap, cap)));
 }
 } // namespace ChatBubble

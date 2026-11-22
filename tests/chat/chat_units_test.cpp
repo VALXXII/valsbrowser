@@ -524,8 +524,8 @@ static void TestBubble() {
         Check(pl.side == Side::Inside && !pl.fromRight && pl.fromBottom && pl.rect.left == plans.left + corner && pl.rect.bottom == plans.bottom - corner,
               "Paper: div.plans clicked near its bottom left — inside, 12 px from its left and bottom edges (was 96 px below its bottom)");
         const auto longConv = Place(plans, W, h, area, gap, margin, Side::Right, lead, px(520), Point{200, 760, true}, corner);   // r44: its conversation has content
-        Check(longConv.side == Side::Inside && !longConv.fromBottom && longConv.rect.top == plans.top + corner && longConv.rect.left == plans.left + corner,
-              "r44: a long conversation — the element's other corner where its 520 px fit (top left, 12 px), never moved");
+        Check(longConv.side != Side::Inside && (longConv.side == Side::Below ? longConv.rect.top == plans.bottom + gap : longConv.rect.bottom == plans.top - gap),
+              "Q r06 (0.3.542): a long conversation on div.plans smaller than the bubble — never inside: below / above at Paper's gap (the most room)");
         const auto grown = Anchored(AnchorOf(pl, plans), plans, W, px(400));
         Check(grown.bottom == pl.rect.bottom && grown.top == pl.rect.bottom - px(400), "R29: then it grows up from its fixed bottom");
         const Rect low{63, 860, 327, 900};   // near the bottom of the visible area: not slid up — the next side where it is whole
@@ -622,7 +622,7 @@ static void TestBubble() {
         Check(a2.side == Side::Right && a2.rect.top == btn.top - lead && a2.rect.left == btn.right + gap && whole(a2, px(200)), "decision: its last known height fits at its right — Paper exactly (+12, -4)");
         const Rect plans{65, 410, 1742, 785};   // div.plans with a conversation
         const auto pl = Place(plans, W, h, area, gap, 0, Side::Right, lead, H, Point{200, 760, true}, corner);
-        Check(whole(pl, H), "decision: div.plans with a conversation — whole with 520 at its opening");
+        Check(pl.side != Side::Inside && (pl.side == Side::Below ? pl.rect.top == plans.bottom + gap : pl.rect.bottom == plans.top - gap), "Q r06 (0.3.542): div.plans with a conversation — never inside (smaller than the bubble): below / above, the most room");
         const auto ab = Place({63, 840, 327, 900}, W, h, area, gap, 0, Side::Right, lead, px(300), Point{}, corner);
         Check(ab.side == Side::Above && ab.fromBottom && ab.rect.bottom == 840 - gap && ab.rect.left == 63 - lead && whole(ab, px(300)), "decision: above — its bottom 12 px above the element, growing up, left -4"); }
     // R47 after the page scrolled (decision): the card's buttons are clickable — the carried window's region, clipped to the page
@@ -651,10 +651,19 @@ static void TestBubble() {
         Check(ab.side == Side::Above && ab.rect.bottom == low.top - gap && ab.slid == 0 && FullyVisible(planned(ab), area), "decision: above is tried (exact, its bottom 12 px above the element)");
         const Rect plans{65, 410, 1742, 785};   // div.plans 1677 x 375: not taller than the bubble's 650 px — no inside
         const auto pl = Place(plans, W, h, area, gap, 0, Side::Right, lead, H, Point{200, 760, true}, corner);
-        Check(FullyVisible(planned(pl), area), "decision: div.plans with a long conversation — whole at its opening");
+        Check(pl.side == Side::Above && pl.rect.bottom == plans.top - gap, "Q r06 (0.3.542): div.plans with a long conversation — no side holds it whole: above (the most room, 254 px against 131), never inside");
         const Rect big{65, 150, 1742, 925};   // an element bigger than the bubble: inside, 12 px from the corner nearest to the click
         const auto in = Place(big, W, h, area, gap, 0, Side::Right, lead, H, Point{200, 300, true}, corner);
         Check(in.side == Side::Inside && in.rect.left == big.left + corner && in.rect.top == big.top + corner, "decision: inside only an element bigger than the bubble — 12 px from the corner"); }
+    // Q r06 step 14 / M15 (0.3.542): div.plans [83,386,1761,686] with a conversation (520 CSS), page area 665 then 632 CSS
+    // high, dpr 1.25: no side holds it whole — below (the most room), its top 12 px under the element; never inside
+    {   const float k = 1.25f; auto px = [&](int c0) { return int(c0 * k + .5f); };
+        const Rect plans{83, 386, 1761, 686};
+        for (const Rect area : {Rect{3, 141, 1841, 141 + px(665)}, Rect{3, 141, 1841, 141 + px(632)}}) {
+            const auto p = Place(plans, px(320), px(104), area, px(12), 0, Side::Right, px(4), px(520), Point{300, 600, true}, px(12));
+            Check(p.side == Side::Below && p.rect.top == plans.bottom + px(12) && p.rect.left == plans.left - px(4) && p.rect.top >= area.top && p.rect.left >= area.left && p.rect.right <= area.right,
+                  "Q r06 / M15: div.plans with a conversation — below at Paper's exact place (not inside, never above the page area)");
+        } }
     // R39 (Q, 0.3.541): a scroll step is only a move — the same window size and inset, the surface carried by exactly the
     // element's move — also when the element passes under the page area's top or bottom edge; and the follow places every
     // position that was on its way to the screen at the composition it waited for (never one cycle late)
@@ -677,9 +686,13 @@ static void TestBubble() {
         Check(onlyMoves && steps == 11, "R39: a scroll step only moves the same window (same size, same inset, the element's exact move) — also past the top and bottom edges");
         const auto carried = ScrollFrame(p0.rect, p0.fromRight, p0.fromBottom, false, Rect{}, f0.inset, f0.window.W(), f0.window.H(), k, Edges{});
         Check(carried.ok && carried.f.window.W() == f0.window.W() && carried.f.inset == f0.inset, "R39: without the opening's kept frame, the window it has is carried (never framed again)");
-        Check(FollowBehind(FollowSampleAtComposition, 1, .1, 60) == 0 && FollowBehind(FollowSampleAtComposition, 2, .1, 60) == 0 && FollowBehind(FollowSampleAtComposition, 3, .3, 60) == 0,
-              "R39: the follow places every position on its way to the screen at the composition it waited for (1, 2, 3 per image)");
-        Check(FollowBehind(false, 2, .1, 60) >= 2, "R39: taken when the thread woke (F11), 2 positions per image stay 2 behind (Q: 41 px with the wheel)"); }
+        bool moveTakesAll = true;
+        for (int per : {1, 2, 3}) for (double ph : {.05, .5, .95}) for (double hd : {.05, .1, .3}) moveTakesAll = moveTakesAll && FollowBehind(FollowSample, per, hd, 60, ph) == 0;
+        Check(FollowSample == FollowAt::Move && moveTakesAll, "R39: the window's move takes the latest position known when it moves (1, 2, 3 per image, any phase)");
+        Check(FollowBehind(FollowAt::Composition, 1, .1, 60, .05) >= 1, "R39: taken at the composition (753b890), the scrollbar's step arriving right after it stays one image late (Q: 61 px)");
+        Check(FollowBehind(FollowAt::Wake, 2, .1, 60) >= 2, "R39: taken when the thread woke (F11), 2 positions per image stay 2 behind (Q: 41 px with the wheel)");
+        Check(PredictShift(100, 0, 160, 16.7, 16.7) == 60 && PredictShift(100, 0, 160, 16.7, 40) == 90 && PredictShift(100, 0, 160, 200, 16.7) == 0 && PredictShift(100, 0, 100, 16.7, 16.7) == 0,
+              "R39 prediction: one image ahead at the last speed, capped at 1.5 steps, nothing after a pause"); }
     // E4: the frame of an opening is carried — a scroll then a new size never changes the inset because the screen's edge got nearer
     {   const Rect screen{0, 0, 1475, 1019}; const Edges none{0, 0, 0, 0}; const float k = 1.25f;
         const Rect s0{342, 536, 742, 641};

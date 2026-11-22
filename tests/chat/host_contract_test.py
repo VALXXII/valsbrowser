@@ -267,7 +267,7 @@ check('bubble slid' in block_after(comment, 'void PlaceBubble(bool scrolling) {'
 
 # R39 (Q, 0.3.541): the follow takes the positions at the composition it waited for; a scroll step only moves the same window
 fl = block_after(comment, 'void FollowLater() {')
-check(fl.find('DwmFlush()') >= 0 and fl.find('FollowSampleAtComposition) gen = follower.gen.load()') > fl.find('DwmFlush()'), 'R39: the positions are taken after the composition (never a cycle late)')
+check('ChatBubble::FollowSample == ChatBubble::FollowAt::Move' in comment and 'follow trace (' in comment, 'R39: the move takes the latest position known when it moves (04514f5); the chain is traced image by image')
 pb = block_after(comment, 'void PlaceBubble(bool scrolling) {')
 check('ChatBubble::ScrollFrame(' in pb and 'a scroll step changed the bubble' in pb, 'R39: a scroll step goes through ScrollFrame (a move only), any other change is logged')
 

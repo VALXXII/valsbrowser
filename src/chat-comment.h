@@ -300,7 +300,32 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
 // position counts: anchors that arrive meanwhile only update the element. BROWSER_CHAT_FOLLOW_FRAMES=0 moves at once.
 struct Follower { HANDLE wake = nullptr; std::atomic<HWND> to{nullptr}; std::atomic<bool> pending{false}; std::atomic<unsigned> gen{0}; } follower;
 // F11 (review R): the positions the page sent, by generation — each wait places the one it waited for, a newer one waits for its own
-std::deque<std::pair<unsigned, RECT>> followPositions;
+struct FollowPos { unsigned gen = 0; RECT r{}; double pageT = 0, hostT = 0, sy = 0; };   // R39 trace: the page's clock, the host's (ms since 1970)
+std::deque<FollowPos> followPositions;
+double EpochMs() { FILETIME ft; GetSystemTimePreciseAsFileTime(&ft); ULARGE_INTEGER u{}; u.LowPart = ft.dwLowDateTime; u.HighPart = ft.dwHighDateTime; return double(u.QuadPart) / 10000.0 - 11644473600000.0; }
+// R39, image by image (BROWSER_CHAT_FOLLOW_TRACE=1, or the test mode): for each move of the window — the page's scroll
+// (its clock) -> the host, the host -> the move, the thread's wait for the composition, the move -> the next composition,
+// how many positions it took. Kept in memory, written 30 moves at a time (the log is written synchronously).
+bool FollowTrace() {
+    static const int on = [] { wchar_t v[8] = L""; return (GetEnvironmentVariableW(L"BROWSER_CHAT_FOLLOW_TRACE", v, 8) && v[0] == L'1') || (GetEnvironmentVariableW(L"BROWSER_ANNOTATIONS_TEST", v, 8) && v[0] == L'1') ? 1 : 0; }();
+    return on != 0;
+}
+// R39 prediction (BROWSER_CHAT_FOLLOW_PREDICT=1, off by default: measured before / after): the window placed where the
+// element will be at the next composition, from its speed; the true position placed after 40 ms without a new one.
+bool FollowPredict() { static const int on = [] { wchar_t v[8] = L""; return GetEnvironmentVariableW(L"BROWSER_CHAT_FOLLOW_PREDICT", v, 8) && v[0] == L'1' ? 1 : 0; }(); return on != 0; }
+std::wstring followTrace; int followTraced = 0; FollowPos followLastPlaced;
+void FlushFollowTrace() { if (!followTrace.empty()) { Diag(L"follow trace (page -> host, host -> move, wait, move -> next composition, taken, dy):" + followTrace); followTrace.clear(); followTraced = 0; } }   // i18n-exempt: log detail
+double MsToNextComposition() {
+    DWM_TIMING_INFO ti{}; ti.cbSize = sizeof(ti); LARGE_INTEGER now{}, fq{};
+    if (FAILED(DwmGetCompositionTimingInfo(nullptr, &ti)) || !ti.qpcRefreshPeriod || !QueryPerformanceCounter(&now) || !QueryPerformanceFrequency(&fq)) return -1;
+    long long next = (long long)ti.qpcVBlank; while (next <= now.QuadPart) next += (long long)ti.qpcRefreshPeriod;
+    return double(next - now.QuadPart) * 1000.0 / double(fq.QuadPart);
+}
+double CompositionPeriodMs() {
+    DWM_TIMING_INFO ti{}; ti.cbSize = sizeof(ti); LARGE_INTEGER fq{};
+    if (FAILED(DwmGetCompositionTimingInfo(nullptr, &ti)) || !ti.qpcRefreshPeriod || !QueryPerformanceFrequency(&fq)) return 16.7;
+    return double(ti.qpcRefreshPeriod) * 1000.0 / double(fq.QuadPart);
+}
 int FollowFrames() {
     static const int n = [] { wchar_t v[8] = L""; return GetEnvironmentVariableW(L"BROWSER_CHAT_FOLLOW_FRAMES", v, 8) ? std::clamp(_wtoi(v), 0, 3) : 1; }();
     return n;
@@ -312,10 +337,10 @@ void FollowLater() {
         std::thread([] {
             for (;;) {
                 WaitForSingleObject(follower.wake, INFINITE);
-                unsigned gen = follower.gen.load();   // F11: the positions sent so far are on their way to the screen
-                for (int i = 0; i < FollowFrames(); ++i) DwmFlush();
-                if (ChatBubble::FollowSampleAtComposition) gen = follower.gen.load();   // R39 (Q 0.3.541): those that arrived during the wait too — taken at the composition, never a cycle late
-                if (const HWND h = follower.to.load()) PostMessageW(h, WM_APP + 4, WPARAM(gen), 0);
+                const ULONGLONG w0 = GetTickCount64();
+                for (int i = 0; i < FollowFrames(); ++i) DwmFlush();   // R39: the page's image of the positions sent so far is on screen
+                const unsigned gen = follower.gen.load();
+                if (const HWND h = follower.to.load()) PostMessageW(h, WM_APP + 4, WPARAM(gen), LPARAM(GetTickCount64() - w0));   // the wait, for the trace
             }
         }).detach();
     }
@@ -450,13 +475,32 @@ LRESULT CALLBACK BubbleProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     if (m == WM_APP + 2) { if (bubble.open && !bubble.away) { SetForegroundWindow(h); view.Focus(); } return 0; }   // the keyboard to the bubble, once the selection is over
     if (m == WM_APP + 3) { FinishOpening(); return 0; }   // R18: after the opening layout
-    if (m == WM_APP + 4) {   // R39: the page's image is on screen — F11: the position this wait was for, not a newer one
-        follower.pending = false; const unsigned gen = unsigned(w); bool any = false; RECT at{};
-        while (!followPositions.empty() && followPositions.front().first <= gen) { at = followPositions.front().second; followPositions.pop_front(); any = true; }
-        if (any) { bubble.element = at; if (bubble.open && bubble.known && bubble.anchor.set) PlaceBubble(true); }
+    if (m == WM_APP + 4) {   // R39: the page's image is on screen — the window takes the LATEST position known now (04514f5, green)
+        follower.pending = false; const unsigned gen = unsigned(w); bool any = false; FollowPos at; int taken = 0;
+        const bool all = ChatBubble::FollowSample == ChatBubble::FollowAt::Move;
+        while (!followPositions.empty() && (all || followPositions.front().gen <= gen)) { at = followPositions.front(); followPositions.pop_front(); any = true; ++taken; }
+        if (any) {
+            const double movedAt = EpochMs(); int lead = 0;
+            bubble.element = at.r;
+            if (FollowPredict() && followLastPlaced.gen) {   // the element where it will be at the next composition
+                lead = ChatBubble::PredictShift(followLastPlaced.r.top, followLastPlaced.pageT, at.r.top, at.pageT, CompositionPeriodMs());   // one image ahead
+                OffsetRect(&bubble.element, 0, lead); SetTimer(h, 0xB4, 40, nullptr);   // the true position after a quiet moment
+            }
+            if (bubble.open && bubble.known && bubble.anchor.set) PlaceBubble(true);
+            if (FollowTrace()) {
+                auto ms = [](double v) { return std::to_wstring(int(std::lround(v))); };
+                followTrace += L" | " + ms(at.hostT - at.pageT) + L"," + ms(movedAt - at.hostT) + L"," + std::to_wstring(int(l)) + L"," + ms(MsToNextComposition()) + L"," + std::to_wstring(taken) + L"," +
+                               std::to_wstring(followLastPlaced.gen ? int(at.r.top - followLastPlaced.r.top) : 0) + (lead ? L",lead " + std::to_wstring(lead) : std::wstring());
+                if (++followTraced >= 30) FlushFollowTrace();
+                SetTimer(h, 0xB5, 300, nullptr);   // the rest written once the scroll is over
+            }
+            followLastPlaced = at;
+        }
         if (!followPositions.empty()) FollowLater();
         return 0;
     }
+    if (m == WM_TIMER && w == 0xB4) { KillTimer(h, 0xB4); if (followLastPlaced.gen && followPositions.empty()) { bubble.element = followLastPlaced.r; if (bubble.open && bubble.known && bubble.anchor.set) PlaceBubble(true); } return 0; }   // R39 prediction: the true position
+    if (m == WM_TIMER && w == 0xB5) { KillTimer(h, 0xB5); FlushFollowTrace(); followLastPlaced = FollowPos{}; return 0; }
     if (m == WM_APP + 5) { UiBeat(w); return 0; }   // R39: the UI thread watch
     if (m == WM_TIMER && w == 0xB3) { KeyboardTry(); return 0; }   // M4
     if (m == WM_TIMER && w == 0xB2) { KillTimer(h, 0xB2); RevealBubble(L"without acknowledgement (safety delay)"); return 0; }   // i18n-exempt: log detail
@@ -716,7 +760,7 @@ void OnAnchor(const AH::Envelope& e) {
         if (e.t > 0) lastSy = e.sy; }
     bubble.known = true;
     if (scrolling && FollowFrames() > 0) {   // F11: placed when the page's image of THIS position is on screen
-        followPositions.push_back({++follower.gen, measured}); while (followPositions.size() > 8) followPositions.pop_front();
+        followPositions.push_back(FollowPos{++follower.gen, measured, e.t, EpochMs(), e.sy}); while (followPositions.size() > 8) followPositions.pop_front();
         FollowLater();
     } else { followPositions.clear(); bubble.element = measured; PlaceBubble(scrolling); }
     if (scrolling && e.t > 0) {   // R39: the page's scroll (its clock) -> here, summed over 30 steps   // i18n-exempt: log detail
