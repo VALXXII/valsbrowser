@@ -5,8 +5,10 @@ and the chat is found in it, in every state of the chat — WITHOUT a window on 
     CHAT_QA_BUILD=<folder under build/> python tests/chat/chat_qa_uia_offscreen.py     (default build/chat-a11y)
 
 Off screen: the browser starts hidden (SW_HIDE), then is moved OUTSIDE the virtual screen and shown there without
-activation. No SendInput, no foreground, no UI Automation Invoke (an Invoke lets the browser take the foreground: it did on
-22 Nov 17:36 during another worker's real-window run): posted keys (Ctrl+Maj+A, Échap) and the banner's own
+activation; every window of the browser (the bubble too) is checked to stay off screen. No SendInput, no UI Automation
+Invoke (an Invoke lets the browser take the foreground: it did on 22 Nov 17:36 during another worker's real-window run).
+The browser still gives the keyboard to a bubble it opens (its own SetForegroundWindow, measured 22 Nov 18:08): run it only
+when no real-window run is going on. Posted keys (Ctrl+Maj+A, Échap) and the banner's own
 posted activation (WM_APP+1) only; the pages are driven through DevTools. Own copy and ports: build/chat-a11y-app, page
 5197, DevTools 9371 (never the real-window QA's).
 
@@ -78,7 +80,7 @@ def our_windows(cls=None, title=None):
 
 def offscreen_ok():
     for h in our_windows():
-        if u32.IsWindowVisible(h) and u32.GetParent(h) == 0:
+        if u32.IsWindowVisible(h) and not (u32.GetWindowLongW(h, -16) & 0x40000000):   # top-level and owned popups (bubble), not WS_CHILD
             r = W.RECT(); u32.GetWindowRect(h, ctypes.byref(r))
             if r.right > u32.GetSystemMetrics(76) and r.right > r.left and r.bottom > r.top:
                 return False
@@ -184,7 +186,9 @@ class Tree:
         if needle:
             check(f"{label}: the chat found in the main window's tree (« {needle} »)", found, r)
         if settle:
-            check(f'{label}: still off screen, never in front', offscreen_ok() and not foreground_ours())
+            check(f'{label}: every window of the browser still off screen', offscreen_ok())
+            if foreground_ours():   # the browser gives the keyboard to an opened bubble itself (SetForegroundWindow): noted
+                notes.append({'step': label, 'foreground': 'the browser (off screen)'})
 
     def stress(self, label, needle, rounds=25):
         """F7 (#128 and #214 came right after a wheel): the tree read AT ONCE after each wheel step, no settle."""
