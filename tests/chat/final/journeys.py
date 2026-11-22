@@ -152,7 +152,11 @@ def j_r47(j):
     F.scroll_into_view('div.plans', 'center')
     j.open_on('div.plans', 'plans')
     m = F.log_mark(); F.type_and_send('vrai-autorisation jetonperm', 'bubble'); j.inv.m.conv['div.plans'] = 'jetonperm'
-    j.step('R9 · the permission is asked', F.wait_log(r'CHAT permission asked', m, 20)); time.sleep(0.8)
+    j.step('R9 · the permission is asked', F.wait_log(r'CHAT permission asked', m, 20))
+    # a card below the visible area: the site's page scrolls once, softly (H1) — read the card after that scroll
+    scrolled = F.wait_log(r'a card waits for an action below the visible area: the page scrolls (\d+) CSS px', m, 1.5)
+    j.R.data['measures']['permissionScroll'] = scrolled.group(0) if scrolled else None
+    time.sleep(0.6); j.inv.rebase()
     st = F.chat_state('bubble'); sf = F.bubble_surface(st)
     j.step('R47 · the whole permission card is shown, Refuser and Autoriser inside the bubble, not greyed',
            st.get('perm') and len(st['perm']['buttons']) == 2 and all(b['op'] >= 0.99 for b in st['perm']['buttons']), st.get('perm'))
@@ -287,8 +291,10 @@ def j_switch(j):
 def j_ctrl(j):
     F.front(); import chat_qa_comment_v4b as V4
     V4.system_cursors()
-    p = F.element_point('h1.hero-title'); F.u32.SetCursorPos(*p); time.sleep(0.5)
-    aim = V4.cursor_now()
+    p = F.element_point('h1.hero-title')
+    for dx in (0, 3, 6, 3):   # a real movement: the page draws its aiming cursor on the pointer's moves
+        F.u32.SetCursorPos(p[0] + dx, p[1]); time.sleep(0.12)
+    time.sleep(0.3); aim = V4.cursor_now()
     F.key(0x11); time.sleep(0.4)
     try:
         F.u32.SetCursorPos(p[0] + 5, p[1] + 2); time.sleep(0.4)
