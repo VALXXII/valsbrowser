@@ -26,6 +26,7 @@
 #include <atomic>
 #include <thread>
 #include <dwmapi.h>
+#include <tlhelp32.h>
 #include "chat-local.h"
 #include "chat-prompt.h"
 #include "chat-tools.h"

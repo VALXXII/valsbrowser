@@ -32,7 +32,7 @@ inline void Fit(int& w, int& h, const Rect& area, int margin, int maxW, int maxH
 // `margin` and `hPlan` are no longer used for the choice (kept for the callers; R44's planning moved the bubble away).
 inline Placement Place(const Rect& element, int w, int h, const Rect& area, int gap, int margin, Side prefer = Side::Right, int lead = 0,
                        int hPlan = 0, Point click = {}, int corner = 0) {
-    (void)margin; (void)hPlan;
+    (void)margin;
     auto exact = [&](Side s) -> Placement {
         Placement p; p.side = s;
         switch (s) {
@@ -48,7 +48,14 @@ inline Placement Place(const Rect& element, int w, int h, const Rect& area, int 
     for (Side s : {Side::Right, Side::Left, Side::Below, Side::Above}) { const auto p = exact(s); if (whole(p.rect)) return p; }
     // inside: the visible part of the element, its corner nearest to the click (else its top right corner), 12 px from both edges
     const Rect vis{std::max(element.left, area.left), std::max(element.top, area.top), std::min(element.right, area.right), std::min(element.bottom, area.bottom)};
-    const bool right = click.set ? click.x > (vis.left + vis.right) / 2 : true, bottom = click.set ? click.y > (vis.top + vis.bottom) / 2 : false;
+    const bool right = click.set ? click.x > (vis.left + vis.right) / 2 : true;
+    bool bottom = click.set ? click.y > (vis.top + vis.bottom) / 2 : false;
+    {   // r44 (Q, section.hero with a long conversation): the corner nearest to the click, unless the bubble at the height it may
+        // take (hPlan, 520) would not fit there in the visible area while it would at the element's other (top / bottom) corner
+        const int H = std::max(h, hPlan);
+        auto fitsAt = [&](bool atBottom) { const int y0 = atBottom ? vis.bottom - corner - H : vis.top + corner; return y0 >= area.top && y0 + H <= area.bottom; };
+        if (hPlan > 0 && !fitsAt(bottom) && fitsAt(!bottom)) bottom = !bottom;
+    }
     int x = right ? vis.right - corner - w : vis.left + corner, y = bottom ? vis.bottom - corner - h : vis.top + corner;
     x = Clamp(x, area.left, area.right - w); y = Clamp(y, area.top, area.bottom - h);   // an element smaller than the bubble: never out of the visible area
     Placement p; p.side = Side::Inside; p.fromRight = right; p.fromBottom = bottom; p.rect = {x, y, x + w, y + h};

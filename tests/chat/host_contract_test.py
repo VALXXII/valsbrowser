@@ -236,7 +236,7 @@ bub = code('chat-bubble.h'); place = bub[bub.find('inline Placement Place('):bub
 check('element.top - lead' in place and 'element.right + gap' in place and 'whole(p.rect)' in place and place.count('Clamp(') == 2, 'Paper: the side positions are exact (+gap, top - lead), a side only if whole there; a clamp only for the inside fallback')
 consts = code('chat-comment.h')
 check('BubbleGapCss = 12' in consts and 'BubbleLeadCss = 4' in consts, 'Paper: gap 12, lead 4 (CSS px)')
-check('OfferedRoomCss(' not in block_after(comment, 'void PlaceBubble(bool scrolling) {'), 'Paper: the height offered is never reduced to fit (past the visible area the user scrolls)')
+check('OfferedRoomCss(' in block_after(comment, 'void PlaceBubble(bool scrolling) {'), 'R38 / R47: the height offered is the room from the fixed edge (the composer and an authorization stay on screen), the position stays Paper')
 
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')

@@ -520,9 +520,12 @@ static void TestBubble() {
         const auto t = Place(title, W, h, area, gap, margin, Side::Right, lead, px(520), Point{}, corner);
         Check(t.side == Side::Right && t.rect.left == title.right + gap && t.rect.top == title.top - lead, "Paper: h1.hero-title — +12, top -4 (was -84.8)");
         const Rect plans{65, 250, 1742, 805};   // div.plans, page-wide: no side has room (sides, below, above)
-        const auto pl = Place(plans, W, h, area, gap, margin, Side::Right, lead, px(520), Point{200, 760, true}, corner);
+        const auto pl = Place(plans, W, h, area, gap, margin, Side::Right, lead, 0, Point{200, 760, true}, corner);   // a new bubble (no content yet)
         Check(pl.side == Side::Inside && !pl.fromRight && pl.fromBottom && pl.rect.left == plans.left + corner && pl.rect.bottom == plans.bottom - corner,
               "Paper: div.plans clicked near its bottom left — inside, 12 px from its left and bottom edges (was 96 px below its bottom)");
+        const auto longConv = Place(plans, W, h, area, gap, margin, Side::Right, lead, px(520), Point{200, 760, true}, corner);   // r44: its conversation has content
+        Check(longConv.side == Side::Inside && !longConv.fromBottom && longConv.rect.top == plans.top + corner && longConv.rect.left == plans.left + corner,
+              "r44: a long conversation — the element's other corner where its 520 px fit (top left, 12 px), never moved");
         const auto grown = Anchored(AnchorOf(pl, plans), plans, W, px(400));
         Check(grown.bottom == pl.rect.bottom && grown.top == pl.rect.bottom - px(400), "R29: then it grows up from its fixed bottom");
         const Rect low{63, 860, 327, 900};   // near the bottom of the visible area: not slid up — the next side where it is whole

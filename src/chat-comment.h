@@ -190,7 +190,7 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
     if (!bubble.anchor.set) {   // R29: the first placement chooses the side and the anchor; then they never change
         // R44: the side is chosen for the height the bubble may take (520), so that it is whole in the visible area
         p = ChatBubble::Place(er, w, h, area, gap, margin, bubble.side, int(std::lround(BubbleLeadCss * k)),
-                              int(std::lround(BubbleMaxHeightCss * k)), bubble.click, int(std::lround(BubbleGapCss * k)));
+                              ShownItems().empty() ? 0 : int(std::lround(BubbleMaxHeightCss * k)), bubble.click, int(std::lround(BubbleGapCss * k)));   // r44: a conversation with content may take 520 (inside: its corner where that fits)
         if (bubble.known) {
             bubble.anchor = ChatBubble::AnchorOf(p, er); placedNow = true; bubble.anchorArea = a;
             Diag(std::wstring(L"bubble placed ") + W(std::string(p.why)) + L" (element " + std::to_wstring(er.W()) + L"x" + std::to_wstring(er.H()) + L", visible area " + std::to_wstring(area.W()) + L"x" + std::to_wstring(area.H()) + L")");   // i18n-exempt: log detail
@@ -199,8 +199,10 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
     const bool sideChanged = p.side != bubble.side; bubble.side = p.side; bubble.fromBottom = p.fromBottom; bubble.surface = p.rect;
     if (!scrolling) {   // R38 / R40: the room and the handle's bounds are told on a new size, never at each scroll step (R39)
         const bool areaResized = area.H() != bubble.roomAreaH; bubble.roomAreaH = area.H();   // M15: a new page area size measures it again
-        (void)placedNow;   // Paper rule (coordinator): never reduced to fit — the bubble may take 520 (bounded by the page area's height); past the visible area the user scrolls (R29)
-        const int room = std::min(BubbleMaxHeightCss, std::max(120, int(area.H() / k) - 2 * BubbleMarginCss));
+        // R38 / R47 (the user): the height offered is the room from the bubble's fixed edge to the page area's far side,
+        // measured when it is placed and kept with the anchor — its composer and an authorization stay on screen (r47: past
+        // the visible area « Autoriser » could not be clicked); its position stays Paper's, never moved
+        const int room = ChatBubble::OfferedRoomCss(placedNow || !bubble.anchor.set || areaResized, bubble.roomCss, p.rect, p.fromBottom, area, margin, k, BubbleMaxHeightCss);
         const auto rm = ChatBubble::ResizeRoom(p.rect, p.fromRight, p.fromBottom, area, margin, k);
         if (room != bubble.roomCss || rm.width != bubble.resizeMax.width || rm.height != bubble.resizeMax.height) {
             if (room != bubble.roomCss) Diag(L"bubble: height offered " + std::to_wstring(room) + L" CSS px (page area " + std::to_wstring(area.H()) + L" px" + (areaResized ? L", resized" : L"") + L")");   // M15 diagnostics   // i18n-exempt: log detail
@@ -291,6 +293,26 @@ RECT BubbleRegionScreen() { const RECT w = BubbleScreenRect(); return RECT{w.lef
 // any more — it is hidden, still open (its conversation, its draft, its place), and shown again as it was as soon as a
 // window of this browser is in front. One state: open + away = hidden; every opening, closing and click clears it.
 void KeyboardToBubble(const wchar_t* why); bool MouseDown();
+// r47 (Q's real window): a click on « Autoriser » in the bubble put the foreground on a window of the WebView2 process
+// (Chrome_WidgetWin_1, another pid): taken for another application, the bubble was hidden and the click lost. A window of
+// this browser = of this process, owned by one of its windows, or of a process this browser started (its WebView2).
+bool OursWindow(HWND h) {
+    if (!h) return false;
+    DWORD pid = 0; GetWindowThreadProcessId(h, &pid); const DWORD me = GetCurrentProcessId();
+    if (pid == me) return true;
+    if (const HWND owner = GetAncestor(h, GA_ROOTOWNER)) { DWORD op = 0; GetWindowThreadProcessId(owner, &op); if (op == me) return true; }
+    static std::map<DWORD, bool> known; if (const auto it = known.find(pid); it != known.end()) return it->second;
+    bool child = false;   // its parent process (or its grand-parent: the WebView2 browser process starts the renderers) is this one
+    const HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap != INVALID_HANDLE_VALUE) {
+        std::map<DWORD, DWORD> parent; PROCESSENTRY32W e{}; e.dwSize = sizeof(e);
+        for (BOOL ok = Process32FirstW(snap, &e); ok; ok = Process32NextW(snap, &e)) parent[e.th32ProcessID] = e.th32ParentProcessID;
+        CloseHandle(snap);
+        DWORD p0 = pid; for (int i = 0; i < 3 && !child; ++i) { const auto it = parent.find(p0); if (it == parent.end()) break; p0 = it->second; child = p0 == me; }
+    }
+    if (known.size() > 64) known.clear();
+    known[pid] = child; return child;
+}
 void BubbleAway(const wchar_t* who) {
     if (!bubble.open || bubble.away || !bubble.hwnd) return;
     bubble.away = true; SetWindowRgn(bubble.hwnd, CreateRectRgn(0, 0, 0, 0), TRUE);   // an empty region, not SW_HIDE: hiding the active window would give the activation back to the browser (« back » at once)
@@ -309,7 +331,7 @@ void BubbleBack(const wchar_t* why) {
 int keyboardTries = 0;
 void KeyboardToBubble(const wchar_t* why) {
     if (!bubble.open || !bubble.hwnd || bubble.waitingAck) return;
-    keyboardTries = 3; SetTimer(bubble.hwnd, 0xB3, 40, nullptr);
+    keyboardTries = 3; SetTimer(bubble.hwnd, 0xB3, 150, nullptr);   // case 3: a click in the page (its selection) cancels it meanwhile
     Diag(std::wstring(L"the keyboard goes back to the bubble (") + why + L")");   // i18n-exempt: log detail
 }
 void KeyboardTry() {
@@ -318,7 +340,7 @@ void KeyboardTry() {
     view.Focus();
     const HWND fg = GetForegroundWindow(); const bool ok = fg == bubble.hwnd;
     if (ok || --keyboardTries <= 0) {
-        KillTimer(bubble.hwnd, 0xB3);
+        KillTimer(bubble.hwnd, 0xB3); keyboardTries = 0;
         wchar_t cls[64] = L""; if (fg) GetClassNameW(fg, cls, 64);
         Diag(ok ? std::wstring(L"the keyboard is in the bubble") : L"the keyboard could not be given to the bubble (foreground: " + std::wstring(cls) + L")");   // i18n-exempt: log detail
     } else SetTimer(bubble.hwnd, 0xB3, 60, nullptr);
@@ -327,7 +349,7 @@ bool MouseDown() { return (GetAsyncKeyState(VK_LBUTTON) | GetAsyncKeyState(VK_RB
 void CALLBACK ForegroundChanged(HWINEVENTHOOK, DWORD, HWND fg, LONG, LONG, DWORD, DWORD) {
     static bool lastOurs = true;   // the previous foreground window was one of this browser's
     DWORD pid = 0; if (fg) GetWindowThreadProcessId(fg, &pid);
-    const bool ours = fg && pid == GetCurrentProcessId(), cameBack = ours && !lastOurs; if (fg) lastOurs = ours;
+    const bool ours = fg && OursWindow(fg), cameBack = ours && !lastOurs; if (fg) lastOurs = ours;
     // M4, panel (Q's monkey): « Chat à droite » open, back from another application (not a click): its composer gets the keys
     if (cameBack && Open() && !bubble.open && panelReady && !MouseDown()) {
         view.Focus(); SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f));
@@ -356,11 +378,11 @@ LRESULT CALLBACK BubbleProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     // focus moves activate the browser window without any click.
     if (m == WM_ACTIVATE && (LOWORD(w) == WA_ACTIVE || LOWORD(w) == WA_CLICKACTIVE) && bubble.open) { bubble.hadKeyboard = true; view.Focus(); }   // M4 (a): activated — its page gets the keyboard
     if (m == WM_ACTIVATE && LOWORD(w) == WA_INACTIVE && bubble.open) {   // M4 (a): to a window of this browser, the keyboard is the browser's
-        DWORD p0 = 0; HWND to0 = reinterpret_cast<HWND>(l); if (to0) GetWindowThreadProcessId(to0, &p0); if (to0 && p0 == GetCurrentProcessId()) bubble.hadKeyboard = false;
+        DWORD p0 = 0; HWND to0 = reinterpret_cast<HWND>(l); (void)p0; if (to0 && OursWindow(to0)) bubble.hadKeyboard = false;
     }
     if (m == WM_ACTIVATE && LOWORD(w) == WA_INACTIVE && bubble.open && !bubble.modal) {
         DWORD pid = 0; HWND to = reinterpret_cast<HWND>(l); if (to) GetWindowThreadProcessId(to, &pid);
-        if (!to || pid != GetCurrentProcessId()) PostMessageW(h, WM_APP + 1, 0, 0);
+        (void)pid; if (!to || !OursWindow(to)) PostMessageW(h, WM_APP + 1, 0, 0);
         return 0;
     }
     // the selection that opened it ends by giving the page the keyboard (Ann::Resume): not a click elsewhere
@@ -373,7 +395,7 @@ LRESULT CALLBACK BubbleProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (const double since = Ann::NowMs() - bubble.openedAt; since <= 500) { SetTimer(h, 0xB1, UINT(520 - since), nullptr); return 0; }   // just opened: looked at again after, not dropped
         const HWND fg = GetForegroundWindow(); DWORD pid = 0; if (fg) GetWindowThreadProcessId(fg, &pid);
         if (!fg) { if (m == WM_APP + 1) SetTimer(h, 0xB1, 250, nullptr); else BubbleAway(L"nobody"); return 0; }
-        if (fg == h || pid == GetCurrentProcessId()) return 0;
+        if (fg == h || OursWindow(fg)) return 0;   // r47: the browser's WebView windows too
         wchar_t cls[64] = L""; GetClassNameW(fg, cls, 64);
         BubbleAway((std::wstring(cls) + L", pid " + std::to_wstring(pid)).c_str()); return 0;
     }
@@ -575,6 +597,12 @@ void OnBubbleSize(int wCss, int hCss, ChatBubble::Edges over, bool resized) {
     } else {
         bubble.baseHCss = std::clamp(hCss, 40, BubbleMaxHeightCss);
         bubble.w = int(std::lround(std::clamp(wCss, 200, BubbleWidthCss) * k)); bubble.h = int(std::lround(std::clamp(hCss, 40, BubbleMaxHeightCss) * k));
+    }
+    // r44 (Q's real window, section.hero with a long conversation): the side was chosen with the opening's small height; the
+    // page's first size (its natural height) comes before the bubble is shown — placed again with it (nothing seen moves)
+    if (bubble.waitingAck && !resized && bubble.anchor.set && bubble.known) {
+        Diag(L"the bubble's first size: placed with its real height");   // i18n-exempt: log detail
+        bubble.anchor = ChatBubble::Anchor{}; bubble.side = ChatBubble::Side::Right;
     }
     const auto before = bubble.inset; PlaceBubble();
     if (bubble.inset == before && panelReady) SendLayout(false);   // R3: every new bubble.size gets its inset (PlaceBubble sent it if it changed)
@@ -808,7 +836,9 @@ std::string LabelOfSelector(const std::string& s) {
     if (const auto c = last.find(':'); c != std::string::npos) last = last.substr(0, c);
     return ChatPrompt::OneLine(last, 60);
 }
+void CancelKeyboardBack() { if (bubble.hwnd && keyboardTries > 0) { KillTimer(bubble.hwnd, 0xB3); keyboardTries = 0; Diag(L"a click in the page: the keyboard stays with it"); } }   // case 3   // i18n-exempt: log detail
 bool OpenEarly(const std::shared_ptr<Tab>& t, const AnnotationHost::Envelope& env) {
+    CancelKeyboardBack();
     if (!t || !CommentFirst(t) || env.selector.empty() || bubble.open || Ann::NowMs() - bubble.closedAt < 400) return false;
     PrepareChat(t);
     const float k = Dpi() * float(Ann::s.zoom > 0 ? Ann::s.zoom : 1.0); const RECT pa = Ann::PageScreen(t);
@@ -831,6 +861,7 @@ bool OpenEarly(const std::shared_ptr<Tab>& t, const AnnotationHost::Envelope& en
     return true;
 }
 bool TakeCommentSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible) {
+    CancelKeyboardBack();
     PrepareChat(t);
     if (early.on && early.seq == Ann::s.sel.seq && bubble.open && bubble.conv == early.conv) {   // R18: the bubble is already open: completed
         early.on = false;
@@ -868,7 +899,7 @@ bool TakeCommentSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, b
     for (const Convo* mem : {&convo, aside.on ? &aside.c : nullptr}) if (!existing && mem && !key.empty() && mem->data.head.anchorKey == key && mem->data.head.anchorPage == page && SentConvo(*mem)) existing = &mem->data.head;
     if (existing) {   // its conversation: the bubble opens on it again
         const std::string id = existing->id, s = existing->anchorSelector, l = existing->anchorLabel;
-        if (bubble.open && bubble.conv == id) { BubbleBack(L"a click on its element"); EnsureOnScreen(L"a click on its element"); return true; }   // already open: shown (hidden by another application meanwhile)   // i18n-exempt: log detail
+        if (bubble.open && bubble.conv == id) { BubbleBack(L"a click on its element"); EnsureOnScreen(L"a click on its element"); Diag(L"bubble opened on " + W(bubble.label) + L" for conversation " + W(id) + L" (was open: shown, in front)"); return true; }   // already open: shown (hidden by another application meanwhile)   // i18n-exempt: log detail
         if (anchorElements.find(id) == anchorElements.end()) { Element e = ElementFromMode(serial); e.captureDone = captureImpossible; e.anchorFor = id; aiming[serial] = std::move(e); QuerySource(t, serial); }
         const std::string page2 = page;
         ShowConversation(id, [id, element, s, l] { OpenBubble(id, &element, s, s.empty(), l); },   // Q 6: no selector — the element itself is followed
