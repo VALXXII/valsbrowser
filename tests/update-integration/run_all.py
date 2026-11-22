@@ -107,6 +107,9 @@ def existing_fixtures() -> None:
             *UI_LIBS, '-lshell32', '-loleaut32', '-lmsimg32', '-lshcore'], [ROOT, flicker_evidence])
     fixture('shortcuts_test', ['-O0', *TVG, WV2, 'tests/shortcuts_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
     fixture('navigation_errors_test', [*LOOSE, *TVG, WV2, 'tests/navigation_errors_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
+    # A navigation the engine turned into a download is never an error page (src/download-navigation.h; real engine:
+    # tests/downloads/download_navigation_e2e.py)
+    fixture('download_navigation_test', [*STRICT, 'tests/download_navigation_test.cpp'])
     fixture('tab_drag_test', [*LOOSE, *TVG, WV2, 'tests/ui/tab_drag_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
     # Split view: pure model (zones, capacity, rails, springs) and host behaviour through WndProc
     fixture('split_view_test', [*STRICT, 'tests/split-view/split_view_test.cpp'])
