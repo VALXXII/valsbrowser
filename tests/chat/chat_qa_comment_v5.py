@@ -344,7 +344,9 @@ def run_main():
         reset(0)
         reset(0)
         def keyboard():
-            u32.SetCursorPos(pg[2] - 7, pg[1] + 30); time.sleep(0.1); mouse(0x0002); time.sleep(0.03); mouse(0x0004); time.sleep(0.15)   # the page has the keyboard (its scrollbar's thumb: no scroll)
+            # final QA: the page's right edge has no real scrollbar here (a click there selects an element): the page gets the
+            # keyboard by a Ctrl+click on a plain place of the page (R31: Ctrl held = the site as usual, nothing selected)
+            V4.key(0x11); u32.SetCursorPos(pg[0] + 400, pg[1] + 40); time.sleep(0.1); mouse(0x0002); time.sleep(0.03); mouse(0x0004); time.sleep(0.1); V4.key(0x11, up=True); time.sleep(0.15)
             u32.SetCursorPos(*park); time.sleep(0.1)
             for vk in (0x28, 0x28, 0x28, 0x22):   # Down x3, Page Down — real keys
                 V4.key(vk); time.sleep(0.03); V4.key(vk, up=True); time.sleep(0.15)

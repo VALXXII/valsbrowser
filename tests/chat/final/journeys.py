@@ -246,6 +246,8 @@ def j_diff(j):
     j.step('R38/R40 · the diff opens in the bubble at its place, the same size', s0 and s1 and abs((s1[2] - s1[0]) - (s0[2] - s0[0])) <= 2 and abs(s1[0] - s0[0]) <= 1 and st.get('diff'), {'before': s0, 'diff': s1})
     j.R.capture('diff-ouvert'); j.check('diff open')
     g = F.chat_point('.b-grip')
+    if g:   # the bubble may go past the visible area (natural height): the user scrolls the page to its handle
+        g = F.bring_into_view(g, '.b-grip'); time.sleep(0.3); s1 = F.bubble_surface()
     if j.step('R40 · the handle is shown', g):
         F.drag(g[0], g[1], g[0] + 180, g[1] + 120, 24)
         s2 = F.bubble_surface()
