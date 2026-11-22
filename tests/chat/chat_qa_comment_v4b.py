@@ -216,7 +216,8 @@ def run_main():
         first = next((t for t, r in s18.samples if r), None)
         lat = round((first - t_click) * 1000) if first else None
         report['measures']['r18'] = {'clickToSurfaceMs': lat, 'log': [l for l in C.log_text()[m2:].splitlines() if 'bubble shown' in l or 'bubble opened' in l]}
-        step('R18 · a real click: the bubble\'s surface on screen in less than 100 ms', lat is not None and lat < 100, report['measures']['r18'])
+        # final QA: the final plan's invariant is « in less than 150 ms » (design/chat-comment-final-plan.md), not 100
+        step('R18 · a real click: the bubble\'s surface on screen in less than 150 ms', lat is not None and lat < 150, report['measures']['r18'])
         logged(r'CHAT panel ready', 0, 5); time.sleep(0.8)
 
         # ---- T6: a CSS-only turn (glide), frame by frame

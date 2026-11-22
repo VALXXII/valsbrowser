@@ -121,8 +121,19 @@ def _ws_for(target):
 
 
 def chat_target(kind='bubble'):
+    """The chat page in the bubble or in the panel. Both load the same address: the page's root carries the class « bub »
+    in the bubble's layout (panel.js applyLayout)."""
     ts = _targets(C.PANEL)
-    b = [t for t in ts if 'layout=bubble' in t.get('url', '')]; p = [t for t in ts if 'layout=bubble' not in t.get('url', '')]
+    if len(ts) <= 1:
+        return ts[0] if ts else None
+    bub = []
+    for t in ts:
+        try:
+            v = _ws_for(t).call('Runtime.evaluate', {'expression': "document.documentElement.classList.contains('bub')", 'returnByValue': True})
+            bub.append(bool(v.get('result', {}).get('value')))
+        except Exception:
+            _ws.pop(t['id'], None); bub.append(False)
+    b = [t for t, x in zip(ts, bub) if x]; p = [t for t, x in zip(ts, bub) if not x]
     pick = (b or p) if kind == 'bubble' else (p or b)
     return pick[0] if pick else None
 

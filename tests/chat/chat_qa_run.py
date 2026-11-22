@@ -164,8 +164,10 @@ def run_main():
         # ---- open the panel (band button), first time: where is the code?
         m0 = mark()
         step('band button invoked', C.invoke('AnnotationAskAgent'))
-        ready = logged(r'CHAT panel ready (\d+) ms after the request', m0, 15)
-        step('panel opens', ready is not None)
+        # final QA: O1 — the panel's page is created and made ready IN ADVANCE when the mode starts (its « ready » comes before
+        # the band button); opening it is then « panel in place »
+        ready = logged(r'CHAT panel ready (\d+) ms after the request', 0, 15)
+        step('panel opens', ready is not None and logged(r'CHAT panel in place (\d+) ms', m0, 10) is not None)
         created = logged(r'CHAT panel WebView created in (\d+) ms', m0, 5)
         inplace = logged(r'CHAT panel in place (\d+) ms', m0, 5)
         if ready:
@@ -174,14 +176,14 @@ def run_main():
         narrow = page_width()
         step('the page shrinks, it is not covered', narrow is not None and wide - narrow >= 370, f'page width {wide} -> {narrow} CSS px')
         step('launcher hidden while the panel is open', not launcher_visible())
-        sug = logged(r'CHAT folder suggestion from the process listening on the site\'s port \(pid \d+\): (.+)', m0, 10)
+        sug = logged(r'CHAT folder suggestion from the process listening on the site\'s port \(pid \d+\): (.+)', 0, 10)   # final QA: O1, found during the warm-up
         step('folder detected from the port of the site (no admin rights)', sug is not None and sug.group(1).strip().lower() == str(C.SITE).lower(), sug.group(1).strip() if sug else 'none')
         # contract B 1.4: a sure detection (one server, its working folder is a project, the page's own file marks point
         # into it) is used at once — no « Où est le code de ce site ? » screen; the folder shows as a chip in the composer
-        m1 = m0
-        marks = logged(r"CHAT the page's file marks agree with the folder \((\d+) file", m0, 10)
+        m1 = 0   # final QA: O1 — the folder is found and linked during the warm-up, before the band button
+        marks = logged(r"CHAT the page's file marks agree with the folder \((\d+) file", 0, 10)
         step('the page\'s own file marks point into that folder', marks is not None, marks.group(0)[5:] if marks else '')
-        auto = logged(r'CHAT folder used without asking \(sure\): (.+)', m0, 10)
+        auto = logged(r'CHAT folder used without asking \(sure\): (.+)', 0, 10)
         step('sure detection: the folder is used at once', auto is not None and auto.group(1).strip().lower() == str(C.SITE).lower(), auto.group(1).strip() if auto else '')
         step('site linked to its folder', logged(r'CHAT site http://127\.0\.0\.1:5183 linked to', m1, 8))
         step('agent session ready', logged(r'CHAT session start: ready', m1, 20))
@@ -242,8 +244,10 @@ def run_main():
         ended = logged(r'CHAT turn t1 ended: (\w+) in (\d+) ms, (\d+) file\(s\) changed \(\+(\d+) -(\d+)\)', m4, 20)
         step('turn ends with 1 file changed', ended is not None and ended.group(1) == 'end_turn' and ended.group(3) == '1', ended.group(0)[5:] if ended else '')
         step('the file was really edited by the agent', MOVED in CSS.read_text(encoding='utf-8'))
-        step('page reloaded by the chat (no dev server reload)', logged(r'CHAT files changed and no dev server reload: reloading the page', m4, 8))
-        step('the mode survives the reload', logged(r'ANNOTATE mode re-armed after a reload', m4, 10))
+        # final QA: R36 — after the agent's edit the page shows the change with a fade (reload) or the values glide (CSS only, no reload)
+        shown_how = logged(r'CHAT files changed and no dev server reload: (reloading the page|the page shows them \(transition\))', m4, 8)
+        step('page shows the change (R36: reload with fade, or the style glides in place)', shown_how)
+        step('the mode survives (re-armed after a reload, or no reload at all)', logged(r'ANNOTATE mode re-armed after a reload', m4, 10) or (shown_how and 'transition' in shown_how.group(0) and 'ANNOTATE mode off' not in C.log_text()[m4:]))
         step('element found again and marked « done »', logged(r'mark « done » on the element: found', m4, 10))
         step('annotation resolved with the agent\'s summary', logged(r'CHAT annotation ann_\w+: resolved ok', m4, 8))
         left1 = C.wait_for(lambda: (button_left() or 0) > (left0 or 0) + 50 and button_left(), 8)
@@ -435,21 +439,34 @@ def run_main():
             print('DIAG log', C.log_text().splitlines()[-25:])
         step('launcher back', launcher_visible())
         destroyed = logged(r'CHAT panel WebView destroyed', m11, 12)
-        step('panel WebView destroyed after staying closed', destroyed is not None and not C.panel_exists())
+        # final QA: R18 — Mode Commentaire keeps its bubble's page created in advance (log « bubble WebView created in advance »):
+        # « no chat WebView » means no PANEL page; the bubble's prepared page may stay
+        def panel_pages():   # chat pages NOT in the bubble's layout (the page's root has the class « bub » in the bubble)
+            out = []
+            for t in C.targets():
+                if t.get('type') == 'page' and t.get('url', '').startswith(C.PANEL):
+                    try:
+                        v = Q.WS(t['webSocketDebuggerUrl']).call('Runtime.evaluate', {'expression': "document.documentElement.classList.contains('bub')", 'returnByValue': True})
+                        if not v.get('result', {}).get('value'):
+                            out.append(t)
+                    except Exception:
+                        out.append(t)
+            return out
+        step('panel WebView destroyed after staying closed', destroyed is not None and not panel_pages())
         step('agent stopped after the panel closed', logged(r'CHAT agent stopped \(idle', m11, 12))
         time.sleep(2.5)
         left = agent_processes()
-        step('rest again: 0 agent process, 0 chat WebView', not left and not C.panel_exists(), f'{len(left)} agent process(es)')
+        step('rest again: 0 agent process, 0 panel WebView (the bubble\'s prepared page may stay, R18)', not left and not panel_pages(), f'{len(left)} agent process(es)')
         report['measures']['restAfterClose'] = {'agentProcesses': len(left), 'chatWebViews': 1 if C.panel_exists() else 0}
 
         # ---- V1.3 (the user's decision): with the chat closed, a click on an element OPENS the chat — the element is a
         #      chip, the caret is in the composer; no note panel on a local site
         m12 = mark()
         C.click_page('.field-label')   # (not h1.title: « title » in a message picks the fake agent's rename scenario)
-        second = logged(r'CHAT panel ready (\d+) ms after the request', m12, 15)
+        second = logged(r'CHAT (panel ready (\d+) ms after the request|panel in place (\d+) ms|a click on an element opens the chat)', m12, 15)   # final QA: O1
         step('V1.3: chat closed, a click on an element opens the chat (new WebView), no note panel', second is not None and not [w for w in Q.windows() if w[1] == 'BrowserAnnotationNote'])
         if second:
-            report['measures']['secondOpenPanelReadyMs'] = int(second.group(1))
+            report['measures']['secondOpen'] = second.group(0)
         step('…the element becomes a chip of the composer', logged(r'CHAT element aimed: \S*field-label', m12, 10) is not None and bool(C.wait_for(lambda: C.panel("document.querySelectorAll('.cin .chip').length"), 6)))
         time.sleep(0.4)
         focus_composer(); C.type_panel(' Mets ce libellé en gras'); time.sleep(0.2); C.enter_panel()

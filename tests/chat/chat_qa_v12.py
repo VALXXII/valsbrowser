@@ -234,7 +234,8 @@ def run_main():
         # ---- 7 (V1.3): chat CLOSED, a click on an element opens the chat: the element is a chip, the caret is there
         m1 = mark()
         C.click_page('.title')
-        opened = logged(r'CHAT a click on an element opens the chat', m1, 8)
+        # final QA: the panel is created in advance (O1): its opening by a click may be logged « panel in place » / « panel opened »
+        opened = logged(r'CHAT (a click on an element opens the chat|panel in place|panel opened)', m1, 8)
         ready = logged(r'CHAT panel ready', m1, 15)
         time.sleep(0.4)
         step('7 · chat closed: a click on an element OPENS the chat (no note panel)', opened is not None and ready is not None and not [w for w in Q.windows() if w[1] == 'BrowserAnnotationNote'])
@@ -316,13 +317,15 @@ def run_main():
         C.click_panel(selector='.tb.mode'); time.sleep(0.4)
         rows = C.panel("Array.from(document.querySelectorAll('.menu .mi')).map(function(b){return b.innerText.replace(/\\n+/g,' | ')})") or []
         report['measures']['modeMenu'] = rows
-        step('V1.4 · the mode menu is in French (Demander, Auto, Planifier, Autonome) with Paper\'s descriptions, no English',
-             [r.split(' | ')[0] for r in rows] == ['Demander', 'Auto', 'Planifier', 'Autonome'] and 'Propose chaque modification.' in rows[0] and 'Propose un plan, ne touche à aucun fichier.' in rows[2]
-             and not any(w in ' '.join(rows) for w in ('Manual', 'Accept edits', 'Always ask', 'Claude handles')), ' / '.join(rows))
+        # final QA: R4 replaced V1.4 — Paper 14RK-0 as the user updated it: 4 rows, this order, these words
+        step('R4 · the mode menu: Accept edits, Auto, Demander, Planifier with their descriptions (Paper 14RK-0)',
+             [r.strip() for r in rows] == ['Accept edits | Automatically accept all file edits', 'Auto | Claude handles permission decisions',
+                                           'Demander | Propose chaque modification.', 'Planifier | Propose un plan, ne touche à aucun fichier.'], ' / '.join(rows))
         capture('10-modes-en-francais')
         C.panel("Array.from(document.querySelectorAll('.menu .mi')).find(function(b){return b.innerText.indexOf('Auto')===0}).click();1"); time.sleep(0.5)
-        chipm = C.panel("(document.querySelector('.tb.mode')||{}).innerText||''")
-        step('V1.4 · the mode chip says « Auto » (not « Accept edits »)', (chipm or '').strip() == 'Auto', repr(chipm))
+        # final QA: R21 — the mode button is an icon alone, its name in its accessible label
+        chipm = C.panel("(document.querySelector('.tb.mode')||{}).getAttribute('aria-label')||''")
+        step('R21 · the mode button is « Auto » (accessible name, icon alone)', 'Auto' in (chipm or '') and 'Accept' not in (chipm or ''), repr(chipm))
         C.panel("Array.from(document.querySelectorAll('.tb.mode')).forEach(function(b){b.click()});1"); time.sleep(0.3)
         C.panel("(function(){var d=Array.from(document.querySelectorAll('.menu .mi')).find(function(b){return b.innerText.indexOf('Demander')===0});if(d)d.click();return 1})()"); time.sleep(0.4)
 
@@ -400,7 +403,7 @@ def run_main():
             capture('6-curseur-visible-apres-saisie', with_cursor=True)
             # 5: the selection frame of the open note stays on its element while the page scrolls
             pg("document.body.style.paddingBottom='2400px'", other); time.sleep(0.6)
-            fm = scroll_and_measure('x h', '.title', 0, 'selectionFrameWhileScrolling', other)
+            fm = scroll_and_measure('x f', '.title', 0, 'selectionFrameWhileScrolling', other)   # final QA: the frame's class is « x f » since R14 / R45
             step('5 · the selection frame stays on its element while the page scrolls (no glide behind it)', fm is not None and fm['scrolledPx'] > 100 and fm['worstOffsetPx'] <= 1.0, json.dumps(fm))
             pg("scrollTo(0, 60)", other); time.sleep(0.5)
             capture('5-cadre-selection-colle-apres-defilement')

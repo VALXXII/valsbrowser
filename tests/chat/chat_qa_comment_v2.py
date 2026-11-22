@@ -400,17 +400,26 @@ def run_main():
         def hover_history():
             at = C.panel("(function(){var l=[].slice.call(document.querySelectorAll('button,[role=button],span,div')).filter(function(e){return (e.textContent||'').trim()==='Historique'&&e.getBoundingClientRect().width>0});"
                          "var e=l[l.length-1];if(!e)return null;var b=e.getBoundingClientRect();return [b.left+b.width/2,b.top+b.height/2]})()")
-            if at:
-                C.ws_for(C.PANEL).call('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': at[0], 'y': at[1]})
+            if at:   # final QA: the REAL pointer (the host closes a hover tooltip when the real pointer is not over the bubble, M10)
+                bw = CC.bubble_window(); k = C.panel('devicePixelRatio') or 1
+                if bw:
+                    u32.SetCursorPos(int(bw[3][0] + at[0] * k), int(bw[3][1] + at[1] * k)); time.sleep(0.05)
+                    u32.SetCursorPos(int(bw[3][0] + at[0] * k) + 2, int(bw[3][1] + at[1] * k))
         def leave_history():   # a hover tooltip closes when the pointer leaves it (Échap would close the bubble: §19.4)
-            C.ws_for(C.PANEL).call('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': 150, 'y': 8})
+            bw = CC.bubble_window()
+            if bw:
+                u32.SetCursorPos(bw[3][0] - 200 if bw[3][0] > 300 else bw[3][2] + 200, bw[3][3] + 200)
         r3_measure('infobulle-historique', hover_history, rest, rest_img, leave_history)
 
         # ---- R9 measures: the same request, permission answered at once, bubble vs panel
         def measure(where):
             u32.SetForegroundWindow(Q.main_window()); time.sleep(0.3)
             mm = mark()
-            send_in_view('Change le gap en 8 px (permission)')   # the fake agent's « permission » scenario: same steps every time
+            if where == 'panneau':   # final QA: the panel's page by its own target, a real click in its composer and real keys (the user's way)
+                sys.path.insert(0, str(C.HERE / 'final')); import qa_final as QF
+                QF.type_and_send('Change le gap en 8 px (permission)', 'panel')
+            else:
+                send_in_view('Change le gap en 8 px (permission)')   # the fake agent's « permission » scenario: same steps every time
             shown, answered, end, deadline = [], 0, None, time.time() + 40
             while time.time() < deadline:
                 text = C.log_text()[mm:]
@@ -419,7 +428,10 @@ def run_main():
                     break
                 if text.count('CHAT permission asked') > answered:
                     t0 = time.time()
-                    if C.wait_for(lambda: 'Autoriser' in (C.panel_text() or ''), 6):
+                    if where == 'panneau':
+                        if C.wait_for(lambda: 'Autoriser' in (QF.chat('document.body.innerText', 'panel') or ''), 6):
+                            shown.append(round(time.time() - t0, 3)); QF.real_click_chat(text='Autoriser', kind='panel', tries=4)
+                    elif C.wait_for(lambda: 'Autoriser' in (C.panel_text() or ''), 6):
                         shown.append(round(time.time() - t0, 3)); C.click_panel(text='Autoriser')
                     answered += 1
                 time.sleep(0.05)

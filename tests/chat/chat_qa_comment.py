@@ -127,7 +127,10 @@ def run_main():
         conv1 = opened.group(2) if opened else ''
         step('2 · a click on an element opens a bubble (no panel, no note)', opened is not None and bw is not None and 'CHAT panel opened' not in C.log_text()[m2:] and not [w for w in Q.windows() if w[1] == 'BrowserAnnotationNote'], opened.group(0)[5:] if opened else '')
         if bw:
-            r = bw[3]; report['measures']['bubble'] = {'rect': r, 'element': el, 'page': pg}
+            # final QA: the bubble's window has a transparent margin (layout.inset, R19 / R41): its REGION is what is on screen
+            import ctypes.wintypes as _W
+            rg = _W.RECT(); u32.GetWindowRgnBox(bw[0], ctypes.byref(rg)); wr = bw[3]
+            r = (wr[0] + rg.left, wr[1] + rg.top, wr[0] + rg.right, wr[1] + rg.bottom); report['measures']['bubble'] = {'rect': r, 'window': wr, 'element': el, 'page': pg}
             beside = r[0] >= el[2] or r[2] <= el[0] or r[1] >= el[3] or r[3] <= el[1]
             inside = r[0] >= pg[0] and r[1] >= pg[1] and r[2] <= pg[2] and r[3] <= pg[3]
             step('2 · …next to the element, never over it, inside the page', beside and inside, f'bubble {r}, element {el}, page {pg}')
@@ -150,12 +153,14 @@ def run_main():
                 print('no Autoriser button', e)
         step('3 · the turn ends', logged(r'CHAT turn t\d+ ended: end_turn', m3, 25))
         time.sleep(2.0)
-        marks = C.wait_for(lambda: conv_marks(), 6) or []
-        step('3 · the element carries its frame + icon (Paper 18IJ-0)', len(marks) >= 1, str(marks))
         capture('3-termine')
         m4 = mark()
         C.panel("(function(){var t=document.querySelector('[contenteditable=true]');if(t)t.focus();return 1})()")
         C.key_panel('Escape', 'Escape', 27)
+        # final QA: R2 / R27 — one contour per element: while its bubble is open the element shows the bubble's frame; the
+        # conversation's frame + icon is there once the bubble is closed
+        marks = C.wait_for(lambda: conv_marks(), 6) or []
+        step('3 · the element carries its frame + icon once its bubble is closed (Paper 18IJ-0)', len(marks) >= 1, str(marks))
         closed = logged(r'CHAT bubble closed \(the agent goes on\)', m4, 5)
         time.sleep(0.5)
         step('3 · Échap closes the bubble, the agent is not stopped', closed is not None and 'agent stopped' not in C.log_text()[m4:] and 'cancelled' not in C.log_text()[m4:])
@@ -191,7 +196,9 @@ def run_main():
         waits = C.panel_text() or ''
         wmarks = conv_marks()
         step('4 · the other element\'s message waits: « Commencera après le travail en cours sur … »', 'Commencera après' in waits and 'CHAT turn t' not in C.log_text()[m7:], waits[-160:].replace('\n', ' | '))
-        step('4 · …its frame says « En attente »', any('wait' in c for c in wmarks), str(wmarks))
+        if not any('wait' in c for c in wmarks):   # final QA: R27 — its own open bubble hides its mark; closed, the mark says it waits
+            C.key_panel('Escape', 'Escape', 27); time.sleep(0.8); wmarks = C.wait_for(lambda: [c for c in conv_marks() if 'wait' in c], 4) or conv_marks()
+        step('4 · …its frame says « En attente » (once its bubble is closed)', any('wait' in c for c in wmarks), str(wmarks))
         capture('4-file-attente')
         m8 = mark()
         # stop the first element's turn from its own bubble (« Arrêter »)
