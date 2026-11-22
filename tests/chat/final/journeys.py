@@ -702,7 +702,7 @@ def j_e4b(j):
     region = (sf[0] - 40, sf[1] - 40, sf[2] + 40, sf[3] + 40)
     film = V5.Frames(region, 90, 0.010); film.start(); time.sleep(0.05)
     F.real_click_chat('button.m'); time.sleep(0.7); film.stop = True; film.join()
-    x = (sf[2] - sf[0]) // 2 + 40; tops = []
+    x = (sf[2] - sf[0]) - 14 + 40; tops = []   # near the surface's right edge: the model menu opens above its button, out of this column (H1)
     for _, fr in film.frames:
         r = V5.run_of(fr, x, V5.dark, 0, fr[1] - 1)
         tops.append(r[0] if r else None)
@@ -897,6 +897,31 @@ def j_c1_delay(j):
     bad = [x for x in samples if x[1] is not None and (not x[2] or (x[1] or '').endswith('Agent'))]
     j.step('C1 · as soon as the page shows: the conversation and the model (never « Agent », never an empty thread)', not bad and any(x[2] for x in samples), bad[:5])
     j.check('C1 delayed')
+
+@journey('m4_panneau_clavier_retour', 'review M4, panel side (Chat à droite: type, another application in front, back, type: the text arrives)')
+def j_m4_panel(j):
+    F.set_layout('panel'); j.inv.m.layout = 'panel'
+    p = F.composer_end_point('panel'); F.click_at(*p); time.sleep(0.2)
+    F.type_keys('un '); time.sleep(0.3)
+    comp = "(document.querySelector('[contenteditable=true]')||{}).innerText||''"
+    j.step('M4 panel · typing in the panel\'s composer', 'un' in (F.chat(comp, 'panel') or ''))
+    with F.OtherApp():
+        time.sleep(0.7)
+    F.front(); time.sleep(0.8)
+    F.type_keys('deux '); time.sleep(0.4)
+    got = F.chat(comp, 'panel') or ''
+    j.step('M4 panel · back from another application, the keys reach the composer (no click)', 'deux' in got, got)
+    F.click_at(*F.element_point('a.btn-primary')); time.sleep(0.8)   # a chip added in between, then back again
+    with F.OtherApp():
+        time.sleep(0.7)
+    F.front(); time.sleep(0.8)
+    F.type_keys('trois'); time.sleep(0.4)
+    got = F.chat(comp, 'panel') or ''
+    j.step('M4 panel · after a chip and another application: the keys still reach the composer', 'trois' in got, got)
+    m = F.log_mark(); F.tap(0x0D)
+    j.step('M4 panel · Entrée sends it (turn started)', F.wait_log(r'CHAT turn t\d+ (started|ended)', m, 10))
+    j.check('M4 panel')
+
 
 # ---------------------------------------------------------------- runner
 def run_one(jn):

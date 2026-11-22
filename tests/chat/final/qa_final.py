@@ -690,6 +690,22 @@ def real_click_chat(selector=None, text=None, kind='bubble', tries=12):
     return False
 
 
+def composer_end_point(kind='bubble'):
+    """Screen point just after the end of the composer's content (the user clicks there to write; the middle of the
+    composer may be a chip, and a click on a chip removes it)."""
+    r = chat("(function(){var c=document.querySelector('[contenteditable=true]');if(!c)return null;var b=c.getBoundingClientRect();"
+             "var g=document.createRange();g.selectNodeContents(c);g.collapse(false);var rs=g.getClientRects();var q=rs.length?rs[rs.length-1]:null;"
+             "var x=q?q.right+6:b.left+12,y=q?q.top+q.height/2:b.top+12;if(x>b.right-6){x=b.right-10}"
+             "var h=document.elementFromPoint(x,y);if(h&&h.closest&&h.closest('.chip')){x=b.right-10;y=b.bottom-6}"
+             "return [x,y,devicePixelRatio]})()", kind)
+    if not r:
+        return None
+    if kind == 'bubble':
+        wr = V3.win_rect(bubble_hwnd()); return (int(wr[0] + r[0] * r[2]), int(wr[1] + r[1] * r[2]))
+    pr = panel_widget()
+    return (int(pr[0] + r[0] * r[2]), int(pr[1] + r[1] * r[2])) if pr else None
+
+
 def focus_composer(kind='bubble'):
     return chat("(function(){var t=document.querySelector('[contenteditable=true]');if(!t)return 0;t.focus();"
                 "var s=getSelection();s.selectAllChildren(t);s.collapseToEnd();return 1})()", kind)
@@ -698,8 +714,11 @@ def focus_composer(kind='bubble'):
 def type_and_send(text, kind='bubble'):
     """A real click in the composer (the user's way to give it the keyboard), then the message typed (CDP insertText, as
     the keyboard would) and Entrée."""
-    if kind == 'panel':   # real keys, as the user (a click in the middle of the composer lands on a chip and removes it)
-        focus_composer(kind); front(); time.sleep(0.1)
+    if kind == 'panel':   # a real click at the END of the composer's text (never on a chip), then real keys, as the user
+        p = composer_end_point(kind)
+        if p:
+            click_at(*p); time.sleep(0.15)
+        focus_composer(kind)
         type_keys(text, every=0.008); time.sleep(0.15); tap(0x0D)
         return
     focus_composer(kind)
