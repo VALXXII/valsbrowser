@@ -805,6 +805,35 @@ class Invariants:
         el = element_screen(sel)
         self.m.anchor = (sf[0] - el[0], sf[1] - el[1], sf[3] - el[3]) if sf else None
         self.m.size = (sf[2] - sf[0], sf[3] - sf[1]) if sf else None
+        if sf and mark is not None:
+            self.distance(sel, el, sf, st.get('dpr', 1), mark, where)
+
+    def distance(self, sel, el, sf, k, mark, where):
+        """Paper's distance to the element (coordinator, after the user's look): beside it, 12 px CSS from its edge and the
+        tops aligned at -4 (+12 / -4); inside it, 12 px from the edges of the corner nearest to the click. > 2 px = failure."""
+        seg = C.log_text()[mark:]
+        found = re.findall(r'bubble placed (right of the element|left of the element|below the element|above the element|inside the element, (?:top|bottom) (?:left|right) corner)', seg)
+        if not found:
+            return
+        how = found[-1]; pg = page_area(); vis = intersect(el, pg) or el
+        css = lambda v: round(v / k, 1)
+        if how.startswith('right'):
+            got = {'gap': css(sf[0] - el[2]), 'top': css(sf[1] - el[1])}; want = {'gap': 12, 'top': -4}
+        elif how.startswith('left'):
+            got = {'gap': css(el[0] - sf[2]), 'top': css(sf[1] - el[1])}; want = {'gap': 12, 'top': -4}
+        elif how.startswith('below'):
+            got = {'gap': css(sf[1] - el[3]), 'left': css(sf[0] - el[0])}; want = {'gap': 12, 'left': -4}
+        elif how.startswith('above'):
+            got = {'gap': css(el[1] - sf[3]), 'left': css(sf[0] - el[0])}; want = {'gap': 12, 'left': -4}
+        else:
+            got = {'x': css(sf[0] - vis[0]) if 'left corner' in how else css(vis[2] - sf[2]),
+                   'y': css(sf[1] - vis[1]) if 'top ' in how else css(vis[3] - sf[3])}
+            want = {'x': 12, 'y': 12}
+        bad = {key: (got[key], want[key]) for key in want if abs(got[key] - want[key]) > 2}
+        if bad:
+            frame = [l for l in seg.splitlines() if 'bubble' in l and ('placed' in l or 'frame' in l or 'shown' in l)][-6:]
+            self.r.step(f'{where} · invariant: the bubble at Paper\'s distance from {sel} ({how.split(":")[0]}: 12 px, aligned -4 / 12 px inside)', False,
+                        {'measured css': got, 'Paper': want, 'surface': sf, 'element': el, 'dpr': k, 'log': frame}, {'action': where})
 
     def rebase(self):
         """After an action that may legitimately move the bubble's anchor (a reload, the end of the document)."""
