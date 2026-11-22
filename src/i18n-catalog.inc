@@ -1460,12 +1460,12 @@ I18N(history_pages_count_other, L"{0} pages", L"{0} pages")  // same: « pages �
 I18N(split_announce_reopened, L"{0} rouvert", L"{0} reopened")
 I18N(script_alert_origin_says, L"{0} indique", L"{0} says")
 
-// ---- Default browser (Réglages › « Navigateur par défaut », src/default-browser.h) --------------------------------
-I18N(settings_default_browser, L"Navigateur par défaut", L"Default browser")
-I18N(settings_default_browser_set, L"Défini", L"Set")
-I18N(settings_default_browser_action, L"Définir", L"Make default")
+// ---- Default browser (the Réglages root's card, Paper « 01 · Réglages — racine », src/default-browser.h) -----------
+I18N(settings_default_browser_question, L"Voulez-vous avoir Browser comme navigateur par défaut ?", L"Make Browser your default browser?")
+I18N(settings_default_browser_later, L"Plus tard", L"Later")
+I18N(settings_default_browser_later_help, L"Ne plus proposer pendant 30 jours", L"Don't ask again for 30 days")
+I18N(settings_default_browser_make, L"Browser par défaut", L"Make default")
 I18N(settings_default_browser_help, L"Ouvre les Paramètres Windows, où vous choisissez Browser comme navigateur par défaut", L"Opens Windows Settings, where you choose Browser as your default browser")
-I18N(search_kw_default_browser, L"navigateur par défaut liens ouvrir applications par défaut windows", L"default browser links open default apps windows")
 // Written into the Windows registration (Applications par défaut, type of a file in Explorer).
 I18N(default_browser_description, L"Navigateur web pour Windows.", L"Web browser for Windows.")
 I18N(default_browser_html_type, L"Document HTML Browser", L"Browser HTML Document")

@@ -4,6 +4,7 @@
 // exercises it directly. Stored as UTF-8 `key=value` lines in `settings`,
 // next to `session`; unknown keys and malformed values keep their defaults.
 #include <cstdint>
+#include <cstdlib>
 #include <istream>
 #include <ostream>
 #include <string>
@@ -197,6 +198,9 @@ struct State {
     bool annotationConnectPrompt = true; // « Connecter un agent » opens at the mode's launch while no agent is connected
     int annotationConnectDeclines = 0;   // « Plus tard » answers, 0..MaxConnectDeclines (at the max the modal stops opening)
     int annotationRetentionDays = 30;    // done annotations kept that long: one of RetentionChoices
+    // « Plus tard » on the Réglages card « Voulez-vous avoir Browser comme navigateur par défaut ? »: when (UTC seconds,
+    // 0 = never). The card stays away DefaultBrowserLaterDays from then (DefaultBrowserCardDue).
+    long long defaultBrowserLaterAt = 0;
     bool operator==(const State& o) const {
         return engine == o.engine && restoreTabs == o.restoreTabs && downloadFolder == o.downloadFolder &&
                askWhereToSave == o.askWhereToSave && reduceMotion == o.reduceMotion && searchSuggestions == o.searchSuggestions &&
@@ -208,7 +212,7 @@ struct State {
                muteBackground == o.muteBackground && autoplay == o.autoplay && grayscaleText == o.grayscaleText &&
                bookmarksBar == o.bookmarksBar && accent == o.accent &&
                annotationConnectPrompt == o.annotationConnectPrompt && annotationConnectDeclines == o.annotationConnectDeclines &&
-               annotationRetentionDays == o.annotationRetentionDays;
+               annotationRetentionDays == o.annotationRetentionDays && defaultBrowserLaterAt == o.defaultBrowserLaterAt;
     }
 };
 // What a panel interaction changed; the host applies and saves it.
@@ -216,7 +220,7 @@ enum class Change { Engine, RestoreTabs, DownloadFolder, AskWhereToSave, ReduceM
                     SearchSuggestions, Tracking, Passwords, Autofill, ClearOnExit, Sleep, Zoom,
                     CustomSearch, NewTabPage, Homepage, TabPosition, ConfirmCloseTabs, CloseWithLastTab,
                     AdBlock, HttpsOnly, ThirdPartyCookies, MemorySaver, MuteBackground, Autoplay, BookmarksBar, GrayscaleText,
-                    AnnotationConnectPrompt, AnnotationRetention };
+                    AnnotationConnectPrompt, AnnotationRetention, DefaultBrowserLater };
 // Annotations: the connect modal stops opening by itself after this many « Plus tard » (src/annotation-mode.h).
 inline constexpr int MaxConnectDeclines = 3;
 inline constexpr int RetentionChoices[] = {7, 30, 90};
@@ -227,6 +231,13 @@ inline std::wstring RetentionLabel(int days) { return TRP(retention_days, days);
 inline bool ConnectPromptActive(const State& s) { return s.annotationConnectPrompt && s.annotationConnectDeclines < MaxConnectDeclines; }
 // Flipping that switch: off = no more prompts; on again = prompts back and the « Plus tard » count restarts at 0.
 inline void SetConnectPrompt(State& s, bool on) { s.annotationConnectPrompt = on; if (on) s.annotationConnectDeclines = 0; }
+// The « navigateur par défaut » card (while Browser is not the default): hidden for 30 days after « Plus tard ». A clock
+// set back before the answer counts as within the 30 days (the card does not come back early).
+inline constexpr long long DefaultBrowserLaterDays = 30;
+inline bool DefaultBrowserCardDue(const State& s, long long now) {
+    if (s.defaultBrowserLaterAt <= 0) return true;
+    return now - s.defaultBrowserLaterAt >= DefaultBrowserLaterDays * 24 * 60 * 60;
+}
 
 inline void Write(std::ostream& out, const State& s) {
     out << "browser-settings 1\n"
@@ -259,7 +270,8 @@ inline void Write(std::ostream& out, const State& s) {
         << "accent=" << AccentText(s.accent) << '\n'
         << "annotation-connect-prompt=" << (s.annotationConnectPrompt ? 1 : 0) << '\n'
         << "annotation-connect-declines=" << s.annotationConnectDeclines << '\n'
-        << "annotation-retention-days=" << s.annotationRetentionDays << '\n';
+        << "annotation-retention-days=" << s.annotationRetentionDays << '\n'
+        << "default-browser-later=" << s.defaultBrowserLaterAt << '\n';
 }
 inline State Read(std::istream& in) {
     State s; std::string line;
@@ -293,6 +305,7 @@ inline State Read(std::istream& in) {
         else if (key == "annotation-launcher") {}   // V2 « Afficher le lanceur d'annotations »: since V3 the launcher only exists in the mode (read, ignored, not written back)
         else if (key == "annotation-connect-prompt") flag(value, s.annotationConnectPrompt);
         else if (key == "annotation-connect-declines") { for (int n = 0; n <= MaxConnectDeclines; ++n) if (value == std::to_string(n)) s.annotationConnectDeclines = n; }
+        else if (key == "default-browser-later") { char* end = nullptr; const long long t = value.empty() || value.size() > 18 ? 0 : std::strtoll(value.c_str(), &end, 10); if (end && !*end && t > 0) s.defaultBrowserLaterAt = t; }
         else if (key == "annotation-retention-days") { for (int d : RetentionChoices) if (value == std::to_string(d)) s.annotationRetentionDays = d; }
         else if (key == "new-tab-page") { for (int i = 0; i < NewTabPageCount; ++i) if (value == Info(static_cast<NewTabPage>(i)).key) s.newTabPage = static_cast<NewTabPage>(i); }
         else if (key == "tab-position") { for (int i = 0; i < TabPositionCount; ++i) if (value == Info(static_cast<TabPosition>(i)).key) s.tabPosition = static_cast<TabPosition>(i); }

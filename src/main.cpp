@@ -2320,6 +2320,7 @@ void SettingChanged(BrowserSettings::Change change){
     // retention are read by the mode when it next needs them (src/annotation-mode.h, Prefs).
     case Change::AnnotationConnectPrompt:Log(BrowserSettings::ConnectPromptActive(settings)?L"SETTINGS annotation connect prompt on (« Plus tard » count reset)":L"SETTINGS annotation connect prompt off");AnnotationSettingsChanged();break;
     case Change::AnnotationRetention:Log(L"SETTINGS annotation retention "+std::to_wstring(settings.annotationRetentionDays)+L" days");AnnotationSettingsChanged();break;
+    case Change::DefaultBrowserLater:Log(L"SETTINGS default browser card: later (30 days)");break;
     case Change::HttpsOnly:case Change::ThirdPartyCookies:ApplySecuritySettings();break;
     case Change::AdBlock:ApplyAdBlock();break;
     case Change::MemorySaver:ApplyMemorySaver();break;
@@ -2352,9 +2353,9 @@ void CreateSettingsPanel(){
     hooks.profilesReadOnly=[]{return profileRegistry.readOnly;};
     hooks.managePasswords=[](bool keyboard){ShowVaultManager(keyboard);};
     if(!privateWindow)hooks.importData=[](bool keyboard){ShowImportDialog(keyboard);};   // a private window imports nothing into its profile
-    // « Navigateur par défaut » (src/default-browser.h): shown when Windows knows Browser (the installed copy registered
-    // it); « Défini » when http and https open with Browser. The row only opens Windows' Default apps page on Browser:
-    // the default is never changed silently (Windows forbids it anyway).
+    // The Réglages card « Voulez-vous avoir Browser comme navigateur par défaut ? » (src/default-browser.h): offered while
+    // Windows knows Browser (the installed copy registered it) and http / https do not open with it. « Browser par défaut »
+    // only opens Windows' Default apps page on Browser: the default is never changed silently (Windows forbids it anyway).
     hooks.defaultBrowser=[]{if(!DefaultBrowser::Registered(HKEY_CURRENT_USER))return -1;return DefaultBrowser::StatusFrom(DefaultBrowser::SystemDefault)==DefaultBrowser::Status::Default?1:0;};
     hooks.setDefaultBrowser=[]{const std::wstring uri=DefaultBrowser::SettingsUri();Log(L"DEFAULT BROWSER Windows' Default apps page asked for");ShellExecuteW(window,L"open",uri.c_str(),nullptr,nullptr,SW_SHOWNORMAL);};
     hooks.vaultInfo=[]{return VaultInfo();};

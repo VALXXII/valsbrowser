@@ -42,6 +42,7 @@
 #include "onboarding-flow.h"
 #include "onboarding-model.h"
 #include "onboarding-shaders.h"
+#include "shader-layer.h"
 #include "onboarding-kit.h"
 #include "onboarding-tuning.h"
 #include "onboarding-debug.h"
@@ -123,25 +124,7 @@ public:
     static constexpr float WelcomeRaise = 35.5f / 721;   // (579 - 508) / 2 over the picture box
 private:
     struct Item { int id; D2D1_RECT_F r; };
-    struct Layer {
-        ID2D1Bitmap* bitmap = nullptr; ID2D1RenderTarget* owner = nullptr; Onboarding::Shaders::Frame frame; bool fresh = false; Motion::Time shaded{}; float key = 0;
-        void Drop() { if (bitmap) { bitmap->Release(); bitmap = nullptr; } owner = nullptr; fresh = false; shaded = {}; }
-        // `part`: the pixels of `frame` that changed (the whole frame when the bitmap is new).
-        bool Upload(ID2D1RenderTarget* t, const RECT* part = nullptr) {
-            if (!t || !frame.width || !frame.height) return false;
-            if (bitmap && owner == t) { const auto size = bitmap->GetPixelSize(); if (size.width != frame.width || size.height != frame.height) Drop(); }
-            if (!bitmap || owner != t) {
-                Drop();
-                const auto props = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96, 96);
-                if (FAILED(t->CreateBitmap(D2D1::SizeU(frame.width, frame.height), frame.bgra.data(), frame.width * 4, props, &bitmap))) { bitmap = nullptr; return false; }
-                owner = t;
-            } else if (part) {
-                const D2D1_RECT_U to{static_cast<UINT32>(part->left), static_cast<UINT32>(part->top), static_cast<UINT32>(part->right), static_cast<UINT32>(part->bottom)};
-                bitmap->CopyFromMemory(&to, frame.bgra.data() + (static_cast<std::size_t>(part->top) * frame.width + part->left) * 4, frame.width * 4);
-            } else bitmap->CopyFromMemory(nullptr, frame.bgra.data(), frame.width * 4);
-            fresh = true; return true;
-        }
-    };
+    using Layer = Onboarding::Shaders::Layer;   // src/shader-layer.h (shared with the Réglages card)
     enum LayerId { HalftoneWelcome = 0, HalftoneOutro = 1, Gem = 2, Grain = 3, LayerCount = 4 };
 
     HINSTANCE instance_ = nullptr; HWND hwnd_ = nullptr, edit_ = nullptr; HFONT editFont_ = nullptr; HBRUSH editBrush_ = nullptr; UINT editDpi_ = 0;
