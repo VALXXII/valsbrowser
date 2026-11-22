@@ -168,6 +168,29 @@ int wmain(int argc, wchar_t** argv) {
             l.window.SetLanguageForTest(I18n::Locale::Fr);
             Expect(I18n::Current() == I18n::Locale::Fr && l.language == I18n::Locale::Fr && l.window.Draft().name == L"Alex", "language picker: back to French, a name the person typed is kept");
         }
+        {
+            // Bookmarks not imported: no bar. A long bar: titles cut, the rest clipped by the window.
+            Fixture b; b.root = root; b.out = out; b.Setup(); using W2 = UI::Window;
+            b.window.ActivateForTest(W2::Primary); b.window.ActivateForTest(W2::Primary);
+            { UI::ImportPick p = b.window.PickForTest(); p.bookmarks = false; b.window.SetPickForTest(p); }
+            b.window.ActivateForTest(W2::Primary);
+            b.window.ImportFinished(b.token, {false, true, L""});
+            Expect(b.window.Flow().screen() == Screen::ImportDone && b.window.BarForTest().empty(), "history only: the mock keeps no bookmarks bar");
+            Expect(b.Shot(L"state-5-history-only"), "render: board 5, history only (no bar)");
+            b.window.SetBarForTest({{L"Un dossier au nom vraiment très long pour la barre", true}, {L"Recettes de cuisine du dimanche et autres", false}, {L"Travail", true}, {L"https://exemple.example/une/adresse", false}, {L"A", false}, {L"Documentation", false}, {L"Encore un", false}, {L"Hors champ", false}});
+            Expect(b.Shot(L"state-5-long-bar"), "render: board 5 with a long bar (cut titles, overflow)");
+            b.window.ActivateForTest(W2::Primary);
+            // A second import from board 3 starts from an empty bar again.
+        }
+        {
+            // The tunable 2 -> 3 timeline belongs to the window; the defaults are the shipped motion.
+            Fixture t; t.root = root; t.out = out; t.Setup();
+            Expect(t.window.TuningForTest() == Onboarding::Tuning::Defaults(), "tuning: a normal run plays the default 2 -> 3 transition");
+            auto v = Onboarding::Tuning::Defaults(); v[Onboarding::Tuning::Duration] = 500; t.window.SetTuningForTest(Onboarding::Tuning::Read(Onboarding::Tuning::Write(v)));
+            Expect(t.window.TuningForTest()[Onboarding::Tuning::Duration] == 500, "tuning: values read back from the panel's file drive the window");
+            t.window.ReplayTransition();
+            Expect(t.window.Flow().screen() == Screen::ImportPick && t.saved == 0, "tuning: « Rejouer 2 → 3 » lands on board 3 without saving anything");
+        }
         Fixture h; h.root = root; h.out = out; h.Setup(false);
         h.window.ActivateForTest(W::Primary); h.window.ActivateForTest(W::Primary); h.window.ActivateForTest(W::SkipStep);
         Expect(h.window.Flow().screen() == Screen::Outro, "no annotation mode in the build: board 6 is skipped");
@@ -181,8 +204,16 @@ int wmain(int argc, wchar_t** argv) {
         f.window.ActivateForTest(W::Primary); Expect(f.Shot(L"2"), "render: board 2");
         f.window.ActivateForTest(W::Primary); Expect(f.Shot(L"3"), "render: board 3");
         f.window.ActivateForTest(W::Primary); f.window.SetProgressForTest(7 / 19.f); Expect(f.Shot(L"4"), "render: board 4 (7 ticks of 19, as the board)");
-        f.window.ImportFinished(f.token, {true, false, L"Google Chrome est ouvert. Fermez-le, puis réessayez."}); Expect(f.Shot(L"5.1"), "render: board 5.1");
-        f.window.ActivateForTest(W::Primary); f.window.ImportFinished(f.token, {true, true, L""}); Expect(f.Shot(L"5"), "render: board 5");
+        Expect(f.window.BarForTest().empty(), "4: while the source is read the mock has no bookmarks bar yet");
+        Expect(f.Shot(L"state-4-reading"), "render: board 4 before anything is imported (no bar)");
+        // The bar of the boards, as an import would hand it over (the boards' sample titles).
+        UI::ImportOutcome failed{true, false, L"Google Chrome est ouvert. Fermez-le, puis réessayez."};
+        failed.bar = {{L"Veille", true}, {L"Paper", false}, {L"ValXXII/Browser", false}, {L"Le Monde", false}, {L"MDN Web Docs", false}, {L"Mobbin", false}, {L"France Culture", false}};
+        f.window.SetBarForTest(failed.bar); Expect(f.Shot(L"4"), "render: board 4 (7 ticks of 19, the imported bar)");
+        f.window.SetBarForTest({});
+        f.window.ImportFinished(f.token, failed); Expect(f.window.BarForTest().size() == 7, "the saved bookmarks' bar items reach the mock"); Expect(f.Shot(L"5.1"), "render: board 5.1");
+        f.window.ActivateForTest(W::Primary); f.window.ImportFinished(f.token, {false, true, L""});
+        Expect(f.window.BarForTest().size() == 7, "a retry of the history keeps the bar the first pass imported"); Expect(f.Shot(L"5"), "render: board 5");
         f.window.ActivateForTest(W::Primary); Expect(f.Shot(L"6"), "render: board 6");
         f.window.ActivateForTest(W::Primary); Expect(f.Shot(L"7"), "render: board 7");
     }

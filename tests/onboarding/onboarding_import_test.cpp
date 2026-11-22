@@ -76,6 +76,23 @@ int wmain(int argc, wchar_t** argv) {
         Expect(!fs::exists(files.history) || Slurp(files.history).find("news.example") == std::string::npos, "no history was written");
         CloseHandle(h);
     }
+    {
+        // The bookmarks bar boards 4 – 5.1 show in the browser mock: the source's own bar, in order.
+        BI::Options o; o.bookmarks = true;
+        const BI::ReadResult read = BI::Read(*source, o);
+        const auto bar = OI::BarItems(read.bookmarks.roots);
+        Expect(bar.size() == 4, "bar items: the four things on the source's bookmarks bar (nothing from « Other bookmarks »)");
+        Expect(bar.size() == 4 && bar[0].title == L"Accueil — été ☀" && !bar[0].folder && bar[1].title == L"Travail 🛠 日本" && bar[1].folder && bar[2].title == L"Perso" && bar[2].folder && bar[3].title == L"Local" && !bar[3].folder, "bar items: titles, folders and links, in the source's order");
+        const auto saved = OI::Commit(files, *source, name, o, read, 1763500000000LL, nullptr, nullptr);
+        Expect(saved.bookmarksSaved && saved.bar.size() == 4 && saved.bar[1].folder, "a saved import hands the bar items to the window");
+        std::vector<BI::Item> roots = read.bookmarks.roots;
+        for (auto& r : roots) if (BI::RoleOf(r.key) == BI::RootRole::Bar) { BI::Item js; js.title = L"Script"; js.url = L"javascript:void(0)"; r.children.insert(r.children.begin(), js); BI::Item bare; bare.url = L"https://bare.example/"; r.children.push_back(bare); }
+        const auto filtered = OI::BarItems(roots);
+        Expect(filtered.size() == 5 && filtered[0].title == L"Accueil — été ☀" && filtered[4].title == L"https://bare.example/", "bar items: an address the browser does not keep is left out; a link without a title shows its address");
+        Expect(OI::BarItems(roots, 2).size() == 2 && OI::BarItems({}).empty(), "bar items: bounded, and empty when the source has no bar");
+        BI::Options history; history.history = true;
+        Expect(OI::Commit(files, *source, name, history, BI::Read(*source, history), 1763500000000LL, nullptr, nullptr).bar.empty(), "no bookmarks asked: no bar items");
+    }
     const std::string afterFirst = Slurp(files.bookmarks);
     {
         const auto retry = run(false, true);   // « Réessayer »: only what is missing

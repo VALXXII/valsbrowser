@@ -45,16 +45,21 @@ inline Reason ShouldShow(const Launch& l) {
     return l.installed && !l.hasRegistry && !l.hasData ? Reason::FirstRun : Reason::None;
 }
 inline constexpr const wchar_t* Switch = L"--onboarding";
+// Review only: the window with its tuning panel for the 2 -> 3 transition (src/onboarding-debug.h).
+inline constexpr const wchar_t* DebugSwitch = L"--onboarding-debug";
 // The exact switch as one argument of the command line (quotes allowed around it).
-inline bool HasSwitch(const wchar_t* args) {
+inline bool HasSwitch(const wchar_t* args, const wchar_t* which = Switch) {
     if (!args) return false;
-    const std::wstring s = args, key = Switch;
+    const std::wstring s = args, key = which;
     for (std::size_t at = s.find(key); at != std::wstring::npos; at = s.find(key, at + 1)) {
         const wchar_t before = at ? s[at - 1] : L' ', after = at + key.size() < s.size() ? s[at + key.size()] : L' ';
         if ((before == L' ' || before == L'"' || before == L'\t') && (after == L' ' || after == L'"' || after == L'\t')) return true;
     }
     return false;
 }
+
+// The window was asked for on the command line (the debug switch alone is enough).
+inline bool Asked(const wchar_t* args) { return HasSwitch(args) || HasSwitch(args, DebugSwitch); }
 
 // ---- the flow ----------------------------------------------------------------------------------------
 class Flow {

@@ -18,7 +18,12 @@ struct BrowserSource {
     bool available = true, file = false;                 // file: « Fichier de favoris HTML… »
 };
 struct ImportPick { int browser = -1, profile = 0; bool bookmarks = true, history = true; };
-struct ImportOutcome { bool bookmarksSaved = false, historySaved = false; std::wstring detail; };   // detail: why the first failure happened
+// One item of the source's bookmarks bar, as the browser's own bar would show it (title, folder or link).
+struct BarItem { std::wstring title; bool folder = false; };
+struct ImportOutcome {
+    bool bookmarksSaved = false, historySaved = false; std::wstring detail;   // detail: why the first failure happened
+    std::vector<BarItem> bar;                                                  // bookmarks saved: what now sits in the bookmarks bar, in order
+};
 
 } // namespace OnboardingUI
 } // namespace NativeChrome

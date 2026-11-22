@@ -72,6 +72,21 @@ inline const BI::Source* Pick(const Listing& l, int browser, int profile) {
     return profile >= 0 && profile < static_cast<int>(p.size()) ? &p[static_cast<std::size_t>(profile)] : nullptr;
 }
 
+// The source's bookmarks bar as it was read: the bar root's own children, in order, the ones the import keeps
+// (folders, and links the browser can open). Boards 4 – 5.1 show them in the browser mock's bar.
+inline std::vector<UI::BarItem> BarItems(const std::vector<BI::Item>& roots, std::size_t limit = 48) {
+    std::vector<UI::BarItem> out;
+    for (const auto& root : roots) {
+        if (BI::RoleOf(root.key) != BI::RootRole::Bar) continue;
+        for (const auto& it : root.children) {
+            if (out.size() >= limit) break;
+            if (!it.folder && !Bookmarks::Admissible(it.url)) continue;
+            out.push_back({it.title.empty() ? it.url : it.title, it.folder});
+        }
+    }
+    return out;
+}
+
 struct Files { std::wstring dataDir, bookmarks, history, map; };   // the profile's folder and its three files
 inline std::wstring CountsLog(const BI::Counts& c) {
     return L"imported=" + std::to_wstring(c.imported) + L" present=" + std::to_wstring(c.present) + L" unsupported=" + std::to_wstring(c.unsupported) + L" full=" + std::to_wstring(c.full) + L" deep=" + std::to_wstring(c.deep) + L" folders=" + std::to_wstring(c.folders);
@@ -94,7 +109,7 @@ inline UI::ImportOutcome Commit(const Files& files, const BI::Source& s, const s
             Bookmarks::Store mine; { ProfileStore::Lock lock(files.dataDir); std::string bytes; ProfileStore::ReadAll(files.bookmarks, bytes); std::istringstream in(bytes); bool damaged = false; mine = Bookmarks::Store::Read(in, &damaged); }
             Bookmarks::Store was = mine;
             const auto c = BI::CommitBookmarks(files.dataDir, files.bookmarks, files.map, was, mine, s, r.roots, now, nullptr, nullptr);
-            if (c.Saved()) { outcome.bookmarksSaved = true; say(L"ONBOARDING bookmarks saved " + CountsLog(c.counts) + L" ignored=" + std::to_wstring(r.ignored)); }   // i18n-exempt: log line (counts only)
+            if (c.Saved()) { outcome.bookmarksSaved = true; outcome.bar = BarItems(r.roots); say(L"ONBOARDING bookmarks saved " + CountsLog(c.counts) + L" ignored=" + std::to_wstring(r.ignored)); }   // i18n-exempt: log line (counts only)
             else { failed(Sentence(c.identity == BI::Identity::Newer ? TR(import_map_newer) : c.identity == BI::Identity::Damaged ? TR(import_map_damaged) : c.identity == BI::Identity::Full ? TR(import_map_full) : TR(import_save_failed))); say(L"ONBOARDING bookmarks save failed result=" + std::to_wstring(static_cast<int>(c.result))); }   // i18n-exempt: log line (counts only)
         }
     }

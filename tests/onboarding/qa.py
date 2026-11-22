@@ -43,6 +43,7 @@ kernel32.CreateFileW.restype = wt.HANDLE
 WM_CLOSE, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_SETTEXT, WM_SYSCOMMAND = 0x10, 0x100, 0x201, 0x202, 0x200, 0x0C, 0x112
 VK_ESCAPE, VK_RETURN, VK_TAB = 0x1B, 0x0D, 0x09
 results = []
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 
 def check(ok, what):
@@ -334,7 +335,7 @@ def scenario_full(app, work, evidence):
         before = cpu_seconds(run.proc.pid); time.sleep(2.0); after = cpu_seconds(run.proc.pid)
         if before is not None and after is not None:
             print('     CPU while the logo loops: %.1f %% of one core' % ((after - before) / 2.0 * 100), flush=True)
-            check((after - before) / 2.0 < .25, 'full: the animated board stays light on the CPU')
+            check((after - before) / 2.0 < .30, 'full: the animated board (dots over the whole window) stays light on the CPU')
         user32.ShowWindow(ui.hwnd, 6); time.sleep(.6)   # SW_MINIMIZE
         before = cpu_seconds(run.proc.pid); time.sleep(1.5); after = cpu_seconds(run.proc.pid)
         if before is not None and after is not None:
@@ -529,7 +530,11 @@ def scenario_firstrun(app, work, evidence):
         check(main is not None and not windows_of(run.proc.pid, 'LisiereOnboarding', visible=False), 'firstrun: BROWSER_NO_ONBOARDING=1 keeps an automated first start out of the window')
         run.close_browser()
         check((root / 'data' / 'profiles.txt').exists(), 'firstrun: installed layout: the data lives in <root>\\data')
-        shutil.rmtree(root / 'data')
+        for attempt in range(40):   # the engine's processes let go of the folder a moment after the window closes
+            try:
+                shutil.rmtree(root / 'data'); break
+            except OSError:
+                time.sleep(.25)
         run.launch(installed / 'browser.exe', [])
         hwnd = wait_window(run.proc.pid, 'LisiereOnboarding')
         check(hwnd is not None, 'firstrun: a fresh install shows the window by itself (no switch)')
@@ -551,18 +556,71 @@ def scenario_firstrun(app, work, evidence):
         run.stop()
 
 
+def scenario_debug(app, work, evidence):
+    """« --onboarding --onboarding-debug »: the tuning panel of the 2 -> 3 transition; values kept between runs."""
+    run = Run(app, work, 'debug', evidence)
+    try:
+        if not run.start('--onboarding-debug'):
+            return
+        panels = windows_of(run.proc.pid, 'LisiereOnboardingDebug')
+        check(len(panels) == 1, 'debug: the tuning panel opens beside the window')
+        if not panels:
+            return
+        panel = Ui(panels[0])
+        panel.grab(evidence / 'debug-panel.png')
+        tuning = run.app / 'onboarding-tuning.txt'
+        panel.click(16 + 268 * (600 - 60) / 1440.0, 44 + 30); time.sleep(.3)             # « Durée du contenu »: 600 ms
+        panel.click(16 + 268 * (900 - 60) / 1940.0, 44 + 4 * 42 + 30); time.sleep(.3)   # « Aperçu : durée du déplacement »: 900 ms
+        text = tuning.read_text(encoding='ascii', errors='replace') if tuning.exists() else ''
+        check('transition23.duration=600' in text and 'transition23.mockDuration=900' in text, 'debug: moving a slider writes the values file at once')
+        panel.click(150, 44 + 10 * 42 + 8 + 16)                                          # « Rejouer 2 → 3 »
+        time.sleep(.3); a = run.shot('replay-before')
+        time.sleep(.55); b = run.shot('replay-during')
+        time.sleep(1.2); c = run.shot('replay-after')
+        moved = differ(a, b, (0, 40, 720, 420)); settled = differ(b, c, (0, 40, 720, 420))
+        if moved is not None and settled is not None:
+            check(moved > 1 and settled > 1, 'debug: « Rejouer 2 → 3 » shows board 2, plays the transition, ends on board 3 (%.1f, %.1f / 255)' % (moved, settled))
+        panel.grab(evidence / 'debug-panel-tuned.png')
+        run.ui.key(VK_ESCAPE)
+        check(run.browser_window() is not None, 'debug: the browser opens after Échap')
+        time.sleep(.8)
+        check('ONBOARDING debug panel' in run.log() and 'ONBOARDING profile saved' not in run.log(), 'debug: log: debug panel; the replay saved nothing')
+        run.close_browser()
+        # Second debug run: the values are back. A normal run: no panel, default motion.
+        run.launch(run.app / 'browser.exe', ['--onboarding-debug'])
+        hwnd = wait_window(run.proc.pid, 'LisiereOnboarding')
+        check(hwnd is not None and len(windows_of(run.proc.pid, 'LisiereOnboardingDebug')) == 1, 'debug: --onboarding-debug alone opens the window and its panel')
+        time.sleep(.6)
+        again = windows_of(run.proc.pid, 'LisiereOnboardingDebug')
+        if again:
+            Ui(again[0]).grab(evidence / 'debug-panel-second-run.png')
+        check('transition23.duration=600' in tuning.read_text(encoding='ascii', errors='replace'), 'debug: the values are kept between debug runs')
+        if hwnd:
+            user32.PostMessageW(hwnd, WM_KEYDOWN, VK_ESCAPE, 0)
+        run.browser_window(); time.sleep(.5); run.close_browser()
+        run.launch(run.app / 'browser.exe', ['--onboarding'])
+        hwnd = wait_window(run.proc.pid, 'LisiereOnboarding')
+        time.sleep(.5)
+        check(hwnd is not None and not windows_of(run.proc.pid, 'LisiereOnboardingDebug', visible=False), 'debug: a normal --onboarding run has no panel')
+        if hwnd:
+            user32.PostMessageW(hwnd, WM_KEYDOWN, VK_ESCAPE, 0)
+        run.browser_window(); time.sleep(.5); run.close_browser()
+    finally:
+        run.stop()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--app', default='build/onboarding-app')
     parser.add_argument('--evidence', default='design/onboarding-evidence/real')
     parser.add_argument('--work', default='build/onboarding-qa')
-    parser.add_argument('--only', default='full,error,skip,english,firstrun')
+    parser.add_argument('--only', default='full,error,skip,english,firstrun,debug')
     args = parser.parse_args()
     app, evidence, work = (ROOT / args.app).resolve(), (ROOT / args.evidence).resolve(), (ROOT / args.work).resolve()
     if not (app / 'browser.exe').exists():
         raise SystemExit('no build at %s (python tools/release/build.py --out %s --channel dev)' % (app, args.app))
     work.mkdir(parents=True, exist_ok=True)
-    scenarios = {'full': scenario_full, 'error': scenario_error, 'skip': scenario_skip, 'english': scenario_english, 'firstrun': scenario_firstrun}
+    scenarios = {'full': scenario_full, 'error': scenario_error, 'skip': scenario_skip, 'english': scenario_english, 'firstrun': scenario_firstrun, 'debug': scenario_debug}
     try:
         for name in args.only.split(','):
             scenarios[name.strip()](app, work, evidence)

@@ -22,7 +22,7 @@
 #include "onboarding-import.h"
 
 namespace OB = NativeChrome::OnboardingUI; namespace OI = OnboardingImport;
-bool onboardingAnnotate = false;
+bool onboardingAnnotate = false, onboardingDebug = false;   // debug: « --onboarding-debug », the 2 → 3 tuning panel (review only)
 constexpr UINT_PTR OnboardingAnnotateTimerId = 0x4F42;
 struct OnboardingJob { unsigned token = 0; BI::Source source; BI::Options options; BI::ReadResult result; std::wstring name; };
 OB::Window* onboardingUi = nullptr; HWND onboardingWindow = nullptr;
@@ -74,10 +74,11 @@ void OnboardingImportRead(WPARAM token) {
 // Read before SelectProfile (which creates the registry): is this a first run, or was the window asked for?
 Onboarding::Reason OnboardingReason(const wchar_t* args) {
     Onboarding::Launch l; namespace fs = std::filesystem; std::error_code ec;
-    l.requested = Onboarding::HasSwitch(args); l.smoke = smoke; l.privateWindow = privateWindow; l.motionLab = motionLabMode;
+    l.requested = Onboarding::Asked(args); l.smoke = smoke; l.privateWindow = privateWindow; l.motionLab = motionLabMode;
     l.installed = dataDir != base;   // installed layout: the data lives in <root>\data, not beside the executable
     l.hasRegistry = fs::exists(fs::path(dataDir) / L"profiles.txt", ec);
     l.hasData = fs::exists(fs::path(settingsFile), ec) || fs::exists(fs::path(sessionFile), ec) || fs::exists(fs::path(profileDir), ec) || fs::exists(fs::path(dataDir) / L"profiles", ec);
+    onboardingDebug = Onboarding::HasSwitch(args, Onboarding::DebugSwitch);
     wchar_t off[8]{}; l.optOut = GetEnvironmentVariableW(L"BROWSER_NO_ONBOARDING", off, 8) > 0 && off[0] != L'0';
     return Onboarding::ShouldShow(l);
 }
@@ -102,6 +103,7 @@ void RunOnboarding(Onboarding::Reason reason) {
     o.hooks.message = [](WPARAM token, LPARAM) { OnboardingImportRead(token); };
     o.hooks.language = [](I18n::Locale l) { if (!UiLanguage::Save(profileRoot, l)) Log(L"ONBOARDING language not saved"); else Log(std::wstring(L"ONBOARDING language ") + (l == I18n::Locale::En ? L"en" : L"fr")); };
     o.hooks.created = [](HWND h) { onboardingWindow = h; };   // where the worker posts its answer
+    if (onboardingDebug) { o.debug = true; o.tuningFile = profileRoot + L"\\onboarding-tuning.txt"; Log(L"ONBOARDING debug panel (2 -> 3 transition)"); }
     OB::Window ui; onboardingUi = &ui;
     const OB::Result result = ui.Run(instance, base, std::move(o));
     onboardingUi = nullptr; onboardingWindow = nullptr;

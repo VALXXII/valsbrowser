@@ -54,8 +54,13 @@ inline void SetColor(float out[4], unsigned rgb, float alpha = 1) {
 // HalftoneDots 1DNQ-0 / 1CEY-0: contrast .58, inverted, grid square, radius 1.19, size .67, scale .46,
 // grainSize .39, type gooey, fit cover, grainOverlay .17, grainMixer .12, front #FFFFFF, back transparent.
 // `drift`: 0..1, one full turn of our loop (0 = the Paper frame).
-inline Uniforms Halftone(float drift = 0) {
-    Uniforms u; u.fit = 2; u.scale = .46f; u.imageAspect = 1;
+// `wholeNode` (ours, asked by the designer): Paper's shader only draws dots inside the picture's box, which shows
+// as a square of faint dots around the logo; with it the lattice covers the whole node — outside the box the
+// picture's own edge colour is read (its dark background), so the faint dots simply go on to the window's edges.
+// `raise`: the picture's centre moved up by this share of the picture box (the logo stays where board 1 has it
+// when the node is the whole window).
+inline Uniforms Halftone(float drift = 0, bool wholeNode = false, float raise = 0) {
+    Uniforms u; u.fit = 2; u.scale = .46f; u.imageAspect = 1; u.offsetY = -raise; u.p2[2] = wholeNode ? 1.f : 0.f;
     SetColor(u.colorFront, 0xFFFFFF, 1); SetColor(u.colorBack, 0x000000, 0);
     u.p0[0] = 1.19f; u.p0[1] = .58f; u.p0[2] = .67f; u.p0[3] = .12f;     // radius, contrast, size, grainMixer
     u.p1[0] = .17f; u.p1[1] = .39f; u.p1[2] = 0; u.p1[3] = 1;            // grainOverlay, grainSize, grid (square), type (gooey)
@@ -228,7 +233,7 @@ float getLumBall(float2 p, float2 pad, float2 inCellOffset, float contrast, floa
   float2 uv_i = floor(p); float2 uv_f = frac(p);
   // `u_drift` (ours): the lattice slides, the picture it samples stays where it is.
   float2 samplingUV = (uv_i + .5 - inCellOffset - u_drift) * pad + float2(.5, .5);
-  float outOfFrame = getUvFrame(samplingUV, pad * stepSize);
+  float outOfFrame = p2.z > .5 ? 1. : getUvFrame(samplingUV, pad * stepSize);   // p2.z (ours): dots over the whole node
   float lum = getLumAtPx(samplingUV, contrast);
   return getGooeyBall(uv_f, lum, baseR) * outOfFrame;
 }

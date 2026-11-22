@@ -43,6 +43,8 @@
 #include "onboarding-model.h"
 #include "onboarding-shaders.h"
 #include "onboarding-kit.h"
+#include "onboarding-tuning.h"
+#include "onboarding-debug.h"
 
 namespace NativeChrome {
 namespace OnboardingUI {
@@ -83,6 +85,8 @@ struct Hooks {
 struct Options {
     Profiles::Profile seed;                       // the draft the profile board starts from
     bool annotation = true, reduced = false;
+    bool debug = false;                           // « --onboarding-debug »: the tuning panel of the 2 → 3 transition
+    std::wstring tuningFile;                      // debug only: where the panel keeps its values
     Hooks hooks;
 };
 struct Result { Onboarding::Ending ending = Onboarding::Ending::Skipped; bool annotate = false, profileSaved = false; };
@@ -108,6 +112,7 @@ public:
                     Name = 20, Hue = 21, Intensity = 22, Icons = 23, Browser = 30, Profile = 31, CheckBookmarks = 32, CheckHistory = 33, IconBase = 100 };
     static constexpr UINT FrameMessage = WM_APP + 0x4F0, HostMessage = WM_APP + 0x4F1;
     static constexpr float TextGamma = 2.2f, TextContrast = .5f;
+    static constexpr float WelcomeRaise = 35.5f / 721;   // (579 - 508) / 2 over the picture box
 private:
     struct Item { int id; D2D1_RECT_F r; };
     struct Layer {
@@ -144,6 +149,8 @@ private:
     Screen shown_ = Screen::Welcome, from_ = Screen::Welcome; bool changing_ = false, entering_ = false, leaving_ = false;
     unsigned importToken_ = 0; bool importAnswered_ = false; float importAtAnswer_ = 0, progressForTest_ = -1; ImportOutcome pending_;
     double secondsForTest_ = -1;
+    Onboarding::Tuning::Values tuning_ = Onboarding::Tuning::Defaults(); OnboardingDebug::Panel panel_;
+    std::vector<BarItem> bar_; Motion::Time barAt_{};   // the imported bookmarks bar shown in the mock (boards 4 – 5.1)
 
     // ---- small helpers ----
     float Scale() const { return dpi_ / 96.f; }
@@ -289,7 +296,15 @@ private:
     bool Visible() const { return hwnd_ && IsWindowVisible(hwnd_) && !IsIconic(hwnd_); }
     bool ShaderOn(Screen s) const { return s == Screen::Welcome || s == Screen::Outro || s == Screen::Annotation || s == Screen::ImportRunning || s == Screen::ImportDone || s == Screen::ImportError; }
     bool ShadersLoop() const { return !offscreen_ && Onboarding::ShaderLoops(options_.reduced, gpu_.Animated(), Visible(), hwnd_ && IsIconic(hwnd_)) && (ShaderOn(shown_) || (changing_ && ShaderOn(from_))); }
-    float Change(Motion::Time now) const { return changing_ ? Motion::Clamp(Ms(changed_, now) / Onboarding::TransitionMs(options_.reduced)) : 1.f; }
+    // Board 2 <-> board 3: the tunable timeline (src/onboarding-tuning.h). Reduced motion keeps the plain fade.
+    bool Tuned() const { return changing_ && !options_.reduced && ((from_ == Screen::Profile && shown_ == Screen::ImportPick) || (from_ == Screen::ImportPick && shown_ == Screen::Profile)); }
+    float Change(Motion::Time now) const {
+        if (!changing_) return 1.f;
+        return Motion::Clamp(Ms(changed_, now) / (Tuned() ? Onboarding::Tuning::TotalMs(tuning_) : static_cast<float>(Onboarding::TransitionMs(options_.reduced))));
+    }
+    float BarShown(Motion::Time now) const { return bar_.empty() ? 0.f : offscreen_ || options_.reduced ? 1.f : Motion::Clamp(Ms(barAt_, now) / 300.f); }
+    float BarItemShown(std::size_t i, Motion::Time now) const { return offscreen_ || options_.reduced ? 1.f : Motion::Clamp((Ms(barAt_, now) - 120 - 40.f * i) / 220.f); }
+    bool BarArriving() const { return !bar_.empty() && !offscreen_ && Ms(barAt_, Motion::Now()) < 400 + 40.f * bar_.size(); }
     double ShaderSeconds(Motion::Time now) const {
         if (secondsForTest_ >= 0) return secondsForTest_;
         if (offscreen_ || options_.reduced || !gpu_.Animated()) return 0;
@@ -305,7 +320,7 @@ private:
     bool Animating() const {
         if (changing_ || entering_ || leaving_) return true;
         if (std::fabs(iconScroll_ - iconScrollTarget_) > .01f) return true;
-        if (flow_.screen() == Screen::ImportRunning) return true;
+        if (flow_.screen() == Screen::ImportRunning || BarArriving()) return true;
         for (const auto& g : glow_) { const float want = g.first == hover_ ? 1.f : 0.f; if (std::fabs(g.second - want) > .001f) return true; }
         return false;
     }
@@ -353,6 +368,7 @@ private:
         SyncImport();
         const unsigned token = retry ? flow_.Retry() : flow_.BeginImport(); if (!token) return;
         importToken_ = token; importStarted_ = Motion::Now(); importAnswered_ = false; pending_ = {};
+        if (!retry) bar_.clear();
         const bool started = options_.hooks.startImport && options_.hooks.startImport(token, pick_, flow_.askedBookmarks(), flow_.askedHistory());
         if (!started) { importToken_ = 0; flow_.CancelImport(); }
     }
@@ -559,8 +575,10 @@ private:
         float w = 721, h = 508; S::Kind kind = S::Kind::Halftone; S::Uniforms u;
         const double seconds = ShaderSeconds(now);
         switch (id) {
-        case HalftoneWelcome: u = S::Halftone(static_cast<float>(Onboarding::LoopPhase(seconds, Onboarding::HalftoneLoopSeconds))); break;
-        case HalftoneOutro: h = 579; u = S::Halftone(static_cast<float>(Onboarding::LoopPhase(seconds, Onboarding::HalftoneLoopSeconds))); break;
+        // The dot field covers the whole window on both boards (the designer's request: no square of dots around
+        // the logo). Board 1's logo stays where Paper has it: the centre of a 508-high node, 35.5 above the window's.
+        case HalftoneWelcome: h = 579; u = S::Halftone(static_cast<float>(Onboarding::LoopPhase(seconds, Onboarding::HalftoneLoopSeconds)), true, WelcomeRaise); break;
+        case HalftoneOutro: h = 579; u = S::Halftone(static_cast<float>(Onboarding::LoopPhase(seconds, Onboarding::HalftoneLoopSeconds)), true, 0); break;
         case Gem: w = Layout::gemW; h = Layout::gemH; kind = S::Kind::GemSmoke; u = S::GemSmoke(S::GemStillSeconds + static_cast<float>(std::fmod(seconds, S::GemPeriod))); break;
         default: {
             w = 725; h = 407; kind = S::Kind::GrainGradient; u = S::GrainGradient(S::GrainStillSeconds + static_cast<float>(std::fmod(seconds, S::GrainPeriod)));
@@ -572,11 +590,7 @@ private:
         const unsigned ow = static_cast<unsigned>(std::lround(w * scale)), oh = static_cast<unsigned>(std::lround(h * scale));
         const bool current = layer.bitmap && layer.owner == t && layer.frame.width == ow && layer.frame.height == oh;
         if (current && (!loops || !Due(id, now))) return;
-        // The halftone's loop only moves the dots of the logo (the picture box, 0.46 of the node's width, plus one
-        // cell): the grain around it is the same every frame, so only that square is drawn and read back.
-        RECT part{0, 0, static_cast<LONG>(ow), static_cast<LONG>(oh)}; const bool halftone = id == HalftoneWelcome || id == HalftoneOutro;
-        if (halftone && current) { const float half = (721 * .46f + 28) / 2 * scale, cx = ow / 2.f, cy = oh / 2.f; part = {static_cast<LONG>(std::floor(cx - half)), static_cast<LONG>(std::floor(cy - half)), static_cast<LONG>(std::ceil(cx + half)), static_cast<LONG>(std::ceil(cy + half))}; }
-        if (gpu_.Render(kind, u, w, h, ow, oh, layer.frame, &part)) { layer.Upload(t, current ? &part : nullptr); layer.shaded = now; } else if (!current) layer.Drop();
+        if (gpu_.Render(kind, u, w, h, ow, oh, layer.frame)) { layer.Upload(t); layer.shaded = now; } else if (!current) layer.Drop();   // the whole field slides: every pixel is new
     }
     // Loop pacing: frames come at the display's rate (src/frame-clock.h); a layer is drawn again on the first
     // tick after its own period. The halftone lattice travels about 1.3 px per second and the gradient's wave
@@ -639,15 +653,38 @@ private:
             const float s = w / Layout::mockWideUnits, a = alpha * bookmarks;
             if (auto* b = c_->AssetBitmap(L"onboarding\\mock-bookmarks.png")) K::DrawBitmap(t, b, Box(x, y, Layout::mockWideShown * s, Layout::mockWideH * s), a);
             DrawChip({x + 8.25f * s, y + 9 * s, x + 45.75f * s, y + 46.25f * s}, a);
+            DrawBar(x, y, s, a);
+        }
+    }
+    // The mock's bookmarks bar, with what was really imported: the picture's sample items are covered and the
+    // source's bar items are laid out as the browser's own bar does it (src/bookmarks-bar.h: padding 8, icon 16,
+    // gap 6, folders with a 12 caret, 2 between items, an item never wider than 160, the title cut with « … »),
+    // at the mock's scale (its layout is 1180 wide, shown 1383 wide). Links carry the globe: the import brings no
+    // site icon. What does not fit is cut by the window's edge, where the real bar would put its « » » button.
+    void DrawBar(float x, float y, float s, float alpha) {
+        if (alpha <= 0) return;
+        const auto now = Motion::Now(); const float k = s * Layout::mockWideUnits / Layout::mockUnits;
+        K::Fill(*c_, {x + 2 * s, y + 100 * s, x + Layout::mockWideShown * s, y + 134 * s}, 0, K::Col(K::Token::canvas, alpha));
+        const K::Font label{14 * k, 20 * k, 500, -.28f * k}; const float cy = y + 117.25f * s; float left = x + 19.5f * s - 8 * k;
+        for (std::size_t i = 0; i < bar_.size() && left < Layout::width; ++i) {
+            const BarItem& item = bar_[i]; const float a = alpha * BarItemShown(i, now);
+            const float fixed = 8 * k + 16 * k + 6 * k + (item.folder ? 18 * k : 0) + 8 * k, title = std::min(K::Width(*c_, item.title, label), 160 * k - fixed);
+            if (a > 0) {
+                const D2D1_RECT_F icon = Box(left + 8 * k, cy - 8 * k, 16 * k, 16 * k);
+                c_->Icon(item.folder ? L"folder-closed" : L"favicon", icon, 16 * k, .6f * a);
+                K::Text(*c_, item.title, {left + 30 * k, cy - 10 * k, left + 30 * k + title + 1, cy + 10 * k}, label, K::Col(0x979797, a), DWRITE_TEXT_ALIGNMENT_LEADING, false, true);
+                if (item.folder) glyphs_.Stroke(*c_, K::Path::chevron, Box(left + 30 * k + title + 6 * k, cy - 6 * k, 12 * k, 12 * k), 24, 2, K::Col(0x979797, .7f * a));
+            }
+            left += fixed + title + 2 * k;
         }
     }
     void DrawBack(const Backdrop& b, float alpha) {
         if (alpha <= 0) return;
         auto* t = c_->RenderTarget();
         if (b.kind == 1 || b.kind == 2) {
-            const LayerId id = b.kind == 1 ? HalftoneWelcome : HalftoneOutro; const float h = b.kind == 1 ? 508.f : 579.f;
-            if (layers_[id].bitmap && layers_[id].owner == t) DrawLayer(id, Box(-1, 1, 721, h), alpha);
-            else if (auto* logo = c_->AssetBitmap(L"onboarding\\halftone-logo.png")) { const float side = 721 * .46f; K::DrawBitmap(t, logo, Box(-1 + (721 - side) / 2, 1 + (h - side) / 2, side, side), alpha); }
+            const LayerId id = b.kind == 1 ? HalftoneWelcome : HalftoneOutro; const float centre = b.kind == 1 ? 255.f : 290.5f;
+            if (layers_[id].bitmap && layers_[id].owner == t) DrawLayer(id, Box(-1, 1, 721, 579), alpha);
+            else if (auto* logo = c_->AssetBitmap(L"onboarding\\halftone-logo.png")) { const float side = 721 * .46f; K::DrawBitmap(t, logo, Box(-1 + (721 - side) / 2, centre - side / 2, side, side), alpha); }
         } else if (b.kind == 3) DrawMock(b.x, b.y, b.w, b.bookmarks, alpha);
         else if (b.kind == 4) {
             const D2D1_RECT_F box = Box(-2, -2, 725, 407);
@@ -886,7 +923,9 @@ private:
     void Draw(Motion::Time now) {
         auto* t = c_->RenderTarget(); if (!t) return;
         TextLook(t);
-        const Screen to = shown_, from = changing_ ? from_ : shown_; const float raw = Change(now), u = EaseOut(raw);
+        const Screen to = shown_, from = changing_ ? from_ : shown_; const float raw = Change(now); float u = EaseOut(raw);
+        const bool tuned = Tuned(); Onboarding::Tuning::Frame tf;
+        if (tuned) { tf = Onboarding::Tuning::At(tuning_, Ms(changed_, now)); u = tf.mock; }
         // Shader layers of the boards on screen.
         const bool loops = ShadersLoop();
         for (Screen s : {from, to}) {
@@ -897,11 +936,13 @@ private:
         }
         const float toneFrom = Annotation(from) ? 1.f : 0.f, toneTo = Annotation(to) ? 1.f : 0.f, tone = toneFrom + (toneTo - toneFrom) * u;
         t->Clear(K::Col(K::Lerp(K::FromHex(K::Token::canvas), K::FromHex(0x000000), tone)));
-        const Backdrop a = BackOf(from), b = BackOf(to);
+        Backdrop a = BackOf(from), b = BackOf(to);
+        // The bookmarks bar only exists once bookmarks were imported: until then the mock has none.
+        for (Backdrop* k : {&a, &b}) if (k->kind == 3 && k->bookmarks > 0) k->bookmarks = BarShown(now);
         if (a.kind == 3 && b.kind == 3) {
             // One mock: it travels between its two framings and gains the bookmarks bar.
             const float m = Onboarding::Moves(options_.reduced) ? u : (raw < .4f ? 0.f : 1.f);
-            DrawMock(a.x + (b.x - a.x) * m, a.y + (b.y - a.y) * m, a.w + (b.w - a.w) * m, a.bookmarks + (b.bookmarks - a.bookmarks) * u, 1);
+            DrawMock(a.x + (b.x - a.x) * m, a.y + (b.y - a.y) * m, a.w + (b.w - a.w) * m, a.bookmarks + (b.bookmarks - a.bookmarks) * (from == to ? 1.f : u), 1 - tf.dim);
         } else if (from == to) DrawBack(b, 1);
         else { DrawBack(a, 1 - u); DrawBack(b, u); }
         const Veil va = VeilOf(from), vb = VeilOf(to);
@@ -911,11 +952,14 @@ private:
             K::Gradient(*c_, {-2, top, 727, 579}, 0, {0, top}, {0, 579}, {{va.from + (vb.from - va.from) * u, color, 0}, {va.to + (vb.to - va.to) * u, color, 1}}, alpha);
             if (tone > 0) K::Fill(*c_, {0, 578.5f, 720, 580}, 0, K::Col(color, tone));
         }
-        const bool swapped = !changing_ || raw >= .4f; const Screen content = swapped ? to : from;
-        const float contentAlpha = !changing_ ? 1.f : raw < .4f ? 1 - raw / .4f : (raw - .4f) / .6f;
+        const bool swapped = !changing_ || (tuned ? tf.swapped : raw >= .4f); const Screen content = swapped ? to : from;
+        const float contentAlpha = !changing_ ? 1.f : tuned ? (swapped ? tf.newAlpha : tf.oldAlpha) : raw < .4f ? 1 - raw / .4f : (raw - .4f) / .6f;
         const float headerAlpha = (from == Screen::Outro ? 0.f : 1.f) + ((to == Screen::Outro ? 0.f : 1.f) - (from == Screen::Outro ? 0.f : 1.f)) * u;
         DrawHeader(content == Screen::Outro ? from : content, tone, headerAlpha);
-        DrawContent(content, now, contentAlpha);
+        if (tuned && tf.rise > 0) {   // the new content climbs into place; the header stays put
+            D2D1_MATRIX_3X2_F base; t->GetTransform(&base); t->SetTransform(D2D1::Matrix3x2F::Translation(0, tf.rise) * base);
+            DrawContent(content, now, contentAlpha); t->SetTransform(base);
+        } else DrawContent(content, now, contentAlpha);
         const float hairline = 1 - tone;
         if (hairline > 0) PopupKit::Outline(*c_, Layout::width, Layout::height, Layout::radius, PopupKit::White((0x1A / 255.f) * hairline));
     }
@@ -1086,6 +1130,7 @@ public:
     void ImportFinished(unsigned token, const ImportOutcome& outcome) {
         if (!token || token != importToken_ || flow_.screen() != Screen::ImportRunning || importAnswered_) return;
         pending_ = outcome; importAtAnswer_ = Progress(Motion::Now()); importAnswered_ = true; importAnsweredAt_ = Motion::Now();
+        if (outcome.bookmarksSaved) { bar_ = outcome.bar; barAt_ = importAnsweredAt_; }   // the bar fills as the bookmarks land
         if (offscreen_) ApplyImport(); else RequestFrame();
     }
     // Shows the window and runs until the flow ends. `root`: the folder that holds assets\.
@@ -1112,6 +1157,10 @@ public:
         editBrush_ = CreateSolidBrush(RGB(0x29, 0x29, 0x29));
         menu_.Init(instance, hwnd_, root_);
         clockOk_ = clock_.Start(hwnd_, FrameMessage);
+        if (options_.debug) {
+            if (!options_.tuningFile.empty()) tuning_ = Onboarding::Tuning::Read(OnboardingDebug::Load(options_.tuningFile));
+            panel_.Open(instance, hwnd_, root_, options_.tuningFile, &tuning_, [this] { Invalidate(); }, [this] { ReplayTransition(); });
+        }
         shown_ = from_ = Screen::Welcome; RevealIcon(false); Arrange(); AttachUia();
         opened_ = Motion::Now(); entering_ = true; done_ = false;
         ShowWindow(hwnd_, SW_SHOW); SetForegroundWindow(hwnd_); SetFocus(hwnd_); RequestFrame();
@@ -1120,7 +1169,7 @@ public:
         if (!done_) { PostQuitMessage(static_cast<int>(msg.wParam)); if (flow_.screen() != Screen::Closed) flow_.Skip(); }   // WM_QUIT while the window was open
         result.ending = flow_.ending() == Onboarding::Ending::None ? Onboarding::Ending::Skipped : flow_.ending();
         result.annotate = result.ending == Onboarding::Ending::Completed && flow_.annotate(); result.profileSaved = flow_.profileApplied();
-        clock_.Stop(); KillTimer(hwnd_, 1); uia_.Detach(); menu_.Dispose(); DropLayers(); gpu_.Dispose(); glyphs_.Clear();
+        panel_.Close(); clock_.Stop(); KillTimer(hwnd_, 1); uia_.Detach(); menu_.Dispose(); DropLayers(); gpu_.Dispose(); glyphs_.Clear();
         if (edit_) { RemoveWindowSubclass(edit_, EditProc, 0); DestroyWindow(edit_); edit_ = nullptr; }
         if (editFont_) { DeleteObject(editFont_); editFont_ = nullptr; }
         if (editBrush_) { DeleteObject(editBrush_); editBrush_ = nullptr; }
@@ -1128,6 +1177,20 @@ public:
         return result;
     }
 
+    // Debug panel « Rejouer 2 → 3 »: board 2 is shown again for a moment, then the transition plays. The flow is
+    // taken to board 3 if it was before it (nothing is saved: review only).
+    void ReplayTransition() {
+        if (flow_.screen() == Screen::Welcome) flow_.Start();
+        if (flow_.screen() == Screen::Profile) flow_.ProfileAccepted();
+        if (flow_.screen() != Screen::ImportPick) return;
+        if (!sourcesLoaded_) LoadSources();
+        ShowEdit(false); focus_ = None; from_ = Screen::Profile; shown_ = Screen::ImportPick; changing_ = !offscreen_;
+        changed_ = Motion::Now() + std::chrono::milliseconds(450); Arrange(); Invalidate(); RequestFrame();
+    }
+    const Onboarding::Tuning::Values& TuningForTest() const { return tuning_; }
+    void SetTuningForTest(const Onboarding::Tuning::Values& v) { tuning_ = v; }
+    void SetBarForTest(std::vector<BarItem> items) { bar_ = std::move(items); barAt_ = Motion::Now(); }
+    const std::vector<BarItem>& BarForTest() const { return bar_; }
     // ---- tests: the same drawing code into an offscreen target, and the events without a window ----
     void SetupForTest(const std::wstring& root, Options options) {
         root_ = root; options_ = std::move(options); draft_ = options_.seed; offscreen_ = true; flow_ = Onboarding::Flow(Onboarding::Flow::Config{options_.annotation});

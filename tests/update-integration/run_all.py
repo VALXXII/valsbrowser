@@ -135,6 +135,8 @@ def existing_fixtures() -> None:
     # boards drawn off screen by the production window at 96 and 120 DPI (shaders on Direct3D, WARP without a GPU),
     # with the Paper geometry, keyboard order, events and both languages. Real window: tests/onboarding/qa.py.
     fixture('onboarding_flow_test', [*STRICT, 'tests/onboarding/onboarding_flow_test.cpp'])
+    # The 2 -> 3 transition as numbers: defaults, text round trip of the debug panel's file, bounds, timeline
+    fixture('onboarding_tuning_test', [*STRICT, 'tests/onboarding/onboarding_tuning_test.cpp'])
     # Its import: board 3's lists and the commit into a profile folder, on synthetic sources only (*.example)
     onboarding_sources, onboarding_work = OUT / 'onboarding-import-sources', OUT / 'onboarding-import-work'
     for folder in (onboarding_sources, onboarding_work):
