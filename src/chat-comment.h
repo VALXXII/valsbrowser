@@ -158,6 +158,9 @@ void SendLayout(bool openNow) {
 struct EarlyOpen { bool on = false; std::int64_t seq = -1; std::string conv; double at = 0; double clickLag = -1; } early;
 struct UiWatch { std::atomic<HWND> to{nullptr}; std::atomic<bool> started{false}; double worst = 0, since = 0; } uiWatch;
 const char* uiLast = "-";
+// opening time: a part of the opening that holds the UI thread more than 8 ms is logged (by name)
+struct UiSlow { const char* what; double t0; UiSlow(const char* w) : what(w), t0(Ann::NowMs()) { uiLast = w; }
+    ~UiSlow() { const double d = Ann::NowMs() - t0; if (d > 8 && bubble.open) Diag(L"UI thread: " + W(std::string(what)) + L" took " + Ann::Ms(d) + L" ms"); } };   // i18n-exempt: log detail
 void UiWatchStart() {
     if (uiWatch.started.exchange(true)) return;
     std::thread([] {
@@ -329,7 +332,7 @@ double CompositionPeriodMs() {
     return double(ti.qpcRefreshPeriod) * 1000.0 / double(fq.QuadPart);
 }
 int FollowFrames() {
-    static const int n = [] { wchar_t v[8] = L""; return GetEnvironmentVariableW(L"BROWSER_CHAT_FOLLOW_FRAMES", v, 8) ? std::clamp(_wtoi(v), 0, 3) : 1; }();
+    static const int n = [] { wchar_t v[8] = L""; return GetEnvironmentVariableW(L"BROWSER_CHAT_FOLLOW_FRAMES", v, 8) ? std::clamp(_wtoi(v), 0, 3) : 0; }();   // R39 (real window 0.3.547, comment-v5): at once — wheel 7-10 px like 04514f5, bar 1/30; waiting a composition (1) was one image late, the prediction worse
     return n;
 }
 void FollowLater() {
@@ -475,7 +478,7 @@ LRESULT CALLBACK BubbleProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         wchar_t cls[64] = L""; GetClassNameW(fg, cls, 64);
         BubbleAway((std::wstring(cls) + L", pid " + std::to_wstring(pid)).c_str()); return 0;
     }
-    if (m == WM_APP + 2) { if (bubble.open && !bubble.away) { SetForegroundWindow(h); view.Focus(); } return 0; }   // the keyboard to the bubble, once the selection is over
+    if (m == WM_APP + 2) { if (bubble.open && !bubble.away) { UiSlow slow("keyboard to the bubble"); SetForegroundWindow(h); view.Focus(); } return 0; }   // the keyboard to the bubble, once the selection is over
     if (m == WM_APP + 3) { FinishOpening(); return 0; }   // R18: after the opening layout
     if (m == WM_APP + 4) {   // R39: the page's image is on screen — the window takes the LATEST position known now (04514f5, green)
         follower.pending = false; const unsigned gen = unsigned(w); bool any = false; FollowPos at; int taken = 0;
@@ -588,6 +591,7 @@ void OpenBubble(const std::string& conv, const RECT* element, const std::string&
     }
     if (!again) { bubble.side = ChatBubble::Side::Right; bubble.h = 0; bubble.over = bubble.inset = ChatBubble::Edges{}; bubble.sizeW = bubble.sizeH = -1; bubble.anchor = ChatBubble::Anchor{}; bubble.endAsked = false; bubble.roomCss = 0; bubble.resized = false; bubble.baseHCss = 0; bubble.resizeMax = ChatBubble::ResizeMax{}; }
     stats = OpenStats{}; stats.requestedAt = Ann::NowMs();
+    UiSlow slowOpen("open");
     if (!view.Usable(environment.p)) { view.Destroy(); panelReady = false; if (!view.Create(environment.p, bubble.hwnd, {0, 0, 10, 10})) { bubble.open = false; Diag(L"bubble WebView creation refused"); return; } }
     else view.Reparent(bubble.hwnd, {0, 0, 10, 10});
     if (!again) { bubble.win = RECT{}; bubble.region = RECT{}; }
@@ -625,12 +629,15 @@ void CheckBubbleShown() {
 }
 void FinishOpening() {
     if (!bubble.open) return;
-    CheckBubbleShown();
-    if (panelReady) view.Focus();
-    ArmAgentIdle(); Ann::LauncherSync(); SyncChromeBits();
-    FollowBubbleElement(bubble.followCurrent);   // the page follows the element (its moves become `anchor` messages)
-    SyncMarks();
-    MaybeStartSession();   // R13: its agent starts now (model list, model · effort), as the panel's does
+    double t0 = Ann::NowMs(); std::wstring slow;   // opening time: what holds the UI thread here (logged over 8 ms)
+    auto step = [&](const char* what) { const double t = Ann::NowMs(); if (t - t0 > 8) slow += L" " + W(std::string(what)) + L" " + Ann::Ms(t - t0) + L" ms"; t0 = t; uiLast = what; };   // i18n-exempt: log detail
+    CheckBubbleShown(); step("check shown");
+    if (panelReady && !bubble.waitingAck) view.Focus(); step("focus");   // opening time (32 ms in a real window): a bubble still waiting gets the keyboard at its reveal (WM_APP + 2)
+    ArmAgentIdle(); Ann::LauncherSync(); SyncChromeBits(); step("chrome bits");
+    FollowBubbleElement(bubble.followCurrent); step("follow");   // the page follows the element (its moves become `anchor` messages)
+    SyncMarks(); step("marks");
+    MaybeStartSession(); step("agent start");   // R13: its agent starts now (model list, model · effort), as the panel's does
+    if (!slow.empty()) Diag(L"opening: slow steps on the UI thread:" + slow);   // i18n-exempt: log detail
 }
 void FollowBubbleElement(bool current) {
     auto t = ChatTab(); if (!t) t = Active(); if (!t || !bubble.open) return;
@@ -646,10 +653,11 @@ void FollowBubbleElement(bool current) {
 // R18: the window appears once, already at its place and size (the page plays its entrance slide).
 void RevealBubble(const wchar_t* why) {
     if (!bubble.open || !bubble.waitingAck || !bubble.hwnd) return;
+    UiSlow slow("reveal");
     bubble.waitingAck = false; KillTimer(bubble.hwnd, 0xB2);
     if (bubble.away) { Diag(L"bubble ready at its place, hidden while another application is in front"); return; }   // BubbleBack shows it
     const RECT rg = bubble.region; SetWindowRgn(bubble.hwnd, CreateRectRgn(rg.left, rg.top, rg.right, rg.bottom), TRUE);   // the surface appears, at its place
-    ShowWindow(bubble.hwnd, SW_SHOWNA); SetForegroundWindow(bubble.hwnd);
+    ShowWindow(bubble.hwnd, SW_SHOWNA);   // opening time (24 ms in a real window): the foreground is taken right after, with the keyboard (WM_APP + 2)
     PostMessageW(bubble.hwnd, WM_APP + 2, 0, 0);   // the caret to the bubble
     Diag(std::wstring(L"bubble shown at its place ") + why + L" after " + Ann::Ms(Ann::NowMs() - bubble.openedAt) + L" ms");
     if (early.conv == bubble.conv && early.at > 0 && bubble.openedAt - early.at < 2000)   // opening time, by phase (section.hero 150 to 167 ms for 150)
@@ -701,7 +709,7 @@ void RevealCard() {
 }
 void OnBubbleSize(int wCss, int hCss, ChatBubble::Edges over, bool resized) {
     if (!bubble.open) return;
-    uiLast = "bubble.size";
+    UiSlow slow("bubble.size");
     if (!resized && bubble.resized) Diag(L"the bubble is back to its size (diff closed)");
     bubble.resized = resized;   // R40
     over = ChatBubble::Bounded(over);
@@ -999,6 +1007,7 @@ bool OpenEarly(const std::shared_ptr<Tab>& t, const AnnotationHost::Envelope& en
     return true;
 }
 bool TakeCommentSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible) {
+    UiSlow slow("full selection");
     CancelKeyboardBack();
     PrepareChat(t);
     if (early.on && early.seq == Ann::s.sel.seq && bubble.open && bubble.conv == early.conv) {   // R18: the bubble is already open: completed
