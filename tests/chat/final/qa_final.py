@@ -198,7 +198,7 @@ class _Errors:
 ERRORS = _Errors()
 
 # Lines of the host's log that are never normal (an exception, a crash, a failed renderer, a refused creation)
-BAD_LOG = re.compile(r'exception|assert|access violation|renderer failed|creation refused|unhandled|std::|terminate called|stack overflow|bubble drawn away from its region', re.I)
+BAD_LOG = re.compile(r'exception|assert|access violation|renderer failed|creation refused|unhandled|std::|terminate called|stack overflow|bubble drawn away from its region|R39: a scroll step changed the bubble.s frame', re.I)
 
 
 def log_mark():
