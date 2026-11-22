@@ -932,6 +932,31 @@ def j_m4_panel(j):
     j.check('M4 panel')
 
 
+@journey('clic_apres_fermeture_panneau', 'a click right after the panel closes (its close button, then « Commentaire »): the panel usable, the bubble whole, never inert')
+def j_after_panel_close(j):
+    comp = "(function(){var c=document.querySelector('[contenteditable=true]');var a=document.getElementById('app');return [c?c.innerText:'',a?a.inert:null]})()"
+    for i in range(2):
+        # 1) Chat à droite: its close button (real click), then a click on an element 50 ms later: the panel opens again, usable
+        F.set_layout('panel'); j.inv.m.layout = 'panel'; time.sleep(0.6)
+        x = F.chat_point('button[aria-label="Fermer le chat"]', kind='panel')
+        if not j.step(f'the panel\'s close button is there ({i + 1})', x):
+            return
+        F.front(); F.click_at(*x, settle=0.03); time.sleep(0.05)
+        F.click_at(*F.element_point('h1.hero-title'), settle=0.0); time.sleep(1.0)
+        st = F.chat(comp, 'panel') or ['', None]
+        j.step(f'panel closed then a click 50 ms later: the panel is back, not inert ({i + 1})', st[1] is False, st)
+        p = F.composer_end_point('panel'); F.click_at(*p); time.sleep(0.2); F.type_keys(f'essai{i}'); time.sleep(0.4)
+        j.step(f'…and its composer takes the keys ({i + 1})', f'essai{i}' in (F.chat(comp, 'panel') or [''])[0], F.chat(comp, 'panel'))
+        F.chat("(function(){var t=document.querySelector('[contenteditable=true]');if(t){t.textContent='';t.dispatchEvent(new Event('input',{bubbles:true}))}return 1})()", 'panel')
+        j.check(f'panel after close + click {i + 1}')
+        # 2) then « Commentaire » and a click at once: the bubble whole, not inert
+        F.set_layout('comment', settle=False); j.inv.m.layout = 'comment'; j.inv.m.open = None
+        j.open_on('a.btn-primary', f'Commentaire then a click at once ({i + 1})')
+        st = F.chat(comp, 'bubble') or ['', None]
+        j.step(f'the bubble is not inert ({i + 1})', st[1] is False, st)
+        j.close(); j.check(f'bubble after the panel {i + 1}')
+
+
 # ---------------------------------------------------------------- runner
 def run_one(jn):
     name = jn['name']; print(f'===== {name} ({jn["retours"]})', flush=True)
