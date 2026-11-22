@@ -2,6 +2,7 @@
 # one JSON line + "END" on stdout. Starting PowerShell and loading UIA once saves ~1.5 s per check.
 #   probe <pid> [needle]      every visible top-level window of <pid>: class, elements of its subtree, ms, error; the chat
 #                             window(s) (class BrowserChat*): their element count and whether a Name holds <needle>
+#   list <pid>                the main window's (LisiereBrowser) elements in FindAll's order: "class|AutomationId|name"
 #   bounds <pid> <id,id,...>  the screen bounds of elements by AutomationId
 #   quit
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -35,6 +36,14 @@ while ($true) {
                     if ($needle -ne "") { foreach ($x in $els) { $nm = ""; try { $nm = $x.Current.Name } catch {}; if ($nm -and $nm.Contains($needle)) { $found = $true; break } } }
                 } catch { $err = $_.Exception.GetType().Name }
                 $out += ('{{"cls":"{0}","n":{1},"ms":{2},"err":"{3}","found":{4}}}' -f (Esc $cls), $n, $sw.ElapsedMilliseconds, (Esc $err), $found.ToString().ToLower())
+            }
+            "[" + ($out -join ",") + "]"
+        } elseif ($parts[0] -eq "list") {
+            # F7: what a short walk of the main window holds (class | AutomationId | name), in FindAll's order
+            foreach ($h in [QaTops]::Of([uint32]$parts[1])) {
+                try { $e = [System.Windows.Automation.AutomationElement]::FromHandle($h); if ($e.Current.ClassName -ne "LisiereBrowser") { continue }
+                      foreach ($x in $e.FindAll($sub, $all)) { $c = ""; $a = ""; $nm = ""; try { $c = $x.Current.ClassName; $a = $x.Current.AutomationId; $nm = $x.Current.Name } catch {}
+                          if ($nm.Length -gt 40) { $nm = $nm.Substring(0, 40) }; $out += ('"{0}|{1}|{2}"' -f (Esc $c), (Esc $a), (Esc $nm)) } } catch { $out += ('"error {0}"' -f (Esc $_.Exception.GetType().Name)) }
             }
             "[" + ($out -join ",") + "]"
         } elseif ($parts[0] -eq "bounds") {

@@ -1036,7 +1036,12 @@ class Invariants:
         if self.uia_base is None:
             self.uia_base = main[0]['n']
         elif main[0]['n'] < self.uia_base * 0.6:
-            broken['UI Automation tree of the main window complete'] = {'elements': main[0]['n'], 'at start': self.uia_base}
+            # F7 (monkey-3 #214, 113 -> 22): what the short walk held, and whether a second walk 0.5 s later is whole
+            # again (a walk cut once while the tree changed) or still short (a tree cut for a screen reader too)
+            short = self.uia.ask(f'list {Q.our_pid()}'); time.sleep(0.5); again, _ = self.uia.probe()
+            n2 = next((x['n'] for x in again if x.get('cls') == 'LisiereBrowser'), -1) if isinstance(again, list) else -1
+            broken['UI Automation tree of the main window complete'] = {'elements': main[0]['n'], 'at start': self.uia_base, 'all windows': r,
+                                                                        'again after 0.5 s': n2, 'short walk': short}
         if s > 15:
             broken['UI Automation answers in time'] = s
         chats = [x for x in r if x.get('cls', '').startswith('BrowserChat')]
