@@ -524,8 +524,8 @@ static void TestBubble() {
         Check(pl.side == Side::Inside && !pl.fromRight && pl.fromBottom && pl.rect.left == plans.left + corner && pl.rect.bottom == plans.bottom - corner,
               "Paper: div.plans clicked near its bottom left — inside, 12 px from its left and bottom edges (was 96 px below its bottom)");
         const auto longConv = Place(plans, W, h, area, gap, margin, Side::Right, lead, px(520), Point{200, 760, true}, corner);   // r44: its conversation has content
-        Check(longConv.side != Side::Inside && (longConv.side == Side::Below ? longConv.rect.top == plans.bottom + gap : longConv.rect.bottom == plans.top - gap),
-              "Q r06 (0.3.542): a long conversation on div.plans smaller than the bubble — never inside: below / above at Paper's gap (the most room)");
+        Check(longConv.side == Side::Inside && !longConv.fromBottom && longConv.rect.top == plans.top + corner && longConv.rect.left == plans.left + corner,
+              "r44: a long conversation — the element's other corner where its 520 px fit (top left, 12 px), never moved");
         const auto grown = Anchored(AnchorOf(pl, plans), plans, W, px(400));
         Check(grown.bottom == pl.rect.bottom && grown.top == pl.rect.bottom - px(400), "R29: then it grows up from its fixed bottom");
         const Rect low{63, 860, 327, 900};   // near the bottom of the visible area: not slid up — the next side where it is whole
@@ -622,7 +622,7 @@ static void TestBubble() {
         Check(a2.side == Side::Right && a2.rect.top == btn.top - lead && a2.rect.left == btn.right + gap && whole(a2, px(200)), "decision: its last known height fits at its right — Paper exactly (+12, -4)");
         const Rect plans{65, 410, 1742, 785};   // div.plans with a conversation
         const auto pl = Place(plans, W, h, area, gap, 0, Side::Right, lead, H, Point{200, 760, true}, corner);
-        Check(pl.side != Side::Inside && (pl.side == Side::Below ? pl.rect.top == plans.bottom + gap : pl.rect.bottom == plans.top - gap), "Q r06 (0.3.542): div.plans with a conversation — never inside (smaller than the bubble): below / above, the most room");
+        Check(pl.side == Side::Inside && whole(pl, H), "decision (whole first): div.plans with a conversation — over the element, whole with 520 at its opening");
         const auto ab = Place({63, 840, 327, 900}, W, h, area, gap, 0, Side::Right, lead, px(300), Point{}, corner);
         Check(ab.side == Side::Above && ab.fromBottom && ab.rect.bottom == 840 - gap && ab.rect.left == 63 - lead && whole(ab, px(300)), "decision: above — its bottom 12 px above the element, growing up, left -4"); }
     // R47 after the page scrolled (decision): the card's buttons are clickable — the carried window's region, clipped to the page
@@ -651,18 +651,20 @@ static void TestBubble() {
         Check(ab.side == Side::Above && ab.rect.bottom == low.top - gap && ab.slid == 0 && FullyVisible(planned(ab), area), "decision: above is tried (exact, its bottom 12 px above the element)");
         const Rect plans{65, 410, 1742, 785};   // div.plans 1677 x 375: not taller than the bubble's 650 px — no inside
         const auto pl = Place(plans, W, h, area, gap, 0, Side::Right, lead, H, Point{200, 760, true}, corner);
-        Check(pl.side == Side::Above && pl.rect.bottom == plans.top - gap, "Q r06 (0.3.542): div.plans with a long conversation — no side holds it whole: above (the most room, 254 px against 131), never inside");
+        Check(pl.side == Side::Inside && FullyVisible(planned(pl), area), "decision (whole first): div.plans with a long conversation — no side holds it, even slid: over the element, whole");
         const Rect big{65, 150, 1742, 925};   // an element bigger than the bubble: inside, 12 px from the corner nearest to the click
         const auto in = Place(big, W, h, area, gap, 0, Side::Right, lead, H, Point{200, 300, true}, corner);
         Check(in.side == Side::Inside && in.rect.left == big.left + corner && in.rect.top == big.top + corner, "decision: inside only an element bigger than the bubble — 12 px from the corner"); }
-    // Q r06 step 14 / M15 (0.3.542): div.plans [83,386,1761,686] with a conversation (520 CSS), page area 665 then 632 CSS
-    // high, dpr 1.25: no side holds it whole — below (the most room), its top 12 px under the element; never inside
+    // Q r06 step 14 / M15 (0.3.542): div.plans [83,386,1761,686] (300 CSS high) with a conversation (520 CSS), page area 665
+    // then 632 CSS high, dpr 1.25: no side holds it whole even slid — over the element, at the corner nearest to the click,
+    // WHOLE in the visible area (past the element, never past the area: it was 150 px above it)
     {   const float k = 1.25f; auto px = [&](int c0) { return int(c0 * k + .5f); };
         const Rect plans{83, 386, 1761, 686};
         for (const Rect area : {Rect{3, 141, 1841, 141 + px(665)}, Rect{3, 141, 1841, 141 + px(632)}}) {
             const auto p = Place(plans, px(320), px(104), area, px(12), 0, Side::Right, px(4), px(520), Point{300, 600, true}, px(12));
-            Check(p.side == Side::Below && p.rect.top == plans.bottom + px(12) && p.rect.left == plans.left - px(4) && p.rect.top >= area.top && p.rect.left >= area.left && p.rect.right <= area.right,
-                  "Q r06 / M15: div.plans with a conversation — below at Paper's exact place (not inside, never above the page area)");
+            const Rect plan = p.fromBottom ? Rect{p.rect.left, p.rect.bottom - px(520), p.rect.right, p.rect.bottom} : Rect{p.rect.left, p.rect.top, p.rect.right, p.rect.top + px(520)};
+            Check(p.side == Side::Inside && FullyVisible(plan, area) && p.rect.left == plans.left + px(12) && p.slid > 0,
+                  "Q r06 / M15: div.plans 300 px with a conversation of 520 — over the element, its left corner (12 px), whole in the visible area");
         } }
     // R39 (Q, 0.3.541): a scroll step is only a move — the same window size and inset, the surface carried by exactly the
     // element's move — also when the element passes under the page area's top or bottom edge; and the follow places every

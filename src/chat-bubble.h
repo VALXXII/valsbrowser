@@ -50,12 +50,10 @@ inline Placement Place(const Rect& element, int w, int h, const Rect& area, int 
     auto whole = [&](const Rect& r) { return r.left >= area.left && r.top >= area.top && r.right <= area.right && r.bottom <= area.bottom; };
     if (prefer != Side::Inside) { const auto p = exact(prefer); if (whole(planned(p))) return p; }
     for (Side s : {Side::Right, Side::Left, Side::Below, Side::Above}) { const auto p = exact(s); if (whole(planned(p))) return p; }
-    // decision (1): inside only an element bigger than the bubble (at the height it will have)
-    const Rect vis0{std::max(element.left, area.left), std::max(element.top, area.top), std::min(element.right, area.right), std::min(element.bottom, area.bottom)};
-    if (!(vis0.W() >= w + 2 * corner && vis0.H() >= H + 2 * corner)) {
-        // the side with the most room where the bubble's width (sides) or height (below / above) fits; slid ALONG it just enough to
-        // be whole — the 12 px gap to the element stays exact, only Paper's -4 alignment gives way
-        Placement best; int bestRoom = -1;
+    // Decision (R44 first: the bubble is WHOLE at its opening). 1) a side at Paper's exact place (above); 2) slid along a
+    // side — the side with the most room where its width (right / left) or its height (below / above) fits, slid just enough
+    // to be whole, the 12 px gap exact (only Paper's -4 alignment gives way); 3) else over the element (below)
+    {   Placement best; int bestRoom = -1;
         for (Side s : {Side::Right, Side::Left, Side::Below, Side::Above}) {
             auto p = exact(s); int room = 0; bool fits = false;
             switch (s) {
@@ -73,30 +71,19 @@ inline Placement Place(const Rect& element, int w, int h, const Rect& area, int 
             best = p; bestRoom = room;
         }
         if (bestRoom >= 0) return best;
-        // Q r06 / M15 (0.3.542, div.plans 1678 x 375 with a conversation, page area 665 CSS high): no side holds it whole —
-        // never inside an element smaller than the bubble (it went 84 px under the element, then 150 px above the page area).
-        // Below or above, the one with the most room (below on a tie: what goes past the bottom the user scrolls to), at
-        // Paper's exact gap, slid along it only to stay within the area's width.
-        if (w <= area.W()) {
-            const int below = area.bottom - (element.bottom + gap), above = (element.top - gap) - area.top;
-            if (below > 0 || above > 0) {
-                auto p = exact(below >= above ? Side::Below : Side::Above);
-                const int l0 = p.rect.left, l1 = Clamp(l0, area.left, area.right - w); p.rect.left = l1; p.rect.right = l1 + w; p.slid = std::abs(l1 - l0);
-                p.why = below >= above ? "below the element (no side holds it whole: the most room)" : "above the element (no side holds it whole: the most room)";
-                return p;
-            }
-        }
     }
-    // inside: the visible part of the element, its corner nearest to the click (else its top right corner), 12 px from both edges;
-    // the other (top / bottom) corner when the planned height fits there and not at the nearest
+    // 3) over the element (R44): its visible part, the corner nearest to the click (else its top right corner), 12 px from both
+    // edges; the other (top / bottom) corner when the planned height fits there and not at the nearest. An element smaller
+    // than the bubble: the bubble stays WHOLE in the visible area — it may go past the element, never past the area (slid)
     const Rect vis{std::max(element.left, area.left), std::max(element.top, area.top), std::min(element.right, area.right), std::min(element.bottom, area.bottom)};
     const bool right = click.set ? click.x > (vis.left + vis.right) / 2 : true;
     bool bottom = click.set ? click.y > (vis.top + vis.bottom) / 2 : false;
     auto fitsAt = [&](bool atBottom) { const int y0 = atBottom ? vis.bottom - corner - H : vis.top + corner; return y0 >= area.top && y0 + H <= area.bottom; };
     if (!fitsAt(bottom) && fitsAt(!bottom)) bottom = !bottom;
     int x = right ? vis.right - corner - w : vis.left + corner, y = bottom ? vis.bottom - corner - H : vis.top + corner;   // y: the planned box's top
+    const int x0 = x, y0 = y;
     x = Clamp(x, area.left, area.right - w); y = Clamp(y, area.top, area.bottom - H);   // never out of the visible area
-    Placement p; p.side = Side::Inside; p.fromRight = right; p.fromBottom = bottom;
+    Placement p; p.side = Side::Inside; p.fromRight = right; p.fromBottom = bottom; p.slid = std::abs(x - x0) + std::abs(y - y0);
     p.rect = bottom ? Rect{x, y + H - h, x + w, y + H} : Rect{x, y, x + w, y + h};
     p.why = right ? (bottom ? "inside the element, bottom right corner (nearest to the click, 12 px): no side has room for the whole bubble"
                             : "inside the element, top right corner (nearest to the click, 12 px): no side has room for the whole bubble")

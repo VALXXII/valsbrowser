@@ -228,7 +228,8 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
                               PlannedHeightPx(k), bubble.click, int(std::lround(BubbleGapCss * k)));   // r44: a conversation with content may take 520 (inside: its corner where that fits)
         if (bubble.known) {
             bubble.anchor = ChatBubble::AnchorOf(p, er); placedNow = true; bubble.anchorArea = a;
-            if (p.slid > 0) Diag(L"bubble slid " + std::to_wstring(p.slid) + L" px along its side to be fully visible");   // decision (1)   // i18n-exempt: log detail
+            if (p.slid > 0) Diag(p.side == ChatBubble::Side::Inside ? L"bubble over the element slid " + std::to_wstring(p.slid) + L" px to be whole in the visible area (it may go past the element)"   // decision (whole first)   // i18n-exempt: log detail
+                                                                     : L"bubble slid " + std::to_wstring(p.slid) + L" px along its side to be fully visible");   // decision (1)   // i18n-exempt: log detail
             Diag(std::wstring(L"bubble placed ") + W(std::string(p.why)) + L" (element " + std::to_wstring(er.W()) + L"x" + std::to_wstring(er.H()) + L", visible area " + std::to_wstring(area.W()) + L"x" + std::to_wstring(area.H()) + L")");   // i18n-exempt: log detail
         }
     } else { p.side = bubble.anchor.side; p.fromRight = bubble.anchor.fromRight; p.fromBottom = bubble.anchor.fromBottom; p.rect = ChatBubble::Anchored(bubble.anchor, er, w, h); }
@@ -239,7 +240,8 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
         // measured when it is placed and kept with the anchor — its composer and an authorization stay on screen (r47: past
         // the visible area « Autoriser » could not be clicked); its position stays Paper's, never moved
         (void)placedNow;   // R29 (the user, coordinator's decision): natural height — never bounded by the room under the fixed edge; past the visible area the user scrolls (R47: the page brings a card on screen)
-        const int room = std::min(BubbleMaxHeightCss, std::max(120, int(area.H() / k) - 2 * BubbleMarginCss));
+        int room = std::min(BubbleMaxHeightCss, std::max(120, int(area.H() / k) - 2 * BubbleMarginCss));
+        if (p.fromBottom) room = std::min(room, std::max(120, int((p.rect.bottom - area.top) / k)));   // M15 (Q 0.3.542): growing up, never past the page area's top (it was cut 150 px above it)
         const auto rm = ChatBubble::ResizeRoom(p.rect, p.fromRight, p.fromBottom, area, margin, k);
         if (room != bubble.roomCss || rm.width != bubble.resizeMax.width || rm.height != bubble.resizeMax.height) {
             if (room != bubble.roomCss) Diag(L"bubble: height offered " + std::to_wstring(room) + L" CSS px (page area " + std::to_wstring(area.H()) + L" px" + (areaResized ? L", resized" : L"") + L")");   // M15 diagnostics   // i18n-exempt: log detail
