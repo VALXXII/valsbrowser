@@ -727,17 +727,30 @@ private:
         const float g = 16 * k, gx = (plate.left + plate.right - g) / 2, gy = (plate.top + plate.bottom - g) / 2;
         glyphs_.Fill(*c_, ProfileIcons::Fill(draft_.icon.c_str()), Box(gx, gy, g, g), 256, K::Col(ink, alpha));
     }
+    // The mock's tab title. In the Paper picture the bottom of the « y » of « By Val.S » is cut (the screenshot
+    // was taken from a build whose tab titles were clipped to a short box); the title is drawn again as text, in
+    // its full line box, ascender to descender, over the tab's own colour. `left`, `capTop`: where the picture's
+    // title starts and where its capitals begin; `k`: DIP of the 1180-wide layout per unit drawn.
+    std::wstring mockTitle_ = L"By Val.S";   // i18n-exempt: the sample page of the mock (a name)
+    void DrawMockTitle(float left, float capTop, float k, float alpha) {
+        const K::Font f{14 * k, 20 * k, 500, -.28f * k}; const float top = capTop - (K::Baseline({14, 20, 500, 0}) - .727f * 14) * k;   // Inter's capitals are 0.727 em tall
+        const float width = std::min(K::Width(*c_, mockTitle_, f), 88 * k);   // the tab's title lane: cut on the right, never vertically
+        K::Fill(*c_, {left - 2 * k, top - 1 * k, left + 90 * k, top + 21 * k}, 0, K::Col(K::Token::raised, alpha));
+        K::Text(*c_, mockTitle_, {left, top, left + width + 1, top + 20 * k}, f, K::Col(0x949494, alpha), DWRITE_TEXT_ALIGNMENT_LEADING, false, true);
+    }
     void DrawMock(float x, float y, float w, float bookmarks, float alpha) {
         auto* t = c_->RenderTarget(); if (alpha <= 0) return;
         if (bookmarks < 1) {
             const float s = w / Layout::mockUnits;
             if (auto* b = c_->AssetBitmap(L"onboarding\\mock-plain.png")) K::DrawBitmap(t, b, Box(x, y, Layout::mockPlainUnits * s, Layout::mockPlainH * s), alpha);
             DrawChip({x + 7.75f * s, y + 7.25f * s, x + 39.5f * s, y + 39 * s}, alpha);
+            DrawMockTitle(x + 78 * s, y + 17.75f * s, s, alpha);
         }
         if (bookmarks > 0) {
             const float s = w / Layout::mockWideUnits, a = alpha * bookmarks;
             if (auto* b = c_->AssetBitmap(L"onboarding\\mock-bookmarks.png")) K::DrawBitmap(t, b, Box(x, y, Layout::mockWideShown * s, Layout::mockWideH * s), a);
             DrawChip({x + 8.25f * s, y + 9 * s, x + 45.75f * s, y + 46.25f * s}, a);
+            DrawMockTitle(x + 91 * s, y + 21 * s, s * Layout::mockWideUnits / Layout::mockUnits, a);
             DrawBar(x, y, s, a);
         }
     }
@@ -1310,6 +1323,7 @@ public:
     }
     const Onboarding::Tuning::Values& TuningForTest() const { return tuning_; }
     void SetTuningForTest(const Onboarding::Tuning::Values& v) { tuning_ = v; }
+    void SetMockTitleForTest(const std::wstring& title) { mockTitle_ = title; }
     void SetBarForTest(std::vector<BarItem> items) { bar_ = std::move(items); barAt_ = Motion::Now(); }
     const std::vector<BarItem>& BarForTest() const { return bar_; }
     // ---- tests: the same drawing code into an offscreen target, and the events without a window ----

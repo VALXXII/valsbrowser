@@ -272,6 +272,29 @@ int wmain(int argc, wchar_t** argv) {
             Expect(text == 0, "dither on board 6: nothing of it over the texts, the buttons or the illustration");
             if (wic) wic->Release();
         }
+        {
+            // The mock's tab title keeps its descenders (the Paper picture cuts the « y » of « By Val.S »): with a
+            // title made of descenders, the ink goes well below the baseline and the row under it is the tab again.
+            IWICImagingFactory* wic = nullptr; CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic));
+            Fixture g; g.root = root; g.out = out; g.Setup(); using W5 = UI::Window; g.window.SetMockTitleForTest(L"gjpqy");
+            g.window.ActivateForTest(W5::Primary); g.window.ActivateForTest(W5::Primary);   // board 3: the mock at 1383 wide
+            Expect(g.Shot(L"state-3-tab-descenders"), "render: board 3 with a tab title made of descenders");
+            for (UINT dpi : {96u, 120u}) {
+                Onboarding::Shaders::Image img; const float sc = dpi / 96.f, s = 1383.f / 1180;
+                const bool loaded = Onboarding::Shaders::LoadPng(wic, out + (dpi == 96 ? L"\\state-3-tab-descenders@96.png" : L"\\state-3-tab-descenders@120.png"), img);
+                // The tab's title lane in the window: from the picture's title start, between the tab's top and bottom edges.
+                const int x0 = static_cast<int>((18 + 78 * s) * sc), x1 = static_cast<int>((18 + 150 * s) * sc), y0 = static_cast<int>((48 + 9 * s) * sc), y1 = static_cast<int>((48 + 38 * s) * sc);
+                int top = -1, bottom = -1;
+                for (int y = y0; loaded && y < y1; ++y) for (int x = x0; x < x1; ++x) if (img.rgba[(static_cast<std::size_t>(y) * img.width + x) * 4] > 90) { if (top < 0) top = y; bottom = y; }
+                const float font = 14 * s * sc;   // « gjpqy »: x-height 0.546 em plus a descender of about 0.21 em — a cut title would stop near 0.55
+                Expect(loaded && top >= 0 && (bottom - top + 1) >= .68f * font, dpi == 96 ? "96 DPI: the descenders go their full depth below the baseline (not cut)" : "120 DPI: the descenders go their full depth below the baseline (not cut)");
+                bool clear = loaded && bottom + 2 < y1;
+                for (int x = x0; clear && x < x1; ++x) clear = img.rgba[(static_cast<std::size_t>(bottom + 2) * img.width + x) * 4] < 60;
+                Expect(clear, dpi == 96 ? "96 DPI: under the title the tab is plain again (the ink ends by itself, inside the tab)" : "120 DPI: under the title the tab is plain again");
+            }
+            g.window.SetMockTitleForTest(L"By Val.S");
+            if (wic) wic->Release();
+        }
         Fixture h; h.root = root; h.out = out; h.Setup(false);
         h.window.ActivateForTest(W::Primary); h.window.ActivateForTest(W::Primary); h.window.ActivateForTest(W::SkipStep);
         Expect(h.window.Flow().screen() == Screen::Outro, "no annotation mode in the build: board 6 is skipped");
