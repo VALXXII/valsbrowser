@@ -494,7 +494,7 @@ STATE_JS = ("(function(){var a=document.getElementById('app')||document.body;var
             "mode:mo?mo.getAttribute('aria-label'):null,model:md?md.getAttribute('aria-label'):null,"
             "perm:pm?{box:vis(pm),buttons:btns}:null,menus:menus,diff:!!document.querySelector('.b-grip:not([hidden])'),"
             "opacity:+getComputedStyle(a).opacity,busy:/Arrêter/.test(document.body.innerText||''),"
-            "text:(document.body.textContent||'').replace(/\\s+/g,' ').slice(-20000)}})()")
+            "text:(document.body.textContent||'').replace(/\\s+/g,' ')}})()")
 
 
 def chat_state(kind='bubble'):
