@@ -686,6 +686,15 @@ static void TestBubble() {
             ++steps;
         }
         Check(onlyMoves && steps == 11, "R39: a scroll step only moves the same window (same size, same inset, the element's exact move) — also past the top and bottom edges");
+        {   // monkey seed 2 #112 (0.3.547): section.hero, inside its bottom left corner — the kept frame recomputed at a scroll step
+            // rounded its inset 537 -> 536 (« R39: a scroll step changed the bubble's frame »): a step moves the window as it is
+            const Rect s0{18, 673, 418, 778}, win{0, 2, 918, 1278}; const Edges in0{537, 0, 0, 14};
+            const Rect rel = RelativeTo(win, CornerOf(s0, false, true));
+            bool same = true;
+            for (int dy = -40; dy <= 40; ++dy) { const Rect s{s0.left, s0.top + dy, s0.right, s0.bottom + dy};
+                const auto kf = ScrollFrame(s, false, true, true, rel, in0, win.W(), win.H(), 1.25f, Edges{});
+                same = same && kf.ok && kf.f.inset == in0 && kf.f.window.W() == win.W() && kf.f.window.H() == win.H() && kf.f.window.top == win.top + dy; }
+            Check(same, "R39 (monkey seed 2 #112): a scroll step keeps the inset to the pixel (no rounding of the kept frame)"); }
         const auto carried = ScrollFrame(p0.rect, p0.fromRight, p0.fromBottom, false, Rect{}, f0.inset, f0.window.W(), f0.window.H(), k, Edges{});
         Check(carried.ok && carried.f.window.W() == f0.window.W() && carried.f.inset == f0.inset, "R39: without the opening's kept frame, the window it has is carried (never framed again)");
         bool moveTakesAll = true;

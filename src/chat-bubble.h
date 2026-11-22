@@ -294,8 +294,9 @@ inline std::string PageKey(const std::string& url) { const auto hash = url.find(
 // new WebView size), the surface carried by exactly the element's move. The window kept for the opening (relative to the
 // surface's fixed corner), else the window it has, carried. ok = false only when there is no window yet.
 inline Kept ScrollFrame(const Rect& surface, bool fromRight, bool fromBottom, bool frameKept, const Rect& rel, const Edges& inset, int winW, int winH, float k, const Edges& over) {
-    Kept out; if (frameKept) out = FrameKept(surface, fromRight, fromBottom, rel, k, over);
-    if (!out.ok && winW > 0 && winH > 0) { out.ok = true; out.f = Reframe(surface, inset, winW, winH, k, over); }
+    // monkey seed 2 #112: the window it has, moved as it is — the kept frame recomputed rounded the inset (537 -> 536)
+    Kept out; if (winW > 0 && winH > 0) { out.ok = true; out.f = Reframe(surface, inset, winW, winH, k, over); return out; }
+    if (frameKept) out = FrameKept(surface, fromRight, fromBottom, rel, k, over);
     return out;
 }
 // R39 (Q, 0.3.541 / 0.3.546): the follow thread waits for the next composition (DwmFlush), then the window moves. Which
