@@ -590,6 +590,18 @@ I18N(about_release_notes, L"Notes de version", L"Release notes")
 I18N(about_licenses, L"Licences des composants tiers", L"Third-party licenses")
 I18N(about_report, L"Signaler un problème", L"Report a problem")
 I18N(about_engine_footnote, L"Moteur Microsoft Edge WebView2 · runtime système", L"Microsoft Edge WebView2 engine · system runtime")
+
+// ---- « Nouveautés » release notes (src/release-notes.h, Paper p-L-0 142E-0 / 144O-0) -------------
+// The items describe what THIS build ships; bump ReleaseNotes::NotesId when they change.
+I18N(release_notes_title, L"Nouveautés", L"What’s new")
+I18N(release_notes_added, L"Ajouts", L"Added")
+I18N(release_notes_fixed, L"Corrections", L"Fixed")
+I18N(release_notes_item_comment, L"Mode Commentaire : discutez d’un élément de la page avec votre agent.", L"Comment mode: talk about any element of the page with your agent.")
+I18N(release_notes_item_tooltips, L"Infobulles centrées, enfin visibles dans les panneaux.", L"Tooltips centered, and now visible in panels.")
+I18N(release_notes_item_download, L"Un téléchargement n’affiche plus de page d’erreur.", L"A download no longer shows an error page.")
+I18N(release_notes_item_select_all, L"Ctrl+A sélectionne tout dans chaque champ.", L"Ctrl+A selects all in every field.")
+I18N(release_notes_item_typing, L"Saisie sans scintillement dans les champs de texte.", L"Typing without flicker in text fields.")
+I18N(release_notes_show_all, L"Voir tout", L"Show all")
 I18N(private_unavailable_title, L"Navigation privée indisponible", L"Private browsing unavailable")
 I18N(private_unavailable_body, L"Cette version n'a pas encore de fenêtre privée. Vos onglets utilisent le profil habituel : cookies, cache et historique sont conservés.", L"This version doesn’t have a private window yet. Your tabs use your usual profile: cookies, cache and history are kept.")
 I18N(private_unavailable_footnote, L"Aucun onglet n'a été ouvert.", L"No tab was opened.")
