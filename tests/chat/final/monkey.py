@@ -124,6 +124,8 @@ class Monkey:
         return f'wheel {a["n"] * a["sign"]}', 0.9
 
     def scrollbar(self, a):
+        if F.scrollbar_width() <= 0:   # no real scrollbar on this page (a click there would select an element)
+            return self.wheel(a)
         F.front(); pg = F.page_area()
         y = F.page('[scrollY,document.scrollingElement.scrollHeight,innerHeight]'); k = F.dpr()
         th = pg[1] + int((y[0] / max(1, y[1])) * (pg[3] - pg[1])) + int(20 * k)
@@ -132,8 +134,7 @@ class Monkey:
         return f'scrollbar drag {dy} px', 0.9
 
     def keyboard_scroll(self, a):
-        F.front(); pg = F.page_area(); k = F.dpr()
-        F.click_at(pg[2] - int(6 * k), pg[1] + int(30 * k)); time.sleep(0.15)   # the page gets the keyboard (scrollbar: no selection)
+        F.keyboard_to_page(avoid=self.bubble_box())   # the page gets the keyboard, nothing selected (Ctrl+click on text)
         vk = [0x28, 0x26, 0x22, 0x21][int(a['r'][3] * 4)]
         for _ in range(min(3, a['n'])):
             F.tap(vk); time.sleep(0.12)

@@ -385,6 +385,25 @@ def embedded_point(host):
     return (int(pg[0] + r[0] * k), int(pg[1] + r[1] * k))
 
 
+def keyboard_to_page(avoid=None):
+    """The site's page gets the keyboard WITHOUT selecting anything: a Ctrl+click on a plain text (R31: Ctrl held = the
+    site as usual). The page's right edge has no real scrollbar to click (its width is 0 here)."""
+    front()
+    for sel in ('p.hero-text', 'h2.section-title', 'footer.footer'):
+        if page("(function(){var e=document.querySelector(%s);if(!e)return false;var r=e.getBoundingClientRect();return r.bottom>20&&r.top<innerHeight-20})()" % json.dumps(sel)):
+            p = element_point(sel, avoid=avoid); key(0x11)
+            try:
+                click_at(*p, settle=0.1)
+            finally:
+                key(0x11, True)
+            time.sleep(0.2); return sel
+    return None
+
+
+def scrollbar_width():
+    return page('innerWidth - document.documentElement.clientWidth') or 0
+
+
 def scroll_into_view(sel, where='center'):
     page("(function(){var e=document.querySelector(%s);if(e)e.scrollIntoView({block:%s,behavior:'instant'});return 1})()" % (json.dumps(sel), json.dumps(where)))
     time.sleep(0.5)

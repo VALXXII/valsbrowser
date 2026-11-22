@@ -761,8 +761,8 @@ def j_m4(j):
     j.step('M4 · Échap (real key) closes the bubble and keeps the mode', not F.bubble_shown()[0] and 'ANNOTATE mode off' not in C.log_text()[m:], C.log_text()[m:][-400:])
     j.inv.m.open = None; j.check('M4')
     # Échap with the keyboard in the page (after a click on its scrollbar)
-    j.open_on('h1.hero-title', 'title again'); pg = F.page_area(); k = F.dpr()
-    F.click_at(pg[2] - int(6 * k), pg[1] + int(30 * k)); time.sleep(0.3)
+    j.open_on('h1.hero-title', 'title again')
+    rb = F.bubble_shown()[1]; F.keyboard_to_page(avoid=rb if isinstance(rb, tuple) else None)   # Ctrl+click on text: the site gets the keyboard, nothing selected
     m = F.log_mark(); F.tap(0x1B); time.sleep(0.8); j.inv.allow_close = True
     j.step('M4 · Échap with the keyboard in the page: the bubble closes, the mode stays', 'ANNOTATE mode off' not in C.log_text()[m:], C.log_text()[m:][-400:])
     j.inv.m.open = None; j.check('M4 page')
@@ -810,7 +810,7 @@ def j_m6(j):
 @journey('m16_rechargement_avant_clic', 'review M16 (F5 before any click in Commentaire: the mode stays)')
 def j_m16(j):
     F.front(); m = F.log_mark()
-    pg = F.page_area(); k = F.dpr(); F.click_at(pg[2] - int(6 * k), pg[1] + int(30 * k)); time.sleep(0.2)   # the page has the keyboard (scrollbar)
+    F.keyboard_to_page()   # the page has the keyboard, nothing selected (Ctrl+click on text)
     origin = F.page('performance.timeOrigin')
     F.tap(0x74); time.sleep(2.0)
     how = 'F5 (SendInput)'
