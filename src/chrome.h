@@ -370,7 +370,16 @@ public:
     bool animateTabLayout=false; // host: animate the next width/scroll reflow (e.g. width unlock)
     bool tabMotionStarted=false; // set when a Build started motion; the host schedules frames
     Motion::TabLayoutFrame tabFrame;
-    struct TabSnapshot{std::wstring title;std::shared_ptr<const FaviconImage> favicon;float fill=Design::Surface::canvas;bool selected=false;};
+    struct TabSnapshot{std::wstring title;std::shared_ptr<const FaviconImage> favicon;float fill=Design::Surface::canvas;bool selected=false;float veil=0;};
+    // Paper v2 tab title: a `TabStrip::titleFade` gradient into surface `c` ending at the close,
+    // then solid surface under it, both at opacity `o` (the close's own reveal).
+    void TitleVeil(Design::Box close,float titleRight,float c,float o){
+        const float edge=close.left,start=edge-Design::TabStrip::titleFade;
+        ID2D1GradientStopCollection* stops=nullptr;ID2D1LinearGradientBrush* gradient=nullptr;
+        D2D1_GRADIENT_STOP g[]={{0,D2D1::ColorF(c,c,c,0)},{1,D2D1::ColorF(c,c,c,o)}};
+        if(SUCCEEDED(target->CreateGradientStopCollection(g,2,&stops))&&SUCCEEDED(target->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({start,0},{edge,0}),stops,&gradient)))target->FillRectangle(D2D1::RectF(start,close.top,edge,close.bottom),gradient);
+        Drop(gradient);Drop(stops);
+        brush->SetColor(D2D1::ColorF(c,c,c,o));target->FillRectangle(D2D1::RectF(edge,close.top,titleRight,close.bottom),brush);}
     std::map<unsigned,TabSnapshot> tabSnapshots; // what a closing tab looked like, drawn while it blurs out
     bool TabKeysValid(int count)const{return motion&&(int)tabKeys.size()==count;}
     unsigned TabKey(int n)const{return n>=0&&n<(int)tabKeys.size()?tabKeys[n]:(unsigned)(n+1);}
@@ -427,6 +436,7 @@ public:
         auto favicon=strip.FaviconIn(box);auto title=strip.TitleIn(box);const D2D1_RECT_F slot{favicon.left,favicon.top,favicon.right,favicon.bottom};
         if(!DrawSiteImage(snap.favicon,slot))Icon(L"favicon",slot,16);
         if(strip.Titled()&&title.right-title.left>=Design::Size::icon)Text(snap.title,{title.left,title.top,title.right,title.bottom},Design::Type::label.size,snap.selected?Design::Text::secondary:Design::Text::muted,false,Design::Type::label.medium,Design::Type::label.tracking);
+        if(snap.veil>0&&strip.Titled()&&strip.HasClose())TitleVeil(strip.CloseIn(box),title.right,snap.fill,snap.veil);
         HRESULT hr=ghostLayer->EndDraw();SwapTarget(main);if(FAILED(hr))return;
         ID2D1Bitmap* bitmap=nullptr;if(FAILED(ghostLayer->GetBitmap(&bitmap))||!bitmap)return;
         // Cut at the strip's left edge and its available room, not at the shrinking
@@ -1044,6 +1054,11 @@ public:
             const float closeShown=closable?(focus==CloseBase+n?1.f:tabHover):0.f;
             DrawFavicon(n,{favicon.left,favicon.top,favicon.right,favicon.bottom},(strip.SwapsClose(n,selected)?1-closeShown:1)*(asleep?.4f:1)*a);
             if(strip.Titled()&&title.right-title.left>=Design::Size::icon)Text(titles[n],{title.left,title.top,title.right,title.bottom},Design::Type::label.size,(n==selected?Design::Text::secondary:asleep?.32f:Design::Text::muted)*a,false,Design::Type::label.medium,Design::Type::label.tracking);
+            // Paper v2: with the close showing, the title dissolves into the tab surface over 20 DIP
+            // and the close sits on solid surface; at rest the title keeps the full width and its « … ».
+            const float titleVeil=strip.Titled()&&strip.HasClose()&&closable?std::min(1.f,closeShown):0.f;
+            if(keyed)tabSnapshots[item.key].veil=titleVeil;
+            if(titleVeil>0)TitleVeil(close,title.right,filled?fill:Design::Surface::canvas,titleVeil);
             if(closable&&(tabHover>0||focus==CloseBase+n)){float press=motion?motion->Visual(CloseBase+n,now).press:0;Icon(L"tab-close",{close.left,close.top,close.right,close.bottom},Design::Size::icon*Motion::PressScale(press,motion&&motion->ReducedMotion()),closeShown*a);}
             if(closable&&focus==CloseBase+n)FocusRing({close.left,close.top,close.right,close.bottom},Design::Radius::button);
             if(partial)target->PopAxisAlignedClip();
