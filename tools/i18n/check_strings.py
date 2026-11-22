@@ -27,6 +27,8 @@ FILES = {
     'debug-sandbox.h': 'internal QA page browser://debug (French review tool; the production components it opens are translated)',
     'motion-lab.h': 'review-only motion lab (--motion-lab), never in a user flow',
     'motion-tuning.h': 'motion lab persistence (keys, review tool)',
+    'onboarding-tuning.h': 'onboarding 2 -> 3 transition parameters: labels of the review panel (--onboarding-debug), French only like the motion lab',
+    'onboarding-debug.h': 'review-only tuning panel (--onboarding-debug), never in a user flow',
     'password-demo.h': 'B05 demonstration surface with fictitious accounts, opened only from the QA sandbox',
     'e2e-fixture-pin.h': 'end-to-end test hook compiled only into test hosts',
     'mcp-bridge.cpp': 'MCP stdio bridge: protocol schema, tool descriptions and errors for agents (developer text)',

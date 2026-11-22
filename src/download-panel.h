@@ -20,6 +20,7 @@
 #include <vector>
 #include "chrome.h"
 #include "native-ui.h"
+#include "tooltip.h"
 #include "downloads.h"
 #include "accessibility.h"
 
@@ -414,8 +415,8 @@ public:
         std::function<void()> viewAll;                 // popover link → drawer
     };
 protected:
-    HWND hwnd_ = nullptr, owner_ = nullptr, tip_ = nullptr;
-    std::vector<UINT_PTR> tips_;
+    HWND hwnd_ = nullptr, owner_ = nullptr;
+    Tooltip::Tools tip_;
     Chrome chrome_; View view_{chrome_};
     Motion::State motion_;
     std::map<int, RowReveal> reveals_;
@@ -533,13 +534,10 @@ protected:
     // Icon-only buttons carry tooltips; tools follow the laid-out rows.
     void RefreshTips() {
         if (!tip_) return;
-        for (auto id : tips_) { TOOLINFOW t{}; t.cbSize = sizeof(t); t.hwnd = hwnd_; t.uId = id; SendMessageW(tip_, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&t)); }
-        tips_.clear();
+        tip_.Clear();
         const auto origin = Origin(Motion::Now());
         auto add = [&](UINT_PTR id, Design::Box b, const wchar_t* text) {
-            TOOLINFOW t{}; t.cbSize = sizeof(t); t.uFlags = TTF_SUBCLASS; t.hwnd = hwnd_; t.uId = id;
-            t.rect = {Px(b.left + origin.x), Px(b.top + origin.y), Px(b.right + origin.x), Px(b.bottom + origin.y)}; t.lpszText = const_cast<wchar_t*>(text);
-            SendMessageW(tip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&t)); tips_.push_back(id);
+            tip_.Add(id, {Px(b.left + origin.x), Px(b.top + origin.y), Px(b.right + origin.x), Px(b.bottom + origin.y)}, text);
         };
         if (!items_) return;
         const auto scene = MakeScene(Motion::Now());
@@ -685,8 +683,7 @@ protected:
         RegisterClassW(&wc);
         CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, TR(downloads_history_title), WS_POPUP, 0, 0, Px(width), Px(height), owner, nullptr, instance, this);
         if (!hwnd_) return false;
-        tip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, hwnd_, nullptr, instance, nullptr);
-        NativeUI::StripTooltipShadow(tip_);
+        tip_.Create(instance, hwnd_, root);
         Configure();
         AttachAccessibility();
         return SUCCEEDED(chrome_.Init(hwnd_, root));
@@ -711,7 +708,7 @@ public:
     void InvokeNodeForTest(long long key) { if (const int hit = HitOfKey(key)) SendMessageW(hwnd_, InvokeMessage, static_cast<WPARAM>(hit), 0); }
     virtual ~Host() { Dispose(); }
     // Release Direct2D/WIC before CoUninitialize; the owner destroys the window.
-    void Dispose() { uia_.Detach(); view_.Release(); chrome_.Dispose(); hwnd_ = tip_ = nullptr; tips_.clear(); visible_ = false; }
+    void Dispose() { uia_.Detach(); view_.Release(); chrome_.Dispose(); tip_.Dispose(); hwnd_ = nullptr; visible_ = false; }
     HWND Window() const { return hwnd_; }
     bool Visible() const { return visible_; }
     void Invalidate() { if (hwnd_ && visible_) InvalidateRect(hwnd_, nullptr, FALSE); }

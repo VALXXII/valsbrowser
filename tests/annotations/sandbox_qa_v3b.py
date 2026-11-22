@@ -421,7 +421,7 @@ def scenario():
                 time.sleep(0.4); pop = [w_ for w_ in Q.windows() if w_[1] == 'BrowserAnnotationNote']
                 if pop:
                     edit = Q.find_child(pop[0][0], 'Edit'); er = W.RECT(); user32.GetWindowRect(edit, ctypes.byref(er)); pr = pop[0][3]
-                    c1 = cursor_at((er.left + er.right) / 2, (er.top + er.bottom) / 2); c2 = cursor_at(pr[0] + 10, pr[3] - 10)
+                    c1 = cursor_at((er.left + er.right) / 2, (er.top + er.bottom) / 2); c2 = cursor_at(er.left + 10, er.bottom + 30)   # the row under the field (site label): the panel's layer, not the field's window
                     step('5.4 note panel: I-beam in the note field, arrow on the panel', c1.get('kind') == 'ibeam' and c2.get('kind') == 'arrow', {'field': c1, 'panel': c2})
                 else:
                     step('5.4 note panel open after the click', False, 'no BrowserAnnotationNote window')

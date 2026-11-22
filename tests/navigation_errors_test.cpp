@@ -38,6 +38,19 @@ int main(){
         Require(broken->uri==L"https://exemple.cooom/","retry URL preserved");
         ++nav.id;
     }
+    {   // A possible download (CONNECTION_ABORTED of the tab's latest navigation) is held, never shown at once;
+        // a transport failure a download never produces keeps the existing path.
+        const auto savedId=nav.id;const auto savedError=nav.error;
+        broken->downloadNav.Starting(50,L"https://exemple.cooom/fichier.zip",GetTickCount64());
+        nav.id=50;nav.error=COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED;
+        Require(NavigationCompleted(broken,&nav)==S_OK&&!halted,"aborted navigation handled");
+        Require(broken->downloadNav.Pending(50)&&broken->uri==L"https://exemple.cooom/","a possible download is held: page and address stay");
+        broken->downloadNav.Starting(51,L"https://exemple.cooom/autre",GetTickCount64());
+        nav.id=51;nav.error=COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT;
+        Require(NavigationCompleted(broken,&nav)==S_OK&&!halted,"refused navigation handled");
+        Require(!broken->downloadNav.Pending(51)&&!broken->downloadNav.Pending(50),"a refused connection is never held; the newer navigation voids the older hold");
+        nav.id=savedId;nav.error=savedError;
+    }
     // A canceled older navigation cannot finish the replacement's progress.
     broken->loading.Start(nav.id+1,now);
     NavigationCompleted(broken,&nav);

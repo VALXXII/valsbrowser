@@ -42,16 +42,25 @@ inline constexpr float remindH = 22, remindPad = 8, remindGap = 6, remindRadius 
 // « BETA » on its accent-16 % chip: Paper #5B84FF measures 4.14:1 there (12 px needs 4.5:1), so it is
 // lifted to #6A8FFF (4.66:1); « Mode Annotation » keeps #5B84FF on the band (4.87:1).
 inline constexpr float gradientAlpha = AccentTone::Paper::gradientAlpha;
+// R10 (Paper 1AYJ-0 « Masque » in 1AYH-0): over the dither and the band's gradient, under the content, a layer of the
+// canvas (#171717) at opacity 0.85 whose alpha ramps from 0 at 60.66 % of the band's width to full at 82.29 % (oklab
+// between the same colour = a linear alpha ramp): the wave fades out before the switch and « Quitter ».
+inline constexpr float maskFrom = .6066f, maskTo = .8229f, maskOpacity = .85f;
+inline float MaskAlpha(float x, float w) { if (w <= 0) return 0; const float t = (x / w - maskFrom) / (maskTo - maskFrom); return maskOpacity * (t <= 0 ? 0.f : t >= 1 ? 1.f : t); }
 }
-enum BannerHit { BannerNone = 0, BannerRemind = 1, BannerQuit = 2 };
+// BannerChat: the « Panneau » half of the layout switch, BannerComment its « Commentaire » half (chat intégré, local sites
+// only; Paper 1AYP-0: they replace the former « Demander à l'agent » button).
+enum BannerHit { BannerNone = 0, BannerRemind = 1, BannerQuit = 2, BannerChat = 3, BannerComment = 4 };
+namespace SwitchSpec { inline constexpr float pad = 4, seg = 24, gap = 2, radius = 6, icon = 14; }   // Paper 1AYP-0
 struct BannerVisual {
-    Motion::InteractionVisual quit, remind; bool focus = false, keyboard = false, reduced = false;
+    Motion::InteractionVisual quit, remind, chat, comment; bool focus = false, keyboard = false, reduced = false;
+    bool chatShown = false, chatActive = false;   // chat intégré: the layout switch exists / « Commentaire » is the chosen layout
     int focusItem = BannerQuit; bool beta = true; float reminder = 0;   // reminder: 0 hidden .. 1 shown (fade)
     bool texture = false; double waveSeconds = 0; float waveAmp = 0;     // V3-B: the dithered background (off in the static boards)
     std::uint32_t accent = AccentTone::reference;                        // the window's accent (0xRRGGBB) as presented
 };
-struct BannerLayout { D2D1_RECT_F logo{}, label{}, beta{}, quit{}, remind{}; float keycapX = 0; };
-inline BannerLayout LayoutBanner(Ink& ink, float w, bool beta = true) {
+struct BannerLayout { D2D1_RECT_F logo{}, label{}, beta{}, quit{}, remind{}, chat{}, comment{}, sw{}; float keycapX = 0; };
+inline BannerLayout LayoutBanner(Ink& ink, float w, bool beta = true, bool chat = false) {
     using namespace BannerSpec; BannerLayout l;
     l.logo = {padLeft, (height - logoH) / 2, padLeft + logoW, (height + logoH) / 2};
     l.label = {l.logo.right + logoGap, 6, l.logo.right + logoGap + ink.Width(TR(settings_group_annotation_mode), F(14, 20)), 26};
@@ -60,14 +69,22 @@ inline BannerLayout LayoutBanner(Ink& ink, float w, bool beta = true) {
     l.quit = {w - padRight - quitW, (height - quitH) / 2, w - padRight, (height + quitH) / 2};
     l.keycapX = l.quit.right - quitPadR - KeycapWidth(ink, TR(key_escape), 400);
     const float rw = remindPad + ink.Width(TR(annotation_no_agent_connected), F(12, 16)) + remindGap + ink.Width(TR(agent_connect), F(12, 16, 500)) + remindPad;
-    l.remind = {l.quit.left - gap - rw, (height - remindH) / 2, l.quit.left - gap, (height + remindH) / 2};
+    float edge = l.quit.left;   // the reminder sits left of « Quitter », or of the chat button when there is one
+    if (chat) {   // the switch: padding 4, two 24 px segments 2 apart (Commentaire, Panneau), left of « Quitter »
+        namespace W = SwitchSpec; const float sw = W::pad + W::seg + W::gap + W::seg + W::pad, top = (height - W::seg) / 2;
+        l.sw = {l.quit.left - BannerSpec::gap - sw, 0, l.quit.left - BannerSpec::gap, height};
+        l.comment = {l.sw.left + W::pad, top, l.sw.left + W::pad + W::seg, top + W::seg}; l.chat = {l.comment.right + W::gap, top, l.comment.right + W::gap + W::seg, top + W::seg};
+        edge = l.sw.left;
+    }
+    l.remind = {edge - gap - rw, (height - remindH) / 2, edge - gap, (height + remindH) / 2};
     return l;
 }
 // The text-free span of the band for the wave (V3-B): from the end of « Mode Annotation » (+ BETA) to the start of
 // « Quitter » — or of the reminder, as it fades in (reminder 0..1).
 inline Dither::Zones WaveZones(const BannerLayout& l, bool beta, float reminder) {
     Dither::Zones z; z.left = std::max(l.label.right, beta ? l.beta.right : 0.f);
-    z.right = l.quit.left + (l.remind.left - l.quit.left) * Motion::Clamp(reminder);
+    const float edge = l.sw.right > l.sw.left ? l.sw.left : l.quit.left;
+    z.right = edge + (l.remind.left - edge) * Motion::Clamp(reminder);
     return z;
 }
 // The texture as a bitmap at the target's pixel density (dots snapped to device pixels), drawn at (0, 0).
@@ -120,18 +137,21 @@ inline void RasterBandSpan(std::uint32_t* px, int stride, RECT d, float w, float
                 if (x - cx * cp < dot && cells[size_t(cx - c0)]) c = Dither::Over(cells[size_t(cx - c0)], c);
             }
             if (edge) c = Dither::Over(edge, c);
+            if (const float m = MaskAlpha((x + .5f) / k, w); m > 0) c = Dither::Over(Dither::Premul(0x171717FFu, m), c);   // R10: the mask over all of it
             row[x] = c;
         }
     }
 }
 inline int BannerHitAt(const BannerLayout& l, bool reminder, float x, float y) {
     if (Inside(l.quit, x, y)) return BannerQuit;
+    if (l.chat.right > l.chat.left && Inside(l.chat, x, y)) return BannerChat;
+    if (l.comment.right > l.comment.left && Inside(l.comment, x, y)) return BannerComment;
     if (reminder && Inside(l.remind, x, y)) return BannerRemind;
     return BannerNone;
 }
 inline void PaintBanner(Ink& ink, float w, float h, const BannerVisual& v, const std::function<void()>& backdrop = {}) {
     using namespace BannerSpec;
-    auto* t = ink.Target(); const auto l = LayoutBanner(ink, w, v.beta);
+    auto* t = ink.Target(); const auto l = LayoutBanner(ink, w, v.beta, v.chatShown);
     const auto& tone = AccentTone::BandCached(v.accent);
     auto rgb = [](std::uint32_t c, float a = 1) { return D2D1_COLOR_F{((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 255.f, (c & 255) / 255.f, a}; };
     ink.Fill({0, 0, w, h}, 0, Hex(Ink_::canvas));
@@ -143,6 +163,15 @@ inline void PaintBanner(Ink& ink, float w, float h, const BannerVisual& v, const
     if (v.texture) PaintBandTexture(ink, w, h - 1, v.waveSeconds, v.waveAmp, WaveZones(l, v.beta, v.reminder), tone);
     if (backdrop) { t->PushAxisAlignedClip({0, 0, w, h}, D2D1_ANTIALIAS_MODE_ALIASED); backdrop(); t->PopAxisAlignedClip(); }
     ink.Fill({0, h - 1, w, h}, 0, Hex(tone.border));
+    {   // R10: Paper's mask (1AYJ-0) over the dither, the gradient and the border, under the content. One row of device
+        // pixels from MaskAlpha (the same values RasterBandSpan writes), stretched to the band's height.
+        float dx = 96, dy = 96; t->GetDpi(&dx, &dy); const float s = dx / 96.f; const int pw = std::max(1, int(std::lround(w * s)));
+        static thread_local std::vector<std::uint32_t> row; row.assign(size_t(pw), 0u);
+        for (int x = 0; x < pw; ++x) if (const float m = MaskAlpha((x + .5f) / s, w); m > 0) row[size_t(x)] = Dither::Premul(0x171717FFu, m);
+        ID2D1Bitmap* mask = nullptr; const auto props = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), dx, dy);
+        if (SUCCEEDED(t->CreateBitmap(D2D1::SizeU(UINT32(pw), 1), row.data(), UINT32(pw * 4), props, &mask))) t->DrawBitmap(mask, D2D1::RectF(0, 0, pw / s, h), 1, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+        Release(mask);
+    }
     {   // Mark with the shader's ramp.
         const D2D1_RECT_F m{(l.logo.left + l.logo.right - markW) / 2, (l.logo.top + l.logo.bottom - markH) / 2, (l.logo.left + l.logo.right + markW) / 2, (l.logo.top + l.logo.bottom + markH) / 2};
         const D2D1_GRADIENT_STOP ramp[3] = {{0, rgb(tone.markLight)}, {.55f, rgb(tone.markMid)}, {1, rgb(tone.markDeep)}};
@@ -161,6 +190,19 @@ inline void PaintBanner(Ink& ink, float w, float h, const BannerVisual& v, const
             if (v.focus && v.focusItem == BannerRemind) FocusRing(ink, l.remind, remindRadius, v.keyboard);
         }
         if (pushed) ink.PopOpacity(group);
+    }
+    if (v.chatShown) {   // Paper 1AYP-0: the chosen half on white 10 % (radius 6), its icon at 80 %; the other at 50 %
+        namespace W = SwitchSpec;
+        auto seg = [&](const D2D1_RECT_F& r, const Glyph& g, float degrees, bool chosen, const Motion::InteractionVisual& iv, int item) {
+            ScaleScope scale(t, r, Motion::PressScale(iv.press, v.reduced));
+            const float plate = chosen ? .10f : .06f * iv.hover + .04f * iv.press;
+            if (plate > 0) ink.Fill(r, W::radius, {1, 1, 1, plate});
+            const float cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+            ink.Icon(g, {cx - W::icon / 2, cy - W::icon / 2, cx + W::icon / 2, cy + W::icon / 2}, {1, 1, 1, chosen ? .8f : .5f + .3f * iv.hover}, degrees);
+            if (v.focus && v.focusItem == item) FocusRing(ink, r, W::radius, v.keyboard);
+        };
+        seg(l.comment, Glyphs::commentBubble, 0, v.chatActive, v.comment, BannerComment);
+        seg(l.chat, Glyphs::sidePanel, 180, !v.chatActive, v.chat, BannerChat);
     }
     {   // Quitter + Échap: hover plate, press 0.96.
         ScaleScope scale(t, l.quit, Motion::PressScale(v.quit.press, v.reduced));
@@ -205,41 +247,53 @@ inline Accessibility::Node ToolbarNode(long long key, long long parent, RECT bou
 
 struct BannerHooks {
     std::function<void()> exit;                               // « Quitter » / Échap via UIA
+    std::function<void()> escape;                             // Échap typed in the band (unset: exit) — an open bubble closes first
     std::function<void()> connect;                            // V2: « Aucun agent connecté · Connecter » (1.8)
+    std::function<void()> chat;                               // chat intégré: « Panneau » (the chat panel at the right; opens it)
+    std::function<void()> comment;                            // chat intégré: « Commentaire » (a bubble on the element clicked)
     std::function<void(const std::wstring&)> announce;        // optional: the host's announcer
 };
 namespace BannerMotion { inline constexpr int enter = 220, exit = 160, reduced = 150; inline constexpr float lift = 32; }
 inline Timing BannerTiming() { Timing t; t.enter = BannerMotion::enter; t.exit = BannerMotion::exit; t.reducedEnter = t.reducedExit = BannerMotion::reduced; t.from = t.to = 1; t.curve = Curves::band; return t; }
 // The band's offset for a presence progress (0 hidden .. 1 in place): slides with its opacity, none when reduced.
+// R25: the band's visible height while it slides in (progress 0 -> 1) or out (1 -> 0); the page and the chat panel
+// are laid out under it at every frame: they follow without a jump. Reduced motion: no slide (a step).
+inline float BandSlideHeight(float progress, float full, bool reduced) { return reduced ? (progress >= .5f ? full : 0.f) : full * Motion::Clamp(progress); }
 inline float BannerOffset(float progress, bool reduced) { return reduced ? 0.f : -(1 - Motion::Clamp(progress)) * BannerMotion::lift; }
 class Banner : public Animator::Client {
-    static constexpr long long RootKey = 1, QuitKey = 2, RemindKey = 3;
+    static constexpr long long RootKey = 1, QuitKey = 2, RemindKey = 3, ChatKey = 4, CommentKey = 5;
+    bool chat_ = false, chatActive_ = false;   // the switch is shown / « Commentaire » is chosen
+    float hidden_ = 0;                          // R25: DIP of the band still above its visible part while it slides
+    static long long KeyOf(int item) { return item == BannerQuit ? QuitKey : item == BannerChat ? ChatKey : item == BannerComment ? CommentKey : RemindKey; }
+    static int ItemOf(long long key) { return key == QuitKey ? BannerQuit : key == ChatKey ? BannerChat : key == CommentKey ? BannerComment : BannerRemind; }
     HINSTANCE instance_ = nullptr; HWND parent_ = nullptr; std::wstring root_; BannerHooks hooks_;
     Layer layer_; Presence presence_{BannerTiming()};
     Motion::State motion_; Ramp reminder_; bool reminderOn_ = false, beta_ = true;
     RECT rect_{}; int hover_ = 0, pressed_ = 0, focusItem_ = BannerQuit; bool focus_ = false, keyboard_ = false, reduced_ = false;
     float Width() const { return (rect_.right - rect_.left) / layer_.Scale(); }
     // Cached per width / BETA / scale (V3-B: the wave frames need the label rectangles 30 times a second).
-    BannerLayout layoutCache_{}; float layoutW_ = -1, layoutScale_ = 0; bool layoutBeta_ = true;
+    BannerLayout layoutCache_{}; float layoutW_ = -1, layoutScale_ = 0; bool layoutBeta_ = true, layoutChat_ = false;
     BannerLayout Layout() {
         auto* ink = Ink::Instance(); if (!ink) return BannerLayout{};
         const float w = Width(), sc = layer_.Scale();
-        if (w != layoutW_ || beta_ != layoutBeta_ || sc != layoutScale_) { layoutCache_ = LayoutBanner(*ink, w, beta_); layoutW_ = w; layoutBeta_ = beta_; layoutScale_ = sc; }
+        if (w != layoutW_ || beta_ != layoutBeta_ || sc != layoutScale_ || chat_ != layoutChat_) { layoutCache_ = LayoutBanner(*ink, w, beta_, chat_); layoutW_ = w; layoutBeta_ = beta_; layoutScale_ = sc; layoutChat_ = chat_; }
         return layoutCache_;
     }
     void Render(Motion::Time now, bool waveOnly = false) {
         if (!layer_.Window()) return;
         const float opacity = presence_.Progress(now), dy = BannerOffset(opacity, reduced_);
         BannerVisual v; v.quit = motion_.Visual(BannerQuit, now); v.remind = motion_.Visual(BannerRemind, now); v.focus = focus_; v.keyboard = keyboard_;
+        v.chat = motion_.Visual(BannerChat, now); v.comment = motion_.Visual(BannerComment, now); v.chatShown = chat_; v.chatActive = chatActive_;
         v.accent = AccentRgb24();   // the window accent as presented (it follows the profile fade)
         v.reduced = reduced_; v.focusItem = focusItem_; v.beta = beta_; v.reminder = Motion::Clamp(reminder_.Value(now));
         v.texture = true; v.waveSeconds = WaveSeconds(now); v.waveAmp = Dither::Amplitude(std::chrono::duration<double, std::milli>(now - enteredAt_).count(), reduced_);
         if (v.waveAmp > 0 && presence_.IsOpen()) ++waveFrames_;
         lastRender_ = now;
-        const double seconds = std::chrono::duration<double>(now.time_since_epoch()).count(); auto backdrop = backdrop_;
-        layer_.paint = [v, opacity, dy, seconds, backdrop](Ink& ink, float w, float h) {
+        const double seconds = std::chrono::duration<double>(now.time_since_epoch()).count(); auto backdrop = backdrop_; const float hidden = hidden_;
+        layer_.paint = [v, opacity, dy, seconds, backdrop, hidden](Ink& ink, float w, float hv) {
+            const float h = hv + hidden;   // R25: the band's full height; only its lower part is in the window while it slides
             auto* t = ink.Target(); D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
-            t->SetTransform(D2D1::Matrix3x2F::Translation(0, dy) * base);
+            t->SetTransform(D2D1::Matrix3x2F::Translation(0, dy - hidden) * base);
             ID2D1Layer* group = nullptr; const bool pushed = ink.PushOpacity(opacity, group);
             PaintBanner(ink, w, h, v, backdrop ? [&] { backdrop(ink, w, h, seconds); } : std::function<void()>());
             if (pushed) ink.PopOpacity(group);
@@ -251,7 +305,7 @@ class Banner : public Animator::Client {
         // A wave-only frame (nothing else moves): only the span between the labels changes; its pixels are written in
         // place (no Direct2D) and only they go to the compositor.
         bool done = false;
-        if (waveOnly && !raiseNext_ && opacity >= 1 && dy == 0) {
+        if (waveOnly && !raiseNext_ && opacity >= 1 && dy == 0 && hidden_ == 0) {
             const auto z = WaveZones(Layout(), beta_, v.reminder); const float k = layer_.Scale(), w = Width(), h = BannerSpec::height;
             const RECT span{LONG(std::ceil(z.left * k)), 0, LONG(std::floor(z.right * k)), LONG(std::lround(h * k))};
             const auto& tones = AccentTone::BandCached(v.accent);
@@ -282,6 +336,8 @@ class Banner : public Animator::Client {
     void Interact() { const auto now = Motion::Now(); motion_.SetInteraction(hover_, pressed_ == hover_ ? pressed_ : 0, now); Render(now); Animator::Get().Request(this); }
     void Activate(int item) {
         if (item == BannerQuit) { if (hooks_.exit) hooks_.exit(); }
+        else if (item == BannerChat) { if (chat_ && hooks_.chat) hooks_.chat(); }
+        else if (item == BannerComment) { if (chat_ && hooks_.comment) hooks_.comment(); }
         else if (item == BannerRemind && reminderOn_ && hooks_.connect) hooks_.connect();
     }
     bool Handle(UINT m, WPARAM w, LPARAM l, LRESULT& r) {
@@ -298,13 +354,15 @@ class Banner : public Animator::Client {
         case WM_GETDLGCODE: r = DLGC_WANTALLKEYS; return true;
         case WM_KEYDOWN:
             keyboard_ = true;
-            if (w == VK_TAB && reminderOn_) {
-                focusItem_ = focusItem_ == BannerQuit ? BannerRemind : BannerQuit; Render(Motion::Now());
-                if (layer_.uia.Listening()) layer_.uia.Raise(focusItem_ == BannerQuit ? QuitKey : RemindKey, UIA_AutomationFocusChangedEventId);
+            if (w == VK_TAB && (reminderOn_ || chat_)) {   // reminder -> chat -> Quitter (reading order), Maj+Tab backwards
+                std::vector<int> order; if (reminderOn_) order.push_back(BannerRemind); if (chat_) { order.push_back(BannerComment); order.push_back(BannerChat); } order.push_back(BannerQuit);
+                auto it = std::find(order.begin(), order.end(), focusItem_); int i = it == order.end() ? 0 : int(it - order.begin()) + (GetKeyState(VK_SHIFT) < 0 ? -1 : 1);
+                focusItem_ = order[size_t((i + int(order.size())) % int(order.size()))]; Render(Motion::Now());
+                if (layer_.uia.Listening()) layer_.uia.Raise(KeyOf(focusItem_), UIA_AutomationFocusChangedEventId);
                 r = 0; return true;
             }
             if (w == VK_RETURN || w == VK_SPACE) { Activate(focusItem_); r = 0; return true; }
-            if (w == VK_ESCAPE) { if (hooks_.exit) hooks_.exit(); r = 0; return true; }
+            if (w == VK_ESCAPE) { if (hooks_.escape) hooks_.escape(); else if (hooks_.exit) hooks_.exit(); r = 0; return true; }
             return false;
         case WM_APP + 1: Activate(int(w)); r = 0; return true;
         case WM_TIMER: if (w != WaveTimer) return false;   // V3-B: the next wave frame is due: back to the display clock
@@ -321,6 +379,12 @@ class Banner : public Animator::Client {
         if (reminderOn_) {
             Accessibility::Node c; c.key = RemindKey; c.parent = RootKey; c.name = TR(annotation_connect_agent); c.help = TR(annotation_no_agent_connected);
             c.automationId = L"AnnotationConnectReminder"; c.bounds = layer_.Screen(l.remind); n.push_back(c);
+        }
+        if (chat_) {   // the switch: two toggle buttons, exactly one on
+            Accessibility::Node m; m.key = CommentKey; m.parent = RootKey; m.name = TR(chat_layout_comment); m.help = TR(chat_layout_comment_help); m.toggle = chatActive_ ? 2 : 1;
+            m.automationId = L"AnnotationLayoutComment"; m.bounds = layer_.Screen(l.comment); n.push_back(m);
+            Accessibility::Node c; c.key = ChatKey; c.parent = RootKey; c.name = TR(chat_layout_panel); c.help = TR(chat_layout_panel_help); c.accelerator = TR(key_ctrl_shift_d); c.toggle = chatActive_ ? 1 : 2;
+            c.automationId = L"AnnotationAskAgent"; c.bounds = layer_.Screen(l.chat); n.push_back(c);
         }
         Accessibility::Node q; q.key = QuitKey; q.parent = RootKey; q.name = TR(annotation_quit_mode); q.accelerator = TR(key_escape);
         q.automationId = L"AnnotationQuit"; q.bounds = layer_.Screen(l.quit); n.push_back(q);
@@ -346,8 +410,8 @@ public:
             layer_.handle = [this](UINT m, WPARAM w, LPARAM l, LRESULT& r) { return Handle(m, w, l, r); };
             Accessibility::Host host; host.window = layer_.Window();
             host.nodes = [this] { return Nodes(); };
-            host.focused = [this]() -> long long { return focus_ ? (focusItem_ == BannerQuit ? QuitKey : RemindKey) : 0; };
-            host.invoke = [this](long long key) { PostMessageW(layer_.Window(), WM_APP + 1, key == QuitKey ? BannerQuit : BannerRemind, 0); };
+            host.focused = [this]() -> long long { return focus_ ? KeyOf(focusItem_) : 0; };
+            host.invoke = [this](long long key) { PostMessageW(layer_.Window(), WM_APP + 1, WPARAM(ItemOf(key)), 0); };
             layer_.uia.Attach(std::move(host));
             motion_.EnablePolish();
         }
@@ -363,6 +427,17 @@ public:
         return true;
     }
     void Move(RECT rect) { rect_ = rect; raiseNext_ = true; if (presence_.Visible(Motion::Now())) Render(Motion::Now()); }
+    // R25: the band slides under the toolbar: `rect` is its visible part, `hiddenDip` what is still above it (drawn
+    // shifted up, laid out at its full height). 0 = in place.
+    void Slide(RECT rect, float hiddenDip) { hidden_ = std::max(0.f, hiddenDip); Move(rect); }
+    // Chat intégré: the layout switch (shown on local sites only; active = « Commentaire » is the chosen layout).
+    void SetChat(bool shown, bool active) {
+        if (shown == chat_ && active == chatActive_) return;
+        const bool layout = shown != chat_; chat_ = shown; chatActive_ = active;
+        if (!chat_ && focusItem_ == BannerChat) focusItem_ = BannerQuit;
+        if (layer_.Window()) { Render(Motion::Now()); if (layout && layer_.uia.Listening()) layer_.uia.ChildrenChanged(RootKey); }
+    }
+    bool ChatShown() const { return chat_; }
     // V2 (1.8): « Aucun agent connecté · Connecter » after « Plus tard »; fades in/out in 120 ms.
     void SetReminder(bool on, bool animate = true) {
         if (on == reminderOn_) return;

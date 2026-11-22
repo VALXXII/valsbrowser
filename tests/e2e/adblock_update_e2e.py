@@ -20,6 +20,7 @@ Checks:
 """
 import argparse, ctypes, ctypes.wintypes as W, http.server, os, shutil, subprocess, sys, threading, time
 from pathlib import Path
+os.environ.setdefault('BROWSER_NO_ONBOARDING', '1')   # fresh installed layout: not the first-run window (src/onboarding-flow.h)
 
 ap = argparse.ArgumentParser(); ap.add_argument('--app', required=True); ap.add_argument('--out', required=True); a = ap.parse_args()
 src, out = Path(a.app).resolve(), Path(a.out).resolve()

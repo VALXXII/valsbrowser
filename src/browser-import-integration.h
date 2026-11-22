@@ -67,7 +67,8 @@ std::vector<MD::Check> ImportChecks(const BI::Source& s) {
     cookies.disabled = true; cookies.value = false; cookies.detail = TR(import_cookies_unavailable);
     return {bookmarks, history, cookies};
 }
-std::wstring PickBookmarksFile() {
+// `owner`: the window the picker belongs to (the onboarding window passes its own); default: the dialog or the browser window.
+std::wstring PickBookmarksFile(HWND owner = nullptr) {
     IFileOpenDialog* dialog = nullptr;
     if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog))) || !dialog) { Log(L"IMPORT file picker unavailable"); return L""; }
     FILEOPENDIALOGOPTIONS options = 0; dialog->GetOptions(&options);
@@ -76,7 +77,7 @@ std::wstring PickBookmarksFile() {
     const std::wstring filter = TR(import_pick_filter);
     const COMDLG_FILTERSPEC types[] = {{filter.c_str(), L"*.html;*.htm"}};
     dialog->SetFileTypes(1, types);
-    std::wstring chosen; const HRESULT hr = dialog->Show(modal.Window() ? modal.Window() : window);
+    std::wstring chosen; const HRESULT hr = dialog->Show(owner ? owner : modal.Window() ? modal.Window() : window);
     if (SUCCEEDED(hr)) { IShellItem* item = nullptr; PWSTR path = nullptr; if (SUCCEEDED(dialog->GetResult(&item)) && item && SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) chosen = path; CoTaskMemFree(path); if (item) item->Release(); }
     else if (hr != HRESULT_FROM_WIN32(ERROR_CANCELLED)) Log(L"IMPORT file picker failed hr=" + std::to_wstring(static_cast<unsigned long>(hr)));
     dialog->Release();
