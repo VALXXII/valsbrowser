@@ -720,7 +720,10 @@ function frame() {
 function schedule() { if (!raf && alive) raf = requestAnimationFrame(frame); }
 
 // ---- events
-function onMove(e) { px = e.clientX; py = e.clientY; if (e.isTrusted && !!e.ctrlKey !== ctrl && !(hostCtrl && !e.ctrlKey)) setCtrl(!!e.ctrlKey); if (idle()) return; haveMove = true; keyboard = false; schedule(); }
+var modsAt = 0;
+function onMove(e) {
+  if (e.isTrusted && !e.ctrlKey) { var tn = performance.now(); if (tn - modsAt > 30) { modsAt = tn; post({ op: 'mods' }); } }   // R31: the host reads Ctrl (its keyboard)
+  px = e.clientX; py = e.clientY; if (e.isTrusted && !!e.ctrlKey !== ctrl && !(hostCtrl && !e.ctrlKey)) setCtrl(!!e.ctrlKey); if (idle()) return; haveMove = true; keyboard = false; schedule(); }
 // R31: Ctrl held = the page as usual: its own cursors (the sheet is emptied), no hover frame nor inspector, no iframe
 // shields; clicks, scrolling and typing reach the site, nothing is selected. Released = the selection at once. A
 // selected element (note open, bubble) keeps its frame. The Ctrl+... shortcuts are never consumed here (onKey).

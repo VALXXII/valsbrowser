@@ -323,6 +323,9 @@ try:
     st = cdp.js("[window.__clicked||0, window.__msgs.filter(m=>m.op==='select').length]")
     check(held[0] == "default" and held[1] == "0" and st == [c0 + 1, n0], "R31 (host Ctrl): held with moves and a click that carry no Ctrl flag: the page's cursor, no frame, the site's click", [held[0][:20], held[1], st])
     cdp.js(f"{H}.cmd('ctrl', false)"); frames(cdp)
+    nm = cdp.js("window.__msgs.filter(m=>m.op==='mods').length"); mouse(cdp, 700, 300); wait(cdp, 60); mouse(cdp, 705, 302); wait(cdp, 60); mouse(cdp, 706, 303)
+    nm2 = cdp.js("window.__msgs.filter(m=>m.op==='mods').length")
+    check(2 <= nm2 - nm <= 3, "R31 (host Ctrl): a pointer move over the page asks the host to read Ctrl (« mods », at most every 30 ms)", [nm, nm2])
     check(cdp.js("getComputedStyle(document.querySelector('.btn')).cursor") == aim, "R31 (host Ctrl): released (host): the aiming cursor at once, without moving")
 
     # ---------------- R26: peek

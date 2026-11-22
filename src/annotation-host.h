@@ -71,7 +71,7 @@ inline bool Pairs(const SJ::Value* v, std::vector<BA::NamedValue>& out, std::siz
 }
 
 // ---------------------------------------------------------------- page messages
-enum class Op { Invalid, Select, Hidden, Shown, Escape, NoSelection, Anchor, Selecting };
+enum class Op { Invalid, Select, Hidden, Shown, Escape, NoSelection, Anchor, Selecting, Mods };
 // Anchor (chat, Mode Commentaire): where the element the bubble is attached to is now, CSS px of the top viewport;
 // gone = it is no longer in the page.
 // Selecting (latency): posted at the click, before the full « select » of the same seq: what was clicked —
@@ -106,6 +106,7 @@ inline Envelope CheckEnvelope(const SJ::Value& v, const std::string& nonce, std:
         if (const auto* pt = v.Get("pt"); pt && pt->IsObject()) { double x = 0, y = 0; if (detail::Num(pt->Get("x"), x, -1e7, 1e7) && detail::Num(pt->Get("y"), y, -1e7, 1e7)) { e.px = x; e.py = y; } }   // optional
         e.op = Op::Selecting; e.serial = q->integer; e.selector = sel->string;
     }
+    else if (op->string == "mods") e.op = Op::Mods;   // R31: the pointer moved over the page: the host reads Ctrl
     else if (op->string == "escape") e.op = Op::Escape;
     else if (op->string == "noselection") e.op = Op::NoSelection;
     else if (op->string == "anchor") {

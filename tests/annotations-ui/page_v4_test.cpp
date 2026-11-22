@@ -103,6 +103,10 @@ static void TransitionDone() {
         CHECK(r.outcomes.size() == 1 && r.outcomes[0] == Outcome::Reloaded && r.reloads == 1);
     }
 }
+static void Mods() {   // R31: « mods » = the host reads Ctrl (no hook)
+    namespace AH = AnnotationHost;
+    CHECK(AH::CheckMessage("{\"type\":\"browser-annotation\",\"v\":1,\"nonce\":\"n4\",\"navStamp\":1,\"op\":\"mods\"}", "n4", 1).env.op == AH::Op::Mods);
+}
 static void Escape() {   // review M4 (b): Escape typed in the page with a bubble open closes the bubble, not the mode
     namespace AH = AnnotationHost;
     CHECK(AH::OnEscape(false, true) == AH::EscapeAction::CloseBubble && AH::OnEscape(true, true) == AH::EscapeAction::CloseBubble);
@@ -126,7 +130,7 @@ static void Transition() {   // R36
 }
 
 int wmain(int argc, wchar_t** argv) {
-    Peek(); Selecting(); Anchor(); Edges(); TransitionDone(); Escape(); Ctrl(); Transition();
+    Peek(); Selecting(); Anchor(); Edges(); TransitionDone(); Mods(); Escape(); Ctrl(); Transition();
     if (argc > 1) {
         const std::wstring out = argv[1];
         auto write = [&](const wchar_t* name, const std::wstring& text) {

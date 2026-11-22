@@ -84,7 +84,7 @@ int claimed = 0;                              // launcher counter: annotations a
 bool statusBusy = false, statusDirty = false;
 enum class Card { None, Working, NoAgent, Added, Done, Read, Unhandled } card = Card::None; std::string cardId, cardSite;
 std::wstring loggedOnce;
-HWND post = nullptr; constexpr UINT JobDone = WM_APP + 1, WatchChanged = WM_APP + 2, CtrlChanged = WM_APP + 3; constexpr UINT_PTR HideTimer = 1, FrameTimer = 2, PanelTimer = 3;
+HWND post = nullptr; constexpr UINT JobDone = WM_APP + 1, WatchChanged = WM_APP + 2; constexpr UINT_PTR HideTimer = 1, FrameTimer = 2, PanelTimer = 3, CtrlTimer = 4;
 // V3: the note panel is built right after the engine is asked for the shot (building it takes 30-55 ms of the UI
 // thread: done before, it delayed the page's « hidden » and so the shot by as much). 60 ms at most after the click.
 struct PendingPanel { bool on = false; std::uint64_t serial = 0; AUI::NoteRequest req; RECT target{}, page{}; bool keyboard = false; } panel;
@@ -227,24 +227,6 @@ bool ConnectRedirected() { return !EnvVar(L"BROWSER_ANNOTATIONS_CONNECT_ROOT").e
 // ---------------------------------------------------------------- thread pool -> UI thread
 struct Job { std::function<void()> work, done; };
 LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l);
-// Final pass 1, R31: Ctrl held = the site as usual. The page sees Ctrl only when its own WebView has the keyboard (its
-// pointer moves carry no Ctrl flag otherwise: keyboard in the band, the bubble, the panel). While the mode is on, a
-// low-level keyboard hook watches the Ctrl keys only (every other key passes untouched, nothing is read or kept) and
-// tells the page « ctrl » true / false; installed at the mode's entry, removed at its exit (no wake-up otherwise).
-HHOOK ctrlHook = nullptr; bool ctrlHeld = false;
-LRESULT CALLBACK CtrlHookProc(int code, WPARAM w, LPARAM l) {
-    if (code == HC_ACTION && post) {
-        const auto* k = reinterpret_cast<const KBDLLHOOKSTRUCT*>(l);
-        if (k->vkCode == VK_LCONTROL || k->vkCode == VK_RCONTROL || k->vkCode == VK_CONTROL)
-            PostMessageW(post, CtrlChanged, (w == WM_KEYDOWN || w == WM_SYSKEYDOWN) ? 1 : 0, 0);   // handled on the UI thread, never here
-    }
-    return CallNextHookEx(ctrlHook, code, w, l);
-}
-void CtrlWatch(bool on) {
-    if (on && !ctrlHook) ctrlHook = SetWindowsHookExW(WH_KEYBOARD_LL, CtrlHookProc, GetModuleHandleW(nullptr), 0);
-    else if (!on && ctrlHook) { UnhookWindowsHookEx(ctrlHook); ctrlHook = nullptr; }
-    if (!on) ctrlHeld = false;
-}
 bool EnsurePost() {
     if (post) return true;
     WNDCLASSEXW wc{sizeof(wc)}; wc.lpfnWndProc = PostProc; wc.hInstance = instance; wc.lpszClassName = L"BrowserAnnotationPost";
@@ -330,6 +312,24 @@ void Cmd(const std::shared_ptr<Tab>& t, const std::wstring& op, const std::wstri
     if (!t || !t->view.p || t->closed || halted) return;
     auto cb = Callback<ICoreWebView2ExecuteScriptCompletedHandler, HRESULT, LPCWSTR>([](HRESULT, LPCWSTR) -> HRESULT { return S_OK; });
     t->view->ExecuteScript(AUI::PageCommand(AH::Wide(s.nonce.empty() ? std::string("-") : s.nonce), op, arg).c_str(), cb); cb->Release();
+}
+// Final pass 1, R31: Ctrl held = the site as usual. The page sees Ctrl only when its own WebView has the keyboard (its
+// pointer moves carry no Ctrl flag otherwise: keyboard in the band, the bubble, the panel). The host reads the state of
+// the Ctrl key (GetAsyncKeyState: no hook, nothing else read) at each pointer move over the page (the page asks:
+// « mods ») and every ~30 ms, only while the mode is on and this window is in front, and tells the page the changes.
+bool ctrlHeld = false;
+bool OursInFront() { DWORD pid = 0; const HWND fg = GetForegroundWindow(); if (fg) GetWindowThreadProcessId(fg, &pid); return fg && pid == GetCurrentProcessId(); }
+void CtrlPoll() {
+    const bool down = s.active && OursInFront() && (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    if (down == ctrlHeld) return;
+    ctrlHeld = down;
+    if (s.active && s.injected) Cmd(ModeTab(), L"ctrl", down ? L"true" : L"false");
+}
+// The ~30 ms reading runs only while the mode is on and the window is in front (WM_ACTIVATEAPP / show: AnnotationWindowState).
+void CtrlWatch() {
+    const bool on = s.active && OursInFront();
+    if (post) { if (on) SetTimer(post, CtrlTimer, 30, nullptr); else KillTimer(post, CtrlTimer); }
+    if (!on) CtrlPoll();   // released (or left behind): the page gets its selection back
 }
 // The accent the page script paints (its frame fill, edges, label, padding hatches, cursor dot): the native frame and
 // the capture's fill removal use the same value. It is the window's SETTLED accent (Design::Accent::Settled: the profile
@@ -1109,7 +1109,7 @@ void Activate(const Start& st) {
     const std::wstring keepDraft = s.draft;
     s = Session{}; s.active = true; s.tab = t; s.navStamp = t->navStamp; ++serials; s.serial = serials; s.nonce = BA::NewClaimToken();
     if (s.nonce.empty()) { s.active = false; Log(L"ANNOTATE no random source"); return; }
-    CtrlWatch(true);   // R31
+    CtrlWatch();   // R31
     { LPWSTR src = nullptr; if (SUCCEEDED(t->view->get_Source(&src)) && src) s.source = src; CoTaskMemFree(src); }
     s.origin = AH::OriginOf(t->uri); t->controller->get_ZoomFactor(&s.zoom); s.draft = keepDraft;
     s.pageAccent = SettledAccentRgb();   // the profile's colour, even when the entry falls inside its 120 ms fade
@@ -1196,7 +1196,7 @@ void SetSelecting(bool on) {
 void Exit(const wchar_t* why, bool pageChanged) {
     if (!s.active) return;
     auto t = ModeTab(); const bool hadPopover = note.Visible();
-    Cmd(t, L"exit"); CtrlWatch(false);
+    Cmd(t, L"exit");
     if (post) { KillTimer(post, HideTimer); KillTimer(post, FrameTimer); KillTimer(post, PanelTimer); }
     panel = PendingPanel{};
     frame.Destroy(); shot = ShotJob{}; resumeOwed = false; frameSerial = 0;   // the page's frame is gone with its script
@@ -1204,6 +1204,7 @@ void Exit(const wchar_t* why, bool pageChanged) {
     // A capture still owed to a written annotation is lost if its page goes away (the note stays, without image).
     lates.erase(std::remove_if(lates.begin(), lates.end(), [](const Late& l) { return l.serial == s.serial && !l.shot; }), lates.end());
     s = Session{}; s.draft = pageChanged ? std::wstring() : draft; ++serials;
+    CtrlWatch();   // R31: the mode is off: no more reading, the state forgotten
     note.Close(!pageChanged); banner.Hide(); if (connect.Visible()) connect.Close(false);
     veil.Interrupt();   // V3-B: an exit during the entry fades the veil from its value (none at the exit otherwise)
     card = Card::None;
@@ -1251,14 +1252,7 @@ LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     if (m == WM_TIMER && w == HideTimer) { KillTimer(h, HideTimer); if (s.active && shot.waiting) { s.captureWanted = false; Log(L"ANNOTATE page did not confirm the hidden frame: capturing anyway"); Capture(ModeTab(), shot.serial); } ShowPanel(); return 0; }
     if (m == WM_TIMER && w == PanelTimer) { KillTimer(h, PanelTimer); ShowPanel(); return 0; }
-    if (m == CtrlChanged) {   // R31: only while this window (or one of ours: the bubble, the band) is in front; a release always
-        DWORD pid = 0; const HWND fg = GetForegroundWindow(); if (fg) GetWindowThreadProcessId(fg, &pid);
-        const bool down = w != 0, ours = pid == GetCurrentProcessId();
-        if (down == ctrlHeld || (down && !ours)) return 0;
-        ctrlHeld = down;
-        if (s.active && s.injected) Cmd(ModeTab(), L"ctrl", down ? L"true" : L"false");
-        return 0;
-    }
+    if (m == WM_TIMER && w == CtrlTimer) { if (!s.active || !OursInFront()) { CtrlWatch(); return 0; } CtrlPoll(); return 0; }   // R31
     if (m == WM_TIMER && w == FrameTimer) { KillTimer(h, FrameTimer); frame.Hide(); return 0; }
     return DefWindowProcW(h, m, w, l);
 }
@@ -1276,7 +1270,7 @@ bool AnnotationSurfaceFocus() {
 }
 void AnnotationSyncChrome() { Ann::SyncChrome(); Ann::LauncherSync(); }
 void AnnotationLayout() { Ann::Place(); }
-void AnnotationWindowState() { if (Ann::uiReady) Ann::banner.WindowStateChanged(); }   // V3-B: the wave's clock
+void AnnotationWindowState() { if (Ann::uiReady) Ann::banner.WindowStateChanged(); Ann::CtrlWatch(); }   // R31: Ctrl read only in front   // V3-B: the wave's clock
 void AnnotationAccentChanged() { Ann::AccentChanged(); }   // profiles-integration.h: the window's accent changed
 void AnnotationNavigation(const std::shared_ptr<Tab>& t) {
     if (!Ann::s.active || Ann::ModeTab() != t) return;
@@ -1311,6 +1305,7 @@ bool AnnotationPageMessage(const std::shared_ptr<Tab>& t, ICoreWebView2WebMessag
         break;
     case AH::Op::NoSelection: Announce(TR(annotation_no_selection)); break;
     case AH::Op::Anchor: Chat::OnAnchor(c.env); break;
+    case AH::Op::Mods: CtrlPoll(); break;   // R31: a pointer move over the page: Ctrl read now
     case AH::Op::Selecting: if (!s.paused) Chat::OpenEarly(t, c.env); break;   // R18: before the full « select » of the same seq
     default: LogOnce(AH::Wide(c.why.empty() ? std::string("invalid") : c.why)); break;
     }
