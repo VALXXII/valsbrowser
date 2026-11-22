@@ -88,6 +88,10 @@ struct Link {
     std::wstring Target() const { wchar_t p[MAX_PATH * 4]{}; return ok() && SUCCEEDED(link->GetPath(p, MAX_PATH * 4, nullptr, SLGP_RAWPATH)) ? p : L""; }
 };
 
+// Our launcher shortcut in a Start Menu / desktop folder (the name setup-core.cpp writes). One place, so the path the
+// browser stamps at start (main.cpp StampTaskbarIdentity) is the one tests check.
+inline std::wstring LauncherShortcut(const std::wstring& folder) { return folder + L"\\browser.lnk"; }
+
 inline std::wstring ShortcutId(const std::wstring& lnk) {
     Link l(lnk, true); if (!l.ok()) return L"";
     IPropertyStore* store = nullptr; if (FAILED(l.link->QueryInterface(IID_PPV_ARGS(&store)))) return L"";

@@ -402,14 +402,6 @@ class NotePopover : public Animator::Client {
         case WM_SETFOCUS: { const LRESULT r = DefSubclassProc(h, m, w, l); self->view_.focus = 0; self->caret_.Apply(h, FieldGray(), self->CaretColor(), std::max(1, self->Px(1)), self->Px(18)); self->Repaint(); return r; }
         case WM_KILLFOCUS: self->Repaint(); break;
         case WM_LBUTTONDOWN: self->view_.keyboard = false; break;
-        case WM_PAINT: {   // placeholder: drawn by GDI under the caret while the field is empty
-            const LRESULT r = DefSubclassProc(h, m, w, l);
-            if (GetWindowTextLengthW(h) == 0) {
-                HDC dc = GetDC(h); RECT c; GetClientRect(h, &c); auto old = SelectObject(dc, self->font_);
-                SetTextColor(dc, HintGray()); SetBkMode(dc, TRANSPARENT); DrawTextW(dc, NoteSpec::placeholder(), -1, &c, DT_WORDBREAK | DT_NOPREFIX);
-                SelectObject(dc, old); ReleaseDC(h, dc);
-            }
-            return r; }
         }
         const bool key = m == WM_CHAR || m == WM_KEYDOWN || m == WM_SYSKEYDOWN;
         if (key) self->KeepPointer();
@@ -450,8 +442,8 @@ class NotePopover : public Animator::Client {
         switch (m) {
         case WM_GETOBJECT: { LRESULT r; if (uia_.OnGetObject(h, w, l, r)) return r; break; }
         case WM_ERASEBKGND: { RECT c{}; GetClientRect(h, &c); if (fieldBrush_) FillRect(reinterpret_cast<HDC>(w), &c, fieldBrush_); return 1; }
-        case WM_PAINT: { PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); if (fieldBrush_) FillRect(dc, &ps.rcPaint, fieldBrush_); EndPaint(h, &ps); return 0; }
-        case WM_CTLCOLOREDIT: { HDC dc = reinterpret_cast<HDC>(w); SetTextColor(dc, TextGray()); SetBkColor(dc, FieldGray()); SetBkMode(dc, OPAQUE); return reinterpret_cast<LRESULT>(fieldBrush_); }
+        case WM_PAINT: { PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); if (fieldBrush_) FillRect(dc, &ps.rcPaint, fieldBrush_); EndPaint(h, &ps); NativeUI::EditBuffer::Flush(edit_); return 0; }
+        case WM_CTLCOLOREDIT: { HDC dc = reinterpret_cast<HDC>(w); NativeUI::EditBuffer::Clip(reinterpret_cast<HWND>(l), dc); SetTextColor(dc, TextGray()); SetBkColor(dc, FieldGray()); SetBkMode(dc, OPAQUE); return reinterpret_cast<LRESULT>(fieldBrush_); }
         case WM_COMMAND:
             if (reinterpret_cast<HWND>(l) == edit_ && HIWORD(w) == EN_CHANGE) FieldChanged();
             if (HIWORD(w) == EN_SETFOCUS || HIWORD(w) == EN_KILLFOCUS) Repaint();
@@ -509,7 +501,7 @@ class NotePopover : public Animator::Client {
         const int lines = int(SendMessageW(edit_, EM_GETLINECOUNT, 0, 0)); const float lineDip = (tm.tmHeight + tm.tmExternalLeading) * 96.f / Dpi();
         const float want = std::clamp(lines * lineDip + 4, NoteSpec::fieldMin, NoteSpec::fieldMax);
         if (std::fabs(want - view_.fieldHeight) > .5f) { view_.fieldHeight = want; if (open_) Resize(); } else Repaint();
-        if (edit_) InvalidateRect(edit_, nullptr, TRUE);
+        if (edit_) InvalidateRect(edit_, nullptr, FALSE);   // recomposed whole (EditBuffer): never erased on screen
         if (open_ && !settled_) Animator::Get().Request(this);
     }
     void MakeFont() {
@@ -560,9 +552,16 @@ class NotePopover : public Animator::Client {
         if (!hwnd_) return false;
         SetLayeredWindowAttributes(hwnd_, 0, 0, LWA_ALPHA);
         NativeUI::ConfigureShadowlessPopup(hwnd_);   // no shadow, no DWM rounding; keepRegion: this window never has a region
-        edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN, 0, 0, 1, 1, hwnd_, nullptr, instance_, nullptr);
+        edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN, 0, 0, 1, 1, hwnd_, nullptr, instance_, nullptr); NativeUI::SelectAllOnCtrlA(edit_);
         SendMessageW(edit_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0); SendMessageW(edit_, EM_SETLIMITTEXT, 4000, 0);
         SetWindowSubclass(edit_, EditProc, EditSubclass, reinterpret_cast<DWORD_PTR>(this));
+        // Placeholder: drawn under the caret while the field is empty, inside the field's composed image.
+        NativeUI::EditBuffer::Attach(edit_, [this](HWND h, HDC dc, const RECT& client) {
+            if (GetWindowTextLengthW(h) != 0) return;
+            RECT c = client; auto old = SelectObject(dc, font_);
+            SetTextColor(dc, HintGray()); SetBkMode(dc, TRANSPARENT); DrawTextW(dc, NoteSpec::placeholder(), -1, &c, DT_WORDBREAK | DT_NOPREFIX);
+            SelectObject(dc, old);
+        });
         MakeFont();
         Layer::Options pill; pill.title = NoteSpec::pillLabel();
         if (!pill_.Create(instance_, hwnd_, pill)) return false;

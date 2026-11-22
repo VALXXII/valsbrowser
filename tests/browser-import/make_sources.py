@@ -80,6 +80,18 @@ def main(root):
             '    <DT><A HREF="https://html.example/two">Deux</A>\n</DL><p>\n')
     with open(os.path.join(root, 'export é#.html'), 'w', encoding='utf-8') as f:
         f.write(html)
+    # Installed browsers as Windows lists them (src/browser-catalog.h reads this file instead of the registry under
+    # --import-sources). Nothing here is run: only names, icon references and command paths. Comet is installed with no
+    # profile data (a disabled row), Opera is not supported (a disabled row; its UNC icon reference is refused unread),
+    # Chrome's logo is read as data from the system's explorer.exe (a stand-in local executable).
+    windows = os.environ.get('SystemRoot', r'C:\Windows')
+    with open(os.path.join(root, 'startmenuinternet.txt'), 'w', encoding='utf-8') as f:
+        rows = [('Google Chrome', 'Google Chrome', r'"C:\Program Files\Google\Chrome\Application\chrome.exe" --single-argument %1', windows + r'\explorer.exe,0'),
+                ('Microsoft Edge', 'Microsoft Edge', r'"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --single-argument %1', ''),
+                ('FIREFOX.EXE', 'Mozilla Firefox', r'"C:\Program Files\Mozilla Firefox\firefox.exe" -osint -url "%1"', ''),
+                ('Comet', 'Comet', r'"C:\Users\e2e\AppData\Local\Perplexity\Comet\Application\comet.exe" --single-argument %1', ''),
+                ('OperaStable', 'Opera Stable', r'"C:\Program Files\Opera\opera.exe" %1', r'\\e2e-server\icons\opera.ico')]
+        f.write(''.join('|'.join(r) + '\n' for r in rows))
 
 
 

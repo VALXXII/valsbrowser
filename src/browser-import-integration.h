@@ -15,6 +15,7 @@
 //     reports each category honestly (terminée / partielle).
 // Logs carry counts and the source brand only: never a URL, a title or a path of the person's data.
 #include "browser-import.h"
+#include "browser-catalog.h"
 
 namespace BI = BrowserImport;
 // The destination named in the dialog: pinned when the dialog opens, checked again when « Importer » is pressed and
@@ -38,13 +39,29 @@ BI::Roots ImportRoots() {
     if (!importRootsOverride.empty()) return BI::Roots{importRootsOverride + L"\\Local", importRootsOverride + L"\\Roaming"};
     return BI::DefaultRoots();
 }
+// Installed browsers (src/browser-catalog.h): the registration Windows lists them by; tests: a synthetic file.
+std::vector<BI::Registered> ImportRegistered() {
+    if (!importRootsOverride.empty()) return BI::ReadRegisteredFile(importRootsOverride + L"\\startmenuinternet.txt");
+    return BI::ReadStartMenuInternet();
+}
+std::wstring OwnExecutable() { wchar_t path[MAX_PATH * 2]{}; const DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH * 2); return n && n < MAX_PATH * 2 ? std::wstring(path, n) : L""; }
+// Logos read once per file and index (data only, see browser-catalog.h); null → the neutral glyph.
+std::shared_ptr<const NativeChrome::FaviconImage> ImportLogo(const BI::Row& r) {
+    static std::map<std::pair<std::wstring, int>, std::shared_ptr<const NativeChrome::FaviconImage>> cache;
+    if (r.icon.empty()) return nullptr;
+    const auto key = std::make_pair(r.icon, r.iconIndex);
+    const auto it = cache.find(key); if (it != cache.end()) return it->second;
+    auto image = BI::LoadLogo(r.icon, r.iconIndex);
+    if (cache.size() < 64) cache[key] = image;
+    return image;
+}
 std::wstring ImportProfileName() { if (const auto* p = CurrentProfile()) return p->name; return DefaultProfileLook().name; }
 // The check list for a source (Favoris, Historique, Cookies), with each one's availability.
 std::vector<MD::Check> ImportChecks(const BI::Source& s) {
     MD::Check bookmarks, history, cookies;
     bookmarks.label = TR(import_item_bookmarks); history.label = TR(import_item_history); cookies.label = TR(import_item_cookies);
     bookmarks.value = s.bookmarks; bookmarks.disabled = !s.bookmarks;
-    bookmarks.detail = s.bookmarks ? TRF(import_bookmarks_detail, BI::FolderTitle(s)) : std::wstring(TR(import_bookmarks_missing));
+    bookmarks.detail = s.bookmarks ? TRF(import_bookmarks_detail, s.browser == BI::Browser::HtmlFile ? std::wstring(TR(import_source_file_short)) : std::wstring(BI::BrandName(s.browser))) : std::wstring(TR(import_bookmarks_missing));
     if (s.browser == BI::Browser::HtmlFile) { history.disabled = true; history.detail = TR(import_history_html); }
     else { history.value = s.history; history.disabled = !s.history; history.detail = s.history ? TR(import_history_detail) : TR(import_history_missing); }
     cookies.disabled = true; cookies.value = false; cookies.detail = TR(import_cookies_unavailable);
@@ -103,6 +120,7 @@ void StartImport(const std::vector<BI::Source>& sources, const ImportDestination
     const MD::Result now = modal.Snapshot();
     if (now.select < 0 || now.select >= static_cast<int>(sources.size())) return;
     BI::Source source = sources[static_cast<std::size_t>(now.select)];
+    if (!source.bookmarks && !source.history) return;   // a row that only says why it is unavailable (never selectable)
     const bool bookmarks = now.checks.size() > 0 && now.checks[0] && source.bookmarks;
     const bool history = now.checks.size() > 1 && now.checks[1] && source.history;
     if (!bookmarks && !history) { modal.SetError(TR(import_none_selected)); return; }
@@ -192,19 +210,35 @@ void ImportFinished() {
 void ShowImportDialog(bool keyboard) {
     if (smoke || privateWindow || importDialogOpen || importRunning) return;
     keyboardModality = keyboard;
-    auto sources = std::make_shared<std::vector<BI::Source>>(BI::Discover(ImportRoots()));
-    sources->push_back(BI::HtmlSource(L""));
-    Log(L"IMPORT dialog: " + std::to_wstring(sources->size() - 1) + L" browser profiles found");
+    const std::vector<BI::Row> rows = BI::Catalog(ImportRegistered(), BI::Discover(ImportRoots()), OwnExecutable());
+    auto sources = std::make_shared<std::vector<BI::Source>>();
+    size_t ready = 0, recoverable = 0, unavailable = 0;
+    for (const auto& r : rows) { sources->push_back(r.source); if (r.state == BI::RowState::Ready) ++ready; else if (r.state == BI::RowState::Recoverable) ++recoverable; else if (!r.Available()) ++unavailable; }
+    Log(L"IMPORT dialog: " + std::to_wstring(ready) + L" profiles, " + std::to_wstring(recoverable) + L" recoverable, " + std::to_wstring(unavailable) + L" browsers unavailable");
     MD::Spec s; s.kind = MD::Kind::Generic; s.scope = MD::Scope::Window; s.automationId = L"ImportBrowserData";
     s.title = TR(import_title); s.body = TRF(import_destination, ImportProfileName());
-    s.hasSelect = true; s.select.label = TR(import_source_label); s.select.index = 0;
-    for (const auto& src : *sources) s.select.options.push_back(BI::Label(src));
+    s.hasSelect = true; s.select.label = TR(import_source_label); s.select.index = BI::FirstAvailable(rows);
+    for (const auto& r : rows) {
+        s.select.options.push_back(BI::RowLabel(r)); s.select.descriptions.push_back(BI::RowDetail(r)); s.select.disabled.push_back(!r.Available());
+        s.select.images.push_back(ImportLogo(r)); s.select.icons.push_back(r.state == BI::RowState::Html ? L"file" : L"favicon");   // i18n-exempt: icon names
+    }
     s.select.checks = [sources](int i) { return ImportChecks((*sources)[static_cast<std::size_t>(std::clamp(i, 0, static_cast<int>(sources->size()) - 1))]); };
-    s.checks = ImportChecks((*sources)[0]);
+    s.checks = ImportChecks((*sources)[static_cast<std::size_t>(s.select.index)]);
     s.buttons = {MD::Make(MD::CancelButton, TR(common_cancel), MD::Role::Secondary, false, true, false, L"DialogCancel"),
                  MD::Make(MD::AcceptButton, TR(import_action), MD::Role::Primary, true, false, true, L"DialogImport")};
     s.buttons[1].closes = false;
     s.onButton = [sources, destination = ImportDestination::Now()](int id) { if (id == MD::AcceptButton) StartImport(*sources, destination); };
     importDialogOpen = true;
     AskModal(std::move(s), nullptr, [](const MD::Result&) { importDialogOpen = false; });
+}
+// A folder an import created: the folder map names that very folder (a validated candidate: same id, kind and time in
+// `s`). A folder merely inside an imported one is the person's, even empty (review 9ef33c5). Read-only; never a root.
+bool ImportOwnedFolder(const BM::Store& s, BM::Id id) {
+    const BM::Node* n = s.Find(id);
+    if (!n || n->kind != BM::Kind::Folder || BM::Store::IsRoot(id) || privateWindow) return false;
+    std::string bytes; bool known = false, complete = false;
+    { ProfileStore::Lock lock(dataDir); if (!lock.Held() || !ProfileStore::ReadAll(dataDir + L"\\bookmark-imports", bytes)) return false; }   // recursive: fine inside the save
+    const BI::FolderMap map = BI::FolderMap::Read(bytes, &known, &complete);
+    if (!known || !complete) return false;
+    return map.Names(s, id);
 }

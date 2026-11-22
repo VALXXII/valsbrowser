@@ -340,7 +340,7 @@ public:
     struct Hooks {
         std::function<void()> wake;
         // Native list of a select (B08 certificate / screen share): chosen index or -1.
-        std::function<int(const std::vector<std::wstring>&, int current, RECT anchorScreen, bool keyboard)> choose;
+        std::function<int(const Modal::Select&, RECT anchorScreen, bool keyboard)> choose;
         // B07 « Plus d'options » command list: chosen Command, 0 when dismissed (shared host menu).
         std::function<int(const std::vector<ContextMenu::Item>&, RECT anchorScreen, bool keyboard)> menu;
         std::function<void()> dismiss;   // end the host list now (the prompt closed while it was open)
