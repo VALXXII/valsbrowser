@@ -102,7 +102,22 @@ void NoteAnchored(const ChatStore::Header& h) {
     SyncMarks();   // a new conversation of an element: its frame + icon now
 }
 void SyncMarks(); void LauncherRefresh(); std::string MarkState(const std::string& id);
-std::string ShownSelector(const std::string& id) { for (const auto& h : anchored) if (h.id == id) return h.anchorSelector; return ""; }
+// Monkey 0.3.561 (F6, « the right conversation »): an element's conversation not saved yet — its first message waits in the
+// queue behind another element's turn — lives only in memory (the engine's, the one shown aside, the parked ones). A click
+// on its element looked only in the saved ones: a NEW conversation each time, the waiting message never in its bubble.
+const ChatStore::Header* FindAnchored(const std::string& page, const std::string& sel, const std::string& key) {
+    auto match = [&](const ChatStore::Header& h) { return h.origin == site.origin && h.anchorPage == page && (!sel.empty() ? h.anchorSelector == sel : (!key.empty() && h.anchorKey == key)); };
+    for (const auto& h : anchored) if (match(h)) return &h;
+    for (const Convo* mem : {&convo, aside.on ? &aside.c : nullptr}) if (mem && match(mem->data.head) && SentConvo(*mem)) return &mem->data.head;
+    for (const auto& p : parked) if (match(p.second.data.head) && SentConvo(p.second)) return &p.second.data.head;
+    return nullptr;
+}
+std::string ShownSelector(const std::string& id) {
+    for (const auto& h : anchored) if (h.id == id) return h.anchorSelector;
+    for (const Convo* mem : {&convo, aside.on ? &aside.c : nullptr}) if (mem && mem->data.head.id == id) return mem->data.head.anchorSelector;   // not saved yet (F6)
+    if (const auto it = parked.find(id); it != parked.end()) return it->second.data.head.anchorSelector;
+    return "";
+}
 std::string ModeOrigin() { auto t = Ann::ModeTab(); return t ? ChatLocal::Classify(U8(t->uri)).origin : std::string(); }
 std::string anchoredOrigin;   // the site `anchored` was read for
 void RefreshAnchored() {
@@ -1023,8 +1038,8 @@ bool OpenEarly(const std::shared_ptr<Tab>& t, const AnnotationHost::Envelope& en
          (env.px >= 0 ? L" clicked at " + std::to_wstring(int(env.px)) + L"," + std::to_wstring(int(env.py)) : std::wstring()));   // monkey: what the page sent   // i18n-exempt: log detail
     if (env.at > 0) { FILETIME ft; GetSystemTimeAsFileTime(&ft); ULARGE_INTEGER u{}; u.LowPart = ft.dwLowDateTime; u.HighPart = ft.dwHighDateTime;   // R18: the click (page clock) -> here
         const double now = double(u.QuadPart / 10000ULL) - 11644473600000.0; early.clickLag = std::max(0.0, now - env.at); Diag(L"the click's « selecting » reached the host " + Ann::Ms(early.clickLag) + L" ms after the click"); }
-    for (const auto& h : anchored) if (h.origin == site.origin && h.anchorPage == page && h.anchorSelector == env.selector) {   // its conversation
-        const std::string id = h.id, l = h.anchorLabel.empty() ? label : h.anchorLabel; early.conv = id;
+    if (const auto* hp = FindAnchored(page, env.selector, "")) {   // its conversation (saved, or only in memory: F6)
+        const auto& h = *hp; const std::string id = h.id, l = h.anchorLabel.empty() ? label : h.anchorLabel; early.conv = id;
         ShowConversation(id, [id, element, l, stale] { OpenBubble(id, &element, ShownSelector(id), false, l); if (bubble.open && bubble.conv == id) bubble.holdForMeasure = stale; }, nullptr, true);   // opening time: one sending, with the opening
         Diag(L"bubble opened on the click (selecting " + std::to_wstring(env.serial) + L"), the element's conversation");
         return true;
@@ -1067,10 +1082,10 @@ bool TakeCommentSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, b
     const std::string label = tgt.path.empty() ? tgt.tag : tgt.path.back();
     const RECT element = ToScreen(Ann::s.sel.target.rect.x, Ann::s.sel.target.rect.y, Ann::s.sel.target.rect.width, Ann::s.sel.target.rect.height, Ann::s.sel.target.viewport.width);
     const ChatStore::Header* existing = nullptr;
-    if (!sel.empty()) for (const auto& h : anchored) if (h.origin == site.origin && h.anchorPage == page && h.anchorSelector == sel) { existing = &h; break; }
+    if (!sel.empty()) existing = FindAnchored(page, sel, "");   // saved, or only in memory (F6)
     // Q 6 (E1): no safe selector (iframe, web component): its conversation is found again by its key
     const std::string key = sel.empty() ? ChatBubble::UnsafeAnchorKey(Ann::s.sel.frameKind, tgt.selector, tgt.shadowPath) : std::string();
-    if (!existing && !key.empty()) for (const auto& h : anchored) if (h.origin == site.origin && h.anchorPage == page && h.anchorKey == key) { existing = &h; break; }
+    if (!existing && !key.empty()) existing = FindAnchored(page, "", key);
     for (const Convo* mem : {&convo, aside.on ? &aside.c : nullptr}) if (!existing && mem && !key.empty() && mem->data.head.anchorKey == key && mem->data.head.anchorPage == page && SentConvo(*mem)) existing = &mem->data.head;
     if (existing) {   // its conversation: the bubble opens on it again
         const std::string id = existing->id, s = existing->anchorSelector, l = existing->anchorLabel;

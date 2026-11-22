@@ -317,6 +317,10 @@ check('EarlyOpenAllowed(bubble.open, bubble.selector, env.selector)' in block_af
 # monkey 0.3.561 #102 / #261: the bubbles' own elements left in `aiming` never block a click (only the panel's chips count)
 tcs = block_after(comment, 'bool TakeCommentSelection(')
 check('aiming.size() >= 10' not in tcs and 'BubbleClickAllowed(chips)' in tcs and 'anchorFor.empty()' in tcs, 'monkey #102 / #261: a click is refused only by 10 chips of the panel, and says so')
+# monkey 0.3.561 F6: an element's conversation only in memory (its message waits in the queue) is found again by a click on it
+fa = block_after(comment, 'const ChatStore::Header* FindAnchored(')
+check('parked' in fa and 'SentConvo(' in fa and 'FindAnchored(page, env.selector' in block_after(comment, 'bool OpenEarly(') and 'FindAnchored(page, sel' in block_after(comment, 'bool TakeCommentSelection('), 'F6: a click finds its element conversation in memory too (not saved yet)')
+
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)
