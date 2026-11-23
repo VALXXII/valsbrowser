@@ -4566,7 +4566,13 @@ constexpr UINT ImportMessage=WM_APP+43;void ImportFinished();
 LRESULT CALLBACK ChromeProc(HWND h,UINT msg,WPARAM w,LPARAM l){LRESULT frameResult;
     // Maximized with WS_CAPTION, Windows pushes the window past the monitor by its frame thickness: the client
     // is the monitor's work area exactly (nothing cut at the edges, the taskbar left visible).
-    if(msg==WM_NCCALCSIZE&&w&&IsZoomed(h)){MONITORINFO mi{sizeof(mi)};if(GetMonitorInfoW(MonitorFromWindow(h,MONITOR_DEFAULTTONEAREST),&mi)){reinterpret_cast<NCCALCSIZE_PARAMS*>(l)->rgrc[0]=mi.rcWork;return 0;}}if(NativeUI::HandleFrame(h,msg,w,l,frameResult))return frameResult;if(msg==ProfilesChangedMessage()){ReloadProfiles();return 0;}switch(msg){
+    if(msg==WM_NCCALCSIZE&&w&&IsZoomed(h)){MONITORINFO mi{sizeof(mi)};if(GetMonitorInfoW(MonitorFromWindow(h,MONITOR_DEFAULTTONEAREST),&mi)){reinterpret_cast<NCCALCSIZE_PARAMS*>(l)->rgrc[0]=mi.rcWork;return 0;}}
+    // WS_CAPTION makes DefWindowProc paint a classic caption straight onto the window when the title or icon changes
+    // (and through the undocumented uxtheme caption / frame messages): the title and icon are stored with the window
+    // briefly marked invisible, so nothing is drawn; the two theme messages draw nothing.
+    if(msg==0x00AE/*WM_NCUAHDRAWCAPTION*/||msg==0x00AF/*WM_NCUAHDRAWFRAME*/)return 0;
+    if(msg==WM_SETTEXT||msg==WM_SETICON){const LONG_PTR style=GetWindowLongPtrW(h,GWL_STYLE);if(!(style&WS_VISIBLE))return DefWindowProcW(h,msg,w,l);
+        SetWindowLongPtrW(h,GWL_STYLE,style&~static_cast<LONG_PTR>(WS_VISIBLE));const LRESULT r=DefWindowProcW(h,msg,w,l);SetWindowLongPtrW(h,GWL_STYLE,style);return r;}if(NativeUI::HandleFrame(h,msg,w,l,frameResult))return frameResult;if(msg==ProfilesChangedMessage()){ReloadProfiles();return 0;}switch(msg){
 case WM_CREATE:window=h;address=CreateWindowExW(0,L"EDIT",L"",WS_CHILD|WS_TABSTOP|ES_AUTOHSCROLL,0,0,1,1,h,nullptr,instance,nullptr); NativeUI::SelectAllOnCtrlA(address);SendMessageW(address,EM_SETLIMITTEXT,8192,0);SendMessageW(address,EM_SETMARGINS,EC_LEFTMARGIN|EC_RIGHTMARGIN,0);SetWindowSubclass(address,AddressProc,1,0);addressSelection.Attach(address,AddressSelectionColors);accessibility.Attach(AccessibleHost());tooltip=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP,0,0,0,0,h,nullptr,instance,nullptr);NativeUI::StripTooltipShadow(tooltip);return 0;
 // Alt alone (or F10) asks for the menu bar; this window has none, and the system-menu state it starts instead freezes
 // the WebView that had the keyboard (page or chat panel) until the next key. Alt+Espace (lParam = the key) still opens the system menu.
