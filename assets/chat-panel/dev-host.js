@@ -161,6 +161,9 @@
   const C_SCENARIOS = {
     "c-1-saisie": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }, typeIn(CASK), blur],
     "c-1-vide": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }],
+    // fix 0.3.690: a new profile — no saved lists, the agent still being prepared: the button names the fallback model
+    "c-profil-neuf": [LAY(), st({ agents: [{ id: "claude", name: "Claude Code", icon: "claude", status: "preparing", detail: "Préparation de Claude…", progress: 0 }], agentId: "claude", model: null, efforts: [], effort: null }), { type: "thread.reset", conversationId: "new", items: [] }],
+    "profil-neuf": [st({ agents: [{ id: "claude", name: "Claude Code", icon: "claude", status: "ready" }], agentId: "claude", model: null, efforts: [], effort: null }), { type: "thread.reset", conversationId: "new", items: [] }],
     "c-2-envoye": cRun(),
     "c-2.1-survol": cRun(),
     "c-2.1-arrete": [LAY(), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: cRunning().concat([{ type: "turn.end", turnId: "t1", stopReason: "cancelled", durationMs: 9000 }]) }],
