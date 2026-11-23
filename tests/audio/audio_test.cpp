@@ -129,7 +129,9 @@ static void IconChecks() {
     static_assert(Icon::LoopMs == 5000, "user-chosen default: the 72-frame loop lasts 5 s");
     Expect(m.At(At(1400 + 2500)).frame == 36 && m.At(At(1400 + 1250)).frame == 18, "loop frame follows time (72 frames over 5 s)");
     Expect(m.At(At(1400 + 1270)).frame == 18 && m.At(At(1400 + 1320)).frame == 19, "one loop frame every ~69 ms");
-    auto w = m.NextWake(At(1400 + 1270)); Expect(w.delay && *w.delay == Milliseconds(50) && w.frames, "loop wakes on the next frame boundary");
+    // PERF-03: a one-shot deadline one nominal frame (16 ms) before the next step, then compositor frames up to it.
+    auto w = m.NextWake(At(1400 + 1270)); Expect(w.delay && *w.delay == Milliseconds(50 - 16) && !w.frames, "loop: a deadline one frame before the next step (no display-rate ticks)");
+    w = m.NextWake(At(1400 + 1310)); Expect(w.delay && *w.delay == Milliseconds(10) && w.frames, "loop: compositor frames within one frame of the step");
     // Stop: the cycle finishes (no jump), then the outro to the subdued static glyph.
     m.Update(false, At(1400 + 700), false);
     Expect(m.At(At(1400 + 4900)).frame > 0 && m.At(At(1400 + 4900)).frame < Icon::Loop, "still on the loop until the cycle ends");

@@ -316,7 +316,8 @@ void InvalidateMotion(NativeChrome::Motion::Time now){
     SplitFrame(now);GripFrame(now);ElementsFrame(now);downloadPanel.Frame(now);downloadDrawer.Frame(now);settingsDrawer.Frame(now);historyDrawer.Frame(now);bookmarksDrawer.Frame(now);
     // Downloads icon: its own button only (also the frame that lands its last pose).
     chrome.downloadIcon.Settle(now);chrome.nav.Settle(now);AudioFrame(now);
-    {static bool painting=false;const bool moving=chrome.downloadIcon.NextWake(now).delay.has_value();if(moving||painting)InvalidateDownloadIcon();painting=moving;}
+    // Repainted only when its pose changes (60 poses a second at most at the authored speed), not on every compositor tick.
+    {static NativeChrome::DownloadIcon::Pose painted;static bool known=false;const auto pose=chrome.downloadIcon.At(now);if(!known||pose!=painted){InvalidateDownloadIcon();painted=pose;known=true;}}
     const bool full=motionFullFrames||motion.NextWake(now).delay||chrome.tabMotion.NextWake(now).delay||chrome.lottie.NextWake(now,motion.ReducedMotion()).delay||chrome.nav.NextWake(now).delay;
     if(full){InvalidateChrome();return;}
     auto t=Active();if(chrome.LoadingSignature(t?t->loading.Sample(now,motion.ReducedMotion()):NativeChrome::Loading::Visual{})==paintedLoading)return;
