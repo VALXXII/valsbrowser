@@ -74,10 +74,11 @@ inline Uniforms Halftone(float drift = 0, bool wholeNode = false, float raise = 
     return u;
 }
 // The Réglages drawer's « navigateur par défaut » card (Paper « 01 · Réglages — racine », HalftoneDots 1DQY-0): the
-// same node and picture as the onboarding with a larger cell and picture — size .69, scale .63 — and Paper's own
-// framing (dots only inside the picture's box). Same loop as the onboarding (`drift`).
+// same node and picture as the onboarding with a larger cell and picture — size .69, scale .63 — and, as the
+// onboarding (designer's request, 2026-11-23), the lattice over the whole node (`wholeNode`): no square of dots
+// around the logo, the faint dots run to the card's edges. Same loop as the onboarding (`drift`).
 inline Uniforms HalftoneCard(float drift = 0) {
-    Uniforms u = Halftone(drift); u.scale = .63f; u.p0[2] = .69f;
+    Uniforms u = Halftone(drift, true); u.scale = .63f; u.p0[2] = .69f;
     return u;
 }
 // GemSmoke 1CCQ-0 / 1CE9-0 / 1CAL-0: size .8, outerDistortion .6, innerDistortion .8, outerGlow 0, innerGlow 1,
