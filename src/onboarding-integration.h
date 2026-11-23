@@ -131,7 +131,10 @@ void RunOnboarding(Onboarding::Reason reason) {
 void OnboardingShowBrowser(int show) {
     if (!onboardingStage.Active()) { ShowWindow(window, show); UpdateWindow(window); return; }
     OnboardingHandoff::Cloak(window, true);
+    // The stage plays its own scale-in: no Windows show animation on top of it (minimize / restore keep theirs).
+    BOOL noTransition = TRUE; DwmSetWindowAttribute(window, DWMWA_TRANSITIONS_FORCEDISABLED, &noTransition, sizeof(noTransition));
     ShowWindow(window, show); UpdateWindow(window);
+    noTransition = FALSE; DwmSetWindowAttribute(window, DWMWA_TRANSITIONS_FORCEDISABLED, &noTransition, sizeof(noTransition));
     RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN); DwmFlush(); DwmFlush();
     auto shot = OnboardingHandoff::Capture(window, IsZoomed(window) ? 0.f : NativeUI::nativeCornerRadius * GetDpiForWindow(window) / 96.f);
     if (shot.Valid() && onboardingStage.Enter(std::move(shot), window)) {

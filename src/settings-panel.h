@@ -105,7 +105,7 @@ inline constexpr float footer = 1 + 12 + slot + padBottom;                      
 // « Navigateur par défaut » card (Paper 1DQM-0, above the version, under the footer's hairline and its 12 DIP): the
 // halftone area (110 high, top corners 22, the shader node 308 x 159 at 0.2 / -3 over a #1D1D1D -> #121212 gradient,
 // then a #171717 radial veil 81 high at 33.2), the question 2 px up into it (14/20 Medium, centred, balanced, #FFFFFFE6),
-// 10, the two buttons (32 high, 12 padding, 10 apart, radius 6), 12, a #FFFFFF14 hairline; 12 more to the version.
+// 10, the two buttons (32 high, 12 padding, 10 apart, radius 6), 12, a white 4 % hairline (the footer's); 12 more to the version.
 inline constexpr float cardArt = 110, cardRadius = 22, cardShaderW = 308, cardShaderH = 159, cardShaderX = .2f, cardShaderY = -3;
 inline constexpr float cardVeilTop = 33.2f, cardVeilH = 81, cardText = cardArt - 2, cardLine = 20, cardTextWidth = 306;   // Paper's column
 inline constexpr float cardButton = 32, cardButtonPad = 12, cardButtonGap = 10;
@@ -1177,7 +1177,7 @@ private:
         CardButton(c.later, TR(settings_default_browser_later), DefaultLater, false, now);
         CardButton(c.make, TR(settings_default_browser_make), DefaultMake, true, now);
         const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width));
-        brush->SetColor(D2D1::ColorF(1, 1, 1, 0x14 / 255.f)); t->FillRectangle(D2D1::RectF(c.card.left, c.card.bottom - px, c.card.right, c.card.bottom), brush);   // border-bottom #FFFFFF14
+        brush->SetColor(D2D1::ColorF(1, 1, 1, .04f)); t->FillRectangle(D2D1::RectF(c.card.left, c.card.bottom - px, c.card.right, c.card.bottom), brush);   // border-bottom: the footer's white 4 % hairline (designer, 2026-11-23; Paper had #FFFFFF14)
     }
     void Footer(View view, Motion::Time now) {
         const float h = Height(), top = h - FooterHeight(view);
