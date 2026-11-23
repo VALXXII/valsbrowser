@@ -259,7 +259,12 @@ public:
                 return r.error = "request failed", r;
             }
             DWORD disable = WINHTTP_DISABLE_REDIRECTS | WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_AUTHENTICATION;
-            WinHttpSetOption(request, WINHTTP_OPTION_DISABLE_FEATURE, &disable, sizeof(disable));
+            if (!WinHttpSetOption(request, WINHTTP_OPTION_DISABLE_FEATURE, &disable, sizeof(disable))) {
+                // Fail closed (as src/webview2-install.h does): never fetch with redirects, cookies or auth on.
+                WinHttpCloseHandle(request);
+                WinHttpCloseHandle(connect);
+                return r.error = "request options failed", r;
+            }
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 if (aborted_ || cancel.load()) {
@@ -919,6 +924,15 @@ ActionResult Engine::Perform(Action action) {
     std::string nonce = RandomHex(16);
     std::wstring helperDir = Updates() + L"\\helper";
     std::wstring helper = helperDir + L"\\update-helper-" + W(nonce) + L".exe";
+    {   // Copies left by earlier installs (SEC-16): a finished helper cannot delete its own file. One still running is locked and stays.
+        WIN32_FIND_DATAW fd;
+        HANDLE f = UP::IsReparsePoint(helperDir) ? INVALID_HANDLE_VALUE : FindFirstFileW((helperDir + L"\\update-helper-*.exe").c_str(), &fd);
+        if (f != INVALID_HANDLE_VALUE) {
+            do if (!(fd.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) DeleteFileW((helperDir + L"\\" + fd.cFileName).c_str());
+            while (FindNextFileW(f, &fd));
+            FindClose(f);
+        }
+    }
     if (!EnsureDir(helperDir) || !CopyFileW((stage + L"\\update-helper.exe").c_str(), helper.c_str(), TRUE))
         return failInstall(TR(update_error_launch_install));
     std::wstring exe = FullPath(config_.exePath);
