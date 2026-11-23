@@ -60,4 +60,16 @@ inline Parsed Parse(const std::vector<std::wstring>& tokens) {
     return p;
 }
 
+// A test switch read from the tokens BEFORE --single-argument only (SEC-12): a link Windows hands over, even one
+// holding a quote that splits it into several tokens, never sets one. `ValueOf`: its value ("" when absent).
+inline bool Has(const std::vector<std::wstring>& tokens, const wchar_t* name) {
+    for (const auto& t : tokens) { if (t == SingleArgument) return false; if (t == name) return true; }
+    return false;
+}
+inline std::wstring ValueOf(const std::vector<std::wstring>& tokens, const wchar_t* name) {
+    for (size_t i = 0; i < tokens.size() && tokens[i] != SingleArgument; ++i)
+        if (tokens[i] == name) return i + 1 < tokens.size() && tokens[i + 1] != SingleArgument ? tokens[i + 1] : L"";
+    return L"";
+}
+
 }  // namespace LaunchArgs

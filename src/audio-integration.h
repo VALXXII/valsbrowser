@@ -37,6 +37,8 @@ void SaveAudioVolumes(){
 
 // ---- Artwork --------------------------------------------------------------------------------
 struct AudioArtResult{std::wstring url;std::shared_ptr<NativeChrome::FaviconImage> image;};
+// SEC-26: results come back through this queue; AudioArtMessage only wakes the UI thread (no pointer in a message).
+std::mutex audioArtMutex;std::vector<AudioArtResult> audioArtDone;
 // winhttp.dll bound at run time (like accessibility.h): no new link dependency for the
 // browser's native fixtures that compile main.cpp.
 struct AudioHttp {
@@ -89,16 +91,18 @@ std::shared_ptr<const NativeChrome::FaviconImage> AudioArtwork(const std::wstrin
     if(url.empty())return nullptr;auto it=audioArt.find(url);if(it!=audioArt.end())return it->second;
     if(audioArtPending.count(url)||audioArtFailed.count(url)||audioArtPending.size()>=4||smoke)return nullptr;
     audioArtPending.insert(url);HWND target=window;
-    std::thread([url,target]{auto* r=new AudioArtResult{url,DownloadArtwork(url)};if(!PostMessageW(target,AudioArtMessage,0,(LPARAM)r))delete r;}).detach();
+    std::thread([url,target]{AudioArtResult r{url,DownloadArtwork(url)};{std::lock_guard<std::mutex> lock(audioArtMutex);audioArtDone.push_back(std::move(r));}PostMessageW(target,AudioArtMessage,0,0);}).detach();
     return nullptr;
 }
 void RefreshAudio();
-void AudioArtArrived(LPARAM l){
-    std::unique_ptr<AudioArtResult> r((AudioArtResult*)l);if(!r)return;audioArtPending.erase(r->url);
-    if(!r->image){audioArtFailed.insert(r->url);Log(L"AUDIO artwork unavailable "+r->url);return;}
-    audioArt[r->url]=r->image;audioArtOrder.push_back(r->url);
-    while(audioArtOrder.size()>32){audioArt.erase(audioArtOrder.front());audioArtOrder.erase(audioArtOrder.begin());}
-    RefreshAudio();
+void AudioArtArrived(LPARAM){
+    std::vector<AudioArtResult> done;{std::lock_guard<std::mutex> lock(audioArtMutex);done.swap(audioArtDone);}
+    bool any=false;
+    for(auto& r:done){audioArtPending.erase(r.url);
+        if(!r.image){audioArtFailed.insert(r.url);Log(L"AUDIO artwork unavailable "+r.url);continue;}
+        audioArt[r.url]=r.image;audioArtOrder.push_back(r.url);any=true;
+        while(audioArtOrder.size()>32){audioArt.erase(audioArtOrder.front());audioArtOrder.erase(audioArtOrder.begin());}}
+    if(any)RefreshAudio();
 }
 
 // ---- Model -> chrome / panel ---------------------------------------------------------------
@@ -197,9 +201,10 @@ void AudioSaveDue(){
 }
 
 // ---- Engine events ---------------------------------------------------------------------------
-bool AudioPageMessage(const std::shared_ptr<Tab>& t,const std::wstring& message){
+bool AudioPageMessage(const std::shared_ptr<Tab>& t,const std::wstring& message,const std::wstring& source){
     if(!AU::IsReport(message))return false;
     if(!t||t->closed)return true;
+    if(AU::SiteKey(source)!=AU::SiteKey(t->uri))return true;   // SEC-25: only the tab's own site reports for it (a left document's late report is dropped)
     AU::Report r;if(!AU::ParseReport(message,r))return true;
     const auto site=AU::SiteKey(t->uri);if(site.empty())return true;
     t->audio.SiteChanged(site,NativeChrome::Motion::Now());

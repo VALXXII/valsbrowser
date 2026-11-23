@@ -118,10 +118,11 @@ inline bool String(const std::wstring& s, size_t& i, std::wstring& out) {
     }
     return false;
 }
-// Display text: control characters become spaces, runs collapse, ends trimmed, capped.
+// Display text: control characters become spaces, bidi controls go (SEC-25: a title cannot reorder the menu's
+// text), runs collapse, ends trimmed, capped.
 inline std::wstring Clean(const std::wstring& s, size_t limit = 200) {
     std::wstring out; bool space = false;
-    for (wchar_t c : s) { if (c < 32 || c == 0x7f || c == 0x2028 || c == 0x2029) c = L' '; if (c == L' ') { space = !out.empty(); continue; } if (space) out += L' '; space = false; out += c; if (out.size() >= limit) break; }
+    for (wchar_t c : s) { if (c == 0x061c || c == 0x200e || c == 0x200f || (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069)) continue; if (c < 32 || c == 0x7f || c == 0x2028 || c == 0x2029) c = L' '; if (c == L' ') { space = !out.empty(); continue; } if (space) out += L' '; space = false; out += c; if (out.size() >= limit) break; }
     return out;
 }
 }

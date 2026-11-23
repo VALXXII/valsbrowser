@@ -354,7 +354,10 @@ int wmain(int argc, wchar_t** argv) {
         p.Show(s, anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; });
         p.Surface().FinishAnimationsForTest(); RECT w{}; GetWindowRect(p.Window(), &w);
         Check(w.left == anchor.left - MulDiv(4, GetDpiForWindow(p.Window()), 96) && w.top == anchor.bottom + MulDiv(16, GetDpiForWindow(p.Window()), 96), "permission: 4 DIP left of the indicator, 16 DIP under it (B01)");
+        Check(m.armMs == 500, "SEC-22 permission: armed 500 ms");
         p.Surface().ActivateForTest(Modal::Dialog::ButtonHit(1));
+        Check(calls == 0 && p.Surface().Visible(), "SEC-22 permission: a click right after the popover appears does nothing");
+        p.Surface().ArmNowForTest(true); p.Surface().ActivateForTest(Modal::Dialog::ButtonHit(1));
         Check(calls == 1 && got.action == OriginPrompt::Action::Allow && got.remember, "permission: « Mémoriser pour ce site » checked by default, Autoriser remembered (user decision 2026-11-17)");
         p.Surface().FinishAnimationsForTest();
         s.permissions = {OriginPrompt::Permission::Notifications};
@@ -363,12 +366,12 @@ int wmain(int argc, wchar_t** argv) {
         Check(calls == 2 && got.action == OriginPrompt::Action::Dismiss && !got.remember, "permission: Échap = Dismiss, nothing remembered");
         p.Surface().FinishAnimationsForTest();
         p.Show(s, anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; });
-        p.Surface().ActivateForTest(Modal::Dialog::ButtonHit(0));
+        p.Surface().ArmNowForTest(true); p.Surface().ActivateForTest(Modal::Dialog::ButtonHit(0));
         Check(calls == 3 && got.action == OriginPrompt::Action::Block && got.remember, "permission: notifications choice always remembered (B02)");
         p.Surface().FinishAnimationsForTest();
         s.permissions = {OriginPrompt::Permission::Camera};
         p.Show(s, anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; });
-        p.Surface().ActivateForTest(Modal::Dialog::SimpleCheckHit); p.Surface().ActivateForTest(Modal::Dialog::ButtonHit(1));
+        p.Surface().ArmNowForTest(true); p.Surface().ActivateForTest(Modal::Dialog::SimpleCheckHit); p.Surface().ActivateForTest(Modal::Dialog::ButtonHit(1));
         Check(calls == 4 && got.action == OriginPrompt::Action::Allow && !got.remember, "permission: check cleared = Autoriser this time only");
         p.Surface().FinishAnimationsForTest();
     }
@@ -419,7 +422,7 @@ int wmain(int argc, wchar_t** argv) {
             Check(help == L"Le site pourra afficher des alertes en dehors de la page.", "notifications popover: UIA group help is the subtitle"); }
         { const auto block = S.BoxForTest(D::ButtonHit(0)); Check(S.HeightForTest() - block.bottom == 16, "notifications popover: buttons end the popover"); }
         for (UINT dpi : {96u, 144u, 192u}) Check(S.RenderForTest(root + L"/build/popups/perm-notifications-" + std::to_wstring(dpi) + L".png", dpi), "notifications popover render");
-        S.ActivateForTest(D::ButtonHit(0)); Check(calls == 2 && got.action == OriginPrompt::Action::Block && got.remember, "notifications popover: Bloquer still always remembered");
+        S.ArmNowForTest(true); S.ActivateForTest(D::ButtonHit(0)); Check(calls == 2 && got.action == OriginPrompt::Action::Block && got.remember, "notifications popover: Bloquer still always remembered");
         S.FinishAnimationsForTest();
 
         p.Show(spec({OPP::Camera, OPP::Microphone, OPP::Geolocation}, L"rendez-vous.doctolib.fr"), anchor, [&](OriginPrompt::Result& r) { ++calls; got = r; }); S.FinishAnimationsForTest();
@@ -461,7 +464,10 @@ int wmain(int argc, wchar_t** argv) {
         Check(m.title == L"Ouvrir Zoom Workplace ?" && m.checkLabel == L"Toujours autoriser ce site à ouvrir les liens zoommtg" && m.buttons[1].label == L"Ouvrir Zoom", "external app (known): Paper text");
         int calls = 0; OriginPrompt::Result got;
         p.Show(s, {}, [&](OriginPrompt::Result& r) { ++calls; got = r; });
+        Check(m.armMs == 500, "SEC-22 external app: armed 500 ms");
         p.Surface().KeyForTest(VK_RETURN);
+        Check(calls == 0 && p.Surface().Visible(), "SEC-22 external app: Enter right after the prompt appears does nothing");
+        p.Surface().ArmNowForTest(true); p.Surface().KeyForTest(VK_RETURN);
         Check(calls == 1 && got.action == OriginPrompt::Action::Open, "external app: Entrée opens");
         p.Surface().FinishAnimationsForTest();
     }

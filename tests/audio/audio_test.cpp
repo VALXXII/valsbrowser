@@ -45,6 +45,7 @@ static void ReportChecks() {
     Expect(r.playing == 1 && std::abs(r.longest - 215.3) < 1e-9 && !r.live && r.session == 2 && r.video == 1, "report numbers");
     Expect(r.title == L"Clair de lune \u00e9\"x\"" && r.artist == L"Debussy" && r.album == L"Suite" && r.artwork == L"https://img.example/a.jpg", "report strings and escapes");
     Expect(ParseReport(L"{\"lisiereAudio\":1,\"p\":0,\"d\":-1,\"l\":1,\"t\":\"  a\\n\\tb  \",\"i\":\"http://insecure/a.png\"}", r) && r.title == L"a b" && r.artwork.empty() && r.live, "titles are cleaned, only https artwork");
+    Expect(ParseReport(L"{\"lisiereAudio\":1,\"p\":1,\"t\":\"a\\u202eb\\u2066c\\u200fd\",\"a\":\"\\u061cx\\u2069\"}", r) && r.title == L"abcd" && r.artist == L"x", "SEC-25: bidi controls are dropped from title and artist");
     Expect(!ParseReport(L"{\"other\":1}", r) && !ParseReport(L"{\"lisiereAudio\":1,\"t\":\"unterminated}", r) && !ParseReport(L"{\"lisiereAudio\":1,\"p\":}", r), "malformed reports are rejected");
     Expect(ParseReport(L"{\"lisiereAudio\":1,\"p\":1e9,\"s\":7,\"d\":null}", r) && r.playing == 1000 && r.session == 2 && r.longest == -1, "counts and states are bounded");
 }

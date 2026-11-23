@@ -107,7 +107,7 @@ inline std::wstring PercentDecode(const std::wstring& s) {
 // document now shown (ICoreWebView2_14::ServerCertificateErrorDetected).
 inline Display Describe(const std::wstring& uri, bool certificateError = false) {
     Display d;
-    if (uri.empty() || uri == L"about:blank") return d;
+    if (uri.empty()) return d;   // about:blank is described as any other address: only the home tab shows an empty field
     Parts p;
     if (Split(uri, p) && (p.scheme == L"https" || p.scheme == L"http")) {
         if (certificateError) {
@@ -172,6 +172,38 @@ inline std::wstring FileUrlFromPath(const std::wstring& typed) {
     }
     return L"file:///" + encode(s);
 }
+// An http(s) address the engine accepts: a host with no blank, control or forbidden host character, a port
+// that fits and no dotted number it rejects as an IPv4 address ("1.2.3.4.5"). The engine's Navigate refuses the others
+// (E_INVALIDARG), so they are searched when typed and dropped from a restored session. Other schemes: not judged here.
+inline bool Navigable(const std::wstring& url) {
+    const std::wstring low = Lower(url);
+    if (!StartsWith(low, L"https://") && !StartsWith(low, L"http://")) return true;
+    Parts p;
+    if (!Split(url, p)) return false;
+    std::wstring host = p.host;
+    for (wchar_t c : host) if (c <= 0x20 || c == 0x7f) return false;   // a blank in the path is escaped by the engine
+    if (!host.empty() && host[0] == L'[') return host.find(L']') != std::wstring::npos;   // IPv6 literal: kept as typed
+    const auto colon = host.rfind(L':');
+    if (colon != std::wstring::npos) {
+        const std::wstring port = host.substr(colon + 1); host = host.substr(0, colon);
+        if (port.size() > 5 || port.find_first_not_of(L"0123456789") != std::wstring::npos || (!port.empty() && std::stol(port) > 65535)) return false;
+    }
+    if (host.empty() || host.find_first_of(L"<>^|:") != std::wstring::npos) return false;
+    if (host.back() == L'.') host.pop_back();
+    const auto lastDot = host.rfind(L'.');
+    const std::wstring last = lastDot == std::wstring::npos ? host : host.substr(lastDot + 1);
+    if (last.empty() || last.find_first_not_of(L"0123456789") != std::wstring::npos) return true;   // a name, not a number
+    std::vector<std::wstring> labels;
+    for (std::size_t start = 0;;) { const auto dot = host.find(L'.', start); labels.push_back(host.substr(start, dot - start)); if (dot == std::wstring::npos) break; start = dot + 1; }
+    if (labels.size() > 4) return false;
+    for (std::size_t i = 0; i < labels.size(); ++i) {
+        const auto& label = labels[i];
+        if (label.empty() || label.size() > 10 || label.find_first_not_of(L"0123456789") != std::wstring::npos || (label.size() > 1 && label[0] == L'0')) return true;   // hex/octal forms: the engine decides
+        const unsigned long long value = std::stoull(label);
+        if (i + 1 < labels.size() ? value > 255 : value >= (1ull << (8 * (5 - labels.size())))) return false;
+    }
+    return true;
+}
 // What the address field (and a link given on the command line) opens: one rule for both.
 enum class Typed { Empty, Url, Sandbox, Search };
 struct Resolution { Typed kind = Typed::Empty; std::wstring value; };   // Url: the URL; Search: the trimmed words
@@ -181,10 +213,10 @@ inline Resolution Resolve(const std::wstring& typed) {
     if (s == L"about:blank") return {Typed::Url, s};
     const std::wstring low = Lower(s);
     if (low == L"browser://debug" || low == L"browser://sandbox") return {Typed::Sandbox, L""};
-    if (StartsWith(low, L"https://") || StartsWith(low, L"http://")) return {Typed::Url, s};
+    if (StartsWith(low, L"https://") || StartsWith(low, L"http://")) return Navigable(s) ? Resolution{Typed::Url, s} : Resolution{Typed::Search, s};
     if (StartsWith(low, L"file:") && s.size() > 5) return {Typed::Url, s};   // file:///C:/… as typed
     if (LooksLikeWindowsPath(s)) return {Typed::Url, FileUrlFromPath(s)};
-    if (s.find_first_of(L" \t") == std::wstring::npos && s.find(L"://") == std::wstring::npos && (s.find(L'.') != std::wstring::npos || StartsWith(low, L"localhost")))
+    if (s.find_first_of(L" \t") == std::wstring::npos && s.find(L"://") == std::wstring::npos && (s.find(L'.') != std::wstring::npos || StartsWith(low, L"localhost")) && Navigable(L"https://" + s))
         return {Typed::Url, L"https://" + s};
     return {Typed::Search, s};
 }
