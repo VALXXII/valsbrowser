@@ -190,6 +190,10 @@ svg.i { display: block; flex-shrink: 0; }
 }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0% 0; } }
 .working .t { font-variant-numeric: tabular-nums; }
+/* fix 0.3.690: the provider's logo, when no model name sits above it, leads « Travaille… » on the same line, centred, the
+   gap of the follow-up lines (.step: 12 px icon, 8 px); its colour is set since the shimmer makes the text transparent */
+.working { display: flex; align-items: center; gap: 0 4px; flex-wrap: wrap; }
+.working > .mlogo { width: 12px; height: 12px; flex-shrink: 0; margin-right: 4px; color: var(--w40); }
 .note { color: var(--w50); font-size: 13px; line-height: 18px; }
 
 /* markdown */

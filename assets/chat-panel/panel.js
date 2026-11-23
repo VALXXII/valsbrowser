@@ -84,6 +84,18 @@
     const a = curAgent();
     return a && a.models ? a.models.find((m) => m.id === S.st.model) || null : null;
   }
+  // R13 (fix 0.3.690): before an agent has ever said its models here (new profile, no saved lists, adapter still being
+  // prepared) the button still names a model, never the tool. The models the pinned adapter announces, with its default
+  // (claude-agent-acp 0.107.3: « Default (recommended) » = Opus 5.5); the agent's live list replaces it as soon as it comes.
+  // Codex builds its list from the Codex CLI at run time: no fixed name to promise, a neutral word instead.
+  const FALLBACK_MODEL = { claude: { label: "Opus 5.5", effort: "Moyen" }, codex: { label: "Modèle par défaut", effort: "Moyen" } };
+  const fallbackModel = (a) => (a && (FALLBACK_MODEL[a.id] || FALLBACK_MODEL[a.icon])) || { label: "Modèle par défaut", effort: "" };
+  // The model the button and a new turn name: the chosen one, else the agent's default, else its first, else the fallback.
+  function shownModelLabel(a) {
+    const m = curModel() && a === curAgent() ? curModel() : null;
+    const x = m || (a && a.models && (a.models.find((y) => y.isDefault) || a.models[0])) || null;
+    return x ? x.label : "";
+  }
   // Efforts (V1.2, Paper 17VU-0): the levels the agent announces, named in French; its « Default » is not a level.
   const EFFORT_FR = { minimal: "Minimal", low: "Faible", medium: "Moyen", high: "Élevé", xhigh: "X-Élevé", "x-high": "X-Élevé", "extra high": "X-Élevé", max: "Max", maximum: "Max", ultra: "Ultra", none: "Aucun" };
   const isDefaultChoice = (o) => !!o && (/^default$/i.test(String(o.id || "")) || /^(default|par défaut)\b/i.test(String(o.label || "")));
@@ -593,10 +605,10 @@
     // cv4 R28: a label once shown for this agent stays until another model is known (no flicker to the agent's name)
     if (shown && a) S.lastModel = { agent: a.id, label: shown.label };
     const kept = !shown && a && S.lastModel && S.lastModel.agent === a.id ? S.lastModel.label : "";
-    modelName.textContent = shown ? shown.label : kept || (a ? a.name : "Agent");
+    modelName.textContent = shown ? shown.label : kept || fallbackModel(a).label;   // R13: never the tool's name
     const e = curEffort();
     // cv4 R28: the effort never disappears — the chosen level, else the remembered id named in French, else the last shown
-    const eLabel = e ? effortName(e.id, e.label) : S.st.effort && !/^default$/i.test(String(S.st.effort)) ? effortName(S.st.effort, S.st.effort) : S.lastEffort || "";
+    const eLabel = e ? effortName(e.id, e.label) : S.st.effort && !/^default$/i.test(String(S.st.effort)) ? effortName(S.st.effort, S.st.effort) : S.lastEffort || (shown || kept ? "" : fallbackModel(a).effort);
     if (eLabel) S.lastEffort = eLabel;
     effortEl.hidden = !eLabel;
     effortTxt.textContent = eLabel;
@@ -2023,7 +2035,7 @@
   }
 
   function newTurn(id, model, effort, at, agentId) {
-    const t = { id, model: model || (curModel() ? curModel().label : ""), effort: effort ? turnEffort(effort) : (curEffort() ? effortName(curEffort().id, curEffort().label) : ""), start: Date.parse(at) || Date.now(),
+    const t = { id, model: model || shownModelLabel((agentId && agentById(agentId)) || curAgent()) || fallbackModel((agentId && agentById(agentId)) || curAgent()).label, effort: effort ? turnEffort(effort) : (curEffort() ? effortName(curEffort().id, curEffort().label) : ""), start: Date.parse(at) || Date.now(),
                 running: true, segs: [], userId: S.lastUser, metaEl: h("div", { class: "meta" }), workEl: h("div", { class: "working", "aria-hidden": "true" }), waitEl: null, endEl: null };
     t.el = h("div", { class: "turn", "data-turn": id, "aria-busy": "true" }, t.metaEl, t.workEl);
     t.who = (agentId && agentById(agentId)) || curAgent();
@@ -2058,8 +2070,12 @@
   }
   const turnOf = (id) => S.turns.get(id) || newTurn(id);
   // B 1.9 (R12): the provider's logo left of the model's name, as in the input (14 px in the bubble, 12 px on the panel's 14 px line)
-  function setMeta(t, text) { clear(t.metaEl).append(agentIcon(t.who, "mlogo"), h("span", { text })); }
-  function bModel(t) { const who = t.who; clear(t.modelEl).append(agentIcon(who), h("span", { class: "n", text: t.model || (who ? who.name : "Agent") }), t.effort ? h("span", { class: "e", text: t.effort }) : null); }
+  function setMeta(t, text) {
+    clear(t.metaEl).append(agentIcon(t.who, "mlogo"), h("span", { text }));
+    t.metaEl.hidden = !text;   // never a logo alone on its line: then it leads « Travaille… » (same line, centred)
+    if (t.workEl) { const lead = t.workEl.querySelector(":scope > .mlogo"); if (!text && !lead) t.workEl.prepend(agentIcon(t.who, "mlogo")); else if (text && lead) lead.remove(); }
+  }
+  function bModel(t) { const who = t.who; clear(t.modelEl).append(agentIcon(who), h("span", { class: "n", text: t.model || fallbackModel(who).label }), t.effort ? h("span", { class: "e", text: t.effort }) : null); }
   // B 1.9: a second `turn.start` with the same turnId, once the agent has said its model and effort, only updates this
   // turn's header (model, effort, agent) — nothing else moves, no « Passé à … » marker.
   function updateTurnHead(t, model, effort, agentId) {
