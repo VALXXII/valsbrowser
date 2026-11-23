@@ -869,6 +869,24 @@ function sourcesOf() {
   } catch (e) {}
   return out;
 }
+// served(): the paths of the files this page is served from (the document when it names an .html file, its scripts,
+// style sheets and a few images), same origin only, each once, 24 at most. The host checks they exist in the project
+// folder before using it (a page served from another folder must never be edited in this one).
+function servedOf() {
+  var out = [], seen = {};
+  function add(u) {
+    try {
+      var x = new URL(String(u || ''), location.href); if (x.origin !== location.origin) return;
+      var p = x.pathname; try { p = decodeURIComponent(p); } catch (e) {}
+      p = p.slice(0, 1024); if (p && !seen[p] && out.length < 24) { seen[p] = 1; out.push(p); }
+    } catch (e) {}
+  }
+  try { if (/\.html?$/i.test(location.pathname)) add(location.href); } catch (e) {}
+  try { var sc = D.querySelectorAll('script[src]'); for (var i = 0; i < sc.length && i < 40; i++) add(sc[i].getAttribute('src')); } catch (e) {}
+  try { var ln = D.querySelectorAll('link[href]'); for (var j = 0; j < ln.length && j < 40; j++) if (/(^|\s)(stylesheet|modulepreload)(\s|$)/i.test(ln[j].getAttribute('rel') || '')) add(ln[j].getAttribute('href')); } catch (e) {}
+  try { var im = D.querySelectorAll('img[src]'); for (var k = 0, n = 0; k < im.length && n < 8; k++) if (!/^data:|^blob:/i.test(im[k].getAttribute('src') || '')) { add(im[k].getAttribute('src')); n++; } } catch (e) {}
+  return out;
+}
 // mark: { state: 'working' | 'done' | 'show' | 'clear', selector, current, title, sub } — Paper 6.10 (label « ⟳ titre - modèle »
 // above the element) and 6.11 (frame + check tag). `current`: the element selected now (no reload since); otherwise
 // the selector must match exactly one element of the top document, or there is no mark at all.
@@ -1175,7 +1193,7 @@ on(window, 'focusin', onFocus, true);
 on(window, 'scroll', onScroll, opts);
 on(window, 'resize', onScroll, { passive: true });
 on(D, 'pointerout', onLeave, opts);
-Object.defineProperty(window, KEY, { value: { nonce: NONCE, teardown: teardown, cmd: cmd, source: sourceOf, sources: sourcesOf }, configurable: true });
+Object.defineProperty(window, KEY, { value: { nonce: NONCE, teardown: teardown, cmd: cmd, source: sourceOf, sources: sourcesOf, served: servedOf }, configurable: true });
 syncShields();
 var st = P.start || {};
 if (st.kind === 'point') selectAtPoint(st.x, st.y);
@@ -1205,7 +1223,7 @@ inline std::wstring PageCommand(const std::wstring& nonce, const std::wstring& o
 // names (see sourcesOf), `mark` -> "true" / "false".
 inline std::wstring PageQuery(const std::wstring& nonce, const std::wstring& what, const std::wstring& argJson = L"null") {
     return L"(function(){try{var h=window[Symbol.for('browser.annotation')];if(h&&h.nonce==='" + nonce + L"'){" +
-           (what == L"source" ? std::wstring(L"return JSON.stringify(h.source());") : what == L"sources" ? std::wstring(L"return JSON.stringify(h.sources());") :
+           (what == L"source" ? std::wstring(L"return JSON.stringify(h.source());") : what == L"sources" ? std::wstring(L"return JSON.stringify(h.sources());") : what == L"served" ? std::wstring(L"return JSON.stringify(h.served?h.served():[]);") :
             what == L"cmarks" ? L"return JSON.stringify(h.cmd('cmarks'," + argJson + L")||[]);" : L"return JSON.stringify(!!h.cmd('" + what + L"'," + argJson + L"));") +
            L"}}catch(e){}return '';})()";
 }

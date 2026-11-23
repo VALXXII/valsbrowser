@@ -378,6 +378,27 @@ SJ::Value OurToolSummary(ChatTools::Ours tool, const std::string& annotation, in
     }
     return s;
 }
+// The files an agent's tool call writes (ACP: kind edit / delete / move, its locations and diffs; the raw input's file
+// path when it gives none). Only these count as the turn's changes: a file changed meanwhile by another program or
+// another agent working in the same folder is never counted, nor undone.
+void NoteAgentFiles(const Acp::ToolCall& t) {
+    if (t.hasKind && !t.kind.empty()) turn.toolKinds[t.id] = t.kind;
+    const auto k = turn.toolKinds.find(t.id); const std::string kind = k == turn.toolKinds.end() ? std::string() : k->second;
+    const bool writes = kind == "edit" || kind == "delete" || kind == "move";
+    std::vector<std::string> named;
+    for (const auto& d : t.diffs) named.push_back(d.path);
+    if (writes) {
+        for (const auto& l : t.locations) named.push_back(l.path);
+        SJ::Value v;
+        if (!t.rawInput.empty() && SJ::Parse(t.rawInput, v) && v.IsObject())
+            for (const char* key : {"file_path", "filePath", "path", "notebook_path", "new_path", "old_path"}) if (const auto* f = v.Get(key); f && f->IsString()) named.push_back(f->string);   // i18n-exempt: tool argument names
+    }
+    const std::string root = U8(folder);
+    for (const auto& f : named) {
+        const std::string rel = ChatPrompt::ProjectRelative(f, root);
+        if (!rel.empty() && std::find(turn.agentFiles.begin(), turn.agentFiles.end(), rel) == turn.agentFiles.end() && turn.agentFiles.size() < 5000) turn.agentFiles.push_back(rel);
+    }
+}
 ChatTools::Ours OurToolOf(const Acp::ToolCall& t) { return ChatTools::OurTool(ChatTools::ParseMcpName(t.title), Ann::ServerName()); }
 // Notes seen in a tool's result (the list names every annotation it returns): remembered for the next step lines.
 void LearnNotes(const std::string& resultText) {
@@ -507,7 +528,7 @@ void OnEvent(const Acp::Event& e) {
         break; }
     case T::ToolCall: {
         if (!turn.active || !ChatStore::ValidId(e.tool.id)) break;
-        CloseThought(); turn.lastMessageId.clear();
+        CloseThought(); turn.lastMessageId.clear(); NoteAgentFiles(e.tool);
         SJ::Value m = ToolJson(e.tool, false); m.Set("turnId", Str(turn.id));
         if (const auto ours = OurToolOf(e.tool); ours != ChatTools::Ours::None) {   // one of our annotation tools: the step says it in words
             auto& call = turn.ourCalls[e.tool.id]; call.tool = ours; if (call.annotation.empty()) call.annotation = ChatTools::AnnotationIdOf(e.tool.rawInput);
@@ -518,6 +539,7 @@ void OnEvent(const Acp::Event& e) {
         break; }
     case T::ToolCallUpdate: {
         if (!turn.active || !ChatStore::ValidId(e.tool.id)) break;
+        NoteAgentFiles(e.tool);
         SJ::Value m = ToolJson(e.tool, true);
         if (auto call = turn.ourCalls.find(e.tool.id); call != turn.ourCalls.end() && call->second.tool != ChatTools::Ours::None) {
             if (call->second.annotation.empty()) call->second.annotation = ChatTools::AnnotationIdOf(e.tool.rawInput);
@@ -682,7 +704,7 @@ void BeginSnapshotThenPrompt() {
     auto out = std::make_shared<Out>(); auto store = Snapshots(); const std::wstring dir = folder; const std::string turnId = turn.id;
     Ann::Run([out, store, dir] { out->r = store->BeginTurn(dir, &out->id, &out->stats); },
              [out, turnId] {
-                 if (!turn.active || turn.id != turnId) { if (out->r.ok()) { auto s = Snapshots(); Ann::Run([s] { s->EndTurn(); }, nullptr); } return; }
+                 if (!turn.active || turn.id != turnId) { if (out->r.ok()) { auto s = Snapshots(); Ann::Run([s] { const std::vector<std::string> none; s->EndTurn(nullptr, nullptr, &none); }, nullptr); } return; }
                  Diag(L"snapshot before the turn: " + W(CS::StatusName(out->r.status)) + L", " + std::to_wstring(out->stats.files) + L" files, " + Ann::Ms(out->stats.milliseconds) + L" ms" + (out->r.detail.empty() ? L"" : L" — " + W(out->r.detail)));
                  turn.snapshot = out->r.ok(); turn.snapshotTurn = out->id;
                  if (out->r.status == CS::Status::TurnOpen) { Problem p; p.title = TR(chat_err_generic_title); p.message = TR(chat_strip_other_window); turn.problem = p; FinishTurn("error"); return; }
@@ -776,6 +798,7 @@ void CompleteTurn(const std::string& stopReason, const CS::TurnSummary* summary,
     {   SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && Open() && !Ann::s.paused)); Send("pick.state", std::move(p)); }
     {   std::vector<std::string> paths; if (summary) for (const auto& c : summary->changes) paths.push_back(c.path);
         AfterTurnPage(paths); }   // R36: the transition picks its way from the files changed
+    void CheckFolderMatchesPage(); CheckFolderMatchesPage();   // the page's files must be in the folder the agent worked in (else the card says it)
     ArmAgentIdle();
     if (auto next = std::move(afterTurn)) { afterTurn = nullptr; next(); }
     ProcessQueue();
@@ -786,9 +809,9 @@ void FinishTurn(const std::string& stopReason) {
     if (!turn.planPermission.empty()) turn.planPermission.clear();
     if (!turn.snapshot) { CompleteTurn(stopReason, nullptr); return; }
     struct Out { CS::Result r; CS::TurnSummary summary; CS::ScanStats stats; std::vector<std::pair<std::string, CS::FileDiff>> diffs; };
-    auto out = std::make_shared<Out>(); auto store = Snapshots();
-    Ann::Run([out, store] {
-            for (int attempt = 0; attempt < 5; ++attempt) { out->r = store->EndTurn(&out->summary, &out->stats); if (out->r.status != CS::Status::Busy) break; Sleep(200); }
+    auto out = std::make_shared<Out>(); auto store = Snapshots(); auto agentFiles = std::make_shared<std::vector<std::string>>(turn.agentFiles);
+    Ann::Run([out, store, agentFiles] {
+            for (int attempt = 0; attempt < 5; ++attempt) { out->r = store->EndTurn(&out->summary, &out->stats, agentFiles.get()); if (out->r.status != CS::Status::Busy) break; Sleep(200); }
             if (out->r.ok() && !out->summary.checkpointId.empty())   // the first files' diffs travel with the turn's end (the others on demand)
                 for (const auto& c : out->summary.changes) { if (out->diffs.size() >= 6) break; CS::FileDiff d; if (!c.binary && store->Diff(c.path, out->summary.checkpointId, &d, 64 * 1024).ok()) out->diffs.emplace_back(c.path, std::move(d)); }
         },

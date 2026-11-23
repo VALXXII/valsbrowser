@@ -230,21 +230,162 @@ void FolderDecided(bool sure, const std::wstring& doubt) {
     folderAsk = true; Diag(L"folder to confirm: " + (doubt.empty() ? std::wstring(L"nothing found") : doubt)); SendState();
 }
 bool EnsurePost();
-// The page's own file marks (Astro attributes, React debug sources) must not point out of the folder found. Asked once
-// the mode's script is in the page: the chat may open while the mode is still starting (Ctrl+Maj+D from outside it).
+// « Cette page ne semble pas venir de <dossier> » — in the thread, once per folder and conversation, with « Choisir le
+// bon dossier » (the Windows picker). The page's files are not in the folder the chat works in.
+std::wstring mismatchShownFor;
+void ShowFolderMismatch() {
+    if (folder.empty()) return;
+    const std::wstring key = ChatFolder::detail::Fold(folder) + L"|" + W(convo.data.head.id);
+    if (mismatchShownFor == key) return;
+    mismatchShownFor = key;
+    Diag(L"the page does not seem to come from the chat's folder (" + folder + L"): card shown");   // i18n-exempt: log detail
+    Problem p; p.title = TRF(chat_folder_mismatch, ChatFolder::Name(folder)); p.message = TR(chat_folder_mismatch_hint); p.retry = false; p.chooseFolder = true;
+    SendError(p, "", "thread", false);
+}
+// What the page says about a folder: its debug marks (Astro, React) and the files it is served from.
+struct FolderVerdict { ChatPrompt::Marks marks = ChatPrompt::Marks::None; ChatFolder::Served served = ChatFolder::Served::None; std::size_t named = 0, files = 0; };
+inline FolderVerdict VerdictFor(const std::vector<std::string>& marks, const std::vector<std::string>& served, const std::wstring& dir) {
+    FolderVerdict v; if (dir.empty()) return v;
+    v.marks = ChatPrompt::MarksInFolder(marks, U8(dir), [](const std::string& p) { const DWORD a = GetFileAttributesW(W(p).c_str()); return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY); });
+    v.served = ChatFolder::ServedInFolder(served, dir); v.named = marks.size(); v.files = ChatFolder::ServedFiles(served).size();
+    return v;
+}
+inline bool Verified(const FolderVerdict& v) { return v.marks != ChatPrompt::Marks::Outside && v.served == ChatFolder::Served::Inside; }
+inline bool Against(const FolderVerdict& v) { return v.marks == ChatPrompt::Marks::Outside || v.served == ChatFolder::Served::Outside; }
+// Asks the page for its marks and served files (empty lists when the mode's script is not in the page: the verdicts
+// are then « None », impossible to say).
+void AskPageFiles(std::function<void(std::shared_ptr<std::vector<std::string>>, std::shared_ptr<std::vector<std::string>>)> done) {
+    auto t = ChatTab();
+    auto marks = std::make_shared<std::vector<std::string>>(), served = std::make_shared<std::vector<std::string>>();
+    if (!t) { done(marks, served); return; }
+    Query(t, L"sources", L"null", [t, marks, served, done](const std::string& json) {
+        *marks = ChatPrompt::ParsePageSources(json);
+        Query(t, L"served", L"null", [marks, served, done](const std::string& json2) { *served = ChatPrompt::ParsePageSources(json2); done(marks, served); });
+    });
+}
+// Judges `dirs` off the UI thread.
+void JudgeFolders(const std::vector<std::wstring>& dirs, std::function<void(const std::vector<FolderVerdict>&)> done) {
+    AskPageFiles([dirs, done](std::shared_ptr<std::vector<std::string>> marks, std::shared_ptr<std::vector<std::string>> served) {
+        auto out = std::make_shared<std::vector<FolderVerdict>>(dirs.size());
+        Ann::Run([marks, served, out, dirs] { for (std::size_t i = 0; i < dirs.size(); ++i) (*out)[i] = VerdictFor(*marks, *served, dirs[i]); },
+                 [out, done] { done(*out); });
+    });
+}
+// The search for the site's folder (« Site ↔ dossier »): the page's own files decide, never the port alone.
+//   kept      the folder remembered for the site (checked again at every opening)
+//   found     the project of the process serving the port (its working folder)
+//   matches   the candidates holding the page's files, in order of trust: first what the server says (its working
+//             folder, the folders of its command line), then the other worktrees of the same repositories and the
+//             folders used recently. `sureMatch`: the one to use without asking (the only match of what the server
+//             says, else the only match of all); empty when none or several match.
+struct FolderSearch { FolderVerdict kept, found; std::vector<std::wstring> matches; std::wstring sureMatch; bool checkable = false; };
+void PageJudged(const FolderSearch& r) {
+    // i18n-exempt-begin: log details
+    if (r.found.marks == ChatPrompt::Marks::Inside) Diag(L"the page's file marks agree with the folder (" + std::to_wstring(r.found.named) + L" file(s) named)");
+    if (r.found.served == ChatFolder::Served::Inside) Diag(L"the page's files are in the folder found (" + std::to_wstring(r.found.files) + L" file(s) served)");
+    for (const auto& m : r.matches) Diag(L"the page's files are in " + m);
+    std::wstring doubt = suggestion.folder.empty() ? suggestion.why : suggestion.doubt;
+    if (!suggestion.folder.empty() && Against(r.found)) {
+        doubt = r.found.marks == ChatPrompt::Marks::Outside ? L"the page's file marks point outside the folder found" : L"the page's files are not in the folder found";
+        Diag(L"folder suggestion dropped: " + doubt + L" (" + suggestion.folder + L")");
+        suggestion.folder.clear(); suggestion.sure = false;
+    }
+    // what the search found replaces the port's guess: used without asking when it is the only match
+    if (!r.sureMatch.empty()) {
+        if (!folder.empty() && ChatFolder::detail::Fold(folder) == ChatFolder::detail::Fold(r.sureMatch) && (Verified(r.kept))) return;   // the remembered folder, confirmed
+        if (turn.active) { if (!folder.empty() && !Verified(r.kept)) ShowFolderMismatch(); return; }
+        Diag(L"the page's files designate one folder: " + r.sureMatch + (folder.empty() ? L"" : L" (was " + folder + L")"));
+        if (!folder.empty() && ChatFolder::detail::Fold(folder) != ChatFolder::detail::Fold(r.sureMatch) && !convo.data.items.empty()) NewConversation();
+        suggestion.folder = r.sureMatch; suggestion.sure = true;
+        if (ChatFolder::detail::Fold(folder) != ChatFolder::detail::Fold(r.sureMatch)) { folder.clear(); folderChosen = false; }
+        Diag(L"folder used without asking (sure): " + r.sureMatch); SetFolder(r.sureMatch, false); return;
+    }
+    if (!folder.empty()) {
+        if (Verified(r.kept)) return;   // the page's files are there (and nowhere else that the server names)
+        const bool keptOk = folderChosen && !Against(r.kept);   // a folder the user chose stays when the page cannot say
+        if (!keptOk) {
+            if (turn.active) { ShowFolderMismatch(); return; }
+            Diag(L"the remembered folder " + folder + (Against(r.kept) ? L" does not hold the page's files" : L" cannot be checked against the page") + L": not used");
+            if (!r.checkable && suggestion.sure && !suggestion.folder.empty()) { if (ChatFolder::detail::Fold(suggestion.folder) != ChatFolder::detail::Fold(folder) && !convo.data.items.empty()) NewConversation(); SetFolder(suggestion.folder, false); return; }
+            folder.clear(); folderChosen = false; folderAsk = true; DisposeSession(L"project folder to confirm");
+            if (!r.matches.empty()) { suggestion.folder = r.matches.front(); suggestion.sure = false; }
+            SendState(); return;
+        }
+    }
+    if (!r.matches.empty()) {   // several folders hold the page's files: the user says which one (the first one proposed)
+        suggestion.folder = r.matches.front(); suggestion.sure = false; doubt = std::to_wstring(r.matches.size()) + L" folders hold the page's files";
+    }
+    // nothing on the page can be checked (routes, /_next/…): the port's detection decides, as before
+    FolderDecided(!r.checkable && suggestion.sure && !suggestion.folder.empty(), doubt);
+    // i18n-exempt-end
+}
+// Once the mode's script is in the page (the chat may open while the mode is still starting, Ctrl+Maj+D from outside it).
 void AskPageMarks(const std::string& origin, int tries) {
     if (origin != site.origin) return;
-    auto t = ChatTab(); if (!t) { FolderDecided(true, L""); return; }
-    if (!Ann::s.injected && tries > 0 && EnsurePost()) { folderMarksOrigin = origin; folderMarksTries = tries - 1; SetTimer(post, FolderTimer, 150, nullptr); return; }
-    Query(t, L"sources", L"null", [origin](const std::string& json) {
-        if (origin != site.origin) return;
-        const auto files = ChatPrompt::ParsePageSources(json);
-        const auto marks = ChatPrompt::MarksInFolder(files, U8(suggestion.folder), [](const std::string& p) { const DWORD a = GetFileAttributesW(W(p).c_str()); return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY); });
-        // i18n-exempt-begin: log details
-        if (marks == ChatPrompt::Marks::Outside) FolderDecided(false, L"the page's file marks point outside the folder (" + std::to_wstring(files.size()) + L" file(s) named)");
-        else { if (marks == ChatPrompt::Marks::Inside) Diag(L"the page's file marks agree with the folder (" + std::to_wstring(files.size()) + L" file(s) named)"); FolderDecided(true, L""); }
-        // i18n-exempt-end
+    if (ChatTab() && !Ann::s.injected && tries > 0 && EnsurePost()) { folderMarksOrigin = origin; folderMarksTries = tries - 1; SetTimer(post, FolderTimer, 150, nullptr); return; }
+    // the candidates, in order of trust (see FolderSearch)
+    std::vector<std::wstring> server; if (!suggestion.folder.empty()) server.push_back(suggestion.folder);
+    for (const auto& a : suggestion.argFolders) server.push_back(a);
+    std::vector<std::wstring> others; if (!folder.empty()) others.push_back(folder);
+    {   std::vector<std::pair<std::int64_t, std::wstring>> recent;
+        for (const auto& sp : projects.sites) if (!sp.second.folder.empty()) recent.push_back({sp.second.usedAt, sp.second.folder});
+        std::sort(recent.begin(), recent.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        for (std::size_t i = 0; i < recent.size() && i < 12; ++i) others.push_back(recent[i].second); }
+    const std::wstring kept = folder, found = suggestion.folder; std::wstring cwdRoot = suggestion.cwd;
+    AskPageFiles([origin, server, others, kept, found, cwdRoot](std::shared_ptr<std::vector<std::string>> marks, std::shared_ptr<std::vector<std::string>> served) {
+        auto out = std::make_shared<FolderSearch>();
+        Ann::Run([out, marks, served, server, others, kept, found, cwdRoot] {
+            out->kept = VerdictFor(*marks, *served, kept); out->found = VerdictFor(*marks, *served, found);
+            out->checkable = !ChatFolder::ServedFiles(*served).empty() || !marks->empty();
+            if (!out->checkable) return;
+            std::vector<std::wstring> seen;
+            const auto fresh = [&](const std::wstring& d) {
+                if (d.empty() || seen.size() > 60) return false;
+                const std::wstring f = ChatFolder::detail::Fold(ChatFolder::detail::Trim(d));
+                if (std::find(seen.begin(), seen.end(), f) != seen.end()) return false;
+                seen.push_back(f); return true;
+            };
+            std::vector<std::wstring> serverMatches, allMatches;
+            for (const auto& d : server) if (fresh(d) && Verified(VerdictFor(*marks, *served, d))) { serverMatches.push_back(d); allMatches.push_back(d); }
+            // the other worktrees of the repositories involved, then the recent folders
+            std::vector<std::wstring> more;
+            for (const auto& d : server) for (const auto& w : ChatFolder::RepoWorktrees(d)) more.push_back(w);
+            if (!cwdRoot.empty()) for (const auto& w : ChatFolder::RepoWorktrees(cwdRoot)) more.push_back(w);
+            for (const auto& d : others) { more.push_back(d); for (const auto& w : ChatFolder::RepoWorktrees(d)) more.push_back(w); }
+            for (const auto& d : more) if (fresh(d) && Verified(VerdictFor(*marks, *served, d))) allMatches.push_back(d);
+            // a folder holding another match is not another candidate: the most precise one is kept (the site's own
+            // folder, not the repository around it)
+            const auto prune = [](std::vector<std::wstring>& v) {
+                std::vector<std::wstring> keep;
+                for (const auto& a : v) {
+                    const std::wstring fa = ChatFolder::detail::Fold(ChatFolder::detail::Trim(a)) + L"\\";
+                    bool outer = false; for (const auto& b : v) { const std::wstring fb = ChatFolder::detail::Fold(ChatFolder::detail::Trim(b)) + L"\\"; if (fb.size() > fa.size() && fb.rfind(fa, 0) == 0) outer = true; }
+                    if (!outer) keep.push_back(a);
+                }
+                v = keep;
+            };
+            prune(serverMatches); prune(allMatches);
+            out->matches = allMatches;
+            if (serverMatches.size() == 1) out->sureMatch = serverMatches.front();
+            else if (serverMatches.empty() && allMatches.size() == 1) out->sureMatch = allMatches.front();
+        }, [out, origin] { if (origin == site.origin) PageJudged(*out); });
     });
+}
+// After a turn, or a folder picked by hand: the page's files must be in the folder, else the card says it.
+void CheckFolderMatchesPage() {
+    if (folder.empty() || !site.local || site.file || !Ann::s.injected) return;
+    const std::string origin = site.origin; const std::wstring dir = folder;
+    JudgeFolders({dir}, [origin, dir](const std::vector<FolderVerdict>& v) {
+        if (origin != site.origin || dir != folder || v.empty()) return;
+        if (Against(v[0])) ShowFolderMismatch();
+    });
+}
+// The Windows folder picker (« Choisir le dossier… », the choose screen's « Choisir un autre dossier… », the card).
+void ChooseFolder() {
+    struct Modal { Modal() { extern void BubbleModal(bool); BubbleModal(true); } ~Modal() { extern void BubbleModal(bool); BubbleModal(false); } } modal;
+    const std::wstring picked = ChatFolder::PickFolder(window, TR(chat_folder_pick_title), !folder.empty() ? folder : !suggestion.folder.empty() ? suggestion.folder : projects.Recent());
+    if (!picked.empty()) { const bool changed = ChatFolder::detail::Fold(picked) != ChatFolder::detail::Fold(folder); SetFolder(picked); if (changed) CheckFolderMatchesPage(); }
+    if (Open()) view.Focus();
 }
 void DetectFolder() {
     if (suggestionAsked || !site.local || site.file) return;
@@ -254,8 +395,7 @@ void DetectFolder() {
                  if (origin != site.origin) return;   // another site since
                  suggestion = *out;
                  Diag(suggestion.folder.empty() ? L"no folder suggestion: " + suggestion.why : L"folder suggestion from the process listening on the site's port (pid " + std::to_wstring(suggestion.pid) + L"): " + suggestion.folder);
-                 if (!suggestion.sure) { FolderDecided(false, suggestion.folder.empty() ? suggestion.why : suggestion.doubt); return; }
-                 AskPageMarks(origin, 20);   // sure so far: the page's own file marks must not point elsewhere (3 s at most for the mode's script)
+                 AskPageMarks(origin, 20);   // the page's own files must be in the folder (3 s at most for the mode's script)
              });
 }
 int CountPending() { return pendingAnnotations; }
@@ -823,7 +963,7 @@ void OnPanelMessage(const std::string& json) {
     if ((type == "folder.use" || type == "folder.choose") && !(site.local && !site.file)) return;   // no folder for a site that is not local
     if ((type == "folder.use" || type == "folder.choose") && turn.active) { Diag(L"folder change asked during a turn: ignored"); return; }
     if (type == "folder.use") { const std::wstring path = W(m.Text("path", 2048)); if (!suggestion.folder.empty() && path == suggestion.folder) SetFolder(path); else Diag(L"folder.use with a path that was not proposed: ignored"); return; }
-    if (type == "folder.choose") { struct Modal { Modal() { extern void BubbleModal(bool); BubbleModal(true); } ~Modal() { extern void BubbleModal(bool); BubbleModal(false); } } modal; const std::wstring picked = ChatFolder::PickFolder(window, TR(chat_folder_pick_title), !folder.empty() ? folder : !suggestion.folder.empty() ? suggestion.folder : projects.Recent()); if (!picked.empty()) SetFolder(picked); if (Open()) view.Focus(); return; }
+    if (type == "folder.choose") { ChooseFolder(); return; }
     if (type == "undo.turn") { Undo(m.Id("turnId"), ""); return; }
     if (type == "checkpoint.restore") { const std::string cp = m.Id("checkpointId"); std::string t; for (const auto& p : checkpointOfTurn) if (p.second == cp) t = p.first; if (!cp.empty()) Undo(t, cp); return; }
     if (type == "checkpoint.viewChanges") { ViewChanges(m.Id("turnId"), m.Text("path", 1024)); return; }
@@ -869,6 +1009,7 @@ void OnPanelMessage(const std::string& json) {
         if (action == "retry") { const std::string text = LastUserText(); if (!text.empty()) SendOrQueue(text, {}, {}); else MaybeStartSession(); }
         else if (action == "connect") Connect(agentId, "");
         else if (action == "newChat") { if (turn.active) { queue.clear(); afterTurn = [] { NewConversation(); MaybeStartSession(); }; StopTurn(); } else { NewConversation(); MaybeStartSession(); } }   // F3: as the composer's « Nouveau chat »
+        else if (action == "chooseFolder") ChooseFolder();   // « Cette page ne semble pas venir de… »
         else if (action == "showWork") ShowEngineWork();   // Mode Commentaire: the work under way asks for a permission
         return;
     }
