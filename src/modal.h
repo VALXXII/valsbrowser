@@ -1437,7 +1437,7 @@ private:
             if (spec_.notes.collapsed) kit_.Ring({0, 0, width_, height_}, P::radius, DialogKit::White(NotesPaper::border));
             PaintNotes(now);
             if (!spec_.notes.collapsed) kit_.Ring({0, 0, width_, height_}, P::radius, DialogKit::White(NotesPaper::border));
-            if (t->EndDraw() == D2DERR_RECREATE_TARGET && pc_ == &chrome_) { kit_.Release(); chrome_.RecreateTarget(); }
+            if (t->EndDraw() == D2DERR_RECREATE_TARGET && pc_ == &chrome_) { kit_.Release(); DropLogoBitmap(); chrome_.RecreateTarget(); }
             return;
         }
         for (const auto& b : blocks_) {
@@ -1689,7 +1689,7 @@ private:
         }
         PaintActions(now);
         kit_.Ring({0, 0, width_, height_}, P::radius, DialogKit::White(P::border));
-        if (t->EndDraw() == D2DERR_RECREATE_TARGET && pc_ == &chrome_) { kit_.Release(); chrome_.RecreateTarget(); }
+        if (t->EndDraw() == D2DERR_RECREATE_TARGET && pc_ == &chrome_) { kit_.Release(); DropLogoBitmap(); chrome_.RecreateTarget(); }
     }
     // ---- UI Automation --------------------------------------------------------------------------
     // B07 card for UIA (R1): file, real reason title and full text, from the spec (not the drawn, possibly
