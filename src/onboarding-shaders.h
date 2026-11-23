@@ -1,7 +1,8 @@
 #pragma once
 // Onboarding shaders (Paper p-R-0 « Onboarding — fenêtre de lancement »).
 //
-// The three Paper shader nodes of the onboarding are @paper-design/shaders 0.0.82 (MIT-style licence, see
+// The three Paper shader nodes of the onboarding are @paper-design/shaders 0.0.82 (Apache License 2.0, Copyright
+// Lost Coast Labs, Inc.; licence and notice in third_party/paper-shaders, source
 // https://github.com/paper-design/shaders): HalftoneDots (screens 1 and 7), GemSmoke (screens 4, 5, 5.1) and
 // GrainGradient (screen 6). This file is a line-for-line HLSL port of that library's vertex shader (sizing: fit,
 // scale, origin, offset) and of the three fragment shaders, run on Direct3D 11 and read back as premultiplied

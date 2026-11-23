@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>frame workers</title>
+<!-- tests/frame-workers: the top document starts workers, then embeds a frame of ANOTHER site (localhost vs
+     127.0.0.1: its own renderer, so the vault attaches to it). Every worker must answer. -->
+<script src="checks.js"></script>
+<script>
+window.results = {};
+runChecks('top', (key, ok) => { window.results[key] = ok; });
+window.addEventListener('message', e => {
+  const d = e.data;
+  if (d && d.frameCheck) window.results[d.frameCheck] = d.ok;
+});
+addEventListener('DOMContentLoaded', () => {
+  const f = document.createElement('iframe');
+  f.src = 'http://' + (location.hostname === 'localhost' ? '127.0.0.1' : 'localhost') + ':' + location.port + '/frame.html';
+  document.body.appendChild(f);
+});
+</script>
+<body></body>

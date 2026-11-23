@@ -35,6 +35,9 @@ permissions:
 jobs:
   build:
     name: Build, test, package (windows x64)
+    # Only in the source repository: the public copy of the code (VALXXII/valsbrowser) carries this file but
+    # builds and publishes nothing.
+    if: github.repository == 'VALXXII/browser'
     runs-on: windows-2022
     timeout-minutes: 60
     # A newer push to main supersedes an older build still in progress.
@@ -84,7 +87,7 @@ jobs:
           name: browser-${{ steps.identity.outputs.version }}-win-x64
           path: build/release/dist/
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 7
 
   publish:
     name: Publish to VALXXII/browser-releases

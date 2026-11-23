@@ -1,12 +1,14 @@
 # Browser - Windows natif
 
+Navigateur pour Windows, écrit en C++ (Win32, Direct2D) sur WebView2. Code sous licence MIT. Projet indépendant : les marques, logos et sites tiers qui y apparaissent ne servent que d'exemples, sans affiliation ni approbation de leur part. Voir [Licence, marques et contenus tiers](#licence-marques-et-contenus-tiers).
+
 ## Télécharger (Windows 10/11 x64)
 
 Dernière version publique : https://github.com/VALXXII/browser-releases/releases/latest — télécharger **`browser-<version>-win-x64-setup.exe`** et l'ouvrir : installation pour votre compte Windows dans `%LOCALAPPDATA%\browser`, sans droits administrateur, raccourci dans le menu Démarrer (Bureau en option), ouverture à la fin (case à cocher). Le même fichier met à jour ou répare une installation existante sans toucher aux données ; désinstallation depuis Paramètres > Applications (données conservées sauf case cochée). Le navigateur se met ensuite à jour tout seul. Browser est déclaré à Windows comme navigateur web (pour votre compte seulement) : il apparaît dans Paramètres > Applications > Applications par défaut, et Réglages › « Navigateur par défaut » ouvre cette page ; liens et fichiers donnés à `browser.exe` s'ouvrent dans un nouvel onglet de la fenêtre déjà ouverte. WebView2 requis (proposé au premier démarrage s'il manque). Conception, contrat et vérifications : [design/windows-setup-plan.md](design/windows-setup-plan.md), [design/windows-setup-report.md](design/windows-setup-report.md).
 
 Version portable (sans installation) : `browser-<version>-win-x64.zip` — clic droit > **Extraire tout…**, lancer **browser.exe** en gardant tout le dossier ; profil dans ce dossier ; une mise à jour installée passe ensuite dans `%LOCALAPPDATA%\browser` et y copie le profil une fois. Les fichiers `.lsrupd` et `update-manifest` servent seulement aux mises à jour automatiques. Construction et vérifications du ZIP : [design/public-download-report.md](design/public-download-report.md).
 
-Page de téléchargement (site statique, sans build) : [web/landing/index.html](web/landing/index.html). Le bouton pointe vers le dernier installateur via l'API GitHub, avec repli sur la page « latest » ; fenêtre interactive reproduite depuis Paper, valeurs dans [web/landing/DESIGN-VALUES.md](web/landing/DESIGN-VALUES.md). Le dossier est autonome (polices comprises) : il est hébergé sur Vercel avec `web/landing` comme dossier racine, et une modification limitée à `web/` ou `tests/landing/` ne publie pas de nouvelle version du navigateur.
+Page de téléchargement : https://valsbrowser.com (site statique, sans build). Le bouton pointe vers le dernier installateur via l'API GitHub, avec repli sur la page « latest » ; fenêtre interactive reproduite depuis Paper. Les sources du site (dossier `web/landing`, valeurs de design dans son `DESIGN-VALUES.md`, tests dans `tests/landing`) restent dans le dépôt privé et ne font pas partie de la copie publique du code. Le dossier est autonome (polices comprises) : il est hébergé sur Vercel avec `web/landing` comme dossier racine, et une modification limitée à `web/` ou `tests/landing/` ne publie pas de nouvelle version du navigateur.
 
 ## Preview « Éléments & popups » (sandbox des composants)
 
@@ -225,3 +227,12 @@ le site le moins récent se replie en rail de 32 DIP, sans fermeture ni recharge
 Vérification : `test-split-view.ps1` pour le modèle et le comportement, et
 `test-split-view.ps1 -Native` pour de vraies WebView2 sur des pages locales (sans
 réseau), avec les captures dans `build/split-dev/split-qa`.
+
+## Licence, marques et contenus tiers
+
+- **Licence.** Le code de ce dépôt est publié sous licence MIT : [LICENSE](LICENSE).
+- **Composants tiers.** Les bibliothèques, polices et icônes venues d'autres auteurs gardent leur propre licence (Apache-2.0 pour Gui et Paper Shaders, MIT pour ThorVG, RapidJSON et Phosphor, OFL pour les polices, GPL-3.0 pour uBlock Origin Lite, livré à part et non modifié). Liste et fichiers de licence : [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+- **Marques et contenus tiers.** Les noms, logos, icônes et captures d'écran de sites, de moteurs de recherche, d'assistants ou d'autres navigateurs ne sont utilisés qu'à titre d'exemple. **Ce projet n'est ni affilié à ces marques, ni soutenu ou approuvé par elles.** Ces éléments restent la propriété de leurs détenteurs et ne sont pas couverts par la licence MIT. Détails : [TRADEMARKS.md](TRADEMARKS.md).
+- *Third-party names, logos, icons and screenshots are used only as examples. This project is not affiliated with, sponsored by or endorsed by any of these brands. See [TRADEMARKS.md](TRADEMARKS.md).*
+- **Sécurité.** Pour signaler une faille, ne pas ouvrir d'issue publique : voir [SECURITY.md](SECURITY.md).
+- **Copie publique.** Le développement se fait dans un dépôt privé. Le dépôt public `VALXXII/valsbrowser` en est une copie, synchronisée depuis le dépôt privé. Son historique est réécrit : les chemins personnels sont anonymisés, et le site web, ses tests et les captures de preuve volumineuses (`design/*-evidence`, `design/e2e-runs`) en sont retirés. Les identifiants de commit diffèrent donc de ceux cités dans les rapports de `design/`, mais le nombre de commits, et donc le numéro de version, reste identique.
