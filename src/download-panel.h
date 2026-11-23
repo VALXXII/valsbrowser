@@ -58,6 +58,7 @@ struct Slot {
     int index = -1;                 // Row: item index; Section: period
     float top = 0, opacity = 1, open = 1;
     float clipTop = -1e6f, clipBottom = 1e6f;
+    float height = 0;               // Row: a held download's card height in the popover (0: a plain row)
 };
 // Everything a frame depends on; the offscreen fixture builds one directly.
 struct Scene {
@@ -101,13 +102,27 @@ inline std::vector<Slot> DrawerSlots(const std::vector<Item>& items, const std::
     if (contentBottom) *contentBottom = y + scroll + Panel::padding - DrawerLayout::after;
     return slots;
 }
-inline std::vector<Slot> PopoverSlots(const std::vector<Item>& items) {
+// A held download shows as its card (HeldCard) when the caller measured one (cardHeight > 0).
+inline bool ShowsCard(const Item& item, float cardHeight) { return cardHeight > 0 && item.held && item.state == State::InProgress; }
+inline std::vector<Slot> PopoverSlots(const std::vector<Item>& items, float cardHeight = 0) {
     std::vector<Slot> slots;
     if (items.empty()) { slots.push_back({SlotKind::Empty, -1, Panel::RowTop(0)}); return slots; }
     const int rows = std::min<int>(Panel::popoverRows, static_cast<int>(items.size()));
-    for (int i = 0; i < rows; ++i) slots.push_back({SlotKind::Row, i, Panel::RowTop(i)});
-    slots.push_back({SlotKind::ViewAll, -1, Panel::ViewAllTop(rows)});
+    float top = Panel::firstRow, bottom = 0; bool previousCard = false;
+    for (int i = 0; i < rows; ++i) {
+        const bool card = ShowsCard(items[i], cardHeight);
+        // Rows 16 apart, a card 20 from a row's tile (12 + the row's 8 inset in Paper), 12 between two cards.
+        if (i > 0) top = bottom + (card && previousCard ? HeldCard::gap : card || previousCard ? HeldCard::around : Panel::rowGap);
+        Slot slot{SlotKind::Row, i, top}; slot.height = card ? cardHeight : 0; slots.push_back(slot);
+        bottom = top + (card ? cardHeight : Panel::tile); previousCard = card;
+    }
+    slots.push_back({SlotKind::ViewAll, -1, bottom + Panel::rowGap});
     return slots;
+}
+// Popover height for its slots: « View all » + its line + the bottom padding.
+inline float PopoverHeight(const std::vector<Slot>& slots) {
+    for (const auto& slot : slots) if (slot.kind == SlotKind::ViewAll) return slot.top + Panel::line + Panel::padding;
+    return Panel::Height(1);
 }
 
 class View {
@@ -123,6 +138,7 @@ public:
     ~View() { Release(); }
     bool blurAvailable = true;
     void Release() {
+        Drop(bodyLayout_); bodyText_.clear(); bodyHeight_ = 0; Drop(warning_);
         Drop(layer_); layerSize_ = {}; Drop(fade_); Drop(stops_); Drop(blur_); Drop(dc_);
         for (auto& icon : icons_) Drop(icon.second);
         icons_.clear();
@@ -236,11 +252,78 @@ public:
         }
         return x;
     }
+    // ---- Held download (Paper B07b, variant A) ----
+    static constexpr D2D1_COLOR_F Amber(float alpha = 1) { return {0xE6 / 255.f, 0xAC / 255.f, 0x3D / 255.f, alpha}; }   // --color-profile-ambre
+    IDWriteTextLayout* bodyLayout_ = nullptr; std::wstring bodyText_; float bodyHeight_ = 0;
+    ID2D1PathGeometry* warning_ = nullptr;
+    // Phosphor « Warning » (bold), the Paper frame's own path: drawn as a vector so the amber is full strength (the
+    // bundled glyph bitmaps carry the toolbar's 50 % alpha).
+    void Warning(D2D1_RECT_F box, float size, D2D1_COLOR_F color) {
+        static constexpr const char* path = "M240.26,186.1,152.81,34.23h0a28.74,28.74,0,0,0-49.62,0L15.74,186.1a27.45,27.45,0,0,0,0,27.71A28.31,28.31,0,0,0,40.55,228h174.9a28.31,28.31,0,0,0,24.79-14.19A27.45,27.45,0,0,0,240.26,186.1Zm-20.8,15.7a4.46,4.46,0,0,1-4,2.2H40.55a4.46,4.46,0,0,1-4-2.2,3.56,3.56,0,0,1,0-3.73L124,46.2a4.77,4.77,0,0,1,8,0l87.44,151.87A3.56,3.56,0,0,1,219.46,201.8ZM116,136V104a12,12,0,0,1,24,0v32a12,12,0,0,1-24,0Zm28,40a16,16,0,1,1-16-16A16,16,0,0,1,144,176Z";
+        if (!warning_) warning_ = DialogKit::SvgGeometry(chrome_.Factory(), path);
+        auto* t = chrome_.RenderTarget(); if (!warning_ || !t) return;
+        D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
+        const float x = (box.left + box.right - size) / 2, y = (box.top + box.bottom - size) / 2;
+        t->SetTransform(D2D1::Matrix3x2F::Scale(size / 256.f, size / 256.f) * D2D1::Matrix3x2F::Translation(x, y) * base);
+        chrome_.SolidBrush()->SetColor(color); t->FillGeometry(warning_, chrome_.SolidBrush());
+        t->SetTransform(base);
+    }
+    // The body paragraph wrapped in the card's inner width, on CSS 18 DIP lines (half-leading above each line).
+    IDWriteTextLayout* Body() {
+        const std::wstring text = TR(downloads_held_body);
+        if (bodyLayout_ && text == bodyText_) return bodyLayout_;
+        Drop(bodyLayout_); bodyText_ = text; bodyHeight_ = 0;
+        TextMeasure m; IDWriteTextLayout* layout = nullptr;
+        if (FAILED(chrome_.MakeTextLayout(text, {0, 0, HeldCard::innerWidth, HeldCard::bodyLine}, Panel::detailText, false, false, 0, &layout, m)) || !layout) return nullptr;
+        DWRITE_TRIMMING none{DWRITE_TRIMMING_GRANULARITY_NONE, 0, 0}; layout->SetTrimming(&none, nullptr);
+        layout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP); layout->SetMaxWidth(HeldCard::innerWidth); layout->SetMaxHeight(4096);
+        DWRITE_LINE_METRICS natural{}; UINT32 count = 0; layout->GetLineMetrics(&natural, 1, &count);
+        layout->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, HeldCard::bodyLine, (HeldCard::bodyLine - natural.height) / 2 + natural.baseline);
+        DWRITE_TEXT_METRICS metrics{}; layout->GetMetrics(&metrics);
+        bodyHeight_ = metrics.lineCount * HeldCard::bodyLine; bodyLayout_ = layout; return layout;
+    }
+    float CardHeight() { return Body() ? HeldCard::Height(bodyHeight_) : 0; }
+    void CardButton(int slot, Design::Box b, int hit, const Scene& scene) {
+        const auto v = Interaction(scene, hit); const D2D1_RECT_F r{b.left, b.top, b.right, b.bottom};
+        auto* t = chrome_.RenderTarget(); auto* brush = chrome_.SolidBrush();
+        // « Supprimer »: filled #FFFFFF1A; « Conserver »: ghost. Hover lifts the plate, press dims it.
+        const float plate = (slot == 0 ? .102f : 0) + .06f * v.hover - .03f * v.press;
+        if (plate > 0) { chrome_.Color(1, plate); t->FillRoundedRectangle(D2D1::RoundedRect(r, HeldCard::radius, HeldCard::radius), brush); }
+        const float label = slot == 0 ? 1.f : .6f + .2f * v.hover;
+        const std::wstring text = slot == 0 ? TR(downloads_action_discard) : TR(downloads_action_keep);
+        const float w = std::min(r.right - r.left, chrome_.TextWidth(text, Panel::detailText, true, false, 0)), x = (r.left + r.right - w) / 2;   // centred
+        chrome_.Text(text, {x, r.top, x + w + 1, r.bottom}, Panel::detailText, label * (1 - .15f * v.press), false, true, 0);
+        if (scene.focus == hit) chrome_.FocusRing(r, HeldCard::radius);
+    }
+    void Card(const Item& item, float top, float height, const Scene& scene) {
+        auto* t = chrome_.RenderTarget(); auto* brush = chrome_.SolidBrush();
+        const auto c = HeldCard::Card(top, height); const D2D1_RECT_F card{c.left, c.top, c.right, c.bottom};
+        brush->SetColor(Amber(0x14 / 255.f)); t->FillRoundedRectangle(D2D1::RoundedRect(card, HeldCard::radius, HeldCard::radius), brush);
+        // 1 px inset ring (box-shadow inset), on the physical pixel grid.
+        const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width));
+        brush->SetColor(Amber(0x33 / 255.f)); t->DrawRoundedRectangle(D2D1::RoundedRect({card.left + px / 2, card.top + px / 2, card.right - px / 2, card.bottom - px / 2}, HeldCard::radius - px / 2, HeldCard::radius - px / 2), brush, px);
+        const auto tb = HeldCard::Tile(top); const D2D1_RECT_F tile{tb.left, tb.top, tb.right, tb.bottom};
+        brush->SetColor(Amber(0x26 / 255.f)); t->FillRoundedRectangle(D2D1::RoundedRect(tile, HeldCard::radius, HeldCard::radius), brush);
+        Warning(tile, HeldCard::glyph, Amber());
+        const auto n = HeldCard::Name(top); chrome_.Text(FileName(item.path), {n.left, n.top, n.right, n.bottom}, 16, 1, false, true, -.16f);
+        const auto st = HeldCard::Status(top); const auto ink = chrome_.ink; chrome_.ink = Amber();
+        chrome_.Text(TRF(downloads_held_status, Bytes(item.total > 0 ? item.total : item.received, 0)), {st.left, st.top, st.right, st.bottom}, Panel::detailText, 1, false, false, 0);
+        chrome_.ink = ink;
+        if (auto* body = Body()) { brush->SetColor(D2D1::ColorF(1, 1, 1, 0xB3 / 255.f)); t->DrawTextLayout({HeldCard::left + HeldCard::inset, HeldCard::BodyTop(top)}, body, brush, D2D1_DRAW_TEXT_OPTIONS_NONE); }
+        for (int slot = 0; slot < 2; ++slot) CardButton(slot, HeldCard::Button(top, height, slot), ActionHit(item.id, slot), scene);
+    }
     void Detail(const Item& item, float top, std::int64_t nowMs) {
         const float y = top + Panel::line, muted = Design::Text::muted;
         float x = Panel::textLeft;
         switch (item.state) {
         case State::InProgress: {
+            if (item.held) {   // DL-V5: warning glyph + « À confirmer », amber at full opacity
+                Warning({x, y, x + Panel::detailIcon, y + Panel::line}, Panel::detailIcon, Amber());
+                x += Panel::detailIcon + Panel::iconGap; const auto ink = chrome_.ink; chrome_.ink = Amber();
+                const std::wstring text = TR(downloads_state_held); const float w = chrome_.TextWidth(text, Panel::detailText, false, true, -.14f);
+                chrome_.Text(text, {x, y, std::min(x + w + 2, Panel::width - Panel::padding), y + Panel::line}, Panel::detailText, 1, true, false, -.14f);
+                chrome_.ink = ink; break;
+            }
             x = Run(L"arrow-down", Bytes(item.received, item.total), x, y, muted);
             if (item.endTime > 0) {
                 const auto left = std::max<std::int64_t>(0, (item.endTime - nowMs + 999) / 1000);
@@ -274,12 +357,13 @@ public:
         chrome_.Round({tile.left, tile.top, tile.right, tile.bottom}, Design::Radius::control, Design::Surface::raised);
         if (auto* icon = FileIcon(item)) {
             const float s = 24, x = (tile.left + tile.right - s) / 2, y = (tile.top + tile.bottom - s) / 2;
-            const float fade = item.state == State::Completed && !item.missing ? 1.f : .5f;
+            const float fade = item.state == State::Completed && !item.missing ? 1.f : item.held ? .8f : .5f;
             if (dc_) dc_->DrawBitmap(icon, D2D1::RectF(x, y, x + s, y + s), fade, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, nullptr, nullptr);
             else target->DrawBitmap(icon, D2D1::RectF(x, y, x + s, y + s), fade);
         }
         const auto name = Panel::Name(top);
-        chrome_.Text(FileName(item.path), {name.left, name.top, name.right, name.bottom}, Panel::line, Design::Text::muted, false, true, -.16f);
+        // A held row keeps its name readable (#FFFFFFE6 at the rows' .9): it waits for a decision.
+        chrome_.Text(FileName(item.path), {name.left, name.top, name.right, name.bottom}, Panel::line, item.held ? .9f * .9f : Design::Text::muted, false, true, -.16f);
         // Keyboard focus on a finished row (Entrée opens it): the ring around the tile + text band, 6 DIP out.
         if (scene.focus == RowHit(item.id)) chrome_.FocusRing({Panel::padding - 6, top - 6, Panel::width - Panel::padding + 6, top + Panel::tile + 6}, Design::Radius::control + 6);
         Detail(item, top, scene.nowMs);
@@ -371,7 +455,7 @@ public:
                 if (slot.opacity <= .002f) break;
                 if (clipped) target->PushAxisAlignedClip(D2D1::RectF(0, top, Panel::width, bottom), D2D1_ANTIALIAS_MODE_ALIASED);
                 if (layered) PushOpacity(slot.opacity);
-                Row(items[slot.index], slot.top, scene);
+                if (slot.height > 0) Card(items[slot.index], slot.top, slot.height, scene); else Row(items[slot.index], slot.top, scene);
                 if (layered) dc_->PopLayer();
                 if (clipped) target->PopAxisAlignedClip();
                 break;
@@ -461,6 +545,12 @@ protected:
             } else if (slot.kind == SlotKind::ViewAll) {
                 auto b = Panel::ViewAll(slot.top, const_cast<View&>(view_).ViewAllWidth());
                 if (x >= b.left && x < b.right && y >= b.top && y < b.bottom) return ViewAllHit;
+            } else if (slot.kind == SlotKind::Row && slot.opacity > .5f && slot.height > 0) {
+                const auto card = HeldCard::Card(slot.top, slot.height);
+                if (y < card.top || y >= card.bottom || x < card.left || x >= card.right) continue;
+                const auto& entry = (*items_)[slot.index]; item = entry.id;
+                for (int s = 0; s < 2; ++s) { auto box = HeldCard::Button(slot.top, slot.height, s); if (x >= box.left && x < box.right && y >= box.top && y < box.bottom) return ActionHit(entry.id, s); }
+                return 0;
             } else if (slot.kind == SlotKind::Row && slot.opacity > .5f) {
                 auto band = Panel::Hover(slot.top);
                 const float top = std::max(band.top, slot.clipTop), bottom = std::min(band.bottom, slot.clipBottom);
@@ -480,7 +570,7 @@ protected:
     // A row shows its actions while hovered or holding keyboard focus. A download in progress or paused shows its
     // Pause / Resume and Cancel at all times (user report 2026-11-14: an active download looked un-cancellable while
     // the pointer was elsewhere); the name keeps its mask, the hit lanes are the same buttons.
-    static bool Active(const Item& item) { return item.state == State::InProgress || item.state == State::Paused; }
+    static bool Active(const Item& item) { return (item.state == State::InProgress && !item.held) || item.state == State::Paused; }   // a held row (DL-V5) reveals on hover
     bool ActiveId(int id) const { if (!items_) return false; for (const auto& i : *items_) if (i.id == id) return Active(i); return false; }
     void UpdateReveals(Motion::Time now) {
         const bool reduced = motion_.ReducedMotion();
@@ -547,7 +637,7 @@ protected:
                     add(static_cast<UINT_PTR>(SectionHit(static_cast<Period>(slot.index))), DrawerLayout::Caret(slot.top), slot.open > .5f ? TR(common_collapse) : TR(common_expand));
                 continue;
             }
-            if (slot.kind != SlotKind::Row || slot.opacity < .99f || slot.top < scene.viewTop || slot.top + Panel::tile > scene.viewBottom) continue;
+            if (slot.kind != SlotKind::Row || slot.height > 0 || slot.opacity < .99f || slot.top < scene.viewTop || slot.top + Panel::tile > scene.viewBottom) continue;   // a card's buttons carry their label
             const auto& item = (*items_)[slot.index]; const auto actions = ActionsFor(item);
             for (int s = 0; s < 2; ++s) {
                 const Action action = s == 0 ? actions.first : actions.second;
@@ -573,7 +663,7 @@ protected:
     static constexpr long long RowKeyBase = 1000000000LL;
     static std::wstring StatusText(const Item& item) {
         switch (item.state) {
-        case State::InProgress: return Bytes(item.received, item.total);
+        case State::InProgress: return item.held ? TRF(downloads_held_status, Bytes(item.total > 0 ? item.total : item.received, 0)) + L". " + TR(downloads_held_body) : Bytes(item.received, item.total);
         case State::Paused: return TR(downloads_state_paused);
         case State::Completed: return item.missing ? TR(downloads_state_file_deleted) : TR(downloads_state_completed);
         case State::Failed: return FailureText(item.reason);
@@ -583,7 +673,8 @@ protected:
     }
     static const wchar_t* ActionId(Action a) {
         switch (a) { case Action::Pause: return L"DownloadPause"; case Action::Resume: return L"DownloadResume"; case Action::Cancel: return L"DownloadCancel";
-        case Action::Retry: return L"DownloadRetry"; case Action::Remove: return L"DownloadRemove"; case Action::ShowInFolder: return L"DownloadShowInFolder"; case Action::Open: return L"DownloadOpen"; default: return L""; }
+        case Action::Retry: return L"DownloadRetry"; case Action::Remove: return L"DownloadRemove"; case Action::ShowInFolder: return L"DownloadShowInFolder"; case Action::Open: return L"DownloadOpen";
+        case Action::Discard: return L"DownloadDiscard"; case Action::Keep: return L"DownloadKeep"; default: return L""; }
     }
 public:
     // The accessible tree of the surface (screen pixels), in reading order. Public: tests read it.
@@ -600,13 +691,13 @@ public:
             if (slot.kind != SlotKind::Row || slot.opacity <= .5f || slot.index < 0 || slot.index >= static_cast<int>(items_->size())) continue;
             const auto& item = (*items_)[slot.index];
             Accessibility::Node row; row.key = RowKeyBase + item.id; row.parent = 3; row.role = Accessibility::Role::ListItem; row.name = FileName(item.path); row.status = StatusText(item);
-            row.automationId = L"DownloadItem"; row.position = ++position; row.count = count; row.focusable = Openable(item); row.bounds = screen(Panel::Hover(slot.top));
+            row.automationId = L"DownloadItem"; row.position = ++position; row.count = count; row.focusable = Openable(item); row.bounds = screen(slot.height > 0 ? HeldCard::Card(slot.top, slot.height) : Panel::Hover(slot.top));
             row.offscreen = slot.top + Panel::tile < scene.viewTop || slot.top > scene.viewBottom; out.push_back(row);
             const auto actions = ActionsFor(item);
             for (int sl = 0; sl < 2; ++sl) {
                 const Action a = sl == 0 ? actions.first : actions.second; if (a == Action::None) continue;
                 Accessibility::Node b; b.key = ActionHit(item.id, sl); b.parent = row.key; b.role = Accessibility::Role::Button; b.name = TipFor(a); b.help = FileName(item.path);
-                b.automationId = ActionId(a); b.bounds = screen(Panel::ActionBox(slot.top, sl)); b.offscreen = row.offscreen; out.push_back(b);
+                b.automationId = ActionId(a); b.bounds = screen(slot.height > 0 ? HeldCard::Button(slot.top, slot.height, sl) : Panel::ActionBox(slot.top, sl)); b.offscreen = row.offscreen; out.push_back(b);
             }
         }
         return out;
@@ -734,8 +825,9 @@ class Popover final : public Host {
     Motion::Tween entrance_;
     float anchorRight_ = 0, anchorTop_ = 0;
     int Rows() const { return items_ ? std::min<int>(Panel::popoverRows, static_cast<int>(items_->size())) : 0; }
-    float Height() const { return Panel::Height(Rows(), items_ && !items_->empty()); }
-    std::vector<Slot> Slots(Motion::Time) const override { static const std::vector<Item> none; return PopoverSlots(items_ ? *items_ : none); }
+    float CardHeight() const { return const_cast<View&>(view_).CardHeight(); }
+    float Height() const { if (!items_ || items_->empty()) return Panel::Height(Rows(), false); return PopoverHeight(Slots(Motion::Time{})); }
+    std::vector<Slot> Slots(Motion::Time) const override { static const std::vector<Item> none; return PopoverSlots(items_ ? *items_ : none, CardHeight()); }
     float SurfaceHeight() const override { return Height(); }
     void Decorate(Scene& scene) const override {
         scene.entrance = entrance_.Value(scene.now); scene.viewBottom = Height() - Panel::padding / 2;
@@ -797,8 +889,8 @@ public:
 // glides into place: section headers emerge from under the title instead of
 // crossing the rows. Content the popover did not show fades in over the last
 // 75%; "View all" leaves within the first 30%. Pure, so the fixture renders it.
-inline std::vector<Slot> MorphSlots(const std::vector<Item>& items, const std::vector<Slot>& drawer, float t) {
-    const auto popover = PopoverSlots(items);
+inline std::vector<Slot> MorphSlots(const std::vector<Item>& items, const std::vector<Slot>& drawer, float t, float cardHeight = 0) {
+    const auto popover = PopoverSlots(items, cardHeight);
     std::map<int, float> from; // item index -> popover top
     for (auto& slot : popover) if (slot.kind == SlotKind::Row) from[slot.index] = slot.top;
     float shift = 0; // first shared row: popover top - drawer top
@@ -850,7 +942,7 @@ class Drawer final : public Host {
         static const std::vector<Item> none; const auto& items = items_ ? *items_ : none;
         auto slots = DrawerSlots(items, Groups(), Folds(now), scroll_.Value(now));
         const float t = Morph(now);
-        return t < 1 ? MorphSlots(items, slots, t) : slots;
+        return t < 1 ? MorphSlots(items, slots, t, const_cast<View&>(view_).CardHeight()) : slots;
     }
     float Scale() const { return 96.f / Dpi(); }
     // The 268 DIP column: at the popover's place when the morph starts, docked after.

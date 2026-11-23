@@ -28,13 +28,17 @@ struct Item {
     std::int64_t endTime = 0;             // estimated end, Unix ms; 0 = unknown
     std::int64_t started = 0;             // when the download began, Unix ms; 0 = unknown (oldest group)
     bool canResume = false, missing = false;
+    // InProgress only: every byte is in, but the engine holds the file for the user's decision (Microsoft Defender
+    // SmartScreen: a rarely downloaded file it could not confirm as safe). WebView2 reports nothing else (state
+    // IN_PROGRESS, no interrupt reason) and keeps it so until Keep or Discard; it deletes the file when it exits.
+    bool held = false;
 };
 // Row actions, left to right. None marks an empty slot.
-enum class Action { None, Pause, Resume, Cancel, Retry, Remove, ShowInFolder, Open };
+enum class Action { None, Pause, Resume, Cancel, Retry, Remove, ShowInFolder, Open, Discard, Keep };
 struct Actions { Action first = Action::None, second = Action::None; };
 inline Actions ActionsFor(const Item& item) {
     switch (item.state) {
-    case State::InProgress: return {Action::Pause, Action::Cancel};
+    case State::InProgress: return item.held ? Actions{Action::Discard, Action::Keep} : Actions{Action::Pause, Action::Cancel};
     case State::Paused: return {Action::Resume, Action::Cancel};
     case State::Completed: return item.missing ? Actions{Action::None, Action::Remove} : Actions{Action::ShowInFolder, Action::Open};
     case State::Failed: return item.canResume ? Actions{Action::Retry, Action::Remove} : Actions{Action::None, Action::Remove};
@@ -47,6 +51,8 @@ inline const wchar_t* IconFor(Action action) {
     case Action::Pause: return L"pause";
     case Action::Resume: return L"resume";
     case Action::Cancel: case Action::Remove: return L"close";
+    case Action::Discard: return L"trash";
+    case Action::Keep: return L"check";
     case Action::Retry: return L"retry";
     case Action::ShowInFolder: return L"folder";
     case Action::Open: return L"open";
@@ -62,8 +68,33 @@ inline const wchar_t* TipFor(Action action) {
     case Action::Remove: return TR(downloads_action_remove);
     case Action::ShowInFolder: return TR(downloads_action_show_in_folder);
     case Action::Open: return TR(downloads_action_open);
+    case Action::Discard: return TR(downloads_action_discard);
+    case Action::Keep: return TR(downloads_action_keep);
     default: return L"";
     }
+}
+
+// ---- Engine state → row state (WebView2 values, kept numeric: no SDK header here) ---------------------
+// COREWEBVIEW2_DOWNLOAD_STATE: 0 in progress, 1 interrupted, 2 completed. Interrupt reasons used here:
+// USER_CANCELED 26, USER_PAUSED 28 (static_assert in main.cpp).
+namespace Engine {
+inline constexpr int InProgress = 0, Interrupted = 1, Completed = 2;
+inline constexpr int ReasonUserCanceled = 26, ReasonUserPaused = 28;
+// A download whose bytes are all in and that the engine still reports in progress for this long is held for the
+// user's decision (measured: a finished download completes within a few hundred ms of its last byte; a held one
+// never does). A late completion after the grace still lands as Completed.
+inline constexpr std::int64_t HoldGraceMs = 2000;
+}
+inline State MapEngineState(int state, int reason, bool userPaused) {
+    if (state == Engine::Completed) return State::Completed;
+    if (state == Engine::InProgress) return userPaused ? State::Paused : State::InProgress;
+    if (reason == Engine::ReasonUserPaused) return State::Paused;
+    if (reason == Engine::ReasonUserCanceled) return State::Cancelled;
+    return State::Failed;
+}
+// fullSinceMs: how long every byte has been in (negative: not all in, or the size is unknown).
+inline bool HeldForDecision(int state, std::int64_t received, std::int64_t total, bool userPaused, std::int64_t fullSinceMs) {
+    return state == Engine::InProgress && !userPaused && total > 0 && received >= total && fullSinceMs >= Engine::HoldGraceMs;
 }
 
 // ---- Text ---------------------------------------------------------------
@@ -359,6 +390,34 @@ inline constexpr float ViewTop() { return firstRow - rowGap / 2; }
 // Text-link hit area: the label plus 4 DIP around it.
 inline constexpr Box ViewAll(float top, float labelWidth) { return {padding - 4, top - 4, padding + labelWidth + 4, top + line + 4}; }
 }
+// ---- Held download card (DIP), Paper B07b « A · Ambre — à confirmer » ------------------------------------
+// The popover shows a download held for the user's decision as a card in its row's place: amber tint (#E6AC3D14,
+// 1 px inset #E6AC3D33, radius 6), 12 inside; a 32 tile (#E6AC3D26, radius 6, warning glyph 16 in #E6AC3D) 10 before
+// the name (16 medium, line 20) and the status (14, line 18, amber) 2 under it; 12 below, the body (14, line 18,
+// #FFFFFFB3); 12 below, two equal 32 buttons 8 apart: « Supprimer » (filled #FFFFFF1A, white) and « Conserver »
+// (ghost, #FFFFFF99), 14 medium. Neighbouring rows' tiles sit 20 from the card (12 gap + the row's 8 inset).
+namespace HeldCard {
+using Design::Box;
+inline constexpr float inset = 12, tile = 32, glyph = 16, radius = 6, headGap = 10, nameLine = 20, statusLine = 18, textGap = 2;
+inline constexpr float head = nameLine + textGap + statusLine;   // 40: the text column sets the head's height
+inline constexpr float gap = 12, bodyLine = 18, button = 32, buttonGap = 8, around = 20;
+inline constexpr float left = Panel::padding, right = Panel::width - Panel::padding;
+inline constexpr float innerWidth = right - left - 2 * inset;     // 212 in the 268 DIP popover
+inline constexpr float textLeft = left + inset + tile + headGap;
+inline constexpr float Height(float bodyHeight) { return inset + head + gap + bodyHeight + gap + button + inset; }
+inline constexpr Box Card(float top, float height) { return {left, top, right, top + height}; }
+inline constexpr Box Tile(float top) { return {left + inset, top + inset + (head - tile) / 2, left + inset + tile, top + inset + (head + tile) / 2}; }
+inline constexpr Box Name(float top) { return {textLeft, top + inset, right - inset, top + inset + nameLine}; }
+inline constexpr Box Status(float top) { return {textLeft, top + inset + nameLine + textGap, right - inset, top + inset + head}; }
+inline constexpr float BodyTop(float top) { return top + inset + head + gap; }
+// slot 0 = « Supprimer » (left), 1 = « Conserver » (right).
+inline constexpr Box Button(float top, float height, int slot) {
+    const float w = (innerWidth - buttonGap) / 2, x = left + inset + slot * (w + buttonGap), y = top + height - inset - button;
+    return {x, y, x + w, y + button};
+}
+}
+static_assert(HeldCard::innerWidth == 212 && HeldCard::Height(0) == 120, "held card: 12 inside, 40 head, 12, body, 12, 32 buttons, 12");
+
 // ---- Drawer geometry (DIP) -------------------------------------------------
 // Measured from the Paper "Download history" drawer: the popover's width,
 // docked to the window's right edge under the toolbar, without a header: the
