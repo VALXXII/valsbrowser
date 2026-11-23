@@ -458,7 +458,8 @@ inline PublishResult PublishWorkspace(const Paths& paths, const std::wstring& pr
     for (std::size_t i = 0; i < titles.size() || i < urls.size(); ++i)
         o << "tab=" << Detail::Escape(i < titles.size() ? titles[i] : L"") << "|" << Detail::Escape(i < urls.size() ? urls[i] : L"") << "\n";
     std::error_code ec; std::filesystem::create_directories(WindowSessions::Dir(paths.dataDir), ec);
-    return ProfileStore::WriteAtomic(Detail::SidecarFile(paths.dataDir, sessionId), o.str()) ? PublishResult::Published : PublishResult::Failed;
+    // PERF-08: a hint rebuilt at every start, rewritten on each activation: atomic, but not flushed to the disk.
+    return ProfileStore::WriteAtomic(Detail::SidecarFile(paths.dataDir, sessionId), o.str(), false) ? PublishResult::Published : PublishResult::Failed;
 }
 inline bool PublishWindow(const Paths& paths, const std::wstring& profileId, const std::wstring& sessionId, HWND hwnd,
                           const std::vector<std::wstring>& titles = {}, const std::vector<std::wstring>& urls = {}, int active = 0, WorkspaceState state = WorkspaceState::Active) {

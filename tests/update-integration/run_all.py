@@ -60,6 +60,7 @@ def existing_fixtures() -> None:
     fixture('session_test', [*STRICT, 'tests/session_test.cpp'])
     # Address field model: display, suggestions, and what a typed text opens (links, local paths and file: URLs, searches).
     fixture('address_test', [*STRICT, 'tests/address_test.cpp'])
+    fixture('history_index_test', ['-O2', *STRICT, 'tests/history_index_test.cpp'])
     # Interface language (design/browser-languages-plan.md): catalog, formats, plurals, the browser-wide
     # preference (temporary folders only), then Reglages > Langue on the real drawer (FR and EN processes).
     run('i18n coverage gate (catalog parity, no untranslated interface text)', [sys.executable, ROOT / 'tools/i18n/check_strings.py'])
