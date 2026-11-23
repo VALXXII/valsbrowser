@@ -489,7 +489,18 @@ int main(){
         privateWindow=false;Log(L"control");
         Expect(!std::filesystem::is_empty(dir),"control: the same paths are written by a normal window");
         std::tie(dataDir,sessionFile,downloadsFile,settingsFile,logFile,smoke,sessionReady)=saved;std::filesystem::remove_all(dir,ec);
-        Expect(PrivateCommandLine(L"C:/b/browser.exe")==L"\"C:/b/browser.exe\" --private","private window: same executable, only --private passed");
+        Expect(PrivateCommandLine(L"C:/b/browser.exe",L"")==L"\"C:/b/browser.exe\" --private"&&PrivateCommandLine(L"C:/b/browser.exe",Profiles::DefaultId)==L"\"C:/b/browser.exe\" --private","private window from Personnel: same executable, only --private passed");
+        Expect(PrivateCommandLine(L"C:/b/browser.exe",L"ptravail01")==L"\"C:/b/browser.exe\" --private --profile ptravail01","R-2: private window from Travail: --profile of its opener (read-only vault of that profile)");
+        Expect(PrivateCommandLine(L"C:/b/browser.exe",L"..\\x --delete-profile y")==L"\"C:/b/browser.exe\" --private","R-2: an invalid profile id is never passed");
+        // Review R-2: a private window reads the vault of the profile it was opened from, and none when that profile is unknown.
+        { const std::wstring pdir=L"build/elements-integration/private-vault";std::error_code pec;std::filesystem::remove_all(pdir,pec);std::filesystem::create_directories(pdir,pec);
+          {Vault::Store st;st.Save(L"https://travail.test",L"synth-travail",L"Synth-7777!",1);std::ofstream f(std::filesystem::path(pdir+L"\\passwords"),std::ios::binary);st.Write(f);}
+          const std::wstring savedDir=dataDir;const std::wstring savedPrivateDir=privateVaultDir;dataDir=L"build/elements-integration/not-this-one";privateWindow=true;privateVaultDir=pdir;
+          Expect(VaultFile()==pdir+L"\\passwords"&&ReadVault(0)==VaultLoad::Ok&&vault.Entries().size()==1&&vault.Entries()[0].user==L"synth-travail","R-2: a private window reads its opener profile's vault, not the window's data root");
+          privateVaultDir.clear();
+          Expect(ReadVault(0)==VaultLoad::Ok&&vaultLoaded&&vault.Entries().empty(),"R-2: opener profile unknown: no vault is read (never another profile's)");
+          privateWindow=false;privateVaultDir=savedPrivateDir;dataDir=savedDir;vault=Vault::Store{};vaultBase=Vault::Store{};vaultLoaded=false;std::filesystem::remove_all(pdir,pec);
+          Expect(VaultFile()==dataDir+L"\\passwords","R-2: a normal window keeps its own profile's vault"); }
         // V5: the native fill control is not armed right after it appeared (500 ms, same tab and navigation).
         { chrome.vaultKey=true;vaultKeySerial=live->serial;vaultKeyNav=live->navStamp;vaultKeyShownAt=GetTickCount64();
           Expect(!VaultKeyArmed(),"V5: the fill control ignores an activation before 500 ms");
@@ -535,6 +546,68 @@ int main(){
           Expect(answered==4&&promptQueue.empty(),"capture: closing the tab drops the offer and its secret");
           Expect(!VaultOfferStillValid(live,o)&&!VaultOfferStillValid(nullptr,o),"capture: the show/answer guard refuses a tab whose engine source is not the capture origin (PumpPrompt and the answer use it; shown path covered by vault_e2e)");
           vaultCapture.clear(); }
+        // Engine passwords, owner decision « option A »: the activation date and the days of use are recorded; NOTHING is
+        // ever deleted automatically; after 30 days of use, with « Mots de passe » on and a readable vault, Réglages ›
+        // Mots de passe OFFERS the deletion; it happens only after a click AND the A5-style confirmation; the result is
+        // said (deleted, or failed with the reason) and, once deleted, the offer is gone for good.
+        { const std::wstring mdir=L"build/elements-integration/vault-migration";std::error_code mec;std::filesystem::remove_all(mdir,mec);std::filesystem::create_directories(mdir,mec);
+          const std::wstring savedDir=dataDir;dataDir=mdir;const bool wasActive=Vault::ActiveFlag(),wasOn=settings.passwords;const std::int64_t day=24LL*3600*1000,t0=1790000000000LL;
+          const std::wstring state=mdir+L"\\vault-engine-migration";settings.passwords=true;
+          int engineCalls=0;HRESULT engineAnswer=S_OK;
+          vaultEngineClearHook=[&](std::function<void(HRESULT)> done){++engineCalls;done(engineAnswer);};   // the engine call, injected
+          Vault::ActiveFlag()=false;Expect(VaultEngineMigrationStep(t0)==EngineStep::Nothing&&!std::filesystem::exists(state)&&!VaultEngineOfferDue(),"option A: vault inactive (dev/release): nothing recorded, no offer");
+          Vault::ActiveFlag()=true;privateWindow=true;Expect(VaultEngineMigrationStep(t0)==EngineStep::Nothing&&!std::filesystem::exists(state)&&!VaultEngineOfferDue(),"option A: a private window records nothing and offers nothing");
+          privateWindow=false;
+          Expect(VaultEngineMigrationStep(t0)==EngineStep::Recorded&&VaultEngineMigrationStep(t0+3600*1000)==EngineStep::Nothing,"option A: the first active start records the activation date (once)");
+          bool early=false;for(int k=1;k<29;++k)early=early||VaultEngineMigrationStep(t0+k*day)!=EngineStep::Nothing||VaultEngineOfferDue();
+          Expect(!early&&engineCalls==0,"option A: 29 days of use: no offer, nothing deleted");
+          AskVaultEngineDelete();Expect(engineCalls==0&&!modalOpen,"option A: before 30 days of use even a direct request deletes nothing (no dialog)");
+          Expect(VaultEngineMigrationStep(t0+400*day)==EngineStep::OfferDue&&engineCalls==0,"option A: the 30th day of use (whatever the calendar says): the offer is due, NOTHING deleted automatically");
+          Expect(VaultEngineOfferDue(),"option A: Réglages › Mots de passe shows the offer");
+          settings.passwords=false;Expect(!VaultEngineOfferDue(),"option A: no offer while « Mots de passe » is off");settings.passwords=true;
+          { std::ofstream bad(std::filesystem::path(mdir+L"\\passwords"),std::ios::binary);bad<<"pas un coffre\n"; }
+          Expect(!VaultEngineOfferDue(),"option A: no offer while the vault is unreadable");
+          std::filesystem::remove(mdir+L"\\passwords",mec);
+          Vault::ActiveFlag()=false;Expect(!VaultEngineOfferDue(),"option A: no offer while the vault is inactive");Vault::ActiveFlag()=true;
+          Expect(VaultEngineOfferDue(),"option A: the offer is back once everything allows it");
+          // The B05 list shows the offer with its button (real mode only).
+          NativeChrome::PasswordDemo::Window list;list.SetReal({},[](std::uint64_t){return false;});list.SetEngineOffer(true,[]{});
+          auto hasOffer=[&](const MD::Spec& sp){for(auto& l:sp.links)if(l.automationId==L"VaultEngineOffer")return true;return false;};
+          Expect(hasOffer(list.ListSpecForTest()),"option A: the B05 list carries the link row « Supprimer les anciens mots de passe… »");
+          list.SetEngineOffer(false,[]{});Expect(!hasOffer(list.ListSpecForTest()),"option A: no button when the offer is not due");
+          list.SetReadOnly(true);list.SetEngineOffer(true,[]{});Expect(!hasOffer(list.ListSpecForTest()),"option A: never in a read-only (private) list");list.SetReadOnly(false);
+          // The confirmation (A5 pattern): « Annuler » deletes nothing; « Supprimer » deletes; a failure is said with its reason.
+          instance=GetModuleHandleW(nullptr);
+          window=CreateWindowExW(WS_EX_TOOLWINDOW,L"STATIC",L"owner",WS_POPUP,0,0,1200,800,nullptr,nullptr,instance,nullptr);
+          wchar_t cwd[MAX_PATH]{};GetCurrentDirectoryW(MAX_PATH,cwd);
+          Expect(window&&modal.Create(instance,window,cwd,{}),"option A: modal surface created");
+          auto run=[]{for(int i=0;i<6&&!deferredJobs.empty();++i){auto jobs=std::move(deferredJobs);deferredJobs.clear();for(auto& j:jobs)j();}};
+          AskVaultEngineDelete();run();
+          Expect(modalOpen&&modal.CurrentSpec().automationId==L"DeleteEnginePasswords"&&modal.CurrentSpec().buttons.size()==2&&modal.CurrentSpec().buttons[1].role==MD::Role::Danger&&engineCalls==0,"option A: a click opens the confirmation (Annuler / destructive action), nothing deleted yet");
+          modal.Finish(MD::CancelButton);run();modal.FinishAnimationsForTest();
+          Expect(!modalOpen&&engineCalls==0&&VaultEngineOfferDue(),"option A: « Annuler »: nothing deleted, the offer stays");
+          engineAnswer=E_FAIL;AskVaultEngineDelete();run();
+          modal.ActivateForTest(MD::Dialog::ButtonHit(1));run();
+          Expect(engineCalls==1&&modalOpen&&!modal.BusyForTest()&&modal.ErrorForTest().find(L"0x80004005")!=std::wstring::npos&&VaultEngineOfferDue(),"option A: a failed deletion is said in the dialog with its reason; nothing recorded, the offer stays");
+          engineAnswer=S_OK;modal.ActivateForTest(MD::Dialog::ButtonHit(1));run();modal.FinishAnimationsForTest();
+          Vault::EngineMigration after;{std::string b;ProfileStore::ReadAll(state,b);Vault::EngineMigration::Read(b,after);}
+          Expect(engineCalls==2&&!modalOpen&&after.cleared>0&&!VaultEngineOfferDue(),"option A: « Supprimer » after the confirmation deletes, the dialog closes, the deletion is recorded and the offer is gone");
+          Expect(VaultEngineMigrationStep(t0+500*day)==EngineStep::Nothing&&!VaultEngineOfferDue(),"option A: the offer never comes back (next starts)");
+          AskVaultEngineDelete();run();Expect(!modalOpen&&engineCalls==2,"option A: after the deletion a direct request opens nothing");
+          { std::ofstream bad(std::filesystem::path(state),std::ios::binary);bad<<"autre chose\n"; }
+          Expect(VaultEngineMigrationStep(t0+501*day)==EngineStep::Recorded&&!VaultEngineOfferDue(),"option A: an unreadable state file is never taken as an old date (re-recorded: never an early offer)");
+          modal.Abort();run();modal.Dispose();DestroyWindow(window);window=nullptr;vaultEngineClearHook=nullptr;
+          settings.passwords=wasOn;Vault::ActiveFlag()=wasActive;dataDir=savedDir;std::filesystem::remove_all(mdir,mec); }
+        // Review V-5: the capture (DevTools domains) is attached only while it can be used.
+        { const bool wasActive=Vault::ActiveFlag(),wasOn=settings.passwords;
+          Vault::ActiveFlag()=false;settings.passwords=true;Expect(!VaultCaptureWanted(),"V-5: vault inactive (dev/release): no DevTools capture on any tab");
+          Vault::ActiveFlag()=true;settings.passwords=false;Expect(!VaultCaptureWanted(),"V-5: « Mots de passe » off: no DevTools capture");
+          settings.passwords=true;privateWindow=true;Expect(!VaultCaptureWanted(),"V-5: private window: no capture");
+          privateWindow=false;Expect(VaultCaptureWanted(),"V-5: vault active, « Mots de passe » on, normal window: capture attached");
+          Vault::ActiveFlag()=wasActive;settings.passwords=wasOn; }
+        // « Effacer en quittant » says what it really deletes (ClearBrowsingDataAll includes the engine's saved passwords and forms).
+        { const bool wasActive=Vault::ActiveFlag();Vault::ActiveFlag()=false;const std::wstring off=ClearOnExitNote();Vault::ActiveFlag()=true;const std::wstring on=ClearOnExitNote();Vault::ActiveFlag()=wasActive;
+          Expect(off.find(L"mots de passe")!=std::wstring::npos&&on.find(L"mots de passe")!=std::wstring::npos&&off!=on,"clear on exit: the note names the saved passwords it deletes (vault inactive: all of them; active: those not kept yet)"); }
         // A5 with engine categories but no engine profile (no live tab / older runtime): a real failure, never « effacé ».
         { HRESULT got=S_FALSE;StartClearSelected({false,true,true,false,false},1,[&](HRESULT hr){got=hr;});Expect(FAILED(got),"A5: cookies/cache selected without an engine profile is reported as a failure"); }
         // Startup recovery relaunch (PR62 contract): the mode and this window's session are kept.

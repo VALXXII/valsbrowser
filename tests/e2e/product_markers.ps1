@@ -11,7 +11,9 @@ function Check([bool]$ok, [string]$what) { if ($ok) { "ok   $what" } else { "FAI
 function Has([string]$f, [string]$m) { $b = [IO.File]::ReadAllBytes($f); $u = [Text.Encoding]::Unicode; return ($u.GetString($b).Contains($m) -or $u.GetString($b, 1, $b.Length - 1).Contains($m)) }
 $prod = Join-Path $root "$Product\browser.exe"; $vh = Join-Path $root 'build\e2e-vault-host\browser.exe'; $mh = Join-Path $root 'build\e2e-mtls-host\browser.exe'
 "product: $prod ($((Get-Item $prod).LastWriteTime.ToString('s')))"
-Check (-not (Has $prod 'E2E FIXTURE PIN') -and -not (Has $prod 'E2E VAULT HOST') -and -not (Has $prod 'BROWSER_E2E_PIN_MANIFEST')) 'product binary: no fixture pin, no vault test host code'
+Check (-not (Has $prod 'E2E FIXTURE PIN') -and -not (Has $prod 'E2E VAULT HOST') -and -not (Has $prod 'E2E VAULT ACTIVE') -and -not (Has $prod 'BROWSER_E2E_PIN_MANIFEST')) 'product binary: no fixture pin, no vault test host code, no forced-active vault (review R-5 host)'
+$ph = Join-Path $root 'build\e2e-vault-product\browser.exe'
+if (Test-Path $ph) { Check ((Has $ph 'E2E VAULT ACTIVE') -and -not (Has $ph 'E2E VAULT HOST')) 'vault product-path host binary: forced-active marker present, no lifted foreground condition' }
 Check ((Has $vh 'E2E FIXTURE PIN') -and (Has $vh 'E2E VAULT HOST')) 'vault test host binary: pin and vault host markers present (the check can see them)'
 Check ((Has $mh 'E2E FIXTURE PIN') -and -not (Has $mh 'E2E VAULT HOST')) 'mTLS test host binary: pin only, vault inactive there'
 $fix = Join-Path $root 'build\e2e-product-check'; Remove-Item $fix -Recurse -Force -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force $fix | Out-Null
@@ -23,7 +25,7 @@ try {
   Start-Process -FilePath $exe -ArgumentList '--smoke-test' -WorkingDirectory $fix   # --smoke-test: never hands over to an installed copy (the personal browser is never involved)
   $ok = $false; for ($i = 0; $i -lt 60 -and !$ok; $i++) { Start-Sleep -Milliseconds 250; $ok = (Get-Content $log -Raw -ErrorAction SilentlyContinue) -match 'VAULT state: (in)?active' }
   $l = Get-Content $log -Raw -ErrorAction SilentlyContinue
-  Check ($l -match 'VAULT state: inactive' -and $l -notmatch 'E2E VAULT HOST' -and $l -notmatch 'E2E BOUND') 'product run: vault inactive, no test host path'
+  Check ($l -match 'VAULT state: inactive' -and $l -notmatch 'E2E VAULT HOST' -and $l -notmatch 'E2E VAULT ACTIVE' -and $l -notmatch 'E2E BOUND') 'product run: vault inactive, no test host path'
 } finally {
   foreach ($p in (Get-CimInstance Win32_Process -Filter "Name='browser.exe'" | Where-Object { $_.ExecutablePath -ieq $exe })) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
   Remove-Item Env:WEBVIEW2_BROWSER_EXECUTABLE_FOLDER -ErrorAction SilentlyContinue

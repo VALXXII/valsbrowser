@@ -77,6 +77,7 @@
 #include "trace-erase.h"
 #include "log-privacy.h"
 #include "password-vault.h"
+#include "profiles.h"   // Profiles::ValidId for the private window command line (review R-2)
 #ifdef BROWSER_E2E_FIXTURE_HOOK
 // TEST HOST ONLY (tests/e2e/mtls_host.cpp): the fixture pin. The release and dev browser never define
 // BROWSER_E2E_FIXTURE_HOOK, so none of this exists in them (checked by tests/e2e/mtls_e2e.ps1).
@@ -104,6 +105,7 @@ GUID_TEXT(ICoreWebView2FaviconChangedEventHandler,"{2913da94-833d-4de0-8dca-900f
 GUID_TEXT(ICoreWebView2FocusChangedEventHandler,"{05ea24bd-6452-4926-9014-4b82b498135d}")
 GUID_TEXT(ICoreWebView2CapturePreviewCompletedHandler,"{697e05e9-3d8f-45fa-96f4-8ffe1ededaf5}")
 GUID_TEXT(ICoreWebView2CallDevToolsProtocolMethodCompletedHandler,"{5c4889f0-5ef6-4c5a-952c-d8f1b92d0574}")
+GUID_TEXT(ICoreWebView2DevToolsProtocolEventReceivedEventHandler,"{e2fda4be-5456-406c-a261-3d452138362c}")
 GUID_TEXT(ICoreWebView2GetFaviconCompletedHandler,"{a2508329-7da8-49d7-8c05-fa125e4aee8d}")
 GUID_TEXT(ICoreWebView2NavigationStartingEventHandler,"{9adbe429-f36d-432b-9ddc-f8881fbd76e3}")
 GUID_TEXT(ICoreWebView2FindStartCompletedHandler,"{6a90ecaf-44b0-5bd9-8f07-1967e17be9fb}")
@@ -343,15 +345,18 @@ bool smoke=false; int testStage=0; int chromePaints=0;
 // NOTHING to disk: no session, history, favicon cache, downloads list, settings, bookmarks or log.
 bool privateWindow=false;
 constexpr const wchar_t* PrivateProfileName=L"browser-private";
-// The command line of a new private window: this same executable, --private (nothing else is passed).
-std::wstring PrivateCommandLine(const std::wstring& exe){return L"\""+exe+L"\" --private";}
+// The command line of a new private window: this same executable, --private, and (review R-2) --profile <id> of the
+// profile it is opened from when that is not the default one: the private window then READS that profile's vault
+// (and still writes nothing anywhere). Only a valid profile id is ever passed.
+std::wstring PrivateCommandLine(const std::wstring& exe,const std::wstring& profile){return L"\""+exe+L"\" --private"+(profile!=Profiles::DefaultId&&Profiles::ValidId(profile)?L" --profile "+profile:L"");}
+std::wstring PrivateOpenerProfile();   // profiles-integration.h
 void Log(const std::wstring& s);
 // « Navigation privée » (button, Ctrl+Maj+N): a separate process; its tabs never share the window,
 // the profile, the session or any file of this one.
 void OpenPrivateWindow(){
     if(smoke)return;
     std::wstring exe(32768,L'\0');const DWORD n=GetModuleFileNameW(nullptr,exe.data(),(DWORD)exe.size());exe.resize(n<exe.size()?n:0);if(exe.empty())return;
-    std::wstring cmd=PrivateCommandLine(exe);const std::wstring dir=std::filesystem::path(exe).parent_path().wstring();
+    std::wstring cmd=PrivateCommandLine(exe,PrivateOpenerProfile());const std::wstring dir=std::filesystem::path(exe).parent_path().wstring();
     STARTUPINFOW si{sizeof(si)};PROCESS_INFORMATION pi{};
     if(!CreateProcessW(exe.c_str(),cmd.data(),nullptr,nullptr,FALSE,0,nullptr,dir.c_str(),&si,&pi)){Log(L"PRIVATE window launch failed");return;}
     CloseHandle(pi.hThread);CloseHandle(pi.hProcess);Log(L"PRIVATE window launched");
@@ -1883,8 +1888,10 @@ void StartClearBrowsingData(std::function<void(HRESULT)>){
 // tab's profile/settings (also called for each new tab); see ClearOnExitAndClose for quitting.
 // Tracking prevention is profile-wide (the environment keeps EnableTrackingPrevention at
 // its default TRUE: no options are passed); passwords/autofill are per-webview settings.
+void VaultCaptureSync();
 void ApplyPrivacySettings(){
     if(smoke)return;
+    VaultCaptureSync();   // review V-5: the vault capture follows « Mots de passe » on every open tab
     static bool trackingLogged=false,formsLogged=false;bool any=false;
     for(auto& t:pages){if(!t||t->closed||!t->view.p)continue;any=true;
         Com<ICoreWebView2Settings> base;Com<ICoreWebView2Settings4> s4;
@@ -1894,6 +1901,8 @@ void ApplyPrivacySettings(){
         // them in the on-disk private profile).
         HRESULT hr=s4->put_IsPasswordAutosaveEnabled(settings.passwords&&!privateWindow&&!Vault::Active()?TRUE:FALSE); /* new saves go to our vault only once it is active (decision 1); older engine passwords keep filling */if(SUCCEEDED(hr))hr=s4->put_IsGeneralAutofillEnabled(settings.autofill&&!privateWindow?TRUE:FALSE);
         if(FAILED(hr)&&!formsLogged){Log(L"SETTINGS password/autofill settings failed "+HrText(hr));formsLogged=true;}
+        {static int lastAutosave=-1;BOOL on=FALSE;   // review R-5: what the ENGINE reports (read back), logged on change only
+         if(SUCCEEDED(s4->get_IsPasswordAutosaveEnabled(&on))&&(on?1:0)!=lastAutosave){lastAutosave=on?1:0;Log(std::wstring(L"SETTINGS engine password autosave ")+(on?L"on":L"off")+L" (read back from the engine)");}}
     }
     if(!any)return;
     Com<ICoreWebView2Profile3> profile;HRESULT hr=E_NOINTERFACE;
@@ -2384,6 +2393,7 @@ void CreateSettingsPanel(){
         if(!DefaultBrowser::Registered(HKEY_CURRENT_USER))return -1;return DefaultBrowser::StatusFrom(DefaultBrowser::SystemDefault)==DefaultBrowser::Status::Default?1:0;};
     hooks.setDefaultBrowser=[]{const std::wstring uri=DefaultBrowser::SettingsUri();Log(L"DEFAULT BROWSER Windows' Default apps page asked for");ShellExecuteW(window,L"open",uri.c_str(),nullptr,nullptr,SW_SHOWNORMAL);};
     hooks.vaultInfo=[]{return VaultInfo();};
+    hooks.clearOnExitNote=[]{return ClearOnExitNote();};   // owner decision B
     hooks.checkUpdates=[](){CheckForUpdates();};
     hooks.version=SettingsVersion;
     hooks.downloadFolder=EffectiveDownloadFolder;
@@ -2506,8 +2516,8 @@ bool E2EAllowedUri(const std::wstring& u){
     if(!e2eCleared)return false;   // nothing reaches the fixture before the cache clear completed
     wchar_t path[1024]{};if(!GetEnvironmentVariableW(L"BROWSER_E2E_PIN_MANIFEST",path,1024))return false;
     const auto m=E2EFixturePin::Load(path);if(!m.loaded)return false;
-    const std::wstring o=L"https://"+m.host+L":"+std::to_wstring(m.port);
-    return u==o||u.rfind(o+L"/",0)==0||u.rfind(o+L"?",0)==0||u.rfind(o+L"#",0)==0;
+    auto at=[&](int port){if(!port)return false;const std::wstring o=L"https://"+m.host+L":"+std::to_wstring(port);return u==o||u.rfind(o+L"/",0)==0||u.rfind(o+L"?",0)==0||u.rfind(o+L"#",0)==0;};
+    return at(m.port)||at(m.port2);   // port2: the optional second fixture origin (vault coverage, cross-origin frame)
 }
 bool E2EFixtureAllows(ICoreWebView2ServerCertificateErrorDetectedEventArgs* args){
     wchar_t path[1024]{};if(!GetEnvironmentVariableW(L"BROWSER_E2E_PIN_MANIFEST",path,1024))return false;
@@ -5076,8 +5086,8 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){
 #ifdef BROWSER_CHANNEL_RELEASE
     smoke=splitTest=workspaceTest=debugSandboxAtStart=false;   // SEC-12: the test harnesses are never honoured by a release build
 #endif
-#ifdef BROWSER_E2E_VAULT_HOST
-    Vault::ActiveFlag()=true;   /* TEST HOST ONLY (tests/e2e/vault_host.cpp): synthetic profile and secrets; never in dev/release */
+#if defined(BROWSER_E2E_VAULT_HOST)||defined(BROWSER_E2E_VAULT_ACTIVE)
+    Vault::ActiveFlag()=true;   /* TEST HOSTS ONLY (tests/e2e/vault_host.cpp, tests/e2e/vault_product_host.cpp): synthetic profile and secrets; never in dev/release */
 #endif
     if(const wchar_t* r=wcsstr(args,L"--restore-window ")){r+=17;while(*r==L' ')++r;const wchar_t* e=r;while(*e&&*e!=L' ')++e;windowRequested.assign(r,e);}smoke=smoke||splitTest;engineRelaunched=wcsstr(args,L"--webview2-recovered")!=nullptr;launchArgs=args?args:L"";motionLabMode=!smoke&&wcsstr(args,L"--motion-lab")!=nullptr;instance=hi;SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(FAILED(init))return 1;wchar_t path[32768];GetModuleFileNameW(nullptr,path,32768);PathRemoveFileSpecW(path);base=path;ResolveBrowserPaths();
     // Interface language, pinned for this process BEFORE any dialog, window or WebView2 (src/ui-language.h): the
@@ -5096,6 +5106,9 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){
     Log(L"START browser");{const char* st=UiLanguage::StatusText(uiLanguage.status);Log(std::wstring(L"UI LANGUAGE ")+(uiLanguage.locale==I18n::Locale::En?L"en":L"fr")+L" ("+std::wstring(st,st+std::strlen(st))+L")");}Log(std::wstring(L"VAULT state: ")+(Vault::Active()?L"active":L"inactive"));   /* P-I1: what a product run reports */
 #ifdef BROWSER_E2E_VAULT_HOST
     Log(L"E2E VAULT HOST: vault active, foreground condition lifted (test host only)");   /* binary marker, absent from dev/release (tests/e2e/product_markers.ps1) */
+#endif
+#ifdef BROWSER_E2E_VAULT_ACTIVE
+    Log(L"E2E VAULT ACTIVE: product path, vault forced active, every foreground condition in force (test build only)");   /* review R-5 host marker, absent from dev/release (tests/e2e/product_markers.ps1) */
 #endif
     INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);RunOnboarding(onboardingReason);/* first-run window: returns when the person is done, then the normal start */paper=CreateSolidBrush(BG);WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);{const UINT dpi=GetDpiForSystem();/* channel app icon (src/app-icon.rc), picked from its multi-size ICO at the system DPI for the title bar/Alt+Tab and the taskbar */wc.hIcon=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXICON,dpi),GetSystemMetricsForDpi(SM_CYICON,dpi),LR_DEFAULTCOLOR);wc.hIconSm=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXSMICON,dpi),GetSystemMetricsForDpi(SM_CYSMICON,dpi),LR_DEFAULTCOLOR);}wc.hbrBackground=paper;RegisterClassExW(&wc);window=CreateWindowW(wc.lpszClassName,privateWindow?TR(window_title_private_bare):L"Browser",WS_POPUP|WS_CAPTION/* Windows' minimize / restore / maximize animations (no caption is drawn: WM_NCCALCSIZE gives the whole window to the client) */|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);StampTaskbarIdentity();DragAcceptFiles(window,TRUE);NativeUI::ConfigureFullClientFrame(window);NativeUI::RoundNatively(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,TR(startup_graphics_failed),L"Browser",MB_OK|MB_ICONERROR);return 3;}splitOverlay.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());statusBubble.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());LoadSettings();ClaimWindowSession();LoadAudioVolumes();motion.SetReducedMotion(ReducedMotionPreferred());NativeChrome::Design::Accent::Set(settings.accent);ProfilesStarted(args);LoadDownloads();LoadHistory();LoadBookmarks();CreateDownloadPanel();CreateAudioPanel();CreateSuggestions();CreateSettingsPanel();CreateHistoryPanel();CreateBookmarkSurfaces();CreateElementSurfaces();contextMenu.Init(instance,window,base);profileMenu.Init(instance,window,base);profileDialog.Init(instance,window,base);profileDeleteDialog.Init(instance,window,base);frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();OnboardingShowBrowser(show);/* plain ShowWindow + UpdateWindow, or the scale-in after a completed onboarding */OnboardingAfterStart();if(motionLabMode){motionLab.changed=[]{ApplyMotionTuning();InvalidateChrome();};motionLab.replay=MotionLabReplay;if(motionLab.Create(hi,window,base+L"\\motion-tuning.ini")){ApplyMotionTuning();motionLab.Show();}}if(smoke)SetTimer(window,1,splitTest?180000:60000,nullptr);
 #ifdef BROWSER_UPDATES

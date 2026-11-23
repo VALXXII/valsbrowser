@@ -47,6 +47,8 @@ struct Spec {
     std::vector<DemoAccount> accounts;   // PasswordFill (fictitious), ClientCertificate (name + issuer)
     std::wstring user;                   // BasicAuth / PasswordSave|Update: pre-filled identifier
     std::wstring secret;                 // PasswordSave|Update, real path only: the password just submitted (wiped by the host after)
+    std::wstring topOrigin;              // PasswordSave|Update, real path: the top-level origin the tab must still show (a frame's capture: its page's; empty: the offer's own origin)
+    bool migration = false;              // PasswordSave, real path: a password the ENGINE had saved (autofilled): « Garder ce mot de passe dans Browser ? »
     // Extras (all optional):
     std::wstring frame;                  // ExternalApp: third-party frame host (no remembering offered)
     std::wstring app;                    // ExternalApp: application name (« Zoom Workplace »), else generic
@@ -256,8 +258,9 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
     }
     case Kind::PasswordSave: case Kind::PasswordUpdate: {   // B04, Démonstration: nothing is stored
         const bool update = s.kind == Kind::PasswordUpdate;
-        m.automationId = update ? L"PasswordUpdate" : L"PasswordSave"; m.scope = Scope::Anchor; m.width = 360; m.closeButton = true; m.demo = s.demo;
-        m.title = update ? TR(password_update_title) : TR(password_save_title);
+        const bool keep = !update && !s.demo && s.migration;   // owner decision B: the same B04, worded as a migration
+        m.automationId = update ? L"PasswordUpdate" : keep ? L"PasswordKeep" : L"PasswordSave"; m.scope = Scope::Anchor; m.width = 360; m.closeButton = true; m.demo = s.demo;
+        m.title = update ? TR(password_update_title) : keep ? TR(password_keep_title) : TR(password_save_title);
         m.subtitle = s.demo ? TRF(password_subtitle_demo, s.origin) : TRF(password_subtitle, s.origin);
         Field user; user.label = TR(auth_user); user.value = s.user; user.automationId = L"PasswordUser"; user.required = true;
         Field pass; pass.label = TR(settings_passwords_singular); pass.password = true; pass.reveal = true; pass.automationId = L"PasswordValue";
@@ -277,7 +280,7 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
             // Review F3: armed (500 ms, foreground) and, for an update, no default Entrée: replacing a stored
             // password always takes a deliberate click or Tab + Espace on « Mettre à jour ».
             m.armMs = 500;
-            m.buttons = {button(Id::Later, TR(common_later), Role::Secondary, false, true, false, L"PasswordLater"), button(Id::Accept, update ? TR(password_update) : TR(password_save), Role::Primary, !update, false, false, L"PasswordSaveConfirm")};
+            m.buttons = {button(Id::Later, TR(common_later), Role::Secondary, false, true, false, L"PasswordLater"), button(Id::Accept, update ? TR(password_update) : keep ? TR(password_keep) : TR(password_save), Role::Primary, !update, false, false, L"PasswordSaveConfirm")};
             if (m.accountsSelect) m.buttons[1].disabled = true;
             break;
         }

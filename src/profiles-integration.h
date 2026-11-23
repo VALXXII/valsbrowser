@@ -37,12 +37,19 @@ bool SwitchWorkspace(const std::wstring& id);bool LeaveProfileHere(const std::ws
 // « --profile <id> » for every relaunch of this window (orphan relaunch, handover, engine recovery):
 // a session of Travail must be adopted by a Travail window, whatever « last used » says later.
 std::wstring ProfileArgument(){return profilesEnabled&&!privateWindow&&Profiles::ValidId(profileId)?L" --profile "+profileId:L"";}
+// Review R-2: the profile a private window opened from here belongs to (it reads that profile's vault, read-only):
+// this window's profile; for a private window, the profile it was itself opened from (so it stays the same).
+std::wstring privateOpener;
+std::wstring PrivateOpenerProfile(){return privateWindow?privateOpener:profilesEnabled?profileId:L"";}
 
 // ---- startup ------------------------------------------------------------------------------------
 // Called right after ResolveBrowserPaths(): `dataDir` is the data root. Smoke and private windows
 // keep the root as is (no registry write): private windows never belong to a profile.
 void SelectProfile(const wchar_t* args){
     profileRoot=dataDir;
+    if(privateWindow){   // review R-2: the vault of the profile this private window was opened from, read-only (none if unknown)
+        const std::wstring opener=ProfileArgs::Value(args?args:L"",L"--profile");privateVaultDir=Profiles::PrivateReadDir(profileRoot,opener);
+        privateOpener=!privateVaultDir.empty()&&opener!=Profiles::DefaultId&&Profiles::ValidId(opener)?opener:L"";}
     if(privateWindow||smoke||motionLabMode){Profiles::Profile d=DefaultProfileLook();profileRegistry.items={d};profilesEnabled=!privateWindow;return;}
     std::wstring requested;
     if(const wchar_t* p=args?wcsstr(args,L"--profile "):nullptr){p+=10;while(*p==L' ')++p;const wchar_t* e=p;while(*e&&*e!=L' ')++e;requested.assign(p,e);}

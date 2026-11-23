@@ -136,6 +136,17 @@ int wmain(int argc, wchar_t** argv) {
         Check(q.dataDir == root + L"\\profiles\\p0123456789ab" && q.profileDir == q.dataDir + L"\\profile" && q.settingsFile == q.dataDir + L"\\settings" && q.logFile == q.dataDir + L"\\browser.log", "other profiles: own folder, own WebView2 data, settings and log");
         Check(ResolvePaths(root, L"..\\evil").dataDir == root && !ValidId(L"..") && !ValidId(L"a\\b") && !ValidId(L"P1") && !ValidId(L"x") && ValidId(L"default"), "ids are never paths");
     }
+    { // Review R-2: a private window reads (never writes) the vault of the profile it was opened from.
+        const auto root = Case(L"private-read");
+        WriteFile(root + L"\\profiles.txt", "browser-profiles 1\nlast=default\np=default|house|0|0|1|Personnel\np=ptravail01|briefcase|150|140|0|Travail\n");
+        const auto before = Snapshot(root);
+        Check(PrivateReadDir(root, L"") == root && PrivateReadDir(root, DefaultId) == root, "R-2: private window opened from Personnel (or without --profile): the default profile's folder");
+        Check(PrivateReadDir(root, L"ptravail01") == ResolvePaths(root, L"ptravail01").dataDir, "R-2: private window opened from Travail: Travail's own folder");
+        Check(PrivateReadDir(root, L"pinconnu01").empty() && PrivateReadDir(root, L"..\\evil").empty() && PrivateReadDir(root, L"P1").empty(), "R-2: an unknown or invalid profile: no vault at all (never another profile's)");
+        Check(Snapshot(root) == before && !fs::exists(root + L"\\profiles"), "R-2: resolving it writes nothing (no registry write, no folder created)");
+        WriteFile(root + L"\\profiles.txt", "browser-profiles 9\np=ptravail01|briefcase|150|140|0|Travail\n");
+        Check(PrivateReadDir(root, L"ptravail01").empty() && PrivateReadDir(root, L"") == root, "R-2: an unknown registry format: no profile vault (the default's stays)");
+    }
     { // Fail closed: an unknown format is never overwritten.
         const auto root = Case(L"unknown-format");
         const std::string future = "browser-profiles 9\np=default|house|0|0|1|Personnel|extra\n";

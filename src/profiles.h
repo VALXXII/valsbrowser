@@ -225,7 +225,7 @@ inline Paths ResolvePaths(const std::wstring& root, const std::wstring& id) {
 // is never touched by a delete of the default profile. Keep in sync with every dataDir+L"\\…"
 // in src (checked by tests/profiles_test.cpp).
 inline const std::vector<std::wstring>& DefaultEntries() {
-    static const std::vector<std::wstring> e{L"profile", L"session", L"sessions", L"history", L"bookmarks", L"settings", L"downloads", L"passwords", L"site-volumes", L"adblock", L"favicons", L"engine-args"};
+    static const std::vector<std::wstring> e{L"profile", L"session", L"sessions", L"history", L"bookmarks", L"settings", L"downloads", L"passwords", L"vault-engine-migration", L"site-volumes", L"adblock", L"favicons", L"engine-args"};
     return e;
 }
 // Application-wide entries at the data root, shared by EVERY profile (annotations are global: one store, see
@@ -344,6 +344,20 @@ inline Registry Load(const std::wstring& root) {
     }
     if (doc.items.empty()) { Registry reg = Detail::ToRegistry(Detail::Doc{{Detail::DefaultProfile()}, L""}, doc); reg.readOnly = true; reg.error = L"empty"; return reg; }
     return Detail::ToRegistry(doc, doc);
+}
+// Review R-2: the folder whose vault a private window may READ (never write): the profile it was opened from
+// (`--profile <id>`, passed by « Navigation privée »), the default profile's (the root) without one. An id that is
+// not a registered profile, or a registry that cannot be read, gives "" : no vault at all, never another profile's.
+// Pure read (a private window writes nothing): no registry write, no adoption, no folder created.
+inline std::wstring PrivateReadDir(const std::wstring& root, const std::wstring& requested) {
+    if (requested.empty() || requested == DefaultId) return root;
+    if (!ValidId(requested)) return L"";
+    std::string bytes; bool read = false;
+    { ProfileStore::Lock lock(root, 2000); if (!lock.Held()) return L""; read = ProfileStore::ReadAll(Detail::RegistryFile(root), bytes); }
+    if (!read || bytes.empty() || ProfileStore::FirstLine(bytes) != Header) return L"";
+    std::istringstream in(bytes);
+    for (const auto& p : Detail::Read(in, nullptr).items) if (p.id == requested) return ResolvePaths(root, requested).dataDir;
+    return L"";
 }
 // Writes `reg` (three-way merged with the file's current state); `reg` becomes the merged result.
 inline bool Save(const std::wstring& root, Registry& reg) {
@@ -477,6 +491,8 @@ inline void UnpublishWindow(const Paths& paths, const std::wstring& sessionId, H
 // session. It marks itself with the window property PrivateWindowProperty = 1 (set by the window's
 // own process at start, removed on close). It still uses the default profile's WebView2 folder
 // (<root>\profile, InPrivate), so deleting the default profile must wait until none is open.
+// Review R-2: it READS (never writes) the password vault of the profile it was opened from (`--profile <id>`,
+// PrivateReadDir); every other file stays the default layout above.
 // (PrivateWindowProperty / IsPrivateWindow are declared with the workspaces above.)
 inline void MarkPrivateWindow(HWND hwnd) { if (hwnd) SetPropW(hwnd, PrivateWindowProperty, reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(1))); }
 inline void UnmarkPrivateWindow(HWND hwnd) { if (hwnd) RemovePropW(hwnd, PrivateWindowProperty); }
