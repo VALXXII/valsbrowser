@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
+#include "fs-safe.h"
 #include <string>
 #include <vector>
 #include "profile-store.h"
@@ -53,7 +54,7 @@ struct Entry { std::wstring id; std::filesystem::file_time_type written; };
 // Session files of the folder (temp files skipped), most recently written first.
 inline std::vector<Entry> List(const std::wstring& dataDir) {
     std::vector<Entry> out; std::error_code ec;
-    for (const auto& e : std::filesystem::directory_iterator(Dir(dataDir), ec)) {
+    for (const auto& e : FsSafe::Entries(Dir(dataDir), ec)) {
         const std::wstring id = e.path().filename().wstring();
         if (!e.is_regular_file(ec) || !ValidId(id) || id.rfind(L"closed-", 0) == 0) continue;   // closed windows are not sessions
         out.push_back({id, e.last_write_time(ec)});
@@ -70,7 +71,7 @@ inline bool Reserved(const std::wstring& dataDir, const std::wstring& id) {
 // Leftovers of an earlier build that set closed windows aside as « closed-<id> »: never restored.
 inline void DropClosedLeftovers(const std::wstring& dataDir) {
     std::error_code ec;
-    for (const auto& e : std::filesystem::directory_iterator(Dir(dataDir), ec))
+    for (const auto& e : FsSafe::Entries(Dir(dataDir), ec))
         if (e.path().filename().wstring().rfind(L"closed-", 0) == 0) DeleteFileW(e.path().c_str());
 }
 inline std::vector<std::wstring> Orphans(const std::wstring& dataDir) {
