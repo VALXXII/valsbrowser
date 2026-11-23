@@ -24,7 +24,10 @@ int main(){
     // Local file: directory secondary, file name primary, %20 decoded.
     auto file=Describe(L"file:///C:/Users/me/Mes%20documents/rapport.pdf");
     CHECK(file.security==Security::File&&file.runs.size()==2&&file.runs[0].text==L"C:/Users/me/Mes documents/"&&file.runs[1].text==L"rapport.pdf");
-    CHECK(Describe(L"").security==Security::Empty&&Describe(L"about:blank").security==Security::Empty);
+    CHECK(Describe(L"").security==Security::Empty);
+    // SEC-24: a blank document that is not the home tab (the host never describes the home tab) shows its address,
+    // never the empty field of the browser's own new tab.
+    {auto blank=Describe(L"about:blank");CHECK(blank.security==Security::Other&&Joined(blank)==L"about:blank");}
     CHECK(Describe(L"data:text/plain,x").security==Security::Other);
 
     // Typed text classification and encoding (mirrors Destination()).

@@ -107,7 +107,7 @@ inline std::wstring PercentDecode(const std::wstring& s) {
 // document now shown (ICoreWebView2_14::ServerCertificateErrorDetected).
 inline Display Describe(const std::wstring& uri, bool certificateError = false) {
     Display d;
-    if (uri.empty() || uri == L"about:blank") return d;
+    if (uri.empty()) return d;   // about:blank is described as any other address: only the home tab shows an empty field
     Parts p;
     if (Split(uri, p) && (p.scheme == L"https" || p.scheme == L"http")) {
         if (certificateError) {
