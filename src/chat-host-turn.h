@@ -309,8 +309,17 @@ void CloseThought() {
     if (auto it = turn.itemOf.find(turn.thoughtId); it != turn.itemOf.end()) { auto& item = convo.data.items[it->second]; item.Set("done", SJ::Value::Bool(true)); item.Set("durationMs", SJ::Value::Int(ms)); }
     turn.thoughtId.clear();
 }
+// PERF-20: appended in place (one copy of the chunk, not of the whole message), and capped: what is kept with the
+// conversation stops growing at MaxKeptText (the panel still gets every chunk as it comes).
+constexpr std::size_t MaxKeptText = 1u << 20;
 void AppendText(const std::string& id, const std::string& more) {
-    if (auto it = turn.itemOf.find(id); it != turn.itemOf.end()) { auto& item = convo.data.items[it->second]; const auto* t = item.Get("text"); item.Set("text", Str((t && t->IsString() ? t->string : std::string()) + more)); }
+    auto it = turn.itemOf.find(id); if (it == turn.itemOf.end()) return;
+    auto& item = convo.data.items[it->second];
+    SJ::Value* t = nullptr; for (auto& f : item.members) if (f.first == "text") t = &f.second;
+    if (!t || !t->IsString()) t = &item.Set("text", Str(std::string()));
+    if (t->string.size() >= MaxKeptText) return;
+    t->string += more;
+    if (t->string.size() > MaxKeptText) t->string = ClipUtf8(t->string, MaxKeptText);
 }
 SJ::Value ToolJson(const Acp::ToolCall& t, bool update) {
     SJ::Value m = SJ::Value::Obj(); m.Set("id", Str(t.id));
@@ -318,7 +327,11 @@ SJ::Value ToolJson(const Acp::ToolCall& t, bool update) {
     if (!update) m.Set("kind", Str(t.kind.empty() || t.kind == "switch_mode" ? std::string("other") : t.kind));
     if (!update || t.hasStatus) m.Set("status", Str(t.status.empty() ? std::string("pending") : t.status));
     if (t.hasLocations || (!update && !t.locations.empty())) { SJ::Value ls = SJ::Value::Arr(); for (const auto& l : t.locations) { if (ls.items.size() >= 20) break; SJ::Value o = SJ::Value::Obj(); o.Set("path", Str(RelPath(l.path))); if (l.line >= 0) o.Set("line", SJ::Value::Int(l.line)); ls.Push(std::move(o)); } m.Set("locations", std::move(ls)); }
-    if (!t.diffs.empty()) m.Set("diff", AgentDiff(t.diffs.front()));
+    if (!t.diffs.empty()) {   // SEC-14: kept with the conversation: a file that may hold secrets (.env, *.pem, .npmrc…) keeps its name and counts, never its lines
+        SJ::Value d = AgentDiff(t.diffs.front());
+        if (CS::MayHoldSecrets(FileName(t.diffs.front().path))) d.Set("lines", SJ::Value::Arr());
+        m.Set("diff", std::move(d));
+    }
     return m;
 }
 // ---- tools in words (better-writing: verb first, one whole sentence per case, the product's own nouns)
@@ -468,7 +481,7 @@ void OnPermission(const Acp::PermissionRequest& p) {
     m.Set("options", std::move(opts));
     waitingPermissions[p.requestId] = m;   // shown again if the panel's WebView is created (or re-created) while it waits
     Send("permission.request", std::move(m));
-    Diag(L"permission asked: " + W(p.toolCall.kind) + L" " + W(ClipUtf8(p.toolCall.title, 120)));
+    Diag(L"permission asked: " + W(p.toolCall.kind) + (mcp.mcp ? L" " + W(ClipUtf8(p.toolCall.title, 120)) : std::wstring()));   // SEC-14: an MCP tool's name, never a command line or a file's text
     RevealCardSoon();   // R47: its card and its buttons on screen (the site's page scrolls softly if needed)
 }
 void OnEvent(const Acp::Event& e) {
