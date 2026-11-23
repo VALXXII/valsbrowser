@@ -366,6 +366,8 @@ std::string Utf8(const std::wstring& s){int n=WideCharToMultiByte(CP_UTF8,0,s.c_
 void Log(const std::wstring& s){if(logFile.empty()||privateWindow)return;static std::mutex logLock;std::lock_guard<std::mutex> guard(logLock);std::ofstream f(std::filesystem::path(logFile),std::ios::app);f<<Utf8(s)<<"\n";if(smoke&&!splitTest&&s.rfind(L"NAVIGATION OK" /* i18n-exempt: log marker */,0)==0)PostMessageW(window,WM_APP+2,0,0);}
 void Fail(const std::wstring& where,HRESULT hr){if(halted)return;halted=true;popups.CancelAll(); /* pending window.open requests settled before any modal loop */for(auto& tab:pages)tab->loading.Clear();ClearChromeMotion();KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();wchar_t code[32];swprintf(code,32,L"0x%08lX",(unsigned long)hr);auto msg=TRF(wv2_halt_body,where,code);Log(L"WEBVIEW2 ERROR "+msg);if(splitTest){PostMessageW(window,WM_CLOSE,0,0);return;}if(workspaceTest&&qaExpectTerminal){Log(L"WSQA terminal failure captured (normal recovery reached once, dialog suppressed by --workspace-test)");return;}MessageBoxW(window,msg.c_str(),TR(wv2_halt_title),MB_OK|MB_ICONERROR);}
 bool Check(HRESULT hr,const wchar_t* op){if(FAILED(hr)){Fail(op,hr);return false;}return !halted;}
+// A refused per-tab operation (find, reload, favicon, interstitial): logged, never the loss of the engine.
+bool CheckTab(HRESULT hr,const wchar_t* op){if(FAILED(hr)){wchar_t code[32];swprintf(code,32,L"0x%08lX",(unsigned long)hr);Log(std::wstring(L"WEBVIEW2 refused ")+op+L" "+code);return false;}return !halted;}
 std::shared_ptr<Tab> Active(){return current>=0&&current<(int)pages.size()?pages[current]:nullptr;}
 void FocusAddress(){if(InFullscreen())return; /* no address field over a fullscreen page */editing=true;ShowWindow(address,SW_SHOW);SetFocus(address);SendMessageW(address,EM_SETSEL,0,-1);InvalidateRect(window,nullptr,FALSE);}
 std::vector<std::wstring> Titles(){std::vector<std::wstring> titles;for(auto& t:pages)titles.push_back(t->title);return titles;}
@@ -1052,7 +1054,11 @@ void ReopenTab(){if(closedTabs.empty()||pages.size()>=128)return;auto tab=closed
 std::wstring HomeDocument(); // NEWTAB: HomeHtml, or the most visited sites (defined with the site icons)
 // SETTINGS(newtab): what a new tab (Ctrl+T, "+", a fresh start) opens: "" is the home tab.
 std::wstring NewTabTarget(){return settings.newTabPage==BrowserSettings::NewTabPage::Custom?settings.homepage:L"";}
-void Navigate(std::shared_ptr<Tab> t,const std::wstring& uri){if(!t||!t->view.p||halted)return;t->navigateFrom=t->uri;t->navigateFromHome=t->home;t->navigateTo=uri; /* what the tab showed, in case this becomes a download */t->home=uri.empty();t->uri=uri;if(uri.empty()){t->blankIsHome=true;const auto html=HomeDocument();homeTiles.Set(*t,html!=HomeHtml());Check(t->view->NavigateToString(html.c_str()),L"NavigateToString");return;}Check(t->view->Navigate(uri.c_str()),L"Navigate");}
+void Navigate(std::shared_ptr<Tab> t,const std::wstring& uri){if(!t||!t->view.p||halted)return;t->navigateFrom=t->uri;t->navigateFromHome=t->home;t->navigateTo=uri; /* what the tab showed, in case this becomes a download */t->home=uri.empty();t->uri=uri;if(uri.empty()){t->blankIsHome=true;const auto html=HomeDocument();homeTiles.Set(*t,html!=HomeHtml());Check(t->view->NavigateToString(html.c_str()),L"NavigateToString");return;}
+    // An address the engine refuses (E_INVALIDARG) is not the loss of the engine: the tab keeps what it showed (its home
+    // page when it had nothing), so a bad link, bookmark or restored session never stops the browser.
+    const HRESULT hr=t->view->Navigate(uri.c_str());if(hr==E_INVALIDARG){Log(L"NAVIGATE refused: invalid address");t->uri=t->navigateFrom;t->home=t->navigateFromHome;t->navigateTo.clear();if(t->uri.empty()||t->home)Navigate(t,L"");else if(t==Active())Update();return;}
+    Check(hr,L"Navigate");}
 // ---- Address suggestions (issue #20) -----------------------------------------
 // The EDIT keeps focus: typing recomputes the list, the arrows move its active row
 // (the field shows what Enter will open), Escape restores then closes, Enter opens.
@@ -1245,7 +1251,7 @@ void OpenWindowWith(const std::vector<std::wstring>& urls){
 }
 void RetryWindowLaunch(const std::wstring& id){if(id.empty()||WindowSessions::Live(dataDir,id))return;if(!LaunchWindow(id))ShowWindowLaunchFailed(id);}
 void SaveSession(){
-    if(smoke||privateWindow||!sessionReady||pages.empty())return;
+    if(smoke||privateWindow||!sessionReady||pages.empty()||halted)return; // a stopped engine's tabs are not a session to replay
     BrowserSession::State state;state.active=current;
     for(auto& tab:pages)state.urls.push_back(tab->home?"":Utf8(tab->uri));
     state.groups=SessionGroups();
@@ -1384,7 +1390,7 @@ void RestoreSession(){KeepContentTransition keep; // a cold profile's tabs come 
         if(!url.empty()&&!size){state=BrowserSession::State{};break;}
     }
     std::vector<std::wstring> overflow; // past 128 tabs: offered in a new window, never dropped silently
-    for(const auto& url:state.urls){int size=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,url.data(),(int)url.size(),nullptr,0);std::wstring uri(size,0);if(size)MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,url.data(),(int)url.size(),uri.data(),size);if(pages.size()>=128){overflow.push_back(uri);continue;}NewTab(uri);}
+    for(const auto& url:state.urls){int size=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,url.data(),(int)url.size(),nullptr,0);std::wstring uri(size,0);if(size)MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,url.data(),(int)url.size(),uri.data(),size);if(!AddressBar::Navigable(uri))uri.clear(); /* an address the engine refuses comes back as a new tab */if(pages.size()>=128){overflow.push_back(uri);continue;}NewTab(uri);}
     if(!overflow.empty())Defer([overflow]{ShowPartialRestoreToast(overflow);});
     if(pages.empty())NewTab(opening.empty()?NewTabTarget():opening);else{if(pages.size()==state.urls.size())ApplySessionGroups(state.groups);Select(state.active);if(!opening.empty()){NewTab(opening);Select((int)pages.size()-1);}}
     // Restored (or first) tabs are the initial state: no entrance cascade, no selection fade.

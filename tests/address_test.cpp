@@ -138,6 +138,13 @@ int main(){
      CHECK(url(L"example.org/docs")==L"https://example.org/docs"&&url(L"localhost:3000")==L"https://localhost:3000"&&url(L"127.0.0.1:8080/x")==L"https://127.0.0.1:8080/x");
      CHECK(Resolve(L"météo lyon").kind==Typed::Search&&Resolve(L"météo lyon").value==L"météo lyon"&&Resolve(L"git").kind==Typed::Search);
      CHECK(Resolve(L"ftp://x.y").kind==Typed::Search&&Resolve(L"javascript:alert(1)").kind==Typed::Search&&Resolve(L"mailto:a@b.c").kind==Typed::Url);   // (mailto:a@b.c has a dot: https://, as before)
+     // SEC-21: an http(s) address the engine refuses is searched, never handed to Navigate (which would stop the browser).
+     for(const wchar_t* bad:{L"http://",L"https://",L"https://a b",L"http://user@",L"https://a:99999/",L"https://a:x/",L"http://a<b.com",L"http://\x7f.com",L"https://1.2.3.4.5",L"https://300.1.1.1",L"https://1.2.3.256"})
+         CHECK(!Navigable(bad)&&Resolve(bad).kind==Typed::Search);
+     CHECK(Resolve(L"1.2.3.4.5").kind==Typed::Search&&Resolve(L"192.168.1.300").kind==Typed::Search);
+     for(const wchar_t* good:{L"https://example.com",L"http://localhost:3000/x",L"https://127.0.0.1",L"https://1.2.3.4./",L"https://[::1]:8080/",L"https://user:pw@host.test/",L"https://a.com:/",L"https://3.14",L"https://10.0.0.1:65535/a b",L"https://0x7f.1/",L"file:///C:/a b.html",L"about:blank",L""})
+         CHECK(Navigable(good));
+     CHECK(url(L"https://1.2.3.4/")==L"https://1.2.3.4/"&&url(L"3.14")==L"https://3.14"&&url(L"https://a.com/a b")==L"https://a.com/a b");
      // file: links as typed.
      CHECK(url(L"file:///C:/x.html")==L"file:///C:/x.html"&&url(L"FILE:///c:/a%20b/c.html")==L"FILE:///c:/a%20b/c.html"&&url(L"file://nas/share/a.html")==L"file://nas/share/a.html");
      // Drive paths, either slash, quoted or not; spaces, %, # and non-ASCII names encoded.
