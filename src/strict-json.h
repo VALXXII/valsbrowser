@@ -18,6 +18,7 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -198,14 +199,20 @@ private:
         ++p_;
         SkipWs();
         if (p_ < s_.size() && s_[p_] == '}') { ++p_; return true; }
+        std::unordered_set<std::string> seen;   // past 16 members: duplicate check in constant time (SEC-17)
         for (;;) {
             if (++items_ > lim_.maxItems) return Bad("too many items");
             SkipWs();
             if (p_ >= s_.size() || s_[p_] != '"') return Bad("expected key");
             std::string key;
             if (!ParseString(key)) return false;
-            for (const auto& m : v.members)
-                if (m.first == key) return Bad("duplicate key");
+            if (v.members.size() < 16) {
+                for (const auto& m : v.members)
+                    if (m.first == key) return Bad("duplicate key");
+            } else {
+                if (seen.empty()) for (const auto& m : v.members) seen.insert(m.first);
+                if (!seen.insert(key).second) return Bad("duplicate key");
+            }
             SkipWs();
             if (p_ >= s_.size() || s_[p_] != ':') return Bad("expected :");
             ++p_;
