@@ -472,8 +472,9 @@ void OnPermission(const Acp::PermissionRequest& p) {
     if (!p.toolCall.diffs.empty()) m.Set("diff", AgentDiff(p.toolCall.diffs.front()));
     if (const std::string cmd = CommandOf(p.toolCall); !cmd.empty()) m.Set("command", Str(cmd));
     SJ::Value opts = SJ::Value::Arr(); bool first = true;
+    const auto neverModes = ModesOf(agentId, agentInfo[agentId]).map.never;   // SEC-02 (review): a mode that asks for nothing is never offered on a card
     for (const auto& o : p.options) {
-        if (!ChatStore::ValidId(o.id)) continue; SJ::Value v = SJ::Value::Obj(); v.Set("optionId", Str(o.id)); v.Set("name", Str(ClipUtf8(o.name.empty() ? o.id : o.name, 200)));
+        if (!ChatStore::ValidId(o.id) || In(neverModes, o.id)) continue; SJ::Value v = SJ::Value::Obj(); v.Set("optionId", Str(o.id)); v.Set("name", Str(ClipUtf8(o.name.empty() ? o.id : o.name, 200)));
         std::string kind = o.kind;   // a question's choices: the first (« skip ») refuses, the others answer
         if (kind != "allow_once" && kind != "allow_always" && kind != "reject_once" && kind != "reject_always") kind = p.question && first ? "reject_once" : "allow_once";
         v.Set("kind", Str(kind)); opts.Push(std::move(v)); first = false;

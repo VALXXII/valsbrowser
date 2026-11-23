@@ -126,8 +126,10 @@ void ModalTabChanged(){
 // Dialogs already shown by a site in a tab: from the second one the A2 « Empêcher ce site d'ouvrir d'autres
 // dialogues » check is offered, and a checked block holds. SEC-25: kept per tab AND origin, so a reload or another
 // page of the same site keeps them (alert(); location.reload() cannot dodge the check); another origin starts over.
-struct ScriptDialogState{std::wstring origin;int count=0;bool blocked=false;};
-std::map<unsigned,ScriptDialogState> scriptDialogs;
+struct ScriptDialogState{int count=0;bool blocked=false;};
+// Per tab, then per origin (review of SEC-25): alternating dialogs with a frame of another origin cannot reset a block.
+// Capped per tab (64 origins: an unblocked origin's state goes first).
+std::map<unsigned,std::map<std::wstring,ScriptDialogState>> scriptDialogs;
 // SEC-25: a page's dialog text is laid out on the UI thread: capped (a whole surrogate pair or nothing).
 std::wstring CapDialogText(std::wstring s,size_t limit){if(s.size()>limit){s.resize(limit);if(!s.empty()&&s.back()>=0xD800&&s.back()<=0xDBFF)s.pop_back();}return s;}
 HRESULT ScriptDialogOpening(const std::shared_ptr<Tab>& t,ICoreWebView2ScriptDialogOpeningEventArgs* a){
@@ -139,7 +141,7 @@ HRESULT ScriptDialogOpening(const std::shared_ptr<Tab>& t,ICoreWebView2ScriptDia
     const std::wstring uri=TakeString([&]{LPWSTR s=nullptr;a->get_Uri(&s);return s;}());
     const std::wstring message=CapDialogText(TakeString([&]{LPWSTR s=nullptr;a->get_Message(&s);return s;}()),10000);
     const std::wstring defaultText=CapDialogText(TakeString([&]{LPWSTR s=nullptr;a->get_DefaultText(&s);return s;}()),2000);
-    const std::wstring site=OriginOf(uri);auto& dialogs=scriptDialogs[t->serial];if(dialogs.origin!=site)dialogs=ScriptDialogState{site};
+    const std::wstring site=OriginOf(uri);auto& perTab=scriptDialogs[t->serial];if(!perTab.count(site)&&perTab.size()>=64){for(auto it=perTab.begin();it!=perTab.end();++it)if(!it->second.blocked){perTab.erase(it);break;}}auto& dialogs=perTab[site];
     if(kind!=COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD&&dialogs.blocked){Log(L"DIALOG suppressed for "+OriginLabel(uri));return S_OK;}
     const std::wstring origin=OriginLabel(uri);MD::Spec spec;
     const bool repeated=kind!=COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD&&++dialogs.count>1;
@@ -154,7 +156,7 @@ HRESULT ScriptDialogOpening(const std::shared_ptr<Tab>& t,ICoreWebView2ScriptDia
     spec.modality=MD::Spec::Modality::Pointer; // the page's own input is not visible here: ring on Tab / arrows only
     ComRef<ICoreWebView2ScriptDialogOpeningEventArgs> args(a);const unsigned serial=t->serial;
     AskModal(std::move(spec),t,[args,deferral,kind,serial,site](const MD::Result& r){
-        if(r.checked&&kind!=COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD){auto it=scriptDialogs.find(serial);if(it!=scriptDialogs.end()&&it->second.origin==site)it->second.blocked=true;}
+        if(r.checked&&kind!=COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD){auto it=scriptDialogs.find(serial);if(it!=scriptDialogs.end()){auto o=it->second.find(site);if(o!=it->second.end())o->second.blocked=true;}}
         const bool accept=r.button==MD::AcceptButton;
         if(accept){if(kind==COREWEBVIEW2_SCRIPT_DIALOG_KIND_PROMPT)args->put_ResultText(r.values.empty()?L"":r.values[0].c_str());args->Accept();}
         Log(std::wstring(L"DIALOG ")+(accept?L"accepted":L"cancelled"));

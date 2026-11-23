@@ -1126,7 +1126,7 @@ void OpenSuggestion(int index){
 void RemoveSuggestion(int index){
     const auto rows=suggestions.Data().rows;if(index<0||index>=(int)rows.size()||rows[index].kind!=AddressBar::Kind::Site)return;
     const auto& row=rows[index];if(row.popular||!(row.host?history.RemoveHost(row.text):history.Remove(row.url)))return;
-    SaveHistory();Log(L"HISTORY removed "+row.text);
+    SaveHistory();Log(L"HISTORY removed "+(row.host?row.text:row.url));   // SEC-05 (review): a page row's text has no scheme, so the release log's redaction would keep it whole
     if(!history.HasSite(row.site)&&!BookmarkedSite(row.site))ForgetSiteIcon(row.site);
     // Recompute from what was typed, without completing it again.
     SetAddressText(addressTyped,(int)addressTyped.size(),(int)addressTyped.size());
