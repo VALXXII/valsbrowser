@@ -439,7 +439,7 @@ protected:
     virtual const wchar_t* ClassName() const = 0;
     virtual void Configure() {}
     virtual D2D1_POINT_2F Origin(Motion::Time) const { return {0, 0}; } // column offset in the window (DIP)
-    virtual float KeyedLead() const { return 0; } // DIP keyed out on the left (a sliding drawer, NativeUI::KeyedDrawer)
+    virtual void KeyOut(Motion::Time) {}          // paints what the frame must not show in the key colour (the drawer, NativeUI::KeyedDrawer)
 public:
     virtual void Dismiss(bool keyboard) = 0;
 protected:
@@ -566,7 +566,7 @@ protected:
         auto* target = chrome_.RenderTarget(); if (!target || !items_) return;
         const auto scene = MakeScene(Motion::Now());
         target->BeginDraw();
-        view_.Paint(scene, Slots(scene.now), SurfaceHeight()); chrome_.KeyOut(KeyedLead());
+        view_.Paint(scene, Slots(scene.now), SurfaceHeight()); KeyOut(scene.now);
         if (target->EndDraw() == D2DERR_RECREATE_TARGET) { view_.Release(); chrome_.RecreateTarget(); }
     }
     // ---- UI Automation (the actions were reachable by pointer / keyboard only) ----------------------------------
@@ -817,13 +817,20 @@ inline std::vector<Slot> MorphSlots(const std::vector<Item>& items, const std::v
     return slots;
 }
 
-// Docked drawer: the full history grouped by period. Two motions, both cheap:
-//  - Morph (from "View all"): the window sits at its final place and size; a
-//    region shaped like the popover grows into the drawer while the content is
-//    re-laid out (one Direct2D frame + one GDI region per display frame).
-//  - Slide (close, Escape, toolbar button): the window itself moves right,
-//    clipped to the owner's client area, so DWM keeps content and position in
-//    sync without repainting.
+// Docked drawer: the full history grouped by period. Two motions, both cheap,
+// both one Direct2D present per display frame on a window that neither moves
+// nor changes its region while they run (NativeUI::KeyedDrawer):
+//  - Morph (from "View all"): the window sits at its final place and size; the
+//    popover's shape grows into the drawer while the content is re-laid out.
+//    What the shape does not cover yet is painted in the key colour (KeyOut).
+//  - Slide (close, Escape, toolbar button): the content is drawn further right
+//    each frame, the strip it has not entered keyed out.
+// Why the morph no longer grows a window region (user report 2026-11-23: small
+// flashes at the edges while the popover grows): a present into this layered
+// window only reaches the pixels inside the region in force when it presents.
+// Painting first and growing the region after left, every frame, the strip just
+// added holding what the window showed there before (black on a new surface,
+// earlier drawer pixels) until the next frame painted it; DWM showed it in between.
 class Drawer final : public Host {
     Lane slide_, scroll_, morph_;
     std::array<Lane, PeriodCount> fold_;
@@ -895,12 +902,37 @@ class Drawer final : public Host {
     RECT OwnerClient() const { RECT r{}; GetClientRect(owner_, &r); MapWindowPoints(owner_, nullptr, reinterpret_cast<POINT*>(&r), 2); return r; }
     int OwnerPx(float dip) const { return static_cast<int>(std::lround(dip * GetDpiForWindow(owner_) / 96.f)); }
     float SurfaceHeight() const override { return ClientHeight(); }
+    // The popover's rectangle (rounded like DWM's popup corners) growing into the
+    // docked column [margin, width], in window pixels: a GDI region, so its corner is
+    // the 1-bit one the popover's own region has.
+    HRGN MorphShape(float t, int margin, int width, int height) const {
+        auto lerp = [t](LONG a, int b) { return static_cast<int>(std::lround(a + (b - a) * t)); };
+        const int radius = static_cast<int>(std::lround(morphRadius_ * (1 - t))) * 2 + 1;
+        return CreateRoundRectRgn(lerp(morphFrom_.left, margin), lerp(morphFrom_.top, 0), lerp(morphFrom_.right, width) + 1, lerp(morphFrom_.bottom, height) + 1, radius, radius);
+    }
+    // Key colour (NativeUI::KeyedDrawer: transparent, click-through) over what this
+    // frame must not show: while morphing, everything outside the growing shape;
+    // otherwise the margin strip (outside the docked column); and, while sliding
+    // (a close may start mid-morph), the strip the column has not entered (`lead_` px).
+    void KeyOut(Motion::Time now) override {
+        const float t = Morph(now);
+        if (t < 1) {
+            RECT client{}; GetClientRect(hwnd_, &client);
+            HRGN outside = CreateRectRgn(0, 0, client.right, client.bottom), shape = MorphShape(t, OwnerPx(DrawerLayout::margin), client.right, client.bottom);
+            CombineRgn(outside, outside, shape, RGN_DIFF); chrome_.KeyOutRegion(outside);
+            DeleteObject(shape); DeleteObject(outside);
+            if (lead_ > 0) chrome_.KeyOut(DrawerLayout::margin + lead_ * Scale());
+            return;
+        }
+        chrome_.KeyOut(DrawerLayout::margin + lead_ * Scale());
+    }
     // Window = margin strip + 268 DIP column, docked to the owner's right edge. It
     // never moves while sliding (NativeUI::KeyedDrawer): a slide step is one present,
     // the column drawn `lead_` pixels right of its place (Origin) and the strip it has
-    // not entered keyed out (KeyedLead). The region rounds the corner shared with the
-    // owner (empty while nothing has entered) and, while morphing, takes the shape of
-    // the popover growing into the drawer. Returns true when it painted.
+    // not entered keyed out (KeyOut). The region rounds the corner shared with the
+    // owner (empty while nothing has entered) and keeps the docked column, or the
+    // whole window while morphing: it changes only when a morph starts or lands,
+    // never during one. Returns true when it painted.
     bool ApplyGeometry(Motion::Time now, bool force = false) {
         if (!hwnd_) return false;
         const RECT owner = OwnerClient();
@@ -910,7 +942,7 @@ class Drawer final : public Host {
         const float t = Morph(now); const int morphKey = t >= 1 ? 1000 : static_cast<int>(t * 999);
         if (!force && shown == appliedVisible_ && morphKey == appliedMorph_ && EqualRect(&owner, &appliedOwner_)) return false;
         const bool resized = !EqualRect(&owner, &appliedOwner_), slid = shown != appliedVisible_;
-        const bool reshape = force || resized || morphKey != appliedMorph_ || (shown > 0) != (appliedVisible_ > 0);
+        const bool reshape = force || resized || (morphKey < 1000) != (appliedMorph_ < 1000) || (shown > 0) != (appliedVisible_ > 0);
         appliedVisible_ = shown; appliedMorph_ = morphKey; appliedOwner_ = owner; lead_ = column - shown;
         const RECT window{owner.right - width, top, owner.right, top + height};
         if (force || !EqualRect(&window, &appliedWindow_)) { SetWindowPos(hwnd_, nullptr, window.left, window.top, width, height, SWP_NOACTIVATE | SWP_NOZORDER); appliedWindow_ = window; }
@@ -922,25 +954,21 @@ class Drawer final : public Host {
             // visible outline stays the owner's smooth one.
             const int right = width, r = OwnerPx(20);
             region = IsZoomed(owner_) ? CreateRectRgn(0, 0, right, height) : CreateRoundRectRgn(-r * 2, -r * 2, right + 1, height + 1, r, r);
-            // Shape: the docked column [margin, width] — never the margin strip, which
-            // only exists for the popover to morph from — or, while morphing, the
-            // popover rectangle (rounded like DWM's popup corners) growing into it.
-            HRGN shape = nullptr;
-            if (t < 1) {
-                auto lerp = [t](LONG a, int b) { return static_cast<int>(std::lround(a + (b - a) * t)); };
-                const int radius = static_cast<int>(std::lround(morphRadius_ * (1 - t))) * 2 + 1;
-                shape = CreateRoundRectRgn(lerp(morphFrom_.left, margin), lerp(morphFrom_.top, 0), lerp(morphFrom_.right, width) + 1, lerp(morphFrom_.bottom, height) + 1, radius, radius);
-            } else shape = CreateRectRgn(margin, 0, width, height);
+            // Docked: the column [margin, width] — never the margin strip, which only
+            // exists for the popover to morph from. Morphing: the whole window, the
+            // same for the whole morph; the popover's shape growing into the column is
+            // what KeyOut leaves unkeyed, so shape and content reach DWM in one present.
+            HRGN shape = t < 1 ? CreateRectRgn(0, 0, width, height) : CreateRectRgn(margin, 0, width, height);
             CombineRgn(region, region, shape, RGN_AND); DeleteObject(shape);
         } else region = CreateRectRgn(0, 0, 0, 0);
-        // No redraw here: morph frames paint first; a slide step presents right after.
+        // No redraw here: a morph's region is set before its first frame (Enter) and
+        // shrinks to the column once that strip is keyed; a slide step presents right after.
         if (region) SetWindowRgn(hwnd_, region, FALSE);
         if (resized) { scroll_.Snap(std::clamp(scroll_.Target(), 0.f, MaxScroll(now, true))); RefreshTips(); }
         if (force || !slid || shown == 0 || t < 1 || !IsWindowVisible(hwnd_)) return false;
         PaintNow(); ValidateRect(hwnd_, nullptr);
         return true;
     }
-    float KeyedLead() const override { return lead_ > 0 ? DrawerLayout::margin + lead_ * Scale() : 0.f; }
     void ScrollTo(float target, Motion::Time now, Motion::Milliseconds duration) {
         target = std::clamp(target, 0.f, MaxScroll(now, true));
         scroll_.Set(target, now, Motion::Milliseconds(0), motion_.ReducedMotion() ? Motion::Milliseconds(0) : duration);
@@ -979,6 +1007,57 @@ class Drawer final : public Host {
         morph_.Snap(1);
         KillTimer(hwnd_, TickTimer); ShowWindow(hwnd_, SW_HIDE);
     }
+    // Layered alpha 0, the colour key kept: nothing of the window reaches the
+    // screen, while what it presents still lands in its surface.
+    void Veil(bool veiled) { SetLayeredWindowAttributes(hwnd_, NativeUI::drawerKey, 0, veiled ? LWA_COLORKEY | LWA_ALPHA : LWA_COLORKEY); }
+    // Show(); `test`: never activated (the user's focus stays where it is) and never reduced motion.
+    void Enter(const RECT* from, HWND under, bool test) {
+        if (!hwnd_) return;
+        motion_.SetReducedMotion(!test && Motion::PreferredReducedMotion());
+        auto now = Motion::Now(); const bool reduced = motion_.ReducedMotion();
+        if (!visible_) { slide_.Snap(0); scroll_.Snap(0); morph_.Snap(1); focus_ = 0; keyboard_ = false; ClearPointer(); }
+        const bool morph = from && !reduced;
+        if (morph) {
+            // Window-local pixels of the popover, the drawer's column at its docked place.
+            const RECT owner = OwnerClient();
+            const int width = OwnerPx(DrawerLayout::width + DrawerLayout::margin), left = owner.right - width, top = owner.top + OwnerPx(DrawerLayout::top);
+            morphFrom_ = {from->left - left, from->top - top, from->right - left, from->bottom - top};
+            morphFrom_.left = std::max(0L, morphFrom_.left); morphFrom_.top = std::max(0L, morphFrom_.top);
+            morphRadius_ = static_cast<float>(OwnerPx(Panel::radius));
+            slide_.Snap(1);
+            if (!visible_) Warm(); // cheap when already warmed while the popover was open
+            morph_.Snap(0);        // its clock starts once the hand-off is on screen (below)
+        } else {
+            morph_.Snap(1);
+            view_.Preload(*items_);
+            // Re-opening mid-exit continues from where the drawer is on screen.
+            slide_.Set(1, now, Motion::Milliseconds(0), reduced ? Motion::Milliseconds(0) : DrawerMotion::enter, DrawerMotion::enterSpring);
+        }
+        closing_ = false; visible_ = true;
+        // Hand-off without a blank frame. A window only keeps what it is painted
+        // with while it is really on screen, so the drawer is shown *underneath*
+        // the popover (which still covers it), is painted there in the popover's
+        // shape, and DWM composes that frame. Only then is it activated, which
+        // hides the popover: the drawer under it is already showing it.
+        // A morph's region is the whole window from this first frame on (it no
+        // longer grows), so what an earlier session left in the window's surface
+        // must never reach the screen: the window stays veiled until this frame has
+        // filled every pixel of it, keyed out around the popover's shape.
+        if (morph) Veil(true);
+        ApplyGeometry(now, true);
+        SetWindowPos(hwnd_, under ? under : HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        PaintNow(); ValidateRect(hwnd_, nullptr);
+        if (morph) { Veil(false); DwmFlush(); }   // one more composition: the unveiled frame is on screen before the popover goes
+        DwmFlush();
+        if (under) SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        if (!test) Activated();
+        // The morph's clock starts now that its first frame is on screen: any time
+        // spent above must never be skipped by the animation (that was a jump).
+        now = Motion::Now();
+        if (morph) morph_.Set(1, now, Motion::Milliseconds(0), DrawerMotion::morph, DrawerMotion::morphSpring);
+        Repoint(); RefreshTips(); Ticker();
+        if (hooks_.schedule) hooks_.schedule(now);
+    }
 public:
     Drawer() { for (auto& lane : fold_) lane.Snap(1); morph_.Snap(1); }
     bool Create(HINSTANCE instance, HWND owner, const std::wstring& root, std::vector<Item>* items, Hooks hooks) {
@@ -1003,45 +1082,11 @@ public:
     }
     // from: the popover's screen rectangle to morph out of, or null to slide in;
     // under: the popover window, kept above the drawer until the hand-off.
-    void Show(const RECT* from = nullptr, HWND under = nullptr) {
-        if (!hwnd_) return;
-        motion_.SetReducedMotion(Motion::PreferredReducedMotion());
-        auto now = Motion::Now(); const bool reduced = motion_.ReducedMotion();
-        if (!visible_) { slide_.Snap(0); scroll_.Snap(0); morph_.Snap(1); focus_ = 0; keyboard_ = false; ClearPointer(); }
-        if (from && !reduced) {
-            // Window-local pixels of the popover, the drawer's column at its docked place.
-            const RECT owner = OwnerClient();
-            const int width = OwnerPx(DrawerLayout::width + DrawerLayout::margin), left = owner.right - width, top = owner.top + OwnerPx(DrawerLayout::top);
-            morphFrom_ = {from->left - left, from->top - top, from->right - left, from->bottom - top};
-            morphFrom_.left = std::max(0L, morphFrom_.left); morphFrom_.top = std::max(0L, morphFrom_.top);
-            morphRadius_ = static_cast<float>(OwnerPx(Panel::radius));
-            slide_.Snap(1);
-            if (!visible_) Warm(); // cheap when already warmed while the popover was open
-            morph_.Snap(0);        // its clock starts once the hand-off is on screen (below)
-        } else {
-            morph_.Snap(1);
-            view_.Preload(*items_);
-            // Re-opening mid-exit continues from where the drawer is on screen.
-            slide_.Set(1, now, Motion::Milliseconds(0), reduced ? Motion::Milliseconds(0) : DrawerMotion::enter, DrawerMotion::enterSpring);
-        }
-        closing_ = false; visible_ = true;
-        // Hand-off without a blank frame. A window only keeps what it is painted
-        // with while it is really on screen, so the drawer is shown in the
-        // popover's shape *underneath* the popover (which still covers it), is
-        // painted there, and DWM composes that frame. Only then is it activated,
-        // which hides the popover: the drawer under it is already showing it.
-        ApplyGeometry(now, true);
-        SetWindowPos(hwnd_, under ? under : HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        PaintNow(); ValidateRect(hwnd_, nullptr); DwmFlush();
-        if (under) SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        Activated();
-        // The morph's clock starts now that its first frame is on screen: any time
-        // spent above must never be skipped by the animation (that was a jump).
-        now = Motion::Now();
-        if (from && !reduced) morph_.Set(1, now, Motion::Milliseconds(0), DrawerMotion::morph, DrawerMotion::morphSpring);
-        Repoint(); RefreshTips(); Ticker();
-        if (hooks_.schedule) hooks_.schedule(now);
-    }
+    void Show(const RECT* from = nullptr, HWND under = nullptr) { Enter(from, under, false); }
+    // Tests: the morph out of `from` (screen pixels), never activated, on a window kept off screen;
+    // MorphingForTest: true while its frames (Frame, called as the host clock does) still have work.
+    void MorphForTest(const RECT& from) { Enter(&from, nullptr, true); }
+    bool MorphingForTest() const { return visible_ && (morph_.Moving(Motion::Now()) || appliedMorph_ < 1000); }
     // Leaves along the path it came in on; `animate` false hides at once.
     void Dismiss(bool keyboard) override { Hide(keyboard, true); }
     void Hide(bool keyboard, bool animate) {
@@ -1065,8 +1110,9 @@ public:
     void Frame(Motion::Time now) override {
         if (!visible_) return;
         if (morph_.Moving(now) || appliedMorph_ < 1000) {
-            // Morph frame (and the one that lands it): paint the new layout first,
-            // then reshape the region, so both reach the same composition. One
+            // Morph frame (and the one that lands it): one present carries the new
+            // layout and, keyed around it, the new shape; the region stays (the
+            // landing frame keys the margin strip, then the region drops it). One
             // paint per frame: the pending invalidation is consumed here.
             PaintNow(); ValidateRect(hwnd_, nullptr); ApplyGeometry(now);
             if (closing_ && !slide_.Moving(now)) { Finish(); return; }
