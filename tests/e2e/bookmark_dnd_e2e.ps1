@@ -139,7 +139,7 @@ function Launch([string]$lang) {
 New-Item -ItemType Directory -Force $app | Out-Null
 robocopy $fix $app /E /NFL /NDL /NJH /NJS /NP /XD profile sessions profiles adblock favicons windows /XF profiles.txt session settings history downloads bookmarks prototype.log engine-args ui-language | Out-Null
 $python = (Get-Command python -ErrorAction SilentlyContinue).Source
-if (!$python) { $python = 'C:/Users/<user>/AppData/Local/Programs/Python/Python312/python.exe' }
+if (!$python) { $python = Join-Path $env:LOCALAPPDATA 'Programs/Python/Python312/python.exe' }
 & $python -I "$repo\tests\browser-import\make_sources.py" $sources
 if ($LASTEXITCODE -ne 0) { throw 'synthetic sources not created' }
 W "$app\profiles.txt" "browser-profiles 1`nlast=default`np=default|house|0|0|1|Personnel`n"
