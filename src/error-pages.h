@@ -253,11 +253,10 @@ inline Copy CopyFor(Kind kind, const std::wstring& host) {
     default: return {TR(error_generic_title), TR(error_generic_body), TR(downloads_action_retry), TR(error_details)};
     }
 }
-// Button order of the action row, as the #121 boards draw it (2026-11-23): the primary action on the
-// left, the other one on the right; « Retour » (certificate pages) stays left of « Réessayer ».
-// The 2026-11-09 order (« Réessayer » always on the right) is this one switch: RetryOnRight = true.
-inline constexpr bool RetryOnRight = false;
-inline bool PrimaryLast(const Copy& c) { return c.secondaryAction == Action::Back || (RetryOnRight && c.primaryAction == Action::Retry); }
+// Button order of the action row (Val's decision 2026-11-23, ticket #121, as the boards draw it): the primary
+// action on the left (« Réessayer », « Rechercher », « Réessayer maintenant »), the other one on the right; only
+// « Retour » (certificate pages) stays left of « Réessayer ». Replaces the 2026-11-09 order (« Réessayer » right).
+inline bool PrimaryLast(const Copy& c) { return c.secondaryAction == Action::Back; }
 inline const wchar_t* ActionName(Action a) {
     switch (a) { case Action::Retry: return L"retry"; case Action::Back: return L"back"; case Action::Details: return L"details"; case Action::Search: return L"search"; case Action::NetworkSettings: return L"network"; case Action::AutoRetry: return L"autoRetry"; case Action::Copy: return L"copy"; }
     return L"";

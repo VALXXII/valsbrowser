@@ -96,7 +96,7 @@ int main() {
     // #121 layout (1LXI-0): 16 between icon / title+text / buttons / sheet, 8 between title and text; no margins left.
     Require(Has(offline, L"main{width:100%;max-width:420px;display:flex;flex-direction:column;align-items:center;gap:16px") && Has(offline, L".text{display:flex;flex-direction:column;align-items:center;gap:8px") && Has(offline, L"p{margin:0;font-size:14px;line-height:20px;color:#FFFFFF99") && Has(offline, L"h1{margin:0;font-size:20px;line-height:28px;font-weight:600"), "layout: 16 / 8 gaps");
     Require(Has(offline, L".status{display:flex;align-items:center;gap:8px;padding-top:24px") && Has(ErrorPages::Html(Kind::TimedOut, L"https://a.test", token, false), L"font-feature-settings:\"tnum\""), "status and countdown as on the boards");
-    // One action row for every variant, in the boards' order (2026-11-23): the primary action left, the other right,
+    // One action row for every variant, in the boards' order (Val's decision 2026-11-23, #121): the primary action left, the other right,
     // except « Retour » (certificate) left of « Réessayer »; DOM = Tab order; never wrapped (a long DNS label
     // ellipsises); only a viewport under 360 px stacks them.
     for (Kind k : {Kind::Offline, Kind::NameNotResolved, Kind::Refused, Kind::TimedOut, Kind::Reset, Kind::Unreachable, Kind::Generic, Kind::Certificate}) {
