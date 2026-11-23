@@ -22,7 +22,7 @@ foreach ($h in 'release-notes', 'modal') {
 }
 Write-Host 'headers: release-notes.h, modal.h compile alone and with chrome.h, no warning'
 
-$expected = '84c8966245ff58d8eb55c32b50cf2fa5ec8e9caf76913fa28f52266a6d06e4d1'   # C:/Users/<user>/Downloads/logo-spin.json, 1 143 955 bytes
+$expected = '84c8966245ff58d8eb55c32b50cf2fa5ec8e9caf76913fa28f52266a6d06e4d1'   # the exported logo-spin.json, 1 143 955 bytes
 $hash = (Get-FileHash -Algorithm SHA256 'assets/lottie/logo-spin.json').Hash.ToLower()
 if ($hash -ne $expected) { throw "logo-spin.json differs from its source: $hash" }
 $json = Get-Content -Raw 'assets/lottie/logo-spin.json'
