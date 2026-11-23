@@ -1,6 +1,6 @@
 // Password vault core (src/password-vault.h): DPAPI bound to the origin, no plaintext on disk,
 // interprocess merge, canonical origins, fill guards (frame, document, origin, user action) and
-// the escaping of the fill script. Fictitious accounts only; the vault stays inactive.
+// the escaping of the fill script. Fictitious accounts only.
 #include "../src/password-vault.h"
 #include "../src/profile-store.h"
 #include <cstdio>
@@ -12,7 +12,7 @@ static void Check(bool ok, const char* what) { std::printf("%s %s\n", ok ? "ok  
 
 int main() {
     using namespace Vault;
-    Check(!Active(), "the vault is inactive until the independent security review");
+    Check(Active(), "the vault is active by default (owner decision after the independent review); only BROWSER_VAULT_FORCE_INACTIVE turns it off");
     // Canonical origins.
     Check(CanonicalOrigin(L"https://Compte.Exemple.test:443/login?x#y") == L"https://compte.exemple.test", "origin: lower-case host, default port elided, path dropped");
     Check(CanonicalOrigin(L"https://exemple.test:8443/") == L"https://exemple.test:8443", "origin: other port kept");

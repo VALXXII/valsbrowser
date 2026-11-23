@@ -481,7 +481,7 @@ int wmain(int argc, wchar_t** argv) {
         p.Surface().FinishAnimationsForTest();
         Check(OriginPrompt::Build(s, true).demo, "password fill: Démonstration badge");
     }
-    {   // B04 REAL path (vault inactive until review): the submitted secret pre-filled, no « Jamais » without a real list,
+    {   // B04 REAL path: the submitted secret pre-filled, no « Jamais » without a real list,
         // and D1: several accounts and no identifier => explicit choice, « Mettre à jour » disabled until then.
         OriginPrompt::Spec r; r.kind = OriginPrompt::Kind::PasswordUpdate; r.origin = L"compte.exemple.test"; r.user = L""; r.secret = L"Fictif-nouveau-2026";
         r.accounts = {{L"camille@exemple.test", L""}, {L"travail@exemple.test", L""}};

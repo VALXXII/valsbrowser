@@ -583,7 +583,7 @@ int main(){
           const std::wstring state=mdir+L"\\vault-engine-migration";settings.passwords=true;
           int engineCalls=0;HRESULT engineAnswer=S_OK;
           vaultEngineClearHook=[&](std::function<void(HRESULT)> done){++engineCalls;done(engineAnswer);};   // the engine call, injected
-          Vault::ActiveFlag()=false;Expect(VaultEngineMigrationStep(t0)==EngineStep::Nothing&&!std::filesystem::exists(state)&&!VaultEngineOfferDue(),"option A: vault inactive (dev/release): nothing recorded, no offer");
+          Vault::ActiveFlag()=false;Expect(VaultEngineMigrationStep(t0)==EngineStep::Nothing&&!std::filesystem::exists(state)&&!VaultEngineOfferDue(),"option A: vault inactive (engine-control test host): nothing recorded, no offer");
           Vault::ActiveFlag()=true;privateWindow=true;Expect(VaultEngineMigrationStep(t0)==EngineStep::Nothing&&!std::filesystem::exists(state)&&!VaultEngineOfferDue(),"option A: a private window records nothing and offers nothing");
           privateWindow=false;
           Expect(VaultEngineMigrationStep(t0)==EngineStep::Recorded&&VaultEngineMigrationStep(t0+3600*1000)==EngineStep::Nothing,"option A: the first active start records the activation date (once)");
@@ -649,7 +649,7 @@ int main(){
           settings.passwords=wasOn;Vault::ActiveFlag()=wasActive;dataDir=savedDir;std::filesystem::remove_all(mdir,mec); }
         // Review V-5: the capture (DevTools domains) is attached only while it can be used.
         { const bool wasActive=Vault::ActiveFlag(),wasOn=settings.passwords;
-          Vault::ActiveFlag()=false;settings.passwords=true;Expect(!VaultCaptureWanted(),"V-5: vault inactive (dev/release): no DevTools capture on any tab");
+          Vault::ActiveFlag()=false;settings.passwords=true;Expect(!VaultCaptureWanted(),"V-5: vault inactive (engine-control test host): no DevTools capture on any tab");
           Vault::ActiveFlag()=true;settings.passwords=false;Expect(!VaultCaptureWanted(),"V-5: « Mots de passe » off: no DevTools capture");
           settings.passwords=true;privateWindow=true;Expect(!VaultCaptureWanted(),"V-5: private window: no capture");
           privateWindow=false;Expect(VaultCaptureWanted(),"V-5: vault active, « Mots de passe » on, normal window: capture attached");

@@ -155,6 +155,9 @@ try {
   # Review R-2: a Travail window saves its own account into the Travail vault (profiles\ptravail01\passwords).
   Start-Process -FilePath $exe -ArgumentList '--profile ptravail01' -WorkingDirectory $hostDir; $tp = 0; for ($i = 0; $i -lt 40 -and !$tp; $i++) { Start-Sleep -Milliseconds 250; $tp = Pids '--profile ptravail01' | Select-Object -First 1 }
   Check (WaitLog 'E2E BOUND certificate decisions cleared' 20000 $travailLog) 'R-2 setup: a Travail window is ready (its own profile folder and log)'
+  # The capture is installed asynchronously on the window's first tab: the login is submitted only once it is in place
+  # (as in vault_coverage_e2e.ps1), otherwise the first page can load before it and report nothing.
+  Check (WaitLog 'VAULT capture coverage installed' 20000 $travailLog) 'R-2 setup: the Travail window''s capture is installed'
   Submit '/login' $tUser $tSecret
   $ts = WaitFind $tp 'PasswordSaveConfirm' ''; if ($ts) { Start-Sleep -Milliseconds 700; $ts = Find $tp 'PasswordSaveConfirm' ''; if ($ts) { [void](Invoke-El $ts) }; Start-Sleep 1 }
   $tb = if (Test-Path $travailVault) { [IO.File]::ReadAllText($travailVault) } else { '' }

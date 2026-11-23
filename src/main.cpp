@@ -5087,7 +5087,7 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){
     smoke=splitTest=workspaceTest=debugSandboxAtStart=false;   // SEC-12: the test harnesses are never honoured by a release build
 #endif
 #if defined(BROWSER_E2E_VAULT_HOST)||defined(BROWSER_E2E_VAULT_ACTIVE)
-    Vault::ActiveFlag()=true;   /* TEST HOSTS ONLY (tests/e2e/vault_host.cpp, tests/e2e/vault_product_host.cpp): synthetic profile and secrets; never in dev/release */
+    Vault::ActiveFlag()=true;   /* TEST HOSTS (tests/e2e/vault_host.cpp, tests/e2e/vault_product_host.cpp): already the default since activation; kept explicit */
 #endif
     if(const wchar_t* r=wcsstr(args,L"--restore-window ")){r+=17;while(*r==L' ')++r;const wchar_t* e=r;while(*e&&*e!=L' ')++e;windowRequested.assign(r,e);}smoke=smoke||splitTest;engineRelaunched=wcsstr(args,L"--webview2-recovered")!=nullptr;launchArgs=args?args:L"";motionLabMode=!smoke&&wcsstr(args,L"--motion-lab")!=nullptr;instance=hi;SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(FAILED(init))return 1;wchar_t path[32768];GetModuleFileNameW(nullptr,path,32768);PathRemoveFileSpecW(path);base=path;ResolveBrowserPaths();
     // Interface language, pinned for this process BEFORE any dialog, window or WebView2 (src/ui-language.h): the
@@ -5106,6 +5106,9 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){
     Log(L"START browser");{const char* st=UiLanguage::StatusText(uiLanguage.status);Log(std::wstring(L"UI LANGUAGE ")+(uiLanguage.locale==I18n::Locale::En?L"en":L"fr")+L" ("+std::wstring(st,st+std::strlen(st))+L")");}Log(std::wstring(L"VAULT state: ")+(Vault::Active()?L"active":L"inactive"));   /* P-I1: what a product run reports */
 #ifdef BROWSER_E2E_VAULT_HOST
     Log(L"E2E VAULT HOST: vault active, foreground condition lifted (test host only)");   /* binary marker, absent from dev/release (tests/e2e/product_markers.ps1) */
+#endif
+#ifdef BROWSER_VAULT_FORCE_INACTIVE
+    Log(L"E2E VAULT FORCED INACTIVE: engine-control test host, the engine keeps its own password autosave (test build only)");   /* binary marker, absent from dev/release (tests/e2e/product_markers.ps1) */
 #endif
 #ifdef BROWSER_E2E_VAULT_ACTIVE
     Log(L"E2E VAULT ACTIVE: product path, vault forced active, every foreground condition in force (test build only)");   /* review R-5 host marker, absent from dev/release (tests/e2e/product_markers.ps1) */

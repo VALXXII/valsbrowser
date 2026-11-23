@@ -1,8 +1,9 @@
 #pragma once
 #include "i18n.h"
-// Local password vault (decision 1, option A for NEW saves). INACTIVE until an independent
-// security review approves it: while `Vault::Active()` is false nothing here is reached from the
-// browser and the engine keeps its own password autosave and suggestions.
+// Local password vault (decision 1, option A for NEW saves). ACTIVE in dev and release builds since the
+// independent review (2026-11-23, owner « Active go »): new saves go here and the engine's own password
+// autosave is off. Only the engine-control test hosts (tests/e2e/mtls_host.cpp) build it INACTIVE, through
+// BROWSER_VAULT_FORCE_INACTIVE: there nothing here is reached and the engine keeps its own autosave.
 //
 // Storage: <data>\passwords, one line per account, written only through the profile store
 // transaction (src/profile-store.h). The secret is a DPAPI blob (CryptProtectData, current user,
@@ -30,8 +31,16 @@
 
 namespace Vault {
 
-// Flipped only after the independent security review (decision 1). Tests force it per case.
+// On by default (owner decision after the independent review). BROWSER_VAULT_FORCE_INACTIVE: engine-control test
+// hosts only (their « VAULT state: inactive » checks). Unit tests force it per case.
+#if defined(BROWSER_VAULT_FORCE_INACTIVE) && (defined(BROWSER_E2E_VAULT_HOST) || defined(BROWSER_E2E_VAULT_ACTIVE))
+#error "a vault test host cannot also force the vault inactive"
+#endif
+#ifdef BROWSER_VAULT_FORCE_INACTIVE
 inline bool& ActiveFlag() { static bool active = false; return active; }
+#else
+inline bool& ActiveFlag() { static bool active = true; return active; }
+#endif
 // Review §6 (D3): a private window may READ and FILL, never write. Enforced here, in the only write path.
 inline bool& WritesForbidden() { static bool forbidden = false; return forbidden; }
 inline bool Active() { return ActiveFlag(); }

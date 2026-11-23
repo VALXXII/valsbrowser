@@ -980,8 +980,8 @@ bool SandboxMessage(const std::shared_ptr<Tab>& t,const std::wstring& source,con
 
 // Every top-level web message of a tab: interstitial, error page, then sandbox.
 HRESULT InterstitialMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceivedEventArgs* a);
-// ---- Password vault, B04 capture → consent → save (decision 1 A). INACTIVE until the independent
-// review: nothing below runs while Vault::Active() is false (no script, no message accepted).
+// ---- Password vault, B04 capture → consent → save (decision 1 A). Active in dev/release since the independent
+// review; nothing below runs while Vault::Active() is false (engine-control test hosts: no script, no message accepted).
 // The page only reports a submitted login of ITS OWN top-level document; the origin is the one the
 // ENGINE reports for the message (never a value from the page); the vault is written only after the
 // user's explicit « Enregistrer » / « Mettre à jour » (B04), through Vault::Commit (fail closed).
@@ -1361,7 +1361,7 @@ void VaultNavigationCompleted(const std::shared_ptr<Tab>& t,std::uint64_t naviga
     if(!t)return;auto it=vaultCapture.find(t->serial);if(it==vaultCapture.end())return;
     if(!it->second.NavigationCompleted(navigationId,ok)||!t->errorPage.shown.empty()||!t->https.shown.empty()){Log(L"VAULT capture dropped: the submission failed");VaultCaptureDrop(t);}
 }
-// B03 (vault inactive; the visible native trigger awaits the review of proposal 11): the user picks an
+// B03: the user picks an
 // account in the real B03 prompt; the target (top-level document, its navigation stamp, its origin) is
 // captured when the user acts and checked again just before injecting (Vault::CanFill); the secret is
 // decrypted only then, sent to the top-level document by FillScript (which re-checks its own origin and
