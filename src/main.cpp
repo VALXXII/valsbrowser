@@ -4603,10 +4603,16 @@ void UpdateFont(){if(font)DeleteObject(font);font=CreateFontW(-S(16),0,0,0,FW_NO
 constexpr UINT EngineInstallMessage=WM_APP+41;void OnEngineInstallMessage();void StopEngineStart();
 // « Importer depuis un navigateur… » (src/browser-import-integration.h): the worker's result reaches the UI thread.
 constexpr UINT ImportMessage=WM_APP+43;void ImportFinished();
+// The monitor a maximized window fills. Restored from minimized, the window still sits at Windows' off-screen minimized
+// position (-32000, -32000) during the first size calculation: the nearest monitor is then whichever lies closest to
+// that point (a second screen on the left or above), the window was laid out once at that screen's size and back, and
+// every tab's page resized twice in the middle of the restore animation (a visible hitch). Off every screen, the
+// window's restore placement names the screen it maximizes on.
+HMONITOR MaximizedMonitor(HWND h){if(HMONITOR m=MonitorFromWindow(h,MONITOR_DEFAULTTONULL))return m;WINDOWPLACEMENT p{sizeof(p)};return GetWindowPlacement(h,&p)?MonitorFromRect(&p.rcNormalPosition,MONITOR_DEFAULTTONEAREST):MonitorFromWindow(h,MONITOR_DEFAULTTONEAREST);}
 LRESULT CALLBACK ChromeProc(HWND h,UINT msg,WPARAM w,LPARAM l){LRESULT frameResult;
     // Maximized with WS_CAPTION, Windows pushes the window past the monitor by its frame thickness: the client
     // is the monitor's work area exactly (nothing cut at the edges, the taskbar left visible).
-    if(msg==WM_NCCALCSIZE&&w&&IsZoomed(h)){MONITORINFO mi{sizeof(mi)};if(GetMonitorInfoW(MonitorFromWindow(h,MONITOR_DEFAULTTONEAREST),&mi)){reinterpret_cast<NCCALCSIZE_PARAMS*>(l)->rgrc[0]=mi.rcWork;return 0;}}
+    if(msg==WM_NCCALCSIZE&&w&&IsZoomed(h)){MONITORINFO mi{sizeof(mi)};if(GetMonitorInfoW(MaximizedMonitor(h),&mi)){reinterpret_cast<NCCALCSIZE_PARAMS*>(l)->rgrc[0]=mi.rcWork;return 0;}}
     // WS_CAPTION makes DefWindowProc paint a classic caption straight onto the window when the title or icon changes
     // (and through the undocumented uxtheme caption / frame messages): the title and icon are stored with the window
     // briefly marked invisible, so nothing is drawn; the two theme messages draw nothing.
@@ -4627,7 +4633,7 @@ case WM_MOUSEACTIVATE:{if(!RequestChipOpen())break;POINT p;GetCursorPos(&p);Scre
 case WM_NCMOUSEMOVE:if(w==HTMAXBUTTON){UpdateInteraction('M',0);TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE|TME_NONCLIENT,h,0};TrackMouseEvent(&track);return 0;}break;
 case WM_NCMOUSELEAVE:UpdateInteraction(0,0);return 0;
 case WM_NCLBUTTONDBLCLK:if(w==HTCAPTION){Command('M');return 0;}break;
-case WM_GETMINMAXINFO:{auto info=(MINMAXINFO*)l;info->ptMinTrackSize={S(560),S(300)};MONITORINFO monitor{sizeof(monitor)};if(GetMonitorInfoW(MonitorFromWindow(h,MONITOR_DEFAULTTONEAREST),&monitor)){info->ptMaxPosition={monitor.rcWork.left-monitor.rcMonitor.left,monitor.rcWork.top-monitor.rcMonitor.top};info->ptMaxSize={monitor.rcWork.right-monitor.rcWork.left,monitor.rcWork.bottom-monitor.rcWork.top};}return 0;}
+case WM_GETMINMAXINFO:{auto info=(MINMAXINFO*)l;info->ptMinTrackSize={S(560),S(300)};MONITORINFO monitor{sizeof(monitor)};if(GetMonitorInfoW(MaximizedMonitor(h),&monitor)){info->ptMaxPosition={monitor.rcWork.left-monitor.rcMonitor.left,monitor.rcWork.top-monitor.rcMonitor.top};info->ptMaxSize={monitor.rcWork.right-monitor.rcWork.left,monitor.rcWork.bottom-monitor.rcWork.top};}return 0;}
 case WM_DPICHANGED:{contentTransition.Cancel();auto r=(RECT*)l;SetWindowPos(h,nullptr,r->left,r->top,r->right-r->left,r->bottom-r->top,SWP_NOZORDER|SWP_NOACTIVATE);UpdateFont();Layout();RepositionElementSurfaces();
 #ifdef BROWSER_UPDATES
     LayoutUpdateToast();
