@@ -6,7 +6,7 @@ Dernière version publique : https://github.com/VALXXII/browser-releases/release
 
 Version portable (sans installation) : `browser-<version>-win-x64.zip` — clic droit > **Extraire tout…**, lancer **browser.exe** en gardant tout le dossier ; profil dans ce dossier ; une mise à jour installée passe ensuite dans `%LOCALAPPDATA%\browser` et y copie le profil une fois. Les fichiers `.lsrupd` et `update-manifest` servent seulement aux mises à jour automatiques. Construction et vérifications du ZIP : [design/public-download-report.md](design/public-download-report.md).
 
-Page de téléchargement (site statique, sans build) : [web/landing/index.html](web/landing/index.html). Le bouton pointe vers le dernier installateur via l'API GitHub, avec repli sur la page « latest » ; fenêtre interactive reproduite depuis Paper, valeurs dans [web/landing/DESIGN-VALUES.md](web/landing/DESIGN-VALUES.md). La page lit les polices et icônes dans `assets/` : servir le dépôt entier, ou copier ces fichiers avec le dossier.
+Page de téléchargement (site statique, sans build) : [web/landing/index.html](web/landing/index.html). Le bouton pointe vers le dernier installateur via l'API GitHub, avec repli sur la page « latest » ; fenêtre interactive reproduite depuis Paper, valeurs dans [web/landing/DESIGN-VALUES.md](web/landing/DESIGN-VALUES.md). Le dossier est autonome (polices comprises) : il est hébergé sur Vercel avec `web/landing` comme dossier racine, et une modification limitée à `web/` ou `tests/landing/` ne publie pas de nouvelle version du navigateur.
 
 ## Preview « Éléments & popups » (sandbox des composants)
 
