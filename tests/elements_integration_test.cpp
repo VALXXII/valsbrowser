@@ -528,6 +528,34 @@ int main(){
            SetEvent(hold.done);WaitForSingleObject(th,5000);CloseHandle(th);CloseHandle(hold.ready);CloseHandle(hold.done);}
           {Vault::Store st;std::ofstream f(std::filesystem::path(VaultFile()),std::ios::binary);st.Write(f);}   // the account removed in another window
           Expect(ReadVault(1000)==VaultLoad::Ok&&vault.Entries().empty(),"F11: a fresh read honours a removal made elsewhere");
+          // Audit SEC-19: the periodic check re-reads and parses the file only when it changed since the last read.
+          { vaultCheckedAt=0;Expect(VaultCached()==std::make_pair(true,(std::size_t)0),"SEC-19: the periodic check reads the vault once");
+            vault.Save(L"https://memoire.test",L"synth",L"Synth-mem-0000!",2);   // memory only: a re-read would drop it
+            vaultCheckedAt=0;Expect(VaultCached()==std::make_pair(true,(std::size_t)1)&&vault.Entries().size()==1,"SEC-19: file unchanged: the periodic check does NOT re-read or parse it");
+            Sleep(30);{Vault::Store st;st.Save(L"https://a.test",L"synth",L"Synth-0000!",3);st.Save(L"https://b.test",L"synth",L"Synth-0001!",3);std::ostringstream o;st.Write(o);
+             Expect(ProfileStore::WriteAtomic(VaultFile(),o.str()),"SEC-19 fixture: another window commits two accounts");}
+            vaultCheckedAt=0;Expect(VaultCached()==std::make_pair(true,(std::size_t)2),"SEC-19: file changed: the periodic check re-reads it");
+            vaultCheckedAt=GetTickCount64();std::filesystem::remove(std::filesystem::path(VaultFile()),vec);Expect(VaultCached().second==2,"SEC-19: still at most one check every 2 s");
+            vaultCheckedAt=0;Expect(VaultCached()==std::make_pair(true,(std::size_t)0),"SEC-19: a removed file is seen at the next check (absent = empty)"); }
+          // Review N-8: a vault file over 16 MB is never read (unavailable, not empty) and never written.
+          { std::ofstream big(std::filesystem::path(VaultFile()),std::ios::binary);big<<Vault::Store::Header<<'\n';std::string pad(1<<20,'x');for(int k=0;k<17;++k)big<<pad; }
+          Expect(ReadVault(0)==VaultLoad::Unavailable&&!vaultLoaded,"N-8: a vault file over 16 MB is unavailable (not read, never an empty vault)");
+          std::filesystem::remove(std::filesystem::path(VaultFile()),vec);
+          // Review N-7: an entry Windows cannot decrypt here is said, never a silent nothing.
+          { Vault::Store st;st.Save(L"https://a.test",L"synth",L"Synth-0000!",1);std::ostringstream o;st.Write(o);std::string b=o.str();
+            Expect(ReadVault(0)==VaultLoad::Ok,"N-7 setup: empty vault");vault=st;Vault::Entry e=vault.Entries()[0];
+            std::wstring sec;const unsigned n0=vaultNoticesShown;
+            Expect(VaultRevealForFill(e,L"https://a.test",sec)&&sec==L"Synth-0000!"&&vaultNoticesShown==n0,"N-7: a readable entry is revealed for the fill, nothing said");Wipe(sec);
+            Expect(!VaultRevealForFill(e,L"https://b.test",sec)&&sec.empty()&&vaultNoticesShown==n0+1&&vaultLastNotice==L"Ce mot de passe ne peut pas être lu sur cet appareil.","N-7: an entry that cannot be decrypted here is said: « Ce mot de passe ne peut pas être lu sur cet appareil. »");
+            I18n::SetForProcess(I18n::Locale::En);VaultRevealForFill(e,L"https://b.test",sec);I18n::SetForProcess(I18n::Locale::Fr);
+            Expect(vaultLastNotice==L"This password can’t be read on this device.","N-7 in English: « This password can’t be read on this device. »");
+            vault=Vault::Store{};vaultBase=Vault::Store{}; }
+          // Review N-3: the 15 s time-out of a held login runs through the profile-scoped timer (DeferAfter), not a plain one.
+          { const auto d0=delayedJobs.size(),s0=sandboxTimers.size();VaultAwait& w=vaultAwait[4242];w.seq=7;std::weak_ptr<Tab> none;
+            VaultHoldTimeout(4242,7,none);
+            Expect(delayedJobs.size()==d0+1&&sandboxTimers.size()==s0,"N-3: the held login's time-out is a profile-scoped timer (DeferAfter: the profile that held it, never the one on screen)");
+            UINT_PTR id=0;for(auto& j:delayedJobs)id=j.first;auto job=std::move(delayedJobs[id]);delayedJobs.erase(id);KillTimer(nullptr,id);job();
+            Expect(!vaultAwait.count(4242),"N-3: when it fires, the held login is dropped"); }
           dataDir=savedDir;vault=Vault::Store{};vaultBase=Vault::Store{};vaultLoaded=false;std::filesystem::remove_all(vdir,vec); }
         // Review 885d322 #1: a pending capture (its secret) is bound to the tab's document and wiped.
         { PromptJob a;a.spec.secret=L"Synth-capture-0000!-long-enough";PromptJob b=std::move(a);
@@ -586,6 +614,27 @@ int main(){
           Expect(modalOpen&&modal.CurrentSpec().automationId==L"DeleteEnginePasswords"&&modal.CurrentSpec().buttons.size()==2&&modal.CurrentSpec().buttons[1].role==MD::Role::Danger&&engineCalls==0,"option A: a click opens the confirmation (Annuler / destructive action), nothing deleted yet");
           modal.Finish(MD::CancelButton);run();modal.FinishAnimationsForTest();
           Expect(!modalOpen&&engineCalls==0&&VaultEngineOfferDue(),"option A: « Annuler »: nothing deleted, the offer stays");
+          // Review N-2: a profile switch (SwitchWorkspace -> CloseVaultSurfaces) closes the dialog; the list never comes back
+          // for the profile now on screen; a late deletion answer never touches another dialog.
+          { const unsigned n0=vaultNoticesShown;
+            AskVaultEngineDelete();run();std::ofstream(std::filesystem::path(mdir+L"\\passwords"),std::ios::binary)<<"pas un coffre\n";modal.Finish(MD::CancelButton);run();modal.FinishAnimationsForTest();
+            Expect(vaultNoticesShown==n0+1,"N-2 control: after « Annuler » the host tries to bring the list back (observable: the unreadable vault is said)");
+            std::filesystem::remove(mdir+L"\\passwords",mec);
+            AskVaultEngineDelete();run();Expect(modalOpen&&modal.CurrentSpec().automationId==L"DeleteEnginePasswords","N-2 setup: the confirmation is open");
+            std::ofstream(std::filesystem::path(mdir+L"\\passwords"),std::ios::binary)<<"pas un coffre\n";const unsigned n1=vaultNoticesShown;
+            CloseVaultSurfaces();run();modal.FinishAnimationsForTest();
+            Expect(!modalOpen&&engineCalls==0&&vaultNoticesShown==n1,"N-2: a profile switch closes the « Supprimer les anciens mots de passe de Browser ? » dialog, nothing deleted, the list does not come back");
+            std::filesystem::remove(mdir+L"\\passwords",mec);
+            std::function<void(HRESULT)> late;vaultEngineClearHook=[&](std::function<void(HRESULT)> done){++engineCalls;late=done;};
+            AskVaultEngineDelete();run();modal.ActivateForTest(MD::Dialog::ButtonHit(1));run();
+            Expect(engineCalls==1&&modalOpen&&modal.BusyForTest()&&late,"N-2 setup: the deletion is under way (busy)");
+            CloseVaultSurfaces();run();modal.FinishAnimationsForTest();
+            MD::Spec other;other.automationId=L"OtherDialog";other.title=L"Autre";other.buttons={{MD::AcceptButton,L"OK",MD::Role::Primary}};AskModal(other,nullptr,nullptr);run();
+            Expect(modalOpen&&modal.CurrentSpec().automationId==L"OtherDialog","N-2 setup: another dialog is open after the switch");
+            late(E_FAIL);run();
+            Expect(modalOpen&&modal.CurrentSpec().automationId==L"OtherDialog"&&modal.ErrorForTest().empty()&&!modal.BusyForTest()&&!vaultEngineJustDeleted,"N-2: a deletion answer arriving after the switch never touches the dialog now open");
+            modal.Abort();run();modal.FinishAnimationsForTest();engineCalls=0;
+            vaultEngineClearHook=[&](std::function<void(HRESULT)> done){++engineCalls;done(engineAnswer);}; }
           engineAnswer=E_FAIL;AskVaultEngineDelete();run();
           modal.ActivateForTest(MD::Dialog::ButtonHit(1));run();
           Expect(engineCalls==1&&modalOpen&&!modal.BusyForTest()&&modal.ErrorForTest().find(L"0x80004005")!=std::wstring::npos&&VaultEngineOfferDue(),"option A: a failed deletion is said in the dialog with its reason; nothing recorded, the offer stays");

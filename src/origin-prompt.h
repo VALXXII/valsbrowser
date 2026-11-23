@@ -48,6 +48,7 @@ struct Spec {
     std::wstring user;                   // BasicAuth / PasswordSave|Update: pre-filled identifier
     std::wstring secret;                 // PasswordSave|Update, real path only: the password just submitted (wiped by the host after)
     std::wstring topOrigin;              // PasswordSave|Update, real path: the top-level origin the tab must still show (a frame's capture: its page's; empty: the offer's own origin)
+    bool inFrame = false;                // PasswordSave|Update, real path: captured in a frame, not the page itself (review N-5: said in the subtitle)
     bool migration = false;              // PasswordSave, real path: a password the ENGINE had saved (autofilled): « Garder ce mot de passe dans Browser ? »
     // Extras (all optional):
     std::wstring frame;                  // ExternalApp: third-party frame host (no remembering offered)
@@ -261,7 +262,7 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
         const bool keep = !update && !s.demo && s.migration;   // owner decision B: the same B04, worded as a migration
         m.automationId = update ? L"PasswordUpdate" : keep ? L"PasswordKeep" : L"PasswordSave"; m.scope = Scope::Anchor; m.width = 360; m.closeButton = true; m.demo = s.demo;
         m.title = update ? TR(password_update_title) : keep ? TR(password_keep_title) : TR(password_save_title);
-        m.subtitle = s.demo ? TRF(password_subtitle_demo, s.origin) : TRF(password_subtitle, s.origin);
+        m.subtitle = s.demo ? TRF(password_subtitle_demo, s.origin) : s.inFrame ? TRF(password_subtitle_frame, s.origin) : TRF(password_subtitle, s.origin);   // review N-5
         Field user; user.label = TR(auth_user); user.value = s.user; user.automationId = L"PasswordUser"; user.required = true;
         Field pass; pass.label = TR(settings_passwords_singular); pass.password = true; pass.reveal = true; pass.automationId = L"PasswordValue";
         pass.value = !s.demo ? s.secret : s.accounts.empty() ? L"exemple-fictif-2026" : s.accounts[0].hint;   // real: the submitted password; demo: fictitious

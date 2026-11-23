@@ -316,6 +316,88 @@ int main() {
         { const std::string body = "browser-passwords 2\n1\t+1\t1\taHR0cHM6Ly9hLmV4ZW1wbGUudGVzdA==\teA==\tYWFhYQ==\n"; std::istringstream in(body + "end\t1\t" + Store::Digest(body) + "\n"); bool d = false; Store::Read(in, &d); Check(d, "v2: lenient numbers (leading +) are refused"); }
     }
     { const std::string body = "browser-passwords 2\n1\t9999999999999999999\t1\taHR0cHM6Ly9hLmV4ZW1wbGUudGVzdA==\teA==\tYWFhYQ==\n"; std::istringstream in(body + "end\t1\t" + Store::Digest(body) + "\n"); bool d = false; Store::Read(in, &d); Check(d, "V2-L2: an out-of-range number is damage, never a crash"); }
+    {   // Review N-1: the « typed by the person » listeners sit on window, capture phase (they run before any page listener).
+        const std::wstring cs = CaptureScript();
+        Check(cs.find(L"window.addEventListener('input',") != std::wstring::npos && cs.find(L"document.addEventListener('input',") == std::wstring::npos, "N-1: the trusted input listener is on window (capture), not on document");
+        Check(cs.find(L"forEach(function(n){window.addEventListener(n,") != std::wstring::npos && cs.find(L"window.addEventListener('click',") != std::wstring::npos && cs.find(L"window.addEventListener('keydown',") != std::wstring::npos && cs.find(L"window.addEventListener('submit',") != std::wstring::npos,
+              "N-1: pointer/key, click, Enter and submit listeners are on window too");
+        bool allCapture = true; for (std::size_t at = cs.find(L"window.addEventListener("); at != std::wstring::npos; at = cs.find(L"window.addEventListener(", at + 1)) {
+            int depth = 0; std::size_t k = at + 23; for (; k < cs.size(); ++k) { if (cs[k] == L'(' || cs[k] == L'{') ++depth; else if (cs[k] == L')' || cs[k] == L'}') { if (--depth == 0 && cs[k] == L')') break; } }
+            allCapture = allCapture && k > 5 && cs.compare(k - 5, 5, L",true") == 0; }
+        Check(allCapture && cs.find(L"document.addEventListener(") == cs.find(L"document.addEventListener('DOMContentLoaded'"), "N-1: every window listener is registered in the capture phase; document keeps only DOMContentLoaded");
+    }
+    {   // Review N-8: a file over 16 MB is damage, never parsed; the commit never writes one.
+        std::string huge = std::string(Store::Header) + "\n" + std::string(static_cast<std::size_t>(Store::MaxFileBytes), 'x'); bool d = false; std::istringstream in(huge);
+        Check(Store::Read(in, &d).Entries().empty() && d, "N-8: a vault file over 16 MB is damage (never parsed)");
+    }
+    // ---- Audit SEC-19 (2026-11-23) ----------------------------------------------------------------------------
+    {   // JSON literal: same bytes as the previous implementation, written into one exactly reserved buffer.
+        auto reference = [](const std::wstring& s) {   // the implementation before SEC-19 (+= into a growing string)
+            std::wstring o = L"\"";
+            for (wchar_t c : s) {
+                switch (c) { case L'"': o += L"\\\""; break; case L'\\': o += L"\\\\"; break; case L'<': o += L"\\u003c"; break; case L'>': o += L"\\u003e"; break;
+                default: if (c < 0x20 || c == 0x2028 || c == 0x2029) { wchar_t b[8]; swprintf(b, 8, L"\\u%04x", static_cast<unsigned>(c)); o += b; } else o += c; }
+            }
+            return o + L"\"";
+        };
+        const std::wstring samples[] = {L"", L"F", L"a\"b\\c", L"x</script><img src=x onerror=alert(1)>", std::wstring(L"\x01\x1f\n\t\r", 5), L"\x2028\x2029\x00e9\x20ac", std::wstring(300, L'\x2028') + L"fin"};
+        bool same = true, exact = true, stable = true;
+        for (const auto& s : samples) {
+            const std::wstring j = JsonString(s); same = same && j == reference(s); exact = exact && JsonStringLength(s) == j.size();
+            std::wstring out = L"pre"; out.reserve(out.size() + JsonStringLength(s)); const wchar_t* before = out.data(); const auto cap = out.capacity();
+            AppendJsonString(out, s); stable = stable && out.data() == before && out.capacity() == cap && out == L"pre" + reference(s);
+        }
+        Check(same, "SEC-19: JsonString gives exactly the previous escaping (quotes, backslash, <, >, controls, U+2028/2029)");
+        Check(exact, "SEC-19: JsonStringLength is the literal's exact length");
+        Check(stable, "SEC-19 / V7: appending a literal to a buffer reserved with JsonStringLength never reallocates (no freed copy of the secret)");
+        const std::wstring o = L"https://compte.exemple.test", u = L"a\"b", secret = L"F\\ictif</script>\x2028";
+        const std::wstring fs = FillScript(o, u, secret);
+        Check(fs == std::wstring(FillScriptBody) + reference(o) + L"," + reference(u) + L"," + reference(secret) + L");", "SEC-19: FillScript keeps the same script and arguments, built in place");
+        Check(fs.rfind(L"(function(o,u,p){'use strict';", 0) == 0, "SEC-19: the fill function runs in strict mode ('use strict' is its first statement)");
+        Check(fs.capacity() == fs.size(), "SEC-19 / V7: FillScript is ONE allocation of its exact size (no reallocated or temporary copy of the secret)");
+        const std::wstring ev = IsolatedEvaluateParams(17, fs);
+        Check(ev == L"{\"expression\":" + reference(fs) + L",\"contextId\":17,\"returnByValue\":true,\"awaitPromise\":false,\"silent\":true,\"includeCommandLineAPI\":false}", "SEC-19: IsolatedEvaluateParams keeps the same parameters, built in place");
+        Check(ev.capacity() == ev.size(), "SEC-19 / V7: the evaluation parameters (they hold the secret) are ONE allocation of their exact size");
+    }
+    {   // Save at the limit: an existing account can still be updated; only a NEW account is refused.
+        Store full; for (std::size_t k = 0; k < Store::Limit; ++k) full.Save(L"https://s" + std::to_wstring(k) + L".exemple.test", L"u", L"Fictif-1", 1);
+        Check(full.Entries().size() == Store::Limit, "SEC-19 fixture: a vault at the limit (fictitious accounts)");
+        Check(full.Save(L"https://s7.exemple.test", L"u", L"Fictif-2", 2) == Store::Saved::Updated, "SEC-19: at the limit, a changed password of an existing account is updated (was refused)");
+        std::wstring back; const auto acc = full.For(L"https://s7.exemple.test");
+        Check(acc.size() == 1 && full.Reveal(acc[0].id, L"https://s7.exemple.test", back) && back == L"Fictif-2" && acc[0].updated == 2, "SEC-19: the update at the limit holds the new secret and time");
+        Check(full.Save(L"https://s7.exemple.test", L"u", L"Fictif-2", 3) == Store::Saved::Unchanged, "SEC-19: at the limit, the same password is unchanged (not refused)");
+        Check(full.Save(L"https://s7.exemple.test", L"autre", L"Fictif-3", 4) == Store::Saved::Refused && full.Save(L"https://neuf.exemple.test", L"u", L"Fictif-3", 4) == Store::Saved::Refused && full.Entries().size() == Store::Limit, "SEC-19: at the limit, a NEW account is still refused");
+        // Read: a full file (5000 lines) reads back whole, a duplicate id anywhere is still damage (hash set, not a scan per line).
+        std::ostringstream out; full.Write(out); bool d = true; { std::istringstream in(out.str()); Check(Store::Read(in, &d).Entries().size() == Store::Limit && !d, "SEC-19: a vault at the limit reads back whole, undamaged"); }
+        std::string text = out.str(); const auto l1 = text.find('\n') + 1, l2 = text.find('\n', l1) + 1, l3 = text.find('\n', l2);
+        std::string dup = text.substr(0, l2) + text.substr(l1, l2 - l1).substr(0, text.substr(l1, l2 - l1).find('\t')) + text.substr(text.find('\t', l2), l3 - text.find('\t', l2)) + "\n";
+        const auto rest = text.substr(l3 + 1); dup += rest.substr(0, rest.rfind("\nend\t") + 1);
+        std::ostringstream tr; tr << "end\t" << Store::Limit << "\t" << Store::Digest(dup) << "\n";
+        { std::istringstream in(dup + tr.str()); bool dd = false; const Store r = Store::Read(in, &dd); Check(dd && r.Entries().size() == Store::Limit - 1, "SEC-19: a duplicate id in a complete file is damage (dropped, said)"); }
+    }
+    {   // VaultCached: the file is re-read only when it changed (stamp: exists, size, write and creation times).
+        wchar_t tmp[MAX_PATH]; GetTempPathW(MAX_PATH, tmp); const std::wstring dir = std::wstring(tmp) + L"vault-sec19-" + std::to_wstring(GetCurrentProcessId()); std::error_code ec; std::filesystem::create_directories(dir, ec);
+        const std::wstring f = dir + L"\\passwords";
+        auto put = [](const std::wstring& path, const std::string& bytes) {   // like the profile store: a new temp file renamed over the vault
+            const std::wstring t = path + L".tmp"; HANDLE h = CreateFileW(t.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr); DWORD w = 0;
+            const bool ok = h != INVALID_HANDLE_VALUE && WriteFile(h, bytes.data(), static_cast<DWORD>(bytes.size()), &w, nullptr); if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+            return ok && MoveFileExW(t.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING);
+        };
+        const FileStamp none = StampOf(f);
+        Check(!none.exists && CacheStale(false, L"", FileStamp{}, f, none), "SEC-19 cache: never read: stale");
+        Check(put(f, "browser-passwords 2\nAAAA\n"), "SEC-19 cache fixture: synthetic file written");
+        const FileStamp s1 = StampOf(f);
+        Check(s1.exists && s1.size == 25 && s1 != none && CacheStale(true, f, none, f, s1), "SEC-19 cache: a file that appears is stale");
+        Sleep(30); const FileStamp s1b = StampOf(f);
+        Check(s1b == s1 && !CacheStale(true, f, s1, f, s1b), "SEC-19 cache: unchanged file: NOT re-read (one attribute query only)");
+        Check(CacheStale(true, dir + L"\\autre", s1, f, s1b), "SEC-19 cache: another profile's file (workspace switch): stale");
+        Sleep(30); Check(put(f, "browser-passwords 2\nBBBB\n"), "SEC-19 cache fixture: same size, other bytes, replaced like a commit");
+        const FileStamp s2 = StampOf(f);
+        Check(s2.size == s1.size && s2 != s1 && CacheStale(true, f, s1, f, s2), "SEC-19 cache: a commit by another window (same size) is seen: stale");
+        DeleteFileW(f.c_str()); const FileStamp s3 = StampOf(f);
+        Check(!s3.exists && CacheStale(true, f, s2, f, s3), "SEC-19 cache: a removed file is seen: stale");
+        std::filesystem::remove_all(dir, ec);
+    }
     std::printf(failures ? "FAIL password vault: %d\n" : "PASS password vault: DPAPI per origin, file, merge, guards, escaping\n", failures);
     return failures ? 1 : 0;
 }

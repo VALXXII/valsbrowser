@@ -986,6 +986,8 @@ HRESULT InterstitialMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessag
 // ENGINE reports for the message (never a value from the page); the vault is written only after the
 // user's explicit « Enregistrer » / « Mettre à jour » (B04), through Vault::Commit (fail closed).
 // A private window never captures (D3). Secret copies held by the host are wiped after use (V7).
+// Audit SEC-19: the path and stamp of the last completed read (VaultCached re-reads only when they change).
+bool vaultStampRead=false;std::wstring vaultStampPath;Vault::FileStamp vaultStamp;
 Vault::Store vault,vaultBase;bool vaultLoaded=false;std::set<unsigned> vaultPromptOpen;std::map<unsigned,Vault::CaptureBinding> vaultCapture;   // tab serial -> its pending capture (review N13)
 // Review R-2: a private window reads (never writes, Vault::WritesForbidden) the vault of the profile it was opened
 // from: set once at start by SelectProfile to Profiles::PrivateReadDir(root, --profile). "" = that profile is not a
@@ -1007,13 +1009,16 @@ void Wipe(std::wstring& s){if(!s.empty())SecureZeroMemory(s.data(),s.size()*size
 void VaultNotice(const std::wstring& message,const std::wstring& detail);
 enum class VaultLoad { Ok, Busy, Unavailable };
 VaultLoad ReadVault(DWORD lockMs){
-    std::string bytes;bool exists=false,read=false;
+    std::string bytes;bool exists=false,read=false,tooLarge=false;
     if(privateWindow&&privateVaultDir.empty()){vault=Vault::Store{};vaultBase=Vault::Store{};vaultLoaded=true;return VaultLoad::Ok;}   // R-2: no known opener profile: no vault, nothing read
     {ProfileStore::Lock lock(VaultDir(),lockMs);if(!lock.Held())return VaultLoad::Busy;   // the cache, if any, is left as it was
-     exists=GetFileAttributesW(VaultFile().c_str())!=INVALID_FILE_ATTRIBUTES;read=ProfileStore::ReadAll(VaultFile(),bytes);}
+     const Vault::FileStamp stamp=Vault::StampOf(VaultFile());   // under the lock: no commit between the stamp and the read
+     exists=stamp.exists;tooLarge=stamp.size>Vault::Store::MaxFileBytes;read=tooLarge||ProfileStore::ReadAll(VaultFile(),bytes);   // N-8: an oversized file is never read
+     if(read){vaultStampRead=true;vaultStampPath=VaultFile();vaultStamp=stamp;}else vaultStampRead=false;}
     static std::wstring lastWhy;
     auto unavailable=[](const wchar_t* why){if(lastWhy!=why){Log(why);lastWhy=why;}vault=Vault::Store{};vaultBase=Vault::Store{};vaultLoaded=false;return VaultLoad::Unavailable;};
     if(!read)return unavailable(L"VAULT file could not be read (sharing or I/O error): unavailable, not empty");
+    if(tooLarge)return unavailable(L"VAULT file over 16 MB: damaged, not read");
     if(exists&&bytes.empty())return unavailable(L"VAULT file exists with 0 bytes: damaged, not opened");
     if(!bytes.empty()&&ProfileStore::FirstLine(bytes)!=Vault::Store::Header)return unavailable(L"VAULT unknown file format: not opened");
     std::istringstream in(bytes);bool damaged=false;Vault::Store read2=Vault::Store::Read(in,&damaged);
@@ -1024,11 +1029,15 @@ std::wstring VaultUnavailableText(VaultLoad r){return r==VaultLoad::Busy?TR(vaul
 // Explicit user actions (capture answer, fill, choice, manager): always a FRESH read (a removal made in
 // another window is honoured, normal or private), bounded wait, a refusal is said.
 bool LoadVault(const wchar_t* title){const auto r=ReadVault(1000);if(r==VaultLoad::Ok)return true;VaultNotice(title,VaultUnavailableText(r));return false;}
-// Periodic UI checks (control visibility, Settings count): at most one non-blocking re-read every 2 s;
-// a busy profile keeps the last known state. {usable, count}.
+// Periodic UI checks (control visibility, Settings count): at most one check every 2 s, and the file is read and
+// parsed again only when it changed since the last read (audit SEC-19: one attribute query otherwise, never a parse
+// on the UI thread for nothing); a busy profile keeps the last known state. {usable, count}.
+ULONGLONG vaultCheckedAt=0;   // last periodic check (0 = never)
 std::pair<bool,std::size_t> VaultCached(){
-    static ULONGLONG last=0;const ULONGLONG now=GetTickCount64();
-    if(last==0||now-last>2000){last=now?now:1;ReadVault(0);}
+    ULONGLONG& last=vaultCheckedAt;const ULONGLONG now=GetTickCount64();
+    if(last==0||now-last>2000){last=now?now:1;
+        const std::wstring path=VaultFile();
+        if(Vault::CacheStale(vaultStampRead,vaultStampPath,vaultStamp,path,Vault::StampOf(path)))ReadVault(0);}
     return {vaultLoaded,vaultLoaded?vault.Entries().size():0};
 }
 // Minimal JSON string field reader for the capture message (the engine gives the message as JSON).
@@ -1043,7 +1052,14 @@ bool JsonField(const std::wstring& json,const std::wstring& key,std::wstring& ou
         else out+=c;}
     return false;
 }
-void VaultNotice(const std::wstring& message,const std::wstring& detail){NativeChrome::ContextToast::Spec s;s.automationId=L"VaultNotice";s.icon=NativeChrome::ContextToast::Icon::Error;s.error=true;s.message=message;s.detail=detail;contextToast.Show(s,PageScreenRect(),[](bool){});Log(L"VAULT notice: "+message);}
+unsigned vaultNoticesShown=0;std::wstring vaultLastNotice;   // tests: what the vault last said
+// Review N-7: an entry Windows cannot decrypt here (profile copied to another PC, Windows password reset by an
+// administrator) is said, never a silent nothing.
+bool VaultRevealForFill(const Vault::Entry& e,const std::wstring& origin,std::wstring& secret){
+    if(vault.Reveal(e.id,origin,secret))return true;
+    Wipe(secret);Log(L"VAULT fill not done: the entry cannot be decrypted on this device");VaultNotice(TR(vault_fill_not_done),TR(vault_secret_unreadable));return false;
+}
+void VaultNotice(const std::wstring& message,const std::wstring& detail){++vaultNoticesShown;vaultLastNotice=detail;NativeChrome::ContextToast::Spec s;s.automationId=L"VaultNotice";s.icon=NativeChrome::ContextToast::Icon::Error;s.error=true;s.message=message;s.detail=detail;contextToast.Show(s,PageScreenRect(),[](bool){});Log(L"VAULT notice: "+message);}
 std::wstring EngineSource(const std::shared_ptr<Tab>& t);
 void VaultCaptureDrop(const std::shared_ptr<Tab>& t);
 // Review N13 (defence in depth): a B04 offer is shown and answered only while the tab's ENGINE source is
@@ -1067,6 +1083,14 @@ std::map<unsigned,VaultPending> vaultPending;
 // same origin and kind says whether it asks for a password again; 15 s at most; dropped with the tab's capture binding.
 struct VaultAwait{Vault::CaptureMessage m;std::wstring top;std::uint64_t seq=0;};
 std::map<unsigned,VaultAwait> vaultAwait;std::uint64_t vaultAwaitSeq=0;
+// Review V-7: a login held until the next page is dropped after 15 s without an answer page. Review N-3: the timer runs
+// in the scope of the profile that held it (DeferAfter), so a hidden profile's tab never clears the on-screen profile's
+// vaultAwait / vaultCapture / vaultPromptOpen.
+void DeferAfter(UINT ms,std::function<void()> job);   // main.cpp: a timer that runs in the scope of the profile that set it
+void VaultCaptureDrop(const std::shared_ptr<Tab>& t);
+void VaultHoldTimeout(unsigned serial,std::uint64_t seq,std::weak_ptr<Tab> weak){
+    DeferAfter(15000,[serial,seq,weak]{auto it=vaultAwait.find(serial);if(it==vaultAwait.end()||it->second.seq!=seq)return;vaultAwait.erase(it);Log(L"VAULT capture dropped: no answer page within 15 s");if(auto tab=weak.lock())VaultCaptureDrop(tab);});
+}
 void After(UINT ms,std::function<void()> f);
 void VaultOffer(const std::shared_ptr<Tab>& t,Vault::CaptureMessage& m,const std::wstring& top);
 // Runtime.bindingCalled of the capture binding, from the tab's own DevTools session or one of its frames' sessions.
@@ -1105,7 +1129,7 @@ void VaultCaptureEvent(const std::shared_ptr<Tab>& t,std::wstring json){
     if(m.via==L"leave"){   // review V-7: offered only once the next document shows the login succeeded
         auto& w=vaultAwait[t->serial];w.m=m;w.top=top;w.seq=++vaultAwaitSeq;const std::uint64_t seq=w.seq;const unsigned serial=t->serial;std::weak_ptr<Tab> weak=t;
         Log(std::wstring(L"VAULT capture held until the next page loads (")+(m.top?L"page":L"frame")+L")");
-        After(15000,[serial,seq,weak]{auto it=vaultAwait.find(serial);if(it==vaultAwait.end()||it->second.seq!=seq)return;vaultAwait.erase(it);Log(L"VAULT capture dropped: no answer page within 15 s");if(auto tab=weak.lock())VaultCaptureDrop(tab);});
+        VaultHoldTimeout(serial,seq,weak);
         return;}
     VaultOffer(t,m,top);
 }
@@ -1118,7 +1142,7 @@ void VaultOffer(const std::shared_ptr<Tab>& t,Vault::CaptureMessage& m,const std
     const Vault::Offer offer=Vault::DecideOffer(vault,m.origin,m.user,m.secret,m.current,m.autofilled);
     if(offer.kind==Vault::Offer::Kind::None){Log(L"VAULT capture: nothing to offer (the vault already holds this password)");VaultCaptureDrop(t);return;}
     const std::wstring origin=m.origin;
-    OP::Spec s;s.demo=false;s.origin=origin;s.topOrigin=top;s.user=offer.user;s.secret=m.secret;Wipe(m.secret);Wipe(m.current);s.migration=offer.migration;
+    OP::Spec s;s.demo=false;s.origin=origin;s.topOrigin=top;s.inFrame=!m.top;s.user=offer.user;s.secret=m.secret;Wipe(m.secret);Wipe(m.current);s.migration=offer.migration;
     if(offer.kind==Vault::Offer::Kind::Save)s.kind=OP::Kind::PasswordSave;
     else{s.kind=OP::Kind::PasswordUpdate;if(offer.kind==Vault::Offer::Kind::Choose){s.user.clear();for(auto& u:offer.accounts)s.accounts.push_back({u,L""});}}   // several: explicit choice (D1)
     vaultPromptOpen.insert(t->serial);const unsigned serial=t->serial;std::weak_ptr<Tab> weak=t;
@@ -1289,21 +1313,34 @@ void VaultEngineDelete(std::function<void(HRESULT,const std::wstring&)> done){
     const HRESULT hr=profile->ClearBrowsingData(COREWEBVIEW2_BROWSING_DATA_KINDS_PASSWORD_AUTOSAVE,handler);handler->Release();
     if(FAILED(hr))finish(hr);
 }
-// « Supprimer les anciens mots de passe d'Edge… » (B05 list link, which closes the list): the confirmation (small-popup
+// « Supprimer les anciens mots de passe de Browser… » (B05 list link, which closes the list): the confirmation (small-popup
 // family, danger action), busy while Edge works; a failure stays in the dialog with a short reason; whatever the answer,
-// the list comes back (one surface at a time), and after a deletion it says « Anciens mots de passe d'Edge supprimés. ».
+// the list comes back (one surface at a time), and after a deletion it says « Anciens mots de passe de Browser supprimés. ».
 bool vaultEngineJustDeleted=false;void ShowVaultManager(bool keyboard);
+// Review N-2: bumped when the window changes profile (CloseVaultSurfaces). A dialog or a deletion result of the profile
+// that left is dropped: it never reopens the list nor touches a dialog for the profile now on screen.
+std::uint64_t vaultSurfaceGen=0;
 void AskVaultEngineDelete(){
     if(!VaultEngineOfferDue()){Log(L"VAULT engine deletion not offered now: nothing asked");return;}
+    const std::uint64_t gen=vaultSurfaceGen;
     auto spec=MD::DeleteEnginePasswordsSpec();spec.buttons[1].closes=false;
-    spec.onButton=[](int id){
-        if(id!=MD::AcceptButton)return;
+    spec.onButton=[gen](int id){
+        if(id!=MD::AcceptButton||gen!=vaultSurfaceGen)return;
         modal.SetBusy(true,TR(vault_engine_deleting));
-        VaultEngineDelete([](HRESULT hr,const std::wstring& reason){
+        VaultEngineDelete([gen](HRESULT hr,const std::wstring& reason){
+            if(gen!=vaultSurfaceGen){Log(L"VAULT engine deletion answered after a profile switch: its dialog is gone, nothing shown");return;}
             if(FAILED(hr)){modal.SetBusy(false);modal.SetError(hr==E_NOINTERFACE&&!reason.empty()?reason:TRF(vault_engine_delete_failed,HrText(hr)));return;}
             vaultEngineJustDeleted=true;modal.Finish(MD::AcceptButton);accessibility.Notify('S',TR(vault_engine_deleted),L"VaultEngineDeleted");});
     };
-    AskModal(std::move(spec),nullptr,[](const MD::Result&){Defer([]{if(!passwordDemo.Visible())ShowVaultManager(false);});});
+    AskModal(std::move(spec),nullptr,[gen](const MD::Result&){if(gen!=vaultSurfaceGen)return;Defer([]{if(!passwordDemo.Visible())ShowVaultManager(false);});});
+}
+// Review N-2: the window changes profile (SwitchWorkspace): the password list (it shows the profile that leaves) and the
+// « Supprimer les anciens mots de passe de Browser ? » dialog (queued or open) close, like the drawers; nothing is deleted.
+void CloseVaultSurfaces(){
+    ++vaultSurfaceGen;
+    if(passwordDemo.Visible())passwordDemo.Hide();
+    for(auto it=modalQueue.begin();it!=modalQueue.end();){if(it->spec.automationId==L"DeleteEnginePasswords"){auto done=std::move(it->done);it=modalQueue.erase(it);if(done)done(MD::Result{});}else ++it;}
+    if(modalOpen&&modalActive.spec.automationId==L"DeleteEnginePasswords"){Log(L"VAULT engine deletion dialog closed: the window changed profile");modal.Abort();}
 }
 // « Effacer en quittant » runs ClearBrowsingDataAll: the engine's saved passwords and form entries go too. With the
 // vault active, what the vault keeps stays (only passwords not kept yet, in the engine's old store, go).
@@ -1387,7 +1424,7 @@ void OfferVaultFill(const std::shared_ptr<Tab>& t){
         if(!LoadVault(TR(vault_fill_canceled)))return;   // F11: fresh read at the real choice
         const Vault::Entry* e=vault.Find(ids[(size_t)r.choice]);
         if(!e||Vault::CanonicalOrigin(e->origin)!=origin){VaultNotice(TR(vault_fill_canceled),TR(vault_account_gone));return;}
-        std::wstring secret;if(!vault.Reveal(e->id,origin,secret))return;
+        std::wstring secret;if(!VaultRevealForFill(*e,origin,secret))return;
         std::wstring script=Vault::FillScript(origin,e->user,secret);Wipe(secret);
         VaultFillIsolated(t,std::move(script));   // review R-1: isolated world of this document, never the page's main world
     },L"vaultfill:"+std::to_wstring(t->serial));

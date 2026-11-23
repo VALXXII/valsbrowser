@@ -25,6 +25,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace Vault {
@@ -113,6 +114,9 @@ struct Entry {
 class Store {
 public:
     static constexpr std::size_t Limit = 5000;
+    // Review N-8 / audit SEC-19: a vault file over 16 MB is never read (5 000 accounts take a few MB at most); only a
+    // process of the same user could make it that large. Refused as damage, never parsed.
+    static constexpr std::uint64_t MaxFileBytes = 16ull << 20;
     const std::vector<Entry>& Entries() const { return entries_; }
     // Accounts of one origin (no secret), most recently changed first.
     std::vector<Entry> For(const std::wstring& origin) const {
@@ -125,13 +129,14 @@ public:
     // B04 after consent. Same origin + same username = an update (D1 resolves which account when the
     // form has no username before calling this: never the last one silently).
     Saved Save(const std::wstring& origin, const std::wstring& user, const std::wstring& secret, std::int64_t now) {
-        if (origin.empty() || CanonicalOrigin(origin) != origin || secret.empty() || entries_.size() >= Limit) return Saved::Refused;   // review V3: "" is not an origin
+        if (origin.empty() || CanonicalOrigin(origin) != origin || secret.empty()) return Saved::Refused;   // review V3: "" is not an origin
         for (auto& e : entries_) if (e.origin == origin && e.user == user) {
             std::wstring old; if (Unprotect(origin, e.blob, old) && old == secret) { SecureZeroMemory(old.data(), old.size() * sizeof(wchar_t)); return Saved::Unchanged; }
             SecureZeroMemory(old.data(), old.size() * sizeof(wchar_t));
             const std::string blob = Protect(origin, secret); if (blob.empty()) return Saved::Refused;
             e.blob = blob; e.updated = now; return Saved::Updated;
         }
+        if (entries_.size() >= Limit) return Saved::Refused;   // audit SEC-19: the limit refuses a NEW account only, never an update
         Entry e; e.id = RandomId(); e.origin = origin; e.user = user; e.created = e.updated = now;
         if (!e.id) return Saved::Refused;
         e.blob = Protect(origin, secret);
@@ -176,6 +181,7 @@ public:
         const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         if (text.empty()) return s;   // absent: a new vault (not damage)
         auto fail = [&]() { if (damaged) *damaged = true; return s; };
+        if (text.size() > MaxFileBytes) return fail();   // review N-8: never parsed
         const auto first = text.find('\n');
         if (first == std::string::npos || text.substr(0, first) != Header) return fail();
         const auto endPos = text.rfind("\nend\t");
@@ -189,6 +195,7 @@ public:
         const std::string dg = Digest(body);
         if (count > Limit || dg.empty() || t.substr(tab + 1) != dg) return fail();   // an empty digest (hash failure) never matches
         std::istringstream lines(body.substr(first + 1)); std::string line; bool bad = false;
+        std::unordered_set<std::uint64_t> ids; ids.reserve(static_cast<std::size_t>(count));   // audit SEC-19: duplicate ids found in O(1), not by a scan per line
         while (std::getline(lines, line)) {
             std::vector<std::string> f; std::size_t start = 0;
             for (std::size_t tb; (tb = line.find('\t', start)) != std::string::npos; start = tb + 1) f.push_back(line.substr(start, tb - start));
@@ -200,7 +207,7 @@ public:
             if (!Unbase64(f[3], o) || !Unbase64(f[4], u) || !Unbase64(f[5], e.blob)) { bad = true; continue; }
             e.origin = Wide(o); e.user = Wide(u);
             if (!u.empty() && e.user.empty()) { bad = true; continue; }
-            if (!e.id || e.origin.empty() || CanonicalOrigin(e.origin) != e.origin || e.blob.empty() || s.Find(e.id)) { bad = true; continue; }
+            if (!e.id || e.origin.empty() || CanonicalOrigin(e.origin) != e.origin || e.blob.empty() || !ids.insert(e.id).second) { bad = true; continue; }
             s.entries_.push_back(std::move(e));
         }
         if (bad || s.entries_.size() != count) { if (damaged) *damaged = true; }
@@ -235,6 +242,26 @@ private:
     std::vector<Entry> entries_;
 };
 
+// Audit SEC-19: what identifies the vault file's current content without reading it (one attribute query): its
+// size, last write and creation times. Every commit replaces the file (a new file renamed over it), so a write by
+// any window changes the stamp; the periodic UI check re-reads and parses the file only when it changed.
+struct FileStamp {
+    bool exists = false; std::uint64_t size = 0, written = 0, created = 0;
+    bool operator==(const FileStamp& o) const { return exists == o.exists && size == o.size && written == o.written && created == o.created; }
+    bool operator!=(const FileStamp& o) const { return !(*this == o); }
+};
+inline FileStamp StampOf(const std::wstring& path) {
+    FileStamp s; WIN32_FILE_ATTRIBUTE_DATA a{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &a)) return s;
+    auto u64 = [](DWORD hi, DWORD lo) { return (static_cast<std::uint64_t>(hi) << 32) | lo; };
+    s.exists = true; s.size = u64(a.nFileSizeHigh, a.nFileSizeLow); s.written = u64(a.ftLastWriteTime.dwHighDateTime, a.ftLastWriteTime.dwLowDateTime); s.created = u64(a.ftCreationTime.dwHighDateTime, a.ftCreationTime.dwLowDateTime);
+    return s;
+}
+// The periodic check: re-read only when never read for this path, or the file is not what was last read.
+inline bool CacheStale(bool readOnce, const std::wstring& readPath, const FileStamp& readStamp, const std::wstring& path, const FileStamp& now) {
+    return !readOnce || readPath != path || readStamp != now;
+}
+
 // The ONLY way the browser writes the vault (review V2-M3): v2 header only, a damaged or unknown
 // file is never rewritten, nothing over the limit is ever written or dropped.
 } // namespace Vault
@@ -243,7 +270,9 @@ namespace Vault {
 inline ProfileStore::Result Commit(const std::wstring& dataDir, const std::wstring& path, Store& base, Store& mine, DWORD timeoutMs = 5000) {
     if (WritesForbidden()) return ProfileStore::Result::Failed;   // private window: no Save/Remove reaches the disk (no .tmp, no backup)
     return ProfileStore::Commit<Store>(dataDir, path, base, mine, [](const Store& b, const Store& m, const Store& t) { return Store::Merge(b, m, t); }, timeoutMs,
-                                       {Store::Header}, false, [](const Store& s) { return s.Entries().size() <= Store::Limit && !Store::Digest(Store::Header).empty(); });   // V2-L4: no file without a digest
+                                       {Store::Header}, false, [](const Store& s) {   // V2-L4: no file without a digest; N-8: never a file this browser would refuse to read
+                                           if (s.Entries().size() > Store::Limit || Store::Digest(Store::Header).empty()) return false;
+                                           std::ostringstream o; s.Write(o); return static_cast<std::uint64_t>(o.tellp()) <= Store::MaxFileBytes; });
 }
 // ---- Fill bridge guards -------------------------------------------------------------------------
 // What our native UI captured when the user asked to fill (click on the vault control), and what
@@ -270,14 +299,24 @@ inline const wchar_t* RefusalText(Refusal r) {
     }
 }
 // JSON string literal (quotes, backslashes, controls, </script>, U+2028/2029 escaped).
-inline std::wstring JsonString(const std::wstring& s) {
-    std::wstring o = L"\"";
-    for (wchar_t c : s) {
-        switch (c) { case L'"': o += L"\\\""; break; case L'\\': o += L"\\\\"; break; case L'<': o += L"\\u003c"; break; case L'>': o += L"\\u003e"; break;
-        default: if (c < 0x20 || c == 0x2028 || c == 0x2029) { wchar_t b[8]; swprintf(b, 8, L"\\u%04x", static_cast<unsigned>(c)); o += b; } else o += c; }
-    }
-    return o + L"\"";
+// Audit SEC-19 / review V7: a secret goes through here, so the literal is written into ONE buffer reserved to its
+// exact final size (JsonStringLength): no reallocation leaves a freed copy of a part of it behind, no temporary.
+inline bool JsonEscapedAsU(wchar_t c) { return c < 0x20 || c == 0x2028 || c == 0x2029 || c == L'<' || c == L'>'; }
+inline std::size_t JsonStringLength(const std::wstring& s) {
+    std::size_t n = 2; for (wchar_t c : s) n += c == L'"' || c == L'\\' ? 2 : JsonEscapedAsU(c) ? 6 : 1; return n;
 }
+// Appends the literal to `out`; never reallocates when `out` has JsonStringLength(s) spare capacity.
+inline void AppendJsonString(std::wstring& out, const std::wstring& s) {
+    static const wchar_t* x = L"0123456789abcdef";
+    out.push_back(L'"');
+    for (wchar_t c : s) {
+        if (c == L'"' || c == L'\\') { out.push_back(L'\\'); out.push_back(c); }
+        else if (JsonEscapedAsU(c)) { const unsigned v = c; out.push_back(L'\\'); out.push_back(L'u'); out.push_back(x[(v >> 12) & 15]); out.push_back(x[(v >> 8) & 15]); out.push_back(x[(v >> 4) & 15]); out.push_back(x[v & 15]); }
+        else out.push_back(c);
+    }
+    out.push_back(L'"');
+}
+inline std::wstring JsonString(const std::wstring& s) { std::wstring o; o.reserve(JsonStringLength(s)); AppendJsonString(o, s); return o; }
 // Script run in the top-level frame only, in an isolated world of its document (review R-1, see
 // IsolatedEvaluateParams below; never ExecuteScript in the page's main world): fills the focused field's form
 // (username + password inputs) and returns nothing to the bridge (no secret comes back).
@@ -288,8 +327,10 @@ inline std::wstring JsonString(const std::wstring& s) {
 // The script answers ONE fixed status word, never a value of the page or the secret (review 885d322):
 // "filled", "origin" (not this exact secure top-level origin), "noform" (the focused element is in no
 // form), "nofield" (no visible password field in it). The host says « rempli » only on "filled".
-inline std::wstring FillScript(const std::wstring& origin, const std::wstring& user, const std::wstring& secret) {
-    return L"(function(o,u,p){if(location.origin!==o||self.origin!==o||!window.isSecureContext)return 'origin';"
+// Audit SEC-19: strict mode (no `arguments` aliasing, no sloppy `this`), and the script is built in ONE buffer reserved
+// to its exact size (no temporary or reallocated copy of the secret; the caller wipes the result).
+inline constexpr const wchar_t* FillScriptBody =
+           L"(function(o,u,p){'use strict';if(location.origin!==o||self.origin!==o||!window.isSecureContext)return 'origin';"
            L"var an=location.ancestorOrigins;if(an)for(var i=0;i<an.length;i++)if(an[i]!==o)return 'origin';"
            L"var a=document.activeElement;var f=a&&a.form;if(!f)return 'noform';"
            L"function shown(e){if(!e||e.type==='hidden'||e.disabled||e.offsetParent===null)return false;"   // review V-6: really visible, on screen, not covered
@@ -299,7 +340,12 @@ inline std::wstring FillScript(const std::wstring& origin, const std::wstring& u
            L"var pw=Array.prototype.find.call(f.querySelectorAll('input[type=password]'),shown);if(!pw)return 'nofield';"
            L"var id=Array.prototype.find.call(f.querySelectorAll('input[autocomplete=username],input[type=email],input[type=text]'),shown);"
            L"function set(e,v){var d=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');d.set.call(e,v);e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));}"
-           L"if(id&&u)set(id,u);set(pw,p);return 'filled';})(" + JsonString(origin) + L"," + JsonString(user) + L"," + JsonString(secret) + L");";
+           L"if(id&&u)set(id,u);set(pw,p);return 'filled';})(";
+inline std::wstring FillScript(const std::wstring& origin, const std::wstring& user, const std::wstring& secret) {
+    const std::wstring_view body(FillScriptBody);
+    std::wstring s; s.reserve(body.size() + JsonStringLength(origin) + 1 + JsonStringLength(user) + 1 + JsonStringLength(secret) + 2);
+    s.append(body); AppendJsonString(s, origin); s.push_back(L','); AppendJsonString(s, user); s.push_back(L','); AppendJsonString(s, secret); s.append(L");");
+    return s;
 }
 // What the host may say about the script's answer (the JSON the engine returns): only the fixed words.
 enum class FillOutcome { Filled, Origin, NoForm, NoField, Failed };
@@ -365,8 +411,13 @@ inline long long ContextIdOf(const std::wstring& json) {
     if (!n || (at < json.size() && json[at] != L'}' && json[at] != L',')) return 0;
     return v;
 }
+// The script holds the secret: one buffer reserved to the exact size (audit SEC-19), the caller wipes it.
 inline std::wstring IsolatedEvaluateParams(long long contextId, const std::wstring& script) {
-    return L"{\"expression\":" + JsonString(script) + L",\"contextId\":" + std::to_wstring(contextId) + L",\"returnByValue\":true,\"awaitPromise\":false,\"silent\":true,\"includeCommandLineAPI\":false}";
+    const std::wstring id = std::to_wstring(contextId);
+    const std::wstring_view head(L"{\"expression\":"), mid(L",\"contextId\":"), tail(L",\"returnByValue\":true,\"awaitPromise\":false,\"silent\":true,\"includeCommandLineAPI\":false}");
+    std::wstring s; s.reserve(head.size() + JsonStringLength(script) + mid.size() + id.size() + tail.size());
+    s.append(head); AppendJsonString(s, script); s.append(mid); s.append(id); s.append(tail);
+    return s;
 }
 // Runtime.evaluate's answer: only a string result holding one of the fixed words counts; an exception, any
 // other type or an engine error is a failure (never « rempli »).
@@ -444,8 +495,11 @@ inline std::wstring CaptureScript() {
         // Review V-4: a real user action in THIS document (trusted pointer or key, in this world), and the values the person
         // typed (trusted input) per field: a page can neither fake the action nor plant the password.
         L"var act=-1e9,typed=new WeakMap();function activated(){return performance.now()-act<=10000;}"
-        L"['pointerdown','mousedown','keydown'].forEach(function(n){document.addEventListener(n,function(e){if(e.isTrusted)act=performance.now();},true);});"
-        L"document.addEventListener('input',function(e){var t=e.target;if(e.isTrusted&&t&&t.tagName==='INPUT')typed.set(t,t.value);},true);"
+        // Review N-1: these listeners sit on WINDOW in the capture phase. This script is installed before any page script, so
+        // they run before every listener of the page (a page's capturing listener on window can no longer rewrite the field
+        // before the typed value is taken).
+        L"['pointerdown','mousedown','keydown'].forEach(function(n){window.addEventListener(n,function(e){if(e.isTrusted)act=performance.now();},true);});"
+        L"window.addEventListener('input',function(e){var t=e.target;if(e.isTrusted&&t&&t.tagName==='INPUT')typed.set(t,t.value);},true);"
         L"function shown(e){return !!e&&e.isConnected&&e.type!=='hidden'&&!e.disabled&&e.getClientRects().length>0;}"
         L"function ac(e){return (e.getAttribute('autocomplete')||'').toLowerCase();}"
         L"function list(r,q){return Array.prototype.slice.call(r.querySelectorAll(q));}"
@@ -474,9 +528,9 @@ inline std::wstring CaptureScript() {
         L"function hold(s){stop();pend=s;pend.t0=performance.now();var at=Date.now();"
         L"timer=setInterval(function(){if(!pend||Date.now()-at>10000){stop();return;}if(!visiblePw(document))confirmed('gone');},250);}"
         L"function trigger(el){if(!activated())return;var s=snap(scope(el));if(!s)return;if(s.k==='user'){post(s,'step');return;}hold(s);}"
-        L"document.addEventListener('submit',function(e){if(!(e.isTrusted&&activated()))return;var f=e.target;if(!f||!f.querySelectorAll)return;var s=snap(f);if(!s)return;if(s.k==='user'){post(s,'step');return;}hold(s);},true);"
-        L"document.addEventListener('click',function(e){if(!e.isTrusted)return;var t=e.target,b=t&&t.closest?t.closest('button,input[type=submit],input[type=button],input[type=image],[role=button]'):null;if(b)trigger(b);},true);"
-        L"document.addEventListener('keydown',function(e){if(!e.isTrusted||e.key!=='Enter')return;var t=e.target;if(t&&t.tagName==='INPUT')trigger(t);},true);"
+        L"window.addEventListener('submit',function(e){if(!(e.isTrusted&&activated()))return;var f=e.target;if(!f||!f.querySelectorAll)return;var s=snap(f);if(!s)return;if(s.k==='user'){post(s,'step');return;}hold(s);},true);"
+        L"window.addEventListener('click',function(e){if(!e.isTrusted)return;var t=e.target,b=t&&t.closest?t.closest('button,input[type=submit],input[type=button],input[type=image],[role=button]'):null;if(b)trigger(b);},true);"
+        L"window.addEventListener('keydown',function(e){if(!e.isTrusted||e.key!=='Enter')return;var t=e.target;if(t&&t.tagName==='INPUT')trigger(t);},true);"
         L"window.addEventListener('pagehide',leave,true);window.addEventListener('beforeunload',leave,true);"
         L"document.addEventListener('DOMContentLoaded',function(){setTimeout(function(){try{B(JSON.stringify({k:'doc',o:O,t:TOP,pw:visiblePw(document)?'1':'0'}));}catch(x){}},400);});"
         L"})();";

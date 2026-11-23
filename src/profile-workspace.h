@@ -275,6 +275,7 @@ bool SwitchWorkspace(const std::wstring& id) {
     BringToGlobals(activeWorkspace); ++workspaceSwitches;
     // Leave: the on-screen state is saved and hidden; page-scoped surfaces close.
     CancelTabDrag(); CloseFindBar(false); CloseDownloadSurfaces(false); settingsDrawer.Hide(false, false); historyDrawer.Hide(false, false); bookmarksDrawer.Hide(false, false);
+    CloseVaultSurfaces();   // review N-2: the password list and the Edge deletion dialog belong to the profile that leaves
     editing = false; ShowWindow(address, SW_HIDE); hover = pressed = keyboardFocus = 0;
     BeginContentTransition(ContentTransition::Kind::Profile);   // snapshot of the outgoing profile's page, before it is hidden
     SaveSession(); PublishProfileWindow(true); HidePages();   // the profile left on screen stays this window's, cached
