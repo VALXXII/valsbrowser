@@ -21,6 +21,11 @@ name: update-release
 on:
   push:
     branches: [main]
+    # The download page (hosted on Vercel from web/landing) and its tests never ship in the app:
+    # a push that only touches them publishes no new browser version.
+    paths-ignore:
+      - 'web/**'
+      - 'tests/landing/**'
   workflow_dispatch:
 
 # Least privilege: the default GITHUB_TOKEN can only read this repository.
