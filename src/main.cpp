@@ -2821,7 +2821,7 @@ void CreateTab(std::wstring uri,int index,std::wstring title,const PopupHost::Re
 
 // i18n-exempt-begin: smoke / split / menu QA harness (--smoke-test, --split-test): assertions, fixtures, log text
 void SmokeCheck(){if(!smoke||halted)return;auto t=Active();if(!t||!t->view.p){Fail(L"Smoke active view missing",E_FAIL);return;}auto cb=Callback<ICoreWebView2ExecuteScriptCompletedHandler,HRESULT,LPCWSTR>([](HRESULT hr,LPCWSTR json)->HRESULT{if(!Check(hr,L"Smoke ExecuteScript callback"))return S_OK;std::wstring expected=testStage<2?L"Nouvel onglet|rgb(23, 23, 23)|":L"Example Domain";if(!json||std::wstring(json).find(expected)==std::wstring::npos){Fail(L"Smoke unexpected document title",E_FAIL);return S_OK;}Log(L"SMOKE document verified stage="+std::to_wstring(testStage)+L" title="+json);PostMessageW(window,WM_APP+3,0,0);return S_OK;});HRESULT hr=t->view->ExecuteScript(testStage<2?L"document.title + '|' + getComputedStyle(document.body).backgroundColor + '|' + document.body.textContent.trim()":L"document.title",cb);cb->Release();Check(hr,L"Smoke ExecuteScript");}
-void SmokeAdvance(){if(halted)return;switch(testStage++){
+void SmokeAdvance(){if(!smoke||halted)return; /* SEC-26: another process posting WM_APP+3 never steps the test script */switch(testStage++){
 case 0:Command('T');break;
 case 1:Navigate(Active(),L"https://example.com/");break;
 case 2:Navigate(Active(),L"https://example.org/");break;
@@ -5040,12 +5040,18 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){
     // The switches are read in `args` only: a link such as https://site/?--private never turns into a switch.
     static std::wstring switchArgs;{int n=0;LPWSTR* v=CommandLineToArgvW(GetCommandLineW(),&n);if(v){const auto parsed=LaunchArgs::Parse(std::vector<std::wstring>(v+1,v+n));LocalFree(v);
         if(!parsed.target.empty()||parsed.single){switchArgs=parsed.switches;args=switchArgs.data();launchTarget=AbsoluteIfFile(parsed.target);}}}
-    {int argc=0;LPWSTR* argv=CommandLineToArgvW(GetCommandLineW(),&argc);for(int i=1;argv&&i+1<argc;++i)if(std::wstring(argv[i])==L"--import-sources"){importRootsOverride=argv[i+1];}else if(std::wstring(argv[i])==L"--import-hold"){importHold=argv[i+1];} /* tests: import from synthetic roots only */
+    {int argc=0;LPWSTR* argv=CommandLineToArgvW(GetCommandLineW(),&argc);
 #ifndef BROWSER_CHANNEL_RELEASE
-    for(int i=1;argv&&i<argc;++i)if(std::wstring(argv[i])==L"--qa-drawer-stays")qaDrawerStays=true;   // QA: drawer kept while the app is not in the foreground
-    for(int i=1;argv&&i<argc;++i)if(std::wstring(argv[i])==L"--qa-default-card")qaDefaultCard=true;   // QA: the default-browser card, for review
+    // SEC-12: test switches exist in dev builds only and are read before --single-argument only (LaunchArgs::Has).
+    const std::vector<std::wstring> tokens=argv&&argc>1?std::vector<std::wstring>(argv+1,argv+argc):std::vector<std::wstring>{};
+    importRootsOverride=LaunchArgs::ValueOf(tokens,L"--import-sources");importHold=LaunchArgs::ValueOf(tokens,L"--import-hold"); /* tests: import from synthetic roots only */
+    qaDrawerStays=LaunchArgs::Has(tokens,L"--qa-drawer-stays");   // QA: drawer kept while the app is not in the foreground
+    qaDefaultCard=LaunchArgs::Has(tokens,L"--qa-default-card");   // QA: the default-browser card, for review
 #endif
     if(argv)LocalFree(argv);}smoke=wcsstr(args,L"--smoke-test")!=nullptr;splitTest=wcsstr(args,L"--split-test")!=nullptr;workspaceTest=wcsstr(args,L"--workspace-test")!=nullptr;debugSandboxAtStart=wcsstr(args,L"--debug-sandbox")!=nullptr;privateWindow=wcsstr(args,L"--private")!=nullptr;Vault::WritesForbidden()=privateWindow;
+#ifdef BROWSER_CHANNEL_RELEASE
+    smoke=splitTest=workspaceTest=debugSandboxAtStart=false;   // SEC-12: the test harnesses are never honoured by a release build
+#endif
 #ifdef BROWSER_E2E_VAULT_HOST
     Vault::ActiveFlag()=true;   /* TEST HOST ONLY (tests/e2e/vault_host.cpp): synthetic profile and secrets; never in dev/release */
 #endif
