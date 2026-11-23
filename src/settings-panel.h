@@ -2186,6 +2186,7 @@ public:
             for (int i = 0; i < SwitchCount; ++i) { switches_[i].Snap(SwitchValue(SwitchHits[i]) ? 1.f : 0.f); knobPress_[i].Snap(0); }
             LoadSites(); // the Autorisations row shows how many sites
             LoadAnnotations(); // the « Annotations » row shows the connected agents
+            RefreshProfiles(); // the « Profils » row (and its current profile) is there from the first frame
             if (hooks_.savedLanguage) { languageSaved_ = hooks_.savedLanguage(); languageFailed_ = false; }   // « Langue »: the preference as stored now
             defaultBrowser_ = hooks_.defaultBrowser ? hooks_.defaultBrowser() : -1;   // the card: Windows' answer now
             cardClock_ = now; cardLayer_.shaded = {};                               // its halftone loop starts on Paper's frame
