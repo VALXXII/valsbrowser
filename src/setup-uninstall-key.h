@@ -66,15 +66,28 @@ inline void RefreshDisplayVersion(const std::wstring& root, const std::string& v
 // Where Browser's default-browser registration (src/default-browser.h) lives: "" = the real HKCU\Software keys, in
 // release builds. Test builds write under HKCU\Software\browser-setup-tests\<leaf>\DefaultBrowser, and NOTHING at all
 // without BROWSER_SETUP_TEST_ROOT (a fixture can never touch the person's registration).
-inline bool DefaultBrowserPrefix(std::wstring& prefix) {
+// Release builds register ONLY the person's real install: <Local AppData>\browser as Windows resolves it (the shell
+// folder, which a LOCALAPPDATA environment override cannot redirect). A portable copy, or a release-built helper run
+// by a test fixture on a throwaway root, never takes over Browser's registration: on 2026-11-22 an update e2e did,
+// and Windows then offered « Browser » pointing at a fixture copy that opened nothing.
+inline bool IsRealInstallRoot(const std::wstring& root) {
+    wchar_t local[MAX_PATH] = {};
+    if (FAILED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, local)) || !local[0]) return false;
+    auto full = [](const std::wstring& p) { wchar_t b[32768]; const DWORD n = GetFullPathNameW(p.c_str(), 32768, b, nullptr);
+        std::wstring s = n && n < 32768 ? std::wstring(b, n) : L""; while (s.size() > 3 && (s.back() == L'\\' || s.back() == L'/')) s.pop_back(); return s; };
+    const std::wstring a = full(std::wstring(local) + L"\\browser"), b = full(root);
+    return !a.empty() && !b.empty() && CompareStringOrdinal(a.c_str(), -1, b.c_str(), -1, TRUE) == CSTR_EQUAL;
+}
+inline bool DefaultBrowserPrefix(const std::wstring& root, std::wstring& prefix) {
 #if defined(SETUP_TESTING) || defined(UPDATE_HELPER_FAULTS)
+    (void)root;
     const std::wstring test = TestRoot();
     if (test.empty()) return false;
     prefix = L"Software\\browser-setup-tests\\" + test.substr(test.find_last_of(L"\\/") + 1) + L"\\DefaultBrowser";
     return true;
 #else
     prefix.clear();
-    return true;
+    return IsRealInstallRoot(root);
 #endif
 }
 
@@ -83,7 +96,7 @@ inline bool DefaultBrowserPrefix(std::wstring& prefix) {
 // update and a repaired or moved root is always current.
 inline bool RegisterDefaultBrowser(const std::wstring& root) {
     std::wstring prefix;
-    if (!DefaultBrowserPrefix(prefix)) return false;
+    if (!DefaultBrowserPrefix(root, prefix)) return false;
     const DefaultBrowser::Texts t{TR(default_browser_description), TR(default_browser_html_type), TR(default_browser_pdf_type), TR(default_browser_url_type)};
     const bool ok = DefaultBrowser::Write(HKEY_CURRENT_USER, DefaultBrowser::For(root, t, prefix));
     if (prefix.empty()) DefaultBrowser::NotifyChanged();
@@ -92,7 +105,7 @@ inline bool RegisterDefaultBrowser(const std::wstring& root) {
 // Uninstall: removed entirely, unless the registration names another copy (left to that copy).
 inline void UnregisterDefaultBrowser(const std::wstring& root) {
     std::wstring prefix;
-    if (!DefaultBrowserPrefix(prefix)) return;
+    if (!DefaultBrowserPrefix(root, prefix)) return;
     const DefaultBrowser::Layout l = DefaultBrowser::For(root, {}, prefix);
     if (DefaultBrowser::Registered(HKEY_CURRENT_USER, prefix) && !DefaultBrowser::Owns(HKEY_CURRENT_USER, l, prefix)) return;
     DefaultBrowser::Remove(HKEY_CURRENT_USER, l);
