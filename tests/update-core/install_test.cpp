@@ -493,6 +493,16 @@ bool HelperGone(const std::wstring& root, DWORD ms) {
     }
     return false;
 }
+int HelperCopies(const std::wstring& root) {
+    int n = 0;
+    WIN32_FIND_DATAW fd;
+    HANDLE f = FindFirstFileW((root + L"\\updates\\helper\\update-helper-*.exe").c_str(), &fd);
+    if (f != INVALID_HANDLE_VALUE) {
+        do ++n; while (FindNextFileW(f, &fd));
+        FindClose(f);
+    }
+    return n;
+}
 void SetFault(const wchar_t* point) { SetEnvironmentVariableW(L"BROWSER_HELPER_FAULT", point); }
 int Update(const std::wstring& root, const std::wstring& feed) {
     return Run(root + L"\\versions\\0.3.1\\browser.exe", L"--update \"" + root + L"\" \"" + feed + L"\"", 60000);
@@ -519,9 +529,12 @@ void TestBridgeUpdateWithLiveAgent() {
     }
     // Second update while the SAME agent (started at 0.3.1) still runs: 0.3.1 is pruned, bin stays valid.
     FeedWithBridge(feed3, Fx(L"fake-0.3.3.exe"), "0.3.3", Fx(L"bridge-0.3.3.exe"));
+    CHECK(HelperGone(root, 30000));                    // the first install's helper has finished; its copy is still there
+    CHECK(UP::PathExists(root + L"\\updates\\helper") && HelperCopies(root) == 1);
     CHECK(Run(root + L"\\versions\\0.3.2\\browser.exe", L"--update \"" + root + L"\" \"" + feed3 + L"\"", 60000) == 0);
     CHECK(WaitFor(root + L"\\updates\\last-result", "version 0.3.3", 60000));
     CHECK(WaitFor(root + L"\\updates\\last-result", "status installed", 60000));
+    CHECK(HelperCopies(root) == 1);                    // SEC-16: the finished copy was removed, only this install's remains
     CHECK(BinIs(root, L"bridge-0.3.3.exe"));
     CHECK(!UP::PathExists(root + L"\\versions\\0.3.1"));  // pruned: the agent never depended on it
     CHECK(agent.Alive() && agent.Answers(4));

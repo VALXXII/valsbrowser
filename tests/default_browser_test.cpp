@@ -120,6 +120,15 @@ int main() {
         roundTrip = roundTrip && v && n == 3 && std::wstring(v[2]) == s; if (v) LocalFree(v);
     }
     Check(roundTrip, "Quoted: CommandLineToArgvW reads every target back exactly (spaces, quotes, trailing backslash)");
+    {   // SEC-12: a link with a raw quote, handed to the registered command unescaped, splits into extra tokens:
+        // the test switches are read before --single-argument only.
+        int n = 0; LPWSTR* v = CommandLineToArgvW(L"browser.exe --single-argument \"https://x/\" --import-sources \"\\\\host\\share\" --qa-default-card\"", &n);
+        std::vector<std::wstring> tokens; for (int i = 1; v && i < n; ++i) tokens.push_back(v[i]); if (v) LocalFree(v);
+        Check(tokens.size() >= 3 && LaunchArgs::ValueOf(tokens, L"--import-sources").empty() && !LaunchArgs::Has(tokens, L"--qa-default-card"), "SEC-12: switches after --single-argument are never read");
+        const std::vector<std::wstring> dev{L"--import-sources", L"C:\\fixture", L"--import-hold", L"snapshot", L"--qa-drawer-stays", L"--single-argument", L"https://x/"};
+        Check(LaunchArgs::ValueOf(dev, L"--import-sources") == L"C:\\fixture" && LaunchArgs::ValueOf(dev, L"--import-hold") == L"snapshot" && LaunchArgs::Has(dev, L"--qa-drawer-stays") && !LaunchArgs::Has(dev, L"--qa-default-card"), "SEC-12: test switches before --single-argument still work (dev builds)");
+        Check(LaunchArgs::ValueOf({L"--import-sources"}, L"--import-sources").empty() && LaunchArgs::ValueOf({L"--import-sources", L"--single-argument", L"x"}, L"--import-sources").empty(), "SEC-12: a switch without its value reads as absent");
+    }
 
     CoUninitialize();
     std::printf("\n%d checks, %d failures\n", checks, failures);

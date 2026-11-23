@@ -197,6 +197,11 @@ void SetFolder(const std::wstring& path, bool byUser = true) {
     // the user's own choice is kept even against a sure detection: what the detection proposed at that moment is
     // remembered, so the question does not come back at every opening while the server stays where it is
     folderInstead = byUser && ChatFolder::detail::Fold(suggestion.folder) != ChatFolder::detail::Fold(dir) ? suggestion.folder : std::wstring();
+    // SEC-08: the mode remembered for this site was chosen for its folder: another folder starts in « Demander » again
+    if (auto it = projects.sites.find(site.origin); it != projects.sites.end() && !it->second.folder.empty() && ChatFolder::detail::Fold(it->second.folder) != ChatFolder::detail::Fold(dir) && !it->second.mode.empty()) {
+        Diag(L"another folder for " + W(site.origin) + L": its remembered mode « " + W(it->second.mode) + L" » is not carried over");   // i18n-exempt: log detail
+        it->second.mode.clear();
+    }
     folder = dir; folderChosen = byUser; folderAsk = false; RememberChoices();
     for (auto& e : composerElements) ResolveElementSource(e.second);
     convo.data.head.folder = folder;
@@ -209,8 +214,12 @@ void SetFolder(const std::wstring& path, bool byUser = true) {
 void FolderDecided(bool sure, const std::wstring& doubt) {
     const bool same = !folder.empty() && ChatFolder::detail::Fold(folder) == ChatFolder::detail::Fold(suggestion.folder);
     if (!folder.empty()) {   // a folder remembered for this site: only a sure detection of ANOTHER folder says something
-        if (same || !sure) return;
+        if (same || (!sure && suggestion.folder.empty())) return;
         if (turn.active) return;
+        if (!sure) {   // SEC-08: an unsure detection that names ANOTHER folder: asked, never kept without a word (unless the user already chose against it)
+            if (folderChosen && !folderInstead.empty() && ChatFolder::detail::Fold(folderInstead) == ChatFolder::detail::Fold(suggestion.folder)) return;
+            Diag(L"the site may now be served from " + suggestion.folder + L", not from its folder (" + folder + L"): asking"); folder.clear(); folderAsk = true; DisposeSession(L"project folder to confirm"); SendState(); return;   // i18n-exempt: log reason
+        }
         if (folderChosen && !folderInstead.empty() && ChatFolder::detail::Fold(folderInstead) == ChatFolder::detail::Fold(suggestion.folder)) return;   // the user already chose against this very folder
         if (folderChosen) { Diag(L"the site is now served from " + suggestion.folder + L", not from the folder chosen for it (" + folder + L"): asking"); folder.clear(); folderAsk = true; DisposeSession(L"project folder to confirm"); SendState(); return; }   // i18n-exempt: log reason
         Diag(L"the site is now served from another folder: " + suggestion.folder + L" (was " + folder + L")");
@@ -769,6 +778,7 @@ void OnPanelMessage(const std::string& json) {
     if (type == "queue.remove") { const std::string id = m.Id("id"); queue.erase(std::remove_if(queue.begin(), queue.end(), [&](const Queued& q) { return q.id == id; }), queue.end()); SendQueue(); return; }
     if (type == "permission.respond") {
         const std::string request = m.Id("requestId"), option = m.Id("optionId"); if (request.empty() || !session) return;
+        if (In(ModesOf(agentId, agentInfo[agentId]).map.never, option)) { Diag(L"permission answer refused: a mode that asks for nothing"); return; }   // SEC-02 (review): never forwarded, whatever the page sends
         session->RespondPermission(request, option); waitingPermissions.erase(request); void RevealCardDone(); RevealCardDone(); Diag(L"permission answered: " + W(option));
         if (const std::string text = m.Text("message", 400000); text.find_first_not_of(" \t\r\n") != std::string::npos) { queue.push_front({NewId("q_"), text, {}, {}}); SendQueue(); }
         return;
@@ -818,7 +828,15 @@ void OnPanelMessage(const std::string& json) {
     if (type == "checkpoint.restore") { const std::string cp = m.Id("checkpointId"); std::string t; for (const auto& p : checkpointOfTurn) if (p.second == cp) t = p.first; if (!cp.empty()) Undo(t, cp); return; }
     if (type == "checkpoint.viewChanges") { ViewChanges(m.Id("turnId"), m.Text("path", 1024)); return; }
     if (type == "plan.run") {
-        if (turn.active && !turn.planPermission.empty() && session) { std::string allow; for (const auto& o : turn.planOptions) if (allow.empty() && o.kind.rfind("allow", 0) == 0) allow = o.id; if (allow.empty() && !turn.planOptions.empty()) allow = turn.planOptions.back().id; turn.planLaunched = true; session->RespondPermission(turn.planPermission, allow); turn.planPermission.clear(); return; }   // M: the mode the agent goes to is kept (KeepModeAfterPlan)
+        if (turn.active && !turn.planPermission.empty() && session) {   // M: the mode the agent goes to is kept (KeepModeAfterPlan)
+            // SEC-02: by id, the option that keeps every next change asking (never « bypass permissions », never by position)
+            const auto mv = ModesOf(agentId, agentInfo[agentId]); const std::string allow = ChatOptions::PlanRunOption(turn.planOptions, mv.map.ask, mv.map.automatic, mv.map.never);
+            if (allow.empty() || !ChatStore::ValidId(allow)) {   // none: the gate keeps asking, the plan's buttons come back
+                Diag(L"plan gate: no option keeps the permissions, nothing answered");   // i18n-exempt: log detail
+                if (auto it = turn.itemOf.find(turn.planId); it != turn.itemOf.end()) { SJ::Value again = SJ::Value::Obj(); for (const auto& f : convo.data.items[it->second].members) if (f.first != "type") again.Set(f.first, f.second); Send("plan", std::move(again)); }
+                return;
+            }
+            turn.planLaunched = true; session->RespondPermission(turn.planPermission, allow); turn.planPermission.clear(); Diag(L"plan launched with « " + W(allow) + L" »"); return; }   // i18n-exempt: log detail
         // a plan given as plain updates (no gate): leave Plan mode for the first « ask » mode, then say go
         const auto mv = ModesOf(agentId, agentInfo[agentId]); std::string next; for (const auto& md : mv.list) if (next.empty() && md.kind == "ask") next = md.id; for (const auto& md : mv.list) if (next.empty() && md.kind != "plan") next = md.id;
         RememberSetting(&ChatStore::Project::mode, ChatOptions::ModeAfterPlan(true, next, KindOfMode(mv, next)));   // M: the user launched the plan — the next element does not start in « Planifier » again

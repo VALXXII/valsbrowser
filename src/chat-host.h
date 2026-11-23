@@ -131,6 +131,7 @@ struct Turn {
     bool active = false, cancelled = false, snapshot = false, promptSent = false, ending = false;
     bool batch = false;   // « Traiter les annotations »: the prompt is the batch's instruction, the card follows our tools
     bool planLaunched = false;   // M: « Lancer le plan » accepted the agent's plan in this turn — the mode it goes to is the user's choice (KeepModeAfterPlan)
+    bool modeWait = false, modeFixed = false;   // SEC-13: the prompt waits for the session's mode; the wanted mode was asked again once for this turn
     std::string id, text, snapshotTurn, lastMessageId, thoughtId, summaryText; double startedMs = 0, thoughtStart = 0; int messageSeq = 0, thoughtSeq = 0;
     std::vector<Element> elements; std::vector<Attachment> attachments; std::uint64_t navStamp = 0;
     std::map<std::string, std::size_t> itemOf;   // message / thought / tool id -> index in convo.items
@@ -188,6 +189,7 @@ struct Aside { bool on = false; Convo c; };
 Convo convo; Aside aside; bool asideSending = false; /* M7: the items of the conversation shown (aside or the engine's) */ const std::vector<SJ::Value>& ShownItems(); void ReleaseHeld(); Turn turn; std::deque<Queued> queue; std::map<std::string, Element> composerElements; std::map<std::string, Attachment> composerAttachments;
 std::unique_ptr<Acp::Session> session; bool sessionStarting = false, sessionReady = false, preparing = false; Acp::StartResult started;
 std::string pendingModel, pendingEffort, pendingMode; ChatOptions::Asked askedModel, askedEffort, askedMode; /* R46: asked to the session, not confirmed yet */ std::function<void()> afterReady; std::function<int()> preparePermille;
+std::string modeAwaited; bool modeRefused = false;   // SEC-13: the mode last asked to the session, until it confirms it; the session refused it (or never answered)
 std::vector<std::unique_ptr<Acp::Session>> disposed;   // stopped sessions whose threads may still be ending (Shutdown waits for them)
 std::vector<Element> orphanAnnotations;                // annotations of a turn that ended before their write came back
 std::map<std::uint64_t, Element> aiming;                // elements being aimed (by capture serial): image and source still coming

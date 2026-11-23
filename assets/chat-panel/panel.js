@@ -1063,7 +1063,7 @@
     const hadFocusInComposer = composer.contains(document.activeElement);
     clear(dock);
     dock.className = "dock"; ruleEl.hidden = true;
-    if (p) { dock.appendChild(permCard(p)); return; }
+    if (p) { dock.appendChild(permCard(p, hadFocusInComposer)); return; }
     for (const q of S.queue) {
       dock.appendChild(h("div", { class: "queue", role: "group", "aria-label": "Suite en file" },
         h("span", { class: "tag", text: "En file" }), h("span", { class: "tx", text: q.text }),
@@ -1134,8 +1134,14 @@
     return (raw ? "Outil : " + raw : "") + (raw && input ? "\n" : "") + (input ? "Arguments :\n" + input : "");
   }
 
-  function permCard(p) {
-    const allowOnce = p.options.find((o) => o.kind === "allow_once") || p.options.find((o) => /^allow/.test(o.kind));
+  // SEC-23 (audit 2026-11-23): a request never takes a keypress or a click meant for something else. The card is not focused
+  // on « Autoriser » (the card itself, or nothing while the user was typing in the composer), and it takes no Enter, Space or
+  // click to allow for PERM_ARM_MS after it appears (or replaces the previous one); a key held down (repeat) never allows.
+  // « Toujours » is sent only with its switch on: no fallback to an allow_always option.
+  const PERM_ARM_MS = 600;
+  const permArmed = (card, e) => !(e && e.repeat) && performance.now() - (card.__shownAt || 0) >= PERM_ARM_MS;
+  function permCard(p, typing) {
+    const allowOnce = p.options.find((o) => o.kind === "allow_once");
     const allowAlways = p.options.find((o) => o.kind === "allow_always");
     const reject = p.options.find((o) => o.kind === "reject_once") || p.options.find((o) => /^reject/.test(o.kind));
     let always = false;
@@ -1150,17 +1156,17 @@
       S.perms.shift();
       refreshWaiting();
       renderDock(true);
-      if (!S.perms.length) cin.focus(); else dock.querySelector(".btn.primary") && dock.querySelector(".btn.primary").focus();
+      if (!S.perms.length) cin.focus(); else dock.querySelector(".perm") && dock.querySelector(".perm").focus();   // SEC-23: the next card, never its « Autoriser »
     };
     const refuse = h("button", { class: "btn", type: "button", "aria-keyshortcuts": "Escape", onclick: () => respond(reject, instead.value.trim() || undefined) },
       "Refuser", h("span", { class: "kbd", "aria-hidden": "true" }, "Échap"));
     const allow = h("button", { class: "btn primary", type: "button", "aria-keyshortcuts": "Enter",
-                                onclick: () => respond(always && allowAlways ? allowAlways : allowOnce || allowAlways) },
+                                onclick: (e) => { if (permArmed(card, e)) respond(always && allowAlways ? allowAlways : allowOnce); } },
       "Autoriser", h("span", { class: "kbd", "aria-hidden": "true" }, "↵"));
     instead.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); if (instead.value.trim()) respond(reject, instead.value.trim()); else allow.click(); }
+      if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); if (instead.value.trim()) respond(reject, instead.value.trim()); else if (permArmed(card, e)) allow.click(); }
     });
-    const card = h("div", { class: "perm" + (S.replay ? "" : " pop-in"), role: "alertdialog", "aria-modal": "false", "aria-labelledby": "perm-t", "aria-describedby": "perm-d" },
+    const card = h("div", { class: "perm" + (S.replay ? "" : " pop-in"), role: "alertdialog", "aria-modal": "false", "aria-labelledby": "perm-t", "aria-describedby": "perm-d", tabindex: "-1" },
       h("div", { class: "perm-hd" }, h("span", { class: "perm-t", id: "perm-t", text: p.title }),
         S.perms.length > 1 ? h("span", { class: "perm-of", text: "1 sur " + S.perms.length }) : null,
         p.diff ? h("span", { class: "num plus", text: "+" + p.diff.added }) : null, p.diff ? h("span", { class: "num minus", text: "−" + p.diff.removed }) : null),
@@ -1168,11 +1174,13 @@
       p.details ? detailsBlock(p.details) : null,
       reject ? instead : null,
       h("div", { class: "perm-ft" }, sw, reject ? refuse : null, allow));   // F10: no refuse option, no « Refuser »
+    card.__shownAt = p.shownAt || (p.shownAt = performance.now());
     card.addEventListener("keydown", (e) => {
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); refuse.click(); }
-      else if (e.key === "Enter" && e.target !== instead && e.target.tagName !== "BUTTON") { e.preventDefault(); allow.click(); }
+      else if ((e.key === "Enter" || e.key === " ") && e.repeat && e.target !== instead) e.preventDefault();   // SEC-23: a held key answers nothing
+      else if (e.key === "Enter" && e.target !== instead && e.target.tagName !== "BUTTON") { e.preventDefault(); if (permArmed(card, e)) allow.click(); }
     });
-    requestAnimationFrame(() => allow.focus());
+    requestAnimationFrame(() => { if (!typing && card.isConnected) card.focus(); });   // SEC-23: never on « Autoriser »
     return card;
   }
   function detailsBlock(text) {
@@ -1419,7 +1427,7 @@
     clear(dock);
     dock.className = "dock" + (p ? " has-perm" : "");
     app.classList.toggle("running", running && !p);
-    if (p) { dock.appendChild(bPerm(p)); ruleEl.hidden = none || !!S.bview; return; }
+    if (p) { dock.appendChild(bPerm(p, composer.contains(a))); ruleEl.hidden = none || !!S.bview; return; }
     if (err) {
       // H1 (monkey seed 1 #29): the input used to leave the page here — whatever was typed next went nowhere until
       // « Annuler ». It stays in the page, out of sight (Paper 1AAE-0 draws the two buttons alone), and keeps the keyboard:
@@ -1462,12 +1470,12 @@
     S.perms.shift();
     closeView(true);
     refreshWaiting(); updateView(); renderDock(true);
-    if (S.perms.length) { const b = dock.querySelector(".btn.primary"); if (b) b.focus(); }
+    if (S.perms.length) { const b = dock.querySelector(".bperm"); if (b) b.focus(); }   // SEC-23: the next card, never its « Autoriser »
     else if (S.st.running) app.focus({ preventScroll: true }); else cin.focus();
   }
   // Paper 1ANU-0: the request sits in the bubble, in place of the input.
-  function bPerm(p) {
-    const allowOnce = p.options.find((o) => o.kind === "allow_once") || p.options.find((o) => /^allow/.test(o.kind));
+  function bPerm(p, typing) {
+    const allowOnce = p.options.find((o) => o.kind === "allow_once");
     const allowAlways = p.options.find((o) => o.kind === "allow_always");
     const reject = p.options.find((o) => o.kind === "reject_once") || p.options.find((o) => /^reject/.test(o.kind));
     const detail = !!(p.diff || p.command || p.details);
@@ -1482,15 +1490,18 @@
                                            onclick: () => { p.always = !p.always; sw.setAttribute("aria-checked", String(p.always)); } },
                                 h("span", { class: "sw", "aria-hidden": "true" }, h("i")), h("span", { text: "Auto." })) : h("span", { class: "always" });
     const refuse = h("button", { class: "btn", type: "button", onclick: () => permRespond(p, reject, instead.value.trim() || undefined) }, "Refuser");
-    const allow = h("button", { class: "btn primary", type: "button", "aria-keyshortcuts": "Enter", onclick: () => permRespond(p, p.always && allowAlways ? allowAlways : allowOnce || allowAlways) }, "Autoriser");
+    const allow = h("button", { class: "btn primary", type: "button", "aria-keyshortcuts": "Enter", onclick: (e) => { if (permArmed(card, e)) permRespond(p, p.always && allowAlways ? allowAlways : allowOnce); } }, "Autoriser");
     instead.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); if (instead.value.trim()) permRespond(p, reject, instead.value.trim()); else allow.click(); }
+      if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); if (instead.value.trim()) permRespond(p, reject, instead.value.trim()); else if (permArmed(card, e)) allow.click(); }
     });
-    const card = h("div", { class: "bperm" + (S.replay || p.shown ? "" : " pop-in"), role: "alertdialog", "aria-modal": "false", "aria-labelledby": "perm-t" },
+    const card = h("div", { class: "bperm" + (S.replay || p.shown ? "" : " pop-in"), role: "alertdialog", "aria-modal": "false", "aria-labelledby": "perm-t", tabindex: "-1" },
       h("div", { class: "bperm-rows" }, file, reject ? h("label", { class: "bperm-in" }, icon("pencilFill", "ic"), instead) : null),
       h("div", { class: "bperm-ft" }, sw, reject ? refuse : null, allow));   // F10
-    card.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target !== instead && e.target.tagName !== "BUTTON") { e.preventDefault(); allow.click(); } });
-    if (!p.shown) requestAnimationFrame(() => { if (allow.isConnected) allow.focus(); });
+    card.__shownAt = p.shownAt || (p.shownAt = performance.now());   // SEC-23: armed from its first appearance (a redraw of the same request does not re-arm)
+    card.addEventListener("keydown", (e) => {
+      if ((e.key === "Enter" || e.key === " ") && e.repeat && e.target !== instead) e.preventDefault();   // SEC-23: a held key answers nothing
+      else if (e.key === "Enter" && e.target !== instead && e.target.tagName !== "BUTTON") { e.preventDefault(); if (permArmed(card, e)) allow.click(); } });
+    if (!p.shown) requestAnimationFrame(() => { if (!typing && card.isConnected) card.focus(); });   // SEC-23: never on « Autoriser »
     p.shown = true;
     return card;
   }

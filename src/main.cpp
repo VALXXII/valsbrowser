@@ -75,6 +75,7 @@
 #include "profile-store.h"
 #include "window-sessions.h"
 #include "trace-erase.h"
+#include "log-privacy.h"
 #include "password-vault.h"
 #ifdef BROWSER_E2E_FIXTURE_HOOK
 // TEST HOST ONLY (tests/e2e/mtls_host.cpp): the fixture pin. The release and dev browser never define
@@ -316,7 +317,8 @@ void InvalidateMotion(NativeChrome::Motion::Time now){
     SplitFrame(now);GripFrame(now);ElementsFrame(now);downloadPanel.Frame(now);downloadDrawer.Frame(now);settingsDrawer.Frame(now);historyDrawer.Frame(now);bookmarksDrawer.Frame(now);
     // Downloads icon: its own button only (also the frame that lands its last pose).
     chrome.downloadIcon.Settle(now);chrome.nav.Settle(now);AudioFrame(now);
-    {static bool painting=false;const bool moving=chrome.downloadIcon.NextWake(now).delay.has_value();if(moving||painting)InvalidateDownloadIcon();painting=moving;}
+    // Repainted only when its pose changes (60 poses a second at most at the authored speed), not on every compositor tick.
+    {static NativeChrome::DownloadIcon::Pose painted;static bool known=false;const auto pose=chrome.downloadIcon.At(now);if(!known||pose!=painted){InvalidateDownloadIcon();painted=pose;known=true;}}
     const bool full=motionFullFrames||motion.NextWake(now).delay||chrome.tabMotion.NextWake(now).delay||chrome.lottie.NextWake(now,motion.ReducedMotion()).delay||chrome.nav.NextWake(now).delay;
     if(full){InvalidateChrome();return;}
     auto t=Active();if(chrome.LoadingSignature(t?t->loading.Sample(now,motion.ReducedMotion()):NativeChrome::Loading::Visual{})==paintedLoading)return;
@@ -363,9 +365,19 @@ void SmokeAdvance();
 
 std::string Utf8(const std::wstring& s){int n=WideCharToMultiByte(CP_UTF8,0,s.c_str(),(int)s.size(),nullptr,0,nullptr,nullptr);std::string r(n,0);WideCharToMultiByte(CP_UTF8,0,s.c_str(),(int)s.size(),r.data(),n,nullptr,nullptr);return r;}
 // Serialized: the WebView2 install worker reports its real outcome from its own thread. A private window logs nothing.
-void Log(const std::wstring& s){if(logFile.empty()||privateWindow)return;static std::mutex logLock;std::lock_guard<std::mutex> guard(logLock);std::ofstream f(std::filesystem::path(logFile),std::ios::app);f<<Utf8(s)<<"\n";if(smoke&&!splitTest&&s.rfind(L"NAVIGATION OK" /* i18n-exempt: log marker */,0)==0)PostMessageW(window,WM_APP+2,0,0);}
+// Release builds write origins only, never full addresses; every build caps the file (src/log-privacy.h, audit SEC-05).
+std::mutex logLock;
+void Log(const std::wstring& s){if(logFile.empty()||privateWindow)return;std::lock_guard<std::mutex> guard(logLock);LogPrivacy::RotateIfLarge(logFile);
+#ifdef BROWSER_CHANNEL_RELEASE
+    const std::wstring line=LogPrivacy::Redact(s);
+#else
+    const std::wstring& line=s;
+#endif
+    {std::ofstream f(std::filesystem::path(logFile),std::ios::app);f<<Utf8(line)<<"\n";}if(smoke&&!splitTest&&s.rfind(L"NAVIGATION OK" /* i18n-exempt: log marker */,0)==0)PostMessageW(window,WM_APP+2,0,0);}
 void Fail(const std::wstring& where,HRESULT hr){if(halted)return;halted=true;popups.CancelAll(); /* pending window.open requests settled before any modal loop */for(auto& tab:pages)tab->loading.Clear();ClearChromeMotion();KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();wchar_t code[32];swprintf(code,32,L"0x%08lX",(unsigned long)hr);auto msg=TRF(wv2_halt_body,where,code);Log(L"WEBVIEW2 ERROR "+msg);if(splitTest){PostMessageW(window,WM_CLOSE,0,0);return;}if(workspaceTest&&qaExpectTerminal){Log(L"WSQA terminal failure captured (normal recovery reached once, dialog suppressed by --workspace-test)");return;}MessageBoxW(window,msg.c_str(),TR(wv2_halt_title),MB_OK|MB_ICONERROR);}
 bool Check(HRESULT hr,const wchar_t* op){if(FAILED(hr)){Fail(op,hr);return false;}return !halted;}
+// A refused per-tab operation (find, reload, favicon, interstitial): logged, never the loss of the engine.
+bool CheckTab(HRESULT hr,const wchar_t* op){if(FAILED(hr)){wchar_t code[32];swprintf(code,32,L"0x%08lX",(unsigned long)hr);Log(std::wstring(L"WEBVIEW2 refused ")+op+L" "+code);return false;}return !halted;}
 std::shared_ptr<Tab> Active(){return current>=0&&current<(int)pages.size()?pages[current]:nullptr;}
 void FocusAddress(){if(InFullscreen())return; /* no address field over a fullscreen page */editing=true;ShowWindow(address,SW_SHOW);SetFocus(address);SendMessageW(address,EM_SETSEL,0,-1);InvalidateRect(window,nullptr,FALSE);}
 std::vector<std::wstring> Titles(){std::vector<std::wstring> titles;for(auto& t:pages)titles.push_back(t->title);return titles;}
@@ -406,8 +418,8 @@ void FindInPage(){
        !Check(environment->QueryInterface(IID_ICoreWebView2Environment15,(void**)&env.p),L"QueryInterface Find environment")||
        !Check(view->get_Find(&find.p),L"get_Find")||!Check(env->CreateFindOptions(&options.p),L"CreateFindOptions"))return;
     FocusPage();
-    auto completed=Callback<ICoreWebView2FindStartCompletedHandler,HRESULT>([](HRESULT hr)->HRESULT{Check(hr,L"Find completed");return S_OK;});
-    HRESULT hr=find->Start(options.p,completed);completed->Release();Check(hr,L"Find Start");
+    auto completed=Callback<ICoreWebView2FindStartCompletedHandler,HRESULT>([](HRESULT hr)->HRESULT{CheckTab(hr,L"Find completed");return S_OK;});
+    HRESULT hr=find->Start(options.p,completed);completed->Release();CheckTab(hr,L"Find Start");
 }
 void CancelContentTransitionIfMoved();
 void SyncFolderRename();
@@ -432,7 +444,7 @@ void Update(){if(WorkspaceParked())return; /* a hidden profile's event: the wind
            !Check(t->view->get_CanGoForward(&canGoForward),L"get_CanGoForward"))return;
     }
     chrome.SetEnabled('B',canGoBack!=FALSE);chrome.SetEnabled('F',canGoForward!=FALSE);
-    chrome.SetEnabled('C',!t->home&&!t->uri.empty());AnnotationSyncChrome();if(!editing)SetWindowTextW(address,t->home?L"":t->uri.c_str());SetWindowTextW(window,(privateWindow?TRF(window_title_private,t->title):TRF(window_title,t->title)).c_str());BuildChrome();RefreshTools();InvalidateRect(window,nullptr,FALSE);
+    chrome.SetEnabled('C',!t->home&&!t->uri.empty());AnnotationSyncChrome();if(!editing)SetWindowTextW(address,t->home?L"":t->uri.c_str());SetWindowTextW(window,(privateWindow?TRF(window_title_private,t->title):TRF(window_title,t->title)).c_str());RefreshTools(); /* builds the chrome (PERF-07: no second BuildChrome) */InvalidateRect(window,nullptr,FALSE);
     ScrollbarRefresh(NativeChrome::Motion::Now()); // home <-> page hides or restores the handle
 }
 // Tab / profile switch transition (src/content-transition.h; functions defined before profile-workspace.h).
@@ -1052,7 +1064,11 @@ void ReopenTab(){if(closedTabs.empty()||pages.size()>=128)return;auto tab=closed
 std::wstring HomeDocument(); // NEWTAB: HomeHtml, or the most visited sites (defined with the site icons)
 // SETTINGS(newtab): what a new tab (Ctrl+T, "+", a fresh start) opens: "" is the home tab.
 std::wstring NewTabTarget(){return settings.newTabPage==BrowserSettings::NewTabPage::Custom?settings.homepage:L"";}
-void Navigate(std::shared_ptr<Tab> t,const std::wstring& uri){if(!t||!t->view.p||halted)return;t->navigateFrom=t->uri;t->navigateFromHome=t->home;t->navigateTo=uri; /* what the tab showed, in case this becomes a download */t->home=uri.empty();t->uri=uri;if(uri.empty()){t->blankIsHome=true;const auto html=HomeDocument();homeTiles.Set(*t,html!=HomeHtml());Check(t->view->NavigateToString(html.c_str()),L"NavigateToString");return;}Check(t->view->Navigate(uri.c_str()),L"Navigate");}
+void Navigate(std::shared_ptr<Tab> t,const std::wstring& uri){if(!t||!t->view.p||halted)return;t->navigateFrom=t->uri;t->navigateFromHome=t->home;t->navigateTo=uri; /* what the tab showed, in case this becomes a download */t->home=uri.empty();t->uri=uri;if(uri.empty()){t->blankIsHome=true;const auto html=HomeDocument();homeTiles.Set(*t,html!=HomeHtml());Check(t->view->NavigateToString(html.c_str()),L"NavigateToString");return;}
+    // An address the engine refuses (E_INVALIDARG) is not the loss of the engine: the tab keeps what it showed (its home
+    // page when it had nothing), so a bad link, bookmark or restored session never stops the browser.
+    const HRESULT hr=t->view->Navigate(uri.c_str());if(hr==E_INVALIDARG){Log(L"NAVIGATE refused: invalid address");t->uri=t->navigateFrom;t->home=t->navigateFromHome;t->navigateTo.clear();if(t->uri.empty()||t->home)Navigate(t,L"");else if(t==Active())Update();return;}
+    Check(hr,L"Navigate");}
 // ---- Address suggestions (issue #20) -----------------------------------------
 // The EDIT keeps focus: typing recomputes the list, the arrows move its active row
 // (the field shows what Enter will open), Escape restores then closes, Enter opens.
@@ -1110,7 +1126,7 @@ void OpenSuggestion(int index){
 void RemoveSuggestion(int index){
     const auto rows=suggestions.Data().rows;if(index<0||index>=(int)rows.size()||rows[index].kind!=AddressBar::Kind::Site)return;
     const auto& row=rows[index];if(row.popular||!(row.host?history.RemoveHost(row.text):history.Remove(row.url)))return;
-    SaveHistory();Log(L"HISTORY removed "+row.text);
+    SaveHistory();Log(L"HISTORY removed "+(row.host?row.text:row.url));   // SEC-05 (review): a page row's text has no scheme, so the release log's redaction would keep it whole
     if(!history.HasSite(row.site)&&!BookmarkedSite(row.site))ForgetSiteIcon(row.site);
     // Recompute from what was typed, without completing it again.
     SetAddressText(addressTyped,(int)addressTyped.size(),(int)addressTyped.size());
@@ -1145,7 +1161,7 @@ enum ShortcutCommand { FocusChrome=3000, FindPage, PrintActive, FocusChromeBack,
 std::vector<int> ShownPanels(){std::vector<int> out;auto v=CurrentSplit();if(v.group)for(auto& s:v.a.slots)if(!s.rail)out.push_back(TabIndexOf(v.members[s.member]));return out;}
 void Close(){CloseAt(current);}
 void Command(int cmd){if(cmd==MotionLabCommand){if(motionLabMode)motionLab.Toggle();return;}if(halted||!chrome.Enabled(cmd))return;
-    if(tabDrag.tab){CancelTabDrag();if(GetCapture()==window)ReleaseCapture();UpdateInteraction(hover,0);}auto t=Active();if(cmd>=SelectTabBase&&cmd<SelectTabBase+9){Select(cmd==SelectTabBase+8?(int)pages.size()-1:cmd-SelectTabBase);return;}switch(cmd){case FocusChrome:ToggleChromeFocus();break;case FocusChromeBack:ToggleChromeFocus(true);break;case FindPage:OpenFindBar();break;case '{':MoveTab(current,current-1);break;case '}':MoveTab(current,current+1);break;case 'L':FocusAddress();break;case ']':if(!pages.empty())Select((current+1)%(int)pages.size());break;case '[':if(!pages.empty())Select((current+(int)pages.size()-1)%(int)pages.size());break;case 'T':NewTab(NewTabTarget(),UserTabIndex());FocusAddress();break;case 'W':Close();break;case 'U':ReopenTab();break;case 'R':if(t&&t->view.p&&t->loading.IsLoading()){Check(t->view->Stop(),L"Stop");break;}if(t&&t->view.p&&Check(t->view->Reload(),L"Reload")){t->refreshing=true;auto now=NativeChrome::Motion::Now();chrome.lottie.RefreshBegin(now);SyncStopMorph(now);InvalidateChrome();ScheduleMotion(now);}break;case 'H':Navigate(t,L"");break;case 'B':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoBack(&yes);if(yes&&Check(t->view->GoBack(),L"GoBack")){auto now=NativeChrome::Motion::Now();chrome.nav.back.Kick(-1,now,motion.ReducedMotion(),TravelParams(true));InvalidateChrome();ScheduleMotion(now);}}break;case 'F':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoForward(&yes);if(yes&&Check(t->view->GoForward(),L"GoForward")){auto now=NativeChrome::Motion::Now();chrome.nav.forward.Kick(1,now,motion.ReducedMotion(),TravelParams(false));InvalidateChrome();ScheduleMotion(now);}}break;default:ExtraCommand(cmd);break;}}
+    if(tabDrag.tab){CancelTabDrag();if(GetCapture()==window)ReleaseCapture();UpdateInteraction(hover,0);}auto t=Active();if(cmd>=SelectTabBase&&cmd<SelectTabBase+9){Select(cmd==SelectTabBase+8?(int)pages.size()-1:cmd-SelectTabBase);return;}switch(cmd){case FocusChrome:ToggleChromeFocus();break;case FocusChromeBack:ToggleChromeFocus(true);break;case FindPage:OpenFindBar();break;case '{':MoveTab(current,current-1);break;case '}':MoveTab(current,current+1);break;case 'L':FocusAddress();break;case ']':if(!pages.empty())Select((current+1)%(int)pages.size());break;case '[':if(!pages.empty())Select((current+(int)pages.size()-1)%(int)pages.size());break;case 'T':NewTab(NewTabTarget(),UserTabIndex());FocusAddress();break;case 'W':Close();break;case 'U':ReopenTab();break;case 'R':if(t&&t->view.p&&t->loading.IsLoading()){Check(t->view->Stop(),L"Stop");break;}if(t&&t->view.p&&CheckTab(t->view->Reload(),L"Reload")){t->refreshing=true;auto now=NativeChrome::Motion::Now();chrome.lottie.RefreshBegin(now);SyncStopMorph(now);InvalidateChrome();ScheduleMotion(now);}break;case 'H':Navigate(t,L"");break;case 'B':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoBack(&yes);if(yes&&Check(t->view->GoBack(),L"GoBack")){auto now=NativeChrome::Motion::Now();chrome.nav.back.Kick(-1,now,motion.ReducedMotion(),TravelParams(true));InvalidateChrome();ScheduleMotion(now);}}break;case 'F':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoForward(&yes);if(yes&&Check(t->view->GoForward(),L"GoForward")){auto now=NativeChrome::Motion::Now();chrome.nav.forward.Kick(1,now,motion.ReducedMotion(),TravelParams(false));InvalidateChrome();ScheduleMotion(now);}}break;default:ExtraCommand(cmd);break;}}
 bool BookmarkPopoverFocus();bool SmokeBookmarks();bool FolderRenameFocus();
 int Key(UINT key){
     const bool ctrl=GetKeyState(VK_CONTROL)<0,alt=GetKeyState(VK_MENU)<0,shift=GetKeyState(VK_SHIFT)<0;
@@ -1245,7 +1261,7 @@ void OpenWindowWith(const std::vector<std::wstring>& urls){
 }
 void RetryWindowLaunch(const std::wstring& id){if(id.empty()||WindowSessions::Live(dataDir,id))return;if(!LaunchWindow(id))ShowWindowLaunchFailed(id);}
 void SaveSession(){
-    if(smoke||privateWindow||!sessionReady||pages.empty())return;
+    if(smoke||privateWindow||!sessionReady||pages.empty()||halted)return; // a stopped engine's tabs are not a session to replay
     BrowserSession::State state;state.active=current;
     for(auto& tab:pages)state.urls.push_back(tab->home?"":Utf8(tab->uri));
     state.groups=SessionGroups();
@@ -1259,11 +1275,17 @@ std::wstring HistoryFile(){return dataDir+L"\\history";}
 // Interprocess transaction (src/profile-store.h): visits made here are added to the file's counts,
 // removals here are applied there, and another window's removals are never undone.
 AddressBar::History historyBase;
+ProfileStore::Stamp historySeen; // PERF-01: the file as it was when `history` last equalled it (nothing left to merge)
 void SaveHistory(){
     if(smoke||privateWindow)return;
+    // Nothing changed here since the file was last read and the file was not replaced since: the
+    // transaction would read, merge and find nothing to do (e.g. every window activation).
+    if(history==historyBase&&ProfileStore::StampOf(HistoryFile())==historySeen)return;
+    ProfileStore::Lock lock(dataDir); /* held through the stamp below (the commit re-enters it: same thread) */
     const auto r=ProfileStore::CommitWith<AddressBar::History>(dataDir,HistoryFile(),historyBase,history,
         [](std::istream& in,bool* damaged){std::string b((std::istreambuf_iterator<char>(in)),std::istreambuf_iterator<char>());std::istringstream i2(b);auto h=AddressBar::History::Read(i2);if(damaged)*damaged=!b.empty()&&ProfileStore::RecordLines(b)!=h.Items().size();return h;},[](std::ostream& out,const AddressBar::History& h){h.Write(out);},
-        [](const AddressBar::History& b,const AddressBar::History& m,const AddressBar::History& t){return AddressBar::History::Merge(b,m,t);},5000,{"browser-history 1"},false); /* damaged: backed up, never rewritten */
+        [](const AddressBar::History& b,const AddressBar::History& m,const AddressBar::History& t){return AddressBar::History::Merge(b,m,t);},lock.Held()?5000:0,{"browser-history 1"},false); /* damaged: backed up, never rewritten */
+    historySeen=r==ProfileStore::Result::Unchanged?ProfileStore::StampOf(HistoryFile()):ProfileStore::Stamp{};
     if(r==ProfileStore::Result::Failed||r==ProfileStore::Result::Busy)Log(L"HISTORY save failed");
 }
 // Result pages of the search engines are not suggested back: typing "git" should
@@ -1314,7 +1336,7 @@ void RememberSiteIcon(const std::wstring& uri,const std::shared_ptr<const Native
 void ForgetSiteIcon(const std::wstring& site){if(site.empty())return;siteIcons.erase(site);siteIconsWritten.erase(site);siteIconsMissing.insert(site);if(smoke||privateWindow)return; /* review P2 */if(!DeleteFileW(SiteIconFile(site).c_str())&&GetLastError()!=ERROR_FILE_NOT_FOUND)Log(L"FAVICONS delete failed "+site);}
 void ClearSiteIcons(){siteIcons.clear();siteIconsMissing.clear();siteIconsWritten.clear();if(smoke||privateWindow)return; /* review P2 */std::error_code ignored;std::filesystem::remove_all(std::filesystem::path(dataDir)/L"favicons",ignored);}
 void LoadPopularSites(){std::ifstream in(std::filesystem::path(base+L"\\assets\\popular-sites.txt"),std::ios::binary);popularSites=AddressBar::ReadPopular(in);if(popularSites.empty())Log(L"ADDRESS popular sites unavailable");}
-void LoadHistory(){LoadPopularSites();if(smoke||privateWindow)return; /* point 8: a private window shows no history, normal or private */std::string bytes;{ProfileStore::Lock lock(dataDir);ProfileStore::ReadAll(HistoryFile(),bytes);}std::istringstream in(bytes);history=AddressBar::History::Read(in);historyBase=history;}
+void LoadHistory(){LoadPopularSites();if(smoke||privateWindow)return; /* point 8: a private window shows no history, normal or private */std::string bytes;{ProfileStore::Lock lock(dataDir);ProfileStore::ReadAll(HistoryFile(),bytes);}std::istringstream in(bytes);history=AddressBar::History::Read(in);historyBase=history;historySeen={};}
 // ---- New tab page (SETTINGS newtab) ----------------------------------------------
 // "Sites fréquents": the home tab shows the most visited hosts (AddressBar::TopSites, the
 // ranking of the address bar's host rows) as plain http(s) links. Self-contained document
@@ -1384,7 +1406,7 @@ void RestoreSession(){KeepContentTransition keep; // a cold profile's tabs come 
         if(!url.empty()&&!size){state=BrowserSession::State{};break;}
     }
     std::vector<std::wstring> overflow; // past 128 tabs: offered in a new window, never dropped silently
-    for(const auto& url:state.urls){int size=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,url.data(),(int)url.size(),nullptr,0);std::wstring uri(size,0);if(size)MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,url.data(),(int)url.size(),uri.data(),size);if(pages.size()>=128){overflow.push_back(uri);continue;}NewTab(uri);}
+    for(const auto& url:state.urls){int size=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,url.data(),(int)url.size(),nullptr,0);std::wstring uri(size,0);if(size)MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,url.data(),(int)url.size(),uri.data(),size);if(!AddressBar::Navigable(uri))uri.clear(); /* an address the engine refuses comes back as a new tab */if(pages.size()>=128){overflow.push_back(uri);continue;}NewTab(uri);}
     if(!overflow.empty())Defer([overflow]{ShowPartialRestoreToast(overflow);});
     if(pages.empty())NewTab(opening.empty()?NewTabTarget():opening);else{if(pages.size()==state.urls.size())ApplySessionGroups(state.groups);Select(state.active);if(!opening.empty()){NewTab(opening);Select((int)pages.size()-1);}}
     // Restored (or first) tabs are the initial state: no entrance cascade, no selection fade.
@@ -1821,6 +1843,8 @@ bool WipeLocalTraceFiles(){
     bool ok=true;
     {std::ostringstream o;AddressBar::History{}.Write(o);if(ProfileStore::WriteAtomic(HistoryFile(),o.str())){historyBase=AddressBar::History{};TraceErase::DropDamagedBackups(HistoryFile());}else{ok=false;Log(L"CLEAR history wipe failed");}}
     {std::vector<DL::Item> keep;for(const auto& d:downloads)if(!DL::Persistent(d))keep.push_back(d);std::ostringstream o;DL::WriteHistory(o,keep);if(ProfileStore::WriteAtomic(downloadsFile,o.str())){downloadsBase.clear();TraceErase::DropDamagedBackups(downloadsFile);}else{ok=false;Log(L"CLEAR downloads wipe failed");}}
+    // The browsing log goes too (audit SEC-05); a window appending at that instant keeps it a moment: said in the log, not a failure.
+    {bool erased=true;{std::lock_guard<std::mutex> guard(logLock);if(!logFile.empty())erased=LogPrivacy::Erase(logFile);}if(!erased)Log(L"CLEAR log file busy: not deleted");}
     return ok;
 }
 void ClearLocalTraces(){
@@ -2127,7 +2151,7 @@ button:focus-visible{outline:2px solid rgba(255,255,255,.9);outline-offset:2px}
     html+=LR"HTML(<script>const t=")HTML";
     html+=token;
     html+=LR"HTML(";const send=a=>window.chrome.webview.postMessage(t+":"+a);back.onclick=()=>send("back");go.onclick=()=>send("continue");</script></html>)HTML";
-    Check(t->view->NavigateToString(html.c_str()),L"NavigateToString interstitial");
+    CheckTab(t->view->NavigateToString(html.c_str()),L"NavigateToString interstitial");
     if(t==Active())Update();
 }
 // NavigationStarting hook (top-level). True when the navigation was cancelled here.
@@ -2194,7 +2218,7 @@ HRESULT InterstitialMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessag
     }
     return S_OK;
 }
-bool AudioPageMessage(const std::shared_ptr<Tab>& t,const std::wstring& message);bool ScrollbarMessageFrom(const std::shared_ptr<Tab>& t,const std::wstring& text);
+bool AudioPageMessage(const std::shared_ptr<Tab>& t,const std::wstring& message,const std::wstring& source);bool ScrollbarMessageFrom(const std::shared_ptr<Tab>& t,const std::wstring& text);
 ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler* PopupScriptBarrier(const PopupHost::RequestPtr& popup,const wchar_t* what); // audio-integration.h
 const std::wstring& PopupQa();
 void InjectAudioScript(const std::shared_ptr<Tab>& t,const PopupHost::RequestPtr& popup); // audio-integration.h
@@ -2447,14 +2471,14 @@ void RequestFavicon(const std::shared_ptr<Tab>& tab){
     std::weak_ptr<Tab> weak=tab;
     auto callback=Callback<ICoreWebView2GetFaviconCompletedHandler,HRESULT,IStream*>([weak,ticket](HRESULT hr,IStream* stream)->HRESULT{
         auto tab=weak.lock();if(halted||!tab||tab->closed||!tab->favicon.Current(ticket))return S_OK;
-        if(!Check(hr,L"GetFavicon callback"))return S_OK;
+        if(!CheckTab(hr,L"GetFavicon callback"))return S_OK;
         // Null/empty/undecodable image streams are site image absence. WIC
         // pixels are copied while the callback stream is alive; no disk/network.
         auto image=chrome.DecodeFavicon(stream);RememberSiteIcon(tab->uri,image,stream);
         if(tab->favicon.Complete(ticket,image))InvalidateChrome();
         return S_OK;
     });
-    HRESULT hr=tab->faviconView->GetFavicon(COREWEBVIEW2_FAVICON_IMAGE_FORMAT_PNG,callback);callback->Release();Check(hr,L"GetFavicon");
+    HRESULT hr=tab->faviconView->GetFavicon(COREWEBVIEW2_FAVICON_IMAGE_FORMAT_PNG,callback);callback->Release();CheckTab(hr,L"GetFavicon");
 }
 
 // Network failures stay inside the WebView: its built-in error page provides
@@ -2762,7 +2786,8 @@ void CreateTab(std::wstring uri,int index,std::wstring title,const PopupHost::Re
         HRESULT result=t->view->add_SourceChanged(source,&token);source->Release();if(!Check(result,L"add_SourceChanged"))return S_OK;
         auto history=Callback<ICoreWebView2HistoryChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2*,IUnknown*)->HRESULT{auto tab=weak.lock();if(tab&&!tab->closed&&!halted&&tab==Active())Update();return S_OK;});
         result=t->view->add_HistoryChanged(history,&token);history->Release();if(!Check(result,L"add_HistoryChanged"))return S_OK;
-        auto title=Callback<ICoreWebView2DocumentTitleChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2* v,IUnknown*)->HRESULT{if(halted)return S_OK;auto t=weak.lock();if(!t||t->closed)return S_OK;LPWSTR s=nullptr;if(Check(v->get_DocumentTitle(&s),L"get_DocumentTitle")&&s){t->title=s;CoTaskMemFree(s);if(!t->home&&t->https.shown.empty()&&t->errorPage.shown.empty()&&!IsSandboxUri(t->uri)&&::history.SetTitle(t->uri,t->title)){SaveHistory();if(!WorkspaceParked())historyDrawer.Changed();}}Update();SchedulePublishProfileWindow();return S_OK;});
+        auto title=Callback<ICoreWebView2DocumentTitleChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2* v,IUnknown*)->HRESULT{if(halted)return S_OK;auto t=weak.lock();if(!t||t->closed)return S_OK;LPWSTR s=nullptr;if(Check(v->get_DocumentTitle(&s),L"get_DocumentTitle")&&s){t->title=s;CoTaskMemFree(s);if(!t->home&&t->https.shown.empty()&&t->errorPage.shown.empty()&&!IsSandboxUri(t->uri)&&::history.SetTitle(t->uri,t->title)){SaveHistory();if(!WorkspaceParked())historyDrawer.Changed();}}
+            /* PERF-07: only the active tab's title reaches the window title and the toolbar; another tab's only changes the strip */if(t==Active())Update();else if(!WorkspaceParked()){RefreshTools();InvalidateChrome();}SchedulePublishProfileWindow();return S_OK;});
         result=t->view->add_DocumentTitleChanged(title,&token);title->Release();if(!Check(result,L"add_DocumentTitleChanged"))return S_OK;
         auto nav=Callback<ICoreWebView2NavigationCompletedEventHandler,ICoreWebView2*,ICoreWebView2NavigationCompletedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2NavigationCompletedEventArgs* a)->HRESULT{return NavigationCompleted(weak.lock(),a);});
         result=t->view->add_NavigationCompleted(nav,&token);nav->Release();if(!Check(result,L"add_NavigationCompleted"))return S_OK;
@@ -2815,7 +2840,7 @@ void CreateTab(std::wstring uri,int index,std::wstring title,const PopupHost::Re
 
 // i18n-exempt-begin: smoke / split / menu QA harness (--smoke-test, --split-test): assertions, fixtures, log text
 void SmokeCheck(){if(!smoke||halted)return;auto t=Active();if(!t||!t->view.p){Fail(L"Smoke active view missing",E_FAIL);return;}auto cb=Callback<ICoreWebView2ExecuteScriptCompletedHandler,HRESULT,LPCWSTR>([](HRESULT hr,LPCWSTR json)->HRESULT{if(!Check(hr,L"Smoke ExecuteScript callback"))return S_OK;std::wstring expected=testStage<2?L"Nouvel onglet|rgb(23, 23, 23)|":L"Example Domain";if(!json||std::wstring(json).find(expected)==std::wstring::npos){Fail(L"Smoke unexpected document title",E_FAIL);return S_OK;}Log(L"SMOKE document verified stage="+std::to_wstring(testStage)+L" title="+json);PostMessageW(window,WM_APP+3,0,0);return S_OK;});HRESULT hr=t->view->ExecuteScript(testStage<2?L"document.title + '|' + getComputedStyle(document.body).backgroundColor + '|' + document.body.textContent.trim()":L"document.title",cb);cb->Release();Check(hr,L"Smoke ExecuteScript");}
-void SmokeAdvance(){if(halted)return;switch(testStage++){
+void SmokeAdvance(){if(!smoke||halted)return; /* SEC-26: another process posting WM_APP+3 never steps the test script */switch(testStage++){
 case 0:Command('T');break;
 case 1:Navigate(Active(),L"https://example.com/");break;
 case 2:Navigate(Active(),L"https://example.org/");break;
@@ -3372,7 +3397,7 @@ void TabContextMenu(int tabIndex,int anchor){
     case ResizeItem:StartKeyboardResize();break;
     case QuitItem:QuitGroup(tab->group);break;
     case NewTabItem:Command('T');break;
-    case ReloadItem:if(tabIndex==current)Command('R');else if(tab->view.p)Check(tab->view->Reload(),L"Reload");break;
+    case ReloadItem:if(tabIndex==current)Command('R');else if(tab->view.p)CheckTab(tab->view->Reload(),L"Reload");break;
     case CopyItem:if(tabIndex==current)Command('C');else if(CopyToClipboard(tab->uri))AnnounceCopied();break;
     case ReopenItem:Command('U');break;
     // The preview draws inside the page: a background tab is brought forward first.
@@ -3469,6 +3494,7 @@ BM::Store bookmarks; BM::Id lastFolder=BM::BarRoot; bool bookmarksSaveFailed=fal
 // What this process last read from or wrote to the shared file: the base of its next three-way
 // merge (src/profile-store.h). Another window's changes arrive with every commit and on activation.
 BM::Store bookmarksBase;
+ProfileStore::Stamp bookmarksSeen; // PERF-08: the file as it was when `bookmarks` last equalled it
 int popoverReturn=0; bool bookmarksDismissClick=false;
 struct BandDrag { int index=-1; BM::Id id=0; POINT start{}; float grab=0; bool active=false; BM::Id parent=0; size_t from=0; BookmarkDrag::Drop drop; Workspace* owner=nullptr; } bandDrag;   // drop: where a release would land (bar or drawer)
 // A bookmark dragged out of a folder/overflow menu or the drawer (src/bookmark-drag.h): stable id + the profile it
@@ -3487,8 +3513,12 @@ void SaveBookmarks(){
     if(smoke)return;
     // Transaction under the profile lock: this window's changes (base → mine) replayed onto the file as
     // it is now, written atomically; the result (with the other windows' changes) becomes the state.
+    // PERF-08: nothing changed here and the file was not replaced since it last equalled this state: nothing to merge.
+    if(!bookmarksSaveFailed&&bookmarks==bookmarksBase&&ProfileStore::StampOf(BookmarksFile())==bookmarksSeen)return;
+    ProfileStore::Lock lock(dataDir); /* held through the stamp below (the commit re-enters it: same thread) */
     std::map<BM::Id,BM::Id> remap;const BM::Store before=bookmarks;
-    const auto r=ProfileStore::Commit<BM::Store>(dataDir,BookmarksFile(),bookmarksBase,bookmarks,[&remap](const BM::Store& b,const BM::Store& m,const BM::Store& t){return BM::Store::Merge(b,m,t,&remap);},5000,{"browser-bookmarks 1"});
+    const auto r=ProfileStore::Commit<BM::Store>(dataDir,BookmarksFile(),bookmarksBase,bookmarks,[&remap](const BM::Store& b,const BM::Store& m,const BM::Store& t){return BM::Store::Merge(b,m,t,&remap);},lock.Held()?5000:0,{"browser-bookmarks 1"});
+    bookmarksSeen=r==ProfileStore::Result::Unchanged?ProfileStore::StampOf(BookmarksFile()):ProfileStore::Stamp{};
     const bool ok=r==ProfileStore::Result::Written||r==ProfileStore::Result::Unchanged;
     if(!remap.empty()){bookmarkUndo.clear();Log(L"BOOKMARKS new ids remapped (another window used them)");}
     if(ok&&bookmarks!=before){if(!bookmarks.Find(lastFolder))lastFolder=BM::BarRoot;Defer([]{BookmarksChanged();});Log(L"BOOKMARKS merged with another window's changes");}
@@ -3504,13 +3534,13 @@ void LoadBookmarks(){
     if(smoke)return;
     namespace fs=std::filesystem;const fs::path path(BookmarksFile()),backup(BookmarksFile()+L".bak");std::error_code ec;
     if(!fs::exists(path,ec)){
-        bookmarksBase=BM::Store{}; // nothing on disk: everything in memory is new to the file
+        bookmarksBase=BM::Store{};bookmarksSeen={}; // nothing on disk: everything in memory is new to the file
         // No file: first run, or a lost one; a clean backup wins over an empty start.
         if(fs::exists(backup,ec)){std::ifstream in(backup,std::ios::binary);bool damaged=false;auto restored=BM::Store::Read(in,&damaged);if(!damaged&&restored.Size()){bookmarks=std::move(restored);Log(L"BOOKMARKS restored from bookmarks.bak");SaveBookmarks();}}
         return;
     }
     bool damaged=false;{ProfileStore::Lock lock(dataDir);std::string bytes;ProfileStore::ReadAll(path.wstring(),bytes);std::istringstream in(bytes);bookmarks=BM::Store::Read(in,&damaged);} // read under the profile lock
-    bookmarksBase=bookmarks; // what is on disk now
+    bookmarksBase=bookmarks;bookmarksSeen={}; // what is on disk now
     if(damaged){
         // Personal data, not a cache: keep the damaged file aside before anything rewrites it.
         const auto aside=fs::path(BookmarksFile()+L".damaged-"+TimeStamp());fs::copy_file(path,aside,fs::copy_options::overwrite_existing,ec);
@@ -5034,12 +5064,18 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){
     // The switches are read in `args` only: a link such as https://site/?--private never turns into a switch.
     static std::wstring switchArgs;{int n=0;LPWSTR* v=CommandLineToArgvW(GetCommandLineW(),&n);if(v){const auto parsed=LaunchArgs::Parse(std::vector<std::wstring>(v+1,v+n));LocalFree(v);
         if(!parsed.target.empty()||parsed.single){switchArgs=parsed.switches;args=switchArgs.data();launchTarget=AbsoluteIfFile(parsed.target);}}}
-    {int argc=0;LPWSTR* argv=CommandLineToArgvW(GetCommandLineW(),&argc);for(int i=1;argv&&i+1<argc;++i)if(std::wstring(argv[i])==L"--import-sources"){importRootsOverride=argv[i+1];}else if(std::wstring(argv[i])==L"--import-hold"){importHold=argv[i+1];} /* tests: import from synthetic roots only */
+    {int argc=0;LPWSTR* argv=CommandLineToArgvW(GetCommandLineW(),&argc);
 #ifndef BROWSER_CHANNEL_RELEASE
-    for(int i=1;argv&&i<argc;++i)if(std::wstring(argv[i])==L"--qa-drawer-stays")qaDrawerStays=true;   // QA: drawer kept while the app is not in the foreground
-    for(int i=1;argv&&i<argc;++i)if(std::wstring(argv[i])==L"--qa-default-card")qaDefaultCard=true;   // QA: the default-browser card, for review
+    // SEC-12: test switches exist in dev builds only and are read before --single-argument only (LaunchArgs::Has).
+    const std::vector<std::wstring> tokens=argv&&argc>1?std::vector<std::wstring>(argv+1,argv+argc):std::vector<std::wstring>{};
+    importRootsOverride=LaunchArgs::ValueOf(tokens,L"--import-sources");importHold=LaunchArgs::ValueOf(tokens,L"--import-hold"); /* tests: import from synthetic roots only */
+    qaDrawerStays=LaunchArgs::Has(tokens,L"--qa-drawer-stays");   // QA: drawer kept while the app is not in the foreground
+    qaDefaultCard=LaunchArgs::Has(tokens,L"--qa-default-card");   // QA: the default-browser card, for review
 #endif
     if(argv)LocalFree(argv);}smoke=wcsstr(args,L"--smoke-test")!=nullptr;splitTest=wcsstr(args,L"--split-test")!=nullptr;workspaceTest=wcsstr(args,L"--workspace-test")!=nullptr;debugSandboxAtStart=wcsstr(args,L"--debug-sandbox")!=nullptr;privateWindow=wcsstr(args,L"--private")!=nullptr;Vault::WritesForbidden()=privateWindow;
+#ifdef BROWSER_CHANNEL_RELEASE
+    smoke=splitTest=workspaceTest=debugSandboxAtStart=false;   // SEC-12: the test harnesses are never honoured by a release build
+#endif
 #ifdef BROWSER_E2E_VAULT_HOST
     Vault::ActiveFlag()=true;   /* TEST HOST ONLY (tests/e2e/vault_host.cpp): synthetic profile and secrets; never in dev/release */
 #endif

@@ -60,6 +60,27 @@ inline Ours OurTool(const McpName& n, std::string_view ourServer) {
     if (n.tool == "browser_annotation_release") return Ours::Release;
     return Ours::None;
 }
+// SEC-28 (audit 2026-11-23): a request is answered without a card only when, besides its title, it also looks like one of
+// our tools: not a shell command, an edit, a deletion, a move or a fetch, and its arguments limited to that tool's own
+// keys (the bridge's CheckArgs, src/mcp-bridge.cpp). Anything else goes through the ordinary permission card.
+inline bool LooksLikeOurs(Ours tool, std::string_view kind, std::string_view rawInputJson) {
+    if (tool == Ours::None) return false;
+    if (kind == "execute" || kind == "edit" || kind == "delete" || kind == "move" || kind == "fetch") return false;
+    std::vector<std::string_view> keys;
+    switch (tool) {
+    case Ours::List: keys = {"site", "status", "limit", "cursor"}; break;
+    case Ours::Get: keys = {"id", "include_screenshot"}; break;
+    case Ours::Claim: keys = {"id", "agent_label", "claim_token"}; break;
+    case Ours::Resolve: keys = {"id", "claim_token", "outcome", "summary"}; break;
+    case Ours::Release: keys = {"id", "claim_token", "reason"}; break;
+    default: return false;
+    }
+    if (rawInputJson.empty()) return true;   // the arguments are not known yet: the title and the kind decide
+    StrictJson::Limits lim; lim.maxBytes = 64 * 1024; lim.maxDepth = 8;
+    StrictJson::Value v; if (!StrictJson::Parse(rawInputJson, v, nullptr, lim) || !v.IsObject()) return false;
+    for (const auto& m : v.members) { bool known = false; for (const auto k : keys) if (m.first == k) known = true; if (!known) return false; }
+    return true;
+}
 // The annotation a call is about: the « id » argument when it has the shape of one of our ids ("ann_" + base32).
 inline std::string AnnotationIdOf(std::string_view rawInputJson) {
     StrictJson::Limits lim; lim.maxBytes = 64 * 1024; lim.maxDepth = 8;

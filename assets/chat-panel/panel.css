@@ -50,6 +50,7 @@ button { transition: transform 150ms var(--ease-out), background-color 120ms eas
 input, textarea { font: inherit; color: inherit; }
 :focus { outline: none; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; border-radius: 6px; }
+.perm:focus-visible, .bperm:focus-visible { outline: none; }   /* SEC-23: the card holds the focus for Échap / Tab, drawn as before */
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 svg.i { display: block; flex-shrink: 0; }
 [hidden] { display: none !important; }

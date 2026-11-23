@@ -16,10 +16,10 @@ template<class I> struct Fake : I {
 LPWSTR Dup(const wchar_t* s){size_t n=(wcslen(s)+1)*sizeof(wchar_t);auto p=(LPWSTR)CoTaskMemAlloc(n);memcpy(p,s,n);return p;}
 struct Deferral : Fake<ICoreWebView2Deferral> { int completed=0; HRESULT STDMETHODCALLTYPE Complete() override{++completed;return S_OK;} };
 struct DialogArgs : Fake<ICoreWebView2ScriptDialogOpeningEventArgs> {
-    Deferral deferral; int accepted=0; COREWEBVIEW2_SCRIPT_DIALOG_KIND kind=COREWEBVIEW2_SCRIPT_DIALOG_KIND_CONFIRM;
-    HRESULT STDMETHODCALLTYPE get_Uri(LPWSTR* v) override{*v=Dup(L"https://exemple.test/page");return S_OK;}
+    Deferral deferral; int accepted=0; COREWEBVIEW2_SCRIPT_DIALOG_KIND kind=COREWEBVIEW2_SCRIPT_DIALOG_KIND_CONFIRM; std::wstring uri=L"https://exemple.test/page",message=L"Continuer ?";
+    HRESULT STDMETHODCALLTYPE get_Uri(LPWSTR* v) override{*v=Dup(uri.c_str());return S_OK;}
     HRESULT STDMETHODCALLTYPE get_Kind(COREWEBVIEW2_SCRIPT_DIALOG_KIND* v) override{*v=kind;return S_OK;}
-    HRESULT STDMETHODCALLTYPE get_Message(LPWSTR* v) override{*v=Dup(L"Continuer ?");return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_Message(LPWSTR* v) override{*v=Dup(message.c_str());return S_OK;}
     HRESULT STDMETHODCALLTYPE Accept() override{++accepted;return S_OK;}
     HRESULT STDMETHODCALLTYPE get_DefaultText(LPWSTR* v) override{*v=Dup(L"");return S_OK;}
     HRESULT STDMETHODCALLTYPE get_ResultText(LPWSTR* v) override{*v=Dup(L"");return S_OK;}
@@ -121,6 +121,7 @@ int main(){
     {ExternalArgs a;LaunchingExternalUriScheme(live,&a);Expect(a.cancel==TRUE&&a.deferral.completed==1,"external scheme: engine launch cancelled, deferral completed once");}
     {ExternalArgs a;a.uri=L"ms-msdt:/id PCWDiagnostic";LaunchingExternalUriScheme(live,&a);Expect(a.cancel==TRUE&&a.deferral.completed==1,"dangerous scheme refused");}
     Expect(ExternalSchemeRefused(L"FILE:///c:/windows")&&ExternalSchemeRefused(L"search-ms:query=x")&&ExternalSchemeRefused(L"javascript:alert(1)")&&!ExternalSchemeRefused(L"mailto:a@b.c")&&!ExternalSchemeRefused(L"zoommtg://join"),"external scheme denylist");
+    Expect(ExternalSchemeRefused(L"c:\\windows\\x.exe")&&ExternalSchemeRefused(L"1app:x")&&ExternalSchemeRefused(L"a b:x")&&ExternalSchemeRefused(L"\x00e9t\x00e9:x")&&!ExternalSchemeRefused(L"ms-settings:privacy")&&!ExternalSchemeRefused(L"web+app.v2:x"),"SEC-22: external scheme shape ([a-z][a-z0-9+.-]+)");
     // Sandbox host matching: exact host only.
     Expect(IsSandboxUri(L"https://browser-debug.invalid/sandbox")&&IsSandboxUri(L"HTTPS://BROWSER-DEBUG.INVALID/sandbox?x")&&IsSandboxUri(L"https://browser-debug.invalid"),"sandbox URI recognised");
     Expect(!IsSandboxUri(L"https://browser-debug.invalid.evil.test/sandbox")&&!IsSandboxUri(L"http://browser-debug.invalid/sandbox")&&!IsSandboxUri(L"https://evil.test/https://browser-debug.invalid/"),"look-alike hosts are not the sandbox");
@@ -377,8 +378,12 @@ int main(){
             DialogArgs third;ScriptDialogOpening(live,&third);run();
             Expect(third.deferral.completed==1&&third.accepted==0&&!modalOpen,"checked: the site's next dialogs are suppressed (answered « cancel »)");
             ElementsNavigationStarting(live);run();
-            DialogArgs fourth;ScriptDialogOpening(live,&fourth);run();
-            Expect(modalOpen&&modalActive.spec.checkLabel.empty(),"navigation lifts the block and restarts the count");
+            DialogArgs reloaded;reloaded.uri=L"https://exemple.test/autre";ScriptDialogOpening(live,&reloaded);run();
+            Expect(reloaded.deferral.completed==1&&reloaded.accepted==0&&!modalOpen,"SEC-25: a reload or another page of the same site keeps the block");
+            ElementsNavigationStarting(live);run();
+            DialogArgs fourth;fourth.uri=L"https://autre-site.test/";fourth.message=std::wstring(20000,L'x')+L"\xD83D\xDE00";ScriptDialogOpening(live,&fourth);run();
+            Expect(modalOpen&&modalActive.spec.checkLabel.empty(),"another site in the tab: no block, the count restarts");
+            Expect(modalActive.spec.message==std::wstring(10000,L'x')&&CapDialogText(L"ab\xD83D\xDE00",3)==L"ab"&&CapDialogText(L"abc",3)==L"abc","SEC-25: a page's dialog text is capped (10 000 characters, never half a surrogate pair)");
             finish(MD::AcceptButton);
             DialogArgs leave;leave.kind=COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD;ScriptDialogOpening(live,&leave);run();
             Expect(modalActive.spec.title==L"Quitter ce site ?","beforeunload: « Quitter » by default");

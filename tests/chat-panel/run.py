@@ -565,8 +565,10 @@ try:
         check(p["role"] == "alertdialog" and p["title"] == "Claude veut modifier checkout.css" and p["nums"] == ["+6", "−2"] and p["ph"] == "Dire à Claude quoi faire à la place…" and p["auto"] == "Auto." and p["checked"] == "true"
               and p["composer"] == 0 and p["rule"] == 1, "bubble (permission): the request is in the bubble, in place of the input", json.dumps(p, ensure_ascii=False)[:300])
         check(p["faded"] and p["fade"] == "1" and p["top"] > 0, "bubble (permission): at its maximum height the thread scrolls and its top fades", f"faded {p['faded']}, opacity {p['fade']}, scrollTop {p['top']}")
-        check(active().startswith("Autoriser"), "bubble (permission): focus on « Autoriser »", active())
-        key("Enter")
+        check(cdp.js("document.activeElement.classList.contains('bperm')"), "bubble (permission, SEC-23): the card holds the focus, never « Autoriser »", active())
+        load("c-2-autorisation"); cdp.js("document.querySelector('.bperm').__shownAt = performance.now()"); key("Enter"); click(".bperm .btn.primary")
+        check(not any(x.startswith("permission.respond") for x in posted()), "bubble (permission, SEC-23): Entrée or a click in the card's first 600 ms answers nothing", str(posted()[-3:]))
+        time.sleep(0.7); key("Enter")
         check("permission.respond:always" in posted(), "bubble (permission): Entrée = Autoriser (Auto on: the allow_always option)", str(posted()[-3:]))
         load("c-2-autorisation"); key("Escape")
         t = posted()
@@ -590,7 +592,7 @@ try:
         check(sizes()[-1] == [305, 303] and v["focus"] == "Fermer l'aperçu", "bubble (diff): it takes all the height there is (maxHeight), focus on its close button", f"{sizes()[-1]} {v['focus']}")
         key("Escape")
         check(cdp.js("document.getElementById('bview').hidden") and "close" not in posted() and "bperm-file" in cdp.js("document.activeElement.className"), "bubble (diff): Échap closes the diff first, focus back on the file line", active())
-        click(".bperm-file"); click(".bperm .btn.primary")
+        click(".bperm-file"); time.sleep(0.6); click(".bperm .btn.primary")   # SEC-23: armed 600 ms after the card appeared
         check("permission.respond:always" in posted() and cdp.js("document.getElementById('bview').hidden && !document.querySelector('.bperm')"), "bubble (diff): « Autoriser » answers from the open diff and closes it")
         load("c-autorisation-commande")
         cmd = cdp.js("[document.querySelector('#bview .bview-pre').textContent, document.querySelectorAll('#bview .num').length]")
@@ -802,8 +804,8 @@ try:
 
         # R9 (page side): the waiting request the host sends again after its thread.reset is shown again, once, focused
         load("c-autorisation-reouverte")
-        ro = cdp.js("[document.querySelectorAll('.bperm').length, document.getElementById('perm-t').textContent, (document.activeElement.textContent||'').trim()]")
-        check(ro == [1, "Claude veut modifier checkout.css", "Autoriser"], "bubble (R9): reopened (thread.reset), the waiting permission card is back — once, « Autoriser » focused", str(ro))
+        ro = cdp.js("[document.querySelectorAll('.bperm').length, document.getElementById('perm-t').textContent, document.activeElement.classList.contains('bperm')]")
+        check(ro == [1, "Claude veut modifier checkout.css", True], "bubble (R9): reopened (thread.reset), the waiting permission card is back — once, the card focused (SEC-23: never « Autoriser »)", str(ro))
         # D4 (audit): the agent's raw titles become Paper's French labels, the file's name alone, « … » while running
         load("c-etapes-brutes")
         st4 = cdp.js("document.querySelector('.bt-stw .lb').textContent")
@@ -1161,7 +1163,13 @@ try:
 
     if not ONLY:
         load("6.1-autorisation")
-        check(active().startswith("Autoriser"), "keyboard: permission card focuses « Autoriser »", active())
+        check(cdp.js("document.activeElement.classList.contains('perm')"), "keyboard (SEC-23): the permission card holds the focus, never « Autoriser »", active())
+        load("6.1-autorisation"); cdp.js("document.querySelector('.perm').__shownAt = performance.now()"); key("Enter")
+        check(not any(x.startswith("permission.respond") for x in posted()), "keyboard (SEC-23): Entrée in the card's first 600 ms answers nothing", str(posted()[-3:]))
+        cdp.js("document.querySelector('.perm').__shownAt = 0")
+        cdp.call("Input.dispatchKeyEvent", type="rawKeyDown", key="Enter", code="Enter", windowsVirtualKeyCode=13, modifiers=0, autoRepeat=True)
+        cdp.call("Input.dispatchKeyEvent", type="keyUp", key="Enter", code="Enter", windowsVirtualKeyCode=13, modifiers=0)
+        check(not any(x.startswith("permission.respond") for x in posted()), "keyboard (SEC-23): a held Entrée (auto-repeat) answers nothing", str(posted()[-3:]))
         key("Enter")
         check("permission.respond:always" in posted(), "keyboard: Entrée = Autoriser (toujours, case cochée)", str(posted()[-3:]))
         load("6.1-autorisation"); key("Escape")

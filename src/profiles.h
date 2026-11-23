@@ -32,6 +32,7 @@
 #include <vector>
 #include "profile-store.h"
 #include "window-sessions.h"
+#include "fs-safe.h"
 #include "session.h"
 #include "profile-color.h"
 #include "profile-cache.h"
@@ -295,7 +296,7 @@ inline std::wstring NewId() {
 // come back as « Profil N » so no profile's data is ever orphaned silently. Caller holds the lock.
 inline void AdoptFolders(const std::wstring& root, Doc& d) {
     std::error_code ec; int n = 2;
-    for (const auto& e : std::filesystem::directory_iterator(ProfilesDir(root), ec)) {
+    for (const auto& e : FsSafe::Entries(ProfilesDir(root), ec)) {
         const std::wstring id = e.path().filename().wstring();
         if (!e.is_directory(ec) || !ValidId(id) || id == DefaultId) continue;
         bool known = false; for (const auto& p : d.items) known = known || p.id == id;
@@ -457,7 +458,8 @@ inline PublishResult PublishWorkspace(const Paths& paths, const std::wstring& pr
     for (std::size_t i = 0; i < titles.size() || i < urls.size(); ++i)
         o << "tab=" << Detail::Escape(i < titles.size() ? titles[i] : L"") << "|" << Detail::Escape(i < urls.size() ? urls[i] : L"") << "\n";
     std::error_code ec; std::filesystem::create_directories(WindowSessions::Dir(paths.dataDir), ec);
-    return ProfileStore::WriteAtomic(Detail::SidecarFile(paths.dataDir, sessionId), o.str()) ? PublishResult::Published : PublishResult::Failed;
+    // PERF-08: a hint rebuilt at every start, rewritten on each activation: atomic, but not flushed to the disk.
+    return ProfileStore::WriteAtomic(Detail::SidecarFile(paths.dataDir, sessionId), o.str(), false) ? PublishResult::Published : PublishResult::Failed;
 }
 inline bool PublishWindow(const Paths& paths, const std::wstring& profileId, const std::wstring& sessionId, HWND hwnd,
                           const std::vector<std::wstring>& titles = {}, const std::vector<std::wstring>& urls = {}, int active = 0, WorkspaceState state = WorkspaceState::Active) {
@@ -508,7 +510,7 @@ inline std::vector<std::wstring> OpenSessionIds(const std::wstring& dataDir) {
     };
     for (const auto& e : WindowSessions::List(dataDir)) add(e.id);
     std::error_code ec;
-    for (const auto& e : std::filesystem::directory_iterator(WindowSessions::Dir(dataDir), ec)) {
+    for (const auto& e : FsSafe::Entries(WindowSessions::Dir(dataDir), ec)) {
         const std::wstring name = e.path().filename().wstring();
         if (name.size() > 5 && name.compare(name.size() - 5, 5, L".hwnd") == 0 && e.is_regular_file(ec)) add(name.substr(0, name.size() - 5));
     }
@@ -618,7 +620,7 @@ inline bool SessionExists(const std::wstring& root, const WindowSlot& s) { retur
 // Every valid set (malformed ones skipped, never touched).
 inline std::vector<WindowSet> ReadWindowSets(const std::wstring& root) {
     std::vector<WindowSet> out; std::error_code ec;
-    for (const auto& e : std::filesystem::directory_iterator(Detail::WindowsDir(root), ec)) {
+    for (const auto& e : FsSafe::Entries(Detail::WindowsDir(root), ec)) {
         const std::wstring name = e.path().filename().wstring(); if (!e.is_regular_file(ec) || !Detail::ValidTokenHex(name)) continue;
         std::string bytes; WindowSet s; if (ProfileStore::ReadAll(e.path().wstring(), bytes) && Detail::ParseWindowSet(bytes, name, s)) out.push_back(std::move(s));
     }
@@ -952,7 +954,7 @@ inline void Reinsert(Registry& reg, const Profile& p, int index, const std::vect
 inline std::vector<std::wstring> OrderWithGhosts(const std::wstring& root, const Registry& reg) {
     std::vector<std::wstring> ids; for (const auto& q : reg.items) ids.push_back(q.id);
     std::vector<std::pair<std::pair<ULONGLONG, std::wstring>, Journal>> pending; std::error_code ec;
-    for (const auto& e : std::filesystem::directory_iterator(TrashRoot(root), ec)) {
+    for (const auto& e : FsSafe::Entries(TrashRoot(root), ec)) {
         if (!e.is_directory(ec)) continue;
         const std::wstring tomb = e.path().wstring(); Journal j;
         if (SafeTrashPath(root, tomb) && ReadJournal(root, tomb, j) && j.state == "aside") pending.push_back({{j.deadlineWall, e.path().filename().wstring()}, j});
@@ -1062,14 +1064,15 @@ inline void PurgeTrash(const std::wstring& root) {
     if (!Detail::Exists(trash)) return;
     ProfileStore::Lock rootLock(root, 10000); if (!rootLock.Held()) return;
     std::vector<std::wstring> tombs; std::error_code ec;
-    for (const auto& e : std::filesystem::directory_iterator(trash, ec)) if (e.is_directory(ec)) tombs.push_back(e.path().wstring());
+    for (const auto& e : FsSafe::Entries(trash, ec)) if (e.is_directory(ec)) tombs.push_back(e.path().wstring());
     for (const auto& tomb : tombs) {
         if (!Detail::SafeTrashPath(root, tomb)) continue;
         Detail::Journal j;
         if (!Detail::ReadJournal(root, tomb, j)) {
             // No readable journal: an aborted tomb with nothing moved is erased; anything else is kept.
-            bool empty = true; for (const auto& e : std::filesystem::recursive_directory_iterator(tomb, ec)) { if (e.is_regular_file(ec)) { empty = false; break; } }
-            if (empty) Detail::DeleteTree(tomb);
+            std::error_code walk;   // a walk cut short by an error proves nothing: the tomb is kept (SEC-27)
+            bool empty = true; for (const auto& e : FsSafe::EntriesRecursive(tomb, walk)) { std::error_code kind; if (e.is_regular_file(kind) || kind) { empty = false; break; } }
+            if (empty && !walk) Detail::DeleteTree(tomb);
             continue;
         }
         if (j.state == "moving" || j.state == "restoring") {

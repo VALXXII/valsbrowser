@@ -100,6 +100,27 @@ inline std::string ShownSetting(bool own, bool owed, const std::string& session,
 inline std::string ModeAfterPlan(bool planLaunched, const std::string& nowId, const std::string& nowKind) {
     return planLaunched && !nowId.empty() && nowKind != "plan" ? nowId : std::string();
 }
+// SEC-02 (audit 2026-11-23): « Lancer le plan » answers the agent's plan gate (Claude's ExitPlanMode request). The option
+// is chosen by id, never by position: the agent's « ask » mode (Claude « default »: every next change still waits for a
+// permission), else an allow_once option that is neither an automatic mode nor a mode that asks for nothing. Never an id
+// of `never` (Claude's adapter puts « bypassPermissions » first on Windows), never another « always » option.
+// "" = no option keeps the permissions: the gate is not answered (it keeps asking).
+template <class Option> std::string PlanRunOption(const std::vector<Option>& options, const std::vector<std::string>& ask,
+                                                  const std::vector<std::string>& automatic, const std::vector<std::string>& never) {
+    auto in = [](const std::vector<std::string>& l, const std::string& v) { for (const auto& x : l) if (x == v) return true; return false; };
+    for (const auto& a : ask) for (const auto& o : options) if (o.id == a && !in(never, o.id) && o.kind.rfind("allow", 0) == 0) return o.id;
+    for (const auto& o : options) if (o.kind == "allow_once" && !in(never, o.id) && !in(automatic, o.id)) return o.id;
+    return "";
+}
+// SEC-13 (audit 2026-11-23): the mode is applied fail-closed. A prompt goes to the session only once the mode asked last is
+// the session's (Wait until then); never while the session is in a mode that asks for nothing, or after the last mode change
+// was refused (Fix: the wanted mode is asked again once, else the turn ends in error).
+enum class PromptGate { Go, Wait, Fix };
+inline PromptGate PromptGateFor(const std::string& current, const std::string& awaited, bool refused, bool currentAsksNothing) {
+    if (!awaited.empty() && current != awaited) return PromptGate::Wait;
+    if (refused || currentAsksNothing) return PromptGate::Fix;
+    return PromptGate::Go;
+}
 inline std::string ShownWhileAsked(const std::string& current, Asked& asked, double now, double patienceMs = 3000) {
     if (asked.value.empty()) return current;
     if (current == asked.value || now - asked.at > patienceMs) { asked = Asked{}; return current; }

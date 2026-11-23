@@ -168,6 +168,10 @@ void TestGitignorePatterns() {
         {"*\n!*.md\n", "main.c", false, true},
         {"\xEF\xBB\xBF" "bom.txt\n", "bom.txt", false, true},
         {"a*b*c*d*e*f*g*h*i*j*k\n", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", false, false},
+        {"**/**/**/tmp\n", "tmp", true, true},          // SEC-27: repeated **/ is one
+        {"**/**/**/tmp\n", "a/b/c/d/tmp", true, true},
+        {"a/**/**/z\n", "a/z", false, true},
+        {"x**/**/z\n", "x/q/z", false, true},         // "x**" is not a leading **: kept as written
     };
     for (const Case& c : cases) {
         const bool got = GitignoreIgnores(c.rules, c.path, c.dir);
@@ -178,6 +182,21 @@ void TestGitignorePatterns() {
         }
     }
 
+    {   // SEC-27: 20 000 x "**/" (60 KB, once ~2 MB of stack) and 4 000 wildcard rules stay quick and never crash.
+        std::string deep;
+        for (int i = 0; i < 20000; ++i) deep += "**/";
+        std::string path;
+        for (int i = 0; i < 60; ++i) path += "d/";
+        const ULONGLONG t0 = GetTickCount64();
+        CHECK(GitignoreIgnores(deep + "x\n", path + "x", false));   // collapsed to "**/x"
+        CHECK(!GitignoreIgnores(std::string(2000, 'a') + "*\n", std::string(2000, 'a'), false));   // over-long: not a rule
+        CHECK(GitignoreIgnores("**/**/**/**/**/**/**/**/x\n", path + "x", false));
+        std::string many;
+        for (int i = 0; i < 4000; ++i) many += "a*a*a*a*a*a*a*a*a*b" + std::to_string(i) + "\n";
+        const std::string name(200, 'a');
+        for (int i = 0; i < 20; ++i) CHECK(!GitignoreIgnores(many, name, false));
+        CHECK(GetTickCount64() - t0 < 5000);
+    }
     CHECK(MayHoldSecrets(".env"));
     CHECK(MayHoldSecrets(".env.local"));
     CHECK(MayHoldSecrets(".ENV.Production"));

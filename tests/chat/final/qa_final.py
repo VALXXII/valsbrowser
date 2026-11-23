@@ -717,6 +717,8 @@ def panel_widget():
 
 
 def real_click_chat(selector=None, text=None, kind='bubble', tries=12):
+    if text == 'Autoriser':
+        time.sleep(0.7)   # SEC-23: a permission card takes no « Autoriser » in its first 600 ms
     for _ in range(tries):
         p = chat_point(selector, text, kind)
         if p and kind == 'bubble':

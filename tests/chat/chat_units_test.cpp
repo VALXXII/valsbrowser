@@ -290,6 +290,13 @@ static void TestTools() {
     Check(OurTool(ParseMcpName("mcp__" + ours + "__browser_annotations_list_all"), ours) == Ours::None, "a longer tool name is not ours");
     Check(OurTool(ParseMcpName("mcp__" + ours + "__browser_annotations_list"), "") == Ours::None, "no server of ours: nothing is ours");
     Check(OurTool(ParseMcpName("Edit"), ours) == Ours::None && OurTool(ParseMcpName("browser_annotations_list"), ours) == Ours::None, "a bare name is not ours");
+    // SEC-28: allowed without a card only when the request also looks like our tool (kind, arguments)
+    Check(LooksLikeOurs(Ours::List, "other", "{}") && LooksLikeOurs(Ours::List, "", "") && LooksLikeOurs(Ours::Resolve, "other", R"({"id":"ann_qa1","summary":"fait"})")
+          && LooksLikeOurs(Ours::Claim, "read", R"({"id":"ann_a1","agent_label":"Claude","claim_token":"t"})"), "SEC-28: our tool's own kind and arguments: no card");
+    Check(!LooksLikeOurs(Ours::List, "execute", "{}") && !LooksLikeOurs(Ours::Get, "edit", R"({"id":"ann_a1"})") && !LooksLikeOurs(Ours::Release, "delete", "{}") && !LooksLikeOurs(Ours::List, "fetch", "{}"),
+          "SEC-28: a command, an edit, a deletion or a fetch titled like our tool gets a card");
+    Check(!LooksLikeOurs(Ours::Get, "other", R"({"id":"ann_a1","command":"rm -rf ."})") && !LooksLikeOurs(Ours::List, "other", R"({"file_path":"C:\\x"})") && !LooksLikeOurs(Ours::List, "other", "[]") && !LooksLikeOurs(Ours::None, "other", "{}"),
+          "SEC-28: an argument our tool does not take gets a card");
     // the annotation a call is about
     Check(AnnotationIdOf(R"({"id":"ann_k7m2p9x4"})") == "ann_k7m2p9x4", "the annotation id of a call");
     Check(AnnotationIdOf(R"({"id":"ann_k7m2p9x4","summary":"fait"})") == "ann_k7m2p9x4", "…with other arguments");
@@ -414,6 +421,25 @@ static void TestOptions() {
     Check(fx.size() == 2 && fx[0] == 0 && fx[1] == 1, "R4: a line the adapter does not have is absent; an unknown mode is never shown");
     const std::vector<P> twice = {{"auto", "acceptEdits"}, {"auto", "acceptAll"}};
     Check(PaperModes(twice).size() == 1, "R4: one mode per line (the first wins)");
+    // SEC-02: « Lancer le plan » never answers the plan gate with the mode that bypasses every permission
+    {   struct Opt { std::string id, kind; };
+        const std::vector<std::string> ask = {"default"}, automatic = {"auto", "acceptEdits"}, never = {"bypassPermissions"};
+        // Claude's adapter on Windows (ALLOW_BYPASS): bypass first, then acceptEdits, default, plan
+        const std::vector<Opt> claudeGate = {{"bypassPermissions", "allow_always"}, {"acceptEdits", "allow_always"}, {"default", "allow_once"}, {"plan", "reject_once"}};
+        Check(PlanRunOption(claudeGate, ask, automatic, never) == "default", "SEC-02: Claude's plan gate is answered with « default » (every change still asks), never the first allow option");
+        const std::vector<Opt> reordered = {{"default", "allow_once"}, {"bypassPermissions", "allow_once"}};
+        Check(PlanRunOption(reordered, ask, automatic, never) == "default", "SEC-02: by id, whatever the order");
+        const std::vector<Opt> noAsk = {{"bypassPermissions", "allow_once"}, {"acceptEdits", "allow_once"}, {"yes", "allow_once"}};
+        Check(PlanRunOption(noAsk, ask, automatic, never) == "yes", "SEC-02: no ask mode: an allow_once that is neither automatic nor « never »");
+        const std::vector<Opt> onlyBad = {{"bypassPermissions", "allow_always"}, {"acceptEdits", "allow_always"}, {"plan", "reject_once"}};
+        Check(PlanRunOption(onlyBad, ask, automatic, never).empty(), "SEC-02: nothing keeps the permissions: nothing is answered (no fallback to the last option)");
+        const std::vector<Opt> askRejects = {{"default", "reject_once"}};
+        Check(PlanRunOption(askRejects, ask, automatic, never).empty() && PlanRunOption(std::vector<Opt>{}, ask, automatic, never).empty(), "SEC-02: a refusal is never taken for a launch"); }
+    // SEC-13: the mode is applied fail-closed
+    Check(PromptGateFor("auto", "default", false, false) == PromptGate::Wait, "SEC-13: a mode asked and not confirmed yet holds the prompt");
+    Check(PromptGateFor("default", "default", false, false) == PromptGate::Go && PromptGateFor("default", "", false, false) == PromptGate::Go, "SEC-13: the session is in the mode asked: the prompt goes");
+    Check(PromptGateFor("auto", "", true, false) == PromptGate::Fix, "SEC-13: the last mode change was refused: never prompted as it is");
+    Check(PromptGateFor("bypassPermissions", "", false, true) == PromptGate::Fix, "SEC-13: never a prompt in a mode that asks for nothing");
 }
 
 // Mode Commentaire: where the bubble goes (src/chat-bubble.h) and what the store keeps of it (src/chat-store.h).

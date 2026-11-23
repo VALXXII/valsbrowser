@@ -330,7 +330,7 @@ private:
         ShowWindow(overlay_, SW_SHOWNA);
         DwmFlushSafe();
     }
-    static void DwmFlushSafe() { using F = HRESULT(WINAPI*)(); static F f = reinterpret_cast<F>(reinterpret_cast<void*>(GetProcAddress(LoadLibraryW(L"dwmapi.dll"), "DwmFlush"))); if (f) f(); }
+    static void DwmFlushSafe() { using F = HRESULT(WINAPI*)(); static F f = reinterpret_cast<F>(reinterpret_cast<void*>(GetProcAddress(LoadLibraryExW(L"dwmapi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32), "DwmFlush"))); if (f) f(); }
     bool Alpha(int a) {
         if (!overlay_ || !mem_) return false;
         BLENDFUNCTION bf{AC_SRC_OVER, 0, BYTE(std::clamp(a, 0, 255)), AC_SRC_ALPHA}; POINT src{0, 0}; SIZE sz = size_;

@@ -11,6 +11,8 @@
 #include <istream>
 #include <ostream>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include "downloads.h" // ToUtf8 / FromUtf8
 
@@ -107,7 +109,7 @@ inline std::wstring PercentDecode(const std::wstring& s) {
 // document now shown (ICoreWebView2_14::ServerCertificateErrorDetected).
 inline Display Describe(const std::wstring& uri, bool certificateError = false) {
     Display d;
-    if (uri.empty() || uri == L"about:blank") return d;
+    if (uri.empty()) return d;   // about:blank is described as any other address: only the home tab shows an empty field
     Parts p;
     if (Split(uri, p) && (p.scheme == L"https" || p.scheme == L"http")) {
         if (certificateError) {
@@ -172,6 +174,38 @@ inline std::wstring FileUrlFromPath(const std::wstring& typed) {
     }
     return L"file:///" + encode(s);
 }
+// An http(s) address the engine accepts: a host with no blank, control or forbidden host character, a port
+// that fits and no dotted number it rejects as an IPv4 address ("1.2.3.4.5"). The engine's Navigate refuses the others
+// (E_INVALIDARG), so they are searched when typed and dropped from a restored session. Other schemes: not judged here.
+inline bool Navigable(const std::wstring& url) {
+    const std::wstring low = Lower(url);
+    if (!StartsWith(low, L"https://") && !StartsWith(low, L"http://")) return true;
+    Parts p;
+    if (!Split(url, p)) return false;
+    std::wstring host = p.host;
+    for (wchar_t c : host) if (c <= 0x20 || c == 0x7f) return false;   // a blank in the path is escaped by the engine
+    if (!host.empty() && host[0] == L'[') return host.find(L']') != std::wstring::npos;   // IPv6 literal: kept as typed
+    const auto colon = host.rfind(L':');
+    if (colon != std::wstring::npos) {
+        const std::wstring port = host.substr(colon + 1); host = host.substr(0, colon);
+        if (port.size() > 5 || port.find_first_not_of(L"0123456789") != std::wstring::npos || (!port.empty() && std::stol(port) > 65535)) return false;
+    }
+    if (host.empty() || host.find_first_of(L"<>^|:") != std::wstring::npos) return false;
+    if (host.back() == L'.') host.pop_back();
+    const auto lastDot = host.rfind(L'.');
+    const std::wstring last = lastDot == std::wstring::npos ? host : host.substr(lastDot + 1);
+    if (last.empty() || last.find_first_not_of(L"0123456789") != std::wstring::npos) return true;   // a name, not a number
+    std::vector<std::wstring> labels;
+    for (std::size_t start = 0;;) { const auto dot = host.find(L'.', start); labels.push_back(host.substr(start, dot - start)); if (dot == std::wstring::npos) break; start = dot + 1; }
+    if (labels.size() > 4) return false;
+    for (std::size_t i = 0; i < labels.size(); ++i) {
+        const auto& label = labels[i];
+        if (label.empty() || label.size() > 10 || label.find_first_not_of(L"0123456789") != std::wstring::npos || (label.size() > 1 && label[0] == L'0')) return true;   // hex/octal forms: the engine decides
+        const unsigned long long value = std::stoull(label);
+        if (i + 1 < labels.size() ? value > 255 : value >= (1ull << (8 * (5 - labels.size())))) return false;
+    }
+    return true;
+}
 // What the address field (and a link given on the command line) opens: one rule for both.
 enum class Typed { Empty, Url, Sandbox, Search };
 struct Resolution { Typed kind = Typed::Empty; std::wstring value; };   // Url: the URL; Search: the trimmed words
@@ -181,10 +215,10 @@ inline Resolution Resolve(const std::wstring& typed) {
     if (s == L"about:blank") return {Typed::Url, s};
     const std::wstring low = Lower(s);
     if (low == L"browser://debug" || low == L"browser://sandbox") return {Typed::Sandbox, L""};
-    if (StartsWith(low, L"https://") || StartsWith(low, L"http://")) return {Typed::Url, s};
+    if (StartsWith(low, L"https://") || StartsWith(low, L"http://")) return Navigable(s) ? Resolution{Typed::Url, s} : Resolution{Typed::Search, s};
     if (StartsWith(low, L"file:") && s.size() > 5) return {Typed::Url, s};   // file:///C:/… as typed
     if (LooksLikeWindowsPath(s)) return {Typed::Url, FileUrlFromPath(s)};
-    if (s.find_first_of(L" \t") == std::wstring::npos && s.find(L"://") == std::wstring::npos && (s.find(L'.') != std::wstring::npos || StartsWith(low, L"localhost")))
+    if (s.find_first_of(L" \t") == std::wstring::npos && s.find(L"://") == std::wstring::npos && (s.find(L'.') != std::wstring::npos || StartsWith(low, L"localhost")) && Navigable(L"https://" + s))
         return {Typed::Url, L"https://" + s};
     return {Typed::Search, s};
 }
@@ -277,7 +311,7 @@ public:
         auto* v = Find(url);
         if (!v) {
             if (items_.size() >= Limit) Evict();
-            items_.push_back({url, L"", 0, 0}); v = &items_.back();
+            v = Add({url, L"", 0, 0});
         }
         ++v->visits; v->last = now; // the first spelling of the URL is kept
         if (!title.empty()) v->title = title;
@@ -295,7 +329,7 @@ public:
             return Imported::Present;
         }
         if (items_.size() >= Limit) return Imported::Full;
-        items_.push_back({url, Clean(title), std::max(1, visits), last});
+        Add({url, Clean(title), std::max(1, visits), last});
         return Imported::Added;
     }
     bool SetTitle(const std::wstring& url, const std::wstring& title) {
@@ -304,19 +338,17 @@ public:
         v->title = title; return true;
     }
     bool Remove(const std::wstring& url) {
-        const auto key = Key(url); const auto before = items_.size();
-        items_.erase(std::remove_if(items_.begin(), items_.end(), [&](const Visit& v) { return Key(v.url) == key; }), items_.end());
-        return items_.size() != before;
+        const auto at = index_.find(Key(url));
+        if (at == index_.end()) return false;
+        EraseAt(at->second); return true;
     }
     // Removes every page of a host (the aggregated "github.com" suggestion).
     bool RemoveHost(const std::wstring& host) {
-        const auto before = items_.size();
-        items_.erase(std::remove_if(items_.begin(), items_.end(), [&](const Visit& v) { Parts p; return Split(v.url, p) && ReadableHost(p.host) == host; }), items_.end());
-        return items_.size() != before;
+        return EraseIf([&](size_t i) { Parts p; return Split(items_[i].url, p) && ReadableHost(p.host) == host; });
     }
     // Whether any remembered page still belongs to `site` (see SiteOf).
     bool HasSite(const std::wstring& site) const { for (auto& v : items_) if (SiteOf(v.url) == site) return true; return false; }
-    void Clear() { items_.clear(); }
+    void Clear() { items_.clear(); keys_.clear(); index_.clear(); }
     bool operator==(const History& o) const {
         if (items_.size() != o.items_.size()) return false;
         for (size_t i = 0; i < items_.size(); ++i) { const auto& a = items_[i]; const auto& b = o.items_[i]; if (a.url != b.url || a.title != b.title || a.visits != b.visits || a.last != b.last) return false; }
@@ -327,13 +359,17 @@ public:
     // another window comes back only with visits made after its removal (never its old count).
     static History Merge(const History& base, const History& mine, const History& theirs) {
         History r = theirs;
-        for (const auto& b : base.items_) if (!const_cast<History&>(mine).Find(b.url)) r.Remove(b.url);
-        for (const auto& m : mine.items_) {
-            const Visit* b = const_cast<History&>(base).Find(m.url);
+        // Keys are indexed (PERF-01): one hash lookup per page instead of a scan of every page.
+        std::unordered_set<std::wstring> gone;
+        for (const auto& k : base.keys_) if (!mine.index_.count(k)) gone.insert(k);
+        if (!gone.empty()) r.EraseIf([&](size_t i) { return gone.count(r.keys_[i]) != 0; });
+        for (size_t i = 0; i < mine.items_.size(); ++i) {
+            const Visit& m = mine.items_[i]; const std::wstring& key = mine.keys_[i];
+            const Visit* b = base.FindKey(key);
             const int fresh = b ? std::max(0, m.visits - b->visits) : m.visits;
-            Visit* v = r.Find(m.url);
+            Visit* v = r.FindKey(key);
             if (v) { v->visits += fresh; if (m.last > v->last) { v->last = m.last; if (!m.title.empty()) v->title = m.title; } else if (b && m.title != b->title && !m.title.empty()) v->title = m.title; }
-            else if (fresh > 0) { if (r.items_.size() >= Limit) r.Evict(); r.items_.push_back({m.url, m.title, fresh, m.last}); }
+            else if (fresh > 0) { if (r.items_.size() >= Limit) r.Evict(); r.Add({m.url, m.title, fresh, m.last}, key); }
         }
         return r;
     }
@@ -354,22 +390,48 @@ public:
             if (f.size() != 4) continue;
             Visit v;
             try { v.visits = std::max(1, std::stoi(f[0])); v.last = std::stoll(f[1]); } catch (...) { continue; }
-            if (!NativeChrome::Downloads::FromUtf8(f[2], v.url) || !NativeChrome::Downloads::FromUtf8(f[3], v.title) || !Recordable(v.url) || h.Find(v.url)) continue;
-            h.items_.push_back(std::move(v));
+            if (!NativeChrome::Downloads::FromUtf8(f[2], v.url) || !NativeChrome::Downloads::FromUtf8(f[3], v.title) || !Recordable(v.url)) continue;
+            std::wstring key = Key(v.url);
+            if (h.index_.count(key)) continue;
+            h.Add(std::move(v), std::move(key));
         }
         return h;
     }
 private:
     std::vector<Visit> items_;
+    // PERF-01: keys_[i] is Key(items_[i].url), computed once; index_ maps each key to its position
+    // (keys are unique: a page is never added twice), so a lookup no longer re-keys every page.
+    std::vector<std::wstring> keys_;
+    std::unordered_map<std::wstring, size_t> index_;
     static std::wstring Clean(std::wstring s) { for (auto& c : s) if (c == L'\t' || c == L'\n' || c == L'\r') c = L' '; return s; }
-    Visit* Find(const std::wstring& url) {
-        const auto key = Key(url);
-        for (auto& v : items_) if (Key(v.url) == key) return &v;
-        return nullptr;
+    Visit* Find(const std::wstring& url) { return FindKey(Key(url)); }
+    Visit* FindKey(const std::wstring& key) { const auto at = index_.find(key); return at == index_.end() ? nullptr : &items_[at->second]; }
+    const Visit* FindKey(const std::wstring& key) const { const auto at = index_.find(key); return at == index_.end() ? nullptr : &items_[at->second]; }
+    Visit* Add(Visit v) { std::wstring key = Key(v.url); return Add(std::move(v), std::move(key)); }
+    Visit* Add(Visit v, std::wstring key) {
+        index_.emplace(key, items_.size()); keys_.push_back(std::move(key)); items_.push_back(std::move(v));
+        return &items_.back();
+    }
+    void EraseAt(size_t i) {
+        index_.erase(keys_[i]); items_.erase(items_.begin() + static_cast<std::ptrdiff_t>(i)); keys_.erase(keys_.begin() + static_cast<std::ptrdiff_t>(i));
+        for (auto& e : index_) if (e.second > i) --e.second;
+    }
+    // Erases every page for which `drop(i)` holds, keeping the order of the others; one pass.
+    template <class F> bool EraseIf(F drop) {
+        size_t out = 0; const size_t before = items_.size();
+        for (size_t i = 0; i < before; ++i) {
+            if (drop(i)) continue;
+            if (out != i) { items_[out] = std::move(items_[i]); keys_[out] = std::move(keys_[i]); }
+            ++out;
+        }
+        if (out == before) return false;
+        items_.resize(out); keys_.resize(out); index_.clear();
+        for (size_t i = 0; i < out; ++i) index_.emplace(keys_[i], i);
+        return true;
     }
     void Evict() {
         auto worst = std::min_element(items_.begin(), items_.end(), [](const Visit& a, const Visit& b) { return a.visits != b.visits ? a.visits < b.visits : a.last < b.last; });
-        if (worst != items_.end()) items_.erase(worst);
+        if (worst != items_.end()) EraseAt(static_cast<size_t>(worst - items_.begin()));
     }
 };
 

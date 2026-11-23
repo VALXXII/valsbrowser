@@ -45,6 +45,7 @@ static void ReportChecks() {
     Expect(r.playing == 1 && std::abs(r.longest - 215.3) < 1e-9 && !r.live && r.session == 2 && r.video == 1, "report numbers");
     Expect(r.title == L"Clair de lune \u00e9\"x\"" && r.artist == L"Debussy" && r.album == L"Suite" && r.artwork == L"https://img.example/a.jpg", "report strings and escapes");
     Expect(ParseReport(L"{\"lisiereAudio\":1,\"p\":0,\"d\":-1,\"l\":1,\"t\":\"  a\\n\\tb  \",\"i\":\"http://insecure/a.png\"}", r) && r.title == L"a b" && r.artwork.empty() && r.live, "titles are cleaned, only https artwork");
+    Expect(ParseReport(L"{\"lisiereAudio\":1,\"p\":1,\"t\":\"a\\u202eb\\u2066c\\u200fd\",\"a\":\"\\u061cx\\u2069\"}", r) && r.title == L"abcd" && r.artist == L"x", "SEC-25: bidi controls are dropped from title and artist");
     Expect(!ParseReport(L"{\"other\":1}", r) && !ParseReport(L"{\"lisiereAudio\":1,\"t\":\"unterminated}", r) && !ParseReport(L"{\"lisiereAudio\":1,\"p\":}", r), "malformed reports are rejected");
     Expect(ParseReport(L"{\"lisiereAudio\":1,\"p\":1e9,\"s\":7,\"d\":null}", r) && r.playing == 1000 && r.session == 2 && r.longest == -1, "counts and states are bounded");
 }
@@ -129,7 +130,9 @@ static void IconChecks() {
     static_assert(Icon::LoopMs == 5000, "user-chosen default: the 72-frame loop lasts 5 s");
     Expect(m.At(At(1400 + 2500)).frame == 36 && m.At(At(1400 + 1250)).frame == 18, "loop frame follows time (72 frames over 5 s)");
     Expect(m.At(At(1400 + 1270)).frame == 18 && m.At(At(1400 + 1320)).frame == 19, "one loop frame every ~69 ms");
-    auto w = m.NextWake(At(1400 + 1270)); Expect(w.delay && *w.delay == Milliseconds(50) && w.frames, "loop wakes on the next frame boundary");
+    // PERF-03: a one-shot deadline one nominal frame (16 ms) before the next step, then compositor frames up to it.
+    auto w = m.NextWake(At(1400 + 1270)); Expect(w.delay && *w.delay == Milliseconds(50 - 16) && !w.frames, "loop: a deadline one frame before the next step (no display-rate ticks)");
+    w = m.NextWake(At(1400 + 1310)); Expect(w.delay && *w.delay == Milliseconds(10) && w.frames, "loop: compositor frames within one frame of the step");
     // Stop: the cycle finishes (no jump), then the outro to the subdued static glyph.
     m.Update(false, At(1400 + 700), false);
     Expect(m.At(At(1400 + 4900)).frame > 0 && m.At(At(1400 + 4900)).frame < Icon::Loop, "still on the loop until the cycle ends");

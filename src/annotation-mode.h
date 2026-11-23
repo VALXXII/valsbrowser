@@ -226,6 +226,8 @@ bool ConnectRedirected() { return !EnvVar(L"BROWSER_ANNOTATIONS_CONNECT_ROOT").e
 
 // ---------------------------------------------------------------- thread pool -> UI thread
 struct Job { std::function<void()> work, done; };
+// SEC-26: finished jobs wait here; JobDone carries no pointer (another process could post a forged one).
+std::mutex jobsMutex; std::vector<std::unique_ptr<Job>> jobsDone;
 LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l);
 bool EnsurePost() {
     if (post) return true;
@@ -238,7 +240,9 @@ VOID CALLBACK RunJob(PTP_CALLBACK_INSTANCE, PVOID p) {
     auto* j = static_cast<Job*>(p);
     try { MigrateOnce(); } catch (...) {}   // every job waits for the one-time merge of the old per-profile stores
     try { if (j->work) j->work(); } catch (...) {}
-    if (!post || !PostMessageW(post, JobDone, 0, reinterpret_cast<LPARAM>(j))) delete j;
+    if (!post) { delete j; return; }
+    { std::lock_guard<std::mutex> lock(jobsMutex); jobsDone.emplace_back(j); }
+    PostMessageW(post, JobDone, 0, 0);
 }
 void Run(std::function<void()> work, std::function<void()> done) {
     Store();
@@ -332,9 +336,14 @@ void CtrlPoll() {
     if (s.active && s.injected) Cmd(ModeTab(), L"ctrl", down ? L"true" : L"false");
 }
 // The ~30 ms reading runs only while the mode is on and the window is in front (WM_ACTIVATEAPP / show: AnnotationWindowState).
+// PERF-20: ~30 ms only while the pointer is over the page (where Ctrl changes what a click does); elsewhere every 200 ms,
+// enough to pass on a release (a pointer move over the page reads Ctrl at once anyway: « mods »).
+UINT ctrlPeriod = 0;
+bool PointerOverPage() { POINT p{}; if (!GetCursorPos(&p)) return true; const RECT r = PageScreen(ModeTab()); return PtInRect(&r, p) != FALSE; }
+void CtrlArm(UINT ms) { if (post && ms != ctrlPeriod) { SetTimer(post, CtrlTimer, ms, nullptr); ctrlPeriod = ms; } }
 void CtrlWatch() {
     const bool on = s.active && OursInFront();
-    if (post) { if (on) SetTimer(post, CtrlTimer, 30, nullptr); else KillTimer(post, CtrlTimer); }
+    if (post) { if (on) CtrlArm(PointerOverPage() ? 30 : 200); else { KillTimer(post, CtrlTimer); ctrlPeriod = 0; } }
     if (!on) CtrlPoll();   // released (or left behind): the page gets its selection back
 }
 // The accent the page script paints (its frame fill, edges, label, padding hatches, cursor dot): the native frame and
@@ -1259,7 +1268,10 @@ void Rearm(const std::shared_ptr<Tab>& t, std::function<void(bool)> then = nullp
     cb->Release();
 }
 LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
-    if (m == JobDone) { std::unique_ptr<Job> j(reinterpret_cast<Job*>(l)); LogMigration(); if (j->done && !halted) j->done(); return 0; }
+    if (m == JobDone) {
+        std::vector<std::unique_ptr<Job>> done; { std::lock_guard<std::mutex> lock(jobsMutex); done.swap(jobsDone); }
+        LogMigration(); for (auto& j : done) if (j->done && !halted) j->done(); return 0;
+    }
     if (m == ShotStart) { if (s.active && shot.waiting && shot.deferred && shot.serial == std::uint64_t(w)) { shot.deferred = false; StartShot(ModeTab()); } return 0; }
     if (m == WatchChanged) {
         watchSignal = false; if (!watch.thread) return 0;
@@ -1270,7 +1282,7 @@ LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     if (m == WM_TIMER && w == HideTimer) { KillTimer(h, HideTimer); if (s.active && shot.waiting) { s.captureWanted = false; Log(L"ANNOTATE page did not confirm the hidden frame: capturing anyway"); Capture(ModeTab(), shot.serial); } ShowPanel(); return 0; }
     if (m == WM_TIMER && w == PanelTimer) { KillTimer(h, PanelTimer); ShowPanel(); return 0; }
-    if (m == WM_TIMER && w == CtrlTimer) { if (!s.active || !OursInFront()) { CtrlWatch(); return 0; } CtrlPoll(); return 0; }   // R31
+    if (m == WM_TIMER && w == CtrlTimer) { if (!s.active || !OursInFront()) { CtrlWatch(); return 0; } CtrlArm(PointerOverPage() ? 30 : 200); CtrlPoll(); return 0; }   // R31, PERF-20
     if (m == WM_TIMER && w == FrameTimer) { KillTimer(h, FrameTimer); frame.Hide(); return 0; }
     return DefWindowProcW(h, m, w, l);
 }

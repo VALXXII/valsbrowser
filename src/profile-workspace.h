@@ -25,7 +25,7 @@ struct WorkspaceStash {
     std::vector<std::shared_ptr<Tab>> pages; int current = -1; std::vector<ClosedTab> closedTabs; bool sessionReady = false;
     std::wstring dataDir, profileDir, sessionFile, downloadsFile, settingsFile, profileId;
     BrowserSettings::State settings, settingsBase;
-    AddressBar::History history, historyBase;
+    AddressBar::History history, historyBase; ProfileStore::Stamp historySeen, bookmarksSeen;
     std::map<std::wstring, std::shared_ptr<const NativeChrome::FaviconImage>> siteIcons; std::set<std::wstring> siteIconsMissing; std::map<std::wstring, size_t> siteIconsWritten;
     std::vector<DL::Item> downloads, downloadsBase; bool downloadFolderOnProfile = false;
     std::vector<std::shared_ptr<PendingDownload>> pendingDownloads;
@@ -63,7 +63,7 @@ void Exchange(Workspace& w) {
     std::swap(pages, s.pages); std::swap(current, s.current); std::swap(closedTabs, s.closedTabs); std::swap(sessionReady, s.sessionReady);
     std::swap(dataDir, s.dataDir); std::swap(profileDir, s.profileDir); std::swap(sessionFile, s.sessionFile); std::swap(downloadsFile, s.downloadsFile); std::swap(settingsFile, s.settingsFile); std::swap(profileId, s.profileId);
     std::swap(settings, s.settings); std::swap(settingsBase, s.settingsBase);
-    std::swap(history, s.history); std::swap(historyBase, s.historyBase);
+    std::swap(history, s.history); std::swap(historyBase, s.historyBase); std::swap(historySeen, s.historySeen); std::swap(bookmarksSeen, s.bookmarksSeen);
     std::swap(siteIcons, s.siteIcons); std::swap(siteIconsMissing, s.siteIconsMissing); std::swap(siteIconsWritten, s.siteIconsWritten);
     std::swap(downloads, s.downloads); std::swap(downloadsBase, s.downloadsBase); std::swap(downloadFolderOnProfile, s.downloadFolderOnProfile);
     std::swap(pendingDownloads, s.pendingDownloads);

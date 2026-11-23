@@ -516,6 +516,9 @@ private:
     float notesAvail_ = 1e9f, notesFull_ = 0, notesBodyTop_ = 0;
     Lottie::Asset logo_; bool logoTried_ = false, logoOk_ = false; Motion::Time logoStart_{};
     std::vector<uint32_t> logoPixels_;
+    // One bitmap for the looping logo, refilled per frame; owned by `logoTarget_` (held, so a new target never shares its address).
+    ID2D1Bitmap* logoBitmap_ = nullptr; ID2D1RenderTarget* logoTarget_ = nullptr; unsigned logoSide_ = 0;
+    void DropLogoBitmap() { if (logoBitmap_) logoBitmap_->Release(); if (logoTarget_) logoTarget_->Release(); logoBitmap_ = nullptr; logoTarget_ = nullptr; logoSide_ = 0; }
     static constexpr long long GroupKey = 1, DangerKey = 7500;   // DangerKey: B07 card group (UIA only, not a hit)
 
     UINT Dpi() const { return GetDpiForWindow(hwnd_ ? hwnd_ : owner_); }
@@ -1055,7 +1058,7 @@ private:
         if (done) done(result);
         for (auto& v : result.values) SecureZeroMemory(v.data(), v.size() * sizeof(wchar_t));
     }
-    void ReleaseLogo() { logo_.Clear(); logoTried_ = logoOk_ = false; logoPixels_.clear(); logoPixels_.shrink_to_fit(); }
+    void ReleaseLogo() { DropLogoBitmap(); logo_.Clear(); logoTried_ = logoOk_ = false; logoPixels_.clear(); logoPixels_.shrink_to_fit(); }
     void FinishClosing() {
         closing_ = false; fade_.Snap(0); ReleaseLogo();
         if (hwnd_) ShowWindow(hwnd_, SW_HIDE);
@@ -1359,11 +1362,15 @@ private:
         const auto* f = logo_.Sample(progress, side); if (!f || f->bgra.size() != static_cast<size_t>(side) * side) return false;
         logoPixels_.resize(f->bgra.size());
         for (size_t i = 0; i < f->bgra.size(); ++i) { const uint32_t a = f->bgra[i] >> 24; logoPixels_[i] = (a << 24) | (a << 16) | (a << 8) | a; }   // premultiplied white
-        ID2D1Bitmap* bitmap = nullptr;
-        if (FAILED(t->CreateBitmap(D2D1::SizeU(side, side), logoPixels_.data(), side * 4, D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)), &bitmap)) || !bitmap) return false;
+        if (logoTarget_ != t || logoSide_ != side) DropLogoBitmap();
+        if (logoBitmap_) { if (FAILED(logoBitmap_->CopyFromMemory(nullptr, logoPixels_.data(), side * 4))) { DropLogoBitmap(); return false; } }
+        else {
+            if (FAILED(t->CreateBitmap(D2D1::SizeU(side, side), logoPixels_.data(), side * 4, D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)), &logoBitmap_)) || !logoBitmap_) { logoBitmap_ = nullptr; return false; }
+            logoTarget_ = t; logoTarget_->AddRef(); logoSide_ = side;
+        }
         const float s = side * px, x = (slot.left + slot.right - s) / 2, y = (slot.top + slot.bottom - s) / 2;
-        t->DrawBitmap(bitmap, {x, y, x + s, y + s}, NotesPaper::logoInk, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-        bitmap->Release(); return true;
+        t->DrawBitmap(logoBitmap_, {x, y, x + s, y + s}, NotesPaper::logoInk, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        return true;
     }
     void PaintNotes(Motion::Time now) {
         namespace N = NotesPaper;
@@ -1430,7 +1437,7 @@ private:
             if (spec_.notes.collapsed) kit_.Ring({0, 0, width_, height_}, P::radius, DialogKit::White(NotesPaper::border));
             PaintNotes(now);
             if (!spec_.notes.collapsed) kit_.Ring({0, 0, width_, height_}, P::radius, DialogKit::White(NotesPaper::border));
-            if (t->EndDraw() == D2DERR_RECREATE_TARGET && pc_ == &chrome_) { kit_.Release(); chrome_.RecreateTarget(); }
+            if (t->EndDraw() == D2DERR_RECREATE_TARGET && pc_ == &chrome_) { kit_.Release(); DropLogoBitmap(); chrome_.RecreateTarget(); }
             return;
         }
         for (const auto& b : blocks_) {
@@ -1682,7 +1689,7 @@ private:
         }
         PaintActions(now);
         kit_.Ring({0, 0, width_, height_}, P::radius, DialogKit::White(P::border));
-        if (t->EndDraw() == D2DERR_RECREATE_TARGET && pc_ == &chrome_) { kit_.Release(); chrome_.RecreateTarget(); }
+        if (t->EndDraw() == D2DERR_RECREATE_TARGET && pc_ == &chrome_) { kit_.Release(); DropLogoBitmap(); chrome_.RecreateTarget(); }
     }
     // ---- UI Automation --------------------------------------------------------------------------
     // B07 card for UIA (R1): file, real reason title and full text, from the spec (not the drawn, possibly

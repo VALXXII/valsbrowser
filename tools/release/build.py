@@ -206,7 +206,9 @@ def build(out: Path, info: dict, repo: str, preview: bool = False, bridge: str |
              rc, '-O', 'coff', '-o', o])
     # No PE link timestamp and relative source paths: identical inputs give identical binaries.
     common = ['-std=c++17', '-O2', *WARNINGS, '-static', '-municode', '-Isrc', f'-I{obj / "gen"}',
-              '-DBROWSER_HAS_BUILD_INFO', '-Wl,--no-insert-timestamp', f'-ffile-prefix-map={ROOT}=.']
+              '-DBROWSER_HAS_BUILD_INFO', '-Wl,--no-insert-timestamp', f'-ffile-prefix-map={ROOT}=.',
+              # Hardening (audit SEC-16): stack canaries for the hand-written parsers; ASLR / DEP stated, not assumed.
+              '-fstack-protector-strong', '-Wl,--dynamicbase,--nxcompat,--high-entropy-va']
     if preview:  # design preview: updates and the hand-over to an installed copy are compiled out
         common.append('-DBROWSER_PREVIEW')
     if not annotations:  # measurement baseline: the annotation mode compiled out (src/main.cpp)

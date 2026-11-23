@@ -997,6 +997,13 @@ class Workflow(unittest.TestCase):
         self.assertIn('cancel-in-progress: true', text)
         self.assertIn("vars.UPDATES_PUBLISH_ENABLED == 'true'", text)
         self.assertIn('secrets.UPDATES_RELEASE_TOKEN', text)
+        # SEC-03: the token comes from the main-only "release" environment, only in the publish job's last step,
+        # and no job output is pasted into a shell script.
+        publish = text[text.index('\n  publish:'):]
+        self.assertIn('environment:\n      name: release', publish)
+        self.assertEqual(text.count('secrets.'), 1)
+        self.assertGreater(text.index('secrets.UPDATES_RELEASE_TOKEN'), text.rindex('- name:'))
+        self.assertNotRegex(text, r'run:[^\n]*\$\{\{')
         self.assertNotIn('GITHUB_TOKEN }}', text)
         self.assertNotRegex(text, r'gh[pousr]_[A-Za-z0-9]{20,}')
         self.assertNotIn('ExecutionPolicy', text)

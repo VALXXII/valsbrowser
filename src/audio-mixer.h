@@ -118,10 +118,11 @@ inline bool String(const std::wstring& s, size_t& i, std::wstring& out) {
     }
     return false;
 }
-// Display text: control characters become spaces, runs collapse, ends trimmed, capped.
+// Display text: control characters become spaces, bidi controls go (SEC-25: a title cannot reorder the menu's
+// text), runs collapse, ends trimmed, capped.
 inline std::wstring Clean(const std::wstring& s, size_t limit = 200) {
     std::wstring out; bool space = false;
-    for (wchar_t c : s) { if (c < 32 || c == 0x7f || c == 0x2028 || c == 0x2029) c = L' '; if (c == L' ') { space = !out.empty(); continue; } if (space) out += L' '; space = false; out += c; if (out.size() >= limit) break; }
+    for (wchar_t c : s) { if (c == 0x061c || c == 0x200e || c == 0x200f || (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069)) continue; if (c < 32 || c == 0x7f || c == 0x2028 || c == 0x2029) c = L' '; if (c == L' ') { space = !out.empty(); continue; } if (space) out += L' '; space = false; out += c; if (out.size() >= limit) break; }
     return out;
 }
 }
@@ -295,6 +296,9 @@ struct IconPose {
     bool high = false;      // static glyph: speaker-simple-high (music, reduced motion) or -low
     float emphasis = Icon::Subdued; // multiplier of the toolbar ink
     float presence = 1;     // first appearance fade
+    // Same pose, same pixels: the host repaints the button only when this changes.
+    bool operator==(const IconPose& o) const { return frame == o.frame && high == o.high && emphasis == o.emphasis && presence == o.presence; }
+    bool operator!=(const IconPose& o) const { return !(*this == o); }
 };
 class IconModel {
     enum class Mode { Rest, Morph, Loop, Finish };
@@ -356,7 +360,10 @@ public:
             else { // next frame of the loop: frame f starts at f * LoopMs / Loop
                 const long long ms = std::max(0LL, Ms(loopStart_, now)), cycle = ms / Icon::LoopMs * Icon::LoopMs, in = ms - cycle;
                 const long long f = in * Icon::Loop / Icon::LoopMs + 1, next = cycle + (f * Icon::LoopMs + Icon::Loop - 1) / Icon::Loop;
-                w = Motion::Earlier(w, Motion::Wake{Milliseconds(std::max(1LL, next - ms)), true}); }
+                // A deadline one nominal frame before the step (one-shot timer, no ticks in between), then
+                // compositor frames up to it: the step still lands on the first frame past its boundary.
+                const long long due = std::max(1LL, next - ms), frame = Motion::Frame().delay->count();
+                w = Motion::Earlier(w, due <= frame ? Motion::Wake{Milliseconds(due), true} : Motion::Wake{Milliseconds(due - frame), false}); }
         }
         return w;
     }

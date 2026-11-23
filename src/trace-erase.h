@@ -8,6 +8,7 @@
 // Failed (read/write); only Done means the selection is gone from disk.
 #include <cstdint>
 #include <filesystem>
+#include "fs-safe.h"
 #include <sstream>
 #include <string>
 #include <vector>
@@ -24,7 +25,7 @@ enum class Outcome { Done, Busy, Failed, UnknownFormat };
 // the same browsing traces); the S3 backups exist to protect data, never to outlive the user's « Effacer ».
 inline void DropDamagedBackups(const std::wstring& path) {
     std::error_code ec; const std::filesystem::path p(path); const std::wstring stem = p.filename().wstring() + L".damaged-";
-    for (const auto& e : std::filesystem::directory_iterator(p.parent_path(), ec)) if (e.path().filename().wstring().rfind(stem, 0) == 0) std::filesystem::remove(e.path(), ec);
+    for (const auto& e : FsSafe::Entries(p.parent_path(), ec)) if (e.path().filename().wstring().rfind(stem, 0) == 0) std::filesystem::remove(e.path(), ec);
 }
 inline Outcome History(const std::wstring& dataDir, const std::wstring& path, std::int64_t since, AddressBar::History& mine, AddressBar::History& base, DWORD timeoutMs = 5000, std::vector<std::wstring>* erased = nullptr) {
     ProfileStore::Lock lock(dataDir, timeoutMs);

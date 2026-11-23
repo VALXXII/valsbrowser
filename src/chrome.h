@@ -71,8 +71,11 @@ class Chrome {
     // must not rebuild text formats/typography for unchanged labels. Bounded.
     struct TextKey{std::wstring value;float width,height,size,tracking;bool tabular,medium,keycap;
         bool operator<(const TextKey& o)const{return std::tie(value,width,height,size,tracking,tabular,medium,keycap)<std::tie(o.value,o.width,o.height,o.size,o.tracking,o.tabular,o.medium,o.keycap);}};
-    struct TextEntry{IDWriteTextLayout* layout=nullptr;TextMeasure measure;};
+    struct TextEntry{IDWriteTextLayout* layout=nullptr;TextMeasure measure;unsigned long long used=0;};
     std::map<TextKey,TextEntry> textCache;
+    // Paint() counts its passes: when the cache is full, only layouts the current pass has not used
+    // are evicted, so a pass that needs more than the limit never empties the cache under itself.
+    unsigned long long textPass=0,textEvictedPass=~0ull;
 public:
     // Present without blocking the UI thread on vblank (pacing comes from FrameClock)
     // and keep the back buffer so partial invalidation stays correct.
@@ -82,6 +85,7 @@ public:
     // every visible row so animation frames never rebuild layouts.
     size_t textCacheLimit=96;
     unsigned long long textLayoutsCreated=0;
+    unsigned long long faviconUploads=0; // site images uploaded as GPU bitmaps (tests measure re-uploads)
     void ClearTextCache(){for(auto& item:textCache)Drop(item.second.layout);textCache.clear();}
     Loading::Visual loading;
     bool navigationLoading=false;
@@ -262,7 +266,7 @@ public:
     // white 10 % inner outline so dark art keeps its edge on the dark canvas.
     bool DrawCover(const std::shared_ptr<const FaviconImage>& image,D2D1_RECT_F box,float radius){
         if(!image||!image->width||!image->height||!target||!factory)return false;
-        auto& bitmap=faviconBitmaps[image];if(!bitmap){auto properties=D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED));target->CreateBitmap(D2D1::SizeU(image->width,image->height),image->pixels.data(),image->stride,properties,&bitmap);}if(!bitmap)return false;
+        auto& bitmap=faviconBitmaps[image];if(!bitmap){++faviconUploads;auto properties=D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED));target->CreateBitmap(D2D1::SizeU(image->width,image->height),image->pixels.data(),image->stride,properties,&bitmap);}if(!bitmap)return false;
         const float bw=box.right-box.left,bh=box.bottom-box.top,iw=float(image->width),ih=float(image->height);
         const float k=std::max(bw/iw,bh/ih),sw=bw/k,sh=bh/k;const D2D1_RECT_F src{(iw-sw)/2,(ih-sh)/2,(iw+sw)/2,(ih+sh)/2};
         ID2D1RoundedRectangleGeometry* clip=nullptr;if(FAILED(factory->CreateRoundedRectangleGeometry(D2D1::RoundedRect(box,radius,radius),&clip)))return false;
@@ -329,16 +333,21 @@ public:
     }
     void ClearFaviconBitmaps(){for(auto& item:faviconBitmaps)Drop(item.second);faviconBitmaps.clear();}
     std::vector<bool> sleeping; // per tab (set with the favicons): suspended background tabs draw dimmed
-    void SetFavicons(std::vector<std::shared_ptr<const FaviconImage>> images){favicons=std::move(images);for(auto it=faviconBitmaps.begin();it!=faviconBitmaps.end();){if(std::find(favicons.begin(),favicons.end(),it->first)==favicons.end()){Drop(it->second);it=faviconBitmaps.erase(it);}else ++it;}}
+    // Keeps the GPU copy of every image this chrome still draws (tabs, closing-tab ghosts, bookmarks bar,
+    // the field's suggestion icon): each is uploaded once per target, not on every paint.
+    void SetFavicons(std::vector<std::shared_ptr<const FaviconImage>> images){favicons=std::move(images);
+        auto kept=[&](const std::shared_ptr<const FaviconImage>& image){if(image==editFavicon||std::find(favicons.begin(),favicons.end(),image)!=favicons.end())return true;
+            for(auto& item:bandItems)if(item.image==image)return true;for(auto& snap:tabSnapshots)if(snap.second.favicon==image)return true;return false;};
+        for(auto it=faviconBitmaps.begin();it!=faviconBitmaps.end();){if(!kept(it->first)){Drop(it->second);it=faviconBitmaps.erase(it);}else ++it;}}
     // Missing/empty/invalid site images are normal favicon absence, not engine errors.
     std::shared_ptr<const FaviconImage> DecodeFavicon(IStream* stream){if(!wic||!stream)return {};STATSTG stat{};if(FAILED(stream->Stat(&stat,STATFLAG_NONAME))||stat.cbSize.QuadPart==0||stat.cbSize.QuadPart>4*1024*1024)return {};LARGE_INTEGER zero{};if(FAILED(stream->Seek(zero,STREAM_SEEK_SET,nullptr)))return {};IWICBitmapDecoder* decoder=nullptr;IWICBitmapFrameDecode* frame=nullptr;IWICFormatConverter* converter=nullptr;UINT w=0,h=0;HRESULT hr=wic->CreateDecoderFromStream(stream,nullptr,WICDecodeMetadataCacheOnLoad,&decoder);if(SUCCEEDED(hr))hr=decoder->GetFrame(0,&frame);if(SUCCEEDED(hr))hr=frame->GetSize(&w,&h);if(SUCCEEDED(hr)&&(!w||!h||w>1024||h>1024))hr=E_INVALIDARG;if(SUCCEEDED(hr))hr=wic->CreateFormatConverter(&converter);if(SUCCEEDED(hr))hr=converter->Initialize(frame,GUID_WICPixelFormat32bppPBGRA,WICBitmapDitherTypeNone,nullptr,0,WICBitmapPaletteTypeCustom);std::shared_ptr<FaviconImage> image;if(SUCCEEDED(hr)){image=std::make_shared<FaviconImage>();image->width=w;image->height=h;image->stride=w*4;image->pixels.resize(image->stride*h);hr=converter->CopyPixels(nullptr,image->stride,(UINT)image->pixels.size(),image->pixels.data());}Drop(converter);Drop(frame);Drop(decoder);return SUCCEEDED(hr)?image:nullptr;}
     // A site image outside the tab list (suggestions, the field while editing), 16 DIP
     // centred in `box`. Bitmaps share the tab favicon cache (pruned with it).
     bool DrawSiteImage(const std::shared_ptr<const FaviconImage>& image,D2D1_RECT_F box,float opacity=1){if(!image||!image->width||!image->height)return false;
-        auto& bitmap=faviconBitmaps[image];if(!bitmap){auto properties=D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED));target->CreateBitmap(D2D1::SizeU(image->width,image->height),image->pixels.data(),image->stride,properties,&bitmap);}if(!bitmap)return false;
+        auto& bitmap=faviconBitmaps[image];if(!bitmap){++faviconUploads;auto properties=D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED));target->CreateBitmap(D2D1::SizeU(image->width,image->height),image->pixels.data(),image->stride,properties,&bitmap);}if(!bitmap)return false;
         const float side=Design::Size::icon,factor=std::min(side/image->width,side/image->height),w=image->width*factor,h=image->height*factor,x=(box.left+box.right-w)/2,y=(box.top+box.bottom-h)/2;
         target->DrawBitmap(bitmap,{x,y,x+w,y+h},opacity);return true;}
-    void DrawFavicon(int index,D2D1_RECT_F slot,float opacity=1){if(opacity<=0)return;auto image=index<(int)favicons.size()?favicons[index]:nullptr;if(!image){Icon(L"favicon",slot,16,opacity);return;}auto& bitmap=faviconBitmaps[image];if(!bitmap){auto properties=D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED));target->CreateBitmap(D2D1::SizeU(image->width,image->height),image->pixels.data(),image->stride,properties,&bitmap);}if(bitmap){float factor=std::min((slot.right-slot.left)/image->width,(slot.bottom-slot.top)/image->height),w=image->width*factor,h=image->height*factor;float x=(slot.left+slot.right-w)/2,y=(slot.top+slot.bottom-h)/2;target->DrawBitmap(bitmap,{x,y,x+w,y+h},opacity);}else Icon(L"favicon",slot,16,opacity);}
+    void DrawFavicon(int index,D2D1_RECT_F slot,float opacity=1){if(opacity<=0)return;auto image=index<(int)favicons.size()?favicons[index]:nullptr;if(!image){Icon(L"favicon",slot,16,opacity);return;}auto& bitmap=faviconBitmaps[image];if(!bitmap){++faviconUploads;auto properties=D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED));target->CreateBitmap(D2D1::SizeU(image->width,image->height),image->pixels.data(),image->stride,properties,&bitmap);}if(bitmap){float factor=std::min((slot.right-slot.left)/image->width,(slot.bottom-slot.top)/image->height),w=image->width*factor,h=image->height*factor;float x=(slot.left+slot.right-w)/2,y=(slot.top+slot.bottom-h)/2;target->DrawBitmap(bitmap,{x,y,x+w,y+h},opacity);}else Icon(L"favicon",slot,16,opacity);}
     // Hosts that paint their own surfaces (the downloads popover) reuse the fonts,
     // icons and helpers through these; SwapTarget redirects them to an offscreen layer.
     ID2D1RenderTarget* RenderTarget()const{return target;}
@@ -546,11 +555,16 @@ public:
         TextKey key{value,slot.right-slot.left,slot.bottom-slot.top,size,tracking,tabular,medium,keycap};
         auto it=textCache.find(key);
         if(it==textCache.end()){
-            if(textCache.size()>=textCacheLimit)ClearTextCache();
-            TextEntry entry;const D2D1_RECT_F origin{0,0,slot.right-slot.left,slot.bottom-slot.top};
+            if(textCache.size()>=textCacheLimit){
+                // Never painted through Paint(), or a runaway (a pass measures at most every bar item + the rest): as before.
+                if(!textPass||textCache.size()>=4*textCacheLimit+2*BookmarkLimit)ClearTextCache();
+                else if(textEvictedPass!=textPass){textEvictedPass=textPass;for(auto e=textCache.begin();e!=textCache.end();){if(e->second.used!=textPass){Drop(e->second.layout);e=textCache.erase(e);}else ++e;}}
+            }
+            TextEntry entry;entry.used=textPass;const D2D1_RECT_F origin{0,0,slot.right-slot.left,slot.bottom-slot.top};
             HRESULT hr=MakeTextLayout(value,origin,size,tabular,medium,tracking,&entry.layout,entry.measure);if(FAILED(hr))return hr;
             it=textCache.emplace(std::move(key),entry).first;
         }
+        it->second.used=textPass;
         placement=it->second.measure;placement.originY+=slot.top;placement.inkTop+=slot.top;placement.inkBottom+=slot.top;
         *output=it->second.layout;(*output)->AddRef();return S_OK;
     }
@@ -1071,7 +1085,7 @@ public:
     }
     // Smoke diagnostics: why AssetsReady() is false (bitmap count, keys that failed to load, font families).
     std::wstring AssetsReport(){std::wstring s=L"bitmaps="+std::to_wstring(bitmaps.size())+L" fonts="+std::to_wstring(fonts?fonts->GetFontFamilyCount():0)+L" missing=";for(auto& b:bitmaps)if(!b.second)s+=b.first+L";";return s;}
-    void Paint(const std::vector<std::wstring>& titles,int selected,const std::wstring& uri,bool editing,int hover,int focus,const D2D1_RECT_F* dirty=nullptr,Motion::Time now=Motion::Now()){(void)uri;/* the field reads `address`, set by the host */if(!target||!brush)return;Build((int)titles.size(),selected,&titles,now);target->BeginDraw();target->PushAxisAlignedClip(dirty?*dirty:D2D1::RectF(0,0,width,height),D2D1_ANTIALIAS_MODE_ALIASED);target->Clear(D2D1::ColorF(Design::Surface::canvas,Design::Surface::canvas,Design::Surface::canvas));if(!contentOnly){
+    void Paint(const std::vector<std::wstring>& titles,int selected,const std::wstring& uri,bool editing,int hover,int focus,const D2D1_RECT_F* dirty=nullptr,Motion::Time now=Motion::Now()){(void)uri;/* the field reads `address`, set by the host */if(!target||!brush)return;++textPass;Build((int)titles.size(),selected,&titles,now);target->BeginDraw();target->PushAxisAlignedClip(dirty?*dirty:D2D1::RectF(0,0,width,height),D2D1_ANTIALIAS_MODE_ALIASED);target->Clear(D2D1::ColorF(Design::Surface::canvas,Design::Surface::canvas,Design::Surface::canvas));if(!contentOnly){
         Round(bar,Design::Radius::control,Design::Surface::raised);DrawLoading(bar);if(focus=='L')FocusRing(bar,Design::Radius::control);
         // Skip controls wholly outside the dirty rectangle (4 DIP margin covers focus rings).
         auto visible=[&](D2D1_RECT_F b){return !dirty||(b.right+4>dirty->left&&b.left-4<dirty->right&&b.bottom+4>dirty->top&&b.top-4<dirty->bottom);};
@@ -1126,7 +1140,7 @@ public:
             if(d!=regions.end()){target->PushAxisAlignedClip(D2D1::RectF(0,0,width,ContentTop()-1),D2D1_ANTIALIAS_MODE_ALIASED);DrawDownloadRipple(ripple,d->rect,Design::Size::icon);target->PopAxisAlignedClip();}
         }
         }   // !contentOnly
-        target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET){DropGhostLayer();DropFade();DropDownloadIcon();DropAudioIcon();DropRipple();ClearFaviconBitmaps();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
+        target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET)RecreateTarget(); /* every target resource, the Lottie bitmap included */
     }
 };
 }
