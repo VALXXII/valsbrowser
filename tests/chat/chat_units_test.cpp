@@ -290,6 +290,13 @@ static void TestTools() {
     Check(OurTool(ParseMcpName("mcp__" + ours + "__browser_annotations_list_all"), ours) == Ours::None, "a longer tool name is not ours");
     Check(OurTool(ParseMcpName("mcp__" + ours + "__browser_annotations_list"), "") == Ours::None, "no server of ours: nothing is ours");
     Check(OurTool(ParseMcpName("Edit"), ours) == Ours::None && OurTool(ParseMcpName("browser_annotations_list"), ours) == Ours::None, "a bare name is not ours");
+    // SEC-28: allowed without a card only when the request also looks like our tool (kind, arguments)
+    Check(LooksLikeOurs(Ours::List, "other", "{}") && LooksLikeOurs(Ours::List, "", "") && LooksLikeOurs(Ours::Resolve, "other", R"({"id":"ann_qa1","summary":"fait"})")
+          && LooksLikeOurs(Ours::Claim, "read", R"({"id":"ann_a1","agent_label":"Claude","claim_token":"t"})"), "SEC-28: our tool's own kind and arguments: no card");
+    Check(!LooksLikeOurs(Ours::List, "execute", "{}") && !LooksLikeOurs(Ours::Get, "edit", R"({"id":"ann_a1"})") && !LooksLikeOurs(Ours::Release, "delete", "{}") && !LooksLikeOurs(Ours::List, "fetch", "{}"),
+          "SEC-28: a command, an edit, a deletion or a fetch titled like our tool gets a card");
+    Check(!LooksLikeOurs(Ours::Get, "other", R"({"id":"ann_a1","command":"rm -rf ."})") && !LooksLikeOurs(Ours::List, "other", R"({"file_path":"C:\\x"})") && !LooksLikeOurs(Ours::List, "other", "[]") && !LooksLikeOurs(Ours::None, "other", "{}"),
+          "SEC-28: an argument our tool does not take gets a card");
     // the annotation a call is about
     Check(AnnotationIdOf(R"({"id":"ann_k7m2p9x4"})") == "ann_k7m2p9x4", "the annotation id of a call");
     Check(AnnotationIdOf(R"({"id":"ann_k7m2p9x4","summary":"fait"})") == "ann_k7m2p9x4", "…with other arguments");

@@ -452,7 +452,7 @@ void OnPermission(const Acp::PermissionRequest& p) {
     // without a card, in every mode — the step line in the thread says what was done (design/chat-integration.md).
     // Never « always »: each call is answered here, so nothing is left configured in the agent.
     const auto mcp = p.question ? ChatTools::McpName{} : ChatTools::ParseMcpName(p.toolCall.title);
-    if (const auto ours = ChatTools::OurTool(mcp, Ann::ServerName()); ours != ChatTools::Ours::None && session) {
+    if (const auto ours = ChatTools::OurTool(mcp, Ann::ServerName()); ours != ChatTools::Ours::None && session && ChatTools::LooksLikeOurs(ours, p.toolCall.kind, p.toolCall.rawInput)) {   // SEC-28: not on the title alone
         for (const auto& o : p.options) if (o.kind == "allow_once" && ChatStore::ValidId(o.id)) {
             session->RespondPermission(p.requestId, o.id);
             if (!p.toolCall.id.empty() && !turn.ourCalls.count(p.toolCall.id)) { auto& call = turn.ourCalls[p.toolCall.id]; call.tool = ours; call.annotation = ChatTools::AnnotationIdOf(p.toolCall.rawInput); call.input = p.toolCall.rawInput; }

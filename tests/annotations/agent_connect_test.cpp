@@ -407,6 +407,21 @@ void TestCodexToml(Fixture& f) {
     CHECK(WriteText(cfg, "model = \"o3\""));
     CHECK(AC::MergeCodexToml(cfg, f.target, f.now).ok() && ReadText(cfg).compare(0, 14, "model = \"o3\"\n\n") == 0);
     CHECK(AC::RemoveCodexToml(cfg, "browser-annotations", f.now).ok() && ReadText(cfg) == "model = \"o3\"\n");
+    {   // 8. SEC-28: backups are full copies of the user's configuration: only the newest 3 are kept, others' files untouched
+        for (const auto& old : Backups(f.codexHome, L"config.toml")) DeleteFileW((f.codexHome + L"\\" + old).c_str());
+        for (const wchar_t* stamp : {L"20200101-000000", L"20200101-000001", L"20200101-000001-2", L"20200102-000000"}) CHECK(WriteText(f.codexHome + L"\\config.toml.browser-annotations-" + stamp + L".bak", "old"));
+        CHECK(WriteText(f.codexHome + L"\\config.toml.browser-annotations-notes.bak", "mine"));   // not named like ours: kept
+        f.now += 10;
+        r = AC::MergeCodexToml(cfg, f.target, f.now);
+        const auto kept = Backups(f.codexHome, L"config.toml");
+        CHECK(r.result == AC::Result::Connected && ReadText(r.backup) == "model = \"o3\"\n");
+        CHECK(kept.size() == 4 && std::find(kept.begin(), kept.end(), L"config.toml.browser-annotations-notes.bak") != kept.end()
+              && std::find(kept.begin(), kept.end(), L"config.toml.browser-annotations-20200102-000000.bak") != kept.end()
+              && std::find(kept.begin(), kept.end(), L"config.toml.browser-annotations-20200101-000001-2.bak") != kept.end()
+              && std::find(kept.begin(), kept.end(), L"config.toml.browser-annotations-20200101-000001.bak") == kept.end());
+        CHECK(AC::RemoveCodexToml(cfg, "browser-annotations", f.now).ok());
+        DeleteFileW((f.codexHome + L"\\config.toml.browser-annotations-notes.bak").c_str());
+    }
     DeleteFileW(cfg.c_str());
 }
 
@@ -439,7 +454,7 @@ void TestCodexCli(Fixture& f, const std::wstring& fakeCodex) {
         f.now += 2;
         r = AC::ConnectCodex(f.env, f.target);
         CHECK(r.result == AC::Result::Connected && r.usedCli && AC::ReadCodexEntry(cfg, "browser-annotations").present);
-        CHECK(Backups(f.codexHome, L"config.toml").size() == backups + 1);
+        CHECK(Backups(f.codexHome, L"config.toml").size() == std::min<std::size_t>(backups + 1, 3));   // SEC-28: the newest 3 only
         r = AC::DisconnectCodex(f.env, f.target);
         CHECK(r.result == AC::Result::Disconnected && ReadText(cfg) == "model = \"o3\"\n");
     }
