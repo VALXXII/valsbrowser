@@ -563,8 +563,8 @@ int wmain(int argc, wchar_t** argv) {
             w2.SetEngineOffer(true, [&] { ++asked; }); Check(w2.Show({0, 0, 900, 700}), "option A: B05 list with the offer shown");
             const auto ls = w2.Surface().CurrentSpec(); int linkAt = -1; for (size_t i = 0; i < ls.links.size(); ++i) if (ls.links[i].automationId == L"VaultEngineOffer") linkAt = static_cast<int>(i);
             bool offerButton = false; for (auto& b : ls.buttons) offerButton = offerButton || b.automationId == L"VaultEngineOffer";
-            Check(linkAt >= 0 && !offerButton && ls.links[static_cast<size_t>(linkAt)].label == L"Supprimer les anciens mots de passe de Browser…" && ls.notices.size() == 1 && ls.notices[0].text == L"Les anciens mots de passe de Browser sont encore gardés. Ceux que vous avez gardés en vous connectant sont déjà ici.",
-                  "option A: B05 list: the explanation line, then the popup family's link row « Supprimer les anciens mots de passe de Browser… » (review N-4) (no destructive button in the list)");
+            Check(linkAt >= 0 && !offerButton && ls.links[static_cast<size_t>(linkAt)].label == L"Supprimer les anciens mots de passe…" && ls.notices.size() == 1 && ls.notices[0].text == L"Les anciens mots de passe de Browser sont encore gardés. Ceux que vous avez gardés en vous connectant sont déjà ici.",
+                  "option A: B05 list: the explanation line, then the popup family's link row « Supprimer les anciens mots de passe… » (review N-4) (no destructive button in the list)");
             Check(!jargon(ls.subtitle) && !jargon(ls.notices[0].text) && !jargon(ls.links[0].label), "option A: no « moteur » / WebView2 in the list's words");
             w2.Surface().FinishAnimationsForTest(); Check(w2.Surface().RenderForTest(root + L"/build/popups/vault-engine-offer-fr.png"), "option A: render B05 list with the offer (FR)");
             const auto nodes = w2.Surface().NodesForTest(); bool linkNode = false, noteNode = false; for (auto& n : nodes) { linkNode = linkNode || n.automationId == L"VaultEngineOffer"; noteNode = noteNode || (n.automationId == L"DialogNotice" && n.name == ls.notices[0].text); }
@@ -579,7 +579,7 @@ int wmain(int argc, wchar_t** argv) {
             w2.SetEngineOffer(false, [] {}); w2.Show({0, 0, 900, 700}); Check(!jargon(w2.Surface().CurrentSpec().subtitle) && w2.Surface().CurrentSpec().subtitle.find(L"anciens mots de passe de Browser") != std::wstring::npos && w2.Surface().CurrentSpec().subtitle.find(L"Edge") == std::wstring::npos, "option A / N-4: the list's usual subtitle names Browser's old passwords, never « Edge » nor « le moteur »"); w2.Hide(); w2.Surface().FinishAnimationsForTest();
             I18n::SetForProcess(I18n::Locale::En); w2.SetEngineOffer(true, [] {}); w2.Show({0, 0, 900, 700}); w2.Surface().FinishAnimationsForTest();
             const auto en = w2.Surface().CurrentSpec();
-            Check(!en.links.empty() && en.links[0].label == L"Delete Browser’s old passwords…" && en.notices[0].text == L"Browser’s old passwords are still kept. The ones you kept when signing in are already here." && w2.Surface().RenderForTest(root + L"/build/popups/vault-engine-offer-en.png"), "option A: the list in English, rendered");
+            Check(!en.links.empty() && en.links[0].label == L"Delete old passwords…" && en.notices[0].text == L"Browser’s old passwords are still kept. The ones you kept when signing in are already here." && w2.Surface().RenderForTest(root + L"/build/popups/vault-engine-offer-en.png"), "option A: the list in English, rendered");
             w2.Hide(); w2.Surface().FinishAnimationsForTest(); I18n::SetForProcess(I18n::Locale::Fr);
             // The confirmation: the small-popup family (A10, same Modal surface), its danger action kept (A5 vocabulary).
             const auto cs = Modal::DeleteEnginePasswordsSpec();

@@ -194,7 +194,7 @@ try {
     $hp = StartHost $exe $dir; Start-Sleep 2
     Check ((Cleared) -eq 0 -and (LogCount $log 'VAULT engine saved passwords deleted') -eq 0) 'option A: on the 30th day of use NOTHING is deleted automatically'
     $list = OpenManager $hp; $offer = WaitFind $hp 'VaultEngineOffer' 5000
-    Check ([bool]$list -and [bool]$offer) 'option A: on the 30th day of use Réglages › Mots de passe offers « Supprimer les anciens mots de passe de Browser… »'
+    Check ([bool]$list -and [bool]$offer) 'option A: on the 30th day of use Réglages › Mots de passe offers « Supprimer les anciens mots de passe… »'
     if ($offer) {
       [void](InvokeEl $offer); $confirm = WaitFind $hp 'DeleteEnginePasswords' 6000
       Check ([bool]$confirm) 'option A: the link closes the list and opens the confirmation (small-popup family, danger action)'
