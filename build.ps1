@@ -7,6 +7,6 @@
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 $python = (Get-Command python -ErrorAction SilentlyContinue).Source
-if (!$python) { $python = 'C:/Users/<user>/AppData/Local/Programs/Python/Python312/python.exe' }
+if (!$python) { $python = Join-Path $env:LOCALAPPDATA 'Programs/Python/Python312/python.exe' }
 & $python "$PSScriptRoot/tools/release/build.py" --out $OutputDirectory --channel $Channel
 if ($LASTEXITCODE -ne 0) { throw "Compilation échouée : code $LASTEXITCODE" }
