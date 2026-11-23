@@ -229,6 +229,8 @@ struct Reader {
     std::int64_t SeenAt(const std::string& id) const { for (const auto& s : seen) if (s.first == id) return s.second; return 0; }
 };
 constexpr std::size_t MaxReaderSeen = 40;
+constexpr std::size_t MaxReaderFiles = 64;                    // SEC-15: readers\*.json at most (a new client is refused past it)
+constexpr std::int64_t MaxReaderAgeSeconds = 30 * 86400;      // SEC-15: a readers\*.json not written for 30 days is purged
 
 // One annotation as seen by readers. `state` is the EFFECTIVE state: a claim whose lease expired reads as
 // open (nothing is written by a read); a valid lease on an open/claimed annotation reads as claimed.

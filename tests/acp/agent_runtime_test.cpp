@@ -320,6 +320,27 @@ void TestDetection() {
         const auto candidates = AR::detail::CliCandidates(env, AR::Agent::Claude);
         CHECK(candidates.size() == 2 && candidates[0].second == "installer" && candidates[1].second == "winget");
     }
+    {  // SEC-15: the installers' folders come before PATH; a compatible CLI later wins over an incompatible one first.
+        AR::Environment env = FakeEnvironment(L"d-order");
+        const std::wstring onPath = g_tmp + L"\\d-order\\bin1\\claude.exe", installed = env.userProfile + L"\\.local\\bin\\claude.exe";
+        FakeCli(onPath, claudeVersion.c_str(), "0");
+        FakeCli(installed, claudeVersion.c_str(), "0");
+        const auto candidates = AR::detail::CliCandidates(env, AR::Agent::Claude);
+        CHECK(candidates.size() == 2 && candidates[0].first == installed && candidates[1].second == "path");
+        AR::Detection d = AR::Detect(env, AR::Agent::Claude);
+        CHECK(d.Usable() && d.cli.path == installed && !Exists(onPath + L".calls"));  // the PATH copy is never run
+        WriteFileText(installed + L".version", "1.0.3 (Claude Code)");
+        d = AR::Detect(env, AR::Agent::Claude);
+        CHECK(d.Usable() && d.cli.state == AR::CliState::Found && d.cli.path == onPath);
+    }
+    {  // SEC-15: the terminal sign-in's command line is the CLI's own sign-in only
+        using V = std::vector<std::wstring>;
+        CHECK(AR::detail::SignInArgsAllowed(AR::Agent::Claude, V{L"auth", L"login", L"--claudeai"}) && AR::detail::SignInArgsAllowed(AR::Agent::Claude, V{L"auth", L"login", L"--console"}));
+        CHECK(AR::detail::SignInArgsAllowed(AR::Agent::Codex, V{L"login"}) && AR::detail::SignInArgsAllowed(AR::Agent::Codex, V{L"login", L"--device-auth"}));
+        CHECK(!AR::detail::SignInArgsAllowed(AR::Agent::Claude, V{L"login"}) && !AR::detail::SignInArgsAllowed(AR::Agent::Codex, V{L"auth", L"login"}));
+        CHECK(!AR::detail::SignInArgsAllowed(AR::Agent::Claude, V{L"auth", L"login", L"--settings=C:\\x.json"}) && !AR::detail::SignInArgsAllowed(AR::Agent::Claude, V{L"auth", L"login", L"-p", L"rm"}));
+        CHECK(!AR::detail::SignInArgsAllowed(AR::Agent::Codex, V{L"login", L"exec"}) && !AR::detail::SignInArgsAllowed(AR::Agent::Codex, V{}) && !AR::detail::SignInArgsAllowed(AR::Agent::Codex, V{L"mcp", L"add"}));
+    }
     {  // npm: the .cmd shim is never run; the native binary behind it is.
         AR::Environment env = FakeEnvironment(L"d-npm");
         const std::wstring root = g_tmp + L"\\d-npm";
@@ -364,6 +385,7 @@ struct Staged {
     explicit Staged(const std::wstring& name) {
         env = FakeEnvironment(name);
         pins.node.exeBytes = 4;
+        pins.node.exeSha256 = "545ea538461003efdc8c81c244531b003f6f26cfccf6c0073b3239fdedf49446";  // sha256("node")
         env.pins = &pins;
         CHECK(MakeDirs(AR::NodeDir(env)) && WriteFileText(AR::NodeExe(env), "node"));
         for (const AR::Agent agent : {AR::Agent::Claude, AR::Agent::Codex}) {
@@ -397,6 +419,13 @@ void TestLaunch() {
     r = AR::MakeResolver(s.env, AR::Agent::Codex)({});
     CHECK(r.error.Ok() && value(r.launch, L"CODEX_PATH") == codex && value(r.launch, L"BROWSER") == L"none" &&
           value(r.launch, L"CLAUDE_CODE_EXECUTABLE") == L"<unset>" && r.launch.args[0] == AR::AdapterEntry(s.env, AR::Agent::Codex));
+    // SEC-15: a node.exe of the right size but not the pinned build is never launched; it is removed (prepared again).
+    CHECK(WriteFileText(AR::NodeExe(s.env), "nodx"));
+    CHECK(AR::Detect(s.env, AR::Agent::Claude).nodeReady);  // the size alone says ready…
+    r = AR::ResolveLaunch(s.env, AR::Agent::Claude, {});
+    CHECK(r.error.code == Acp::ErrorCode::NeedsPrepare && r.launch.exe.empty() && !Exists(AR::NodeExe(s.env)));  // …the hash does not
+    CHECK(MakeDirs(AR::NodeDir(s.env)) && WriteFileText(AR::NodeExe(s.env), "node"));
+    CHECK(AR::ResolveLaunch(s.env, AR::Agent::Claude, {}).error.Ok());
     // A node.exe of the wrong size is not "ready" (an interrupted or altered install).
     CHECK(WriteFileText(AR::NodeExe(s.env), "nodes"));
     CHECK(!AR::Detect(s.env, AR::Agent::Claude).nodeReady && AR::ResolveLaunch(s.env, AR::Agent::Claude, {}).error.code == Acp::ErrorCode::NeedsPrepare);

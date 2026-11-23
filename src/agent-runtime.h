@@ -212,6 +212,9 @@ bool ParseVersion(std::string_view text, int out[3]);  // first "a.b.c" in the t
 CliState Compatible(Agent agent, std::string_view found, const AdapterPin& pin);
 // Candidate executables for an agent, best first (existing files only).
 std::vector<std::pair<std::wstring, std::string>> CliCandidates(const Environment& env, Agent agent);
+// SEC-15: the terminal sign-in arguments the agent may choose (its "--cli" removed): Claude `auth login [--flag…]`,
+// Codex `login [--flag…]`, flags `--[a-z][a-z0-9-]*` only. Anything else runs DefaultTerminalSignIn.
+bool SignInArgsAllowed(Agent agent, const std::vector<std::wstring>& args);
 std::string Sha256Hex(const void* data, std::size_t size);
 std::string Sha512Base64(const void* data, std::size_t size);
 bool HashFile(const std::wstring& path, bool sha512, std::string& out);  // sha256 hex or sha512 base64

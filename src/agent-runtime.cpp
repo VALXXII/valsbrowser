@@ -954,14 +954,8 @@ std::vector<std::pair<std::wstring, std::string>> CliCandidates(const Environmen
     };
     const std::wstring name = CliName(agent);
     const std::wstring shim = agent == Agent::Claude ? L"claude.cmd" : L"codex.cmd";
-    // 1. The user's PATH: what they would get in a terminal.
-    for (const auto& dir : PathDirs(env.path)) {
-        add(dir + L"\\" + name, "path");
-        // An npm shim is never run (cmd.exe parsing of a path cannot be made safe): the native binary behind it is.
-        if (FileExists(dir + L"\\" + shim))
-            for (const auto& native : NpmNative(dir, agent)) add(native, "npm");
-    }
-    // 2. Where the official installers put it, for a PATH that does not cover them.
+    // 1. Where the official installers put it, in the user's own folders (SEC-15: before PATH, whose folders may be
+    //    writable by another account; Detect still prefers a compatible CLI found later to an incompatible one here).
     if (!env.userProfile.empty() && agent == Agent::Claude) {
         add(env.userProfile + L"\\.local\\bin\\claude.exe", "installer");
         add(env.userProfile + L"\\.claude\\local\\claude.exe", "installer");
@@ -970,10 +964,36 @@ std::vector<std::pair<std::wstring, std::string>> CliCandidates(const Environmen
         if (agent == Agent::Codex) add(env.localAppData + L"\\Programs\\OpenAI\\Codex\\bin\\codex.exe", "installer");
         add(env.localAppData + L"\\Microsoft\\WinGet\\Links\\" + name, "winget");
     }
+    // 2. The user's PATH: what they would get in a terminal.
+    for (const auto& dir : PathDirs(env.path)) {
+        add(dir + L"\\" + name, "path");
+        // An npm shim is never run (cmd.exe parsing of a path cannot be made safe): the native binary behind it is.
+        if (FileExists(dir + L"\\" + shim))
+            for (const auto& native : NpmNative(dir, agent)) add(native, "npm");
+    }
     // 3. npm's default global folder.
     if (!env.appData.empty())
         for (const auto& native : NpmNative(env.appData + L"\\npm", agent)) add(native, "npm");
     return out;
+}
+
+bool SignInArgsAllowed(Agent agent, const std::vector<std::wstring>& args) {
+    std::size_t i = 0;
+    if (agent == Agent::Claude) {
+        if (args.size() < 2 || args[0] != L"auth" || args[1] != L"login") return false;
+        i = 2;
+    } else {
+        if (args.empty() || args[0] != L"login") return false;
+        i = 1;
+    }
+    if (args.size() > i + 4) return false;
+    for (; i < args.size(); ++i) {
+        const std::wstring& a = args[i];
+        if (a.size() < 3 || a.size() > 40 || a[0] != L'-' || a[1] != L'-' || !(a[2] >= L'a' && a[2] <= L'z')) return false;
+        for (std::size_t j = 3; j < a.size(); ++j)
+            if (!((a[j] >= L'a' && a[j] <= L'z') || (a[j] >= L'0' && a[j] <= L'9') || a[j] == L'-')) return false;
+    }
+    return true;
 }
 
 }  // namespace detail
@@ -998,11 +1018,15 @@ Detection Detect(const Environment& env, Agent agent, const DetectOptions& optio
         const int code = RunHidden(env, candidate.first, versionArgs, options.timeoutMs, &output);
         int version[3];
         if (code != 0 || !detail::ParseVersion(output, version)) continue;  // not a working CLI: try the next one
-        d.cli.path = candidate.first;
-        d.cli.source = candidate.second;
-        d.cli.version = std::to_string(version[0]) + "." + std::to_string(version[1]) + "." + std::to_string(version[2]);
-        d.cli.state = detail::Compatible(agent, d.cli.version, pin);
-        break;
+        const std::string text = std::to_string(version[0]) + "." + std::to_string(version[1]) + "." + std::to_string(version[2]);
+        const CliState state = detail::Compatible(agent, text, pin);
+        if (d.cli.state == CliState::Missing || state == CliState::Found) {  // the first that answers, unless a later one is compatible
+            d.cli.path = candidate.first;
+            d.cli.source = candidate.second;
+            d.cli.version = text;
+            d.cli.state = state;
+        }
+        if (state == CliState::Found) break;
     }
     if (d.Usable() && options.checkLogin) {
         // The CLI's own documented status command; its output is discarded, only the exit code is read.
@@ -1099,6 +1123,18 @@ Acp::Resolution ResolveLaunch(const Environment& env, Agent agent, const Acp::Re
         r.error.code = Acp::ErrorCode::NeedsPrepare;
         return r;
     }
+    // SEC-15: node.exe is run only as the pinned build. The size check above is for detection; before each launch its
+    // SHA-256 is checked again (a portable install in a shared folder could have been replaced since the download). A
+    // mismatch removes it: the next preparation downloads it again.
+    {
+        std::string digest;
+        if (!detail::HashFile(NodeExe(env), false, digest) || digest != env.ThePins().node.exeSha256) {
+            RemoveTree(NodeDir(env));
+            r.error.code = Acp::ErrorCode::NeedsPrepare;
+            r.error.detail = "node.exe sha256";
+            return r;
+        }
+    }
     r.launch.exe = NodeExe(env);
     r.launch.args = {AdapterEntry(env, agent)};
     r.launch.freshUserEnvironment = env.freshUserEnvironment;
@@ -1183,10 +1219,15 @@ SignIn RunTerminalSignIn(const Environment& env, Agent agent, const Acp::AuthMet
         // The adapter's own "--cli" hands the rest to its CLI: we run that CLI directly.
         for (std::size_t i = 0; i < method.terminalArgs.size(); ++i)
             if (i > 0 || method.terminalArgs[i] != "--cli") args.push_back(Widen(method.terminalArgs[i]));
+        // SEC-15: the agent names the sign-in, it does not choose the command line: only the CLI's own sign-in shapes.
+        if (!detail::SignInArgsAllowed(agent, args)) {
+            args.clear();
+            for (const auto& a : DefaultTerminalSignIn(agent).terminalArgs) args.push_back(Widen(a));
+        }
     }
     Acp::LaunchSpec spec;
     spec.freshUserEnvironment = env.freshUserEnvironment;
-    for (const auto& kv : method.terminalEnv) spec.env.emplace_back(Widen(kv.first), Widen(kv.second));
+    // SEC-15: the agent's `env` for the sign-in is not applied (the CLI's sign-in needs none; it could redirect the CLI).
     std::wstring block = Acp::BuildEnvironmentBlock(spec);
     std::wstring cmd = Acp::QuoteArgument(exe);
     for (const auto& a : args) cmd += L" " + Acp::QuoteArgument(a);
