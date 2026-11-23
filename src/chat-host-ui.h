@@ -368,6 +368,9 @@ void AskPageMarks(const std::string& origin, int tries) {
             out->matches = allMatches;
             if (serverMatches.size() == 1) out->sureMatch = serverMatches.front();
             else if (serverMatches.empty() && allMatches.size() == 1) out->sureMatch = allMatches.front();
+            // contract B 1.4: only a folder that looks like a project is used without asking (a loose folder, the
+            // Desktop, a temp folder is proposed, never taken)
+            if (!out->sureMatch.empty() && (!ChatFolder::detail::HasMarker(out->sureMatch) || ChatFolder::detail::TooWide(out->sureMatch) || ChatFolder::detail::Refused(out->sureMatch))) out->sureMatch.clear();
         }, [out, origin] { if (origin == site.origin) PageJudged(*out); });
     });
 }
