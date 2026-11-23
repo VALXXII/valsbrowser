@@ -296,6 +296,9 @@ struct IconPose {
     bool high = false;      // static glyph: speaker-simple-high (music, reduced motion) or -low
     float emphasis = Icon::Subdued; // multiplier of the toolbar ink
     float presence = 1;     // first appearance fade
+    // Same pose, same pixels: the host repaints the button only when this changes.
+    bool operator==(const IconPose& o) const { return frame == o.frame && high == o.high && emphasis == o.emphasis && presence == o.presence; }
+    bool operator!=(const IconPose& o) const { return !(*this == o); }
 };
 class IconModel {
     enum class Mode { Rest, Morph, Loop, Finish };
@@ -357,7 +360,10 @@ public:
             else { // next frame of the loop: frame f starts at f * LoopMs / Loop
                 const long long ms = std::max(0LL, Ms(loopStart_, now)), cycle = ms / Icon::LoopMs * Icon::LoopMs, in = ms - cycle;
                 const long long f = in * Icon::Loop / Icon::LoopMs + 1, next = cycle + (f * Icon::LoopMs + Icon::Loop - 1) / Icon::Loop;
-                w = Motion::Earlier(w, Motion::Wake{Milliseconds(std::max(1LL, next - ms)), true}); }
+                // A deadline one nominal frame before the step (one-shot timer, no ticks in between), then
+                // compositor frames up to it: the step still lands on the first frame past its boundary.
+                const long long due = std::max(1LL, next - ms), frame = Motion::Frame().delay->count();
+                w = Motion::Earlier(w, due <= frame ? Motion::Wake{Milliseconds(due), true} : Motion::Wake{Milliseconds(due - frame), false}); }
         }
         return w;
     }

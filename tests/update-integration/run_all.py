@@ -134,6 +134,12 @@ def existing_fixtures() -> None:
     # Suggestions popup and Favoris drawer redraw at the DPI of the monitor they land on (SKIP with a single DPI, as on CI).
     fixture('address_popup_dpi_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/ui/address_popup_dpi_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS, '-lshell32', '-loleaut32', '-lmsimg32', '-lshcore'], [ROOT])
     fixture('select_all_test', [*STRICT, 'tests/ui/select_all_test.cpp', '-luser32', '-lcomctl32', '-ldwmapi', '-lgdi32'])
+    # Paint path (offscreen): bar favicons uploaded once, text cache kept across paints, audio/downloads icon repaint rates.
+    paint_evidence = ROOT / 'build/paint-perf-qa'
+    paint_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('paint_perf_render_test', [*STRICT, '-Wno-misleading-indentation', '-municode', *TVG, 'tests/ui/paint_perf_render_test.cpp', 'src/native-lottie.cpp', THORVG,
+            '-ld2d1', '-ldwrite', '-lwindowscodecs', '-lole32', '-luuid', '-lcomctl32', '-lgdi32', '-ldwmapi', '-lshell32'],
+            [ROOT, paint_evidence])
     fixture('accessibility_test', [*LOOSE, *TVG, WV2, 'tests/accessibility/accessibility_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS, '-loleaut32'])
     # Download history popover/drawer (upstream PR #28/#29, same line as test-downloads.ps1)
     downloads_evidence = ROOT / 'build/downloads-qa'

@@ -147,7 +147,9 @@ void RefreshAudio(){if(WorkspaceParked())return; /* a hidden profile's event: th
 void AudioFrame(NativeChrome::Motion::Time now){
     // A reduced-motion switch while the meter loops lands here first: the icon goes static at once.
     chrome.audioIcon.Update(audioToolbar.Music(),now,motion.ReducedMotion());chrome.audioIcon.Settle(now);
-    static bool painting=false;const bool moving=chrome.audioIcon.NextWake(now).delay.has_value();if(moving||painting)InvalidateAudioIcon();painting=moving;
+    // Repaint only when the pose (frame, glyph, emphasis, fade) differs from the last one sent: a 14 fps
+    // loop costs 14 small paints a second whatever the display rate or the other motion ticking.
+    static NativeChrome::Audio::IconPose painted;static bool known=false;const auto pose=chrome.audioIcon.At(now);if(!known||pose!=painted){InvalidateAudioIcon();painted=pose;known=true;}
 }
 NativeChrome::Motion::Wake AudioNextWake(NativeChrome::Motion::Time now){return chrome.audioShown?chrome.audioIcon.NextWake(now):NativeChrome::Motion::Wake{};}
 

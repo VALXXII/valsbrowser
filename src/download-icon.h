@@ -50,6 +50,9 @@ struct Pose {
     int success = -1;           // >= 0: the arrow layer is the success morph at this frame (0 arrow .. 24 check)
     float ripple = -1;          // 0..1 while the ripple plays, else -1
     bool idle = true;           // static icon (no layer needed)
+    // Same pose, same pixels: the host repaints the button only when this changes.
+    bool operator==(const Pose& o) const { return ring == o.ring && arrow == o.arrow && success == o.success && ripple == o.ripple && idle == o.idle; }
+    bool operator!=(const Pose& o) const { return !(*this == o); }
 };
 
 // Pure state model: feed it the downloads' state, sample a pose at any time.
