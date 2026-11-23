@@ -113,8 +113,11 @@ int main() {
         Check(CaptureBindingParams() == std::wstring(L"{\"name\":\"") + CaptureBindingName + L"\",\"executionContextName\":\"browser-vault-capture\"}",
               "coverage: the binding exists only in that isolated world (Runtime.addBinding executionContextName)");
         const std::wstring aa = AutoAttachParams();
-        Check(aa.find(L"\"autoAttach\":true") != std::wstring::npos && aa.find(L"\"waitForDebuggerOnStart\":true") != std::wstring::npos && aa.find(L"\"flatten\":true") != std::wstring::npos && aa.find(L"\"type\":\"iframe\"") != std::wstring::npos,
-              "coverage: out-of-process (cross-site) frames are attached before they run, iframes only");
+        Check(aa.find(L"\"autoAttach\":true") != std::wstring::npos && aa.find(L"\"waitForDebuggerOnStart\":true") != std::wstring::npos && aa.find(L"\"flatten\":true") != std::wstring::npos
+              && aa.size() > 5 && aa.compare(aa.size() - 5, 5, L",{}]}") == 0   // the last entry takes every other target
+              && aa.find(L"{\"type\":\"service_worker\",\"exclude\":true}") != std::wstring::npos && aa.find(L"{\"type\":\"shared_worker\",\"exclude\":true}") != std::wstring::npos
+              && aa.find(L"\"exclude\":true") != std::wstring::npos && aa.find(L"\"exclude\":true", aa.find(L"\"exclude\":true", aa.find(L"\"exclude\":true") + 1) + 1) == std::wstring::npos,   // nothing else left out
+              "coverage: out-of-process (cross-site) frames are attached before they run, and every target the engine holds with them (workers, worklets) is announced, so it is resumed; only service and shared workers are left out (tests/frame-workers)");
         AttachedTarget at;
         Check(ParseAttachedToTarget(L"{\"sessionId\":\"S1A2\",\"targetInfo\":{\"targetId\":\"T9\",\"type\":\"iframe\",\"url\":\"https://autre.exemple.test/\"},\"waitingForDebugger\":true}", at) && at.sessionId == L"S1A2" && at.type == L"iframe" && at.waiting,
               "coverage: an attached iframe target: its session id and type");
