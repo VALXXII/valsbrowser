@@ -2200,7 +2200,7 @@ HRESULT InterstitialMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessag
     }
     return S_OK;
 }
-bool AudioPageMessage(const std::shared_ptr<Tab>& t,const std::wstring& message);bool ScrollbarMessageFrom(const std::shared_ptr<Tab>& t,const std::wstring& text);
+bool AudioPageMessage(const std::shared_ptr<Tab>& t,const std::wstring& message,const std::wstring& source);bool ScrollbarMessageFrom(const std::shared_ptr<Tab>& t,const std::wstring& text);
 ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler* PopupScriptBarrier(const PopupHost::RequestPtr& popup,const wchar_t* what); // audio-integration.h
 const std::wstring& PopupQa();
 void InjectAudioScript(const std::shared_ptr<Tab>& t,const PopupHost::RequestPtr& popup); // audio-integration.h

@@ -197,9 +197,10 @@ void AudioSaveDue(){
 }
 
 // ---- Engine events ---------------------------------------------------------------------------
-bool AudioPageMessage(const std::shared_ptr<Tab>& t,const std::wstring& message){
+bool AudioPageMessage(const std::shared_ptr<Tab>& t,const std::wstring& message,const std::wstring& source){
     if(!AU::IsReport(message))return false;
     if(!t||t->closed)return true;
+    if(AU::SiteKey(source)!=AU::SiteKey(t->uri))return true;   // SEC-25: only the tab's own site reports for it (a left document's late report is dropped)
     AU::Report r;if(!AU::ParseReport(message,r))return true;
     const auto site=AU::SiteKey(t->uri);if(site.empty())return true;
     t->audio.SiteChanged(site,NativeChrome::Motion::Now());
