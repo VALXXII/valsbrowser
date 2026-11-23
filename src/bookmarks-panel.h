@@ -73,7 +73,7 @@ private:
     std::vector<Row> rows_; std::set<Bookmarks::Id> open_{Bookmarks::BarRoot, Bookmarks::OtherRoot};
     std::wstring query_; Lane slide_, scroll_;
     int hover_ = 0, pressed_ = 0, focus_ = 0; bool keyboard_ = false, visible_ = false, closing_ = false, tracking_ = false;
-    int appliedVisible_ = -1; RECT appliedOwner_{};
+    int appliedVisible_ = -1, appliedEntered_ = -1, lead_ = 0; RECT appliedOwner_{};   // lead_: slide offset (window px), see ApplyGeometry
     Bookmarks::Id renaming_ = 0;   // its title is drawn by the owner's in-place editor
     POINT pressAt_{};              // screen point of the left press (row drag threshold)
     int dropRow_ = -1; BookmarkDrag::Mark dropMark_ = BookmarkDrag::Mark::None;   // drop feedback while the owner drags over the drawer
@@ -140,6 +140,7 @@ private:
     D2D1_RECT_F Caret(float top) const { auto b = Panel::ActionBox(top, 1); return {b.left, b.top, b.right, b.bottom}; }
     int Actions(const Row& r) const { return r.folder ? (r.level == 0 ? 0 : 1) : 2; }
     int Hit(float x, float y) const {
+        x -= LeadDip();   // window DIP -> content DIP while it slides
         auto in = [&](Design::Box b) { return x >= b.left && x < b.right && y >= b.top && y < b.bottom; };
         if (in(Panel::Close())) return CloseHit;
         if (!query_.empty() && in(HistoryView::Layout::Clear())) return ClearHit;
@@ -246,7 +247,7 @@ private:
         auto* t = chrome_.RenderTarget(); if (!t || !chrome_.SolidBrush()) return;
         const auto now = Motion::Now(); const float c = Design::Surface::canvas, h = Height(), scroll = scroll_.Value(now);
         const bool focused = GetFocus() == hwnd_;
-        t->BeginDraw(); t->Clear(D2D1::ColorF(c, c, c, 1)); chrome_.keyboardModality = keyboard_;
+        t->BeginDraw(); t->Clear(D2D1::ColorF(c, c, c, 1)); t->SetTransform(D2D1::Matrix3x2F::Translation(LeadDip(), 0)); chrome_.keyboardModality = keyboard_;
         auto R = [](Design::Box b) { return D2D1_RECT_F{b.left, b.top, b.right, b.bottom}; };
         chrome_.Text(TR(bookmarks_title), R(Panel::Title()), Panel::line, Design::Text::muted, false, true, -.16f);
         const auto cv = motion_.Visual(CloseHit, now);
@@ -315,18 +316,29 @@ private:
         t->PopAxisAlignedClip();
         const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width));
         chrome_.Color(1, DownloadsUI::Popup::border); t->FillRectangle(D2D1::RectF(0, 0, px, h), chrome_.SolidBrush());
+        t->SetTransform(D2D1::Matrix3x2F::Identity()); chrome_.KeyOut(LeadDip());
         if (t->EndDraw() == D2DERR_RECREATE_TARGET) chrome_.RecreateTarget();
     }
-    void ApplyGeometry(Motion::Time now, bool force = false) {
-        if (!hwnd_) return;
+    // The window never moves while sliding (NativeUI::KeyedDrawer): a slide step is one present, the content drawn
+    // `lead_` pixels right of its place and the strip it has not entered keyed out. The region rounds the corner shared
+    // with the owner (empty while nothing has entered). Returns true when it painted.
+    bool ApplyGeometry(Motion::Time now, bool force = false) {
+        if (!hwnd_) return false;
         const RECT owner = OwnerClient(); const int column = OwnerPx(Layout::width), top = owner.top + OwnerPx(Layout::top), height = std::max(1, static_cast<int>(owner.bottom - top));
         const int shown = static_cast<int>(std::lround(column * Motion::Clamp(slide_.Value(now))));
-        if (!force && shown == appliedVisible_ && EqualRect(&owner, &appliedOwner_)) return;
-        appliedVisible_ = shown; appliedOwner_ = owner;
-        SetWindowPos(hwnd_, nullptr, owner.right - shown, top, column, height, SWP_NOACTIVATE | SWP_NOZORDER);
-        const int r = OwnerPx(20);
-        SetWindowRgn(hwnd_, shown > 0 ? (IsZoomed(owner_) ? CreateRectRgn(0, 0, shown, height) : CreateRoundRectRgn(-r * 2, -r * 2, shown + 1, height + 1, r, r)) : CreateRectRgn(0, 0, 0, 0), FALSE);
+        if (!force && shown == appliedVisible_ && EqualRect(&owner, &appliedOwner_)) return false;
+        const bool moved = force || !EqualRect(&owner, &appliedOwner_), slid = shown != appliedVisible_;
+        appliedVisible_ = shown; appliedOwner_ = owner; lead_ = column - shown;
+        if (moved) SetWindowPos(hwnd_, nullptr, owner.right - column, top, column, height, SWP_NOACTIVATE | SWP_NOZORDER);
+        const int entered = shown > 0;
+        if (force || moved || entered != appliedEntered_) { SetWindowRgn(hwnd_, NativeUI::DrawerRegion(entered, column, height, OwnerPx(20), IsZoomed(owner_)), FALSE); appliedEntered_ = entered; }
+        if (force || !slid || shown == 0 || !IsWindowVisible(hwnd_)) return false;
+        Paint(); ValidateRect(hwnd_, nullptr);
+        if (renaming_ && hooks_.relayout) hooks_.relayout();
+        return true;
     }
+    // Slide offset in DIP (content drawn right of its docked place while it enters or leaves).
+    float LeadDip() const { return lead_ * 96.f / std::max(1.f, Dpi()); }
     void Finish() { closing_ = false; visible_ = false; appliedVisible_ = -1; ShowWindow(hwnd_, SW_HIDE); }
     // ---- UI Automation -----------------------------------------------------------------
     static constexpr long long SearchKey = 2, CloseKey = 1, ListKey = 3;
@@ -414,6 +426,7 @@ public:
         CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, TR(bookmarks_title), WS_POPUP | WS_CLIPCHILDREN, 0, 0, Px(Layout::width), Px(400), owner, nullptr, instance, this);
         if (!hwnd_) return false;
         NativeUI::ConfigureShadowlessPopup(hwnd_); // DWMWCP_DONOTROUND, no shadow: the region shapes it
+        NativeUI::KeyedDrawer(hwnd_);               // the slide's not-yet-entered strip is keyed out
         Accessibility::Host host; host.window = hwnd_;
         host.nodes = [this] { return Nodes(); };
         host.focused = [this]() -> long long { return GetFocus() == hwnd_ ? Key(IsRowPart(focus_) ? focus_ : focus_) : 0; };
@@ -517,9 +530,10 @@ public:
     }
     void Frame(Motion::Time now) {
         if (!visible_) return;
-        ApplyGeometry(now);
+        const bool slid = ApplyGeometry(now);
         if (closing_ && !slide_.Moving(now)) { Finish(); return; }
         if (NextWake(now).delay || painted_) Invalidate();
+        if (slid) ValidateRect(hwnd_, nullptr);   // a slide step: already presented with its region
         painted_ = NextWake(now).delay.has_value();
     }
     bool painted_ = false;

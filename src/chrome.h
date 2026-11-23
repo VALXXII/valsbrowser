@@ -519,6 +519,11 @@ public:
         HRESULT hr=factory->CreateHwndRenderTarget(D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,D2D1::PixelFormat(),(float)dpi,(float)dpi),D2D1::HwndRenderTargetProperties(hwnd,D2D1::SizeU(r.right,r.bottom),presentOptions),&hwndTarget);if(FAILED(hr))return hr;target=hwndTarget;target->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);return target->CreateSolidColorBrush(D2D1::ColorF(1,1,1),&brush);
     }
     void Color(float c,float alpha=1){brush->SetColor(D2D1::ColorF(c,c,c,alpha));}
+    // Docked drawers (NativeUI::KeyedDrawer): the strip a sliding drawer has not entered yet, [0, lead) DIP, in the
+    // colour its layered window keys out. Aliased and pixel-exact (lead is a whole number of pixels).
+    void KeyOut(float lead){if(lead<=0||!target||!brush)return;D2D1_MATRIX_3X2_F m;target->GetTransform(&m);target->SetTransform(D2D1::Matrix3x2F::Identity());
+        const auto mode=target->GetAntialiasMode();target->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);brush->SetColor(D2D1::ColorF(1,0,1,1));
+        target->FillRectangle(D2D1::RectF(0,0,lead,target->GetSize().height+1),brush);target->SetAntialiasMode(mode);target->SetTransform(m);}
     void Round(D2D1_RECT_F r,float radius,float c){Color(c);target->FillRoundedRectangle(D2D1::RoundedRect(r,radius,radius),brush);}
     // Enable tabular figures explicitly for counters; titles and URLs keep proportional digits.
     HRESULT MakeTextLayout(const std::wstring& value,D2D1_RECT_F slot,float size,bool tabular,bool medium,float tracking,IDWriteTextLayout** output,TextMeasure& placement){

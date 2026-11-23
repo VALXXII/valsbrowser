@@ -439,6 +439,7 @@ protected:
     virtual const wchar_t* ClassName() const = 0;
     virtual void Configure() {}
     virtual D2D1_POINT_2F Origin(Motion::Time) const { return {0, 0}; } // column offset in the window (DIP)
+    virtual float KeyedLead() const { return 0; } // DIP keyed out on the left (a sliding drawer, NativeUI::KeyedDrawer)
 public:
     virtual void Dismiss(bool keyboard) = 0;
 protected:
@@ -565,7 +566,7 @@ protected:
         auto* target = chrome_.RenderTarget(); if (!target || !items_) return;
         const auto scene = MakeScene(Motion::Now());
         target->BeginDraw();
-        view_.Paint(scene, Slots(scene.now), SurfaceHeight());
+        view_.Paint(scene, Slots(scene.now), SurfaceHeight()); chrome_.KeyOut(KeyedLead());
         if (target->EndDraw() == D2DERR_RECREATE_TARGET) { view_.Release(); chrome_.RecreateTarget(); }
     }
     // ---- UI Automation (the actions were reachable by pointer / keyboard only) ----------------------------------
@@ -828,7 +829,7 @@ class Drawer final : public Host {
     std::array<Lane, PeriodCount> fold_;
     bool closing_ = false;
     RECT morphFrom_{}; float morphRadius_ = 0; // popover rectangle in window pixels
-    int appliedVisible_ = -1, appliedMorph_ = -1; RECT appliedOwner_{}, appliedWindow_{};
+    int appliedVisible_ = -1, appliedMorph_ = -1, lead_ = 0; RECT appliedOwner_{}, appliedWindow_{};   // lead_: slide offset (window px)
     bool warmed_ = false; std::tuple<size_t, int, LONG, LONG, UINT> warmSignature_{};
     std::array<std::vector<int>, PeriodCount> Groups() const {
         std::array<std::vector<int>, PeriodCount> groups;
@@ -853,9 +854,10 @@ class Drawer final : public Host {
         return t < 1 ? MorphSlots(items, slots, t) : slots;
     }
     float Scale() const { return 96.f / Dpi(); }
-    // The 268 DIP column: at the popover's place when the morph starts, docked after.
+    // The 268 DIP column: at the popover's place when the morph starts, docked after
+    // (and `lead_` further right while it slides, see ApplyGeometry).
     D2D1_POINT_2F Origin(Motion::Time now) const override {
-        const float t = Morph(now), docked = DrawerLayout::margin;
+        const float t = Morph(now), docked = DrawerLayout::margin + lead_ * Scale();
         return {(morphFrom_.left * Scale()) + (docked - morphFrom_.left * Scale()) * t, morphFrom_.top * Scale() * (1 - t)};
     }
     void Decorate(Scene& scene) const override {
@@ -888,32 +890,37 @@ class Drawer final : public Host {
     const wchar_t* ClassName() const override { return L"LisiereDownloadsDrawer"; }
     void Configure() override {
         NativeUI::ConfigureShadowlessPopup(hwnd_); // DWMWCP_DONOTROUND, no shadow: the region shapes it
+        NativeUI::KeyedDrawer(hwnd_);               // the slide's not-yet-entered strip is keyed out
     }
     RECT OwnerClient() const { RECT r{}; GetClientRect(owner_, &r); MapWindowPoints(owner_, nullptr, reinterpret_cast<POINT*>(&r), 2); return r; }
     int OwnerPx(float dip) const { return static_cast<int>(std::lround(dip * GetDpiForWindow(owner_) / 96.f)); }
     float SurfaceHeight() const override { return ClientHeight(); }
-    // Window = margin strip + 268 DIP column, docked to the owner's right edge.
-    // The slide moves it right; the region clips it to the owner's client area,
-    // rounds the corner it shares with the owner and, while morphing, takes the
-    // shape of the popover growing into the drawer.
-    void ApplyGeometry(Motion::Time now, bool force = false) {
-        if (!hwnd_) return;
+    // Window = margin strip + 268 DIP column, docked to the owner's right edge. It
+    // never moves while sliding (NativeUI::KeyedDrawer): a slide step is one present,
+    // the column drawn `lead_` pixels right of its place (Origin) and the strip it has
+    // not entered keyed out (KeyedLead). The region rounds the corner shared with the
+    // owner (empty while nothing has entered) and, while morphing, takes the shape of
+    // the popover growing into the drawer. Returns true when it painted.
+    bool ApplyGeometry(Motion::Time now, bool force = false) {
+        if (!hwnd_) return false;
         const RECT owner = OwnerClient();
         const int column = OwnerPx(DrawerLayout::width), margin = OwnerPx(DrawerLayout::margin), width = column + margin;
         const int top = owner.top + OwnerPx(DrawerLayout::top), height = std::max(1, static_cast<int>(owner.bottom - top));
         const int shown = static_cast<int>(std::lround(column * Motion::Clamp(slide_.Value(now))));
         const float t = Morph(now); const int morphKey = t >= 1 ? 1000 : static_cast<int>(t * 999);
-        if (!force && shown == appliedVisible_ && morphKey == appliedMorph_ && EqualRect(&owner, &appliedOwner_)) return;
-        const bool resized = !EqualRect(&owner, &appliedOwner_);
-        appliedVisible_ = shown; appliedMorph_ = morphKey; appliedOwner_ = owner;
-        const RECT window{owner.right - width + (column - shown), top, owner.right + (column - shown), top + height};
+        if (!force && shown == appliedVisible_ && morphKey == appliedMorph_ && EqualRect(&owner, &appliedOwner_)) return false;
+        const bool resized = !EqualRect(&owner, &appliedOwner_), slid = shown != appliedVisible_;
+        const bool reshape = force || resized || morphKey != appliedMorph_ || (shown > 0) != (appliedVisible_ > 0);
+        appliedVisible_ = shown; appliedMorph_ = morphKey; appliedOwner_ = owner; lead_ = column - shown;
+        const RECT window{owner.right - width, top, owner.right, top + height};
         if (force || !EqualRect(&window, &appliedWindow_)) { SetWindowPos(hwnd_, nullptr, window.left, window.top, width, height, SWP_NOACTIVATE | SWP_NOZORDER); appliedWindow_ = window; }
         HRGN region = nullptr;
-        if (shown > 0) {
+        if (!reshape) {}
+        else if (shown > 0) {
             // Owner clip: everything left of the owner's right edge, rounding the corner it shares with it
             // at 10 DIP, inside the owner's antialiased 8 DIP DWM corner: canvas over canvas, so the
             // visible outline stays the owner's smooth one.
-            const int right = margin + shown, r = OwnerPx(20);
+            const int right = width, r = OwnerPx(20);
             region = IsZoomed(owner_) ? CreateRectRgn(0, 0, right, height) : CreateRoundRectRgn(-r * 2, -r * 2, right + 1, height + 1, r, r);
             // Shape: the docked column [margin, width] — never the margin strip, which
             // only exists for the popover to morph from — or, while morphing, the
@@ -926,11 +933,14 @@ class Drawer final : public Host {
             } else shape = CreateRectRgn(margin, 0, width, height);
             CombineRgn(region, region, shape, RGN_AND); DeleteObject(shape);
         } else region = CreateRectRgn(0, 0, 0, 0);
-        // No redraw: the content for this frame is already presented (morph frames
-        // paint first) or unchanged (slide), so a region change costs no paint.
-        SetWindowRgn(hwnd_, region, FALSE);
+        // No redraw here: morph frames paint first; a slide step presents right after.
+        if (region) SetWindowRgn(hwnd_, region, FALSE);
         if (resized) { scroll_.Snap(std::clamp(scroll_.Target(), 0.f, MaxScroll(now, true))); RefreshTips(); }
+        if (force || !slid || shown == 0 || t < 1 || !IsWindowVisible(hwnd_)) return false;
+        PaintNow(); ValidateRect(hwnd_, nullptr);
+        return true;
     }
+    float KeyedLead() const override { return lead_ > 0 ? DrawerLayout::margin + lead_ * Scale() : 0.f; }
     void ScrollTo(float target, Motion::Time now, Motion::Milliseconds duration) {
         target = std::clamp(target, 0.f, MaxScroll(now, true));
         scroll_.Set(target, now, Motion::Milliseconds(0), motion_.ReducedMotion() ? Motion::Milliseconds(0) : duration);
@@ -1063,9 +1073,10 @@ public:
             if (!morph_.Moving(now)) RefreshTips();
             animatingPainted_ = false; return;
         }
-        ApplyGeometry(now);
+        const bool painted = ApplyGeometry(now);
         if (closing_ && !slide_.Moving(now)) { Finish(); return; }
         Host::Frame(now);
+        if (painted) ValidateRect(hwnd_, nullptr);   // a slide step: already presented with its region
     }
 };
 } // namespace DownloadsUI

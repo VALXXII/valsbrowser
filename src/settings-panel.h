@@ -600,7 +600,7 @@ private:
     bool LastProfile() const { return profiles_.size() < 2; }
     bool ProfilesReadOnly() const { return hooks_.profilesReadOnly && hooks_.profilesReadOnly(); }
     bool keyboard_ = false, visible_ = false, closing_ = false, tracking_ = false, modal_ = false, animatingPainted_ = false, spinning_ = false;
-    int appliedVisible_ = -1; RECT appliedOwner_{}, appliedWindow_{};
+    int appliedVisible_ = -1, appliedEntered_ = -1, lead_ = 0; RECT appliedOwner_{}, appliedWindow_{};
     Motion::Time spinStart_{}, landStart_{};
     // Update spinner: a constant counter-clockwise turn while a check runs. When
     // it ends, the glyph keeps its speed and eases into the next full turn (cubic
@@ -1318,12 +1318,13 @@ private:
     void PaintNow() {
         if (!pc_->RenderTarget()) pc_->Resize();
         auto* target = pc_->RenderTarget(); if (!target) return;
-        target->BeginDraw(); Paint(Motion::Now());
+        target->BeginDraw(); target->SetTransform(D2D1::Matrix3x2F::Translation(LeadDip(), 0)); Paint(Motion::Now()); target->SetTransform(D2D1::Matrix3x2F::Identity()); chrome_.KeyOut(LeadDip());
         if (target->EndDraw() == D2DERR_RECREATE_TARGET) { Drop(fade_); Drop(stops_); DropCard(); pc_->RecreateTarget(); }
     }
 
     // ---- Input -----------------------------------------------------------------
     int HitAt(float x, float y) const {
+        x -= LeadDip();   // window DIP -> content DIP while it slides
         const View view = Current(); const float h = Height();
         auto in = [x, y](Design::Box b) { return x >= b.left && x < b.right && y >= b.top && y < b.bottom; };
         if (page_.Moving(Motion::Now())) return None;
@@ -1917,7 +1918,7 @@ private:
             const bool shown = !page_.Moving(now) && top >= s.clipTop - .5f && bottom <= s.clipBottom + .5f &&
                                top >= Layout::viewTop - Layout::groupGap / 2 && bottom <= ViewBottom(Current());
             const bool search = editing_ == SearchField;
-            const RECT r{Px(search ? SearchTextLeft() : Layout::textLeft), Px(top), Px(search ? ClearBox(s.top).left - 4 : Layout::rowRight - 8), Px(bottom)};
+            const RECT r{lead_ + Px(search ? SearchTextLeft() : Layout::textLeft), Px(top), lead_ + Px(search ? ClearBox(s.top).left - 4 : Layout::rowRight - 8), Px(bottom)};
             if (EqualRect(&r, &editRect_) && shown == editShown_) return; // moving it repaints: only when it changes
             editRect_ = r; editShown_ = shown;
             SetWindowPos(edit_, nullptr, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE | (shown ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
@@ -1979,26 +1980,29 @@ private:
     // ---- Window ----------------------------------------------------------------
     RECT OwnerClient() const { RECT r{}; GetClientRect(owner_, &r); MapWindowPoints(owner_, nullptr, reinterpret_cast<POINT*>(&r), 2); return r; }
     // The 332 DIP column docked to the owner's right edge under the toolbar. The
-    // slide moves the window itself; the region clips it to the owner's client
-    // area and rounds the corner it shares with it.
-    void ApplyGeometry(Motion::Time now, bool force = false) {
-        if (!hwnd_) return;
+    // window never moves while sliding (NativeUI::KeyedDrawer): a slide step is one
+    // present, the content drawn `lead_` pixels right of its place and the strip it
+    // has not entered keyed out. The region rounds the corner shared with the owner
+    // (empty while nothing has entered). Returns true when it painted.
+    bool ApplyGeometry(Motion::Time now, bool force = false) {
+        if (!hwnd_) return false;
         const RECT owner = OwnerClient();
         const int column = OwnerPx(Layout::width), top = owner.top + OwnerPx(Layout::top), height = std::max(1, static_cast<int>(owner.bottom - top));
         const int shown = static_cast<int>(std::lround(column * Motion::Clamp(slide_.Value(now))));
-        if (!force && shown == appliedVisible_ && EqualRect(&owner, &appliedOwner_)) return;
-        const bool resized = !EqualRect(&owner, &appliedOwner_);
-        appliedVisible_ = shown; appliedOwner_ = owner;
-        const RECT window{owner.right - shown, top, owner.right - shown + column, top + height};
+        if (!force && shown == appliedVisible_ && EqualRect(&owner, &appliedOwner_)) return false;
+        const bool resized = !EqualRect(&owner, &appliedOwner_), slid = shown != appliedVisible_;
+        appliedVisible_ = shown; appliedOwner_ = owner; lead_ = column - shown;
+        const RECT window{owner.right - column, top, owner.right, top + height};
         if (force || !EqualRect(&window, &appliedWindow_)) { SetWindowPos(hwnd_, nullptr, window.left, window.top, column, height, SWP_NOACTIVATE | SWP_NOZORDER); appliedWindow_ = window; }
-        HRGN region = nullptr;
-        if (shown > 0) {
-            const int r = OwnerPx(20);
-            region = IsZoomed(owner_) ? CreateRectRgn(0, 0, shown, height) : CreateRoundRectRgn(-r * 2, -r * 2, shown + 1, height + 1, r, r);
-        } else region = CreateRectRgn(0, 0, 0, 0);
-        SetWindowRgn(hwnd_, region, FALSE);
+        const int entered = shown > 0;
+        if (force || resized || entered != appliedEntered_) { SetWindowRgn(hwnd_, NativeUI::DrawerRegion(entered, column, height, OwnerPx(20), IsZoomed(owner_)), FALSE); appliedEntered_ = entered; }
         if (resized) { for (int d = 0; d <= depth_; ++d) scrolls_[d].Snap(std::clamp(scrolls_[d].Target(), 0.f, MaxScroll(views_[d], now, true))); RefreshTips(); Invalidate(); }
+        if (force || !slid || shown == 0 || !IsWindowVisible(hwnd_)) return false;
+        PaintNow(); ValidateRect(hwnd_, nullptr);
+        return true;
     }
+    // Slide offset in DIP (content drawn right of its docked place while it enters or leaves).
+    float LeadDip() const { return lead_ * 96.f / std::max(1.f, Dpi()); }
     void Finish() {
         closing_ = false; visible_ = false; appliedVisible_ = -1; appliedWindow_ = {};
         ShowWindow(hwnd_, SW_HIDE);
@@ -2098,7 +2102,7 @@ public:
     // « Annotations » tests: the laid-out rows, the Tab order, hit testing, the UIA tree, the agents.
     std::vector<Slot> SlotsForTest() const { return Slots(Current(), Motion::Now(), true); }
     std::vector<int> FocusOrderForTest() const { return FocusOrder(); }
-    int HitForTest(float x, float y) const { return HitAt(x, y); }
+    int HitForTest(float x, float y) const { return HitAt(x + LeadDip(), y); }   // content DIP (layout boxes), wherever the slide is
     int FocusForTest() const { return focus_; }
     void KeyForTest(WPARAM key) { if (hwnd_) Handle(hwnd_, WM_KEYDOWN, key, 0); }
     std::vector<Accessibility::Node> AccessibleNodesForTest() const { return UiaNodes(); }
@@ -2134,6 +2138,7 @@ public:
         if (!hwnd_) return false;
         tip_.Create(instance, hwnd_, root);
         NativeUI::ConfigureShadowlessPopup(hwnd_); // DWMWCP_DONOTROUND, no shadow: the region shapes it
+        NativeUI::KeyedDrawer(hwnd_);               // the slide's not-yet-entered strip is keyed out
         AttachEditor(); AttachUia();
         return SUCCEEDED(chrome_.Init(hwnd_, root));
     }
@@ -2274,13 +2279,13 @@ public:
     // Display-paced frame from the host clock; also paints the frame after motion ends.
     void Frame(Motion::Time now) {
         if (!visible_) return;
-        ApplyGeometry(now);
+        const bool painted = ApplyGeometry(now);
         if (closing_ && !slide_.Moving(now)) { Finish(); return; }
         PlaceEdit(now); SyncEditor(now);
-        // A window keeps only what it is painted with while its region shows it:
-        // the entering slide repaints as it uncovers; the exit moves finished pixels.
+        // A slide step is painted by ApplyGeometry (with its region); other motion repaints here.
         const bool content = (Moving(now) && !(closing_ && !page_.Moving(now))) || motion_.NextWake(now).delay.has_value();
         if (content || animatingPainted_ || CardFrameDue(now)) Invalidate();
+        if (painted) ValidateRect(hwnd_, nullptr);   // this frame is already presented
         // Rows moved under a still pointer (fold, scroll, navigation): hover follows the layout.
         if (!content && animatingPainted_) { RefreshTips(); Repoint(); }
         animatingPainted_ = content;
