@@ -409,6 +409,25 @@ inline void ConfigureFullClientFrame(HWND window){DWMNCRENDERINGPOLICY policy=DW
 // popup surfaces, now cut by ConfigureShadowlessPopup's window region at that radius.
 inline constexpr float nativeCornerRadius=8;
 inline void RoundNatively(HWND window){if(!window)return;SetWindowRgn(window,nullptr,FALSE);const int round=2/*DWMWCP_ROUND*/;DwmSetWindowAttribute(window,33,&round,sizeof(round));const COLORREF none=0xFFFFFFFE;DwmSetWindowAttribute(window,34,&none,sizeof(none));}
+// Docked drawers (Réglages, Historique, Favoris, Téléchargements) slide without moving or re-cutting their window.
+// Moving a window and changing its region both reach the screen a composition after the frame presented with them
+// (measured: one frame in three showed the drawer cut, the page through its edge, or its content cut on the left).
+// So the window stays on its docked column with a fixed shape; each slide step is one present: the content drawn
+// `lead` pixels right of its place and, left of it, the key colour, which the layered window shows as transparent
+// (and click-through). The region only rounds the corner shared with the owner (`square`: maximized, no corner),
+// or hides everything while nothing has entered (before the first present of a reopened drawer).
+inline constexpr COLORREF drawerKey=RGB(255,0,255);
+inline void KeyedDrawer(HWND window){
+    if(!window)return;
+    SetWindowLongPtrW(window,GWL_EXSTYLE,GetWindowLongPtrW(window,GWL_EXSTYLE)|WS_EX_LAYERED);
+    SetLayeredWindowAttributes(window,drawerKey,0,LWA_COLORKEY);
+}
+inline HRGN DrawerRegion(bool entered,int right,int height,int radius,bool square){
+    if(!entered)return CreateRectRgn(0,0,0,0);
+    if(square)return CreateRectRgn(0,0,right,height);
+    HRGN region=CreateRoundRectRgn(-radius*2,-radius*2,right+1,height+1,radius,radius),clip=CreateRectRgn(0,0,right+1,height+1);
+    CombineRgn(region,region,clip,RGN_AND);DeleteObject(clip);return region;
+}
 inline bool HandleFrame(HWND window,UINT message,WPARAM w,LPARAM,LRESULT& result){switch(message){case WM_NCCALCSIZE:result=0;return true;case WM_NCPAINT:result=0;return true;case WM_NCACTIVATE:result=DefWindowProcW(window,message,w,-1);InvalidateRect(window,nullptr,FALSE);return true;}return false;}
 // ---------------------------------------------------------------------------------
 // Zero drop shadow (user decision, 2026-11-09). The earlier acceptance of DWM's
