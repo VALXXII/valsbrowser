@@ -147,12 +147,20 @@ def page(predicate, wait=30):
     raise SystemExit('page target not found')
 
 
+def mark_old(cdp):
+    """Marks the current document, so the wait below only accepts the NEXT one."""
+    try:
+        cdp.eval('window.__qaOld=1')
+    except RuntimeError:
+        pass
+
+
 def wait_error_page(cdp, seconds=20):
     end = time.time() + seconds
     while time.time() < end:
         cdp.pump(0.3)
         try:
-            if cdp.eval('!!document.querySelector("main .text h1")&&document.fonts.status==="loaded"'):
+            if cdp.eval('!window.__qaOld&&!!document.querySelector("main .text h1")&&document.fonts.status==="loaded"'):
                 cdp.pump(0.4)   # entrance animation (160 ms)
                 return True
         except RuntimeError:
@@ -239,6 +247,13 @@ def run_case(name, cdp, out, dpr, hwnd, rows, failures, sandboxed=False):
     want_focus = 'back' if name == 'insecure' else 'primary'
     if name != 'restored' and m.get('focused') != want_focus:
         notes.append(f'focus on {m.get("focused")!r} (expected the primary action)')
+    pixels = {}
+    try:   # captured before the copy test moves the pointer (the refused board shows « Détails techniques » hovered)
+        img = block_shot(cdp, m, dpr); img.save(out / f'{name}-block.png')
+        pixels = cases.compare(name, img, out)
+    except Exception as e:
+        notes.append(f'block capture failed: {e}')
+    window_shot(hwnd, out / f'{name}-window.png')
     if m.get('copy'):
         c = m['copy']; cdp.call('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': c['x'] + 8, 'y': c['y'] + 9})
         for kind in ('mousePressed', 'mouseReleased'):
@@ -248,13 +263,6 @@ def run_case(name, cdp, out, dpr, hwnd, rows, failures, sandboxed=False):
         got = clipboard_text()
         if got != code:
             layout.append(f'copy button: clipboard {got!r}, expected {code!r}')
-    pixels = {}
-    try:
-        img = block_shot(cdp, m, dpr); img.save(out / f'{name}-block.png')
-        pixels = cases.compare(name, img, out)
-    except Exception as e:
-        notes.append(f'block capture failed: {e}')
-    window_shot(hwnd, out / f'{name}-window.png')
     rows.append({'name': name, 'layout': layout, 'notes': notes, 'pixels': pixels, 'title': m.get('title'), 'sandboxed': sandboxed})
     print(f'  {name:16} {"OK" if not layout else "DIFF"}  pixels {pixels or "-"}  {"; ".join(notes)}')
     for d in layout:
@@ -298,11 +306,13 @@ def main() -> int:
         tab = page(lambda u: u == 'about:blank')
         tab.call('Fetch.enable', {'patterns': [{'urlPattern': '*', 'requestStage': 'Request'}]})
         for name, url in REAL:
-            tab.call('Page.navigate', {'url': url})
+            mark_old(tab); tab.call('Page.navigate', {'url': url})
             if not wait_error_page(tab):
                 failures.append(f'{name}: our page did not appear (title {tab.eval("document.title")!r})'); continue
             if name == 'refused':   # the board shows the second attempt: « Réessayer » once (failed again, locally)
-                tab.eval('document.getElementById("primary").click()'); time.sleep(0.5); wait_error_page(tab)
+                mark_old(tab); tab.eval('document.getElementById("primary").click()')
+                if not wait_error_page(tab):
+                    failures.append('refused: « Réessayer » did not bring a new page'); continue
             run_case(name, tab, out, dpr, hwnd, rows, failures)
         if tab.leaked:
             failures.append(f'unexpected requests (failed, never sent): {tab.leaked}')
