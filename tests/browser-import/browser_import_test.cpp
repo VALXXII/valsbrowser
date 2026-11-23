@@ -333,6 +333,10 @@ int main(int argc, char** argv) {
         // Unknown schema → unsupported, never a crash.
         const std::wstring odd = work + L"\\odd\\Default"; { Db d(odd + L"\\History"); d.Exec("CREATE TABLE something(x)"); }
         Source s = p2; s.dir = odd; s.root = Parent(odd); OK(Read(s, o).history.failure == Failure::Unsupported);
+        // « urls » as a view over another table (SEC-17): not a plain table, refused before any query runs on it.
+        const std::wstring viewed = work + L"\\viewed\\Default";
+        { Db d(viewed + L"\\History"); d.Exec("CREATE TABLE t(url, title, visit_count, last_visit_time, hidden, id)"); d.Exec("INSERT INTO t VALUES('https://v.example/', 'v', 1, 13300000000000000, 0, 1)"); d.Exec("CREATE VIEW urls AS SELECT * FROM t"); }
+        s.dir = viewed; s.root = Parent(viewed); OK(Read(s, o).history.failure == Failure::Unsupported);
         // Not a database at all.
         const std::wstring junk = work + L"\\junk\\Default"; Put(junk + L"\\History", std::string(4096, 'Z'));
         s.dir = junk; s.root = Parent(junk); OK(Read(s, o).history.failure == Failure::Malformed);
@@ -432,6 +436,21 @@ int main(int argc, char** argv) {
         const auto legacy = ParseHtmlBookmarks("<DL><DT><A HREF=\"https://e.example/\">caf\xE9</A></DL>");
         OK(legacy.failure == Failure::None && legacy.roots.size() == 1 && legacy.roots[0].title == L"café");
         OK(ParseHtmlBookmarks("just text, no list").failure == Failure::Malformed);
+        {   // SEC-17: entities are looked up 10 characters ahead at most; 4 M ampersands decode in linear time.
+            OK(Html::Decode(L"a &amp; b &#x1F600; &unknown; &amp") == L"a & b \U0001F600 &unknown; &amp");
+            OK(Html::Decode(L"&verylongname;") == L"&verylongname;" && Html::Decode(L"&#123456789;") == L"&#123456789;");
+            const std::wstring many(4u << 20, L'&');
+            const ULONGLONG t0 = GetTickCount64();
+            OK(Html::Decode(many) == many && GetTickCount64() - t0 < 5000);
+        }
+        {   // SEC-17: duplicate keys are still refused past 16 members (hashed check), in linear time.
+            std::string obj = "{"; for (int i = 0; i < 40; ++i) obj += (i ? ",\"k" : "\"k") + std::to_string(i) + "\":1";
+            StrictJson::Value v; StrictJson::Limits lim; lim.maxItems = 1u << 22; lim.maxBytes = 64u << 20;
+            OK(StrictJson::Parse(obj + "}", v, nullptr, lim) && !StrictJson::Parse(obj + ",\"k3\":2}", v, nullptr, lim) && !StrictJson::Parse(obj + ",\"k39\":2}", v, nullptr, lim));
+            std::string big = "{"; for (int i = 0; i < 200000; ++i) big += (i ? ",\"" : "\"") + std::to_string(i) + "\":0";
+            const ULONGLONG t0 = GetTickCount64();
+            OK(StrictJson::Parse(big + "}", v, nullptr, lim) && GetTickCount64() - t0 < 5000);
+        }
         std::string deep = "<DL>"; for (int i = 0; i < 300; ++i) deep += "<DT><H3>f</H3><DL>"; deep += "<DT><A HREF=\"https://x.example/\">x</A>";
         OK(ParseHtmlBookmarks(deep).failure == Failure::TooDeep);
         Put(work + L"\\exports\\big.html", std::string(static_cast<std::size_t>(Bound::htmlBytes) + 1, 'x'));

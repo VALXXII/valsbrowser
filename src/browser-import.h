@@ -239,6 +239,7 @@ struct Api {
     int(__stdcall* column_type)(sqlite3_stmt*, int) = nullptr;
     int(__stdcall* exec)(sqlite3*, const char*, void*, void*, char**) = nullptr;
     int(__stdcall* busy_timeout)(sqlite3*, int) = nullptr;
+    int (*db_config)(sqlite3*, int, ...) = nullptr;   // optional (SEC-17: defensive mode); variadic, so cdecl
     bool Ready() const { return dll && open_v2 && close && prepare_v2 && step && finalize && column_text16 && column_bytes16 && column_int64 && column_type && exec && busy_timeout; }
 };
 // Loaded once from System32 only (never from the application or current folder).
@@ -250,6 +251,7 @@ inline const Api& Get() {
         get(a.open_v2, "sqlite3_open_v2"); get(a.close, "sqlite3_close"); get(a.prepare_v2, "sqlite3_prepare_v2"); get(a.step, "sqlite3_step");
         get(a.finalize, "sqlite3_finalize"); get(a.column_text16, "sqlite3_column_text16"); get(a.column_bytes16, "sqlite3_column_bytes16");
         get(a.column_int64, "sqlite3_column_int64"); get(a.column_type, "sqlite3_column_type"); get(a.exec, "sqlite3_exec"); get(a.busy_timeout, "sqlite3_busy_timeout");
+        get(a.db_config, "sqlite3_db_config");
         return a;
     }();
     return api;
@@ -294,6 +296,12 @@ public:
 private:
     sqlite3_stmt* s_ = nullptr; int rc_ = 0;
 };
+// True when every name is a plain table of the copy (not a view or a virtual table that could run other code).
+// `names` is a constant SQL list such as "'urls'"; `count` is how many names it holds.
+inline bool PlainTables(sqlite3* db, const char* names, int count) {
+    Statement q(db, (std::string("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND sql NOT LIKE 'CREATE VIRTUAL%' AND name IN (") + names + ")").c_str());
+    return q.Prepared() && q.Step() == ROW && q.Int(0) == count;
+}
 } // namespace Sql
 
 // Test seam (dev builds' E2E only, see browser-import-integration.h): runs once a private snapshot exists.
@@ -410,6 +418,9 @@ public:
         const int rc = a.open_v2(Sql::FileUri(copy, "").c_str(), &db_, Sql::OPEN_READWRITE | Sql::OPEN_URI | Sql::OPEN_NOMUTEX | Sql::OPEN_PRIVATECACHE, nullptr);
         if (rc != Sql::OK) { failure_ = Sql::CodeFailure(rc); return; }
         a.busy_timeout(db_, Bound::busyMs);
+        // Another program's file (SEC-17): no schema-defined functions or views run with trust, no schema writes.
+        if (a.db_config) a.db_config(db_, 1010 /* SQLITE_DBCONFIG_DEFENSIVE */, 1, static_cast<int*>(nullptr));
+        a.exec(db_, "PRAGMA trusted_schema = OFF", nullptr, nullptr, nullptr);   // ignored by SQLite older than 3.31
         const int begin = a.exec(db_, "BEGIN", nullptr, nullptr, nullptr);
         if (begin != Sql::OK) { failure_ = Sql::CodeFailure(begin); return; }
         // Touch the schema now: a file that is not a database fails here, not in the middle of a query.
@@ -738,8 +749,9 @@ inline std::wstring Decode(const std::wstring& s) {
     std::wstring out; out.reserve(s.size());
     for (std::size_t i = 0; i < s.size(); ++i) {
         if (s[i] != L'&') { out += s[i]; continue; }
-        const auto semi = s.find(L';', i);
-        if (semi == std::wstring::npos || semi - i > 10) { out += s[i]; continue; }
+        const auto rel = std::wstring_view(s).substr(i, 11).find(L';');   // 10 characters ahead at most: no rescan to the end per '&' (SEC-17)
+        if (rel == std::wstring::npos) { out += s[i]; continue; }
+        const std::size_t semi = i + rel;
         const std::wstring e = s.substr(i + 1, semi - i - 1);
         std::uint32_t cp = 0;
         if (e == L"amp") cp = '&'; else if (e == L"lt") cp = '<'; else if (e == L"gt") cp = '>'; else if (e == L"quot") cp = '"'; else if (e == L"apos") cp = '\''; else if (e == L"nbsp") cp = 0xA0;
@@ -870,6 +882,7 @@ inline Bookmarks_ ReadFirefoxBookmarks(Sql::sqlite3* db) {
     Bookmarks_ r;
     struct Row { std::int64_t id, type, parent, position, added; std::wstring title, url, guid; };
     std::map<std::int64_t, Row> rows; std::map<std::int64_t, std::vector<std::int64_t>> kids;
+    if (!Sql::PlainTables(db, "'moz_bookmarks', 'moz_places'", 2)) { r.failure = Failure::Unsupported; return r; }
     Sql::Statement q(db, "SELECT b.id, b.type, b.parent, b.position, b.title, b.dateAdded, p.url, b.guid FROM moz_bookmarks b LEFT JOIN moz_places p ON b.fk = p.id ORDER BY b.parent, b.position, b.id LIMIT 200001");
     if (!q.Prepared()) { r.failure = q.Code() == Sql::OK ? Failure::Unsupported : (Sql::CodeFailure(q.Code()) == Failure::Busy ? Failure::Busy : Failure::Unsupported); return r; }
     int rc;
@@ -918,6 +931,7 @@ inline History_ ReadHistory(Sql::sqlite3* db, Browser b) {
     const char* countWith = firefox ? "SELECT count(*) FROM moz_places WHERE hidden = 0 AND visit_count > 0 AND last_visit_date > 0" : "SELECT count(*) FROM urls WHERE hidden = 0 AND last_visit_time > 0";
     const char* countPlain = firefox ? "SELECT count(*) FROM moz_places WHERE visit_count > 0 AND last_visit_date > 0" : "SELECT count(*) FROM urls WHERE last_visit_time > 0";
     bool hidden = true;
+    if (!Sql::PlainTables(db, firefox ? "'moz_places'" : "'urls'", 1)) { r.failure = Failure::Unsupported; return r; }
     auto q = std::make_unique<Sql::Statement>(db, withHidden);
     if (!q->Prepared()) {
         if (Sql::CodeFailure(q->Code()) == Failure::Busy) { r.failure = Failure::Busy; return r; }

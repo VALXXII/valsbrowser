@@ -108,7 +108,12 @@ DWORD WINAPI ImportWorker(LPVOID param) {
 #ifndef BROWSER_CHANNEL_RELEASE
     if (importHold == L"snapshot") BI::SnapshotTakenForTest() = [] { ImportHoldPoint(L"snapshot"); };
 #endif
-    (*job)->result = BI::Read((*job)->source, (*job)->options);
+    try { (*job)->result = BI::Read((*job)->source, (*job)->options); }
+    catch (const std::bad_alloc&) {   // a huge source: refused as too large, the worker still reports back (SEC-17)
+        (*job)->result = BI::ReadResult{};
+        if ((*job)->options.bookmarks) (*job)->result.bookmarks.failure = BI::Failure::TooLarge;
+        if ((*job)->options.history) (*job)->result.history.failure = BI::Failure::TooLarge;
+    }
     ImportHoldPoint(L"read");
     HWND target = window;
     { std::lock_guard<std::mutex> guard(importLock); importFinished = *job; }

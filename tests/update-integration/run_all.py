@@ -66,6 +66,10 @@ def existing_fixtures() -> None:
     fixture('i18n_test', [*STRICT, 'tests/i18n_test.cpp'])
     # The ad blocker installs from a folder updates never move (src/adblock-folder.h; e2e: tests/e2e/adblock_update_e2e.py).
     fixture('adblock_folder_test', [*STRICT, 'tests/adblock_folder_test.cpp'])
+    # browser.log: origins only in release builds, capped at 1 MiB, erased with the browsing data (src/log-privacy.h, SEC-05).
+    fixture('log_privacy_test', [*STRICT, 'tests/log_privacy_test.cpp'])
+    # Directory loops that never throw (src/fs-safe.h, SEC-27): an unlistable sub-folder ends the loop, not the process.
+    fixture('fs_safe_test', [*STRICT, 'tests/fs_safe_test.cpp', '-ladvapi32'])
     # One taskbar identity for every installed version (src/taskbar-identity.h; e2e: tests/e2e/taskbar_identity_e2e.py).
     fixture('taskbar_identity_test', [*STRICT, 'tests/taskbar_identity_test.cpp', '-lole32', '-luuid', '-lshell32', '-lshlwapi'])
     # Browser as a selectable default browser (src/default-browser.h: registration under a throwaway HKCU test key only,

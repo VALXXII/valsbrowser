@@ -75,6 +75,7 @@
 #include "profile-store.h"
 #include "window-sessions.h"
 #include "trace-erase.h"
+#include "log-privacy.h"
 #include "password-vault.h"
 #ifdef BROWSER_E2E_FIXTURE_HOOK
 // TEST HOST ONLY (tests/e2e/mtls_host.cpp): the fixture pin. The release and dev browser never define
@@ -363,7 +364,15 @@ void SmokeAdvance();
 
 std::string Utf8(const std::wstring& s){int n=WideCharToMultiByte(CP_UTF8,0,s.c_str(),(int)s.size(),nullptr,0,nullptr,nullptr);std::string r(n,0);WideCharToMultiByte(CP_UTF8,0,s.c_str(),(int)s.size(),r.data(),n,nullptr,nullptr);return r;}
 // Serialized: the WebView2 install worker reports its real outcome from its own thread. A private window logs nothing.
-void Log(const std::wstring& s){if(logFile.empty()||privateWindow)return;static std::mutex logLock;std::lock_guard<std::mutex> guard(logLock);std::ofstream f(std::filesystem::path(logFile),std::ios::app);f<<Utf8(s)<<"\n";if(smoke&&!splitTest&&s.rfind(L"NAVIGATION OK" /* i18n-exempt: log marker */,0)==0)PostMessageW(window,WM_APP+2,0,0);}
+// Release builds write origins only, never full addresses; every build caps the file (src/log-privacy.h, audit SEC-05).
+std::mutex logLock;
+void Log(const std::wstring& s){if(logFile.empty()||privateWindow)return;std::lock_guard<std::mutex> guard(logLock);LogPrivacy::RotateIfLarge(logFile);
+#ifdef BROWSER_CHANNEL_RELEASE
+    const std::wstring line=LogPrivacy::Redact(s);
+#else
+    const std::wstring& line=s;
+#endif
+    {std::ofstream f(std::filesystem::path(logFile),std::ios::app);f<<Utf8(line)<<"\n";}if(smoke&&!splitTest&&s.rfind(L"NAVIGATION OK" /* i18n-exempt: log marker */,0)==0)PostMessageW(window,WM_APP+2,0,0);}
 void Fail(const std::wstring& where,HRESULT hr){if(halted)return;halted=true;popups.CancelAll(); /* pending window.open requests settled before any modal loop */for(auto& tab:pages)tab->loading.Clear();ClearChromeMotion();KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();wchar_t code[32];swprintf(code,32,L"0x%08lX",(unsigned long)hr);auto msg=TRF(wv2_halt_body,where,code);Log(L"WEBVIEW2 ERROR "+msg);if(splitTest){PostMessageW(window,WM_CLOSE,0,0);return;}if(workspaceTest&&qaExpectTerminal){Log(L"WSQA terminal failure captured (normal recovery reached once, dialog suppressed by --workspace-test)");return;}MessageBoxW(window,msg.c_str(),TR(wv2_halt_title),MB_OK|MB_ICONERROR);}
 bool Check(HRESULT hr,const wchar_t* op){if(FAILED(hr)){Fail(op,hr);return false;}return !halted;}
 // A refused per-tab operation (find, reload, favicon, interstitial): logged, never the loss of the engine.
@@ -1827,6 +1836,8 @@ bool WipeLocalTraceFiles(){
     bool ok=true;
     {std::ostringstream o;AddressBar::History{}.Write(o);if(ProfileStore::WriteAtomic(HistoryFile(),o.str())){historyBase=AddressBar::History{};TraceErase::DropDamagedBackups(HistoryFile());}else{ok=false;Log(L"CLEAR history wipe failed");}}
     {std::vector<DL::Item> keep;for(const auto& d:downloads)if(!DL::Persistent(d))keep.push_back(d);std::ostringstream o;DL::WriteHistory(o,keep);if(ProfileStore::WriteAtomic(downloadsFile,o.str())){downloadsBase.clear();TraceErase::DropDamagedBackups(downloadsFile);}else{ok=false;Log(L"CLEAR downloads wipe failed");}}
+    // The browsing log goes too (audit SEC-05); a window appending at that instant keeps it a moment: said in the log, not a failure.
+    {bool erased=true;{std::lock_guard<std::mutex> guard(logLock);if(!logFile.empty())erased=LogPrivacy::Erase(logFile);}if(!erased)Log(L"CLEAR log file busy: not deleted");}
     return ok;
 }
 void ClearLocalTraces(){

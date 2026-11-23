@@ -499,6 +499,7 @@ struct IgnoreFile {
 
     // 0 = no rule matches, 1 = ignored, -1 = re-included. `sub` and `name` are lower-cased.
     int Verdict(std::string_view sub, std::string_view name, bool isDir) const {
+        long total = 0;  // SEC-27: all the wildcard rules of one file share a budget per path (a hostile file stays cheap)
         for (std::size_t i = rules.size(); i-- > 0;) {
             const IgnoreRule& r = rules[i];
             if (r.dirOnly && !isDir) continue;
@@ -508,10 +509,12 @@ struct IgnoreFile {
             } else if (r.fast == IgnoreRule::Suffix) {
                 match = name.size() >= r.pattern.size() - 1 && EndsWith(name, std::string_view(r.pattern).substr(1));
             } else {
+                if (total > 1000000) continue;
                 const std::string_view subject = r.anchored ? sub : name;
                 int steps = 0;
                 match = Glob(r.pattern.data(), r.pattern.data(), r.pattern.data() + r.pattern.size(), subject.data(),
                              subject.data() + subject.size(), steps);
+                total += steps;
             }
             if (match) return r.negate ? -1 : 1;
         }
@@ -546,6 +549,12 @@ IgnoreFile ParseGitignore(std::string_view text, std::string base) {
         if (line[0] == '/') line.erase(0, 1);
         if (line.empty() || !SJ::ValidUtf8(line)) continue;
         rule.pattern = LowerAscii(line);
+        // SEC-27: "**/**/" is "**/" (each one was a level of recursion in Glob); an over-long rule is no real rule.
+        for (std::size_t at = 0; (at = rule.pattern.find("**/**/", at)) != std::string::npos;) {
+            if (at == 0 || rule.pattern[at - 1] == '/') rule.pattern.erase(at, 3);
+            else ++at;
+        }
+        if (rule.pattern.size() > 1024) continue;
         const bool special = rule.pattern.find_first_of("*?[\\") != std::string::npos;
         if (!rule.anchored && !special) rule.fast = IgnoreRule::Literal;
         else if (!rule.anchored && rule.pattern[0] == '*' && rule.pattern.find_first_of("*?[\\", 1) == std::string::npos)

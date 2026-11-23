@@ -147,6 +147,10 @@ private:
     std::uint64_t generation_ = 0;
     WPARAM session_ = 0;
     std::atomic<bool> notifyPending_{false}, cancel_{false}, shutdown_{false}, busy_{false};
+    // next-check as last read or written by this process (PERF-19): AutoCheckDelayMs runs on the UI thread at
+    // every engine notification and reads the state file at most once a minute. AutoCheck still reads the file.
+    mutable std::atomic<std::int64_t> cachedNextCheck_{0};
+    mutable std::atomic<std::uint64_t> cachedAt_{0};   // Ticks() + 1 when cachedNextCheck_ was set; 0 = none
     std::thread worker_;
     Op failedOp_ = Op::None;
     Failure failure_ = Failure::None;

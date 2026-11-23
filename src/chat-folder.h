@@ -133,12 +133,12 @@ namespace detail {
 // OneDrive root (the profile, drive roots and system folders are refused outright by Refused).
 inline bool TooWide(const std::wstring& dir) {
     const std::wstring d = Fold(Trim(dir)); wchar_t buf[MAX_PATH];
-    if (GetEnvironmentVariableW(L"USERPROFILE", buf, MAX_PATH)) {
+    if (const DWORD n = GetEnvironmentVariableW(L"USERPROFILE", buf, MAX_PATH); n && n < MAX_PATH) {   // longer: buf not written (SEC-27)
         const std::wstring home = Fold(Trim(buf));
         for (const wchar_t* sub : {L"\\desktop", L"\\documents", L"\\downloads", L"\\bureau", L"\\téléchargements"}) if (d == home + sub) return true;   // i18n-exempt: folder names
     }
     for (const wchar_t* var : {L"OneDrive", L"OneDriveConsumer", L"OneDriveCommercial"}) {
-        if (!GetEnvironmentVariableW(var, buf, MAX_PATH)) continue;
+        if (const DWORD n = GetEnvironmentVariableW(var, buf, MAX_PATH); !n || n >= MAX_PATH) continue;
         const std::wstring one = Fold(Trim(buf));
         for (const wchar_t* sub : {L"", L"\\desktop", L"\\documents", L"\\bureau"}) if (d == one + sub) return true;   // i18n-exempt: folder names
     }
