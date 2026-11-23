@@ -124,6 +124,14 @@ def case_of(text, marker):
     at = text.find(marker)
     return text[at:text.find('break;', at)] if at >= 0 else ''
 check('ModeSettled();' in case_of(turn, 'case T::ModesChanged:') and 'ModeSettled();' in case_of(turn, 'case T::ConfigOptionsChanged:') and 'ModeRefused(e);' in case_of(turn, 'case T::RequestFailed:'),'SEC-13: the mode\'s confirmation sends the held prompt, its refusal ends the turn')
+set_folder = block_after(ui, 'void SetFolder(')
+check('it->second.mode.clear();' in set_folder and set_folder.find('it->second.mode.clear();') < set_folder.find('RememberChoices();'), 'SEC-08: another folder behind the same origin does not inherit the mode remembered for the old one')
+folder_decided = block_after(ui, 'void FolderDecided(')
+check('if (same || !sure) return;' not in folder_decided and 'if (!sure) {' in folder_decided and 'folderAsk = true;' in block_after(folder_decided, 'if (!sure) {'), 'SEC-08: an unsure detection of another folder asks the folder question instead of keeping the old folder silently')
+check('CS::MayHoldSecrets(FileName(t.diffs.front().path))' in block_after(turn, 'SJ::Value ToolJson(') and 'd.Set("lines", SJ::Value::Arr())' in block_after(turn, 'SJ::Value ToolJson('),
+      'SEC-14: a step kept with the conversation never carries the lines of a file that may hold secrets')
+append_text = block_after(turn, 'void AppendText(')
+check('t->string += more;' in append_text and 'MaxKeptText' in append_text and '+ more)' not in append_text, 'PERF-20: streamed text is appended in place and capped (no copy of the whole message per chunk)')
 keep_plan = block_after(turn, 'void KeepModeAfterPlan() {')
 check(all(x in keep_plan for x in ('turn.planLaunched', 'ChatOptions::ModeAfterPlan(true, mv.current', 'RememberSetting(&ChatStore::Project::mode, kept)', 'std::none_of(mv.list')), 'M: the mode the agent goes to after its plan is accepted is remembered for the site (only a mode the chat offers)')
 events = block_after(turn, 'void OnEvent(const Acp::Event& e) {')

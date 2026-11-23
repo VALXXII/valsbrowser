@@ -197,6 +197,11 @@ void SetFolder(const std::wstring& path, bool byUser = true) {
     // the user's own choice is kept even against a sure detection: what the detection proposed at that moment is
     // remembered, so the question does not come back at every opening while the server stays where it is
     folderInstead = byUser && ChatFolder::detail::Fold(suggestion.folder) != ChatFolder::detail::Fold(dir) ? suggestion.folder : std::wstring();
+    // SEC-08: the mode remembered for this site was chosen for its folder: another folder starts in « Demander » again
+    if (auto it = projects.sites.find(site.origin); it != projects.sites.end() && !it->second.folder.empty() && ChatFolder::detail::Fold(it->second.folder) != ChatFolder::detail::Fold(dir) && !it->second.mode.empty()) {
+        Diag(L"another folder for " + W(site.origin) + L": its remembered mode « " + W(it->second.mode) + L" » is not carried over");   // i18n-exempt: log detail
+        it->second.mode.clear();
+    }
     folder = dir; folderChosen = byUser; folderAsk = false; RememberChoices();
     for (auto& e : composerElements) ResolveElementSource(e.second);
     convo.data.head.folder = folder;
@@ -209,8 +214,12 @@ void SetFolder(const std::wstring& path, bool byUser = true) {
 void FolderDecided(bool sure, const std::wstring& doubt) {
     const bool same = !folder.empty() && ChatFolder::detail::Fold(folder) == ChatFolder::detail::Fold(suggestion.folder);
     if (!folder.empty()) {   // a folder remembered for this site: only a sure detection of ANOTHER folder says something
-        if (same || !sure) return;
+        if (same || (!sure && suggestion.folder.empty())) return;
         if (turn.active) return;
+        if (!sure) {   // SEC-08: an unsure detection that names ANOTHER folder: asked, never kept without a word (unless the user already chose against it)
+            if (folderChosen && !folderInstead.empty() && ChatFolder::detail::Fold(folderInstead) == ChatFolder::detail::Fold(suggestion.folder)) return;
+            Diag(L"the site may now be served from " + suggestion.folder + L", not from its folder (" + folder + L"): asking"); folder.clear(); folderAsk = true; DisposeSession(L"project folder to confirm"); SendState(); return;   // i18n-exempt: log reason
+        }
         if (folderChosen && !folderInstead.empty() && ChatFolder::detail::Fold(folderInstead) == ChatFolder::detail::Fold(suggestion.folder)) return;   // the user already chose against this very folder
         if (folderChosen) { Diag(L"the site is now served from " + suggestion.folder + L", not from the folder chosen for it (" + folder + L"): asking"); folder.clear(); folderAsk = true; DisposeSession(L"project folder to confirm"); SendState(); return; }   // i18n-exempt: log reason
         Diag(L"the site is now served from another folder: " + suggestion.folder + L" (was " + folder + L")");
