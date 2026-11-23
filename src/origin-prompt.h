@@ -154,6 +154,7 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
         // « Mémoriser pour ce site » starts checked (user decision 2026-11-17, like Chrome): an answer is kept for the
         // site unless the user clears the check for this time only. Notifications are always remembered.
         m.checkValue = true;
+        if (!s.demo) m.armMs = 500;   // SEC-22: a double click the page arranged cannot land on « Autoriser »
         break;
     }
     case Kind::BasicAuth: {
@@ -172,6 +173,7 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
     case Kind::ExternalApp: {
         // Title in the popovers' 16/20 role (user override of Paper's 20/24), tile on the title line.
         m.automationId = L"ExternalApplication"; m.scope = Scope::Page; m.tileGlyph = DialogKit::Glyph::external; m.softButtons = true;
+        if (!s.demo) m.armMs = 500;   // SEC-22: a key or click the page timed (it takes the focus) cannot launch the application
         std::wstring scheme = s.detail.substr(0, s.detail.find(L':'));
         if (!s.frame.empty()) {
             m.title = TR(external_title);
@@ -340,7 +342,7 @@ public:
     struct Hooks {
         std::function<void()> wake;
         // Native list of a select (B08 certificate / screen share): chosen index or -1.
-        std::function<int(const std::vector<std::wstring>&, int current, RECT anchorScreen, bool keyboard)> choose;
+        std::function<int(const Modal::Select&, RECT anchorScreen, bool keyboard)> choose;
         // B07 « Plus d'options » command list: chosen Command, 0 when dismissed (shared host menu).
         std::function<int(const std::vector<ContextMenu::Item>&, RECT anchorScreen, bool keyboard)> menu;
         std::function<void()> dismiss;   // end the host list now (the prompt closed while it was open)

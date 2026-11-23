@@ -599,7 +599,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE, LPWSTR, int) {
     }
     if (!payload) {
         // Truncated / corrupted download (or a renamed stub): nothing is written anywhere.
-        if (!g.unattended) MessageBoxW(nullptr, TR(setup_error_not_setup), L"browser", MB_OK | MB_ICONERROR);
+        if (!g.unattended) MessageBoxW(nullptr, TR(setup_error_not_setup), L"Browser", MB_OK | MB_ICONERROR);
         return 3;
     }
     HANDLE single = CreateMutexW(nullptr, TRUE, L"Local\\browser-setup");

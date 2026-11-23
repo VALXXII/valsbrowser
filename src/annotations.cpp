@@ -2501,7 +2501,19 @@ Outcome Store::WriteReader(const Reader& r) const {
         for (const auto& s : seen) { if (m.Get(s.first)) continue; if (++n > MaxReaderSeen) break; m.Set(s.first, Value::Str(FormatTime(s.second))); }
         v.Set("seen", std::move(m));
     }
-    if (!AtomicWrite(dir + L"\\" + Widen(r.client) + L".json", SJ::Serialize(v))) return Fail(Code::Io, "Écriture du lecteur impossible.");
+    // SEC-15: a client name is chosen by the client. Files not written for MaxReaderAgeSeconds are purged, and a NEW
+    // client file is refused once MaxReaderFiles exist (a known client keeps updating its own).
+    const std::wstring file = dir + L"\\" + Widen(r.client) + L".json";
+    if (GetFileAttributesW(file.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        const std::int64_t now = RealNow(); std::size_t kept = 0;
+        for (const auto& f : ListDir(dir)) {
+            if (f.dir || f.reparse || f.name.size() < 6 || f.name.compare(f.name.size() - 5, 5, L".json") != 0) continue;
+            if (now - f.writeTime > MaxReaderAgeSeconds && DeleteFileW((dir + L"\\" + f.name).c_str())) continue;
+            ++kept;
+        }
+        if (kept >= MaxReaderFiles) return Fail(Code::Invalid, "Trop de lecteurs.");
+    }
+    if (!AtomicWrite(file, SJ::Serialize(v))) return Fail(Code::Io, "Écriture du lecteur impossible.");
     return {};
 }
 

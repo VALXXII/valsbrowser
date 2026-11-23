@@ -4,7 +4,7 @@
 #ifdef BROWSER_HAS_BUILD_INFO
 #include "build-info.h"
 #endif
-#define VI_DESCRIPTION "browser annotations MCP bridge"
+#define VI_DESCRIPTION "Browser annotations MCP bridge"
 #define VI_INTERNAL "browser-annotations-mcp"
 #define VI_ORIGINAL "browser-annotations-mcp.exe"
 #include "version-info.rc"

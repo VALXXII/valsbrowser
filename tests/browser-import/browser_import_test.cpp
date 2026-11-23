@@ -125,9 +125,9 @@ static std::string Json(const std::wstring& w) { std::string o = "\""; for (char
 static std::string ChromeNode(const std::wstring& name, const std::string& url, std::int64_t addedMs = 1700000000000) {
     return "{\"type\":\"url\",\"name\":" + Json(name) + ",\"url\":\"" + url + "\",\"date_added\":\"" + Chrome(addedMs) + "\",\"guid\":\"x\",\"id\":\"1\"}";
 }
-static std::string ChromeFolder(const std::wstring& name, const std::vector<std::string>& kids) {
+static std::string ChromeFolder(const std::wstring& name, const std::vector<std::string>& kids, const std::string& guid = "") {
     std::string k; for (const auto& c : kids) { if (!k.empty()) k += ","; k += c; }
-    return "{\"type\":\"folder\",\"name\":" + Json(name) + ",\"children\":[" + k + "],\"date_added\":\"" + Chrome(1690000000000) + "\"}";
+    return "{\"type\":\"folder\",\"name\":" + Json(name) + ",\"children\":[" + k + "],\"date_added\":\"" + Chrome(1690000000000) + "\"" + (guid.empty() ? "" : ",\"guid\":\"" + guid + "\"") + "}";
 }
 static std::string ChromeBookmarks() {
     std::string deep = ChromeNode(L"au fond", "https://deep.example/");
@@ -333,6 +333,10 @@ int main(int argc, char** argv) {
         // Unknown schema → unsupported, never a crash.
         const std::wstring odd = work + L"\\odd\\Default"; { Db d(odd + L"\\History"); d.Exec("CREATE TABLE something(x)"); }
         Source s = p2; s.dir = odd; s.root = Parent(odd); OK(Read(s, o).history.failure == Failure::Unsupported);
+        // « urls » as a view over another table (SEC-17): not a plain table, refused before any query runs on it.
+        const std::wstring viewed = work + L"\\viewed\\Default";
+        { Db d(viewed + L"\\History"); d.Exec("CREATE TABLE t(url, title, visit_count, last_visit_time, hidden, id)"); d.Exec("INSERT INTO t VALUES('https://v.example/', 'v', 1, 13300000000000000, 0, 1)"); d.Exec("CREATE VIEW urls AS SELECT * FROM t"); }
+        s.dir = viewed; s.root = Parent(viewed); OK(Read(s, o).history.failure == Failure::Unsupported);
         // Not a database at all.
         const std::wstring junk = work + L"\\junk\\Default"; Put(junk + L"\\History", std::string(4096, 'Z'));
         s.dir = junk; s.root = Parent(junk); OK(Read(s, o).history.failure == Failure::Malformed);
@@ -432,6 +436,21 @@ int main(int argc, char** argv) {
         const auto legacy = ParseHtmlBookmarks("<DL><DT><A HREF=\"https://e.example/\">caf\xE9</A></DL>");
         OK(legacy.failure == Failure::None && legacy.roots.size() == 1 && legacy.roots[0].title == L"café");
         OK(ParseHtmlBookmarks("just text, no list").failure == Failure::Malformed);
+        {   // SEC-17: entities are looked up 10 characters ahead at most; 4 M ampersands decode in linear time.
+            OK(Html::Decode(L"a &amp; b &#x1F600; &unknown; &amp") == L"a & b \U0001F600 &unknown; &amp");
+            OK(Html::Decode(L"&verylongname;") == L"&verylongname;" && Html::Decode(L"&#123456789;") == L"&#123456789;");
+            const std::wstring many(4u << 20, L'&');
+            const ULONGLONG t0 = GetTickCount64();
+            OK(Html::Decode(many) == many && GetTickCount64() - t0 < 5000);
+        }
+        {   // SEC-17: duplicate keys are still refused past 16 members (hashed check), in linear time.
+            std::string obj = "{"; for (int i = 0; i < 40; ++i) obj += (i ? ",\"k" : "\"k") + std::to_string(i) + "\":1";
+            StrictJson::Value v; StrictJson::Limits lim; lim.maxItems = 1u << 22; lim.maxBytes = 64u << 20;
+            OK(StrictJson::Parse(obj + "}", v, nullptr, lim) && !StrictJson::Parse(obj + ",\"k3\":2}", v, nullptr, lim) && !StrictJson::Parse(obj + ",\"k39\":2}", v, nullptr, lim));
+            std::string big = "{"; for (int i = 0; i < 200000; ++i) big += (i ? ",\"" : "\"") + std::to_string(i) + "\":0";
+            const ULONGLONG t0 = GetTickCount64();
+            OK(StrictJson::Parse(big + "}", v, nullptr, lim) && GetTickCount64() - t0 < 5000);
+        }
         std::string deep = "<DL>"; for (int i = 0; i < 300; ++i) deep += "<DT><H3>f</H3><DL>"; deep += "<DT><A HREF=\"https://x.example/\">x</A>";
         OK(ParseHtmlBookmarks(deep).failure == Failure::TooDeep);
         Put(work + L"\\exports\\big.html", std::string(static_cast<std::size_t>(Bound::htmlBytes) + 1, 'x'));
@@ -465,61 +484,67 @@ int main(int argc, char** argv) {
         OK(fr[0].key == "bookmark_bar" && en[0].key == "bookmark_bar" && fr[0].title != en[0].title);   // displayed names differ, identity does not
         Source chromeD = chromeDefault; chromeD.soleProfile = true;
         auto importIn = [&](BM::Store& s, FolderMap& m, Locale l, const Source& src, const std::vector<Item>& roots) { I18n::SetForProcess(l); const Counts c = ApplyBookmarks(s, src, roots, now, &m); I18n::SetForProcess(Locale::Fr); return c; };
-        {   // FR → EN → FR: one container, one folder per root, nothing added after the first import.
-            BM::Store s; FolderMap m;
+        {   // Semantic roots (v0.3.377): the source's bar goes straight onto « Barre de favoris », its « other » root straight
+            // into « Autres favoris »; the person's own bar entries stay first; FR → EN → FR adds nothing.
+            BM::Store s; FolderMap m; s.Add(BM::BarRoot, BM::End, L"mine", L"https://mine.example/", 1);
             const Counts a = importIn(s, m, Locale::Fr, chromeD, fr);
+            OK((Titles(s, BM::BarRoot) == std::vector<std::wstring>{L"mine", L"Un", L"Travail 🛠 é", L"Perso", L"Deux"}));
+            OK((Titles(s, BM::OtherRoot) == std::vector<std::wstring>{L"Trois", L"N1"}));   // no « Importés de … », no technical root folder
+            OK(a.imported == 6 && a.unsupported == 1 && a.deep == 1 && m.entries.empty());   // fixed roots are never map entries
             const BM::Store once = s;
             const Counts b = importIn(s, m, Locale::En, chromeD, en);
             const Counts c = importIn(s, m, Locale::Fr, chromeD, fr);
-            OK(a.imported == 6 && b.imported == 0 && b.present == 6 && b.folders == 0 && c.imported == 0 && c.present == 6 && s == once);
-            OK(s.Find(BM::OtherRoot)->children.size() == 1 && m.entries.size() == 3);   // container + bar + other
-            // The reviewer's probe, in this form: FR import then an EN repeat → present, one group.
-            BM::Store p; FolderMap pm; importIn(p, pm, Locale::Fr, chromeD, fr); const Counts pe = importIn(p, pm, Locale::En, chromeD, en);
-            OK(pe.imported == 0 && pe.present == 6 && p.Find(BM::OtherRoot)->children.size() == 1);
+            OK(b.imported == 0 && b.present == 6 && b.folders == 0 && c.imported == 0 && c.present == 6 && s == once);
+            // The person reorders the bar: a repeat import keeps their order and adds nothing.
+            CHECK(s.Move(Child(s, BM::BarRoot, L"Deux"), BM::BarRoot, 0));
+            const BM::Store reordered = s; const Counts d = importIn(s, m, Locale::Fr, chromeD, fr);
+            OK(d.imported == 0 && s == reordered);
         }
-        {   // Map lost (or never written): the titles of both languages still find the folders.
-            BM::Store s; FolderMap m1, m2;
-            importIn(s, m1, Locale::Fr, chromeD, fr);
-            const Counts b = importIn(s, m2, Locale::En, chromeD, en);
-            OK(b.imported == 0 && b.present == 6 && b.folders == 0 && s.Find(BM::OtherRoot)->children.size() == 1);
-        }
-        {   // The source gains another profile (its label changes), the person renamed and moved the folders.
+        {   // Source folders with a stable id (Chrome guid): renamed, moved, other language, another label → same folder.
+            const std::string g = "{\"roots\":{\"bookmark_bar\":" + ChromeFolder(L"bar", {ChromeFolder(L"Work", {ChromeNode(L"w", "https://work.example/")}, "g-work"), ChromeNode(L"x", "https://x.example/")}) + "}}";
+            I18n::SetForProcess(Locale::Fr); const auto gfr = ParseChromiumBookmarks(g).roots; I18n::SetForProcess(Locale::En); const auto gen = ParseChromiumBookmarks(g).roots; I18n::SetForProcess(Locale::Fr);
             BM::Store s; FolderMap m;
-            importIn(s, m, Locale::Fr, chromeD, fr);
-            const BM::Id box = s.Find(BM::OtherRoot)->children[0], bar = s.Find(box)->children[0];
-            CHECK(s.Rename(box, L"Mes imports") && s.Rename(bar, L"Ma barre") && s.Move(box, BM::BarRoot, BM::End));
-            Source multi = chromeD; multi.soleProfile = false;   // « Chrome — profil principal » now
+            const Counts a = importIn(s, m, Locale::Fr, chromeD, gfr);
+            const BM::Id work1 = Child(s, BM::BarRoot, L"Work");
+            OK(a.imported == 2 && work1 != BM::NoId && m.entries.count("chromium:Chrome/Default|g:g-work") == 1);
+            CHECK(s.Rename(work1, L"Mon travail") && s.Move(work1, BM::OtherRoot, BM::End));
+            Source multi = chromeD; multi.soleProfile = false;
             const BM::Store before = s;
-            const Counts c = importIn(s, m, Locale::En, multi, en);
-            OK(c.imported == 0 && c.present == 6 && c.folders == 0 && s == before);
-            OK(s.Find(box)->title == L"Mes imports" && s.Find(bar)->title == L"Ma barre" && s.Find(box)->parent == BM::BarRoot);   // the person's names and place kept
-            // Another profile of the same browser never adopts that folder, even with the sole-profile title free.
+            const Counts b = importIn(s, m, Locale::En, multi, gen);
+            OK(b.imported == 0 && b.present == 2 && s == before && s.Find(work1)->title == L"Mon travail");
+            // Another profile of the same browser has its own identities: its « Work » is its own folder.
             Source p2 = multi; p2.profile = L"Profile 2"; p2.isDefault = false; p2.dir = chromeD.root + L"\\Profile 2";
-            const Counts d = importIn(s, m, Locale::Fr, p2, fr);
-            OK(d.imported == 6 && Child(s, BM::OtherRoot, L"Importés de Chrome — Profile 2") != BM::NoId && m.entries.size() == 6);
+            const Counts d = importIn(s, m, Locale::Fr, p2, gfr);
+            OK(d.imported == 1 && Child(s, BM::BarRoot, L"Work") != BM::NoId && Child(s, BM::BarRoot, L"Work") != work1);
             // Deleted by the person: the next import creates it again (and maps the new one).
-            CHECK(s.Remove(box));
-            const Counts e = importIn(s, m, Locale::Fr, multi, fr);
-            OK(e.imported == 6 && Child(s, BM::OtherRoot, L"Importés de Chrome — profil principal") != BM::NoId);
+            CHECK(s.Remove(work1));
+            const Counts e = importIn(s, m, Locale::Fr, multi, gfr);
+            OK(e.imported == 1 && m.Valid(s, "chromium:Chrome/Default|g:g-work") != nullptr);
         }
         {   // Folders repeated on purpose (same name, same parent) stay distinct across imports and languages.
-            const std::string dup = "{\"roots\":{\"bookmark_bar\":" + ChromeFolder(L"bar", {ChromeFolder(L"Dup", {ChromeNode(L"a", "https://a.example/")}), ChromeFolder(L"Dup", {ChromeNode(L"b", "https://b.example/")}), ChromeNode(L"x", "https://x.example/"), ChromeNode(L"x", "https://x.example/")}) + "}}";
+            const std::string dup = "{\"roots\":{\"bookmark_bar\":" + ChromeFolder(L"bar", {ChromeFolder(L"Dup", {ChromeNode(L"a", "https://a.example/")}, "g1"), ChromeFolder(L"Dup", {ChromeNode(L"b", "https://b.example/")}, "g2"), ChromeNode(L"x", "https://x.example/"), ChromeNode(L"x", "https://x.example/")}) + "}}";
             I18n::SetForProcess(Locale::Fr); const auto dfr = ParseChromiumBookmarks(dup).roots; I18n::SetForProcess(Locale::En); const auto den = ParseChromiumBookmarks(dup).roots; I18n::SetForProcess(Locale::Fr);
             BM::Store s; FolderMap m;
             const Counts a = importIn(s, m, Locale::Fr, chromeD, dfr), b = importIn(s, m, Locale::En, chromeD, den);
-            const BM::Id barF = s.Find(s.Find(BM::OtherRoot)->children[0])->children[0];
-            OK(a.imported == 4 && b.imported == 0 && b.present == 4 && (Titles(s, barF) == std::vector<std::wstring>{L"Dup", L"Dup", L"x", L"x"}));
+            OK(a.imported == 4 && b.imported == 0 && b.present == 4 && (Titles(s, BM::BarRoot) == std::vector<std::wstring>{L"Dup", L"Dup", L"x", L"x"}));
+            BM::Store t; const Counts c = importIn(t, m, Locale::Fr, chromeD, dfr);   // without guids' map entries' folders: by title, in order
+            OK(c.imported == 4 && (Titles(t, BM::BarRoot) == std::vector<std::wstring>{L"Dup", L"Dup", L"x", L"x"}));
         }
-        {   // Firefox roots by GUID; HTML (no roots) keeps one container in either language.
+        {   // Firefox: toolbar onto the bar, menu / unfiled into « Autres favoris », mobile into its own folder.
             Item tb; tb.folder = true; tb.key = "toolbar_____"; tb.title = L"Barre de favoris"; Item l; l.url = L"https://f.example/"; l.title = L"f"; tb.children.push_back(l);
-            Item tbEn = tb; tbEn.title = L"Bookmarks bar";
+            Item menu; menu.folder = true; menu.key = "menu________"; menu.title = L"Menu des marque-pages"; Item ml; ml.url = L"https://menu.example/"; ml.title = L"m"; menu.children.push_back(ml);
+            Item mob; mob.folder = true; mob.key = "mobile______"; mob.title = L"Favoris sur mobile"; Item mo; mo.url = L"https://mobile.example/"; mo.title = L"mo"; mob.children.push_back(mo);
+            Item tbEn = tb; tbEn.title = L"Bookmarks bar"; Item mobEn = mob; mobEn.title = L"Mobile bookmarks";
             Source ffs; ffs.browser = Browser::Firefox; ffs.root = L"C:\\x\\Firefox"; ffs.dir = L"C:\\x\\Firefox\\Profiles\\a.default"; ffs.profile = L"default"; ffs.soleProfile = true;
             BM::Store s; FolderMap m;
-            importIn(s, m, Locale::Fr, ffs, {tb}); const Counts b = importIn(s, m, Locale::En, ffs, {tbEn});
-            OK(b.present == 1 && b.imported == 0 && m.entries.count("firefox:Firefox/Profiles/a.default|toolbar_____") == 1);
-            Item h; h.url = L"https://h.example/"; h.title = L"h";
-            importIn(s, m, Locale::Fr, HtmlSource(L"C:\\a.html"), {h}); const Counts hb = importIn(s, m, Locale::En, HtmlSource(L"C:\\b.html"), {h});
-            OK(hb.present == 1 && s.Find(BM::OtherRoot)->children.size() == 2);
+            const Counts a = importIn(s, m, Locale::Fr, ffs, {tb, menu, mob}); const Counts b = importIn(s, m, Locale::En, ffs, {tbEn, menu, mobEn});
+            OK(a.imported == 3 && (Titles(s, BM::BarRoot) == std::vector<std::wstring>{L"f"}) && (Titles(s, BM::OtherRoot) == std::vector<std::wstring>{L"m", L"Favoris sur mobile"}));
+            OK(b.present == 3 && b.imported == 0 && m.entries.count("firefox:Firefox/Profiles/a.default|mobile______") == 1 && m.entries.size() == 1);
+            // HTML with no root mark: its top level onto the bar as it is, no « Importés d'un fichier HTML » group.
+            Item h; h.url = L"https://h.example/"; h.title = L"h"; Item hf; hf.folder = true; hf.title = L"Bookmarks bar"; Item hl; hl.url = L"https://inside.example/"; hl.title = L"i"; hf.children.push_back(hl);
+            importIn(s, m, Locale::Fr, HtmlSource(L"C:\\a.html"), {h, hf}); const Counts hb = importIn(s, m, Locale::En, HtmlSource(L"C:\\b.html"), {h, hf});
+            OK(hb.present == 2 && hb.imported == 0 && Child(s, BM::OtherRoot, L"Importés d'un fichier HTML") == BM::NoId);
+            OK(Child(s, BM::BarRoot, L"Bookmarks bar") != BM::NoId && Titles(s, Child(s, BM::BarRoot, L"Bookmarks bar")) == std::vector<std::wstring>{L"i"});   // an unmarked folder stays a folder
         }
         {   // On disk: the map is written in the same transaction scope, validated, never trusted blindly.
             const std::wstring data = work + L"\\mapped"; MakeDirs(data);
@@ -528,7 +553,8 @@ int main(int argc, char** argv) {
             I18n::SetForProcess(Locale::Fr);
             const auto c1 = CommitBookmarks(data, bm, map, base, mine, chromeD, fr, now, &saved);
             std::string mapBytes, bmBytes; ProfileStore::ReadAll(map, mapBytes); ProfileStore::ReadAll(bm, bmBytes);
-            OK(c1.Saved() && saved && c1.counts.imported == 6 && mapBytes.rfind("browser-bookmark-imports 1\n", 0) == 0);
+            OK(c1.Saved() && saved && c1.counts.imported == 6 && (mapBytes.empty() || mapBytes.rfind("browser-bookmark-imports 1\n", 0) == 0));
+            const auto barAfter1 = Titles(mine, BM::BarRoot), otherAfter1 = Titles(mine, BM::OtherRoot);
             { std::istringstream in(bmBytes); bool damaged = true; BM::Store::Read(in, &damaged); OK(!damaged && bmBytes.rfind("browser-bookmarks 1\n", 0) == 0); }   // bookmarks format unchanged
             I18n::SetForProcess(Locale::En);
             const auto c2 = CommitBookmarks(data, bm, map, base, mine, chromeD, en, now, &saved);
@@ -537,7 +563,8 @@ int main(int argc, char** argv) {
             OK(c2.result == ProfileStore::Result::Unchanged && c2.counts.present == 6 && bm2 == bmBytes && saved);
             // Map unwritable (a folder in its place): identities first, so NOTHING is imported and the category fails.
             DeleteFileW(map.c_str()); CreateDirectoryW(map.c_str(), nullptr);
-            Item extra; extra.url = L"https://new.example/"; extra.title = L"n"; auto more = fr; more[0].children.push_back(extra);
+            Item extra; extra.folder = true; extra.key = "g:new-folder"; extra.title = L"Nouveau"; Item en1; en1.url = L"https://new.example/"; en1.title = L"n"; extra.children.push_back(en1);
+            auto more = fr; more[0].children.push_back(extra);   // a source folder with a stable id: its identity must be written
             const BM::Store b3 = base, m3 = mine;
             const auto c3 = CommitBookmarks(data, bm, map, base, mine, chromeD, more, now, &saved);
             std::string bm3; ProfileStore::ReadAll(bm, bm3);
@@ -547,7 +574,7 @@ int main(int argc, char** argv) {
             I18n::SetForProcess(Locale::En);
             const auto c4 = CommitBookmarks(data, bm, map, base, mine, chromeD, en, now, &saved);
             I18n::SetForProcess(Locale::Fr);
-            OK(c4.Saved() && saved && c4.counts.imported == 0 && c4.counts.present == 6 && mine.Find(BM::OtherRoot)->children.size() == 1);
+            OK(c4.Saved() && saved && c4.counts.imported == 0 && c4.counts.present == 6 && Titles(mine, BM::BarRoot) == barAfter1 && Titles(mine, BM::OtherRoot) == otherAfter1);
             // A map of another version is neither used nor rewritten, and nothing is imported (no identity to keep).
             std::string bm4; ProfileStore::ReadAll(bm, bm4);
             const std::string future = "browser-bookmark-imports 9\nwhatever\n"; CHECK(ProfileStore::WriteAtomic(map, future));
@@ -564,13 +591,13 @@ int main(int argc, char** argv) {
             CHECK(ProfileStore::WriteAtomic(map, "browser-bookmark-imports 1\nchromium:Chrome/Default\t99999\t5\n"));
             const auto c6 = CommitBookmarks(data, bm, map, base, mine, chromeD, fr, now, &saved);
             std::string rewritten; ProfileStore::ReadAll(map, rewritten);
-            OK(c6.Saved() && saved && c6.counts.present == 6 && mine.Find(BM::OtherRoot)->children.size() == 1 && rewritten.find("99999") == std::string::npos);
+            OK(c6.Saved() && saved && c6.counts.present == 6 && Titles(mine, BM::BarRoot) == barAfter1 && Titles(mine, BM::OtherRoot) == otherAfter1 && rewritten.find("99999") == std::string::npos);
         }
         {   // Review 99959e3: map target locked (deny-delete reader, as an indexer) → refused; then rename + other
             // language + profile label change → still one group. Fresh folder, synthetic data only.
             const std::wstring data = work + L"\\durable"; MakeDirs(data);
             const std::wstring bm = data + L"\\bookmarks", map = data + L"\\bookmark-imports";
-            const std::string json = "{\"roots\":{\"bookmark_bar\":{\"type\":\"folder\",\"name\":\"bar\",\"children\":[{\"type\":\"url\",\"name\":\"s\",\"url\":\"https://fresh.example/one\"}]}}}";
+            const std::string json = "{\"roots\":{\"bookmark_bar\":{\"type\":\"folder\",\"name\":\"bar\",\"children\":[{\"type\":\"folder\",\"name\":\"Box\",\"guid\":\"gA\",\"children\":[{\"type\":\"folder\",\"name\":\"Inner\",\"guid\":\"gB\",\"children\":[{\"type\":\"url\",\"name\":\"s\",\"url\":\"https://fresh.example/one\"}]}]}]}}}";
             I18n::SetForProcess(Locale::Fr); const auto frr = ParseChromiumBookmarks(json).roots;
             I18n::SetForProcess(Locale::En); const auto enr = ParseChromiumBookmarks(json).roots; I18n::SetForProcess(Locale::Fr);
             Source src = chromeD; BM::Store base, mine; bool saved = false;
@@ -582,13 +609,13 @@ int main(int argc, char** argv) {
             OK(!a.Saved() && a.identity == Identity::Unwritable && !saved && !IsFile(bm) && mine.Size() == 0);   // refused, nothing written
             const auto a2 = CommitBookmarks(data, bm, map, base, mine, src, frr, now, &saved);   // retry once the lock is gone
             OK(a2.Saved() && saved && a2.counts.imported == 1);
-            const BM::Id box = mine.Find(BM::OtherRoot)->children[0], bar = mine.Find(box)->children[0];
+            const BM::Id box = mine.Find(BM::BarRoot)->children[0], bar = mine.Find(box)->children[0];
             CHECK(mine.Rename(box, L"My custom container") && mine.Rename(bar, L"My custom root"));
             { std::ostringstream o; mine.Write(o); CHECK(ProfileStore::WriteAtomic(bm, o.str())); base = mine; }
             I18n::SetForProcess(Locale::En); src.soleProfile = false;
             const auto b = CommitBookmarks(data, bm, map, base, mine, src, enr, now + 100, &saved);
             I18n::SetForProcess(Locale::Fr);
-            OK(b.Saved() && b.counts.imported == 0 && b.counts.present == 1 && mine.Find(BM::OtherRoot)->children.size() == 1 && mine.Find(box)->title == L"My custom container" && mine.Find(bar)->title == L"My custom root");
+            OK(b.Saved() && b.counts.imported == 0 && b.counts.present == 1 && mine.Find(BM::BarRoot)->children.size() == 1 && mine.Find(box)->title == L"My custom container" && mine.Find(bar)->title == L"My custom root");
 
             // Interrupted at the durable boundary: identities written, bookmarks NOT (target read-only = a failed write,
             // the state a crash between the two writes leaves). Nothing is claimed; the dangling entries are never
@@ -602,27 +629,27 @@ int main(int argc, char** argv) {
             const auto i1 = CommitBookmarks(data2, bm2, map2, base2, mine2, src2, frr, now, &saved);
             SetFileAttributesW(bm2.c_str(), FILE_ATTRIBUTE_NORMAL);
             std::string afterFail, mapAfterFail; ProfileStore::ReadAll(bm2, afterFail); ProfileStore::ReadAll(map2, mapAfterFail);
-            OK(!i1.Saved() && i1.counts == Counts{} && afterFail == seedBytes && mapAfterFail.find("chromium:Chrome/Default\t") != std::string::npos);   // map ahead, bookmarks untouched
+            OK(!i1.Saved() && i1.counts == Counts{} && afterFail == seedBytes && mapAfterFail.find("chromium:Chrome/Default|g:gA\t") != std::string::npos);   // map ahead, bookmarks untouched
             // Another window (same profile, under the same lock discipline) adds a folder that takes the dangling id.
             const FolderMap dangling = FolderMap::Read(mapAfterFail, nullptr);
-            const BM::Id danglingId = dangling.entries.at("chromium:Chrome/Default").front().id;
+            const BM::Id danglingId = dangling.entries.at("chromium:Chrome/Default|g:gA").front().id;
             {
                 BM::Store other; std::istringstream in(afterFail); other = BM::Store::Read(in);
                 BM::Id got = BM::NoId; while ((got = other.AddFolder(BM::OtherRoot, BM::End, L"Other window", now + 999)) != BM::NoId && got < danglingId) {}
-                CHECK(got == danglingId && other.Find(danglingId)->added != dangling.entries.at("chromium:Chrome/Default").front().added);
+                CHECK(got == danglingId && other.Find(danglingId)->added != dangling.entries.at("chromium:Chrome/Default|g:gA").front().added);
                 std::ostringstream o; other.Write(o); CHECK(ProfileStore::WriteAtomic(bm2, o.str()));
             }
             const auto i2 = CommitBookmarks(data2, bm2, map2, base2, mine2, src2, frr, now + 1, &saved);
             OK(i2.Saved() && saved && i2.counts.imported == 1 && mine2.Find(danglingId)->title == L"Other window" && mine2.Find(danglingId)->children.empty());   // never adopted
-            OK(Child(mine2, BM::OtherRoot, L"Importés de Chrome") != BM::NoId && Child(mine2, BM::BarRoot, L"mine") != BM::NoId);
+            OK(Child(mine2, BM::BarRoot, L"Box") != BM::NoId && Child(mine2, BM::BarRoot, L"mine") != BM::NoId);
             // Then the person renames the imported folders; another language and label: still exactly one group.
-            const BM::Id box2 = Child(mine2, BM::OtherRoot, L"Importés de Chrome");
+            const BM::Id box2 = Child(mine2, BM::BarRoot, L"Box");
             CHECK(mine2.Rename(box2, L"Renamed after recovery"));
             { std::ostringstream o; mine2.Write(o); CHECK(ProfileStore::WriteAtomic(bm2, o.str())); base2 = mine2; }
             I18n::SetForProcess(Locale::En); src2.soleProfile = false;
             const auto i3 = CommitBookmarks(data2, bm2, map2, base2, mine2, src2, enr, now + 2, &saved);
             I18n::SetForProcess(Locale::Fr);
-            std::size_t groups = 0; for (BM::Id id : mine2.Find(BM::OtherRoot)->children) if (mine2.Find(id)->kind == BM::Kind::Folder && mine2.Find(id)->title != L"Other window") ++groups;
+            std::size_t groups = 0; for (BM::Id id : mine2.Find(BM::BarRoot)->children) if (mine2.Find(id)->kind == BM::Kind::Folder) ++groups;
             OK(i3.Saved() && i3.counts.imported == 0 && i3.counts.present == 1 && groups == 1 && mine2.Find(box2)->title == L"Renamed after recovery");
             // Another window renames it again between two imports (its own commit under the profile lock): still found.
             { BM::Store other; std::string cur; ProfileStore::ReadAll(bm2, cur); std::istringstream in(cur); other = BM::Store::Read(in); CHECK(other.Rename(box2, L"Renamed elsewhere")); std::ostringstream o; other.Write(o); ProfileStore::Lock l(data2); CHECK(ProfileStore::WriteAtomic(bm2, o.str())); }
@@ -635,18 +662,18 @@ int main(int argc, char** argv) {
     // ---- Existing mapped folder + pending deletion at the map-ahead boundary (review ff1bcbe) ------------------
     {
         using I18n::Locale;
-        const std::string json = "{\"roots\":{\"bookmark_bar\":{\"type\":\"folder\",\"name\":\"bar\",\"children\":[{\"type\":\"url\",\"name\":\"s\",\"url\":\"https://fresh.example/one\"}]}}}";
+        const std::string json = "{\"roots\":{\"bookmark_bar\":{\"type\":\"folder\",\"name\":\"bar\",\"children\":[{\"type\":\"folder\",\"name\":\"Box\",\"guid\":\"gA\",\"children\":[{\"type\":\"folder\",\"name\":\"Inner\",\"guid\":\"gB\",\"children\":[{\"type\":\"url\",\"name\":\"s\",\"url\":\"https://fresh.example/one\"}]}]}]}}}";
         I18n::SetForProcess(Locale::Fr); const auto frr = ParseChromiumBookmarks(json).roots;
         I18n::SetForProcess(Locale::En); const auto enr = ParseChromiumBookmarks(json).roots; I18n::SetForProcess(Locale::Fr);
         Source chromeD = chromeDefault; chromeD.soleProfile = true;
-        auto groupsOf = [](const BM::Store& s) { std::size_t g = 0; for (BM::Id id : s.Find(BM::OtherRoot)->children) if (s.Find(id)->kind == BM::Kind::Folder) ++g; return g; };
+        auto groupsOf = [](const BM::Store& s) { std::size_t g = 0; for (BM::Id id : s.Find(BM::BarRoot)->children) if (s.Find(id)->kind == BM::Kind::Folder) ++g; return g; };
         auto reload = [](const std::wstring& file, BM::Store& base, BM::Store& mine) { std::string b; ProfileStore::ReadAll(file, b); std::istringstream in(b); mine = BM::Store::Read(in); base = mine; };
         // Imported, mapped, renamed by the person, then this window deletes the container but that save fails.
         auto prepare = [&](const std::wstring& data, BM::Store& base, BM::Store& mine, Source& src, BM::Id& box, BM::Id& bar) {
             MakeDirs(data); bool saved = false;
             const auto first = CommitBookmarks(data, data + L"\\bookmarks", data + L"\\bookmark-imports", base, mine, src, frr, now, &saved);
             CHECK(first.Saved() && saved && first.counts.imported == 1);
-            box = mine.Find(BM::OtherRoot)->children[0]; bar = mine.Find(box)->children[0];
+            box = mine.Find(BM::BarRoot)->children[0]; bar = mine.Find(box)->children[0];
             CHECK(mine.Rename(box, L"Custom container") && mine.Rename(bar, L"Custom root"));
             { std::ostringstream o; mine.Write(o); CHECK(ProfileStore::WriteAtomic(data + L"\\bookmarks", o.str())); base = mine; }
             CHECK(mine.Remove(box));   // pending deletion, only in this window's memory
@@ -662,14 +689,14 @@ int main(int argc, char** argv) {
             std::string diskAfter, mapAfter; ProfileStore::ReadAll(data + L"\\bookmarks", diskAfter); ProfileStore::ReadAll(data + L"\\bookmark-imports", mapAfter);
             const FolderMap m = FolderMap::Read(mapAfter, nullptr);
             OK(!failed.Saved() && !saved && failed.counts == Counts{} && diskAfter == diskBefore);
-            OK(m.entries.at("chromium:Chrome/Default").size() == 2 && m.entries.at("chromium:Chrome/Default").back().id == box);   // new ahead, old kept
+            OK(m.entries.at("chromium:Chrome/Default|g:gA").size() == 2 && m.entries.at("chromium:Chrome/Default|g:gA").back().id == box);   // new ahead, old kept
             // Restart: this window's unsaved deletion is gone, the disk still has the renamed folders.
             reload(data + L"\\bookmarks", base, mine);
             const auto again = CommitBookmarks(data, data + L"\\bookmarks", data + L"\\bookmark-imports", base, mine, src, enr, now + 2, &saved);
             I18n::SetForProcess(Locale::Fr);
             OK(again.Saved() && saved && again.counts.imported == 0 && again.counts.present == 1 && groupsOf(mine) == 1 && mine.Find(box)->title == L"Custom container" && mine.Find(bar)->title == L"Custom root");
             std::string mapNow; ProfileStore::ReadAll(data + L"\\bookmark-imports", mapNow);
-            OK(FolderMap::Read(mapNow, nullptr).entries.at("chromium:Chrome/Default").size() == 1);   // the dangling candidate pruned
+            OK(FolderMap::Read(mapNow, nullptr).entries.at("chromium:Chrome/Default|g:gA").size() == 1);   // the dangling candidate pruned
             // And French again, sole label: still that one group.
             const auto fr2 = CommitBookmarks(data, data + L"\\bookmarks", data + L"\\bookmark-imports", base, mine, chromeD, frr, now + 3, &saved);
             OK(fr2.Saved() && fr2.counts.imported == 0 && fr2.counts.present == 1 && groupsOf(mine) == 1);
@@ -687,7 +714,7 @@ int main(int argc, char** argv) {
             WaitForSingleObject(t, 20000); DWORD code = 0; GetExitCodeThread(t, &code); CloseHandle(t);
             MapWrittenForTest() = nullptr;
             std::string diskAfter, mapAfter; ProfileStore::ReadAll(data + L"\\bookmarks", diskAfter); ProfileStore::ReadAll(data + L"\\bookmark-imports", mapAfter);
-            OK(code == 0 && diskAfter == diskBefore && FolderMap::Read(mapAfter, nullptr).entries.at("chromium:Chrome/Default").size() == 2);   // stopped between the writes
+            OK(code == 0 && diskAfter == diskBefore && FolderMap::Read(mapAfter, nullptr).entries.at("chromium:Chrome/Default|g:gA").size() == 2);   // stopped between the writes
             // Restart (fresh stores from disk; the abandoned profile mutex is taken over), English, multi-profile label.
             BM::Store base2, mine2; reload(data + L"\\bookmarks", base2, mine2);
             Source src2 = chromeD; src2.soleProfile = false; bool saved = false;
@@ -700,7 +727,7 @@ int main(int argc, char** argv) {
             OK(del.Saved() && del.counts.imported == 1 && groupsOf(mine2) == 1 && !mine2.Find(box));
             const auto next = CommitBookmarks(data, data + L"\\bookmarks", data + L"\\bookmark-imports", base2, mine2, src2, frr, now + 4, &saved);
             std::string mapEnd; ProfileStore::ReadAll(data + L"\\bookmark-imports", mapEnd);
-            OK(next.Saved() && next.counts.present == 1 && next.counts.imported == 0 && FolderMap::Read(mapEnd, nullptr).entries.at("chromium:Chrome/Default").size() == 1);
+            OK(next.Saved() && next.counts.present == 1 && next.counts.imported == 0 && FolderMap::Read(mapEnd, nullptr).entries.at("chromium:Chrome/Default|g:gA").size() == 1);
         }
         {   // Map format: candidates in order, exact repeats harmless; anything the reader would drop marks it incomplete.
             bool known = false, complete = false;
@@ -724,6 +751,319 @@ int main(int argc, char** argv) {
         }
     }
 
+    // ---- Semantic roots and the v0.3.376 correction (bar roots straight onto the bar) ----------------------------------
+    {
+        using I18n::Locale;
+        // The user's screenshot, as a Chrome HTML export: a marked bar with folders and links, one entry outside it.
+        auto export_ = [](const std::string& barAttribute) {
+            return std::string("<!DOCTYPE NETSCAPE-Bookmark-file-1>\n<DL><p>\n") +
+                "<DT><H3 ADD_DATE=\"1700000000\" " + barAttribute + ">Bookmarks bar</H3>\n<DL><p>\n" +
+                "<DT><H3>Mockups</H3><DL><p><DT><A HREF=\"https://dribbble.example/\">Dribbble</A></DL><p>\n" +
+                "<DT><A HREF=\"https://youtube.example/\">youtube.com</A>\n<DT><A HREF=\"https://icloud.example/\">icloud.com</A>\n" +
+                "<DT><A HREF=\"https://cosmos.example/home\">cosmos.so/home</A>\n<DT><A HREF=\"https://phosphor.example/\">phosphoricons.com</A>\n" +
+                "<DT><A HREF=\"https://v3.example/\">v3-hub</A>\n<DT><A HREF=\"https://unify.example/sales\">unify</A>\n<DT><A HREF=\"https://prism.example/\">Prism PX</A>\n" +
+                "<DT><A HREF=\"https://det.example/\">Design Engineer Tools</A>\n<DT><A HREF=\"https://shader.example/\">Shader Lab | basement.studio</A>\n" +
+                "<DT><H3>Rent</H3><DL><p><DT><A HREF=\"https://rent.example/\">Rent site</A></DL><p>\n" +
+                "<DT><A HREF=\"https://kingdom.example/\">Kingdom's Protector | Eorzea Collection</A>\n<DT><A HREF=\"https://universalis.example/\">Universalis</A>\n" +
+                "</DL><p>\n<DT><A HREF=\"https://mail.icloud.example/\">Mail iCloud</A>\n</DL><p>\n";
+        };
+        const std::vector<std::wstring> barTitles{L"Mockups", L"youtube.com", L"icloud.com", L"cosmos.so/home", L"phosphoricons.com", L"v3-hub", L"unify", L"Prism PX",
+                                                  L"Design Engineer Tools", L"Shader Lab | basement.studio", L"Rent", L"Kingdom's Protector | Eorzea Collection", L"Universalis"};
+        for (const std::string attr : {"PERSONAL_TOOLBAR_FOLDER=\"true\"", "personal_toolbar_folder='TRUE'", "Personal_Toolbar_Folder=true"}) {
+            const auto r = ParseHtmlBookmarks(export_(attr));
+            OK(r.failure == Failure::None && r.roots.size() == 2 && r.roots[0].key == "html:toolbar" && r.roots[1].key.empty());
+            BM::Store s; FolderMap m; s.Add(BM::BarRoot, BM::End, L"mine", L"https://mine.example/", 1);
+            const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\b.html"), r.roots, now, &m);
+            std::vector<std::wstring> expect{L"mine"}; expect.insert(expect.end(), barTitles.begin(), barTitles.end());
+            OK(c.imported == 14 && Titles(s, BM::BarRoot) == expect && (Titles(s, BM::OtherRoot) == std::vector<std::wstring>{L"Mail iCloud"}));
+            OK(s.Depth(Child(s, BM::BarRoot, L"Mockups")) == 2 && Child(s, BM::OtherRoot, L"Importés d'un fichier HTML") == BM::NoId);
+            const BM::Store once = s; const Counts again = ApplyBookmarks(s, HtmlSource(L"C:\\b.html"), r.roots, now, &m);
+            OK(again.imported == 0 && again.present == 14 && s == once);
+        }
+        {   // A marked folder deeper than the top level, or a folder merely titled « Bookmarks bar », is a genuine folder.
+            const std::string nested = "<DL><p><DT><H3>Projets</H3><DL><p><DT><H3 PERSONAL_TOOLBAR_FOLDER=\"true\">Bookmarks bar</H3><DL><p><DT><A HREF=\"https://n.example/\">n</A></DL><p></DL><p><DT><H3>Bookmarks bar</H3><DL><p><DT><A HREF=\"https://t.example/\">t</A></DL><p></DL><p>";
+            const auto r = ParseHtmlBookmarks(nested);
+            OK(r.failure == Failure::None && r.roots.size() == 2 && r.roots[0].key.empty() && r.roots[0].children[0].key.empty() && r.roots[1].key.empty());
+            BM::Store s; FolderMap m; ApplyBookmarks(s, HtmlSource(L"C:\\n.html"), r.roots, now, &m);
+            const BM::Id pro = Child(s, BM::BarRoot, L"Projets");
+            OK((Titles(s, BM::BarRoot) == std::vector<std::wstring>{L"Projets", L"Bookmarks bar"}) && (Titles(s, pro) == std::vector<std::wstring>{L"Bookmarks bar"}));
+        }
+        {   // Firefox HTML export: toolbar onto the bar, « Other Bookmarks » and the menu entries into « Autres favoris ».
+            const std::string ff = "<DL><p><DT><A HREF=\"https://menu.example/\">menu entry</A><DT><H3 PERSONAL_TOOLBAR_FOLDER=\"true\">Bookmarks Toolbar</H3><DL><p><DT><A HREF=\"https://tb.example/\">tb</A></DL><p><DT><H3 UNFILED_BOOKMARKS_FOLDER=\"true\">Other Bookmarks</H3><DL><p><DT><A HREF=\"https://other.example/\">o</A></DL><p></DL><p>";
+            BM::Store s; FolderMap m; const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\f.html"), ParseHtmlBookmarks(ff).roots, now, &m);
+            OK(c.imported == 3 && (Titles(s, BM::BarRoot) == std::vector<std::wstring>{L"tb"}) && (Titles(s, BM::OtherRoot) == std::vector<std::wstring>{L"menu entry", L"o"}));
+        }
+        // ---- v0.3.376 stores (what the user has now), corrected by the next import of the same source ----
+        auto legacyHtml = [&](BM::Store& s, FolderMap& m, BM::Id& group, BM::Id& oldBar, std::vector<BM::Id>& ids) {
+            s.Add(BM::BarRoot, BM::End, L"mine", L"https://mine.example/", 1);
+            group = s.AddFolder(BM::OtherRoot, BM::End, L"Importés d'un fichier HTML", 5); oldBar = s.AddFolder(group, BM::End, L"Bookmarks bar", 6);
+            const auto r = ParseHtmlBookmarks(export_("PERSONAL_TOOLBAR_FOLDER=\"true\""));
+            for (const Item& it : r.roots[0].children) {   // as v0.3.376 wrote them: same titles, same order
+                const BM::Id id = it.folder ? s.AddFolder(oldBar, BM::End, it.title, 7) : s.Add(oldBar, BM::End, it.title, it.url, 7);
+                if (it.folder) for (const Item& k : it.children) s.Add(id, BM::End, k.title, k.url, 7);
+                ids.push_back(id);
+            }
+            ids.push_back(s.Add(group, BM::End, L"Mail iCloud", L"https://mail.icloud.example/", 7));
+            m.Prefer("html", {group, 5});   // the only identity v0.3.376 kept for an HTML file
+        };
+        {
+            BM::Store s; FolderMap m; BM::Id group = 0, oldBar = 0; std::vector<BM::Id> ids; legacyHtml(s, m, group, oldBar, ids);
+            CHECK(s.Rename(group, L"Mon import"));   // renamed by the person: still recognised by identity
+            const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\b.html"), ParseHtmlBookmarks(export_("PERSONAL_TOOLBAR_FOLDER=\"true\"")).roots, now, &m);
+            std::vector<BM::Id> barIds(s.Find(BM::BarRoot)->children.begin() + 1, s.Find(BM::BarRoot)->children.end());
+            OK(c.imported == 0 && c.present == 14 && c.moved == 14 && barIds == std::vector<BM::Id>(ids.begin(), ids.end() - 1));   // same ids, same order
+            OK((Titles(s, BM::OtherRoot) == std::vector<std::wstring>{L"Mail iCloud"}) && s.Find(BM::OtherRoot)->children[0] == ids.back());
+            OK(!s.Find(group) && !s.Find(oldBar) && Titles(s, BM::BarRoot).front() == L"mine");   // old group and bar folder gone (empty, owned)
+            const BM::Store once = s; const Counts again = ApplyBookmarks(s, HtmlSource(L"C:\\b.html"), ParseHtmlBookmarks(export_("PERSONAL_TOOLBAR_FOLDER=\"true\"")).roots, now, &m);
+            OK(again.imported == 0 && again.moved == 0 && s == once);
+        }
+        {   // The person added something in the old group: it stays there, so the group stays.
+            BM::Store s; FolderMap m; BM::Id group = 0, oldBar = 0; std::vector<BM::Id> ids; legacyHtml(s, m, group, oldBar, ids);
+            const BM::Id own = s.Add(group, BM::End, L"own", L"https://own.example/", 9);
+            ApplyBookmarks(s, HtmlSource(L"C:\\b.html"), ParseHtmlBookmarks(export_("PERSONAL_TOOLBAR_FOLDER=\"true\"")).roots, now, &m);
+            OK(s.Find(group) && (Titles(s, group) == std::vector<std::wstring>{L"own"}) && s.Find(own)->parent == group && !s.Find(oldBar));
+        }
+        {   // A Chromium import of v0.3.376: group › « Barre de favoris » / « Autres favoris », mapped; FR → EN, renamed group.
+            Source chromeD = chromeDefault; chromeD.soleProfile = true; const std::string key = SourceKey(chromeD);
+            BM::Store s; FolderMap m;
+            const BM::Id group = s.AddFolder(BM::OtherRoot, BM::End, L"Importés de Chrome", 5), bar = s.AddFolder(group, BM::End, L"Barre de favoris", 6), other = s.AddFolder(group, BM::End, L"Autres favoris", 6);
+            const BM::Id one = s.Add(bar, BM::End, L"Un", L"https://one.example/", 7), three = s.Add(other, BM::End, L"Trois", L"https://three.example/", 7);
+            m.Prefer(key, {group, 5}); m.Prefer(key + "|bookmark_bar", {bar, 6}); m.Prefer(key + "|other", {other, 6});
+            CHECK(s.Rename(group, L"Chrome (mes favoris)"));
+            const std::string json = "{\"roots\":{\"bookmark_bar\":" + ChromeFolder(L"b", {ChromeNode(L"Un", "https://one.example/")}) + ",\"other\":" + ChromeFolder(L"o", {ChromeNode(L"Trois", "https://three.example/")}) + "}}";
+            I18n::SetForProcess(Locale::En); const auto en = ParseChromiumBookmarks(json).roots; const Counts c = ApplyBookmarks(s, chromeD, en, now, &m); I18n::SetForProcess(Locale::Fr);
+            OK(c.imported == 0 && c.present == 2 && c.moved == 2 && s.Find(one)->parent == BM::BarRoot && s.Find(three)->parent == BM::OtherRoot && !s.Find(group) && !s.Find(bar) && !s.Find(other));
+        }
+        {   // On disk: the correction is one transaction; a failed bookmarks write changes nothing and loses no identity.
+            const std::wstring data = work + L"\\legacy-commit"; MakeDirs(data);
+            const std::wstring bm = data + L"\\bookmarks", mf = data + L"\\bookmark-imports";
+            BM::Store seed; FolderMap m; BM::Id group = 0, oldBar = 0; std::vector<BM::Id> ids; legacyHtml(seed, m, group, oldBar, ids);
+            { std::ostringstream o; seed.Write(o); CHECK(ProfileStore::WriteAtomic(bm, o.str())); CHECK(ProfileStore::WriteAtomic(mf, m.Write())); }
+            std::string before; ProfileStore::ReadAll(bm, before);
+            BM::Store base = seed, mine = seed; bool saved = false;
+            const auto roots = ParseHtmlBookmarks(export_("PERSONAL_TOOLBAR_FOLDER=\"true\"")).roots;
+            SetFileAttributesW(bm.c_str(), FILE_ATTRIBUTE_READONLY);
+            const auto failed = CommitBookmarks(data, bm, mf, base, mine, HtmlSource(L"C:\\b.html"), roots, now, &saved);
+            SetFileAttributesW(bm.c_str(), FILE_ATTRIBUTE_NORMAL);
+            std::string after, mapAfter; ProfileStore::ReadAll(bm, after); ProfileStore::ReadAll(mf, mapAfter);
+            OK(!failed.Saved() && failed.counts == Counts{} && after == before && base == seed && mine == seed && FolderMap::Read(mapAfter, nullptr).Valid(seed, "html") != nullptr);
+            // Restart, retry: corrected once, saved; a later repeat changes nothing.
+            const auto ok = CommitBookmarks(data, bm, mf, base, mine, HtmlSource(L"C:\\b.html"), roots, now + 1, &saved);
+            OK(ok.Saved() && saved && ok.counts.moved == 14 && ok.counts.imported == 0 && !mine.Find(group) && mine.Find(BM::BarRoot)->children.size() == 14);
+            std::string done; ProfileStore::ReadAll(bm, done);
+            const auto rep = CommitBookmarks(data, bm, mf, base, mine, HtmlSource(L"C:\\b.html"), roots, now + 2, &saved);
+            std::string done2; ProfileStore::ReadAll(bm, done2);
+            OK(rep.Saved() && rep.counts.imported == 0 && rep.counts.moved == 0 && done2 == done);
+        }
+    }
+
+    // ---- Review 9ef33c5 P2: repeats beside marked roots, ambiguous guids, legacy marked « other » wrapper -----------
+    {
+        using I18n::Locale;
+        {   // Marked bar + intentional repeats at the file's top level (two same links, two same-titled folders).
+            const std::string html = "<DL><p><DT><H3 PERSONAL_TOOLBAR_FOLDER=\"true\">Bookmarks bar</H3><DL><p><DT><A HREF=\"https://bar.example/\">b</A></DL><p>"
+                                     "<DT><A HREF=\"https://twice.example/\">t1</A><DT><A HREF=\"https://twice.example/\">t2</A>"
+                                     "<DT><H3>Same</H3><DL><p><DT><A HREF=\"https://s1.example/\">s1</A></DL><p><DT><H3>Same</H3><DL><p><DT><A HREF=\"https://s2.example/\">s2</A></DL><p></DL><p>";
+            const auto roots = ParseHtmlBookmarks(html).roots;
+            BM::Store s; FolderMap m; const BM::Id keep = s.Add(BM::OtherRoot, BM::End, L"existing", L"https://existing.example/", 1);
+            const Counts a = ApplyBookmarks(s, HtmlSource(L"C:\\r.html"), roots, now, &m);
+            OK(a.imported == 5 && a.present == 0 && (Titles(s, BM::OtherRoot) == std::vector<std::wstring>{L"existing", L"t1", L"t2", L"Same", L"Same"}) && s.Find(keep)->title == L"existing");
+            const BM::Store once = s; const Counts b = ApplyBookmarks(s, HtmlSource(L"C:\\r.html"), roots, now, &m);
+            OK(b.imported == 0 && b.present == 5 && s == once);   // repeat: multiplicity kept, nothing added
+        }
+        {   // Review b7b3ce5: a source where two folders share one guid is REFUSED whole — no de-keying, no title match.
+            Source chromeD = chromeDefault; chromeD.soleProfile = true;
+            auto seeded = [&](BM::Store& s, FolderMap& m) {   // an earlier import mapped « same » to « A », renamed by the person
+                const BM::Id earlier = s.AddFolder(BM::BarRoot, BM::End, L"A", 77); s.Add(earlier, BM::End, L"old", L"https://old.example/", 78);
+                s.AddFolder(BM::OtherRoot, BM::End, L"Renamed", 79);
+                m.Prefer(SourceKey(chromeD) + "|g:same", {earlier, 77}); m.Prefer(SourceKey(chromeD) + "|g:other", {s.Find(BM::OtherRoot)->children.back(), 79});
+                return earlier;
+            };
+            auto refused = [&](const std::string& json, const char* what) {
+                const auto parsed = ParseChromiumBookmarks(json);
+                CHECK(parsed.failure == Failure::None);   // well-formed: the refusal is about identity, not syntax
+                OK(AmbiguousIds(parsed.roots));
+                BM::Store s; FolderMap m; seeded(s, m); const BM::Store before = s; const std::string mapBefore = m.Write();
+                const Counts c = ApplyBookmarks(s, chromeD, parsed.roots, now, &m);
+                OK(c.imported == 0 && c.present == 0 && c.moved == 0 && s == before && m.Write() == mapBefore);   // existing data unchanged
+                // Through Read: the category fails with its reason, nothing to apply.
+                const std::wstring dir = work + L"\\ambiguous-" + std::wstring(what, what + std::strlen(what)) + L"\\Default";
+                Put(dir + L"\\Bookmarks", json);
+                Source src = chromeDefault; src.dir = dir; src.root = Parent(dir); Options o; o.bookmarks = true; o.tempRoot = temp;
+                const ReadResult r = Read(src, o);
+                OK(r.bookmarks.failure == Failure::Ambiguous && r.bookmarks.roots.empty());
+            };
+            // same title as the mapped (renamed) target, siblings
+            refused("{\"roots\":{\"bookmark_bar\":" + ChromeFolder(L"bar", {ChromeFolder(L"A", {ChromeNode(L"n", "https://new.example/")}, "same"), ChromeFolder(L"B", {}, "same")}) + "}}", "siblings");
+            // nested: a folder and its own child share the guid
+            refused("{\"roots\":{\"bookmark_bar\":" + ChromeFolder(L"bar", {ChromeFolder(L"A", {ChromeFolder(L"Inner", {ChromeNode(L"y", "https://y.example/")}, "same")}, "same")}) + "}}", "nested");
+            // across roots, renamed old target's title, and every folder colliding
+            refused("{\"roots\":{\"bookmark_bar\":" + ChromeFolder(L"bar", {ChromeFolder(L"Renamed", {}, "other")}) + ",\"other\":" + ChromeFolder(L"other", {ChromeFolder(L"X", {}, "other"), ChromeFolder(L"A", {}, "same"), ChromeFolder(L"A", {}, "same")}) + "}}", "all");
+            // Unique guids: imported normally (the guard is about duplicates only).
+            const auto fine = ParseChromiumBookmarks("{\"roots\":{\"bookmark_bar\":" + ChromeFolder(L"bar", {ChromeFolder(L"A", {ChromeNode(L"n", "https://new.example/")}, "same"), ChromeFolder(L"B", {}, "b")}) + "}}");
+            BM::Store s; FolderMap m; const BM::Id earlier = seeded(s, m);
+            OK(!AmbiguousIds(fine.roots) && ApplyBookmarks(s, chromeD, fine.roots, now, &m).imported == 1 && (Titles(s, earlier) == std::vector<std::wstring>{L"old", L"n"}));
+            // Firefox: same rule (two folders with one guid), applied and read the same way.
+            Item f1; f1.folder = true; f1.key = "g:dup"; f1.title = L"F1"; Item l1; l1.url = L"https://ff.example/"; l1.title = L"l"; f1.children.push_back(l1);
+            Item f2 = f1; f2.title = L"F2";
+            Item tb; tb.folder = true; tb.key = "toolbar_____"; tb.title = L"Barre de favoris"; tb.children = {f1, f2};
+            Source ffs; ffs.browser = Browser::Firefox; ffs.root = L"C:\\x\\Firefox"; ffs.dir = L"C:\\x\\Firefox\\Profiles\\a"; ffs.profile = L"a";
+            BM::Store t; FolderMap tm; const Counts c = ApplyBookmarks(t, ffs, {tb}, now, &tm);
+            OK(c.imported == 0 && t == BM::Store{} && tm.entries.empty());
+            Bookmarks_ fb; fb.roots = {tb}; RefuseAmbiguous(fb); OK(fb.failure == Failure::Ambiguous && fb.roots.empty());
+            OK(FailureText(Failure::Ambiguous, chromeDefault) == L"deux dossiers y portent le même identifiant, rien n'a été importé.");
+        }
+        {   // v0.3.376 HTML group holding BOTH marked roots as ordinary folders: each moves where it belongs, same ids.
+            const std::string html = "<DL><p><DT><H3 PERSONAL_TOOLBAR_FOLDER=\"true\">Bookmarks Toolbar</H3><DL><p><DT><A HREF=\"https://tb.example/\">tb</A></DL><p>"
+                                     "<DT><H3 UNFILED_BOOKMARKS_FOLDER=\"true\">Other Bookmarks</H3><DL><p><DT><A HREF=\"https://other.example/\">o</A></DL><p>"
+                                     "<DT><A HREF=\"https://menu.example/\">m</A></DL><p>";
+            BM::Store s; FolderMap m;
+            const BM::Id group = s.AddFolder(BM::OtherRoot, BM::End, L"Importés d'un fichier HTML", 5);
+            const BM::Id oldBar = s.AddFolder(group, BM::End, L"Bookmarks Toolbar", 6), oldOther = s.AddFolder(group, BM::End, L"Other Bookmarks", 6);
+            const BM::Id tb = s.Add(oldBar, BM::End, L"tb", L"https://tb.example/", 7), o = s.Add(oldOther, BM::End, L"o", L"https://other.example/", 7);
+            const BM::Id mm = s.Add(group, BM::End, L"m", L"https://menu.example/", 7);
+            m.Prefer("html", {group, 5});
+            const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\ff.html"), ParseHtmlBookmarks(html).roots, now, &m);
+            OK(c.imported == 0 && c.present == 3 && s.Find(tb)->parent == BM::BarRoot && s.Find(o)->parent == BM::OtherRoot && s.Find(mm)->parent == BM::OtherRoot);
+            OK(!s.Find(oldBar) && !s.Find(oldOther) && !s.Find(group) && c.kept == 0);   // proven by content: unambiguous
+            const BM::Store once = s; const Counts again = ApplyBookmarks(s, HtmlSource(L"C:\\ff.html"), ParseHtmlBookmarks(html).roots, now, &m);
+            OK(again.imported == 0 && again.moved == 0 && s == once);
+        }
+    }
+
+    // ---- Review b7b3ce5 P2: legacy HTML folders are acted on only with proof from the file's content ----------------
+    {
+        const std::string html = "<DL><p><DT><H3 PERSONAL_TOOLBAR_FOLDER=\"true\">Bookmarks bar</H3><DL><p><DT><A HREF=\"https://source.example/\">source</A></DL><p>"
+                                 "<DT><H3>Docs</H3><DL><p><DT><A HREF=\"https://doc.example/\">d</A></DL><p></DL><p>";
+        const auto roots = ParseHtmlBookmarks(html).roots;
+        auto group = [](BM::Store& s, FolderMap& m) { const BM::Id g = s.AddFolder(BM::OtherRoot, BM::End, L"Importés d'un fichier HTML", 5); m.Prefer("html", {g, 5}); return g; };
+        {   // The reviewer's case: the person's « Bookmarks bar » first, the technical one second. Only the proven one moves.
+            BM::Store s; FolderMap m; const BM::Id g = group(s, m);
+            const BM::Id manual = s.AddFolder(g, BM::End, L"Bookmarks bar", 6); const BM::Id mine = s.Add(manual, BM::End, L"mine", L"https://manual.example/", 7);
+            const BM::Id tech = s.AddFolder(g, BM::End, L"Bookmarks bar", 8); const BM::Id src = s.Add(tech, BM::End, L"source", L"https://source.example/", 9);
+            const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\a.html"), roots, now, &m);
+            OK(s.Find(manual) && s.Find(manual)->parent == g && s.Find(mine)->parent == manual);   // the person's folder: untouched
+            OK(!s.Find(tech) && s.Find(src)->parent == BM::BarRoot && c.imported == 1 && c.present == 1 && c.kept == 0);   // « Docs » new
+        }
+        {   // Two candidates that BOTH hold the file's content: ambiguous, both kept, nothing deleted; the import still adds.
+            BM::Store s; FolderMap m; const BM::Id g = group(s, m);
+            const BM::Id a = s.AddFolder(g, BM::End, L"Bookmarks bar", 6); s.Add(a, BM::End, L"source", L"https://source.example/", 7);
+            const BM::Id b = s.AddFolder(g, BM::End, L"Bookmarks bar", 8); s.Add(b, BM::End, L"source", L"https://source.example/", 9);
+            const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\a.html"), roots, now, &m);
+            OK(s.Find(a) && s.Find(b) && s.Find(a)->children.size() == 1 && s.Find(b)->children.size() == 1 && c.kept == 2 && c.moved == 0);
+            OK(CountsText(c).find(L"anciens dossiers laissés en place") != std::wstring::npos);
+        }
+        {   // A different export with the same root name (its old bar held other links): kept as it is.
+            BM::Store s; FolderMap m; const BM::Id g = group(s, m);
+            const BM::Id old = s.AddFolder(g, BM::End, L"Bookmarks bar", 6); const BM::Id x = s.Add(old, BM::End, L"x", L"https://other-export.example/", 7);
+            const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\b.html"), roots, now, &m);
+            OK(s.Find(old) && s.Find(x)->parent == old && s.Find(old)->children.size() == 1 && c.kept == 1 && c.moved == 0 && s.Find(g));
+        }
+        {   // The technical bar folder holding one extra entry the person added: not proven, kept whole.
+            BM::Store s; FolderMap m; const BM::Id g = group(s, m);
+            const BM::Id tech = s.AddFolder(g, BM::End, L"Bookmarks bar", 6); s.Add(tech, BM::End, L"source", L"https://source.example/", 7);
+            const BM::Id extra = s.Add(tech, BM::End, L"extra", L"https://extra.example/", 8);
+            const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\a.html"), roots, now, &m);
+            OK(s.Find(tech) && s.Find(extra)->parent == tech && s.Find(tech)->children.size() == 2 && c.kept == 1);
+        }
+        {   // An unmarked top-level folder « Docs »: the person's same-titled folder (other content) stays; the proven one moves.
+            BM::Store s; FolderMap m; const BM::Id g = group(s, m);
+            const BM::Id personal = s.AddFolder(g, BM::End, L"Docs", 6); const BM::Id p = s.Add(personal, BM::End, L"p", L"https://personal.example/", 7);
+            const BM::Id docs = s.AddFolder(g, BM::End, L"Docs", 8); const BM::Id d = s.Add(docs, BM::End, L"d", L"https://doc.example/", 9);
+            const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\a.html"), roots, now, &m);
+            OK(s.Find(personal)->parent == g && s.Find(p)->parent == personal && s.Find(docs)->parent == BM::OtherRoot && s.Find(d)->parent == docs && c.kept == 0);
+            // Empty same-titled folder: no proof either way, never moved or removed.
+            BM::Store t; FolderMap tm; const BM::Id tg = group(t, tm); const BM::Id empty = t.AddFolder(tg, BM::End, L"Bookmarks bar", 6);
+            const Counts e = ApplyBookmarks(t, HtmlSource(L"C:\\a.html"), roots, now, &tm);
+            OK(t.Find(empty) && t.Find(empty)->parent == tg && e.kept == 1);
+        }
+        {   // The safe unambiguous case, repeated: idempotent.
+            BM::Store s; FolderMap m; const BM::Id g = group(s, m);
+            const BM::Id tech = s.AddFolder(g, BM::End, L"Bookmarks bar", 6); const BM::Id src = s.Add(tech, BM::End, L"source", L"https://source.example/", 7);
+            const BM::Id docs = s.AddFolder(g, BM::End, L"Docs", 8); s.Add(docs, BM::End, L"d", L"https://doc.example/", 9);
+            const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\a.html"), roots, now, &m);
+            OK(!s.Find(g) && s.Find(src)->parent == BM::BarRoot && s.Find(docs)->parent == BM::OtherRoot && c.imported == 0 && c.moved == 2 && c.kept == 0);
+            const BM::Store once = s; const Counts again = ApplyBookmarks(s, HtmlSource(L"C:\\a.html"), roots, now, &m);
+            OK(again.imported == 0 && again.moved == 0 && s == once);
+        }
+    }
+
+    // ---- Review eb542bc P2: nested folders are proven by their own content, at every depth -------------------------
+    {
+        auto group = [](BM::Store& s, FolderMap& m) { const BM::Id g = s.AddFolder(BM::OtherRoot, BM::End, L"Importés d'un fichier HTML", 5); m.Prefer("html", {g, 5}); return g; };
+        const std::string marked = "<DL><p><DT><H3 PERSONAL_TOOLBAR_FOLDER=\"true\">Bookmarks bar</H3><DL><p><DT><H3>Docs</H3><DL><p><DT><A HREF=\"https://different-export.example/\">new</A></DL><p></DL><p></DL><p>";
+        {   // The reviewer's case (marked root): old wrapper › Docs › another export's link. Not this file's: kept, nothing merged.
+            BM::Store s; FolderMap m; const BM::Id g = group(s, m);
+            const BM::Id wrapper = s.AddFolder(g, BM::End, L"Bookmarks bar", 6), docs = s.AddFolder(wrapper, BM::End, L"Docs", 7);
+            const BM::Id own = s.Add(docs, BM::End, L"private", L"https://old-export.example/", 8);
+            const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\different.html"), ParseHtmlBookmarks(marked).roots, now, &m);
+            OK(s.Find(wrapper) && s.Find(wrapper)->parent == g && s.Find(docs)->parent == wrapper && s.Find(own)->parent == docs && s.Find(docs)->children.size() == 1);
+            OK(c.moved == 0 && c.kept == 1 && c.imported == 1);   // the new export's Docs is created on the bar, apart
+            const BM::Id fresh = Child(s, BM::BarRoot, L"Docs"); OK(fresh && fresh != docs && Titles(s, fresh) == std::vector<std::wstring>{L"new"});
+        }
+        {   // Unmarked top-level variant: group › Rent › another export's link vs this file's Rent › other link: kept.
+            const std::string html = "<DL><p><DT><H3>Rent</H3><DL><p><DT><H3>2025</H3><DL><p><DT><A HREF=\"https://new-lease.example/\">n</A></DL><p></DL><p></DL><p>";
+            BM::Store s; FolderMap m; const BM::Id g = group(s, m);
+            const BM::Id rent = s.AddFolder(g, BM::End, L"Rent", 6), year = s.AddFolder(rent, BM::End, L"2025", 7);
+            const BM::Id old = s.Add(year, BM::End, L"o", L"https://old-lease.example/", 8);
+            const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\b.html"), ParseHtmlBookmarks(html).roots, now, &m);
+            OK(s.Find(rent)->parent == g && s.Find(year)->parent == rent && s.Find(old)->parent == year && c.kept == 1 && c.moved == 0 && c.imported == 1);
+        }
+        {   // Repeated same-named child folders: each old one must match a distinct source one by content.
+            const std::string html = "<DL><p><DT><H3 PERSONAL_TOOLBAR_FOLDER=\"true\">Bookmarks bar</H3><DL><p>"
+                                     "<DT><H3>Same</H3><DL><p><DT><A HREF=\"https://one.example/\">1</A></DL><p>"
+                                     "<DT><H3>Same</H3><DL><p><DT><A HREF=\"https://two.example/\">2</A></DL><p></DL><p></DL><p>";
+            const auto roots = ParseHtmlBookmarks(html).roots;
+            {   // both present (v0.3.376 kept the source order): each proven by its own content, same ids and order
+                BM::Store s; FolderMap m; const BM::Id g = group(s, m);
+                const BM::Id w = s.AddFolder(g, BM::End, L"Bookmarks bar", 6);
+                const BM::Id a = s.AddFolder(w, BM::End, L"Same", 7); s.Add(a, BM::End, L"1", L"https://one.example/", 8);
+                const BM::Id b = s.AddFolder(w, BM::End, L"Same", 9); s.Add(b, BM::End, L"2", L"https://two.example/", 10);
+                const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\r.html"), roots, now, &m);
+                OK(!s.Find(w) && s.Find(a)->parent == BM::BarRoot && s.Find(b)->parent == BM::BarRoot && s.Find(BM::BarRoot)->children == (std::vector<BM::Id>{a, b}) && c.kept == 0 && c.moved == 2 && c.imported == 0);
+                // The other order still proves the wrapper (the greedy pass tries every same-titled source folder).
+                BM::Store t; FolderMap tm; const BM::Id tg = group(t, tm); const BM::Id tw = t.AddFolder(tg, BM::End, L"Bookmarks bar", 6);
+                const BM::Id x = t.AddFolder(tw, BM::End, L"Same", 7); t.Add(x, BM::End, L"2", L"https://two.example/", 8);
+                const BM::Id y = t.AddFolder(tw, BM::End, L"Same", 9); t.Add(y, BM::End, L"1", L"https://one.example/", 10);
+                OK(detail::ContentOf(t, tw, roots[0].children));
+            }
+            {   // two old « Same » folders holding the SAME link, the source has it in one « Same » only: not proven
+                BM::Store s; FolderMap m; const BM::Id g = group(s, m);
+                const BM::Id w = s.AddFolder(g, BM::End, L"Bookmarks bar", 6);
+                const BM::Id a = s.AddFolder(w, BM::End, L"Same", 7); s.Add(a, BM::End, L"1", L"https://one.example/", 8);
+                const BM::Id b = s.AddFolder(w, BM::End, L"Same", 9); s.Add(b, BM::End, L"1", L"https://one.example/", 10);
+                const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\r.html"), roots, now, &m);
+                OK(s.Find(w) && s.Find(a)->parent == w && s.Find(b)->parent == w && c.kept == 1 && c.moved == 0);
+            }
+        }
+        {   // Deeper nesting with an extra entry the person added three levels down: kept whole.
+            const std::string html = "<DL><p><DT><H3 PERSONAL_TOOLBAR_FOLDER=\"true\">Bookmarks bar</H3><DL><p><DT><H3>A</H3><DL><p><DT><H3>B</H3><DL><p><DT><H3>C</H3><DL><p>"
+                                     "<DT><A HREF=\"https://deep.example/\">d</A></DL><p></DL><p></DL><p></DL><p></DL><p>";
+            BM::Store s; FolderMap m; const BM::Id g = group(s, m);
+            const BM::Id w = s.AddFolder(g, BM::End, L"Bookmarks bar", 6), A = s.AddFolder(w, BM::End, L"A", 7), B = s.AddFolder(A, BM::End, L"B", 8), C = s.AddFolder(B, BM::End, L"C", 9);
+            s.Add(C, BM::End, L"d", L"https://deep.example/", 10); const BM::Id extra = s.Add(C, BM::End, L"x", L"https://mine.example/", 11);
+            const BM::Store before = s;
+            const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\d.html"), ParseHtmlBookmarks(html).roots, now, &m);
+            OK(s.Find(w)->parent == g && s.Find(A)->parent == w && s.Find(extra)->parent == C && c.kept == 1 && c.moved == 0);
+            // Without the extra entry: proven at every depth, same ids, order kept, repeat adds nothing.
+            BM::Store t = before; t.Remove(extra); FolderMap tm; tm.Prefer("html", {g, 5});
+            const Counts d = ApplyBookmarks(t, HtmlSource(L"C:\\d.html"), ParseHtmlBookmarks(html).roots, now, &tm);
+            OK(!t.Find(w) && t.Find(A)->parent == BM::BarRoot && t.Find(B)->parent == A && t.Find(C)->parent == B && d.kept == 0 && d.moved == 1 && d.imported == 0);
+            const BM::Store once = t; const Counts again = ApplyBookmarks(t, HtmlSource(L"C:\\d.html"), ParseHtmlBookmarks(html).roots, now, &tm);
+            OK(again.imported == 0 && again.moved == 0 && t == once);
+        }
+        {   // Work bound: a huge old subtree is compared within the budget (no unbounded cross-product): it completes.
+            BM::Store s; FolderMap m; const BM::Id g = group(s, m);
+            const BM::Id w = s.AddFolder(g, BM::End, L"Bookmarks bar", 6);
+            for (int i = 0; i < 300; ++i) { const BM::Id f = s.AddFolder(w, BM::End, L"Same", 7); s.Add(f, BM::End, L"x", L"https://x" + std::to_wstring(i) + L".example/", 8); }
+            std::string html = "<DL><p><DT><H3 PERSONAL_TOOLBAR_FOLDER=\"true\">Bookmarks bar</H3><DL><p>";
+            for (int i = 0; i < 300; ++i) html += "<DT><H3>Same</H3><DL><p><DT><A HREF=\"https://y" + std::to_string(i) + ".example/\">y</A></DL><p>";
+            html += "</DL><p></DL><p>";
+            const Counts c = ApplyBookmarks(s, HtmlSource(L"C:\\big.html"), ParseHtmlBookmarks(html).roots, now, &m);
+            OK(s.Find(w) && s.Find(w)->children.size() == 300 && c.kept == 1 && c.moved == 0);
+        }
+    }
+
     // ---- Map capacity (review 2ed598c): 4 096 → 4 098 records, every identity kept across a restart -------------
     {
         const std::wstring dir = work + L"\\capacity"; MakeDirs(dir);
@@ -738,17 +1078,20 @@ int main(int argc, char** argv) {
         { std::ostringstream o; mine.Write(o); CHECK(ProfileStore::WriteAtomic(bm, o.str())); CHECK(ProfileStore::WriteAtomic(mf, map.Write())); base = mine; }
         OK(map.Records() == 4096 && mine.Size() == 6144);
         const auto roots = ParseChromiumBookmarks("{\"roots\":{\"bookmark_bar\":{\"type\":\"folder\",\"children\":[{\"type\":\"url\",\"name\":\"new\",\"url\":\"https://bounds.example/\"}]}}}").roots;
+        // A new source with two folders that have a stable id: two more records (4 098).
+        const auto keyed = ParseChromiumBookmarks("{\"roots\":{\"bookmark_bar\":{\"type\":\"folder\",\"children\":[{\"type\":\"folder\",\"name\":\"K1\",\"guid\":\"k1\",\"children\":[{\"type\":\"url\",\"name\":\"a\",\"url\":\"https://k1.example/\"}]},{\"type\":\"folder\",\"name\":\"K2\",\"guid\":\"k2\",\"children\":[{\"type\":\"url\",\"name\":\"b\",\"url\":\"https://k2.example/\"}]}]}}}").roots;
         Source s; s.browser = Browser::Chrome; s.profile = L"Profile 9999"; s.soleProfile = false; bool saved = false;
-        const auto first = CommitBookmarks(dir, bm, mf, base, mine, s, roots, now, &saved);
+        const auto first = CommitBookmarks(dir, bm, mf, base, mine, s, keyed, now, &saved);
         std::string bytes; ProfileStore::ReadAll(mf, bytes); bool known = false, complete = false;
         const FolderMap reread = FolderMap::Read(bytes, &known, &complete);
-        OK(first.Saved() && saved && mine.Size() == 6147 && reread.Records() == 4098 && complete && reread.Fits());
-        // Restart; Profile 9's root (an old, renamed one) is still identified: nothing duplicated.
+        OK(first.Saved() && saved && mine.Size() == 6148 && reread.Records() == 4098 && complete && reread.Fits());
+        // Restart; Profile 9's old v0.3.376 group (renamed) is still identified among 4 098 records: its link is moved
+        // onto the bar (same id), its now empty mapped folders removed, nothing duplicated.
         { std::istringstream in(std::string([&] { std::string b; ProfileStore::ReadAll(bm, b); return b; }())); mine = BM::Store::Read(in); base = mine; }
         Source p9 = s; p9.profile = L"Profile 9";
         OK(reread.entries.count(SourceKey(p9) + "|bookmark_bar") == 1);
         const auto again = CommitBookmarks(dir, bm, mf, base, mine, p9, roots, now + 1, &saved);
-        OK(again.Saved() && again.counts.imported == 0 && again.counts.present == 1 && mine.Size() == 6147);
+        OK(again.Saved() && again.counts.imported == 0 && again.counts.present == 1 && again.counts.moved == 1 && mine.Size() == 6146 && Titles(mine, BM::BarRoot).back() == L"old link");
         // A map file already over the reader's bound (written by anything else): refused whole, untouched.
         FolderMap over = reread; for (std::size_t i = 0; over.Records() <= FolderMap::Limit; ++i) over.entries["chromium:Chrome/Extra " + std::to_string(i)].push_back({static_cast<BM::Id>(900000 + i), 1});
         const std::string overText = over.Write(); CHECK(ProfileStore::WriteAtomic(mf, overText));

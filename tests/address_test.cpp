@@ -24,7 +24,10 @@ int main(){
     // Local file: directory secondary, file name primary, %20 decoded.
     auto file=Describe(L"file:///C:/Users/me/Mes%20documents/rapport.pdf");
     CHECK(file.security==Security::File&&file.runs.size()==2&&file.runs[0].text==L"C:/Users/me/Mes documents/"&&file.runs[1].text==L"rapport.pdf");
-    CHECK(Describe(L"").security==Security::Empty&&Describe(L"about:blank").security==Security::Empty);
+    CHECK(Describe(L"").security==Security::Empty);
+    // SEC-24: a blank document that is not the home tab (the host never describes the home tab) shows its address,
+    // never the empty field of the browser's own new tab.
+    {auto blank=Describe(L"about:blank");CHECK(blank.security==Security::Other&&Joined(blank)==L"about:blank");}
     CHECK(Describe(L"data:text/plain,x").security==Security::Other);
 
     // Typed text classification and encoding (mirrors Destination()).
@@ -119,6 +122,56 @@ int main(){
      auto top=TopSites(t,8);CHECK(top.size()==3&&top[0].host==L"a.example"&&top[0].visits==3&&top[0].root&&top[0].url==L"https://a.example/");
      CHECK(top[1].host==L"b.example"&&top[1].url==L"https://www.b.example/"&&!top[1].root&&top[2].host==L"c.example");
      CHECK(TopSites(t,2).size()==2&&TopSites(History{},8).empty());}
+    // Local files typed in the address field (or given on the command line): a Windows path or a file: link
+    // is an address, never a search, and never a « site » with a favicon to fetch.
+    {CHECK(LooksLikeAddress(L"C:\\Users\\Ana\\My Pages\\index.html"));                    // a space in a folder name
+     CHECK(LooksLikeAddress(L"\"C:\\Users\\Ana\\page.html\""));                            // Explorer's « Copier en tant que chemin d'accès »
+     CHECK(LooksLikeAddress(L"file:///C:/Users/Ana/My%20Pages/index.html"));
+     CHECK(LooksLikeAddress(L"\\\\nas\\partage\\doc.html"));
+     auto path=Suggest(L"C:\\Users\\Ana\\My Pages\\index.html",History{});
+     CHECK(path.rows.size()==2&&path.rows[0].kind==Kind::Address&&path.rows[0].site.empty()&&path.completion.empty());
+     auto file=Suggest(L"file:///C:/x/a.html",History{});
+     CHECK(file.rows[0].kind==Kind::Address&&file.rows[0].site.empty());}
+    // Resolve: the host's Destination() and the command line, one rule.
+    {auto url=[](const std::wstring& typed){const auto r=Resolve(typed);return r.kind==Typed::Url?r.value:L"<"+std::to_wstring((int)r.kind)+L">"+r.value;};
+     // Existing behaviours, unchanged.
+     CHECK(Resolve(L"   ").kind==Typed::Empty&&url(L"about:blank")==L"about:blank");
+     CHECK(Resolve(L"browser://debug").kind==Typed::Sandbox&&Resolve(L"BROWSER://Sandbox").kind==Typed::Sandbox);
+     CHECK(url(L" https://example.com/a?b=1 ")==L"https://example.com/a?b=1"&&url(L"HTTP://x.y")==L"HTTP://x.y");
+     CHECK(url(L"example.org/docs")==L"https://example.org/docs"&&url(L"localhost:3000")==L"https://localhost:3000"&&url(L"127.0.0.1:8080/x")==L"https://127.0.0.1:8080/x");
+     CHECK(Resolve(L"météo lyon").kind==Typed::Search&&Resolve(L"météo lyon").value==L"météo lyon"&&Resolve(L"git").kind==Typed::Search);
+     CHECK(Resolve(L"ftp://x.y").kind==Typed::Search&&Resolve(L"javascript:alert(1)").kind==Typed::Search&&Resolve(L"mailto:a@b.c").kind==Typed::Url);   // (mailto:a@b.c has a dot: https://, as before)
+     // SEC-21: an http(s) address the engine refuses is searched, never handed to Navigate (which would stop the browser).
+     for(const wchar_t* bad:{L"http://",L"https://",L"https://a b",L"http://user@",L"https://a:99999/",L"https://a:x/",L"http://a<b.com",L"http://\x7f.com",L"https://1.2.3.4.5",L"https://300.1.1.1",L"https://1.2.3.256"})
+         CHECK(!Navigable(bad)&&Resolve(bad).kind==Typed::Search);
+     CHECK(Resolve(L"1.2.3.4.5").kind==Typed::Search&&Resolve(L"192.168.1.300").kind==Typed::Search);
+     for(const wchar_t* good:{L"https://example.com",L"http://localhost:3000/x",L"https://127.0.0.1",L"https://1.2.3.4./",L"https://[::1]:8080/",L"https://user:pw@host.test/",L"https://a.com:/",L"https://3.14",L"https://10.0.0.1:65535/a b",L"https://0x7f.1/",L"file:///C:/a b.html",L"about:blank",L""})
+         CHECK(Navigable(good));
+     CHECK(url(L"https://1.2.3.4/")==L"https://1.2.3.4/"&&url(L"3.14")==L"https://3.14"&&url(L"https://a.com/a b")==L"https://a.com/a b");
+     // file: links as typed.
+     CHECK(url(L"file:///C:/x.html")==L"file:///C:/x.html"&&url(L"FILE:///c:/a%20b/c.html")==L"FILE:///c:/a%20b/c.html"&&url(L"file://nas/share/a.html")==L"file://nas/share/a.html");
+     // Drive paths, either slash, quoted or not; spaces, %, # and non-ASCII names encoded.
+     CHECK(url(L"C:\\x.html")==L"file:///C:/x.html");
+     CHECK(url(L"c:/Users/Ana/page.html")==L"file:///c:/Users/Ana/page.html");
+     CHECK(url(L"C:\\Users\\Ana\\My Pages\\index.html")==L"file:///C:/Users/Ana/My%20Pages/index.html");
+     CHECK(url(L"\"C:\\Users\\Ana\\My Pages\\index.html\"")==L"file:///C:/Users/Ana/My%20Pages/index.html");
+     CHECK(url(L"  \"D:\\a.html\"  ")==L"file:///D:/a.html");
+     CHECK(url(L"C:\\docs\\100% #1?.html")==L"file:///C:/docs/100%25%20%231%3F.html");
+     CHECK(url(L"C:\\Données\\été.html")==L"file:///C:/Donn%C3%A9es/%C3%A9t%C3%A9.html");
+     CHECK(url(L"C:\\a\\b(1)&c=d;e.html")==L"file:///C:/a/b(1)&c=d;e.html");
+     CHECK(url(L"\\\\?\\C:\\long\\a.html")==L"file:///C:/long/a.html");
+     // UNC shares: the server is the host.
+     CHECK(url(L"\\\\NAS\\partage\\dossier\\doc.html")==L"file://nas/partage/dossier/doc.html");
+     CHECK(url(L"\\\\nas\\partage\\mon doc.html")==L"file://nas/partage/mon%20doc.html");
+     CHECK(url(L"\\\\?\\UNC\\nas\\partage\\a.html")==L"file://nas/partage/a.html");
+     // Not paths: hosts with a port, a lone drive, a single backslash.
+     CHECK(url(L"a:80")==L"<3>a:80"&&url(L"C:")==L"<3>C:"&&url(L"\\x")==L"<3>\\x");
+     // The address bar shows a typed path as the local file it is (Security::File, file name primary).
+     {auto d=Describe(FileUrlFromPath(L"C:\\Users\\Ana\\My Pages\\index.html"));
+      CHECK(d.security==Security::File&&d.runs.size()==2&&d.runs[0].text==L"C:/Users/Ana/My Pages/"&&d.runs[1].text==L"index.html"&&d.runs[1].tone==Tone::Primary);
+      auto u=Describe(FileUrlFromPath(L"\\\\nas\\partage\\doc.html"));CHECK(u.security==Security::File&&u.runs.back().text==L"doc.html");}
+     // History keeps local files (Recordable) and bookmarks still accept file: (Normalize), unchanged.
+     CHECK(Recordable(FileUrlFromPath(L"C:\\x.html"))&&Normalize(L"file:///C:/x.html")==L"file:///C:/x.html");}
     std::puts("address tests passed");
     return 0;
 }

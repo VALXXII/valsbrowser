@@ -147,6 +147,34 @@ std::wstring Stamp(std::int64_t now) {
     std::swprintf(buffer, 32, L"%04d%02d%02d-%02d%02d%02d", u.year, u.month, u.day, u.hour, u.minute, u.second);
     return buffer;
 }
+// SEC-28: only the newest KeptBackups backups of a file stay (full copies of another application's configuration, which
+// often holds API keys). Order: the stamp, then -n; anything not named like our backups is left alone.
+constexpr std::size_t KeptBackups = 3;
+void PruneBackups(const std::wstring& file, const std::wstring& justMade) {
+    const std::size_t slash = file.find_last_of(L"\\/");
+    const std::wstring dir = slash == std::wstring::npos ? std::wstring(L".") : file.substr(0, slash);
+    const std::wstring prefix = (slash == std::wstring::npos ? file : file.substr(slash + 1)) + L".browser-annotations-";
+    std::vector<std::pair<std::pair<std::wstring, int>, std::wstring>> found;   // ((stamp, n), name)
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((file + L".browser-annotations-*.bak").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (fd.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) continue;
+        const std::wstring name = fd.cFileName;
+        if (name.size() < prefix.size() + 15 + 4 || CompareStringOrdinal(name.c_str(), int(prefix.size()), prefix.c_str(), int(prefix.size()), TRUE) != CSTR_EQUAL) continue;
+        const std::wstring rest = name.substr(prefix.size(), name.size() - prefix.size() - 4);   // <stamp>[-n]
+        if (rest.size() != 15 && !(rest.size() > 16 && rest[15] == L'-')) continue;
+        found.push_back({{rest.substr(0, 15), rest.size() > 16 ? _wtoi(rest.c_str() + 16) : 1}, name});
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    for (std::size_t i = KeptBackups; i < found.size(); ++i) {
+        const std::wstring path = dir + L"\\" + found[i].second;
+        if (CompareStringOrdinal(path.c_str(), -1, justMade.c_str(), -1, TRUE) == CSTR_EQUAL) continue;   // the one this change made is always kept
+        SetFileAttributesW(path.c_str(), FILE_ATTRIBUTE_NORMAL);
+        DeleteFileW(path.c_str());
+    }
+}
 // <file>.browser-annotations-<stamp>[-n].bak, never overwriting an older backup.
 bool Backup(const std::wstring& file, std::int64_t now, std::wstring& backup) {
     backup.clear();
@@ -177,6 +205,7 @@ Report Make(Result r, std::string message, const std::wstring& file = L"", const
     rep.message = std::move(message);
     rep.file = file;
     rep.backup = backup;
+    if (!file.empty() && !backup.empty() && (r == Result::Connected || r == Result::Disconnected)) PruneBackups(file, backup);   // SEC-28: once the change is written
     return rep;
 }
 

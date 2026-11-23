@@ -24,6 +24,7 @@
 #include "history.h"
 #include "bookmarks.h"
 #include "accessibility.h"
+#include "bookmark-drag.h"
 
 namespace NativeChrome {
 namespace BookmarksUI {
@@ -61,6 +62,9 @@ public:
         // colours its EDIT (0: not ours) and follows the row after every paint (scroll, rebuild, resize).
         std::function<LRESULT(HDC, HWND)> editColor;
         std::function<void()> relayout;
+        // Drag a row (src/bookmark-drag.h): past the system threshold the drawer releases its capture and hands the
+        // bookmark to the owner's drag controller (the button is still down). Absent: rows are not draggable.
+        std::function<void(Bookmarks::Id, POINT)> dragStart;
     };
 private:
     HWND hwnd_ = nullptr, owner_ = nullptr;
@@ -71,6 +75,8 @@ private:
     int hover_ = 0, pressed_ = 0, focus_ = 0; bool keyboard_ = false, visible_ = false, closing_ = false, tracking_ = false;
     int appliedVisible_ = -1; RECT appliedOwner_{};
     Bookmarks::Id renaming_ = 0;   // its title is drawn by the owner's in-place editor
+    POINT pressAt_{};              // screen point of the left press (row drag threshold)
+    int dropRow_ = -1; BookmarkDrag::Mark dropMark_ = BookmarkDrag::Mark::None;   // drop feedback while the owner drags over the drawer
     float Dpi() const { return static_cast<float>(GetDpiForWindow(hwnd_ ? hwnd_ : owner_)); }
     int Px(float dip) const { return static_cast<int>(std::lround(dip * Dpi() / 96.f)); }
     int OwnerPx(float dip) const { return static_cast<int>(std::lround(dip * GetDpiForWindow(owner_) / 96.f)); }
@@ -297,6 +303,15 @@ private:
             }
             if (focused && focus_ == row) chrome_.FocusRing({tile.left - 6, top - 6, Layout::width - Panel::padding + 6, top + Panel::tile + 6}, Design::Radius::control + 6);
         }
+        if (dropRow_ >= 0 && dropRow_ < static_cast<int>(rows_.size())) {   // drop feedback (owner's drag): accent tint into a folder, line before/after
+            const Row& r = rows_[dropRow_]; const float top = RowTop(dropRow_, scroll); const auto tile = Tile(r, top); const auto a = Design::Accent::Get();
+            if (dropMark_ == BookmarkDrag::Mark::Into) chrome_.FillBox({tile.left - 6, top - 6, Layout::width - Panel::padding + 6, top + Panel::tile + 6}, Design::Radius::control + 6, D2D1::ColorF(a.r, a.g, a.b, .18f));
+            else if (dropMark_ != BookmarkDrag::Mark::None) {
+                const bool after = dropMark_ == BookmarkDrag::Mark::After; const float y = after ? top + Panel::pitch - (Panel::pitch - Panel::tile) / 2 : top - (Panel::pitch - Panel::tile) / 2;
+                const float left = r.level == 0 ? Panel::padding + Layout::indent : (after && r.folder && r.open ? tile.left + Layout::indent : tile.left);
+                chrome_.FillBox({left, y - 1, Layout::width - Panel::padding, y + 1}, 1, D2D1::ColorF(a.r, a.g, a.b, 1));
+            }
+        }
         t->PopAxisAlignedClip();
         const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width));
         chrome_.Color(1, DownloadsUI::Popup::border); t->FillRectangle(D2D1::RectF(0, 0, px, h), chrome_.SolidBrush());
@@ -356,12 +371,20 @@ private:
         // Placed on a monitor at another DPI: WM_SIZE read the old DPI during the move; redraw at the new one.
         case WM_DPICHANGED: chrome_.Resize(); Invalidate(); return 0;
         case WM_MOUSEACTIVATE: return MA_ACTIVATE;
-        case WM_ACTIVATE: if (LOWORD(w) == WA_INACTIVE && !holding_) { HWND to = reinterpret_cast<HWND>(l); if (!to || GetWindow(to, GW_OWNER) != owner_ || to == owner_) Hide(false, true); } return 0;
+        case WM_ACTIVATE: if (LOWORD(w) == WA_INACTIVE && !holding_ && !stayForTest) { HWND to = reinterpret_cast<HWND>(l); if (!to || GetWindow(to, GW_OWNER) != owner_ || to == owner_) Hide(false, true); } return 0;
         case WM_SETFOCUS: case WM_KILLFOCUS: Invalidate(); return 0;
         case WM_SETCURSOR: if (LOWORD(l) == HTCLIENT) { POINT p; GetCursorPos(&p); ScreenToClient(h, &p); SetCursor(LoadCursor(nullptr, Hit(p.x * s, p.y * s) == SearchHit ? IDC_IBEAM : IDC_ARROW)); return TRUE; } break;
-        case WM_MOUSEMOVE: { if (!tracking_) { TRACKMOUSEEVENT t{sizeof(t), TME_LEAVE, h, 0}; TrackMouseEvent(&t); tracking_ = true; } const int hit = Hit(GET_X_LPARAM(l) * s, GET_Y_LPARAM(l) * s); if (hit != hover_) Interact(hit, pressed_); return 0; }
+        case WM_MOUSEMOVE: {
+            // A pressed row (not its action buttons, not a root label, not while renaming) dragged past the threshold.
+            if ((w & MK_LBUTTON) && hooks_.dragStart && IsRowPart(pressed_) && HitPart(pressed_) == 0 && !renaming_) {
+                const int i = HitIndex(pressed_); POINT p{GET_X_LPARAM(l), GET_Y_LPARAM(l)}; ClientToScreen(h, &p);
+                if (i < static_cast<int>(rows_.size()) && rows_[i].level > 0 && (std::abs(p.x - pressAt_.x) > GetSystemMetrics(SM_CXDRAG) || std::abs(p.y - pressAt_.y) > GetSystemMetrics(SM_CYDRAG))) {
+                    const Bookmarks::Id id = rows_[i].id; if (GetCapture() == h) ReleaseCapture(); Interact(0, 0); hooks_.dragStart(id, p); return 0;
+                }
+            }
+            if (!tracking_) { TRACKMOUSEEVENT t{sizeof(t), TME_LEAVE, h, 0}; TrackMouseEvent(&t); tracking_ = true; } const int hit = Hit(GET_X_LPARAM(l) * s, GET_Y_LPARAM(l) * s); if (hit != hover_) Interact(hit, pressed_); return 0; }
         case WM_MOUSELEAVE: tracking_ = false; Interact(0, 0); return 0;
-        case WM_LBUTTONDOWN: { if (renaming_) SetFocus(h); /* a press elsewhere ends the in-place rename (blur commits) */ keyboard_ = false; const int hit = Hit(GET_X_LPARAM(l) * s, GET_Y_LPARAM(l) * s); if (hit == SearchHit) focus_ = SearchHit; if (hit) { SetCapture(h); Interact(hit, hit); } return 0; }
+        case WM_LBUTTONDOWN: { if (renaming_) SetFocus(h); /* a press elsewhere ends the in-place rename (blur commits) */ keyboard_ = false; pressAt_ = {GET_X_LPARAM(l), GET_Y_LPARAM(l)}; ClientToScreen(h, &pressAt_); const int hit = Hit(GET_X_LPARAM(l) * s, GET_Y_LPARAM(l) * s); if (hit == SearchHit) focus_ = SearchHit; if (hit) { SetCapture(h); Interact(hit, hit); } return 0; }
         case WM_LBUTTONUP: { const int hit = Hit(GET_X_LPARAM(l) * s, GET_Y_LPARAM(l) * s), was = pressed_; if (GetCapture() == h) ReleaseCapture(); Interact(hit, 0); if (was && was == hit) { if (IsRowPart(hit)) focus_ = RowHit(HitIndex(hit)); Activate(hit, false, (w & (MK_CONTROL | MK_SHIFT)) != 0); } return 0; }
         case WM_MBUTTONUP: { const int hit = Hit(GET_X_LPARAM(l) * s, GET_Y_LPARAM(l) * s); if (IsRowPart(hit) && HitPart(hit) == 0 && !rows_[HitIndex(hit)].folder && hooks_.open) hooks_.open(rows_[HitIndex(hit)].url, true); return 0; }
         case WM_RBUTTONDOWN: if (renaming_) SetFocus(h); return 0;
@@ -375,14 +398,20 @@ private:
     }
 public:
     bool holding_ = false; // a menu or the popover opened from the drawer: deactivation keeps it open
+    bool stayForTest = false; // QA only (--qa-drawer-stays, dev builds): an app that is not in the foreground keeps its drawer
     ULONGLONG hiddenAt = 0;
     ~Drawer() { Dispose(); }
-    void Dispose() { uia_.Detach(); chrome_.Dispose(); hwnd_ = nullptr; visible_ = false; }
+    void Dispose() {
+        // The window may outlive this object (a scope's end, the owner destroying it later): its messages
+        // then go to DefWindowProc, never to freed memory.
+        if (hwnd_) SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0);
+        uia_.Detach(); chrome_.Dispose(); hwnd_ = nullptr; visible_ = false;
+    }
     bool Create(HINSTANCE instance, HWND owner, const std::wstring& root, const Bookmarks::Store* store, Hooks hooks) {
         owner_ = owner; store_ = store; hooks_ = std::move(hooks); motion_.EnablePolish(); chrome_.SetMotion(&motion_); chrome_.textCacheLimit = 1024;
         WNDCLASSW wc{}; wc.lpfnWndProc = Proc; wc.hInstance = instance; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = L"LisiereBookmarksDrawer";
         RegisterClassW(&wc);
-        CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, TR(bookmarks_title), WS_POPUP, 0, 0, Px(Layout::width), Px(400), owner, nullptr, instance, this);
+        CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, TR(bookmarks_title), WS_POPUP | WS_CLIPCHILDREN, 0, 0, Px(Layout::width), Px(400), owner, nullptr, instance, this);
         if (!hwnd_) return false;
         NativeUI::ConfigureShadowlessPopup(hwnd_); // DWMWCP_DONOTROUND, no shadow: the region shapes it
         Accessibility::Host host; host.window = hwnd_;
@@ -453,6 +482,33 @@ public:
     Bookmarks::Id Renaming() const { return renaming_; }
     void Changed() { if (!hwnd_ || !visible_) return; Rebuild(); scroll_.Snap(std::clamp(scroll_.Target(), 0.f, MaxScroll())); Invalidate(); if (uia_.Listening()) uia_.ChildrenChanged(ListKey); }
     // Keeps a row focused (after a move or an edit).
+    // ---- Drop target for the owner's drag controller (src/bookmark-drag.h) ----------------------------------------
+    // The place under `screen` for `dragged`, or invalid (outside the list, a search is active: no tree order there).
+    // Near the list's top/bottom edge it scrolls a step per pointer move (no timer at rest).
+    BookmarkDrag::ListDrop DropAt(POINT screen, Bookmarks::Id dragged) {
+        BookmarkDrag::ListDrop none; if (!hwnd_ || !visible_ || !store_ || !query_.empty()) return none;
+        RECT wr{}; GetWindowRect(hwnd_, &wr); if (!PtInRect(&wr, screen)) return none;
+        POINT p = screen; ScreenToClient(hwnd_, &p); const float k = 96.f / Dpi(), x = p.x * k, y = p.y * k; (void)x;
+        if (y < HistoryView::Layout::viewTop) return none;
+        const auto now = Motion::Now(); const float h = Height();
+        if (y < HistoryView::Layout::viewTop + 24 || y > h - 24) {
+            const float step = y < HistoryView::Layout::viewTop + 24 ? -Panel::pitch / 2 : Panel::pitch / 2;
+            const float to = std::clamp(scroll_.Target() + step, 0.f, MaxScroll()); if (to != scroll_.Target()) { scroll_.Snap(to); Invalidate(); }
+        }
+        const float scroll = scroll_.Value(now);
+        std::vector<BookmarkDrag::Row> rows; rows.reserve(rows_.size());
+        for (const Row& r : rows_) rows.push_back({r.id, r.level, r.folder, r.open});
+        for (int i = 0; i < static_cast<int>(rows_.size()); ++i) {
+            const float top = RowTop(i, scroll) - (Panel::pitch - Panel::tile) / 2;
+            if (y >= top && y < top + Panel::pitch) return BookmarkDrag::ListTarget(*store_, dragged, rows, i, (y - top) / Panel::pitch);
+        }
+        if (!rows_.empty() && y >= RowTop(static_cast<int>(rows_.size()) - 1, scroll)) {   // below the last row: end of the last root shown
+            const Bookmarks::Id root = store_->Find(Bookmarks::OtherRoot)->children.empty() ? Bookmarks::BarRoot : Bookmarks::OtherRoot;
+            BookmarkDrag::ListDrop r; if (BookmarkDrag::Accepts(*store_, dragged, root)) { r.drop = {root, Bookmarks::End, true}; r.row = static_cast<int>(rows_.size()) - 1; r.mark = BookmarkDrag::Mark::After; } return r;
+        }
+        return none;
+    }
+    void SetDropMarker(int row, BookmarkDrag::Mark mark) { if (row == dropRow_ && mark == dropMark_) return; dropRow_ = row; dropMark_ = mark; Invalidate(); }
     void FocusBookmark(Bookmarks::Id id) { for (int i = 0; i < static_cast<int>(rows_.size()); ++i) if (rows_[i].id == id) { keyboard_ = true; SetFocusHit(RowHit(i)); return; } }
     Motion::Wake NextWake(Motion::Time now) const {
         if (!visible_) return {};

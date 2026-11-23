@@ -5,7 +5,7 @@
 #endif   /* otherwise src/version-info.rc falls back to 0.2.0 */
 #include "app-icon.rc"
 1 24 "src/browser.manifest"
-#define VI_DESCRIPTION "browser"
+#define VI_DESCRIPTION "Browser"
 #define VI_INTERNAL "browser"
 #define VI_ORIGINAL "browser.exe"
 #include "version-info.rc"

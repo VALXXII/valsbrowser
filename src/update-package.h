@@ -103,8 +103,9 @@ bool RemoveTree(const std::wstring& path);  // never follows reparse points
 // open files just written into `from`, and NTFS refuses to rename a directory while any file under it is open:
 // ERROR_ACCESS_DENIED / ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION are retried until `timeoutMs`, any other
 // error fails at once. On failure nothing moved and GetLastError() is the last rename error. `attempts` (optional)
-// receives the number of rename calls made.
-bool MoveDirectory(const std::wstring& from, const std::wstring& to, unsigned long timeoutMs, int* attempts = nullptr);
+// receives the number of rename calls made. `cancel` (optional) ends the retries at once when set.
+bool MoveDirectory(const std::wstring& from, const std::wstring& to, unsigned long timeoutMs, int* attempts = nullptr,
+                   const std::atomic<bool>* cancel = nullptr);
 bool IsUnder(const std::wstring& child, const std::wstring& root);  // lexical, case-insensitive, normalized
 std::wstring FinalPath(const std::wstring& path);  // GetFinalPathNameByHandle without \\?\ prefix, "" on failure
 }  // namespace UpdatePackage

@@ -200,10 +200,12 @@ class Staging(unittest.TestCase):
             (app / 'ui-language.tmp4242').write_text('browser-ui-language 1\n')         # an interrupted atomic write
             (app / 'bookmark-imports').write_text('browser-bookmark-imports 1\nchromium:Chrome/Default\t5\t1\n')   # import folder identities
             (app / 'bookmark-imports.tmp4242').write_text('browser-bookmark-imports 1\n')                              # an interrupted atomic write
+            (app / 'release-notes').write_text('browser-release-notes 1\nseen=canary-notes\n')   # « Nouveautés » read state
+            (app / 'release-notes.tmp4242').write_text('browser-release-notes 1\n')              # an interrupted atomic write
             before = canary(app)
             files = K.stage(app, Path(tmp) / 'stage')
             self.assertEqual(canary(app), before)
-            self.assertFalse(any('profile' in f or f in ('session', 'prototype.log') or f.startswith(('ui-language', 'bookmark-imports')) for f in files))
+            self.assertFalse(any('profile' in f or f in ('session', 'prototype.log') or f.startswith(('ui-language', 'bookmark-imports', 'release-notes')) for f in files))
             self.assertIn('assets/fonts/a.ttf', files)
             self.assertFalse((Path(tmp) / 'stage/profile').exists())
 
@@ -995,6 +997,13 @@ class Workflow(unittest.TestCase):
         self.assertIn('cancel-in-progress: true', text)
         self.assertIn("vars.UPDATES_PUBLISH_ENABLED == 'true'", text)
         self.assertIn('secrets.UPDATES_RELEASE_TOKEN', text)
+        # SEC-03: the token comes from the main-only "release" environment, only in the publish job's last step,
+        # and no job output is pasted into a shell script.
+        publish = text[text.index('\n  publish:'):]
+        self.assertIn('environment:\n      name: release', publish)
+        self.assertEqual(text.count('secrets.'), 1)
+        self.assertGreater(text.index('secrets.UPDATES_RELEASE_TOKEN'), text.rindex('- name:'))
+        self.assertNotRegex(text, r'run:[^\n]*\$\{\{')
         self.assertNotIn('GITHUB_TOKEN }}', text)
         self.assertNotRegex(text, r'gh[pousr]_[A-Za-z0-9]{20,}')
         self.assertNotIn('ExecutionPolicy', text)

@@ -13,9 +13,16 @@ if hashlib.sha256(archive.read_bytes()).hexdigest() != SHA256:
 if not source.exists():
     with zipfile.ZipFile(archive) as z: z.extractall(ROOT / 'deps')
 packages = ROOT / 'tools/lottie-build'
+# Build tools pinned by hash, like every other input of the shipped binaries (audit SEC-16): wheels only, no dependencies.
+REQUIREMENTS = '''meson==1.9.1 --hash=sha256:f824ab770c041a202f532f69e114c971918ed2daff7ea56583d80642564598d0
+ninja==1.13.0 --hash=sha256:fb8ee8719f8af47fed145cced4a85f0755dd55d45b2bddaf7431fa89803c5f3e --hash=sha256:3c0b40b1f0bba764644385319028650087b4c1b18cdfa6f45cb39a3669b81aa9 --hash=sha256:8cfbb80b4a53456ae8a39f90ae3d7a2129f45ea164f43fadfa15dc38c4aef1c9
+'''
 if not (packages / 'mesonbuild').exists() or not (packages / 'ninja').exists():
-    subprocess.run([sys.executable, '-m', 'pip', 'install', '--target', str(packages),
-                    'meson==1.9.1', 'ninja==1.13.0'], check=True)
+    requirements = ROOT / 'build/lottie-build-requirements.txt'
+    requirements.parent.mkdir(parents=True, exist_ok=True)
+    requirements.write_text(REQUIREMENTS, encoding='ascii')
+    subprocess.run([sys.executable, '-m', 'pip', 'install', '--target', str(packages), '--require-hashes',
+                    '--only-binary=:all:', '--no-deps', '-r', str(requirements)], check=True)
 env = os.environ.copy()
 env['PYTHONPATH'] = str(packages)
 env['PATH'] = str(packages / 'bin') + os.pathsep + env['PATH']

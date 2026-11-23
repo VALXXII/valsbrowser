@@ -839,6 +839,19 @@ void TestMoveDirectoryTransientHold() {
     CHECK(GetLastError() == ERROR_ACCESS_DENIED);
     CHECK(GetTickCount64() - start >= 500 && GetTickCount64() - start < 5000 && attempts > 1);
     CHECK(UP::PathExists(from + L"\\session") && !UP::PathExists(to));
+    // Cancelled while held (PERF-19: Cancel / window close never wait out the 15 s budget).
+    {
+        static std::atomic<bool> cancel{false};
+        cancel = false;
+        HANDLE stop = CreateThread(nullptr, 0, [](LPVOID) -> DWORD { Sleep(300); cancel = true; return 0; }, nullptr, 0, nullptr);
+        CHECK(stop != nullptr);
+        start = GetTickCount64();
+        CHECK(!UP::MoveDirectory(from, to, 10000, &attempts, &cancel));
+        CHECK(GetTickCount64() - start < 2000 && attempts > 1);
+        WaitForSingleObject(stop, INFINITE);
+        CloseHandle(stop);
+        CHECK(UP::PathExists(from + L"\\session") && !UP::PathExists(to));
+    }
     // Released while retrying: the rename completes with the content intact.
     HANDLE release = CreateThread(nullptr, 0, [](LPVOID h) -> DWORD { Sleep(700); CloseHandle(HANDLE(h)); return 0; }, scanner, 0, nullptr);
     CHECK(release != nullptr);

@@ -24,6 +24,7 @@
 #include "debug-sandbox.h"
 #include "shortcuts-panel.h"
 #include "update-toast-motion.h" // FormatSize: the one validated progress format (toast, A6)
+#include "release-notes.h"     // « Nouveautés »: content, read state, automatic display rule
 #include <deque>
 #include <shellapi.h>
 #include <netlistmgr.h>
@@ -73,7 +74,7 @@ RECT OriginAnchorRect(){
 
 // ---------------------------------------------------------------------------------------
 // Components (created in CreateElementSurfaces, disposed before CoUninitialize).
-MD::Dialog modal; OP::Prompt originPrompt; NativeChrome::FindBar::Bar findBar;
+MD::Dialog modal; MD::Dialog notesCard; /* « Nouveautés »: its own bottom-right card, outside the modal queue (never holds a question back) */ OP::Prompt originPrompt; NativeChrome::FindBar::Bar findBar;
 NativeChrome::ContextToast::Toast contextToast; NativeChrome::FullscreenHint::Hint fullscreenHint;
 NativeChrome::PasswordDemo::Window passwordDemo; NativeChrome::ShortcutsPanel::Panel shortcutsPanel; NativeChrome::Tooltip::Tip sandboxTip; NativeChrome::Tooltip::Tip chromeTip;
 void RequestElementFrame(){ScheduleMotion(NativeChrome::Motion::Now());}
@@ -122,10 +123,15 @@ void ModalTabChanged(){
 // ---------------------------------------------------------------------------------------
 // JavaScript dialogs (A2/A3/A4): ICoreWebView2::ScriptDialogOpening with the engine's
 // default dialogs disabled (Settings::put_AreDefaultScriptDialogsEnabled(FALSE)).
-std::set<unsigned> scriptDialogsBlocked; // tab serials whose page asked to stop dialogs (A2 checkbox)
-// Dialogs already shown by the current document of a tab: from the second one the A2 « Empêcher ce
-// site d'ouvrir d'autres dialogues » check is offered. Both reset when the tab navigates.
-std::map<unsigned,int> scriptDialogCount;
+// Dialogs already shown by a site in a tab: from the second one the A2 « Empêcher ce site d'ouvrir d'autres
+// dialogues » check is offered, and a checked block holds. SEC-25: kept per tab AND origin, so a reload or another
+// page of the same site keeps them (alert(); location.reload() cannot dodge the check); another origin starts over.
+struct ScriptDialogState{int count=0;bool blocked=false;};
+// Per tab, then per origin (review of SEC-25): alternating dialogs with a frame of another origin cannot reset a block.
+// Capped per tab (64 origins: an unblocked origin's state goes first).
+std::map<unsigned,std::map<std::wstring,ScriptDialogState>> scriptDialogs;
+// SEC-25: a page's dialog text is laid out on the UI thread: capped (a whole surrogate pair or nothing).
+std::wstring CapDialogText(std::wstring s,size_t limit){if(s.size()>limit){s.resize(limit);if(!s.empty()&&s.back()>=0xD800&&s.back()<=0xDBFF)s.pop_back();}return s;}
 HRESULT ScriptDialogOpening(const std::shared_ptr<Tab>& t,ICoreWebView2ScriptDialogOpeningEventArgs* a){
     if(!a)return S_OK;
     ICoreWebView2Deferral* raw=nullptr;if(FAILED(a->GetDeferral(&raw))||!raw)return S_OK; // no deferral: engine answers "cancel"
@@ -133,11 +139,12 @@ HRESULT ScriptDialogOpening(const std::shared_ptr<Tab>& t,ICoreWebView2ScriptDia
     if(halted||!t||t->closed)return S_OK; // guard completes: dialog cancelled
     COREWEBVIEW2_SCRIPT_DIALOG_KIND kind=COREWEBVIEW2_SCRIPT_DIALOG_KIND_ALERT;a->get_Kind(&kind);
     const std::wstring uri=TakeString([&]{LPWSTR s=nullptr;a->get_Uri(&s);return s;}());
-    const std::wstring message=TakeString([&]{LPWSTR s=nullptr;a->get_Message(&s);return s;}());
-    const std::wstring defaultText=TakeString([&]{LPWSTR s=nullptr;a->get_DefaultText(&s);return s;}());
-    if(kind!=COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD&&scriptDialogsBlocked.count(t->serial)){Log(L"DIALOG suppressed for "+OriginLabel(uri));return S_OK;}
+    const std::wstring message=CapDialogText(TakeString([&]{LPWSTR s=nullptr;a->get_Message(&s);return s;}()),10000);
+    const std::wstring defaultText=CapDialogText(TakeString([&]{LPWSTR s=nullptr;a->get_DefaultText(&s);return s;}()),2000);
+    const std::wstring site=OriginOf(uri);auto& perTab=scriptDialogs[t->serial];if(!perTab.count(site)&&perTab.size()>=64){for(auto it=perTab.begin();it!=perTab.end();++it)if(!it->second.blocked){perTab.erase(it);break;}}auto& dialogs=perTab[site];
+    if(kind!=COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD&&dialogs.blocked){Log(L"DIALOG suppressed for "+OriginLabel(uri));return S_OK;}
     const std::wstring origin=OriginLabel(uri);MD::Spec spec;
-    const bool repeated=kind!=COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD&&++scriptDialogCount[t->serial]>1;
+    const bool repeated=kind!=COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD&&++dialogs.count>1;
     switch(kind){
     case COREWEBVIEW2_SCRIPT_DIALOG_KIND_ALERT:spec=MD::AlertSpec(origin,message,repeated);break;
     case COREWEBVIEW2_SCRIPT_DIALOG_KIND_CONFIRM:spec=MD::ConfirmSpec(origin,message,repeated);break;
@@ -148,8 +155,8 @@ HRESULT ScriptDialogOpening(const std::shared_ptr<Tab>& t,ICoreWebView2ScriptDia
     Log(L"DIALOG kind="+std::to_wstring(kind)+L" "+origin);
     spec.modality=MD::Spec::Modality::Pointer; // the page's own input is not visible here: ring on Tab / arrows only
     ComRef<ICoreWebView2ScriptDialogOpeningEventArgs> args(a);const unsigned serial=t->serial;
-    AskModal(std::move(spec),t,[args,deferral,kind,serial](const MD::Result& r){
-        if(r.checked&&kind!=COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD)scriptDialogsBlocked.insert(serial);
+    AskModal(std::move(spec),t,[args,deferral,kind,serial,site](const MD::Result& r){
+        if(r.checked&&kind!=COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD){auto it=scriptDialogs.find(serial);if(it!=scriptDialogs.end()){auto o=it->second.find(site);if(o!=it->second.end())o->second.blocked=true;}}
         const bool accept=r.button==MD::AcceptButton;
         if(accept){if(kind==COREWEBVIEW2_SCRIPT_DIALOG_KIND_PROMPT)args->put_ResultText(r.values.empty()?L"":r.values[0].c_str());args->Accept();}
         Log(std::wstring(L"DIALOG ")+(accept?L"accepted":L"cancelled"));
@@ -343,7 +350,6 @@ void ElementsNavigationStarting(const std::shared_ptr<Tab>& t){
     for(auto it=promptQueue.begin();it!=promptQueue.end();){auto q=it->tab.lock();if((it->spec.kind==OP::Kind::Permission||it->spec.kind==OP::Kind::ClientCertificate)&&(!q||q==t)){auto job=std::move(*it);it=promptQueue.erase(it);OP::Result none;for(auto& a:job.answers)a(none);}else ++it;}
     if(promptOpen&&(promptActive.spec.kind==OP::Kind::Permission||promptActive.spec.kind==OP::Kind::SiteStatus||promptActive.spec.kind==OP::Kind::ClientCertificate)){auto q=promptActive.tab.lock();if(!q||q==t){Log(L"PERMISSION navigation: popover closed");originPrompt.Abort();}}
     if(siteStates.erase(t->serial))Log(L"PERMISSION navigation: site state cleared");
-    scriptDialogCount.erase(t->serial);if(scriptDialogsBlocked.erase(t->serial))Log(L"DIALOG block lifted by navigation");
     if(t==Active())RefreshRequestChip();
 }
 // After a successful top-level navigation: the engine's saved decisions for this origin (the same
@@ -397,6 +403,7 @@ HRESULT PermissionRequested(const std::shared_ptr<Tab>& t,ICoreWebView2Permissio
     const std::wstring uri=TakeString([&]{LPWSTR s=nullptr;a->get_Uri(&s);return s;}());
     OP::Spec spec;spec.kind=OP::Kind::Permission;spec.origin=OriginLabel(uri);spec.permissions={(int)kind};spec.userInitiated=user!=FALSE;
     const std::wstring key=OriginOf(uri);Log(L"PERMISSION request kind="+std::to_wstring(kind)+L" "+key);
+    if(kind==COREWEBVIEW2_PERMISSION_KIND_MULTIPLE_AUTOMATIC_DOWNLOADS)DownloadNavigationAsked(t,uri);   // the navigation that waits for it is a download
     // Persistent storage only keeps the site's own data from automatic eviction when the disk is
     // short: Chrome and Edge never ask about it, and x.com asked on every visit. User decision
     // 2026-11-17: allowed silently, never saved in the profile (no lasting « autorisé » chip).
@@ -510,6 +517,9 @@ HRESULT BasicAuthenticationRequested(const std::shared_ptr<Tab>& t,ICoreWebView2
 bool ExternalSchemeRefused(const std::wstring& uri){
     const auto colon=uri.find(L':');if(colon==std::wstring::npos||colon==0)return true;
     std::wstring s=uri.substr(0,colon);std::transform(s.begin(),s.end(),s.begin(),towlower);
+    // SEC-22: a scheme is [a-z][a-z0-9+.-]+ (two characters at least: "c:" is a drive, not an application).
+    if(s.size()<2||s[0]<L'a'||s[0]>L'z')return true;
+    for(wchar_t c:s)if(!((c>=L'a'&&c<=L'z')||(c>=L'0'&&c<=L'9')||c==L'+'||c==L'.'||c==L'-'))return true;
     for(auto bad:{L"file",L"javascript",L"vbscript",L"data",L"shell",L"ms-msdt",L"search-ms",L"search",L"ms-officecmd",L"ms-cxh",L"ms-cxh-full",L"res",L"mk",L"its",L"ms-its",L"hcp",L"jar"})if(s==bad)return true;
     return false;
 }
@@ -671,8 +681,10 @@ void ApplyFullscreen(bool wasFull){
         // field goes to the page (a page that asked for fullscreen already has it).
         hover=pressed=0;if(tooltip)SendMessageW(tooltip,TTM_POP,0,0);if(editing||keyboardFocus||GetFocus()==address)FocusPage();
         if(IsZoomed(window))ShowWindow(window,SW_RESTORE);
+        // Without its caption style while it covers the monitor, so Windows treats it as fullscreen (taskbar below).
+        SetWindowLongPtrW(window,GWL_STYLE,GetWindowLongPtrW(window,GWL_STYLE)&~static_cast<LONG_PTR>(WS_CAPTION));
         const RECT m=MonitorScreenRect();SetWindowPos(window,HWND_TOP,m.left,m.top,m.right-m.left,m.bottom-m.top,SWP_FRAMECHANGED|SWP_NOOWNERZORDER);}
-    else if(!full&&wasFull){if(fullscreen.saved)SetWindowPlacement(window,&fullscreen.placement);SetWindowPos(window,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_FRAMECHANGED);}
+    else if(!full&&wasFull){SetWindowLongPtrW(window,GWL_STYLE,GetWindowLongPtrW(window,GWL_STYLE)|WS_CAPTION);if(fullscreen.saved)SetWindowPlacement(window,&fullscreen.placement);SetWindowPos(window,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_FRAMECHANGED);}
     Layout();
     // C7: the pill names the real origin of the page that took the screen (« Cette page » only
     // without one). No keyboard-lock variant here: WebView2 exposes no keyboard-lock signal.
@@ -840,6 +852,7 @@ std::wstring ReleaseNotesUrl(const std::wstring& version){
 bool AboutOpen(){return modalOpen&&modalActive.spec.kind==MD::Kind::About&&!modalActive.spec.demo;}
 // The update engine notified: an open « À propos » shows the new state at once.
 void RefreshAboutStatus(){if(AboutOpen())modal.SetStatus(AboutStatusNow());}
+void ShowReleaseNotes(bool mini,std::function<void()> shown=nullptr,bool activate=true);
 void ShowAboutDialog(int demoState){
     auto spec=MD::AboutSpec(RunningVersion(),demoState<0?MD::AboutUpToDate:demoState);
     if(demoState>=0)spec.demo=true;
@@ -855,12 +868,47 @@ void ShowAboutDialog(int demoState){
     const bool demo=demoState>=0;
     AskModal(std::move(spec),nullptr,[demo](const MD::Result& r){
         if(r.button==MD::AboutLicensesLink){std::wstring dir=base;ShellExecuteW(window,L"open",dir.c_str(),nullptr,nullptr,SW_SHOWNORMAL);}
-        else if(r.button==MD::AboutNotesLink){const auto url=ReleaseNotesUrl(RunningVersion());Log(L"ABOUT release notes "+url);Defer([url]{NewTab(url,-1,L"");});}
+        else if(r.button==MD::AboutNotesLink){Log(L"ABOUT release notes: Nouveautés (full)");Defer([]{ShowReleaseNotes(false,nullptr,true);});}
         else if(r.button==MD::AboutReportLink){Log(L"ABOUT report a problem");Defer([]{NewTab(IssuesUrl,-1,L"");});}
         else if(!demo&&r.button==MD::AboutRestartButton)AboutUpdateAction(MD::AboutRestartButton);
     });
 }
 void ShowAboutDialog(){ShowAboutDialog(-1);}
+// « Nouveautés » (src/release-notes.h, Paper p-L-0 142E-0 / 144O-0): the build's own notes, never fetched.
+// `mini`: the automatic Mini after an update (« Voir tout » expands it in place); else the Full view.
+// `activate`: take the keyboard (opened by hand from À propos); the automatic card leaves it to the page.
+// `shown` runs only once the card is really on screen. One card at a time: a new request replaces it.
+std::wstring ReleaseNotesLogo(){return base+L"\\assets\\lottie\\logo-spin.json";}
+void ShowReleaseNotes(bool mini,std::function<void()> shown,bool activate){
+    std::vector<MD::NoteSection> sections;const auto notes=ReleaseNotes::Current();
+    for(const auto& s:notes)sections.push_back({s.kind==ReleaseNotes::Kind::Fixed,s.title,s.items});
+    auto spec=MD::ReleaseNotesSpec(std::move(sections),ReleaseNotes::Spoken(notes),ReleaseNotesLogo(),mini);
+    spec.onShown=[mini,shown]{Log(std::wstring(L"RELEASE NOTES shown ")+(mini?L"mini":L"full"));if(shown)shown();};
+    spec.onButton=[](int id){if(id==MD::Dialog::NotesExpandHit)Log(L"RELEASE NOTES expanded (Voir tout)");};
+    spec.activate=activate;
+    if(halted||!notesCard.Window())return;
+    if(notesCard.Visible())notesCard.Abort();
+    if(!notesCard.Show(std::move(spec),PageScreenRect(),[](const MD::Result&){Log(L"RELEASE NOTES closed");}))Log(L"RELEASE NOTES show failed");
+}
+// Automatic Mini after a successful update, at most once per notes content (ReleaseNotes::Decide).
+// `startupInstalled`: the update engine reported Installed when it started (the helper-launched process).
+// `dataRoot`: the GLOBAL data root (profileRoot, else dataDir) where the read state lives; never a private window's.
+// True when the card will open: it then replaces the « Mise à jour installée » toast.
+bool ReleaseNotesAtStartup(bool startupInstalled,const std::wstring& installRoot,const std::wstring& version,const std::wstring& dataRoot){
+    if(privateWindow||smoke||dataRoot.empty())return false;
+    std::string previousBytes;ReleaseNotes::Previous previous;
+    if(startupInstalled){if(ProfileStore::ReadAll(installRoot+L"\\previous",previousBytes))previous=ReleaseNotes::ParsePrevious(previousBytes);else previous.kind=ReleaseNotes::Previous::Kind::Invalid;}
+    const auto state=startupInstalled?ReleaseNotes::Load(dataRoot):ReleaseNotes::State{};
+    std::string current;for(wchar_t c:version)current.push_back(c<128?static_cast<char>(c):'?');
+    const auto decision=ReleaseNotes::Decide(startupInstalled,previous,current,state);
+    if(!startupInstalled)return false; // ordinary launch, other window, dev build: nothing read, nothing logged
+    {const char* d=ReleaseNotes::DecisionText(decision);const char* st=ReleaseNotes::StatusText(state.status);
+     Log(L"RELEASE NOTES startup: "+std::wstring(d,d+std::strlen(d))+L" (state "+std::wstring(st,st+std::strlen(st))+L")");}
+    if(decision==ReleaseNotes::Decision::Baseline){const bool ok=ReleaseNotes::MarkSeen(dataRoot,ReleaseNotes::NotesId);Log(ok?L"RELEASE NOTES baseline recorded (first install)":L"RELEASE NOTES baseline NOT recorded");return false;}
+    if(decision!=ReleaseNotes::Decision::Show)return false;
+    Defer([dataRoot]{ShowReleaseNotes(true,[dataRoot]{const bool ok=ReleaseNotes::MarkSeen(dataRoot,ReleaseNotes::NotesId);Log(ok?L"RELEASE NOTES seen recorded":L"RELEASE NOTES seen NOT recorded (kept as it was)");},false);});
+    return true;
+}
 void ShowPrivateDialog(bool future){AskModal(MD::PrivateSpec(future),nullptr,[future](const MD::Result& r){if(r.button==MD::PrivateClearDataButton)AskClearBrowsingData(future,nullptr);});}
 
 // ---------------------------------------------------------------------------------------
@@ -1160,7 +1208,7 @@ HRESULT PageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceive
     else{CoTaskMemFree(raw);raw=nullptr;if(SUCCEEDED(a->get_WebMessageAsJson(&raw))&&raw)message=TakeString(raw);}
     if(message.size()>4096){Wipe(message);return S_OK;}
     struct WipeAtEnd{std::wstring& m;~WipeAtEnd(){Wipe(m);}} wipeAll{message};   // F6: a page message may carry a submitted password
-    if(AudioPageMessage(t,message))return S_OK; // per-site audio reports (audio-integration.h)
+    if(AudioPageMessage(t,message,source))return S_OK; // per-site audio reports (audio-integration.h)
     if(ScrollbarMessageFrom(t,message))return S_OK; // overlay scrollbar metrics (viewport-scrollbar-host.h)
     if(VaultCapture(t,source,message))return S_OK;
     if(ErrorPageMessage(t,source,message))return S_OK;
@@ -1211,7 +1259,7 @@ void ElementsTabClosed(const std::shared_ptr<Tab>& t){
     AbortTabModals(t);AbortTabPrompts(t);
     if(findSession.tab.lock()==t){if(findBar.Visible())findBar.Hide();FindDetach();}
     if(t->pageFullscreen){t->pageFullscreen=false;if(fullscreen.page){const bool was=InFullscreen();fullscreen.page=false;ApplyFullscreen(was);}}
-    scriptDialogsBlocked.erase(t->serial);scriptDialogCount.erase(t->serial);
+    scriptDialogs.erase(t->serial);
     siteStates.erase(t->serial);
 }
 // Keys pressed while one of our dialogs, prompts or the find bar has focus: their fields keep
@@ -1224,22 +1272,23 @@ bool ElementSurfaceKey(UINT key,bool ctrl,bool alt,bool shift,int& cmd){
         if(!ctrl&&!alt&&key==VK_F3){cmd=shift?FindPreviousCommand:FindNextCommand;return true;}
         return true;
     }
-    return InWindow(shortcutsPanel.Window(),f)||InWindow(modal.Window(),f)||InWindow(originPrompt.Window(),f)||InWindow(passwordDemo.Window(),f)||InWindow(contextToast.Window(),f);
+    return InWindow(shortcutsPanel.Window(),f)||InWindow(modal.Window(),f)||InWindow(notesCard.Window(),f)||InWindow(originPrompt.Window(),f)||InWindow(passwordDemo.Window(),f)||InWindow(contextToast.Window(),f);
 }
 void ElementsTabChanged(){ModalTabChanged();PromptTabChanged();FindTabChanged();FullscreenTabChanged();RefreshRequestChip();}
 void RepositionElementSurfaces(){
     if(modal.Visible())modal.Reposition(PageScreenRect());
+    if(notesCard.Visible())notesCard.Reposition(PageScreenRect());
     if(originPrompt.Visible())originPrompt.Reposition(OriginAnchorRect());
     if(findBar.Visible())findBar.Reposition(PageScreenRect());
     if(contextToast.Visible())contextToast.Reposition(PageScreenRect());
     originPrompt.SetPageArea(PageScreenRect());
 }
-void ElementsReducedMotion(bool reduced){modal.SetReducedMotion(reduced);originPrompt.SetReducedMotion(reduced);passwordDemo.SetReducedMotion(reduced);findBar.SetReducedMotion(reduced);contextToast.SetReducedMotion(reduced);fullscreenHint.SetReducedMotion(reduced);shortcutsPanel.SetReducedMotion(reduced);sandboxTip.SetReducedMotion(reduced);chromeTip.SetReducedMotion(reduced);}
+void ElementsReducedMotion(bool reduced){modal.SetReducedMotion(reduced);notesCard.SetReducedMotion(reduced);originPrompt.SetReducedMotion(reduced);passwordDemo.SetReducedMotion(reduced);findBar.SetReducedMotion(reduced);contextToast.SetReducedMotion(reduced);fullscreenHint.SetReducedMotion(reduced);shortcutsPanel.SetReducedMotion(reduced);sandboxTip.SetReducedMotion(reduced);chromeTip.SetReducedMotion(reduced);}
 NativeChrome::Motion::Wake ElementsNextWake(NativeChrome::Motion::Time now){
     using NativeChrome::Motion::Earlier;
-    return Earlier(ChipNextWake(now),Earlier(Earlier(Earlier(Earlier(modal.NextWake(now),originPrompt.NextWake(now)),Earlier(findBar.NextWake(now),contextToast.NextWake(now))),fullscreenHint.NextWake(now)),Earlier(Earlier(shortcutsPanel.NextWake(now),Earlier(sandboxTip.NextWake(now),chromeTip.NextWake(now))),passwordDemo.NextWake(now))));
+    return Earlier(ChipNextWake(now),Earlier(Earlier(Earlier(Earlier(Earlier(modal.NextWake(now),notesCard.NextWake(now)),originPrompt.NextWake(now)),Earlier(findBar.NextWake(now),contextToast.NextWake(now))),fullscreenHint.NextWake(now)),Earlier(Earlier(shortcutsPanel.NextWake(now),Earlier(sandboxTip.NextWake(now),chromeTip.NextWake(now))),passwordDemo.NextWake(now))));
 }
-void ElementsFrame(NativeChrome::Motion::Time now){ChipFrame(now);modal.Frame(now);originPrompt.Frame(now);passwordDemo.Frame(now);shortcutsPanel.Frame(now);sandboxTip.Frame(now);chromeTip.Frame(now);findBar.Frame(now);contextToast.Frame(now);fullscreenHint.Frame(now);}
+void ElementsFrame(NativeChrome::Motion::Time now){ChipFrame(now);modal.Frame(now);notesCard.Frame(now);originPrompt.Frame(now);passwordDemo.Frame(now);shortcutsPanel.Frame(now);sandboxTip.Frame(now);chromeTip.Frame(now);findBar.Frame(now);contextToast.Frame(now);fullscreenHint.Frame(now);}
 // ---------------------------------------------------------------------------------------
 // B07 real path: the engine interrupted a download for safety (ICoreWebView2DownloadOperation
 // InterruptReason FILE_MALICIOUS / FILE_SECURITY_CHECK_FAILED / FILE_BLOCKED_BY_POLICY; SmartScreen
@@ -1295,12 +1344,13 @@ void CreateElementSurfaces(){
     const std::wstring root=base;
     // The Période select (Effacer les données) drops the shared shadowless menu under its field.
     MD::Dialog::Hooks mh;mh.wake=[]{RequestElementFrame();};mh.keyboard=[]{return keyboardModality;};
-    mh.choose=[](const std::vector<std::wstring>& options,int current,RECT anchor,bool keyboard){return MD::ChooseFromMenu(contextMenu,options,current,anchor,keyboard,motion.ReducedMotion());};
+    mh.choose=[](const MD::Select& select,RECT anchor,bool keyboard){return MD::ChooseFromMenu(contextMenu,select,anchor,keyboard,motion.ReducedMotion());};
     mh.dismiss=[]{contextMenu.Cancel();};
+    {MD::Dialog::Hooks nh;nh.wake=mh.wake;nh.keyboard=mh.keyboard;if(!notesCard.Create(instance,window,root,std::move(nh)))Log(L"RELEASE NOTES card unavailable");}
     if(!modal.Create(instance,window,root,std::move(mh)))Log(L"MODAL unavailable");
     OP::Prompt::Hooks ph;ph.wake=[]{RequestElementFrame();};ph.keyboard=[]{return keyboardModality;};
     // B07 « Plus d'options » and the B08 selects drop the same shared, shadowless menu.
-    ph.choose=[](const std::vector<std::wstring>& options,int current,RECT anchor,bool keyboard){return MD::ChooseFromMenu(contextMenu,options,current,anchor,keyboard,motion.ReducedMotion());};ph.dismiss=[]{contextMenu.Cancel();};
+    ph.choose=[](const MD::Select& select,RECT anchor,bool keyboard){return MD::ChooseFromMenu(contextMenu,select,anchor,keyboard,motion.ReducedMotion());};ph.dismiss=[]{contextMenu.Cancel();};
     ph.menu=[](const std::vector<NativeChrome::ContextMenu::Item>& items,RECT anchor,bool keyboard){return contextMenu.Track(items,{anchor.right,anchor.bottom},&anchor,keyboard,motion.ReducedMotion(),true);};
     ph.download=[](OP::Prompt::Command c,const OP::Spec& s){PromptDownloadCommand(c,s);};
     ph.revoke=[](int kind,const OP::Spec& s){RevokeSitePermission(kind,s);};
@@ -1330,7 +1380,7 @@ void DisposeElementSurfaces(){
     if(promptOpen)originPrompt.Abort();
     siteStates.clear();chipMotion=ChipMotion{};
     FindDetach();
-    modal.Dispose();originPrompt.Dispose();findBar.Dispose();contextToast.Dispose();fullscreenHint.Dispose();passwordDemo.Dispose();shortcutsPanel.Dispose();sandboxTip.Dispose();chromeTip.Dispose();
+    notesCard.Dispose();modal.Dispose();originPrompt.Dispose();findBar.Dispose();contextToast.Dispose();fullscreenHint.Dispose();passwordDemo.Dispose();shortcutsPanel.Dispose();sandboxTip.Dispose();chromeTip.Dispose();
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1502,7 +1552,7 @@ void ChromeTipHover(int x,int y){
     for(auto& r:chrome.regions){
         if(!r.tip||!*r.tip||fx<r.rect.left||fx>=r.rect.right||fy<r.rect.top||fy>=r.rect.bottom)continue;
         RECT target{S(r.rect.left),S(r.rect.top),S(r.rect.right),S(r.rect.bottom)};MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&target),2);
-        RECT bounds=WindowScreenRect();chromeTip.Hover(TipContent(r.tip),target,&bounds);return;
+        RECT bounds=NativeChrome::TooltipPlacement::VisibleRect(window);chromeTip.Hover(TipContent(r.tip),target,&bounds);return;
     }
     chromeTip.Hide();
 }

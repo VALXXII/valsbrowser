@@ -1,4 +1,5 @@
 ﻿#include "../src/session.h"
+#include "../src/address.h"
 #include <cassert>
 #include <sstream>
 int main(){
@@ -24,4 +25,9 @@ int main(){
                          "browser-session-2\n0\n2\n\"a\"\n\"b\"\n1\n0 1 0 1\n",       // a group of one
                          "browser-session-2\n0\n2\n\"a\"\n\"b\"\n1\n0 2 0 -1 1 1\n"}){ // negative weight
         std::istringstream input(bad);auto partial=Read(input);assert(partial.urls.size()==2&&partial.groups.empty());}
+    // SEC-21: a saved address the engine refuses is restored as a new tab (RestoreSession's filter), not replayed into
+    // Navigate at every start; the other tabs and the tab count (so the split groups) are kept.
+    {State saved{{"http://","https://ok.test/","https://a b/","https://1.2.3.4.5/",""},1,{}};std::stringstream file;Write(file,saved);auto back=Read(file);
+     std::vector<std::wstring> restored;for(const auto& url:back.urls){std::wstring uri;NativeChrome::Downloads::FromUtf8(url,uri);if(!AddressBar::Navigable(uri))uri.clear();restored.push_back(uri);}
+     assert(restored==std::vector<std::wstring>({L"",L"https://ok.test/",L"",L"",L""}));}
 }

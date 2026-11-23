@@ -259,7 +259,12 @@ public:
                 return r.error = "request failed", r;
             }
             DWORD disable = WINHTTP_DISABLE_REDIRECTS | WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_AUTHENTICATION;
-            WinHttpSetOption(request, WINHTTP_OPTION_DISABLE_FEATURE, &disable, sizeof(disable));
+            if (!WinHttpSetOption(request, WINHTTP_OPTION_DISABLE_FEATURE, &disable, sizeof(disable))) {
+                // Fail closed (as src/webview2-install.h does): never fetch with redirects, cookies or auth on.
+                WinHttpCloseHandle(request);
+                WinHttpCloseHandle(connect);
+                return r.error = "request options failed", r;
+            }
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 if (aborted_ || cancel.load()) {
@@ -470,6 +475,8 @@ Engine::State Engine::LoadState() const {
     return s;
 }
 void Engine::SaveState(const State& s) const {
+    cachedNextCheck_ = s.nextCheck;
+    cachedAt_ = Ticks() + 1;
     if (!EnsureDir(Updates())) return;
     UP::AtomicWriteFile(Updates() + L"\\state", "browser-update-state 1\nnext-check " + std::to_string(s.nextCheck) +
                                                     "\nfailures " + std::to_string(s.failures) + "\nnotified " +
@@ -599,8 +606,16 @@ bool Engine::AutoCheck() {
 
 DWORD Engine::AutoCheckDelayMs() const {
     if (!enabled_ || shutdown_ || !config_.automaticCheck) return 0;
-    State state = LoadState();
-    const std::int64_t wait = state.nextCheck - Now();
+    std::int64_t nextCheck;
+    const std::uint64_t at = cachedAt_.load(), ticks = Ticks();
+    if (at && ticks + 1 - at < 60 * 1000) {
+        nextCheck = cachedNextCheck_.load();
+    } else {  // first call, or another window may have checked since: read the shared file again
+        nextCheck = LoadState().nextCheck;
+        cachedNextCheck_ = nextCheck;
+        cachedAt_ = ticks + 1;
+    }
+    const std::int64_t wait = nextCheck - Now();
     if (wait <= 0 || wait > FailureMax) return AutoCheckMinMs;  // due (or corrupt): retry no sooner than the floor
     const std::int64_t ms = wait * 1000;
     return DWORD(std::min<std::int64_t>(AutoCheckMaxMs, std::max<std::int64_t>(AutoCheckMinMs, ms)));
@@ -801,8 +816,9 @@ void Engine::RunDownload(std::uint64_t gen, UP::Manifest m) {
         return fail(TR(update_error_locked));
     }
     // A scanner/indexer may still hold a file just extracted into `work`: the rename is retried briefly.
-    if (!UP::MoveDirectory(work, target, 15 * 1000)) {
+    if (!UP::MoveDirectory(work, target, 15 * 1000, nullptr, &cancel_)) {  // cancel / close never wait out the retries (PERF-19)
         UP::RemoveTree(work);
+        if (cancel_) return;
         return fail(TR(update_error_prepare));
     }
     {
@@ -919,6 +935,15 @@ ActionResult Engine::Perform(Action action) {
     std::string nonce = RandomHex(16);
     std::wstring helperDir = Updates() + L"\\helper";
     std::wstring helper = helperDir + L"\\update-helper-" + W(nonce) + L".exe";
+    {   // Copies left by earlier installs (SEC-16): a finished helper cannot delete its own file. One still running is locked and stays.
+        WIN32_FIND_DATAW fd;
+        HANDLE f = UP::IsReparsePoint(helperDir) ? INVALID_HANDLE_VALUE : FindFirstFileW((helperDir + L"\\update-helper-*.exe").c_str(), &fd);
+        if (f != INVALID_HANDLE_VALUE) {
+            do if (!(fd.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) DeleteFileW((helperDir + L"\\" + fd.cFileName).c_str());
+            while (FindNextFileW(f, &fd));
+            FindClose(f);
+        }
+    }
     if (!EnsureDir(helperDir) || !CopyFileW((stage + L"\\update-helper.exe").c_str(), helper.c_str(), TRUE))
         return failInstall(TR(update_error_launch_install));
     std::wstring exe = FullPath(config_.exePath);

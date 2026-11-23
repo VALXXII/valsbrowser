@@ -7,7 +7,7 @@
 #endif
 #include "app-icon.rc"
 1 24 "src/setup.manifest"
-#define VI_DESCRIPTION "browser setup"
+#define VI_DESCRIPTION "Browser Setup"
 #define VI_INTERNAL "browser-setup"
 #define VI_ORIGINAL "browser-setup.exe"
 #include "version-info.rc"

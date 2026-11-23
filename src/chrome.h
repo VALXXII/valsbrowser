@@ -28,7 +28,8 @@
 
 namespace NativeChrome {
 template<class T> void Drop(T*& p){if(p){p->Release();p=nullptr;}}
-const wchar_t* FontFiles[]={L"InterDisplay-Regular.ttf",L"InterDisplay-Medium.ttf"};
+// SemiBold: the onboarding boards (Paper p-R-0) set their titles and buttons in weight 600.
+const wchar_t* FontFiles[]={L"InterDisplay-Regular.ttf",L"InterDisplay-Medium.ttf",L"InterDisplay-SemiBold.ttf"};
 struct FontEnumerator final:IDWriteFontFileEnumerator {
     LONG refs=1; IDWriteFactory* factory; std::wstring folder; int index=-1; IDWriteFontFile* file=nullptr;
     FontEnumerator(IDWriteFactory* f,std::wstring p):factory(f),folder(std::move(p)){factory->AddRef();}
@@ -70,8 +71,11 @@ class Chrome {
     // must not rebuild text formats/typography for unchanged labels. Bounded.
     struct TextKey{std::wstring value;float width,height,size,tracking;bool tabular,medium,keycap;
         bool operator<(const TextKey& o)const{return std::tie(value,width,height,size,tracking,tabular,medium,keycap)<std::tie(o.value,o.width,o.height,o.size,o.tracking,o.tabular,o.medium,o.keycap);}};
-    struct TextEntry{IDWriteTextLayout* layout=nullptr;TextMeasure measure;};
+    struct TextEntry{IDWriteTextLayout* layout=nullptr;TextMeasure measure;unsigned long long used=0;};
     std::map<TextKey,TextEntry> textCache;
+    // Paint() counts its passes: when the cache is full, only layouts the current pass has not used
+    // are evicted, so a pass that needs more than the limit never empties the cache under itself.
+    unsigned long long textPass=0,textEvictedPass=~0ull;
 public:
     // Present without blocking the UI thread on vblank (pacing comes from FrameClock)
     // and keep the back buffer so partial invalidation stays correct.
@@ -81,6 +85,7 @@ public:
     // every visible row so animation frames never rebuild layouts.
     size_t textCacheLimit=96;
     unsigned long long textLayoutsCreated=0;
+    unsigned long long faviconUploads=0; // site images uploaded as GPU bitmaps (tests measure re-uploads)
     void ClearTextCache(){for(auto& item:textCache)Drop(item.second.layout);textCache.clear();}
     Loading::Visual loading;
     bool navigationLoading=false;
@@ -261,7 +266,7 @@ public:
     // white 10 % inner outline so dark art keeps its edge on the dark canvas.
     bool DrawCover(const std::shared_ptr<const FaviconImage>& image,D2D1_RECT_F box,float radius){
         if(!image||!image->width||!image->height||!target||!factory)return false;
-        auto& bitmap=faviconBitmaps[image];if(!bitmap){auto properties=D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED));target->CreateBitmap(D2D1::SizeU(image->width,image->height),image->pixels.data(),image->stride,properties,&bitmap);}if(!bitmap)return false;
+        auto& bitmap=faviconBitmaps[image];if(!bitmap){++faviconUploads;auto properties=D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED));target->CreateBitmap(D2D1::SizeU(image->width,image->height),image->pixels.data(),image->stride,properties,&bitmap);}if(!bitmap)return false;
         const float bw=box.right-box.left,bh=box.bottom-box.top,iw=float(image->width),ih=float(image->height);
         const float k=std::max(bw/iw,bh/ih),sw=bw/k,sh=bh/k;const D2D1_RECT_F src{(iw-sw)/2,(ih-sh)/2,(iw+sw)/2,(ih+sh)/2};
         ID2D1RoundedRectangleGeometry* clip=nullptr;if(FAILED(factory->CreateRoundedRectangleGeometry(D2D1::RoundedRect(box,radius,radius),&clip)))return false;
@@ -328,16 +333,23 @@ public:
     }
     void ClearFaviconBitmaps(){for(auto& item:faviconBitmaps)Drop(item.second);faviconBitmaps.clear();}
     std::vector<bool> sleeping; // per tab (set with the favicons): suspended background tabs draw dimmed
-    void SetFavicons(std::vector<std::shared_ptr<const FaviconImage>> images){favicons=std::move(images);for(auto it=faviconBitmaps.begin();it!=faviconBitmaps.end();){if(std::find(favicons.begin(),favicons.end(),it->first)==favicons.end()){Drop(it->second);it=faviconBitmaps.erase(it);}else ++it;}}
+    // Keeps the GPU copy of every image this chrome still draws (tabs, closing-tab ghosts, bookmarks bar,
+    // the field's suggestion icon): each is uploaded once per target, not on every paint.
+    void SetFavicons(std::vector<std::shared_ptr<const FaviconImage>> images){favicons=std::move(images);
+        auto kept=[&](const std::shared_ptr<const FaviconImage>& image){if(image==editFavicon||std::find(favicons.begin(),favicons.end(),image)!=favicons.end())return true;
+            for(auto& item:bandItems){if(item.image==image)return true;}
+            for(auto& snap:tabSnapshots){if(snap.second.favicon==image)return true;}
+            return false;};
+        for(auto it=faviconBitmaps.begin();it!=faviconBitmaps.end();){if(!kept(it->first)){Drop(it->second);it=faviconBitmaps.erase(it);}else ++it;}}
     // Missing/empty/invalid site images are normal favicon absence, not engine errors.
     std::shared_ptr<const FaviconImage> DecodeFavicon(IStream* stream){if(!wic||!stream)return {};STATSTG stat{};if(FAILED(stream->Stat(&stat,STATFLAG_NONAME))||stat.cbSize.QuadPart==0||stat.cbSize.QuadPart>4*1024*1024)return {};LARGE_INTEGER zero{};if(FAILED(stream->Seek(zero,STREAM_SEEK_SET,nullptr)))return {};IWICBitmapDecoder* decoder=nullptr;IWICBitmapFrameDecode* frame=nullptr;IWICFormatConverter* converter=nullptr;UINT w=0,h=0;HRESULT hr=wic->CreateDecoderFromStream(stream,nullptr,WICDecodeMetadataCacheOnLoad,&decoder);if(SUCCEEDED(hr))hr=decoder->GetFrame(0,&frame);if(SUCCEEDED(hr))hr=frame->GetSize(&w,&h);if(SUCCEEDED(hr)&&(!w||!h||w>1024||h>1024))hr=E_INVALIDARG;if(SUCCEEDED(hr))hr=wic->CreateFormatConverter(&converter);if(SUCCEEDED(hr))hr=converter->Initialize(frame,GUID_WICPixelFormat32bppPBGRA,WICBitmapDitherTypeNone,nullptr,0,WICBitmapPaletteTypeCustom);std::shared_ptr<FaviconImage> image;if(SUCCEEDED(hr)){image=std::make_shared<FaviconImage>();image->width=w;image->height=h;image->stride=w*4;image->pixels.resize(image->stride*h);hr=converter->CopyPixels(nullptr,image->stride,(UINT)image->pixels.size(),image->pixels.data());}Drop(converter);Drop(frame);Drop(decoder);return SUCCEEDED(hr)?image:nullptr;}
     // A site image outside the tab list (suggestions, the field while editing), 16 DIP
     // centred in `box`. Bitmaps share the tab favicon cache (pruned with it).
     bool DrawSiteImage(const std::shared_ptr<const FaviconImage>& image,D2D1_RECT_F box,float opacity=1){if(!image||!image->width||!image->height)return false;
-        auto& bitmap=faviconBitmaps[image];if(!bitmap){auto properties=D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED));target->CreateBitmap(D2D1::SizeU(image->width,image->height),image->pixels.data(),image->stride,properties,&bitmap);}if(!bitmap)return false;
+        auto& bitmap=faviconBitmaps[image];if(!bitmap){++faviconUploads;auto properties=D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED));target->CreateBitmap(D2D1::SizeU(image->width,image->height),image->pixels.data(),image->stride,properties,&bitmap);}if(!bitmap)return false;
         const float side=Design::Size::icon,factor=std::min(side/image->width,side/image->height),w=image->width*factor,h=image->height*factor,x=(box.left+box.right-w)/2,y=(box.top+box.bottom-h)/2;
         target->DrawBitmap(bitmap,{x,y,x+w,y+h},opacity);return true;}
-    void DrawFavicon(int index,D2D1_RECT_F slot,float opacity=1){if(opacity<=0)return;auto image=index<(int)favicons.size()?favicons[index]:nullptr;if(!image){Icon(L"favicon",slot,16,opacity);return;}auto& bitmap=faviconBitmaps[image];if(!bitmap){auto properties=D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED));target->CreateBitmap(D2D1::SizeU(image->width,image->height),image->pixels.data(),image->stride,properties,&bitmap);}if(bitmap){float factor=std::min((slot.right-slot.left)/image->width,(slot.bottom-slot.top)/image->height),w=image->width*factor,h=image->height*factor;float x=(slot.left+slot.right-w)/2,y=(slot.top+slot.bottom-h)/2;target->DrawBitmap(bitmap,{x,y,x+w,y+h},opacity);}else Icon(L"favicon",slot,16,opacity);}
+    void DrawFavicon(int index,D2D1_RECT_F slot,float opacity=1){if(opacity<=0)return;auto image=index<(int)favicons.size()?favicons[index]:nullptr;if(!image){Icon(L"favicon",slot,16,opacity);return;}auto& bitmap=faviconBitmaps[image];if(!bitmap){++faviconUploads;auto properties=D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED));target->CreateBitmap(D2D1::SizeU(image->width,image->height),image->pixels.data(),image->stride,properties,&bitmap);}if(bitmap){float factor=std::min((slot.right-slot.left)/image->width,(slot.bottom-slot.top)/image->height),w=image->width*factor,h=image->height*factor;float x=(slot.left+slot.right-w)/2,y=(slot.top+slot.bottom-h)/2;target->DrawBitmap(bitmap,{x,y,x+w,y+h},opacity);}else Icon(L"favicon",slot,16,opacity);}
     // Hosts that paint their own surfaces (the downloads popover) reuse the fonts,
     // icons and helpers through these; SwapTarget redirects them to an offscreen layer.
     ID2D1RenderTarget* RenderTarget()const{return target;}
@@ -369,7 +381,16 @@ public:
     bool animateTabLayout=false; // host: animate the next width/scroll reflow (e.g. width unlock)
     bool tabMotionStarted=false; // set when a Build started motion; the host schedules frames
     Motion::TabLayoutFrame tabFrame;
-    struct TabSnapshot{std::wstring title;std::shared_ptr<const FaviconImage> favicon;float fill=Design::Surface::canvas;bool selected=false;};
+    struct TabSnapshot{std::wstring title;std::shared_ptr<const FaviconImage> favicon;float fill=Design::Surface::canvas;bool selected=false;float veil=0;};
+    // Paper v2 tab title: a `TabStrip::titleFade` gradient into surface `c` ending at the close,
+    // then solid surface under it, both at opacity `o` (the close's own reveal).
+    void TitleVeil(Design::Box close,float titleRight,float c,float o){
+        const float edge=close.left,start=edge-Design::TabStrip::titleFade;
+        ID2D1GradientStopCollection* stops=nullptr;ID2D1LinearGradientBrush* gradient=nullptr;
+        D2D1_GRADIENT_STOP g[]={{0,D2D1::ColorF(c,c,c,0)},{1,D2D1::ColorF(c,c,c,o)}};
+        if(SUCCEEDED(target->CreateGradientStopCollection(g,2,&stops))&&SUCCEEDED(target->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({start,0},{edge,0}),stops,&gradient)))target->FillRectangle(D2D1::RectF(start,close.top,edge,close.bottom),gradient);
+        Drop(gradient);Drop(stops);
+        brush->SetColor(D2D1::ColorF(c,c,c,o));target->FillRectangle(D2D1::RectF(edge,close.top,titleRight,close.bottom),brush);}
     std::map<unsigned,TabSnapshot> tabSnapshots; // what a closing tab looked like, drawn while it blurs out
     bool TabKeysValid(int count)const{return motion&&(int)tabKeys.size()==count;}
     unsigned TabKey(int n)const{return n>=0&&n<(int)tabKeys.size()?tabKeys[n]:(unsigned)(n+1);}
@@ -426,6 +447,7 @@ public:
         auto favicon=strip.FaviconIn(box);auto title=strip.TitleIn(box);const D2D1_RECT_F slot{favicon.left,favicon.top,favicon.right,favicon.bottom};
         if(!DrawSiteImage(snap.favicon,slot))Icon(L"favicon",slot,16);
         if(strip.Titled()&&title.right-title.left>=Design::Size::icon)Text(snap.title,{title.left,title.top,title.right,title.bottom},Design::Type::label.size,snap.selected?Design::Text::secondary:Design::Text::muted,false,Design::Type::label.medium,Design::Type::label.tracking);
+        if(snap.veil>0&&strip.Titled()&&strip.HasClose())TitleVeil(strip.CloseIn(box),title.right,snap.fill,snap.veil);
         HRESULT hr=ghostLayer->EndDraw();SwapTarget(main);if(FAILED(hr))return;
         ID2D1Bitmap* bitmap=nullptr;if(FAILED(ghostLayer->GetBitmap(&bitmap))||!bitmap)return;
         // Cut at the strip's left edge and its available room, not at the shrinking
@@ -535,11 +557,16 @@ public:
         TextKey key{value,slot.right-slot.left,slot.bottom-slot.top,size,tracking,tabular,medium,keycap};
         auto it=textCache.find(key);
         if(it==textCache.end()){
-            if(textCache.size()>=textCacheLimit)ClearTextCache();
-            TextEntry entry;const D2D1_RECT_F origin{0,0,slot.right-slot.left,slot.bottom-slot.top};
+            if(textCache.size()>=textCacheLimit){
+                // Never painted through Paint(), or a runaway (a pass measures at most every bar item + the rest): as before.
+                if(!textPass||textCache.size()>=4*textCacheLimit+2*BookmarkLimit)ClearTextCache();
+                else if(textEvictedPass!=textPass){textEvictedPass=textPass;for(auto e=textCache.begin();e!=textCache.end();){if(e->second.used!=textPass){Drop(e->second.layout);e=textCache.erase(e);}else ++e;}}
+            }
+            TextEntry entry;entry.used=textPass;const D2D1_RECT_F origin{0,0,slot.right-slot.left,slot.bottom-slot.top};
             HRESULT hr=MakeTextLayout(value,origin,size,tabular,medium,tracking,&entry.layout,entry.measure);if(FAILED(hr))return hr;
             it=textCache.emplace(std::move(key),entry).first;
         }
+        it->second.used=textPass;
         placement=it->second.measure;placement.originY+=slot.top;placement.inkTop+=slot.top;placement.inkBottom+=slot.top;
         *output=it->second.layout;(*output)->AddRef();return S_OK;
     }
@@ -662,6 +689,7 @@ public:
     int bandRover=-1;              // band item that takes the band's single Tab stop (roving focus)
     int bandDrag=-1;float bandDragOffset=0; // item being dragged (visible index) and its pointer offset
     int bandDropInto=-1;           // folder item under the dragged one: drop moves it inside
+    float bandInsertX=-1;          // a bookmark dragged from a menu or the drawer: x (DIP) of the insertion line, -1 none
     BookmarksBar::Result band;     // last layout (Build)
     // Annotation mode (T3, src/annotation-mode.h): the "Annoter" button ('N') left of the tool cluster, and
     // the 32 DIP "Mode Annotation" band under the toolbar while the mode is on (the page moves down).
@@ -728,6 +756,12 @@ public:
         if(!bandShown)return;
         for(int i=0;i<band.visible&&i<(int)bandItems.size();++i)if(i!=bandDrag)DrawBandItem(i,bandItems[i],hover,focus,now);
         if(bandDrag>=0&&bandDrag<band.visible&&bandDrag<(int)bandItems.size())DrawBandItem(bandDrag,bandItems[bandDrag],hover,focus,now);
+        {   // Drop feedback for a bookmark dragged in from a menu or the drawer: the folder it would enter is tinted with the
+            // accent; otherwise a 2 DIP accent line marks where it would land. Nothing animates at rest.
+            const auto accent=Design::Accent::Get();
+            if(bandDrag<0&&bandDropInto>=0&&bandDropInto<band.visible)FillBox(BandRect(bandDropInto),Design::Radius::control,D2D1::ColorF(accent.r,accent.g,accent.b,.18f));
+            if(bandInsertX>=0)FillBox({bandInsertX-1,BookmarksBar::Layout::top+4,bandInsertX+1,BookmarksBar::Layout::bottom-4},1,D2D1::ColorF(accent.r,accent.g,accent.b,1));
+        }
         if(band.overflow){const D2D1_RECT_F box{band.overflowLeft,BookmarksBar::Layout::top,band.overflowLeft+Design::Size::control,BookmarksBar::Layout::bottom};
             auto v=motion?motion->Visual('O',now):Motion::InteractionVisual{hover=='O'?1.f:0.f,0};if(bandOpen=='O')v.hover=1;
             DrawButton(L"overflow",box,Design::ButtonVariant::Ghost,{v.hover,v.press,false,focus=='O'});}
@@ -1036,6 +1070,11 @@ public:
             const float closeShown=closable?(focus==CloseBase+n?1.f:tabHover):0.f;
             DrawFavicon(n,{favicon.left,favicon.top,favicon.right,favicon.bottom},(strip.SwapsClose(n,selected)?1-closeShown:1)*(asleep?.4f:1)*a);
             if(strip.Titled()&&title.right-title.left>=Design::Size::icon)Text(titles[n],{title.left,title.top,title.right,title.bottom},Design::Type::label.size,(n==selected?Design::Text::secondary:asleep?.32f:Design::Text::muted)*a,false,Design::Type::label.medium,Design::Type::label.tracking);
+            // Paper v2: with the close showing, the title dissolves into the tab surface over 20 DIP
+            // and the close sits on solid surface; at rest the title keeps the full width and its « … ».
+            const float titleVeil=strip.Titled()&&strip.HasClose()&&closable?std::min(1.f,closeShown):0.f;
+            if(keyed)tabSnapshots[item.key].veil=titleVeil;
+            if(titleVeil>0)TitleVeil(close,title.right,filled?fill:Design::Surface::canvas,titleVeil);
             if(closable&&(tabHover>0||focus==CloseBase+n)){float press=motion?motion->Visual(CloseBase+n,now).press:0;Icon(L"tab-close",{close.left,close.top,close.right,close.bottom},Design::Size::icon*Motion::PressScale(press,motion&&motion->ReducedMotion()),closeShown*a);}
             if(closable&&focus==CloseBase+n)FocusRing({close.left,close.top,close.right,close.bottom},Design::Radius::button);
             if(partial)target->PopAxisAlignedClip();
@@ -1048,7 +1087,7 @@ public:
     }
     // Smoke diagnostics: why AssetsReady() is false (bitmap count, keys that failed to load, font families).
     std::wstring AssetsReport(){std::wstring s=L"bitmaps="+std::to_wstring(bitmaps.size())+L" fonts="+std::to_wstring(fonts?fonts->GetFontFamilyCount():0)+L" missing=";for(auto& b:bitmaps)if(!b.second)s+=b.first+L";";return s;}
-    void Paint(const std::vector<std::wstring>& titles,int selected,const std::wstring& uri,bool editing,int hover,int focus,const D2D1_RECT_F* dirty=nullptr,Motion::Time now=Motion::Now()){(void)uri;/* the field reads `address`, set by the host */if(!target||!brush)return;Build((int)titles.size(),selected,&titles,now);target->BeginDraw();target->PushAxisAlignedClip(dirty?*dirty:D2D1::RectF(0,0,width,height),D2D1_ANTIALIAS_MODE_ALIASED);target->Clear(D2D1::ColorF(Design::Surface::canvas,Design::Surface::canvas,Design::Surface::canvas));if(!contentOnly){
+    void Paint(const std::vector<std::wstring>& titles,int selected,const std::wstring& uri,bool editing,int hover,int focus,const D2D1_RECT_F* dirty=nullptr,Motion::Time now=Motion::Now()){(void)uri;/* the field reads `address`, set by the host */if(!target||!brush)return;++textPass;Build((int)titles.size(),selected,&titles,now);target->BeginDraw();target->PushAxisAlignedClip(dirty?*dirty:D2D1::RectF(0,0,width,height),D2D1_ANTIALIAS_MODE_ALIASED);target->Clear(D2D1::ColorF(Design::Surface::canvas,Design::Surface::canvas,Design::Surface::canvas));if(!contentOnly){
         Round(bar,Design::Radius::control,Design::Surface::raised);DrawLoading(bar);if(focus=='L')FocusRing(bar,Design::Radius::control);
         // Skip controls wholly outside the dirty rectangle (4 DIP margin covers focus rings).
         auto visible=[&](D2D1_RECT_F b){return !dirty||(b.right+4>dirty->left&&b.left-4<dirty->right&&b.bottom+4>dirty->top&&b.top-4<dirty->bottom);};
@@ -1103,7 +1142,7 @@ public:
             if(d!=regions.end()){target->PushAxisAlignedClip(D2D1::RectF(0,0,width,ContentTop()-1),D2D1_ANTIALIAS_MODE_ALIASED);DrawDownloadRipple(ripple,d->rect,Design::Size::icon);target->PopAxisAlignedClip();}
         }
         }   // !contentOnly
-        target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET){DropGhostLayer();DropFade();DropDownloadIcon();DropAudioIcon();DropRipple();ClearFaviconBitmaps();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Resize();}
+        target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET)RecreateTarget(); /* every target resource, the Lottie bitmap included */
     }
 };
 }

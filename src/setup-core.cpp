@@ -168,7 +168,7 @@ bool WriteShortcut(const std::wstring& lnk, const std::wstring& root) {
     link->SetPath(launcher.c_str());
     link->SetWorkingDirectory(root.c_str());
     link->SetIconLocation((root + L"\\browser.ico").c_str(), 0);
-    link->SetDescription(L"browser");
+    link->SetDescription(TaskbarIdentity::ProductName);
     {   // same taskbar identity as the installed windows (src/taskbar-identity.h): a pin from this link groups with them
         IPropertyStore* store = nullptr;
         if (FAILED(link->QueryInterface(IID_PPV_ARGS(&store)))) return false;
@@ -462,7 +462,13 @@ Result Integrate(const Env& env, const std::wstring& self, const SetupPayload::L
     // portable folder) is not ours: left untouched and reported.
     if (env.programs.empty() || !(UP::IsDirectory(env.programs) || SHCreateDirectoryExW(nullptr, env.programs.c_str(), nullptr) == ERROR_SUCCESS))
         return r.error = Error::Integration, r.detail = "Start Menu folder unavailable", r;
-    const std::wstring start = env.programs + L"\\browser.lnk", desk = env.desktop + L"\\browser.lnk";
+    // « Browser.lnk »; ours from an earlier setup (« browser.lnk ») is first renamed in place (same file: pins kept).
+    const std::wstring start = TaskbarIdentity::LauncherShortcut(env.programs), desk = TaskbarIdentity::LauncherShortcut(env.desktop);
+    {
+        ComInit com;
+        TaskbarIdentity::RenameShortcut(env.programs, launcher);
+        if (!env.desktop.empty()) TaskbarIdentity::RenameShortcut(env.desktop, launcher);
+    }
     if (UP::PathExists(start) && !Ours(start, root)) {
         r.startMenuForeign = true;
     } else if (!WriteShortcut(start, root)) {
@@ -483,7 +489,7 @@ Result Integrate(const Env& env, const std::wstring& self, const SetupPayload::L
     wchar_t date[16];
     swprintf(date, 16, L"%04u%02u%02u", t.wYear, t.wMonth, t.wDay);
     std::wstring installDate;
-    bool ok = SetupKey::WriteString(key, L"DisplayName", L"browser") && SetupKey::WriteString(key, L"DisplayVersion", W(current)) &&
+    bool ok = SetupKey::WriteString(key, L"DisplayName", TaskbarIdentity::ProductName) && SetupKey::WriteString(key, L"DisplayVersion", W(current)) &&
               SetupKey::WriteString(key, L"Publisher", L"VALXXII") && SetupKey::WriteString(key, L"DisplayIcon", icon) &&   // i18n-exempt: registry value names
               SetupKey::WriteString(key, L"InstallLocation", root) &&
               SetupKey::WriteString(key, L"UninstallString", L"\"" + uninstaller + L"\"");
@@ -494,6 +500,9 @@ Result Integrate(const Env& env, const std::wstring& self, const SetupPayload::L
          RegSetValueExW(key, L"EstimatedSize", 0, REG_DWORD, reinterpret_cast<const BYTE*>(&sizeKb), sizeof(sizeKb)) == ERROR_SUCCESS;
     RegCloseKey(key);
     if (!ok) return r.error = Error::Integration, r.detail = "uninstall entry could not be written", r;
+    // Browser in Windows' « Applications par défaut » (src/default-browser.h). Never blocks the install: the updater
+    // writes it again after every update.
+    if (Fault("default-browser") || !SetupKey::RegisterDefaultBrowser(root)) r.detail = "default-browser registration not written";
     return r;
 }
 
@@ -540,9 +549,10 @@ UninstallReport Uninstall(const Env& env, bool removeData) {
         }
         if (!UP::RemoveTree(trash)) r.leftovers = true;
     }
-    for (const std::wstring& lnk : {env.programs + L"\\browser.lnk", env.desktop + L"\\browser.lnk"})
-        if (Ours(lnk, root)) DeleteFileW(lnk.c_str());
+    for (const std::wstring& lnk : {TaskbarIdentity::LauncherShortcut(env.programs), TaskbarIdentity::LauncherShortcut(env.desktop)})
+        if (Ours(lnk, root)) DeleteFileW(lnk.c_str());   // (names compare without case: « browser.lnk » of an older setup too)
     RegDeleteKeyW(HKEY_CURRENT_USER, env.uninstallKey.c_str());
+    SetupKey::UnregisterDefaultBrowser(root);   // Browser leaves « Applications par défaut »
     if (removeData && UP::PathExists(root + L"\\data")) {
         // Only <root>\data itself, a plain directory (checked above); RemoveTree never follows a reparse point inside.
         const std::wstring doomed = root + L"\\.data-removed-" + W(nonce);

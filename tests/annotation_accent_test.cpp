@@ -131,7 +131,7 @@ int main() {
         Check(js.find(L"op === 'accent'") != std::wstring::npos && js.find(L"accentStyle.textContent = accentCss()") != std::wstring::npos, "page script: an « accent » command rebuilds the accent rules");
         const size_t css = js.find(L"function accentCss()"), end = js.find(L"root.innerHTML", css);
         const std::wstring rules = js.substr(css, end - css);
-        Check(rules.find(L".f{") != std::wstring::npos && rules.find(L".h,.v{") != std::wstring::npos && rules.find(L".l{") != std::wstring::npos && rules.find(L".pb{") != std::wstring::npos && rules.find(L".pl{") != std::wstring::npos, "accent rules: frame fill, edges, label, padding hatches, padding labels");
+        Check(rules.find(L".f{") != std::wstring::npos && rules.find(L"border-color:rgb(") != std::wstring::npos && rules.find(L".l{") != std::wstring::npos && rules.find(L".pb{") != std::wstring::npos && rules.find(L".pl{") != std::wstring::npos, "accent rules: frame fill and edges (R27: one bordered box), label, padding hatches, padding labels");
         Check(rules.find(L"224,71,158") == std::wstring::npos && rules.find(L"D63E92") == std::wstring::npos, "the gap pink is not in the accent rules (semantic colour kept)");
         Check(js.find(L"rgbList(arg && arg.accent)") != std::wstring::npos, "the « accent » argument is validated (r,g,b ints) before use");
     }

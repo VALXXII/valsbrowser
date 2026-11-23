@@ -8,6 +8,10 @@
 //     (also the field's accessible name);
 //     row h 24: site (globe 13 at 50 %, gap 6, padding-inline 2, origin 12/16 #FFFFFF99, not
 //     interactive) and « Ajouter » (accent, h 24, radius 6, padding 10, 13/16 medium white).
+//     Chat intégré (local sites): two actions, the main one LAST (right) and the only one filled with the accent:
+//     « Ajouter » (secondary: neutral plate #FFFFFF0F, padding 8) then, 6 further, « Demander à l'agent » (accent,
+//     padding 10). Entrée = the main action: « Demander à l'agent » when it is there, « Ajouter » otherwise;
+//     Ctrl+Entrée = « Ajouter » always; Ctrl+Maj+D = « Demander à l'agent ».
 //   Separate pill 8 under the panel, centred: canvas, border #FFFFFF1F, radius 8, padding 6/8,
 //     gap 6: « Ce que l'agent verra » 12/16 #FFFFFF99 + caret 14 at 60 %. Unfolded (2.2): 350,
 //     radius 12, padding 10/12/12, gap 10: centred header 12/16 medium #FFFFFFE6 + caret up;
@@ -18,9 +22,15 @@
 // No project selector any more: annotations are grouped by site (the origin), shown, not chosen.
 // Motion: the panel is born next to the clicked element (origin on the target side): scale
 // 0.96 -> 1 + opacity, 180 ms cubic-bezier(.23,1,.32,1), through a click-through ghost layer
-// while the real window (EDIT focused from frame 0) stays at alpha 0; the pill follows 60 ms
+// while the field's window (EDIT focused from frame 0) stays at alpha 0; the pill follows 60 ms
 // later (opacity + 4 DIP) and unfolds downward into its card in 200 ms. « Ajouter »: the panel
 // folds toward the launcher (bottom-right) in 150 ms. Reduced motion: fades only.
+// Windows (smooth corners): the panel is a per-pixel-alpha Layer like every other annotation surface: its
+// rounded corners and its 1 DIP border are antialiased against whatever is behind. It has NO window region
+// (a region is a 1-bit mask: the stair-stepped corners of the first version) and no DWM rounding (which always
+// brings a shadow, native-ui.h). A layer cannot host a child window, so the native EDIT lives in a second,
+// plain rectangular window exactly on the panel's field (13 DIP inside the edge: never under a corner), owned
+// by the panel so it always sits above it. That window holds the keyboard focus; the panel is never activated.
 #include "annotation-kit.h"
 #include "native-ui.h"
 #include <commctrl.h>
@@ -35,7 +45,7 @@ struct NoteContext {
 };
 enum class CaptureState { Pending, Ready, Unavailable };
 enum class NoteStatus { Editing, Saving, Failed };
-enum NoteHit { NoteNone = 0, NoteField = 1, NoteAdd = 2, NotePill = 3 };
+enum NoteHit { NoteNone = 0, NoteField = 1, NoteAdd = 2, NotePill = 3, NoteAsk = 4 };   // NoteAsk: « Demander à l'agent » (chat intégré, local sites only)
 
 namespace NoteSpec {
 inline constexpr float width = 350, radius = 12, pad = 12, gap = 12, row = 24, minHeight = 84, noteLine = 20;
@@ -63,11 +73,12 @@ struct NoteView {
     std::wstring note; bool drawNote = true, fieldFocused = true, fieldError = false; float fieldHeight = 40;
     NoteContext context; CaptureState capture = CaptureState::Ready; const Shot* shot = nullptr;
     NoteStatus status = NoteStatus::Editing; std::wstring message;
+    bool ask = false;   // chat intégré: « Demander à l'agent », the main action, right of « Ajouter » (then secondary)
     int focus = 0; bool keyboard = false, reduced = false; float spinner = 0;
     std::map<int, Motion::InteractionVisual> visuals;
     Motion::InteractionVisual V(int id) const { auto it = visuals.find(id); return it == visuals.end() ? Motion::InteractionVisual{} : it->second; }
 };
-struct NoteLayout { float height = 0; D2D1_RECT_F field{}, row{}, site{}, add{}, message{}; };
+struct NoteLayout { float height = 0; D2D1_RECT_F field{}, row{}, site{}, add{}, message{}, ask{}; };
 inline std::wstring AddLabel(NoteStatus s) { return s == NoteStatus::Saving ? TR(note_adding) : s == NoteStatus::Failed ? TR(downloads_action_retry) : TR(note_add); }
 inline NoteLayout LayoutNote(Ink& ink, const NoteView& v) {
     using namespace NoteSpec; NoteLayout l; const float x0 = 1 + pad, x1 = width - 1 - pad;
@@ -75,14 +86,18 @@ inline NoteLayout LayoutNote(Ink& ink, const NoteView& v) {
     const float fh = std::max(v.fieldHeight, minHeight - 2 - 2 * pad - gap - row);
     l.field = {x0, y, x1, y + fh}; y += fh + gap;
     l.row = {x0, y, x1, y + row};
-    const float aw = 10 + ink.Width(AddLabel(v.status), F(13, 16, 500)) + 10;
-    l.add = {x1 - aw, y, x1, y + row};
-    l.site = {x0, y, l.add.left - 8, y + row}; y += row;
+    // Actions end the row, the main one last. Padding 10 for the filled (accent) button, 8 for the neutral one.
+    const float addPad = v.ask ? 8.f : 10.f, aw = addPad + ink.Width(AddLabel(v.status), F(13, 16, 500)) + addPad;
+    float addRight = x1;
+    if (v.ask) { const float kw = 10 + ink.Width(TR(chat_note_ask), F(13, 16, 500)) + 10; l.ask = {x1 - kw, y, x1, y + row}; addRight = l.ask.left - 6; }
+    l.add = {addRight - aw, y, addRight, y + row};
+    l.site = {x0, y, std::max(x0, l.add.left - 8), y + row}; y += row;
     if (!v.message.empty()) { y += 8; const float mh = ink.Height(v.message, F(12, 16), x1 - x0 - 19); l.message = {x0, y, x1, y + mh}; y += mh; }
     l.height = y + pad + 1; return l;
 }
 inline int NoteHitAt(const NoteLayout& l, float x, float y) {
     if (Inside(l.add, x, y)) return NoteAdd;
+    if (l.ask.right > l.ask.left && Inside(l.ask, x, y)) return NoteAsk;
     if (Inside(l.field, x, y)) return NoteField;
     return NoteNone;
 }
@@ -97,11 +112,21 @@ inline void PaintNote(Ink& ink, const NoteView& v, const NoteLayout& l) {
         t->PopAxisAlignedClip();
     }
     Pieces(ink, {PIcon(Glyphs::globe, 13, {1, 1, 1, .5f}), PText(NoteSite(v.context), F(12, 16), Hex(0xFFFFFF99))}, {l.site.left + 2, l.site.top, l.site.right, l.site.bottom}, Align::Leading);
-    {   const auto iv = v.V(NoteAdd); const bool busy = v.status == NoteStatus::Saving;
+    // One filled (accent) button: the main action. « Ajouter » alone is that one; next to « Demander à l'agent »
+    // it becomes the secondary action (neutral plate, same height and radius).
+    const bool busy = v.status == NoteStatus::Saving;
+    {   const auto iv = v.V(NoteAdd);
         ScaleScope s(ink.Target(), l.add, Motion::PressScale(iv.press, v.reduced, !busy));
-        ink.Fill(l.add, 6, busy ? Accent(.6f) : AccentButton(iv.hover, iv.press));
-        ink.Text(AddLabel(v.status), F(13, 16, 500), l.add, {1, 1, 1, busy ? .8f : 1.f}, false, Align::Center, true);
+        if (v.ask) ink.Fill(l.add, 6, {1, 1, 1, busy ? .06f : .06f + .06f * iv.hover + .04f * iv.press});
+        else ink.Fill(l.add, 6, busy ? Accent(.6f) : AccentButton(iv.hover, iv.press));
+        ink.Text(AddLabel(v.status), F(13, 16, 500), l.add, {1, 1, 1, busy ? (v.ask ? .6f : .8f) : (v.ask ? .9f : 1.f)}, false, Align::Center, true);
         if (v.focus == NoteAdd) FocusRing(ink, l.add, 6, v.keyboard); }
+    if (v.ask) {   // unavailable while the note is being written (dimmed, no press)
+        const auto iv = v.V(NoteAsk);
+        ScaleScope s(ink.Target(), l.ask, Motion::PressScale(iv.press, v.reduced, !busy));
+        ink.Fill(l.ask, 6, busy ? Accent(.45f) : AccentButton(iv.hover, iv.press));
+        ink.Text(TR(chat_note_ask), F(13, 16, 500), l.ask, {1, 1, 1, busy ? .6f : 1.f}, false, Align::Center, true);
+        if (v.focus == NoteAsk) FocusRing(ink, l.ask, 6, v.keyboard); }
     if (!v.message.empty()) {
         ink.Icon(Glyphs::warningCircle, {l.message.left, l.message.top + 1.5f, l.message.left + 13, l.message.top + 14.5f}, Hex(Ink_::danger));
         ink.Text(v.message, F(12, 16), {l.message.left + 19, l.message.top, l.message.right, l.message.bottom}, Hex(Ink_::danger), true);
@@ -197,6 +222,7 @@ struct NoteRequest {
     bool expanded = false;                                   // V2: the pill starts unfolded
     std::vector<Project> projects; std::wstring projectId;   // V1, ignored (kept so older callers compile)
     bool includeShot = true;                                 // V1, ignored: the capture is always included
+    bool askAgent = false;                                   // chat intégré: show « Demander à l'agent »
 };
 struct NoteHooks {
     std::function<void(const NoteSubmission&)> submit;              // write off the UI thread, then Saved() or Failed()
@@ -205,19 +231,22 @@ struct NoteHooks {
     std::function<void(const std::wstring&)> announce;
     std::function<void()> newProject;                                // V1, never called
     std::function<void(const std::wstring&)> projectChanged;         // V1, never called
+    std::function<void(const std::wstring& draft)> ask;              // « Demander à l'agent »: the caller moves the selection to the chat and closes the panel
 };
 
 class NotePopover : public Animator::Client {
     static constexpr long long GroupKey = 100, SiteKey = 101, PillRowBase = 120, ShotKey = 130;
     HINSTANCE instance_ = nullptr; HWND owner_ = nullptr; std::wstring root_; NoteHooks hooks_;
-    HWND hwnd_ = nullptr, edit_ = nullptr; ID2D1HwndRenderTarget* rt_ = nullptr;
+    HWND hwnd_ = nullptr, edit_ = nullptr;   // hwnd_: the FIELD's window (plain rectangle on the panel's field), parent of the EDIT
     HFONT font_ = nullptr; HBRUSH fieldBrush_ = nullptr; NativeUI::AccentCaret caret_; Accessibility::Bridge uia_;
-    Layer ghost_, pill_;
+    Layer ghost_, pill_, panel_;   // panel_: the note itself once settled (per-pixel alpha: smooth corners, buttons, border)
     NoteView view_; NoteLayout layout_; Shot shot_;
     Presence presence_{NoteTiming()}; Ramp pillIn_; Ramp fold_; Motion::State motion_;
     RECT target_{}, bounds_{}, final_{}; D2D1_POINT_2F origin_{}; float liftX_ = 0, liftY_ = 0; bool above_ = false;
     bool open_ = false, settled_ = false, reduced_ = false, pillOpen_ = false; int hover_ = 0, pressed_ = 0, pillHover_ = 0, pillPressed_ = 0;
     static constexpr UINT_PTR EditSubclass = 0xA77E;
+    static constexpr UINT_PTR VanishTimer = 0x5649;   // the pointer hidden by typing in the field (see WatchPointer)
+    POINT vanishAt_{}; int vanishTicks_ = 0; HCURSOR shownCursor_ = nullptr;
 
     float Dpi() const { const UINT d = GetDpiForWindow(hwnd_ ? hwnd_ : owner_); return d ? float(d) : 96.f; }
     int Px(float dip) const { return int(std::lround(dip * Dpi() / 96.f)); }
@@ -243,37 +272,38 @@ class NotePopover : public Animator::Client {
         else if (liftX_ > 0) origin_ = {NoteSpec::width, std::clamp(cy, 0.f, layout_.height)};
         else origin_ = {std::clamp(((target_.left + target_.right) / 2.f - x) / s, 0.f, NoteSpec::width), liftY_ < 0 ? 0.f : layout_.height};
     }
-    void PlaceEdit() { const auto& f = layout_.field; MoveWindow(edit_, Px(f.left), Px(f.top), Px(f.right - f.left), Px(f.bottom - f.top), TRUE); }
+    // The field's window sits exactly on the panel's field (screen px); the EDIT fills it.
+    RECT FieldScreen() const { const auto& f = layout_.field; return {final_.left + Px(f.left), final_.top + Px(f.top), final_.left + Px(f.right), final_.top + Px(f.bottom)}; }
+    void PlaceField() {
+        const RECT r = FieldScreen(); const int w = std::max<int>(1, r.right - r.left), h = std::max<int>(1, r.bottom - r.top);
+        SetWindowPos(hwnd_, nullptr, r.left, r.top, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+        MoveWindow(edit_, 0, 0, w, h, TRUE);
+    }
+    // The settled panel: everything but the note's text (the EDIT draws it), in ONE layered update (place, size, pixels).
+    void PresentPanel(bool raise = false) {
+        NoteView v = Visual(Motion::Now()); v.drawNote = false; const NoteLayout l = layout_;
+        panel_.paint = [v, l](Ink& ink, float, float) { PaintNote(ink, v, l); };
+        panel_.Present(final_, raise);
+    }
+    void Repaint() { if (hwnd_ && open_ && settled_) PresentPanel(); }   // while it animates, the ghost paints (Frame)
     void Resize() {   // height changed (field growth, message): keep the anchored edge
         const int oldH = final_.bottom - final_.top; Relayout(); const int h = Px(layout_.height);
-        if (h == oldH) { InvalidateRect(hwnd_, nullptr, FALSE); PlacePill(Motion::Now()); return; }
+        if (h == oldH) { Repaint(); PlacePill(Motion::Now()); return; }
         if (above_) final_.top = final_.bottom - h; else final_.bottom = final_.top + h;
         if (final_.bottom > bounds_.bottom) OffsetRect(&final_, 0, bounds_.bottom - final_.bottom);
-        SetWindowPos(hwnd_, nullptr, final_.left, final_.top, final_.right - final_.left, h, SWP_NOZORDER | SWP_NOACTIVATE);
-        if (rt_) rt_->Resize(D2D1::SizeU(final_.right - final_.left, h));
-        // V3 (no flash): the grown area is painted at once (WM_PAINT would come later: a compositor frame of
-        // uninitialised pixels under the field when a new line is typed).
-        PlaceEdit(); InvalidateRect(hwnd_, nullptr, FALSE); if (settled_ && open_) UpdateWindow(hwnd_); PlacePill(Motion::Now());
+        // V3 (no flash): the field's window never sticks out of the panel: growing, the panel first (its field area is
+        // the canvas colour); shrinking, the field first. Both are painted at once (no frame of uninitialised pixels).
+        if (h > oldH) { Repaint(); PlaceField(); } else { PlaceField(); Repaint(); }
+        if (settled_ && open_) UpdateWindow(hwnd_);
+        PlacePill(Motion::Now());
         if (uia_.Listening()) uia_.ChildrenChanged(GroupKey);
     }
     NoteView Visual(Motion::Time now) {
         NoteView v = view_; v.note = EditText(); v.fieldFocused = GetFocus() == edit_ || !settled_;
         v.spinner = SpinnerAngle(now, reduced_); v.reduced = reduced_;
-        v.visuals[NoteAdd] = motion_.Visual(NoteAdd, now);
+        v.visuals[NoteAdd] = motion_.Visual(NoteAdd, now); if (view_.ask) v.visuals[NoteAsk] = motion_.Visual(NoteAsk, now);
         v.shot = shot_.width ? &shot_ : nullptr;
         return v;
-    }
-    void PaintReal() {
-        if (!hwnd_) return;
-        if (!rt_) {
-            RECT c{}; GetClientRect(hwnd_, &c); const float dpi = Dpi();
-            if (FAILED(I().Factory()->CreateHwndRenderTarget(D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1::PixelFormat(), dpi, dpi),
-                D2D1::HwndRenderTargetProperties(hwnd_, D2D1::SizeU(c.right, c.bottom)), &rt_))) return;
-            rt_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-        }
-        I().Bind(rt_); rt_->BeginDraw(); rt_->Clear(D2D1::ColorF(Design::Surface::canvas, Design::Surface::canvas, Design::Surface::canvas));
-        NoteView v = Visual(Motion::Now()); v.drawNote = false; PaintNote(I(), v, layout_);
-        if (rt_->EndDraw() == D2DERR_RECREATE_TARGET) { I().Forget(rt_); Release(rt_); }
     }
     RECT GhostRect() const { const int m = Px(Spec::popoverLift); return {final_.left - m, final_.top - m, final_.right + m, final_.bottom + m}; }
     void PaintGhost(Motion::Time now) {
@@ -313,7 +343,7 @@ class NotePopover : public Animator::Client {
         if (uia_.Listening()) uia_.ChildrenChanged(GroupKey);
     }
     // ---- interaction
-    void Interact() { const auto now = Motion::Now(); motion_.SetInteraction(pillHover_ ? int(NotePill) : hover_, pillPressed_ ? (pillPressed_ == pillHover_ ? int(NotePill) : 0) : (pressed_ == hover_ ? pressed_ : 0), now); InvalidateRect(hwnd_, nullptr, FALSE); PlacePill(now); Animator::Get().Request(this); }
+    void Interact() { const auto now = Motion::Now(); motion_.SetInteraction(pillHover_ ? int(NotePill) : hover_, pillPressed_ ? (pillPressed_ == pillHover_ ? int(NotePill) : 0) : (pressed_ == hover_ ? pressed_ : 0), now); Repaint(); PlacePill(now); Animator::Get().Request(this); }
     void Announce(const std::wstring& text) { if (hooks_.announce) hooks_.announce(text); else uia_.Notify(GroupKey, text.c_str(), L"AnnotationNote"); }
     void Submit() {
         if (view_.status == NoteStatus::Saving) return;
@@ -331,15 +361,17 @@ class NotePopover : public Animator::Client {
         switch (hit) {
         case NoteField: SetFocus(edit_); break;
         case NoteAdd: Submit(); break;
+        case NoteAsk: if (view_.ask && view_.status != NoteStatus::Saving && hooks_.ask) hooks_.ask(EditText()); break;
         case NotePill: SetPill(!pillOpen_, keyboard); break;
         }
     }
-    std::vector<int> Order() const { std::vector<int> o{NoteField, NoteAdd}; if (PillExpandable(view_.capture)) o.push_back(NotePill); return o; }
+    int Main() const { return view_.ask ? int(NoteAsk) : int(NoteAdd); }
+    std::vector<int> Order() const { std::vector<int> o{NoteField, NoteAdd}; if (view_.ask) o.push_back(NoteAsk); if (PillExpandable(view_.capture)) o.push_back(NotePill); return o; }
     int Current() const { return GetFocus() == edit_ ? int(NoteField) : view_.focus; }
     void FocusStop(int stop) {
         view_.keyboard = true; motion_.ClearInteractions();
         if (stop == NoteField) { view_.focus = 0; SetFocus(edit_); } else { view_.focus = stop; SetFocus(hwnd_); }
-        InvalidateRect(hwnd_, nullptr, FALSE); PlacePill(Motion::Now());
+        Repaint(); PlacePill(Motion::Now());
         if (uia_.Listening()) uia_.Raise(stop == NoteField ? 0 : stop, UIA_AutomationFocusChangedEventId);
     }
     void Cycle(bool back) {
@@ -350,11 +382,13 @@ class NotePopover : public Animator::Client {
         const bool shift = GetKeyState(VK_SHIFT) < 0, ctrl = GetKeyState(VK_CONTROL) < 0;
         if (key == VK_ESCAPE) { if (pillOpen_) { SetPill(false, true); return true; } Cancel(true); return true; }
         if (key == VK_TAB) { Cycle(shift); return true; }
+        if (ctrl && shift && key == 'D' && view_.ask) { Activate(NoteAsk, true); return true; }   // Ctrl+Maj+D: « Demander à l'agent »
         if (key == VK_RETURN) {
+            // Entrée = the main action (the filled button): « Demander à l'agent » when the chat is available here,
+            // « Ajouter » otherwise. Ctrl+Entrée = « Ajouter » always. Maj+Entrée = a new line. A focused button wins.
             if (ctrl) { Submit(); return true; }
-            if (fromEdit) { if (shift) return false; Submit(); return true; }
-            if (view_.focus) { Activate(view_.focus, true); return true; }
-            Submit(); return true;
+            if (fromEdit) { if (shift) return false; Activate(Main(), true); return true; }
+            Activate(view_.focus ? view_.focus : Main(), true); return true;
         }
         if (!fromEdit && key == VK_SPACE && view_.focus) { Activate(view_.focus, true); return true; }
         return false;
@@ -365,19 +399,38 @@ class NotePopover : public Animator::Client {
         case WM_GETDLGCODE: return DefSubclassProc(h, m, w, l) | DLGC_WANTALLKEYS;
         case WM_KEYDOWN: if (self->Key(w, true)) return 0; break;
         case WM_CHAR: if (w == L'\t' || w == 27) return 0; if (w == L'\r' && GetKeyState(VK_SHIFT) >= 0) return 0; break;
-        case WM_SETFOCUS: { const LRESULT r = DefSubclassProc(h, m, w, l); self->view_.focus = 0; self->caret_.Apply(h, FieldGray(), self->CaretColor(), std::max(1, self->Px(1)), self->Px(18)); InvalidateRect(self->hwnd_, nullptr, FALSE); return r; }
-        case WM_KILLFOCUS: InvalidateRect(self->hwnd_, nullptr, FALSE); break;
+        case WM_SETFOCUS: { const LRESULT r = DefSubclassProc(h, m, w, l); self->view_.focus = 0; self->caret_.Apply(h, FieldGray(), self->CaretColor(), std::max(1, self->Px(1)), self->Px(18)); self->Repaint(); return r; }
+        case WM_KILLFOCUS: self->Repaint(); break;
         case WM_LBUTTONDOWN: self->view_.keyboard = false; break;
-        case WM_PAINT: {   // placeholder: drawn by GDI under the caret while the field is empty
-            const LRESULT r = DefSubclassProc(h, m, w, l);
-            if (GetWindowTextLengthW(h) == 0) {
-                HDC dc = GetDC(h); RECT c; GetClientRect(h, &c); auto old = SelectObject(dc, self->font_);
-                SetTextColor(dc, HintGray()); SetBkMode(dc, TRANSPARENT); DrawTextW(dc, NoteSpec::placeholder(), -1, &c, DT_WORDBREAK | DT_NOPREFIX);
-                SelectObject(dc, old); ReleaseDC(h, dc);
-            }
-            return r; }
         }
-        return DefSubclassProc(h, m, w, l);
+        const bool key = m == WM_CHAR || m == WM_KEYDOWN || m == WM_SYSKEYDOWN;
+        if (key) self->KeepPointer();
+        const LRESULT r = DefSubclassProc(h, m, w, l);
+        if (key) self->WatchPointer();
+        return r;
+    }
+    // Windows' « Masquer le pointeur pendant la saisie » (mouse vanish, on by default): the EDIT hides the pointer while
+    // the user types (no cursor at all) and gives it back only when the pointer moves over the EDIT itself. Moved
+    // straight back over the page, it stayed hidden for good (V1.2, point 6): the page (the WebView, another process)
+    // only sets its cursor when its cursor CHANGES, and in the annotation mode it is the same « viseur » everywhere. So the
+    // cursor shown before the key is kept, and after each key the pointer is watched (50 ms): still hidden and it moved
+    // -> that cursor is put back (and the display count, if that is how it was hidden), wherever the pointer is. It stays
+    // hidden while the user keeps typing without touching the mouse, as Windows wants. The watch ends half a second
+    // after the pointer is visible.
+    static bool PointerHidden(const CURSORINFO& ci) { return !(ci.flags & CURSOR_SHOWING) || !ci.hCursor; }
+    void KeepPointer() { CURSORINFO ci{}; ci.cbSize = sizeof(ci); if (GetCursorInfo(&ci) && !PointerHidden(ci)) shownCursor_ = ci.hCursor; }
+    void WatchPointer() {
+        CURSORINFO ci{}; ci.cbSize = sizeof(ci); if (!hwnd_ || !GetCursorInfo(&ci)) return;
+        vanishAt_ = ci.ptScreenPos; vanishTicks_ = 0; SetTimer(hwnd_, VanishTimer, 50, nullptr);
+    }
+    void PointerTick() {
+        CURSORINFO ci{}; ci.cbSize = sizeof(ci); if (!GetCursorInfo(&ci)) { KillTimer(hwnd_, VanishTimer); return; }
+        if (!PointerHidden(ci)) { if (++vanishTicks_ > 10) KillTimer(hwnd_, VanishTimer); return; }
+        vanishTicks_ = 0;
+        if (ci.ptScreenPos.x == vanishAt_.x && ci.ptScreenPos.y == vanishAt_.y) return;
+        if (!(ci.flags & CURSOR_SHOWING)) for (int i = 0; i < 16 && ShowCursor(TRUE) < 0; ++i) {}
+        SetCursor(shownCursor_ ? shownCursor_ : LoadCursorW(nullptr, IDC_ARROW));
+        KillTimer(hwnd_, VanishTimer);
     }
     COLORREF CaretColor() const { const auto a = Design::Accent::Get(); return NativeUI::AccentCaret::Mix(FieldGray(), RGB(std::lround(a.r * 255), std::lround(a.g * 255), std::lround(a.b * 255)), Design::Accent::caretOpacity); }
     static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
@@ -385,45 +438,50 @@ class NotePopover : public Animator::Client {
         if (m == WM_NCCREATE) { self = static_cast<NotePopover*>(reinterpret_cast<CREATESTRUCTW*>(l)->lpCreateParams); SetWindowLongPtrW(h, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self)); self->hwnd_ = h; }
         return self ? self->Handle(h, m, w, l) : DefWindowProcW(h, m, w, l);
     }
-    LRESULT Handle(HWND h, UINT m, WPARAM w, LPARAM l) {
-        const float s = 96.f / Dpi();
+    LRESULT Handle(HWND h, UINT m, WPARAM w, LPARAM l) {   // the field's window: the canvas colour under the EDIT, focus and keys
         switch (m) {
         case WM_GETOBJECT: { LRESULT r; if (uia_.OnGetObject(h, w, l, r)) return r; break; }
-        case WM_ERASEBKGND: return 1;
-        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); PaintReal(); EndPaint(h, &ps); return 0; }
-        case WM_SIZE: if (rt_) rt_->Resize(D2D1::SizeU(LOWORD(l), HIWORD(l))); return 0;
-        case WM_CTLCOLOREDIT: { HDC dc = reinterpret_cast<HDC>(w); SetTextColor(dc, TextGray()); SetBkColor(dc, FieldGray()); SetBkMode(dc, OPAQUE); return reinterpret_cast<LRESULT>(fieldBrush_); }
+        case WM_ERASEBKGND: { RECT c{}; GetClientRect(h, &c); if (fieldBrush_) FillRect(reinterpret_cast<HDC>(w), &c, fieldBrush_); return 1; }
+        case WM_PAINT: { PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); if (fieldBrush_) FillRect(dc, &ps.rcPaint, fieldBrush_); EndPaint(h, &ps); NativeUI::EditBuffer::Flush(edit_); return 0; }
+        case WM_CTLCOLOREDIT: { HDC dc = reinterpret_cast<HDC>(w); NativeUI::EditBuffer::Clip(reinterpret_cast<HWND>(l), dc); SetTextColor(dc, TextGray()); SetBkColor(dc, FieldGray()); SetBkMode(dc, OPAQUE); return reinterpret_cast<LRESULT>(fieldBrush_); }
         case WM_COMMAND:
             if (reinterpret_cast<HWND>(l) == edit_ && HIWORD(w) == EN_CHANGE) FieldChanged();
-            if (HIWORD(w) == EN_SETFOCUS || HIWORD(w) == EN_KILLFOCUS) InvalidateRect(h, nullptr, FALSE);
+            if (HIWORD(w) == EN_SETFOCUS || HIWORD(w) == EN_KILLFOCUS) Repaint();
             return 0;
         case WM_ACTIVATE:
             if (LOWORD(w) == WA_INACTIVE && open_) { if (hooks_.blurred) hooks_.blurred(); }
             else if (LOWORD(w) != WA_INACTIVE && open_) { if (view_.focus) SetFocus(h); else SetFocus(edit_); }   // back where the user left it
             return 0;
         case WM_MOUSEACTIVATE: return MA_ACTIVATE;
-        case WM_MOUSEMOVE: {
-            TRACKMOUSEEVENT t{sizeof(t), TME_LEAVE, h, 0}; TrackMouseEvent(&t);
-            const int hit = NoteHitAt(layout_, GET_X_LPARAM(l) * s, GET_Y_LPARAM(l) * s);
-            if (hit != hover_) { hover_ = hit; Interact(); }
-            return 0; }
-        case WM_MOUSELEAVE: hover_ = 0; Interact(); return 0;
-        case WM_LBUTTONDOWN: {
-            view_.keyboard = false; const int hit = NoteHitAt(layout_, GET_X_LPARAM(l) * s, GET_Y_LPARAM(l) * s);
-            if (hit == NoteField) { SetFocus(edit_); return 0; }
-            pressed_ = hit; if (hit) SetCapture(h);
-            Interact(); return 0; }
-        case WM_LBUTTONUP: {
-            const int hit = NoteHitAt(layout_, GET_X_LPARAM(l) * s, GET_Y_LPARAM(l) * s), was = pressed_;
-            pressed_ = 0; if (GetCapture() == h) ReleaseCapture(); Interact();
-            if (was && was == hit) Activate(hit, false);
-            return 0; }
         case WM_KEYDOWN: case WM_SYSKEYDOWN: if (Key(w, false)) return 0; break;
-        case WM_SETFOCUS: case WM_KILLFOCUS: InvalidateRect(h, nullptr, FALSE); PlacePill(Motion::Now()); return 0;
+        case WM_SETFOCUS: case WM_KILLFOCUS: Repaint(); PlacePill(Motion::Now()); return 0;
         case WM_APP + 2: view_.keyboard = true; Activate(int(w), true); return 0;
-        case WM_DPICHANGED: if (rt_) { I().Forget(rt_); Release(rt_); } MakeFont(); Resize(); return 0;
+        case WM_TIMER: if (w == VanishTimer) { PointerTick(); return 0; } break;
+        case WM_DPICHANGED: MakeFont(); Relayout(); PlaceField(); Repaint(); PlacePill(Motion::Now()); return 0;
         }
         return DefWindowProcW(h, m, w, l);
+    }
+    // The panel layer's pointer (buttons: hover, press, click). It never takes activation (MA_NOACTIVATE, like the
+    // pill): a click on it gives the keyboard back to the field's window when the note had lost it.
+    bool PanelHandle(UINT m, WPARAM, LPARAM l, LRESULT& r) {
+        if (m != WM_MOUSEMOVE && m != WM_MOUSELEAVE && m != WM_LBUTTONDOWN && m != WM_LBUTTONUP) return false;
+        r = 0; if (!open_ || !settled_) return true;
+        const float s = 1 / panel_.Scale(); const int hit = m == WM_MOUSELEAVE ? 0 : NoteHitAt(layout_, GET_X_LPARAM(l) * s, GET_Y_LPARAM(l) * s);
+        switch (m) {
+        case WM_MOUSEMOVE: { TRACKMOUSEEVENT t{sizeof(t), TME_LEAVE, panel_.Window(), 0}; TrackMouseEvent(&t); if (hit != hover_) { hover_ = hit; Interact(); } break; }
+        case WM_MOUSELEAVE: if (hover_) { hover_ = 0; Interact(); } break;
+        case WM_LBUTTONDOWN:
+            view_.keyboard = false;
+            if (GetForegroundWindow() != hwnd_) SetForegroundWindow(hwnd_);
+            if (hit == NoteField) { SetFocus(edit_); break; }
+            pressed_ = hit; if (hit) SetCapture(panel_.Window());
+            Interact(); break;
+        case WM_LBUTTONUP: {
+            const int was = pressed_; pressed_ = 0; if (GetCapture() == panel_.Window()) ReleaseCapture(); Interact();
+            if (was && was == hit) Activate(hit, false);
+            break; }
+        }
+        return true;
     }
     bool PillHandle(UINT m, WPARAM, LPARAM l, LRESULT& r) {
         const float s = 1 / pill_.Scale(); const float x = GET_X_LPARAM(l) * s, y = GET_Y_LPARAM(l) * s;
@@ -442,8 +500,8 @@ class NotePopover : public Animator::Client {
         HDC dc = GetDC(edit_); auto old = SelectObject(dc, font_); TEXTMETRICW tm{}; GetTextMetricsW(dc, &tm); SelectObject(dc, old); ReleaseDC(edit_, dc);
         const int lines = int(SendMessageW(edit_, EM_GETLINECOUNT, 0, 0)); const float lineDip = (tm.tmHeight + tm.tmExternalLeading) * 96.f / Dpi();
         const float want = std::clamp(lines * lineDip + 4, NoteSpec::fieldMin, NoteSpec::fieldMax);
-        if (std::fabs(want - view_.fieldHeight) > .5f) { view_.fieldHeight = want; if (open_) Resize(); } else if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
-        if (edit_) InvalidateRect(edit_, nullptr, TRUE);
+        if (std::fabs(want - view_.fieldHeight) > .5f) { view_.fieldHeight = want; if (open_) Resize(); } else Repaint();
+        if (edit_) InvalidateRect(edit_, nullptr, FALSE);   // recomposed whole (EditBuffer): never erased on screen
         if (open_ && !settled_) Animator::Get().Request(this);
     }
     void MakeFont() {
@@ -454,13 +512,15 @@ class NotePopover : public Animator::Client {
     // ---- UI Automation
     std::vector<Accessibility::Node> Nodes() {
         std::vector<Accessibility::Node> n; if (!open_) return n;
-        auto screen = [&](D2D1_RECT_F r) { RECT p{Px(r.left), Px(r.top), Px(r.right), Px(r.bottom)}; MapWindowPoints(hwnd_, nullptr, reinterpret_cast<POINT*>(&p), 2); return p; };
+        auto screen = [&](D2D1_RECT_F r) { return RECT{final_.left + Px(r.left), final_.top + Px(r.top), final_.left + Px(r.right), final_.top + Px(r.bottom)}; };   // the panel's place on screen
         Accessibility::Node g; g.key = GroupKey; g.role = Accessibility::Role::Group; g.name = TR(note_title); g.automationId = L"AnnotationNote"; g.focusable = false;
-        g.status = view_.status == NoteStatus::Saving ? TR(note_adding_status) : view_.message; GetWindowRect(hwnd_, &g.bounds); n.push_back(g);
+        g.status = view_.status == NoteStatus::Saving ? TR(note_adding_status) : view_.message; g.bounds = final_; n.push_back(g);
         Accessibility::Node site; site.key = SiteKey; site.parent = GroupKey; site.role = Accessibility::Role::Text; site.name = TR(note_site); site.value = NoteSite(view_.context);
         site.focusable = false; site.bounds = screen(layout_.site); site.automationId = L"AnnotationSite"; n.push_back(site);
-        Accessibility::Node ok; ok.key = NoteAdd; ok.parent = GroupKey; ok.name = AddLabel(view_.status); ok.accelerator = TR(key_enter); ok.enabled = view_.status != NoteStatus::Saving;
+        Accessibility::Node ok; ok.key = NoteAdd; ok.parent = GroupKey; ok.name = AddLabel(view_.status); ok.accelerator = view_.ask ? TR(key_ctrl_enter) : TR(key_enter); ok.enabled = view_.status != NoteStatus::Saving;
         ok.bounds = screen(layout_.add); ok.automationId = L"AnnotationAdd"; n.push_back(ok);
+        if (view_.ask) { Accessibility::Node a; a.key = NoteAsk; a.parent = GroupKey; a.name = TR(chat_note_ask); a.accelerator = TR(key_enter); a.enabled = view_.status != NoteStatus::Saving;
+            a.bounds = screen(layout_.ask); a.automationId = L"AnnotationNoteAskAgent"; n.push_back(a); }
         RECT pr{}; if (pill_.Window()) { const auto r = PillLocal(Motion::Now()); pr = pill_.Screen(r); }
         if (PillExpandable(view_.capture)) {
             Accessibility::Node p; p.key = NotePill; p.parent = GroupKey; p.name = NoteSpec::pillLabel(); p.expand = pillOpen_ ? 2 : 1; p.bounds = pr; p.automationId = L"AnnotationContext"; n.push_back(p);
@@ -479,19 +539,32 @@ class NotePopover : public Animator::Client {
     bool Create() {
         if (hwnd_) return true;
         if (!Ink::Shared(root_)) return false;
+        // The panel and the ghost: per-pixel-alpha layers (smooth corners; no region, no DWM rounding, no shadow).
+        Layer::Options panel; panel.title = TR(note_title);
+        Layer::Options ghost; ghost.clickThrough = true; ghost.title = L"";
+        if (!panel_.Create(instance_, owner_, panel) || !ghost_.Create(instance_, owner_, ghost)) return false;
+        panel_.handle = [this](UINT m, WPARAM w, LPARAM l, LRESULT& r) { return PanelHandle(m, w, l, r); };
+        fieldBrush_ = CreateSolidBrush(FieldGray());
+        // The field's window: a plain rectangle (no region at all), owned by the panel so it stays right above it.
         WNDCLASSW wc{}; wc.lpfnWndProc = Proc; wc.hInstance = instance_; wc.hCursor = LoadCursorW(nullptr, IDC_ARROW); wc.lpszClassName = L"BrowserAnnotationNote";
         RegisterClassW(&wc);
-        CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, wc.lpszClassName, TR(note_title), WS_POPUP | WS_CLIPCHILDREN, 0, 0, 1, 1, owner_, nullptr, instance_, this);
+        CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_LAYERED, wc.lpszClassName, TR(note_title), WS_POPUP | WS_CLIPCHILDREN, 0, 0, 1, 1, panel_.Window(), nullptr, instance_, this);
         if (!hwnd_) return false;
         SetLayeredWindowAttributes(hwnd_, 0, 0, LWA_ALPHA);
-        NativeUI::ConfigureShadowlessPopup(hwnd_, NoteSpec::radius);
-        edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN, 0, 0, 1, 1, hwnd_, nullptr, instance_, nullptr);
+        NativeUI::ConfigureShadowlessPopup(hwnd_);   // no shadow, no DWM rounding; keepRegion: this window never has a region
+        edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN, 0, 0, 1, 1, hwnd_, nullptr, instance_, nullptr); NativeUI::SelectAllOnCtrlA(edit_);
         SendMessageW(edit_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0); SendMessageW(edit_, EM_SETLIMITTEXT, 4000, 0);
         SetWindowSubclass(edit_, EditProc, EditSubclass, reinterpret_cast<DWORD_PTR>(this));
-        fieldBrush_ = CreateSolidBrush(FieldGray()); MakeFont();
-        Layer::Options ghost; ghost.clickThrough = true; ghost.title = L"";
+        // Placeholder: drawn under the caret while the field is empty, inside the field's composed image.
+        NativeUI::EditBuffer::Attach(edit_, [this](HWND h, HDC dc, const RECT& client) {
+            if (GetWindowTextLengthW(h) != 0) return;
+            RECT c = client; auto old = SelectObject(dc, font_);
+            SetTextColor(dc, HintGray()); SetBkMode(dc, TRANSPARENT); DrawTextW(dc, NoteSpec::placeholder(), -1, &c, DT_WORDBREAK | DT_NOPREFIX);
+            SelectObject(dc, old);
+        });
+        MakeFont();
         Layer::Options pill; pill.title = NoteSpec::pillLabel();
-        if (!ghost_.Create(instance_, owner_, ghost) || !pill_.Create(instance_, hwnd_, pill)) return false;
+        if (!pill_.Create(instance_, hwnd_, pill)) return false;
         pill_.handle = [this](UINT m, WPARAM w, LPARAM l, LRESULT& r) { return PillHandle(m, w, l, r); };
         Accessibility::Host host; host.window = hwnd_;
         host.nodes = [this] { return Nodes(); };
@@ -500,15 +573,15 @@ class NotePopover : public Animator::Client {
         host.expand = [this](long long key, bool) { PostMessageW(hwnd_, WM_APP + 2, WPARAM(key), 0); };
         host.label = [this](HWND child, Accessibility::Node& node) {
             if (child != edit_) return false;
-            node.name = NoteSpec::placeholder(); node.automationId = L"AnnotationNoteField"; node.accelerator = TR(note_keys);
+            node.name = NoteSpec::placeholder(); node.automationId = L"AnnotationNoteField"; node.accelerator = view_.ask ? TR(note_keys_ask) : TR(note_keys);
             if (view_.fieldError) node.help = view_.message; return true; };
         uia_.Attach(std::move(host));
         motion_.EnablePolish();
         return true;
     }
-    void Settle() {   // V3 (no flash): the real panel painted and opaque first, then the ghost goes (overlap, never a gap)
+    void Settle() {   // V3 (no flash): the panel and its field painted and opaque first, then the ghost goes (overlap, never a gap)
         settled_ = true;
-        InvalidateRect(hwnd_, nullptr, FALSE); UpdateWindow(hwnd_);
+        PresentPanel(true); PlaceField(); InvalidateRect(hwnd_, nullptr, TRUE); UpdateWindow(hwnd_);
         SetLayeredWindowAttributes(hwnd_, 0, 255, LWA_ALPHA);
         DwmFlush();
         ghost_.Hide();
@@ -518,9 +591,10 @@ public:
     ~NotePopover() { Dispose(); }
     void Dispose() {
         if (Animator::Exists()) Animator::Get().Forget(this);
-        uia_.Detach(); if (rt_ && Ink::Instance()) Ink::Instance()->Forget(rt_); Release(rt_);
+        uia_.Detach();
         ghost_.Destroy(); pill_.Destroy();
         if (hwnd_ && IsWindow(hwnd_)) DestroyWindow(hwnd_);
+        panel_.Destroy();   // after the field's window it owns
         if (font_) DeleteObject(font_);
         if (fieldBrush_) DeleteObject(fieldBrush_);
         font_ = nullptr; fieldBrush_ = nullptr; hwnd_ = edit_ = nullptr; open_ = false;
@@ -533,9 +607,10 @@ public:
     void AccentChanged() {
         if (!hwnd_ || !open_) return;
         if (GetFocus() == edit_) caret_.Apply(edit_, FieldGray(), CaretColor(), std::max(1, Px(1)), Px(18));
-        InvalidateRect(hwnd_, nullptr, FALSE); PlacePill(Motion::Now());
+        Repaint(); PlacePill(Motion::Now());
     }
-    HWND Window() const { return hwnd_; }
+    HWND Window() const { return hwnd_; }          // the field's window: where the keyboard focus lives
+    HWND PanelWindow() const { return panel_.Window(); }
     HWND Edit() const { return edit_; }
     HWND PillWindow() const { return pill_.Window(); }
     // target: the element rect, bounds: the page area (both screen px).
@@ -543,23 +618,22 @@ public:
         if (!Create()) return false;
         const auto now = Motion::Now();
         projectId_ = request.projectId;
-        view_ = NoteView{}; view_.context = request.context; view_.capture = request.capture; view_.keyboard = keyboard;
+        view_ = NoteView{}; view_.context = request.context; view_.capture = request.capture; view_.keyboard = keyboard; view_.ask = request.askAgent;
         if (request.capture != CaptureState::Ready) shot_ = Shot{};
         reduced_ = reduced; target_ = target; bounds_ = bounds; hover_ = pressed_ = pillHover_ = pillPressed_ = 0; motion_.ClearInteractions(); motion_.SetReducedMotion(reduced);
         open_ = false; SetWindowTextW(edit_, request.draft.c_str()); SendMessageW(edit_, EM_SETSEL, WPARAM(request.draft.size()), LPARAM(request.draft.size()));
-        PlaceEdit(); FieldChanged(); view_.fieldError = false; view_.message.clear();
-        Relayout(); Place();
-        SetWindowPos(hwnd_, HWND_TOP, final_.left, final_.top, final_.right - final_.left, final_.bottom - final_.top, SWP_NOACTIVATE);
-        if (rt_) rt_->Resize(D2D1::SizeU(final_.right - final_.left, final_.bottom - final_.top));
-        PlaceEdit();
+        Relayout(); PlaceField();   // the field's width first: the draft's line count depends on it
+        FieldChanged(); view_.fieldError = false; view_.message.clear();
+        Relayout(); Place(); PlaceField();
+        panel_.Hide();              // the ghost plays the entrance; the panel appears, complete, when it settles
         open_ = true; settled_ = false;
         Timing t = NoteTiming(); presence_.Configure(t); presence_.Show(now, true, reduced);
         pillOpen_ = request.expanded && PillExpandable(request.capture); fold_.Snap(pillOpen_ ? 1.f : 0.f);
         pillIn_.Snap(0); pillIn_.Set(1, now, reduced ? Spec::modalReducedIn : Spec::pillUnfold, Curves::out, reduced ? 0 : Spec::pillDelay);
-        SetLayeredWindowAttributes(hwnd_, 0, reduced_ ? BYTE(std::lround(255 * presence_.Progress(now))) : 0, LWA_ALPHA);
+        SetLayeredWindowAttributes(hwnd_, 0, 0, LWA_ALPHA);
         ShowWindow(hwnd_, SW_SHOW); EnableWindow(hwnd_, TRUE);
         SetForegroundWindow(hwnd_); SetFocus(edit_);
-        if (!reduced_) PaintGhost(now);
+        PaintGhost(now);            // reduced motion: the same ghost, opacity only (Presence::Sample)
         PlacePill(now);
         Animator::Get().Request(this);
         if (uia_.Listening()) { uia_.ChildrenChanged(GroupKey); uia_.Raise(GroupKey, UIA_Window_WindowOpenedEventId); }
@@ -569,7 +643,7 @@ public:
         view_.capture = state; if (shot && state == CaptureState::Ready) shot_ = *shot; else if (state != CaptureState::Ready) shot_ = Shot{};
         if (state == CaptureState::Unavailable && pillOpen_) { pillOpen_ = false; fold_.Snap(0); }
         if (!hwnd_) return;
-        InvalidateRect(hwnd_, nullptr, FALSE); PlacePill(Motion::Now()); Animator::Get().Request(this);
+        Repaint(); PlacePill(Motion::Now()); Animator::Get().Request(this);
         if (uia_.Listening()) uia_.ChildrenChanged(GroupKey);
     }
     void SetProjects(std::vector<Project>, const std::wstring& selected) { projectId_ = selected; }   // V1, no selector in V2
@@ -578,18 +652,18 @@ public:
     // The write failed: keep the note, say so, offer « Réessayer » (focus on it).
     void Failed(const std::wstring& message = TR(note_save_failed)) {
         if (!hwnd_) return; view_.status = NoteStatus::Failed; view_.message = message; Resize();
-        view_.focus = NoteAdd; SetFocus(hwnd_); InvalidateRect(hwnd_, nullptr, FALSE); Announce(message);
+        view_.focus = NoteAdd; SetFocus(hwnd_); Repaint(); Announce(message);
     }
     void Close(bool animate = true) {
         if (!open_ || !hwnd_) return;
         const auto now = Motion::Now(); open_ = false;
-        const bool ghost = animate && !reduced_ && presence_.Progress(now) > 0;
+        const bool ghost = animate && presence_.Progress(now) > 0;
         presence_.Hide(now, animate, reduced_);
         pillIn_.Set(0, now, animate ? (reduced_ ? Spec::modalReducedOut : Spec::noteOut) : 0, Curves::out);
         if (GetForegroundWindow() == hwnd_ && owner_) SetForegroundWindow(owner_);
-        if (ghost) { PaintGhost(now); DwmFlush(); ShowWindow(hwnd_, SW_HIDE); }   // V3: the ghost is on screen before the panel goes
-        else if (reduced_ && animate) EnableWindow(hwnd_, FALSE);
-        else { ShowWindow(hwnd_, SW_HIDE); ghost_.Hide(); }
+        if (ghost) { PaintGhost(now); DwmFlush(); }   // V3: the ghost is on screen before the panel goes
+        else ghost_.Hide();
+        ShowWindow(hwnd_, SW_HIDE); panel_.Hide();
         PlacePill(now);
         if (uia_.Listening()) uia_.Raise(GroupKey, UIA_Window_WindowClosedEventId);
         if (presence_.Moving(now) || pillIn_.Moving(now)) Animator::Get().Request(this);
@@ -597,19 +671,16 @@ public:
     bool Frame(Motion::Time now) override {
         if (!hwnd_) return false;
         const bool moving = presence_.Moving(now);
-        if (open_) {
-            if (reduced_) { SetLayeredWindowAttributes(hwnd_, 0, BYTE(std::lround(255 * presence_.Progress(now))), LWA_ALPHA); if (!moving && !settled_) Settle(); }
-            else if (moving) PaintGhost(now);
-            else if (!settled_) Settle();
-        } else {
-            if (reduced_) { SetLayeredWindowAttributes(hwnd_, 0, BYTE(std::lround(255 * presence_.Progress(now))), LWA_ALPHA); if (!moving) { ShowWindow(hwnd_, SW_HIDE); EnableWindow(hwnd_, TRUE); } }
-            else if (moving) PaintGhost(now);
-            else ghost_.Hide();
-        }
+        if (moving) PaintGhost(now);
+        else if (!open_) ghost_.Hide();
+        else if (!settled_) Settle();
         const bool pillMoving = pillIn_.Moving(now) || fold_.Moving(now);
         const bool spin = open_ && pillOpen_ && view_.capture == CaptureState::Pending && !reduced_;
-        if (pillMoving || spin || moving || motion_.NextWake(now).delay) PlacePill(now);
-        if (open_ && settled_ && motion_.NextWake(now).delay) InvalidateRect(hwnd_, nullptr, FALSE);
+        // a closed note's pill is placed until it is hidden: when the UI thread was busy for the whole fade (« Demander à
+        // l'agent » opens the chat right after the close), the first frame comes after the ramp's end, and the pill would
+        // stay on screen as it was last presented (V1.2)
+        if (pillMoving || spin || moving || motion_.NextWake(now).delay || (!open_ && pill_.Shown())) PlacePill(now);
+        if (open_ && settled_ && motion_.NextWake(now).delay) Repaint();
         return moving || pillMoving || spin || motion_.NextWake(now).delay.has_value();
     }
     // ---- tests / QA
@@ -618,6 +689,7 @@ public:
     Presence& PresenceForTest() { return presence_; }
     Layer& GhostForTest() { return ghost_; }
     Layer& PillForTest() { return pill_; }
+    Layer& PanelForTest() { return panel_; }
     bool SettledForTest() const { return settled_; }
     bool PillOpenForTest() const { return pillOpen_; }
     bool KeyForTest(WPARAM key, bool fromEdit) { return Key(key, fromEdit); }
