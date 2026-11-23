@@ -126,7 +126,7 @@ struct Element {   // an aimed element: a chip in the composer, then part of a t
 };
 struct Attachment { std::string id, name, mime, base64, thumb; };
 struct Queued { std::string id, text; std::vector<std::string> elements, attachments; std::string batchId; std::vector<std::string> annotations; std::string convId; };   // convId (Mode Commentaire): the conversation it belongs to, "" = the engine's   // annotations: a batch « Traiter N annotations » that waits its turn
-struct Problem { std::wstring title, message; bool retry = true, connect = false, newChat = false; };
+struct Problem { std::wstring title, message; bool retry = true, connect = false, newChat = false, chooseFolder = false; };
 struct Turn {
     bool active = false, cancelled = false, snapshot = false, promptSent = false, ending = false;
     bool batch = false;   // « Traiter les annotations »: the prompt is the batch's instruction, the card follows our tools
@@ -140,6 +140,8 @@ struct Turn {
     Acp::Error failure; Problem problem;   // why it failed (an agent error code, or our own sentence)
     struct OurCall { ChatTools::Ours tool = ChatTools::Ours::None; std::string annotation, input; int count = -1; bool done = false, reported = false; };   // input: its arguments (an update does not repeat them)
     std::map<std::string, OurCall> ourCalls;   // tool call id -> one of our annotation tools (its step line is ours to word)
+    std::map<std::string, std::string> toolKinds;   // tool call id -> its ACP kind (an update may not repeat it)
+    std::vector<std::string> agentFiles;            // files the agent's edit / delete / move calls named (relative to the folder): the only ones the turn counts and undoes
 };
 struct Convo { ChatStore::Conversation data; int turnSeq = 0; bool preambleSent = false; std::string recap; };   // recap (R42): given with the next prompt to the agent that took the chat over
 // « Traiter les annotations » (contract B 1.4): one pending annotation of the site, as a line of the block / the card.
@@ -188,7 +190,7 @@ ChatStore::Projects projects; bool projectsLoaded = false; std::string agentId =
 struct Aside { bool on = false; Convo c; };
 Convo convo; Aside aside; bool asideSending = false; /* M7: the items of the conversation shown (aside or the engine's) */ const std::vector<SJ::Value>& ShownItems(); void ReleaseHeld(); Turn turn; std::deque<Queued> queue; std::map<std::string, Element> composerElements; std::map<std::string, Attachment> composerAttachments;
 std::unique_ptr<Acp::Session> session; bool sessionStarting = false, sessionReady = false, preparing = false; Acp::StartResult started;
-std::string pendingModel, pendingEffort, pendingMode; ChatOptions::Asked askedModel, askedEffort, askedMode; /* R46: asked to the session, not confirmed yet */ std::function<void()> afterReady; std::function<int()> preparePermille;
+std::string pendingModel, pendingEffort, pendingMode; ChatOptions::Asked askedModel, askedEffort, askedMode; /* R46: asked to the session, not confirmed yet */ std::function<void()> afterReady; std::function<int()> preparePermille, prepareStage;
 std::string modeAwaited; bool modeRefused = false;   // SEC-13: the mode last asked to the session, until it confirms it; the session refused it (or never answered)
 std::vector<std::unique_ptr<Acp::Session>> disposed;   // stopped sessions whose threads may still be ending (Shutdown waits for them)
 std::vector<Element> orphanAnnotations;                // annotations of a turn that ended before their write came back
@@ -466,6 +468,7 @@ void SendError(const Problem& p, const std::string& detail, const char* scope = 
     if (p.connect) add("connect", I18n::Id::chat_action_connect, true);
     if (p.retry) add("retry", I18n::Id::chat_action_retry, !p.connect);
     if (p.newChat) add("newChat", I18n::Id::chat_title_new, true);
+    if (p.chooseFolder) add("chooseFolder", I18n::Id::chat_action_choose_folder, true);
     m.Set("actions", std::move(actions));
     if (turn.active && !turn.id.empty()) m.Set("turnId", Str(turn.id));
     if (keep && std::string(scope) == "thread") Keep("error", m);
