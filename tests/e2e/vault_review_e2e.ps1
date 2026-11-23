@@ -169,7 +169,7 @@ try {
     Check $filled 'V-6 control: a visible field still fills'
   }
   if (!$Only -or $Only -match 'E') {
-    '--- E (option A): deleting Edge''s old passwords is OFFERED after 30 days of use, done only on request'
+    '--- E (option A): deleting Browser''s old passwords is OFFERED after 30 days of use, done only on request'
     function FindLike([int]$hostPid, [string]$pattern) {
       $cond = New-Object System.Windows.Automation.PropertyCondition($AE::ProcessIdProperty, $hostPid)
       foreach ($w in $AE::RootElement.FindAll('Children', $cond)) { foreach ($e in $w.FindAll('Descendants', [System.Windows.Automation.Condition]::TrueCondition)) { if ($e.Current.Name -like $pattern) { return $e } } }
@@ -194,7 +194,7 @@ try {
     $hp = StartHost $exe $dir; Start-Sleep 2
     Check ((Cleared) -eq 0 -and (LogCount $log 'VAULT engine saved passwords deleted') -eq 0) 'option A: on the 30th day of use NOTHING is deleted automatically'
     $list = OpenManager $hp; $offer = WaitFind $hp 'VaultEngineOffer' 5000
-    Check ([bool]$list -and [bool]$offer) 'option A: on the 30th day of use Réglages › Mots de passe offers « Supprimer les mots de passe d''Edge… »'
+    Check ([bool]$list -and [bool]$offer) 'option A: on the 30th day of use Réglages › Mots de passe offers « Supprimer les anciens mots de passe de Browser… »'
     if ($offer) {
       [void](InvokeEl $offer); $confirm = WaitFind $hp 'DeleteEnginePasswords' 6000
       Check ([bool]$confirm) 'option A: the link closes the list and opens the confirmation (small-popup family, danger action)'
@@ -204,8 +204,8 @@ try {
       [void](InvokeEl (WaitFind $hp 'DialogDeleteEnginePasswords' 3000))
       Check (WaitLog $log 'VAULT engine saved passwords deleted on request' 15000) 'option A: after the confirmation the engine''s saved passwords are deleted (ClearBrowsingData PASSWORD_AUTOSAVE)'
       Start-Sleep 1
-      $done = $null; $t = [Environment]::TickCount; while (!$done -and [Environment]::TickCount - $t -lt 6000) { $done = FindLike $hp "*Mots de passe d'Edge supprimés*"; Start-Sleep -Milliseconds 300 }
-      Check ((Cleared) -gt 0 -and -not (Find $hp 'VaultEngineOffer') -and [bool]$done) 'option A: the list comes back and says so (« Mots de passe d''Edge supprimés »), the deletion is recorded and the offer is gone'
+      $done = $null; $t = [Environment]::TickCount; while (!$done -and [Environment]::TickCount - $t -lt 6000) { $done = FindLike $hp "*Anciens mots de passe de Browser supprimés*"; Start-Sleep -Milliseconds 300 }
+      Check ((Cleared) -gt 0 -and -not (Find $hp 'VaultEngineOffer') -and [bool]$done) 'option A: the list comes back and says so (« Anciens mots de passe de Browser supprimés », review N-4), the deletion is recorded and the offer is gone'
     }
     StopHost $exe $dir; $hp = StartHost $exe $dir; Start-Sleep 1
     $list = OpenManager $hp
