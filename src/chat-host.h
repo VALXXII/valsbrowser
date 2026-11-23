@@ -190,7 +190,7 @@ ChatStore::Projects projects; bool projectsLoaded = false; std::string agentId =
 struct Aside { bool on = false; Convo c; };
 Convo convo; Aside aside; bool asideSending = false; /* M7: the items of the conversation shown (aside or the engine's) */ const std::vector<SJ::Value>& ShownItems(); void ReleaseHeld(); Turn turn; std::deque<Queued> queue; std::map<std::string, Element> composerElements; std::map<std::string, Attachment> composerAttachments;
 std::unique_ptr<Acp::Session> session; bool sessionStarting = false, sessionReady = false, preparing = false; Acp::StartResult started;
-std::string pendingModel, pendingEffort, pendingMode; ChatOptions::Asked askedModel, askedEffort, askedMode; /* R46: asked to the session, not confirmed yet */ std::function<void()> afterReady; std::function<int()> preparePermille;
+std::string pendingModel, pendingEffort, pendingMode; ChatOptions::Asked askedModel, askedEffort, askedMode; /* R46: asked to the session, not confirmed yet */ std::function<void()> afterReady; std::function<int()> preparePermille, prepareStage;
 std::string modeAwaited; bool modeRefused = false;   // SEC-13: the mode last asked to the session, until it confirms it; the session refused it (or never answered)
 std::vector<std::unique_ptr<Acp::Session>> disposed;   // stopped sessions whose threads may still be ending (Shutdown waits for them)
 std::vector<Element> orphanAnnotations;                // annotations of a turn that ended before their write came back

@@ -42,17 +42,26 @@ std::shared_ptr<std::atomic<bool>> prepareCancel;
 void PrepareAgent(const std::string& id, std::function<void(bool)> then) {
     const auto* def = AgentOf(id); if (!def || preparing) { if (then) then(false); return; }
     preparing = true; prepareCancel = std::make_shared<std::atomic<bool>>(false);
-    SetAgentStatus(id, "preparing", TR(chat_agent_preparing), 0);
-    struct Shared { std::atomic<int> permille{0}; AgentRuntime::PrepareResult result; };
+    // no bar until something really moves: « Préparation de Claude… » alone (never an empty grey bar)
+    SetAgentStatus(id, "preparing", TRF(chat_agent_prepare_start, AgentShort(id)), -1);
+    struct Shared { std::atomic<int> permille{0}, stage{0}; AgentRuntime::PrepareResult result; };
     auto shared = std::make_shared<Shared>(); const auto rt = def->rt; auto cancel = prepareCancel; const HWND target = post;
     Ann::Run([shared, rt, cancel, target] {
             const auto env = RtEnv();
             shared->result = AgentRuntime::Prepare(env, rt, [&](const AgentRuntime::Progress& p) {
-                double f = 0;   // Node is most of the bytes: 0 .. 0.7, the adapter's packages 0.7 .. 1
-                if (p.stage == AgentRuntime::Progress::Stage::Node) f = p.total ? 0.7 * double(p.received) / double(p.total) : 0.1;
-                else if (p.stage == AgentRuntime::Progress::Stage::Adapter) f = 0.7 + (p.itemCount ? 0.3 * double(p.item) / double(p.itemCount) : 0);
-                else if (p.stage == AgentRuntime::Progress::Stage::Done) f = 1;
-                shared->permille = int(f * 1000); if (target) PostMessageW(target, WM_APP + 22, 0, 0);
+                // each stage its own label and its own progress (PrepareProgress): Node's download (bytes), then its
+                // unpacking (no measure: no bar), then the adapter's packages (count, and the bytes of the current one)
+                using St = AgentRuntime::Progress::Stage;
+                double f = -1; int stage = 0;
+                if (p.stage == St::Node) {
+                    if (p.total && p.received >= p.total) stage = 2;   // downloaded: unpacked and checked now
+                    else { stage = 1; if (p.total) f = double(p.received) / double(p.total); }
+                } else if (p.stage == St::Adapter) {
+                    stage = 3;
+                    if (p.itemCount) f = (double(p.item) + (p.total ? std::min(1.0, double(p.received) / double(p.total)) : 0.0)) / double(p.itemCount);
+                } else if (p.stage == St::Done) stage = 4;
+                shared->stage = stage; shared->permille = f < 0 ? -1 : int(std::min(1.0, f) * 1000);
+                if (target) PostMessageW(target, WM_APP + 22, 0, 0);
             }, cancel.get());
         },
         [shared, id, then] {
@@ -66,12 +75,22 @@ void PrepareAgent(const std::string& id, std::function<void(bool)> then) {
                 if (!turn.active) { Acp::Error e; e.code = Acp::ErrorCode::NeedsPrepare; SendError(ProblemFor(e, id), std::string(AgentRuntime::PrepareErrorName(shared->result.error)) + " " + shared->result.detail); } }   // a waiting turn says it itself
             SendState(); if (then) then(ok);
         });
-    preparePermille = [shared] { return shared->permille.load(); };
+    preparePermille = [shared] { return shared->permille.load(); }; prepareStage = [shared] { return shared->stage.load(); };
 }
 void PrepareProgress() {
     if (!preparing || !preparePermille) return;
-    const int p = preparePermille(); auto& a = agentInfo[agentId];
-    a.status = "preparing"; a.progress = p / 1000.0; a.detail = TRF(chat_agent_download, std::to_wstring(p / 10)); SendState();
+    const int p = preparePermille(), stage = prepareStage ? prepareStage() : 0; auto& a = agentInfo[agentId]; const std::wstring who = AgentShort(agentId);
+    // a bar only from 1 %: below, the label alone (an empty bar says nothing)
+    const double bar = p >= 10 ? p / 1000.0 : -1; const std::wstring pct = std::to_wstring(std::max(0, p) / 10);
+    a.status = "preparing"; a.progress = -1;
+    switch (stage) {
+    case 1: a.detail = bar < 0 ? TR(chat_agent_node_connect) : TRF(chat_agent_node_download, pct); a.progress = bar; break;
+    case 2: a.detail = TR(chat_agent_node_install); break;
+    case 3: a.detail = bar < 0 ? TRF(chat_agent_adapter_start, who) : TRF(chat_agent_adapter_install, who, pct); a.progress = bar; break;
+    case 4: a.detail = TRF(chat_agent_launching, who); break;
+    default: a.detail = TRF(chat_agent_prepare_start, who); break;
+    }
+    SendState();
 }
 
 // ---------------------------------------------------------------- session (one agent process per conversation)
