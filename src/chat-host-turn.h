@@ -8,6 +8,7 @@ void StartTurn(const std::string& text, const std::vector<std::string>& elementI
 SJ::Value BatchItemJson(const BatchItem& i, bool withStatus); void BatchToolDone(ChatTools::Ours tool, const std::string& annotation, const std::string& rawInput); void BatchTurnEnded(const std::string& stopReason);
 void StartBatchTurn(const std::string& precision, const std::string& batchId, const std::vector<std::string>& ids); void PoseBatch(const wchar_t* from); void ShowAnnotation(const std::string& id);
 void DisposeSession(const wchar_t* why);
+void SendPrompt(); void ModeSettled(); void ModeRefused(const Acp::Event& e);   // SEC-13
 
 // ---------------------------------------------------------------- detection and preparation (off the UI thread)
 void ApplyDetection(const std::string& id, const AgentRuntime::Detection& d) {
@@ -78,6 +79,7 @@ void DisposeSession(const wchar_t* why) {
     defaultsApplied = false;   // R28: the next session shows the browser's choices until they are applied
     choicesOwed = 0;           // M: owed to the session that leaves — the next one gets the choices at its start
     askedModel = askedEffort = askedMode = ChatOptions::Asked{};   // R46
+    modeAwaited.clear(); modeRefused = false;   // SEC-13: the next session's mode is asked again at its start
     if (!session) return;
     session->Dispose(); disposed.push_back(std::move(session)); session.reset();   // kept until its threads have ended (Shutdown waits)
     sessionReady = sessionStarting = false; afterReady = nullptr;
@@ -93,6 +95,7 @@ void SetAgentMode(const std::string& id) {
     const auto mv = ModesOf(agentId, agentInfo[agentId]);
     askedMode = ChatOptions::Asked{id, Ann::NowMs()};   // R46: shown until the agent confirms it
     Diag(L"mode asked: « " + W(id) + L" »");
+    modeAwaited = id; modeRefused = false;   // SEC-13: no prompt until the session confirms it
     if (id == PlanOptionId) { session->SetConfigOption(mv.map.planOption, mv.map.planOn); return; }
     if (mv.current == PlanOptionId) session->SetConfigOption(mv.map.planOption, mv.map.planOff);   // leaving « Planifier » held by an option
     if (mv.viaOption) session->SetConfigOption(mv.optionId, id); else session->SetMode(id);
@@ -516,8 +519,8 @@ void OnEvent(const Acp::Event& e) {
         if (e.permission.requestId == turn.planPermission) { turn.planPermission.clear(); break; }
         waitingPermissions.erase(e.permission.requestId);
         SJ::Value m = SJ::Value::Obj(); m.Set("requestId", Str(e.permission.requestId)); Send("permission.cancel", std::move(m)); break; }
-    case T::ModesChanged: info.modes = e.modes; KeepModeAfterPlan(); SendState(); break;
-    case T::ConfigOptionsChanged: { info.options = e.configOptions; KeepModeAfterPlan(); SendState(); void SaveOptionsCache(); SaveOptionsCache(); break; }
+    case T::ModesChanged: info.modes = e.modes; KeepModeAfterPlan(); SendState(); ModeSettled(); break;
+    case T::ConfigOptionsChanged: { info.options = e.configOptions; KeepModeAfterPlan(); SendState(); void SaveOptionsCache(); SaveOptionsCache(); ModeSettled(); break; }
     case T::CommandsChanged: info.commands = e.commands; SendCommands(); break;
     case T::SessionTitle: if (!e.text.empty()) { convo.data.head.title = ChatPrompt::OneLine(e.text, 60); SendState(); } break;
     case T::Usage: {   // context gauge (contract B 1.2): relayed as it comes (also after a compaction), kept with the conversation
@@ -534,11 +537,11 @@ void OnEvent(const Acp::Event& e) {
         break;
     case T::Notice: Diag(L"agent notice (" + W(e.severity) + L"): " + W(ClipUtf8(e.text, 300))); break;
     case T::TurnEnded: if (turn.active) { turn.failure = e.error; FinishTurn(e.error.Ok() ? (e.stopReason.empty() ? std::string("end_turn") : e.stopReason) : std::string("error")); } break;
-    case T::RequestFailed: Diag(L"agent refused " + W(e.request) + L": " + W(Acp::ErrorCodeName(e.error.code)) + L" " + W(ClipUtf8(e.error.detail, 200))); SendState(); break;
+    case T::RequestFailed: Diag(L"agent refused " + W(e.request) + L": " + W(Acp::ErrorCodeName(e.error.code)) + L" " + W(ClipUtf8(e.error.detail, 200))); ModeRefused(e); SendState(); break;
     case T::Warning: Diag(L"agent line ignored: " + W(ClipUtf8(e.text, 200))); break;
     case T::Exited:
         Diag(L"agent exited (" + std::to_wstring(e.exitCode) + L"): " + W(ClipUtf8(e.error.detail, 300)));
-        sessionReady = sessionStarting = false; if (session) { disposed.push_back(std::move(session)); session.reset(); }
+        sessionReady = sessionStarting = false; modeAwaited.clear(); modeRefused = false; if (session) { disposed.push_back(std::move(session)); session.reset(); }
         if (turn.active) { turn.failure = e.error; FinishTurn("error"); } else { info.status = "ready"; info.detail = TR(chat_agent_installed); SendState(); }
         break;
     }
@@ -601,8 +604,41 @@ std::string LastParagraph(const std::string& text) {
 
 // ---------------------------------------------------------------- one turn
 std::shared_ptr<CS::Store> Snapshots() { if (!snapshots) snapshots = std::make_shared<CS::Store>(Ann::DataRoot() + L"\\" + CS::StoreFolderName); return snapshots; }
+// SEC-13: the prompt goes only in the mode the browser asked (« Demander » unless the user chose another one). false: held
+// (the mode's confirmation sends it: ModeSettled) or the turn ended in error.
+bool PromptModeReady() {
+    const auto mv = ModesOf(agentId, agentInfo[agentId]);
+    switch (ChatOptions::PromptGateFor(mv.current, modeAwaited, modeRefused, In(mv.map.never, mv.current))) {
+    case ChatOptions::PromptGate::Go: turn.modeWait = false; return true;
+    case ChatOptions::PromptGate::Wait: if (!turn.modeWait) Diag(L"prompt held until the session is in « " + W(modeAwaited) + L" » (now « " + W(mv.current) + L" »)"); turn.modeWait = true; return false;   // i18n-exempt: log detail
+    case ChatOptions::PromptGate::Fix: break;
+    }
+    const std::string want = WantedMode(mv);
+    if (turn.modeFixed || want.empty()) {
+        Diag(L"prompt refused: the session stays in « " + W(mv.current) + L" » (" + (modeRefused ? L"mode change refused" : L"a mode that asks for nothing") + L")");   // i18n-exempt: log detail
+        turn.modeWait = false; Acp::Error e; e.code = Acp::ErrorCode::Protocol; e.detail = "session/set_mode"; turn.failure = e; FinishTurn("error"); return false;
+    }
+    turn.modeFixed = turn.modeWait = true; SetAgentMode(want); return false;
+}
+// SEC-13: the session announced its mode (or refused to change it).
+void ModeSettled() {
+    const auto mv = ModesOf(agentId, agentInfo[agentId]);
+    if (!modeAwaited.empty() && mv.current == modeAwaited) modeAwaited.clear();
+    if (modeAwaited.empty() && In(mv.map.never, mv.current) && session && sessionReady) {   // SEC-02: the agent went to a mode that asks for nothing
+        const std::string want = WantedMode(mv);
+        if (!want.empty()) { Diag(L"the session went to « " + W(mv.current) + L" », a mode that asks for nothing: set back to « " + W(want) + L" »"); SetAgentMode(want); }   // i18n-exempt: log detail
+    }
+    if (turn.active && turn.modeWait && !turn.promptSent) SendPrompt();
+}
+void ModeRefused(const Acp::Event& e) {
+    const auto mv = ModesOf(agentId, agentInfo[agentId]);
+    if (modeAwaited.empty() || (e.request == "set_config_option" && !mv.viaOption && mv.map.planOption.empty())) return;   // a model or an effort, not the mode
+    modeAwaited.clear(); modeRefused = true;
+    if (turn.active && turn.modeWait && !turn.promptSent) { turn.modeWait = false; Diag(L"prompt refused: the mode was not applied"); turn.failure = e.error; if (turn.failure.Ok()) turn.failure.code = Acp::ErrorCode::Protocol; FinishTurn("error"); }   // i18n-exempt: log detail
+}
 void SendPrompt() {
     if (!turn.active || !session || !sessionReady) return;
+    if (!PromptModeReady()) return;
     std::vector<Acp::ContentBlock> blocks;
     if (!convo.preambleSent) {
         ChatPrompt::PreambleInput in; in.site = site.origin; in.folder = U8(folder); in.browser = "the browser";
@@ -757,6 +793,7 @@ void StopTurn() {
     if (turn.promptSent && session) session->Cancel();          // -> TurnEnded{cancelled}
     else if (!sessionReady && !sessionStarting && !preparing) FinishTurn("cancelled");
     else if (sessionStarting || preparing) { afterReady = nullptr; if (prepareCancel) *prepareCancel = true; FinishTurn("cancelled"); }
+    else if (turn.modeWait) FinishTurn("cancelled");   // SEC-13: held for the mode, never sent
     // else: the snapshot is being taken; BeginSnapshotThenPrompt ends the turn
 }
 void ProcessQueue() {

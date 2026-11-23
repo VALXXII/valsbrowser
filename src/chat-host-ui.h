@@ -818,7 +818,15 @@ void OnPanelMessage(const std::string& json) {
     if (type == "checkpoint.restore") { const std::string cp = m.Id("checkpointId"); std::string t; for (const auto& p : checkpointOfTurn) if (p.second == cp) t = p.first; if (!cp.empty()) Undo(t, cp); return; }
     if (type == "checkpoint.viewChanges") { ViewChanges(m.Id("turnId"), m.Text("path", 1024)); return; }
     if (type == "plan.run") {
-        if (turn.active && !turn.planPermission.empty() && session) { std::string allow; for (const auto& o : turn.planOptions) if (allow.empty() && o.kind.rfind("allow", 0) == 0) allow = o.id; if (allow.empty() && !turn.planOptions.empty()) allow = turn.planOptions.back().id; turn.planLaunched = true; session->RespondPermission(turn.planPermission, allow); turn.planPermission.clear(); return; }   // M: the mode the agent goes to is kept (KeepModeAfterPlan)
+        if (turn.active && !turn.planPermission.empty() && session) {   // M: the mode the agent goes to is kept (KeepModeAfterPlan)
+            // SEC-02: by id, the option that keeps every next change asking (never « bypass permissions », never by position)
+            const auto mv = ModesOf(agentId, agentInfo[agentId]); const std::string allow = ChatOptions::PlanRunOption(turn.planOptions, mv.map.ask, mv.map.automatic, mv.map.never);
+            if (allow.empty() || !ChatStore::ValidId(allow)) {   // none: the gate keeps asking, the plan's buttons come back
+                Diag(L"plan gate: no option keeps the permissions, nothing answered");   // i18n-exempt: log detail
+                if (auto it = turn.itemOf.find(turn.planId); it != turn.itemOf.end()) { SJ::Value again = SJ::Value::Obj(); for (const auto& f : convo.data.items[it->second].members) if (f.first != "type") again.Set(f.first, f.second); Send("plan", std::move(again)); }
+                return;
+            }
+            turn.planLaunched = true; session->RespondPermission(turn.planPermission, allow); turn.planPermission.clear(); Diag(L"plan launched with « " + W(allow) + L" »"); return; }   // i18n-exempt: log detail
         // a plan given as plain updates (no gate): leave Plan mode for the first « ask » mode, then say go
         const auto mv = ModesOf(agentId, agentInfo[agentId]); std::string next; for (const auto& md : mv.list) if (next.empty() && md.kind == "ask") next = md.id; for (const auto& md : mv.list) if (next.empty() && md.kind != "plan") next = md.id;
         RememberSetting(&ChatStore::Project::mode, ChatOptions::ModeAfterPlan(true, next, KindOfMode(mv, next)));   // M: the user launched the plan — the next element does not start in « Planifier » again

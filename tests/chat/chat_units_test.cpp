@@ -414,6 +414,25 @@ static void TestOptions() {
     Check(fx.size() == 2 && fx[0] == 0 && fx[1] == 1, "R4: a line the adapter does not have is absent; an unknown mode is never shown");
     const std::vector<P> twice = {{"auto", "acceptEdits"}, {"auto", "acceptAll"}};
     Check(PaperModes(twice).size() == 1, "R4: one mode per line (the first wins)");
+    // SEC-02: « Lancer le plan » never answers the plan gate with the mode that bypasses every permission
+    {   struct Opt { std::string id, kind; };
+        const std::vector<std::string> ask = {"default"}, automatic = {"auto", "acceptEdits"}, never = {"bypassPermissions"};
+        // Claude's adapter on Windows (ALLOW_BYPASS): bypass first, then acceptEdits, default, plan
+        const std::vector<Opt> claudeGate = {{"bypassPermissions", "allow_always"}, {"acceptEdits", "allow_always"}, {"default", "allow_once"}, {"plan", "reject_once"}};
+        Check(PlanRunOption(claudeGate, ask, automatic, never) == "default", "SEC-02: Claude's plan gate is answered with « default » (every change still asks), never the first allow option");
+        const std::vector<Opt> reordered = {{"default", "allow_once"}, {"bypassPermissions", "allow_once"}};
+        Check(PlanRunOption(reordered, ask, automatic, never) == "default", "SEC-02: by id, whatever the order");
+        const std::vector<Opt> noAsk = {{"bypassPermissions", "allow_once"}, {"acceptEdits", "allow_once"}, {"yes", "allow_once"}};
+        Check(PlanRunOption(noAsk, ask, automatic, never) == "yes", "SEC-02: no ask mode: an allow_once that is neither automatic nor « never »");
+        const std::vector<Opt> onlyBad = {{"bypassPermissions", "allow_always"}, {"acceptEdits", "allow_always"}, {"plan", "reject_once"}};
+        Check(PlanRunOption(onlyBad, ask, automatic, never).empty(), "SEC-02: nothing keeps the permissions: nothing is answered (no fallback to the last option)");
+        const std::vector<Opt> askRejects = {{"default", "reject_once"}};
+        Check(PlanRunOption(askRejects, ask, automatic, never).empty() && PlanRunOption(std::vector<Opt>{}, ask, automatic, never).empty(), "SEC-02: a refusal is never taken for a launch"); }
+    // SEC-13: the mode is applied fail-closed
+    Check(PromptGateFor("auto", "default", false, false) == PromptGate::Wait, "SEC-13: a mode asked and not confirmed yet holds the prompt");
+    Check(PromptGateFor("default", "default", false, false) == PromptGate::Go && PromptGateFor("default", "", false, false) == PromptGate::Go, "SEC-13: the session is in the mode asked: the prompt goes");
+    Check(PromptGateFor("auto", "", true, false) == PromptGate::Fix, "SEC-13: the last mode change was refused: never prompted as it is");
+    Check(PromptGateFor("bypassPermissions", "", false, true) == PromptGate::Fix, "SEC-13: never a prompt in a mode that asks for nothing");
 }
 
 // Mode Commentaire: where the bubble goes (src/chat-bubble.h) and what the store keeps of it (src/chat-store.h).
