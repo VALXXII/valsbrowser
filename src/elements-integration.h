@@ -673,8 +673,10 @@ void ApplyFullscreen(bool wasFull){
         // field goes to the page (a page that asked for fullscreen already has it).
         hover=pressed=0;if(tooltip)SendMessageW(tooltip,TTM_POP,0,0);if(editing||keyboardFocus||GetFocus()==address)FocusPage();
         if(IsZoomed(window))ShowWindow(window,SW_RESTORE);
+        // Without its caption style while it covers the monitor, so Windows treats it as fullscreen (taskbar below).
+        SetWindowLongPtrW(window,GWL_STYLE,GetWindowLongPtrW(window,GWL_STYLE)&~static_cast<LONG_PTR>(WS_CAPTION));
         const RECT m=MonitorScreenRect();SetWindowPos(window,HWND_TOP,m.left,m.top,m.right-m.left,m.bottom-m.top,SWP_FRAMECHANGED|SWP_NOOWNERZORDER);}
-    else if(!full&&wasFull){if(fullscreen.saved)SetWindowPlacement(window,&fullscreen.placement);SetWindowPos(window,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_FRAMECHANGED);}
+    else if(!full&&wasFull){SetWindowLongPtrW(window,GWL_STYLE,GetWindowLongPtrW(window,GWL_STYLE)|WS_CAPTION);if(fullscreen.saved)SetWindowPlacement(window,&fullscreen.placement);SetWindowPos(window,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_FRAMECHANGED);}
     Layout();
     // C7: the pill names the real origin of the page that took the screen (« Cette page » only
     // without one). No keyboard-lock variant here: WebView2 exposes no keyboard-lock signal.
