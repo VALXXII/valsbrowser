@@ -859,6 +859,19 @@ try:
         host({"type": "state", "agents": [{"id": "claude-code", "name": "Claude Code", "icon": "claude", "status": "starting"}], "efforts": [], "model": "sonnet", "effort": "high"})
         f1 = cdp.js("(()=>{const m=document.querySelector('.model .m'),e=document.querySelector('.model .e');return [m.textContent, !e.hidden, getComputedStyle(m.querySelector('.mcv')).display!=='none', Math.round(m.getBoundingClientRect().height)]})()")
         check(f0 == ["Sonnet 5.5Élevé", True, True, 24] and f1 == f0 and sizes()[-1] == [305, 84], "bubble (cv4 R28): model, effort and chevron shown at once and kept when the agent's state comes back without its lists — nothing changes size", f"{f0} -> {f1} {sizes()[-1]}")
+        # fix 0.3.690 (R13): a new profile, no saved lists, the agent being prepared — the button names the pinned adapter's
+        # default model, never the tool; the agent's live list replaces it, the cached choice wins over the fallback
+        load("c-profil-neuf")
+        MB = "(()=>{const m=document.querySelector('.model .m'),e=document.querySelector('.model .e');return [m.querySelector('.mn').textContent, e.hidden?'':e.textContent.trim(), Math.round(m.getBoundingClientRect().height)]})()"
+        n0 = cdp.js(MB); txt0 = cdp.js("document.body.innerText")
+        check(n0 == ["Opus 5.5", "Moyen", 24] and "Claude Code" not in txt0, "bubble (fix 0.3.690 R13): new profile without saved lists — the button names the fallback model « Opus 5.5 · Moyen », never « Claude Code »", f"{n0} {'Claude Code' in txt0}")
+        host({"type": "state", "agents": [{"id": "claude", "name": "Claude Code", "icon": "claude", "status": "ready", "models": [{"id": "opus", "label": "Opus 5.5", "isDefault": True}, {"id": "sonnet", "label": "Sonnet 5.5"}]}], "agentId": "claude", "model": "sonnet", "efforts": [{"id": "low", "label": "Low"}, {"id": "high", "label": "High"}], "effort": "high"})
+        n1 = cdp.js(MB)
+        check(n1 == ["Sonnet 5.5", "Élevé", 24], "bubble (fix 0.3.690 R13): the cached / live list replaces the fallback — the remembered model and effort, same height", str(n1))
+        load("profil-neuf")
+        host({"type": "turn.start", "turnId": "t1", "agentId": "claude", "at": "2026-11-23T10:00:00Z"})
+        tl = cdp.js("(()=>{const t=document.querySelector('.turn[data-turn=t1]'),m=t.querySelector('.meta'),w=t.querySelector('.working'),l=t.querySelector('.mlogo').getBoundingClientRect(),x=(m.hidden?w:m).getBoundingClientRect();return [m.hidden?'':m.textContent, Math.abs((l.top+l.bottom)/2-(x.top+x.bottom)/2)<=1, t.querySelectorAll('.mlogo').length, w.textContent.startsWith('Travaille')]})()")
+        check(tl == ["Opus 5.5", True, 1, True] and "Claude Code" not in cdp.js("document.body.innerText"), "panel (fix 0.3.690): a turn started before any model is known names the fallback model; the logo is on that line, centred, never alone above « Travaille… »", str(tl))
         # R29: a new card of the agent comes in softly
         load("c-2-envoye")
         host({"type": "message.agentChunk", "turnId": "t1", "messageId": "m9", "text": "Je vérifie aussi la largeur sur mobile."})

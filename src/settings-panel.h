@@ -515,6 +515,7 @@ public:
         std::function<void()> pickFolder;                           // modal folder picker (may change the state)
         std::function<void(bool keyboard)> managePasswords;          // E8: the vault manager (B05)
         std::function<std::pair<bool, std::size_t>()> vaultInfo;     // E8: {vault active here, account count}
+        std::function<std::wstring()> clearOnExitNote;               // « Effacer en quittant »: what it really deletes (depends on the vault)
         std::function<void(bool keyboard)> clearData;               // modal confirmation + clear; `keyboard`: how the row was activated (focus ring)
         std::function<void(bool keyboard)> importData;              // « Importer depuis un navigateur… » (src/browser-import.h); absent: no row
         std::function<void()> checkUpdates;
@@ -739,6 +740,7 @@ private:
         lines_.clear();
         for (const auto& [hit, text] : Descriptions) lines_[hit] = Wrap(I18n::T(text.id), Layout::descriptionWidth);
         noSitesLines_ = Wrap(NoSitesDescription(), Layout::rowRight - 8 - Layout::textLeft);
+        if (hooks_.clearOnExitNote) lines_[ClearOnExit] = Wrap(hooks_.clearOnExitNote(), Layout::descriptionWidth);
         sitesNoteLines_ = Wrap(SitesNote(), Layout::rowRight - Layout::textLeft - 4);
         profileNoteLines_ = Wrap(TR(settings_profile_delete_note), Layout::rowRight - Layout::textLeft - 4);
         lastProfileNoteLines_ = Wrap(TR(settings_last_profile_note), Layout::rowRight - Layout::textLeft - 4);
@@ -2184,6 +2186,7 @@ public:
             for (int i = 0; i < SwitchCount; ++i) { switches_[i].Snap(SwitchValue(SwitchHits[i]) ? 1.f : 0.f); knobPress_[i].Snap(0); }
             LoadSites(); // the Autorisations row shows how many sites
             LoadAnnotations(); // the « Annotations » row shows the connected agents
+            RefreshProfiles(); // the « Profils » row (and its current profile) is there from the first frame
             if (hooks_.savedLanguage) { languageSaved_ = hooks_.savedLanguage(); languageFailed_ = false; }   // « Langue »: the preference as stored now
             defaultBrowser_ = hooks_.defaultBrowser ? hooks_.defaultBrowser() : -1;   // the card: Windows' answer now
             cardClock_ = now; cardLayer_.shaded = {};                               // its halftone loop starts on Paper's frame

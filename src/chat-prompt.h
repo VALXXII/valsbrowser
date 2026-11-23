@@ -263,6 +263,17 @@ inline Marks MarksInFolder(const std::vector<std::string>& files, const std::str
     }
     return any ? Marks::Inside : Marks::None;
 }
+// A file an agent's tool call names (absolute, or relative to the project folder; any slashes), as a path relative to
+// the project folder with '/' separators — the form the change snapshots use. Empty when it is outside the folder.
+inline std::string ProjectRelative(const std::string& file, const std::string& projectDir) {
+    std::string root, f = detail::Slashes(file), n;
+    if (f.empty() || f.size() > 1024 || projectDir.empty() || !detail::Normalize(detail::Slashes(projectDir), root) || root.empty()) return "";
+    if (root.back() == '/') root.pop_back();
+    if (f.rfind("file:///", 0) == 0) f.erase(0, 8);
+    if (!detail::Absolute(f)) { while (f.rfind("./", 0) == 0) f.erase(0, 2); f = root + "/" + f; }
+    if (!detail::Normalize(f, n) || !detail::StartsWithFolded(n, root + "/")) return "";
+    return n.substr(root.size() + 1);
+}
 // The list of files a page query (« sources ») returned: a JSON array of strings, read tolerantly (24 at most).
 inline std::vector<std::string> ParsePageSources(std::string_view json) {
     std::vector<std::string> out;

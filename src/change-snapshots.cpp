@@ -1886,7 +1886,25 @@ struct Store::Impl {
     }
 
     // Records the folder now, writes the turn's record, makes "now" the known state. Caller holds the lock.
-    Result FinishTurn(TurnRecord turn, bool interrupted, TurnSummary* summary, ScanStats* stats) {
+    // Keeps only the changes of `onlyFiles` (ASCII case-insensitive): the rest was changed by someone else.
+    static void KeepOnly(TurnRecord& turn, const std::vector<std::string>& onlyFiles) {
+        const auto fold = [](std::string v) { for (auto& ch : v) if (ch >= 'A' && ch <= 'Z') ch = char(ch - 'A' + 'a'); return v; };
+        std::set<std::string> keep;
+        for (const auto& f : onlyFiles) keep.insert(fold(f));
+        turn.changes.erase(std::remove_if(turn.changes.begin(), turn.changes.end(), [&](const ChangeRecord& c) { return !keep.count(fold(c.path)); }), turn.changes.end());
+        std::set<std::string> kept;
+        for (const auto& c : turn.changes) kept.insert(c.path);
+        for (auto& c : turn.changes) {
+            if (!c.renamedFrom.empty() && !kept.count(c.renamedFrom)) c.renamedFrom.clear();
+            if (!c.renamedTo.empty() && !kept.count(c.renamedTo)) c.renamedTo.clear();
+        }
+        // a folder created during the turn is the agent's only when it holds one of the agent's files
+        turn.createdDirs.erase(std::remove_if(turn.createdDirs.begin(), turn.createdDirs.end(), [&](const std::string& d) {
+            for (const auto& c : turn.changes) if (c.path.size() > d.size() && c.path[d.size()] == '/' && fold(c.path.substr(0, d.size())) == fold(d)) return false;
+            return true; }), turn.createdDirs.end());
+    }
+
+    Result FinishTurn(TurnRecord turn, bool interrupted, TurnSummary* summary, ScanStats* stats, const std::vector<std::string>* onlyFiles = nullptr) {
         turn.interrupted = interrupted;
         turn.endedAt = std::max(Now(), turn.startedAt);
         Index before, after;
@@ -1899,7 +1917,7 @@ struct Store::Impl {
             DeleteFileW(LongPath(MarkerPath()).c_str());
             result = Fail(scan.status, scan.detail + "; this turn cannot be undone");
         } else {
-            if (hadBefore) ComputeChanges(before, after, turn);
+            if (hadBefore) { ComputeChanges(before, after, turn); if (onlyFiles) KeepOnly(turn, *onlyFiles); }
             else result = Fail(Status::Corrupt, "the state before the turn was lost; this turn cannot be undone");
             if (!SaveTurn(turn)) return Fail(Status::IoError, "cannot write the turn record");
             if (Fault("end.record")) return Fail(Status::IoError, "fault injected at end.record");
@@ -2454,7 +2472,7 @@ Result Store::BeginTurn(const std::wstring& projectDir, std::string* turnId, Sca
     return out;
 }
 
-Result Store::EndTurn(TurnSummary* summary, ScanStats* stats) {
+Result Store::EndTurn(TurnSummary* summary, ScanStats* stats, const std::vector<std::string>* onlyFiles) {
     std::lock_guard<std::mutex> guard(impl_->mutex);
     Impl& s = *impl_;
     if (summary) *summary = TurnSummary();
@@ -2462,7 +2480,7 @@ Result Store::EndTurn(TurnSummary* summary, ScanStats* stats) {
     Handle lock;
     Result locked = s.Lock(lock);
     if (!locked) return locked;  // still open: the caller may try again
-    Result out = s.FinishTurn(s.openTurn, false, summary, stats);
+    Result out = s.FinishTurn(s.openTurn, false, summary, stats, onlyFiles);
     s.turnLock.Close();
     s.turnOpen = false;
     if (out.status != Status::IoError) s.PurgeLocked(nullptr);

@@ -257,6 +257,54 @@ static void TestFolder(const std::wstring& root) {
     WSACleanup();
 }
 
+// Fix « wrong project folder » (installed 0.3.690): a folder is used only when the files the page is served from are
+// in it. A page of another worktree is never edited in this one.
+static void TestServed(const std::wstring& root) {
+    using namespace ChatFolder;
+    const std::wstring landing = root + L"\\wt\\landing-page", vault = root + L"\\wt\\vault-activation";
+    for (const auto& d : {landing + L"\\web\\landing\\images", vault + L"\\sandbox\\site", vault + L"\\src"}) ChatStore::EnsureDir(d);
+    for (const wchar_t* f : {L"\\web\\landing\\index.html", L"\\web\\landing\\app.js", L"\\web\\landing\\shader.js", L"\\web\\landing\\styles.css", L"\\web\\landing\\images\\hero.png"}) ChatStore::WriteFileAtomic(landing + f, "x");
+    for (const wchar_t* f : {L"\\sandbox\\site\\index.html", L"\\sandbox\\site\\app.js", L"\\sandbox\\site\\style.css", L"\\package.json"}) ChatStore::WriteFileAtomic(vault + f, "x");
+    const std::vector<std::string> page{"/", "/styles.css", "/app.js?v=2", "/shader.js", "/images/hero.png"};
+    Check(ServedInFolder(page, landing) == Served::Inside, "the landing page's files are found in its worktree (served from web\\landing)");
+    Check(ServedInFolder(page, vault) == Served::Outside, "another worktree holding an app.js and an index.html is not the page's folder");
+    Check(ServedInFolder({"/index.html", "/app.js"}, vault + L"\\sandbox") == Served::Inside, "the document named and its script, one level down");
+    Check(ServedInFolder({"/app.js", "/shader.js"}, vault) == Served::Outside, "two files, one missing: outside");
+    Check(ServedInFolder({"/about", "/_next/static/chunks/main.js", "/@vite/client", "/node_modules/.vite/deps/react.js"}, vault) == Served::None, "routes and dev servers' virtual files: impossible to say");
+    Check(ServedInFolder({"/../../secret.txt", "/C:/x.js"}, landing) == Served::None, "a path leaving the folder is never checked");
+    ChatStore::EnsureDir(vault + L"\\public"); ChatStore::WriteFileAtomic(vault + L"\\public\\logo.png", "x"); ChatStore::WriteFileAtomic(vault + L"\\src\\main.tsx", "x");
+    Check(ServedInFolder({"/src/main.tsx", "/logo.png"}, vault) == Served::Inside, "Vite: the source at the root, an image from public\\");
+    Check(ServedInFolder(page, root + L"\\wt\\absent") == Served::Outside, "a folder that is gone holds nothing");
+    Check(ServedFiles({"/a%20b.js", "/x/", "/a%20b.js"}).size() == 2, "each file once; a folder path means its index.html");
+    // The exact case of the installed 0.3.690: one repository, its worktrees under .claude\worktrees; the landing is
+    // served by « python serve.py <landing-page> 59734 » started FROM vault-activation.
+    {   const std::wstring repo = root + L"\\repo", wts = repo + L"\\.claude\\worktrees", lp = wts + L"\\landing-page", va = wts + L"\\vault-activation";
+        for (const auto& d : {repo + L"\\.git\\worktrees\\landing-page", repo + L"\\.git\\worktrees\\vault-activation", lp + L"\\web\\landing", va + L"\\src", repo + L"\\src"}) ChatStore::EnsureDir(d);
+        const auto fwd = [](std::wstring x) { for (auto& c : x) if (c == L'\\') c = L'/'; return std::string(x.begin(), x.end()); };
+        ChatStore::WriteFileAtomic(lp + L"\\.git", "gitdir: " + fwd(repo) + "/.git/worktrees/landing-page\n");
+        ChatStore::WriteFileAtomic(va + L"\\.git", "gitdir: " + fwd(repo) + "/.git/worktrees/vault-activation\n");
+        ChatStore::WriteFileAtomic(repo + L"\\.git\\worktrees\\landing-page\\gitdir", fwd(lp) + "/.git\n");
+        ChatStore::WriteFileAtomic(repo + L"\\.git\\worktrees\\vault-activation\\gitdir", fwd(va) + "/.git\n");
+        for (const wchar_t* f : {L"\\web\\landing\\index.html", L"\\web\\landing\\app.js", L"\\web\\landing\\shader.js", L"\\web\\landing\\styles.css"}) ChatStore::WriteFileAtomic(lp + f, "x");
+        ChatStore::WriteFileAtomic(va + L"\\index.html", "x"); ChatStore::WriteFileAtomic(va + L"\\app.js", "x");
+        const std::wstring cmd = L"C:\\Python312\\python.exe C:/Temp/scratchpad/serve.py " + std::wstring(lp.begin(), lp.end()) + L" 59734";
+        const auto args = ArgFolders(cmd, va);
+        Check(args.size() == 1 && detail::Fold(args[0]) == detail::Fold(lp), "the folder named by the server's command line: the landing-page worktree");
+        Check(ArgFolders(L"node.exe server.js --root=web\\landing --port 5173", lp).size() == 1 && detail::Fold(ArgFolders(L"node.exe server.js --root=web\\landing", lp)[0]) == detail::Fold(lp),
+              "a relative --root=… is the project it belongs to (the worktree, not web\\landing)");
+        Check(ArgFolders(L"python.exe -m http.server 8000", va).empty(), "no folder among the arguments");
+        const std::vector<std::string> landing{"/styles.css", "/app.js", "/shader.js"};
+        Check(ServedInFolder(landing, va) == Served::Outside && ServedInFolder(landing, lp) == Served::Inside, "the working folder (vault-activation) does not hold the page; landing-page does");
+        const auto all = RepoWorktrees(va);
+        const auto has = [&](const std::wstring& d) { for (const auto& w : all) if (detail::Fold(w) == detail::Fold(d)) return true; return false; };
+        Check(all.size() == 3 && has(repo) && has(lp) && has(va), "every worktree of the repository is found from one of them (no git process)");
+        Check(RepoWorktrees(repo + L"\\src").size() == 3, "…and from the main worktree's sub-folder");
+        std::size_t holding = 0; for (const auto& w : all) if (ServedInFolder(landing, w) == Served::Inside) ++holding;
+        Check(holding == 1, "among the worktrees, only landing-page holds the page (the main one skips .claude)");
+        Check(RepoWorktrees(root + L"\\wt\\landing-page").empty(), "not in a repository: no worktree");
+    }
+}
+
 // src/chat-tools.h: which tool an agent asks for. The integration answers a permission request by itself ONLY for one
 // of our five annotation tools on our own server: everything here that returns « None » goes through the card.
 static void TestTools() {
@@ -338,6 +386,15 @@ static void TestMarks() {
 }
 
 // « Traiter les annotations »: what a line of the card becomes, and the instruction the agent gets.
+static void TestAgentPaths() {
+    using ChatPrompt::ProjectRelative;
+    const std::string dir = "C:\\Users\\moi\\wt\\landing-page";
+    Check(ProjectRelative("C:\\Users\\moi\\wt\\landing-page\\web\\landing\\app.js", dir) == "web/landing/app.js", "an absolute path inside the folder");
+    Check(ProjectRelative("c:/users/MOI/wt/landing-page/web/x.css", dir + "\\") == "web/x.css", "letter case and slashes do not matter");
+    Check(ProjectRelative("./web/app.js", dir) == "web/app.js" && ProjectRelative("web\\app.js", dir) == "web/app.js", "a path relative to the folder");
+    Check(ProjectRelative("C:\\Users\\moi\\wt\\vault-activation\\a.js", dir).empty() && ProjectRelative("C:\\Users\\moi\\wt\\landing-page-2\\a.js", dir).empty(), "another worktree is outside");
+    Check(ProjectRelative("../vault-activation/a.js", dir).empty() && ProjectRelative("", dir).empty(), "« .. » out of the folder, or nothing");
+}
 static void TestBatch() {
     using namespace ChatBatch; using ChatTools::Ours;
     Check(ChatTools::TextArg(R"({"id":"ann_a1","summary":"Bouton aligné à droite."})", "summary", 2000) == "Bouton aligné à droite.", "a text argument of a call");
@@ -932,9 +989,9 @@ static void TestAnchorStore(const std::wstring& root) {
 }
 
 int wmain() {
-    TestLocal(); TestPrompt(); TestTools(); TestMarks(); TestBatch(); TestOptions(); TestBubble();
+    TestLocal(); TestPrompt(); TestTools(); TestMarks(); TestAgentPaths(); TestBatch(); TestOptions(); TestBubble();
     const std::wstring root = TempDir();
-    TestStore(root); TestFolder(root); TestAnchorStore(root);
+    TestStore(root); TestFolder(root); TestServed(root); TestAnchorStore(root);
     RemoveTree(root);
     Check(GetFileAttributesW(root.c_str()) == INVALID_FILE_ATTRIBUTES, "temporary folder removed");
     std::printf("%s chat_units_test: %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);

@@ -35,6 +35,13 @@ int wmain(int argc, wchar_t** argv) {
     Check(!nosan.empty() && Decide(mn, L"https://127.0.0.1:18445/", untrusted, nosan, from, to, now) == V::Refuse, "no SAN (subject CN=127.0.0.1 only, even pinned): refused");
     for (const wchar_t* u : {L"HTTPS://127.0.0.1:18445/", L"https://127.0.0.1.:18445/", L"https://[::ffff:127.0.0.1]:18445/", L"https://127.0.0.1:018445/", L"https://127%2e0.0.1:18445/", L"https://127.0.0.1\\@x:18445/", L"https://0x7f.0.0.1:18445/"})
         Check(Decide(m, u, untrusted, good, from, to, now) == V::Refuse, "URI edge form refused (case, trailing dot, IPv6-mapped, leading zero, percent, backslash, hex)");
+    // Vault capture coverage (cross-origin frame): an OPTIONAL second fixture port of the same host and pinned certificate.
+    E2EFixturePin::Manifest m2 = m; m2.port2 = 18446;
+    Check(Decide(m2, L"https://127.0.0.1:18446/login", untrusted, good, from, to, now) == V::Allow && Decide(m2, L"https://127.0.0.1:18445/", untrusted, good, from, to, now) == V::Allow, "second fixture port declared: both fixture ports allowed (same host, same pin)");
+    Check(Decide(m2, L"https://127.0.0.1:18447/", untrusted, good, from, to, now) == V::Refuse && Decide(m2, L"https://localhost:18446/", untrusted, good, from, to, now) == V::Refuse && Decide(m2, L"https://127.0.0.1:18446/", untrusted, other, from, to, now) == V::Refuse, "second fixture port: any other port, host or certificate still refused");
+    { const std::wstring mf = d + L"\\pin2.txt"; std::ofstream f(mf.c_str()); f << "host=127.0.0.1\nport=18445\nport2=18446\nsha256=" << m.sha256 << "\n"; f.close();
+      const auto l = E2EFixturePin::Load(mf); Check(l.loaded && l.port == 18445 && l.port2 == 18446, "manifest: optional port2 read");
+      std::ofstream g(mf.c_str()); g << "host=127.0.0.1\nport=18445\nport2=0446\nsha256=" << m.sha256 << "\n"; g.close(); Check(!E2EFixturePin::Load(mf).loaded, "manifest: a malformed port2 refuses the whole manifest"); }
     E2EFixturePin::Manifest none; Check(Decide(none, L"https://127.0.0.1:18445/", untrusted, good, from, to, now) == V::Refuse, "no harness manifest: refused");
     std::printf(failures ? "FAIL e2e pin: %d\n" : "PASS e2e pin: negative matrix (fingerprint, host, port, scheme, status, validity, SAN, manifest)\n", failures);
     return failures ? 1 : 0;

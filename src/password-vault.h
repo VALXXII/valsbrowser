@@ -1,8 +1,9 @@
 #pragma once
 #include "i18n.h"
-// Local password vault (decision 1, option A for NEW saves). INACTIVE until an independent
-// security review approves it: while `Vault::Active()` is false nothing here is reached from the
-// browser and the engine keeps its own password autosave and suggestions.
+// Local password vault (decision 1, option A for NEW saves). ACTIVE in dev and release builds since the
+// independent review (2026-11-23, owner « Active go »): new saves go here and the engine's own password
+// autosave is off. Only the engine-control test hosts (tests/e2e/mtls_host.cpp) build it INACTIVE, through
+// BROWSER_VAULT_FORCE_INACTIVE: there nothing here is reached and the engine keeps its own autosave.
 //
 // Storage: <data>\passwords, one line per account, written only through the profile store
 // transaction (src/profile-store.h). The secret is a DPAPI blob (CryptProtectData, current user,
@@ -25,12 +26,21 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace Vault {
 
-// Flipped only after the independent security review (decision 1). Tests force it per case.
+// On by default (owner decision after the independent review). BROWSER_VAULT_FORCE_INACTIVE: engine-control test
+// hosts only (their « VAULT state: inactive » checks). Unit tests force it per case.
+#if defined(BROWSER_VAULT_FORCE_INACTIVE) && (defined(BROWSER_E2E_VAULT_HOST) || defined(BROWSER_E2E_VAULT_ACTIVE))
+#error "a vault test host cannot also force the vault inactive"
+#endif
+#ifdef BROWSER_VAULT_FORCE_INACTIVE
 inline bool& ActiveFlag() { static bool active = false; return active; }
+#else
+inline bool& ActiveFlag() { static bool active = true; return active; }
+#endif
 // Review §6 (D3): a private window may READ and FILL, never write. Enforced here, in the only write path.
 inline bool& WritesForbidden() { static bool forbidden = false; return forbidden; }
 inline bool Active() { return ActiveFlag(); }
@@ -113,6 +123,9 @@ struct Entry {
 class Store {
 public:
     static constexpr std::size_t Limit = 5000;
+    // Review N-8 / audit SEC-19: a vault file over 16 MB is never read (5 000 accounts take a few MB at most); only a
+    // process of the same user could make it that large. Refused as damage, never parsed.
+    static constexpr std::uint64_t MaxFileBytes = 16ull << 20;
     const std::vector<Entry>& Entries() const { return entries_; }
     // Accounts of one origin (no secret), most recently changed first.
     std::vector<Entry> For(const std::wstring& origin) const {
@@ -125,13 +138,14 @@ public:
     // B04 after consent. Same origin + same username = an update (D1 resolves which account when the
     // form has no username before calling this: never the last one silently).
     Saved Save(const std::wstring& origin, const std::wstring& user, const std::wstring& secret, std::int64_t now) {
-        if (origin.empty() || CanonicalOrigin(origin) != origin || secret.empty() || entries_.size() >= Limit) return Saved::Refused;   // review V3: "" is not an origin
+        if (origin.empty() || CanonicalOrigin(origin) != origin || secret.empty()) return Saved::Refused;   // review V3: "" is not an origin
         for (auto& e : entries_) if (e.origin == origin && e.user == user) {
             std::wstring old; if (Unprotect(origin, e.blob, old) && old == secret) { SecureZeroMemory(old.data(), old.size() * sizeof(wchar_t)); return Saved::Unchanged; }
             SecureZeroMemory(old.data(), old.size() * sizeof(wchar_t));
             const std::string blob = Protect(origin, secret); if (blob.empty()) return Saved::Refused;
             e.blob = blob; e.updated = now; return Saved::Updated;
         }
+        if (entries_.size() >= Limit) return Saved::Refused;   // audit SEC-19: the limit refuses a NEW account only, never an update
         Entry e; e.id = RandomId(); e.origin = origin; e.user = user; e.created = e.updated = now;
         if (!e.id) return Saved::Refused;
         e.blob = Protect(origin, secret);
@@ -176,6 +190,7 @@ public:
         const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         if (text.empty()) return s;   // absent: a new vault (not damage)
         auto fail = [&]() { if (damaged) *damaged = true; return s; };
+        if (text.size() > MaxFileBytes) return fail();   // review N-8: never parsed
         const auto first = text.find('\n');
         if (first == std::string::npos || text.substr(0, first) != Header) return fail();
         const auto endPos = text.rfind("\nend\t");
@@ -189,6 +204,7 @@ public:
         const std::string dg = Digest(body);
         if (count > Limit || dg.empty() || t.substr(tab + 1) != dg) return fail();   // an empty digest (hash failure) never matches
         std::istringstream lines(body.substr(first + 1)); std::string line; bool bad = false;
+        std::unordered_set<std::uint64_t> ids; ids.reserve(static_cast<std::size_t>(count));   // audit SEC-19: duplicate ids found in O(1), not by a scan per line
         while (std::getline(lines, line)) {
             std::vector<std::string> f; std::size_t start = 0;
             for (std::size_t tb; (tb = line.find('\t', start)) != std::string::npos; start = tb + 1) f.push_back(line.substr(start, tb - start));
@@ -200,7 +216,7 @@ public:
             if (!Unbase64(f[3], o) || !Unbase64(f[4], u) || !Unbase64(f[5], e.blob)) { bad = true; continue; }
             e.origin = Wide(o); e.user = Wide(u);
             if (!u.empty() && e.user.empty()) { bad = true; continue; }
-            if (!e.id || e.origin.empty() || CanonicalOrigin(e.origin) != e.origin || e.blob.empty() || s.Find(e.id)) { bad = true; continue; }
+            if (!e.id || e.origin.empty() || CanonicalOrigin(e.origin) != e.origin || e.blob.empty() || !ids.insert(e.id).second) { bad = true; continue; }
             s.entries_.push_back(std::move(e));
         }
         if (bad || s.entries_.size() != count) { if (damaged) *damaged = true; }
@@ -235,6 +251,26 @@ private:
     std::vector<Entry> entries_;
 };
 
+// Audit SEC-19: what identifies the vault file's current content without reading it (one attribute query): its
+// size, last write and creation times. Every commit replaces the file (a new file renamed over it), so a write by
+// any window changes the stamp; the periodic UI check re-reads and parses the file only when it changed.
+struct FileStamp {
+    bool exists = false; std::uint64_t size = 0, written = 0, created = 0;
+    bool operator==(const FileStamp& o) const { return exists == o.exists && size == o.size && written == o.written && created == o.created; }
+    bool operator!=(const FileStamp& o) const { return !(*this == o); }
+};
+inline FileStamp StampOf(const std::wstring& path) {
+    FileStamp s; WIN32_FILE_ATTRIBUTE_DATA a{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &a)) return s;
+    auto u64 = [](DWORD hi, DWORD lo) { return (static_cast<std::uint64_t>(hi) << 32) | lo; };
+    s.exists = true; s.size = u64(a.nFileSizeHigh, a.nFileSizeLow); s.written = u64(a.ftLastWriteTime.dwHighDateTime, a.ftLastWriteTime.dwLowDateTime); s.created = u64(a.ftCreationTime.dwHighDateTime, a.ftCreationTime.dwLowDateTime);
+    return s;
+}
+// The periodic check: re-read only when never read for this path, or the file is not what was last read.
+inline bool CacheStale(bool readOnce, const std::wstring& readPath, const FileStamp& readStamp, const std::wstring& path, const FileStamp& now) {
+    return !readOnce || readPath != path || readStamp != now;
+}
+
 // The ONLY way the browser writes the vault (review V2-M3): v2 header only, a damaged or unknown
 // file is never rewritten, nothing over the limit is ever written or dropped.
 } // namespace Vault
@@ -243,7 +279,9 @@ namespace Vault {
 inline ProfileStore::Result Commit(const std::wstring& dataDir, const std::wstring& path, Store& base, Store& mine, DWORD timeoutMs = 5000) {
     if (WritesForbidden()) return ProfileStore::Result::Failed;   // private window: no Save/Remove reaches the disk (no .tmp, no backup)
     return ProfileStore::Commit<Store>(dataDir, path, base, mine, [](const Store& b, const Store& m, const Store& t) { return Store::Merge(b, m, t); }, timeoutMs,
-                                       {Store::Header}, false, [](const Store& s) { return s.Entries().size() <= Store::Limit && !Store::Digest(Store::Header).empty(); });   // V2-L4: no file without a digest
+                                       {Store::Header}, false, [](const Store& s) {   // V2-L4: no file without a digest; N-8: never a file this browser would refuse to read
+                                           if (s.Entries().size() > Store::Limit || Store::Digest(Store::Header).empty()) return false;
+                                           std::ostringstream o; s.Write(o); return static_cast<std::uint64_t>(o.tellp()) <= Store::MaxFileBytes; });
 }
 // ---- Fill bridge guards -------------------------------------------------------------------------
 // What our native UI captured when the user asked to fill (click on the vault control), and what
@@ -270,15 +308,26 @@ inline const wchar_t* RefusalText(Refusal r) {
     }
 }
 // JSON string literal (quotes, backslashes, controls, </script>, U+2028/2029 escaped).
-inline std::wstring JsonString(const std::wstring& s) {
-    std::wstring o = L"\"";
-    for (wchar_t c : s) {
-        switch (c) { case L'"': o += L"\\\""; break; case L'\\': o += L"\\\\"; break; case L'<': o += L"\\u003c"; break; case L'>': o += L"\\u003e"; break;
-        default: if (c < 0x20 || c == 0x2028 || c == 0x2029) { wchar_t b[8]; swprintf(b, 8, L"\\u%04x", static_cast<unsigned>(c)); o += b; } else o += c; }
-    }
-    return o + L"\"";
+// Audit SEC-19 / review V7: a secret goes through here, so the literal is written into ONE buffer reserved to its
+// exact final size (JsonStringLength): no reallocation leaves a freed copy of a part of it behind, no temporary.
+inline bool JsonEscapedAsU(wchar_t c) { return c < 0x20 || c == 0x2028 || c == 0x2029 || c == L'<' || c == L'>'; }
+inline std::size_t JsonStringLength(const std::wstring& s) {
+    std::size_t n = 2; for (wchar_t c : s) n += c == L'"' || c == L'\\' ? 2 : JsonEscapedAsU(c) ? 6 : 1; return n;
 }
-// Script run in the target frame only (ExecuteScript of that frame): fills the focused field's form
+// Appends the literal to `out`; never reallocates when `out` has JsonStringLength(s) spare capacity.
+inline void AppendJsonString(std::wstring& out, const std::wstring& s) {
+    static const wchar_t* x = L"0123456789abcdef";
+    out.push_back(L'"');
+    for (wchar_t c : s) {
+        if (c == L'"' || c == L'\\') { out.push_back(L'\\'); out.push_back(c); }
+        else if (JsonEscapedAsU(c)) { const unsigned v = c; out.push_back(L'\\'); out.push_back(L'u'); out.push_back(x[(v >> 12) & 15]); out.push_back(x[(v >> 8) & 15]); out.push_back(x[(v >> 4) & 15]); out.push_back(x[v & 15]); }
+        else out.push_back(c);
+    }
+    out.push_back(L'"');
+}
+inline std::wstring JsonString(const std::wstring& s) { std::wstring o; o.reserve(JsonStringLength(s)); AppendJsonString(o, s); return o; }
+// Script run in the top-level frame only, in an isolated world of its document (review R-1, see
+// IsolatedEvaluateParams below; never ExecuteScript in the page's main world): fills the focused field's form
 // (username + password inputs) and returns nothing to the bridge (no secret comes back).
 // The script re-checks, at the moment it runs, everything the host checked before injecting (review
 // V1/V2): this document's origin and its own (non-opaque) origin equal the account's, a secure
@@ -287,15 +336,25 @@ inline std::wstring JsonString(const std::wstring& s) {
 // The script answers ONE fixed status word, never a value of the page or the secret (review 885d322):
 // "filled", "origin" (not this exact secure top-level origin), "noform" (the focused element is in no
 // form), "nofield" (no visible password field in it). The host says « rempli » only on "filled".
-inline std::wstring FillScript(const std::wstring& origin, const std::wstring& user, const std::wstring& secret) {
-    return L"(function(o,u,p){if(location.origin!==o||self.origin!==o||!window.isSecureContext)return 'origin';"
+// Audit SEC-19: strict mode (no `arguments` aliasing, no sloppy `this`), and the script is built in ONE buffer reserved
+// to its exact size (no temporary or reallocated copy of the secret; the caller wipes the result).
+inline constexpr const wchar_t* FillScriptBody =
+           L"(function(o,u,p){'use strict';if(location.origin!==o||self.origin!==o||!window.isSecureContext)return 'origin';"
            L"var an=location.ancestorOrigins;if(an)for(var i=0;i<an.length;i++)if(an[i]!==o)return 'origin';"
            L"var a=document.activeElement;var f=a&&a.form;if(!f)return 'noform';"
-           L"function shown(e){return e&&e.type!=='hidden'&&e.offsetParent!==null&&!e.disabled;}"
+           L"function shown(e){if(!e||e.type==='hidden'||e.disabled||e.offsetParent===null)return false;"   // review V-6: really visible, on screen, not covered
+           L"if(e.checkVisibility&&!e.checkVisibility({opacityProperty:true,visibilityProperty:true,contentVisibilityAuto:true}))return false;"
+           L"var r=e.getBoundingClientRect();if(r.width<2||r.height<2||r.right<=0||r.bottom<=0||r.left>=innerWidth||r.top>=innerHeight)return false;"
+           L"var h=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);return !!h&&(h===e||e.contains(h)||h.control===e);}"
            L"var pw=Array.prototype.find.call(f.querySelectorAll('input[type=password]'),shown);if(!pw)return 'nofield';"
            L"var id=Array.prototype.find.call(f.querySelectorAll('input[autocomplete=username],input[type=email],input[type=text]'),shown);"
            L"function set(e,v){var d=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');d.set.call(e,v);e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));}"
-           L"if(id&&u)set(id,u);set(pw,p);return 'filled';})(" + JsonString(origin) + L"," + JsonString(user) + L"," + JsonString(secret) + L");";
+           L"if(id&&u)set(id,u);set(pw,p);return 'filled';})(";
+inline std::wstring FillScript(const std::wstring& origin, const std::wstring& user, const std::wstring& secret) {
+    const std::wstring_view body(FillScriptBody);
+    std::wstring s; s.reserve(body.size() + JsonStringLength(origin) + 1 + JsonStringLength(user) + 1 + JsonStringLength(secret) + 2);
+    s.append(body); AppendJsonString(s, origin); s.push_back(L','); AppendJsonString(s, user); s.push_back(L','); AppendJsonString(s, secret); s.append(L");");
+    return s;
 }
 // What the host may say about the script's answer (the JSON the engine returns): only the fixed words.
 enum class FillOutcome { Filled, Origin, NoForm, NoField, Failed };
@@ -303,6 +362,81 @@ inline FillOutcome ParseFillResult(long hr, const wchar_t* json) {
     if (hr < 0 || !json) return FillOutcome::Failed;
     const std::wstring j = json;
     return j == L"\"filled\"" ? FillOutcome::Filled : j == L"\"origin\"" ? FillOutcome::Origin : j == L"\"noform\"" ? FillOutcome::NoForm : j == L"\"nofield\"" ? FillOutcome::NoField : FillOutcome::Failed;
+}
+// ---- Review R-1: the fill runs in an ISOLATED world, never in the page's main world ------------------
+// In the main world `self` and `window.origin` are [Replaceable]: an opaque-origin document (CSP sandbox)
+// served at the account's URL can make `self.origin` read as that URL's origin and pass FillScript's own
+// check. The host therefore evaluates FillScript through the DevTools protocol in a FRESH isolated world of
+// the top-level frame (Page.getFrameTree -> Page.createIsolatedWorld -> Runtime.evaluate with that
+// contextId). There the globals and prototypes are the world's own, so `self.origin`, `location`,
+// `isSecureContext` and the HTMLInputElement setter are the engine's, not the page's: an opaque document reads
+// "null" and is refused ("origin"). The world belongs to the document it was created in: a navigation in
+// between destroys it and the evaluation fails (nothing filled). No fallback to the main world.
+inline bool AsciiIdChar(wchar_t c) { return (c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z') || (c >= L'0' && c <= L'9'); }
+// Where the value of member `key` of the JSON object opening at `open` starts (members of THAT object only, never of
+// a nested one; strings skipped whole, whitespace and any key order accepted). npos when absent or malformed.
+inline std::size_t JsonMemberAt(const std::wstring& j, std::size_t open, const wchar_t* key) {
+    if (open >= j.size() || j[open] != L'{') return std::wstring::npos;
+    int depth = 0;
+    for (std::size_t i = open; i < j.size(); ++i) {
+        const wchar_t c = j[i];
+        if (c == L'"') {
+            std::size_t e = i + 1; while (e < j.size() && j[e] != L'"') e += j[e] == L'\\' ? 2 : 1;
+            if (e >= j.size()) return std::wstring::npos;
+            std::size_t k = e + 1; while (k < j.size() && iswspace(j[k])) ++k;
+            if (depth == 1 && k < j.size() && j[k] == L':' && j.compare(i + 1, e - i - 1, key) == 0) { ++k; while (k < j.size() && iswspace(j[k])) ++k; return k < j.size() ? k : std::wstring::npos; }
+            i = e; continue;
+        }
+        if (c == L'{' || c == L'[') ++depth;
+        else if ((c == L'}' || c == L']') && --depth == 0) return std::wstring::npos;
+    }
+    return std::wstring::npos;
+}
+inline std::size_t JsonRoot(const std::wstring& j) { std::size_t i = 0; while (i < j.size() && iswspace(j[i])) ++i; return i < j.size() && j[i] == L'{' ? i : std::wstring::npos; }
+// A plain string value (no escape) starting at `at`; false when it is not one.
+inline bool JsonPlainString(const std::wstring& j, std::size_t at, std::wstring& out) {
+    out.clear(); if (at >= j.size() || j[at] != L'"') return false;
+    const auto e = j.find(L'"', at + 1); if (e == std::wstring::npos) return false;
+    out = j.substr(at + 1, e - at - 1); return out.find(L'\\') == std::wstring::npos;
+}
+// The top-level frame's id in a Page.getFrameTree answer ({frameTree:{frame:{id}}}, never a child frame's);
+// "" when absent or not a plain engine id.
+inline std::wstring MainFrameId(const std::wstring& json) {
+    const auto tree = JsonMemberAt(json, JsonRoot(json), L"frameTree"); const auto frame = JsonMemberAt(json, tree, L"frame");
+    std::wstring v; if (!JsonPlainString(json, JsonMemberAt(json, frame, L"id"), v)) return L"";
+    if (v.empty() || v.size() > 64) return L"";
+    for (wchar_t c : v) if (!AsciiIdChar(c)) return L"";
+    return v;
+}
+inline std::wstring IsolatedWorldParams(const std::wstring& frameId) {
+    return L"{\"frameId\":\"" + frameId + L"\",\"worldName\":\"browser-vault-fill\",\"grantUniveralAccess\":false}";   // (sic: the protocol's spelling)
+}
+// The new world's execution context id from Page.createIsolatedWorld; 0 = refused.
+inline long long ContextIdOf(const std::wstring& json) {
+    std::size_t at = JsonMemberAt(json, JsonRoot(json), L"executionContextId"); if (at == std::wstring::npos) return 0;
+    long long v = 0; std::size_t n = 0;
+    while (at < json.size() && json[at] >= L'0' && json[at] <= L'9' && n < 12) { v = v * 10 + (json[at] - L'0'); ++at; ++n; }
+    while (at < json.size() && iswspace(json[at])) ++at;
+    if (!n || (at < json.size() && json[at] != L'}' && json[at] != L',')) return 0;
+    return v;
+}
+// The script holds the secret: one buffer reserved to the exact size (audit SEC-19), the caller wipes it.
+inline std::wstring IsolatedEvaluateParams(long long contextId, const std::wstring& script) {
+    const std::wstring id = std::to_wstring(contextId);
+    const std::wstring_view head(L"{\"expression\":"), mid(L",\"contextId\":"), tail(L",\"returnByValue\":true,\"awaitPromise\":false,\"silent\":true,\"includeCommandLineAPI\":false}");
+    std::wstring s; s.reserve(head.size() + JsonStringLength(script) + mid.size() + id.size() + tail.size());
+    s.append(head); AppendJsonString(s, script); s.append(mid); s.append(id); s.append(tail);
+    return s;
+}
+// Runtime.evaluate's answer: only a string result holding one of the fixed words counts; an exception, any
+// other type or an engine error is a failure (never « rempli »).
+inline FillOutcome ParseIsolatedFillResult(long hr, const wchar_t* json) {
+    if (hr < 0 || !json) return FillOutcome::Failed;
+    const std::wstring j = json; const auto root = JsonRoot(j);
+    if (root == std::wstring::npos || JsonMemberAt(j, root, L"exceptionDetails") != std::wstring::npos) return FillOutcome::Failed;
+    const auto result = JsonMemberAt(j, root, L"result"); std::wstring type, value;
+    if (!JsonPlainString(j, JsonMemberAt(j, result, L"type"), type) || type != L"string" || !JsonPlainString(j, JsonMemberAt(j, result, L"value"), value)) return FillOutcome::Failed;
+    return ParseFillResult(0, (L"\"" + value + L"\"").c_str());
 }
 inline const wchar_t* FillOutcomeText(FillOutcome o) {
     switch (o) {
@@ -338,6 +472,221 @@ public:
 private:
     bool End() { active_ = false; return false; }
     std::wstring origin_; std::uint64_t submit_ = 0; bool known_ = false, active_ = false;
+};
+
+// ---- Capture coverage (owner decision A) --------------------------------------------------------------------
+// The capture runs in an ISOLATED world (CaptureWorld) of EVERY document of the tab, its frames included (the
+// out-of-process ones are attached before they run, AutoAttachParams), installed through the DevTools protocol
+// (Page.addScriptToEvaluateOnNewDocument with a worldName). It reports through a DevTools binding that exists ONLY
+// in that world (Runtime.addBinding executionContextName): the page cannot call it, and the origin it reports is
+// read in that world (`self.origin`, the document's real origin), so an opaque (sandboxed) document reads "null"
+// and never reports (review R-6). The page's own message channel (chrome.webview.postMessage) is never a capture.
+// What it reports (once, directly; nothing is kept in web storage):
+//   - a classic form submit;
+//   - a script-driven login: a TRUSTED click on a button-like element or Enter in a field, confirmed within 10 s by
+//     every password field of the login disappearing, or by the page leaving (pagehide / beforeunload) within 2 s
+//     of the click / Enter or of the end of the last request the page made after it (fetch / XHR); a failed login
+//     (the fields stay, the person goes elsewhere later) reports nothing;
+//   - a first step with a username and no password field at all (two-step logins: the host joins it to a later
+//     password of the same origin, TwoStep);
+//   - change-password forms: the NEW password (autocomplete new-password, else current + new + confirm), the
+//     current one only to find the account; a confirmation that differs reports nothing;
+//   - whether the password field was filled by the ENGINE (:-webkit-autofill): a migration from its old store.
+inline constexpr const wchar_t* CaptureWorld = L"browser-vault-capture";
+inline constexpr const wchar_t* CaptureBindingName = L"browserVaultCapture";
+inline std::wstring CaptureScript() {
+    // Review V-5: the host does not keep the page's DevTools Runtime domain enabled (it would serialise every console call
+    // of the page); it adds the binding to each new document's world once that document exists (VaultRebind). A message
+    // sent before that is retried for 3 s; one sent while the page leaves goes at once (the binding is there long before).
+    return std::wstring(L"(function(){function B(m){var n=0;(function go(){var f=window.") + CaptureBindingName + L";if(typeof f==='function'){f(m);return;}if(++n<15)setTimeout(go,200);})();}"
+        L"var O=self.origin;if(O==='null'||location.protocol!=='https:'||!window.isSecureContext||location.origin!==O)return;"
+        L"var TOP=window.top===window?'1':'0';"
+        // Review V-4: a real user action in THIS document (trusted pointer or key, in this world), and the values the person
+        // typed (trusted input) per field: a page can neither fake the action nor plant the password.
+        L"var act=-1e9,typed=new WeakMap();function activated(){return performance.now()-act<=10000;}"
+        // Review N-1: these listeners sit on WINDOW in the capture phase. This script is installed before any page script, so
+        // they run before every listener of the page (a page's capturing listener on window can no longer rewrite the field
+        // before the typed value is taken).
+        L"['pointerdown','mousedown','keydown'].forEach(function(n){window.addEventListener(n,function(e){if(e.isTrusted)act=performance.now();},true);});"
+        L"window.addEventListener('input',function(e){var t=e.target;if(e.isTrusted&&t&&t.tagName==='INPUT')typed.set(t,t.value);},true);"
+        L"function shown(e){return !!e&&e.isConnected&&e.type!=='hidden'&&!e.disabled&&e.getClientRects().length>0;}"
+        L"function ac(e){return (e.getAttribute('autocomplete')||'').toLowerCase();}"
+        L"function list(r,q){return Array.prototype.slice.call(r.querySelectorAll(q));}"
+        L"function visiblePw(r){return list(r,'input[type=password]').filter(shown).length>0;}"
+        L"function scope(el){var f=el&&(el.form||(el.closest&&el.closest('form')));return f||document;}"
+        L"function userField(r){var c=list(r,'input').filter(function(e){var t=(e.type||'text').toLowerCase();return (t==='text'||t==='email'||t==='tel')&&e.value;});"
+        L"var h=c.filter(function(e){return ac(e).indexOf('username')>=0;});if(h.length)return h[0];var v=c.filter(shown);return v.length?v[0]:null;}"
+        L"function looksUser(e){return ac(e).indexOf('username')>=0||e.type==='email'||/user|login|mail|ident|account|compte/i.test((e.name||'')+' '+(e.id||''));}"
+        L"function snap(r){var pw=list(r,'input[type=password]').filter(shown),f=pw.filter(function(e){return e.value;}),u=userField(r);"
+        L"if(!f.length)return (!pw.length&&u&&looksUser(u))?{k:'user',u:u.value}:null;"
+        L"var nw=f.filter(function(e){return ac(e).indexOf('new-password')>=0;}),cu=f.filter(function(e){return ac(e).indexOf('current-password')>=0;}),p=null,c='';"
+        L"if(nw.length){if(nw.length>1&&nw[0].value!==nw[1].value)return null;p=nw[0];var o=cu.length?cu[0]:f.filter(function(e){return nw.indexOf(e)<0;})[0];c=o?o.value:'';}"
+        L"else if(f.length>=3){if(f[1].value!==f[2].value)return null;c=f[0].value;p=f[1];}"
+        L"else if(f.length===2){if(f[0].value===f[1].value)p=f[0];else if(cu.length){c=cu[0].value;p=f[0]===cu[0]?f[1]:f[0];}else{c=f[0].value;p=f[1];}}"
+        L"else p=f[0];"
+        L"if(c===p.value)c='';var a=false;try{a=p.matches(':-webkit-autofill');}catch(x){}"
+        L"if(!(a||typed.get(p)===p.value))return null;"   // V-4: typed by the person, or autofilled by the engine
+        L"return {k:'capture',u:u?u.value:'',p:p.value,c:c,a:a?'1':'0',f:f};}"
+        L"function post(s,v){var m={k:s.k,o:O,t:TOP,v:v,u:s.u||''};if(s.k==='capture'){m.p=s.p;m.c=s.c;m.a=s.a;}try{B(JSON.stringify(m));}catch(x){}}"
+        L"var pend=null,timer=0;function stop(){pend=null;if(timer){clearInterval(timer);timer=0;}}"
+        L"function confirmed(v){if(!pend)return;var s=pend;stop();post(s,v);}"
+        L"function recent(){if(!pend)return false;var last=pend.t0;try{performance.getEntriesByType('resource').forEach(function(e){if((e.initiatorType==='fetch'||e.initiatorType==='xmlhttprequest')&&e.startTime>=pend.t0&&e.responseEnd>last)last=e.responseEnd;});}catch(x){}return performance.now()-last<=2000;}"
+        L"function leave(){if(recent())confirmed('leave');else stop();}"
+        // Review V-7: a login is held until its outcome is known: every visible password field of THIS document gone (« gone »),
+        // or the page left (« leave »: the next document then says whether it asks for a password again, k:'doc').
+        L"function hold(s){stop();pend=s;pend.t0=performance.now();var at=Date.now();"
+        L"timer=setInterval(function(){if(!pend||Date.now()-at>10000){stop();return;}if(!visiblePw(document))confirmed('gone');},250);}"
+        L"function trigger(el){if(!activated())return;var s=snap(scope(el));if(!s)return;if(s.k==='user'){post(s,'step');return;}hold(s);}"
+        L"window.addEventListener('submit',function(e){if(!(e.isTrusted&&activated()))return;var f=e.target;if(!f||!f.querySelectorAll)return;var s=snap(f);if(!s)return;if(s.k==='user'){post(s,'step');return;}hold(s);},true);"
+        L"window.addEventListener('click',function(e){if(!e.isTrusted)return;var t=e.target,b=t&&t.closest?t.closest('button,input[type=submit],input[type=button],input[type=image],[role=button]'):null;if(b)trigger(b);},true);"
+        L"window.addEventListener('keydown',function(e){if(!e.isTrusted||e.key!=='Enter')return;var t=e.target;if(t&&t.tagName==='INPUT')trigger(t);},true);"
+        L"window.addEventListener('pagehide',leave,true);window.addEventListener('beforeunload',leave,true);"
+        L"document.addEventListener('DOMContentLoaded',function(){setTimeout(function(){try{B(JSON.stringify({k:'doc',o:O,t:TOP,pw:visiblePw(document)?'1':'0'}));}catch(x){}},400);});"
+        L"})();";
+}
+inline std::wstring CaptureScriptParams() { return L"{\"source\":" + JsonString(CaptureScript()) + L",\"worldName\":\"" + CaptureWorld + L"\"}"; }
+inline std::wstring CaptureBindingParams() { return std::wstring(L"{\"name\":\"") + CaptureBindingName + L"\",\"executionContextName\":\"" + CaptureWorld + L"\"}"; }
+// Frames of another site run in their own renderer: attached (paused) before they run, iframes only, then given
+// the same world, binding and auto-attach (nested frames), then resumed.
+inline std::wstring AutoAttachParams() { return L"{\"autoAttach\":true,\"waitForDebuggerOnStart\":true,\"flatten\":true,\"filter\":[{\"type\":\"iframe\",\"exclude\":false}]}"; }
+// A JSON string value starting at `at`, unescaped (\uXXXX kept as UTF-16 units); false when it is not one.
+inline bool JsonStringAt(const std::wstring& j, std::size_t at, std::wstring& out) {
+    out.clear(); if (at >= j.size() || j[at] != L'"') return false;
+    for (std::size_t i = at + 1; i < j.size(); ++i) {
+        const wchar_t c = j[i];
+        if (c == L'"') return true;
+        if (c != L'\\') { out += c; continue; }
+        if (++i >= j.size()) return false;
+        const wchar_t e = j[i];
+        if (e == L'u') { if (i + 4 >= j.size()) return false; unsigned v = 0; for (int k = 1; k <= 4; ++k) { const wchar_t h = j[i + k]; v <<= 4; if (h >= L'0' && h <= L'9') v |= h - L'0'; else if (h >= L'a' && h <= L'f') v |= h - L'a' + 10; else if (h >= L'A' && h <= L'F') v |= h - L'A' + 10; else return false; } out += static_cast<wchar_t>(v); i += 4; }
+        else out += e == L'n' ? L'\n' : e == L't' ? L'\t' : e == L'r' ? L'\r' : e == L'b' ? L'\b' : e == L'f' ? L'\f' : e;
+    }
+    return false;
+}
+inline void WipeText(std::wstring& s) { if (!s.empty()) SecureZeroMemory(s.data(), s.size() * sizeof(wchar_t)); s.clear(); }
+// Target.attachedToTarget: the child session and its type (an engine id: letters and digits only).
+struct AttachedTarget { std::wstring sessionId, type; bool waiting = false; };
+inline bool ParseAttachedToTarget(const std::wstring& json, AttachedTarget& out) {
+    out = AttachedTarget{}; const auto root = JsonRoot(json);
+    if (!JsonPlainString(json, JsonMemberAt(json, root, L"sessionId"), out.sessionId) || out.sessionId.empty() || out.sessionId.size() > 64) return false;
+    for (wchar_t c : out.sessionId) if (!AsciiIdChar(c)) return false;
+    const auto info = JsonMemberAt(json, root, L"targetInfo");
+    if (!JsonPlainString(json, JsonMemberAt(json, info, L"type"), out.type)) return false;
+    const auto w = JsonMemberAt(json, root, L"waitingForDebugger"); out.waiting = w != std::wstring::npos && json.compare(w, 4, L"true") == 0;
+    return true;
+}
+// Runtime.bindingCalled of the capture binding. The origin is the isolated world's `self.origin`: it must be a
+// canonical https origin (an opaque "null", http, or anything else is refused). Fields of the page (user,
+// passwords) are only values; no field decides an origin.
+struct CaptureMessage {
+    enum class Kind { Capture, User, Doc } kind = Kind::Capture;
+    std::wstring origin, user, secret, current, via; bool top = false, autofilled = false, passwordField = false;
+    CaptureMessage() = default; CaptureMessage(const CaptureMessage&) = default; CaptureMessage& operator=(const CaptureMessage&) = default;
+    ~CaptureMessage() { WipeText(secret); WipeText(current); }
+};
+// Review V-4: a username shown in B04 and stored is at most 128 characters, without control, line-separator or
+// text-direction characters (a page must not write a sentence, or reorder text, inside native UI).
+inline bool UsernameAcceptable(const std::wstring& u) {
+    if (u.size() > 128) return false;
+    for (wchar_t c : u) if (c < 0x20 || (c >= 0x7F && c <= 0x9F) || c == 0x200E || c == 0x200F || (c >= 0x2028 && c <= 0x202E) || (c >= 0x2066 && c <= 0x2069)) return false;
+    return true;
+}
+inline bool ParseCaptureEvent(const std::wstring& event, CaptureMessage& out) {
+    out.kind = CaptureMessage::Kind::Capture; out.origin.clear(); out.user.clear(); WipeText(out.secret); WipeText(out.current); out.via.clear(); out.top = out.autofilled = out.passwordField = false;
+    const auto root = JsonRoot(event); std::wstring name, payload;
+    if (!JsonStringAt(event, JsonMemberAt(event, root, L"name"), name) || name != CaptureBindingName) return false;
+    if (!JsonStringAt(event, JsonMemberAt(event, root, L"payload"), payload)) { WipeText(payload); return false; }
+    struct Wiper { std::wstring& s; ~Wiper() { WipeText(s); } } wipePayload{payload};
+    const auto p = JsonRoot(payload); std::wstring k, t, a;
+    auto str = [&](const wchar_t* key, std::wstring& v) { return JsonStringAt(payload, JsonMemberAt(payload, p, key), v); };
+    if (!str(L"k", k) || !str(L"o", out.origin)) return false;
+    if (out.origin.empty() || CanonicalOrigin(out.origin) != out.origin) { out.origin.clear(); return false; }   // "null" (opaque), http, non-canonical
+    str(L"t", t); str(L"v", out.via); str(L"u", out.user); out.top = t == L"1";
+    if (k == L"doc") { std::wstring pw; str(L"pw", pw); out.kind = CaptureMessage::Kind::Doc; out.passwordField = pw == L"1"; out.user.clear(); return pw == L"0" || pw == L"1"; }
+    if (!UsernameAcceptable(out.user)) return false;   // review V-4: no sentence or control character inside native UI
+    if (k == L"user") { out.kind = CaptureMessage::Kind::User; return !out.user.empty(); }
+    if (k != L"capture") return false;
+    str(L"p", out.secret); str(L"c", out.current); str(L"a", a); out.autofilled = a == L"1";
+    if (out.secret.empty() || out.secret.size() > 1024 || out.current.size() > 1024) { WipeText(out.secret); WipeText(out.current); return false; }
+    return true;
+}
+// What B04 offers for a capture, from what the vault holds for that origin (secrets compared, then wiped).
+// Never for a password the vault already holds unchanged; an account known by its username: update; no username:
+// the account whose CURRENT password was typed (change form), else the only account, else the user chooses (D1);
+// unknown: save, worded as a migration when the ENGINE autofilled it (owner decision B).
+struct Offer { enum class Kind { None, Save, Update, Choose } kind = Kind::None; std::wstring user; std::vector<std::wstring> accounts; bool migration = false; };
+inline Offer DecideOffer(const Store& s, const std::wstring& origin, const std::wstring& user, const std::wstring& secret, const std::wstring& current, bool autofilled) {
+    Offer o; if (origin.empty() || CanonicalOrigin(origin) != origin || secret.empty()) return o;
+    const auto accounts = s.For(origin);
+    auto holds = [&](const Entry& e, const std::wstring& v) { std::wstring got; const bool same = !v.empty() && s.Reveal(e.id, origin, got) && got == v; WipeText(got); return same; };
+    if (!user.empty()) {
+        for (const auto& e : accounts) if (e.user == user) { if (holds(e, secret)) return o; o.kind = Offer::Kind::Update; o.user = user; return o; }
+        o.kind = Offer::Kind::Save; o.user = user; o.migration = autofilled; return o;
+    }
+    for (const auto& e : accounts) if (holds(e, secret)) return o;
+    if (!current.empty()) { const Entry* match = nullptr; int n = 0; for (const auto& e : accounts) if (holds(e, current)) { match = &e; ++n; }
+        if (n == 1) { o.kind = Offer::Kind::Update; o.user = match->user; return o; } }
+    if (accounts.size() == 1) { o.kind = Offer::Kind::Update; o.user = accounts[0].user; return o; }
+    if (accounts.size() > 1) { o.kind = Offer::Kind::Choose; for (const auto& e : accounts) o.accounts.push_back(e.user); return o; }
+    o.kind = Offer::Kind::Save; o.migration = autofilled; return o;
+}
+// Review V-4: a newer capture of a tab replaces its pending offer only when the newer one is not a frame's while the
+// pending one is the page's own, and at most once every 5 s (a frame or a page cannot keep swapping the offer away).
+inline constexpr std::int64_t ReplaceIntervalMs = 5000;
+inline bool MayReplace(bool pendingTop, bool newTop, std::int64_t now, std::int64_t lastReplaceAt) {
+    if (pendingTop && !newTop) return false;
+    return !(lastReplaceAt && now - lastReplaceAt < ReplaceIntervalMs);
+}
+// Review V-7: a login that left its page is offered only once the next document of the same origin and kind (page or
+// frame) has loaded without a visible password field; asking for a password again means the login failed.
+enum class Outcome { Wait, Offer, Drop };
+inline Outcome LoginOutcome(const std::wstring& captureOrigin, bool captureTop, const std::wstring& docOrigin, bool docTop, bool docAsksPassword) {
+    if (captureOrigin != docOrigin || captureTop != docTop) return Outcome::Wait;
+    return docAsksPassword ? Outcome::Drop : Outcome::Offer;
+}
+// Two-step logins: the username of a first step, joined to a password of the same origin within 3 minutes.
+class TwoStep {
+public:
+    static constexpr std::int64_t WindowMs = 3LL * 60 * 1000;
+    void Remember(const std::wstring& origin, const std::wstring& user, std::int64_t now) { if (origin.empty() || user.empty()) return; origin_ = origin; user_ = user; at_ = now; }
+    std::wstring For(const std::wstring& origin, std::int64_t now) const { return !user_.empty() && origin == origin_ && now >= at_ && now - at_ <= WindowMs ? user_ : std::wstring(); }
+private:
+    std::wstring origin_, user_; std::int64_t at_ = 0;
+};
+/// ---- Engine passwords (owner decision B, then « option A »): migrated as the user logs in (B04 « Garder »), never
+// decrypted from the engine's store, and NEVER deleted automatically. The activation date is recorded per profile and
+// the days of use are counted (review V-3: a calendar day, local, on which the active vault opened a tab; a day counts
+// once and only when it is later than the last one counted: a clock set back counts nothing, a clock set ahead counts
+// one day). After 30 days of use, while « Mots de passe » is on and the vault is readable, Réglages › Mots de passe
+// OFFERS to delete them; they are deleted only after the person's click and confirmation (ClearBrowsingData
+// PASSWORD_AUTOSAVE); once deleted (`cleared`), the offer never comes back.
+//   browser-vault-migration 1 / activated=<unix ms> / cleared=<unix ms, 0 = not yet> / days=<n> / lastday=<yyyymmdd>
+// (a « notice=<0|1> » line written by the previous build is read and ignored)
+enum class EngineCleanupMode { ManualOffer };
+inline constexpr EngineCleanupMode EngineCleanup = EngineCleanupMode::ManualOffer;   // option A (owner decision)
+struct EngineMigration {
+    static constexpr int GraceDays = 30;
+    static constexpr const char* Header = "browser-vault-migration 1";
+    std::int64_t activated = 0, cleared = 0; int useDays = 0, lastUseDay = 0;
+    // `dayKey`: yyyymmdd of the local calendar day. True when it counted as a new day of use.
+    bool RecordUse(int dayKey) { if (dayKey <= lastUseDay) return false; lastUseDay = dayKey; ++useDays; return true; }
+    // The deletion is offered (never done) from the 30th day of use, until the person has deleted them.
+    bool OfferDue(bool passwordsOn, bool vaultReadable) const { return activated > 0 && cleared == 0 && useDays >= GraceDays && passwordsOn && vaultReadable; }
+    std::string Write() const { std::ostringstream o; o << Header << "\nactivated=" << activated << "\ncleared=" << cleared << "\ndays=" << useDays << "\nlastday=" << lastUseDay << "\n"; return o.str(); }
+    static bool Read(const std::string& text, EngineMigration& out) {
+        out = EngineMigration{}; std::istringstream in(text); std::string line; bool any = false, act = false;
+        if (!std::getline(in, line) || line != Header) return false;
+        while (std::getline(in, line)) {
+            if (line.empty()) continue;
+            const auto eq = line.find('='); if (eq == std::string::npos) return false;
+            const std::string k = line.substr(0, eq), v = line.substr(eq + 1); if (!Store::Digits(v)) return false;
+            std::int64_t n = 0; try { n = std::stoll(v); } catch (...) { return false; }
+            if (k == "activated") { out.activated = n; act = true; } else if (k == "cleared") out.cleared = n; else if (k == "notice") { if (n > 1) return false; }
+            else if (k == "days") { if (n > 100000) return false; out.useDays = static_cast<int>(n); } else if (k == "lastday") { if (n > 99991231) return false; out.lastUseDay = static_cast<int>(n); } else return false;
+            any = true;
+        }
+        return any && act && out.activated > 0;
+    }
 };
 
 } // namespace Vault

@@ -248,7 +248,10 @@ public:
 
     // Records the folder after the agent ran and says what the turn changed. Always call it, even when the turn
     // failed or was cancelled. A turn without changes is recorded too (it has a checkpoint; it costs nothing).
-    Result EndTurn(TurnSummary* summary = nullptr, ScanStats* stats = nullptr);
+    // `onlyFiles` (optional): the files the agent said it wrote (paths as in FileChange::path, ASCII
+    // case-insensitive). Any other file that changed during the turn was changed by someone else (another
+    // program, another agent): it is neither counted nor undone, and becomes part of the known state.
+    Result EndTurn(TurnSummary* summary = nullptr, ScanStats* stats = nullptr, const std::vector<std::string>* onlyFiles = nullptr);
 
     // Undoes `turnId` and every later turn still applied: the files they changed go back to how they were
     // before `turnId`. Refused while a turn is running (TurnOpen).

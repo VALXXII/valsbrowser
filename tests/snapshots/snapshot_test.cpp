@@ -1320,6 +1320,57 @@ void TestOptions() {
 
 }  // namespace
 
+// Fix « 1 fichier modifié +7 −0 » (installed 0.3.690): another program writes in the folder during the turn. Only the
+// files the agent said it wrote count, and only they are undone; the other file stays as that program left it.
+void TestOnlyAgentFiles() {
+    Section("only the agent's files count and are undone");
+    Sandbox box("agent-files");
+    box.Put("web/app.js", "const a = 1;\n");
+    box.Put("notes.md", "# Notes\n");
+    box.Put("Shared.css", "body {}\n");
+    Store store(box.store);
+    CHECK(store.BeginTurn(box.project).ok());
+    box.Put("web/app.js", "const a = 2;\n", false);                                    // the agent
+    box.Put("notes.md", "# Notes\n1\n2\n3\n4\n5\n6\n7\n", false);                    // another agent, same folder
+    MakeDirs(box.Path("other/new"));
+    box.Put("other/new/log.txt", "x\n", false);                                       // …and a new folder of its own
+    box.Put("Shared.css", "body { margin: 0 }\n", false);                              // the agent (named in another letter case)
+    TurnSummary t;
+    const std::vector<std::string> agent{"web/app.js", "shared.css", "outside-never-written.txt"};
+    CHECK(store.EndTurn(&t, nullptr, &agent).ok());
+    CHECK_EQ(t.changes.size(), std::size_t(2));
+    CHECK(FindChange(t, "web/app.js") && FindChange(t, "Shared.css"));
+    CHECK(!FindChange(t, "notes.md") && !FindChange(t, "other/new/log.txt"));
+    CHECK_EQ(t.additions, 2);
+    CHECK_EQ(t.deletions, 2);
+    const Result undo = store.UndoTurn(t.turnId);
+    CHECK(undo.ok());
+    CHECK(box.Get("web/app.js") == std::optional<std::string>("const a = 1;\n"));
+    CHECK(box.Get("Shared.css") == std::optional<std::string>("body {}\n"));
+    CHECK(box.Get("notes.md") == std::optional<std::string>("# Notes\n1\n2\n3\n4\n5\n6\n7\n"));   // never touched
+    CHECK(box.Has("other/new/log.txt"));
+
+    // An empty list (a turn that wrote nothing): nothing counted, even with files changed meanwhile.
+    CHECK(store.BeginTurn(box.project).ok());
+    box.Put("notes.md", "# Notes changed by someone else\n", false);
+    const std::vector<std::string> none;
+    TurnSummary empty;
+    CHECK(store.EndTurn(&empty, nullptr, &none).ok());
+    CHECK(empty.changes.empty());
+
+    // The agent's file, changed again by someone else after the turn: undo names the conflict and touches nothing.
+    CHECK(store.BeginTurn(box.project).ok());
+    box.Put("web/app.js", "const a = 3;\n", false);
+    TurnSummary third;
+    const std::vector<std::string> mine{"web/app.js"};
+    CHECK(store.EndTurn(&third, nullptr, &mine).ok());
+    CHECK_EQ(third.changes.size(), std::size_t(1));
+    box.Put("web/app.js", "const a = 3; // someone else\n", false);
+    const Result clash = store.UndoTurn(third.turnId);
+    CHECK(clash.status == Status::Conflict && clash.conflicts.size() == 1 && clash.conflicts[0].path == "web/app.js");
+    CHECK(box.Get("web/app.js") == std::optional<std::string>("const a = 3; // someone else\n"));
+}
+
 int main() {
     SetConsoleOutputCP(CP_UTF8);
     TestGitignorePatterns();
@@ -1336,6 +1387,7 @@ int main() {
     TestTurnLifecycle();
     TestStoreInsideProject();
     TestOptions();
+    TestOnlyAgentFiles();
 
     wchar_t temp[MAX_PATH];
     GetTempPathW(MAX_PATH, temp);

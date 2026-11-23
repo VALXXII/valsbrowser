@@ -61,6 +61,11 @@ int wmain(int argc, wchar_t** argv) {
     auto centre = [](Design::Box b) { return std::pair<float, float>{(b.left + b.right) / 2, (b.top + b.bottom) / 2}; };
 
     BrowserSettings::State st;
+    {   // « Profils » is on the root from the first frame (it used to appear only after a setting changed).
+        SettingsUI::Drawer::Hooks h = hooks(); h.profiles = [] { SettingsUI::ProfileItem p; p.id = L"p1"; p.name = L"Personnel"; p.current = true; return std::vector<SettingsUI::ProfileItem>{p}; };
+        status = 1; SettingsUI::Drawer dr; dr.Create(hi, owner, root, &st, h); open(dr);
+        Check(Hit(dr.SlotsForTest(), SettingsUI::CatProfiles), "« Profils » listed as soon as the drawer opens");
+    }
     {   // Not the default: the card, Paper's root list.
         status = 0; SettingsUI::Drawer dr; Check(dr.Create(hi, owner, root, &st, hooks()), "drawer created"); open(dr);
         Check(dr.CardShownForTest(), "not the default: the card shows on the root");
