@@ -28,6 +28,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 #include "chrome.h"
@@ -188,14 +189,18 @@ private:
     // The sources are listed off the UI thread and adopted when they arrive (SourcesMessage). Until then board 3
     // shows its select with « Recherche des navigateurs… » and nothing to import. Tests (no window): at once.
     unsigned sourcesAsked_ = 0; bool sourcesLoading_ = false; float slowestChangeMs_ = 0, slowestFrameMs_ = 0; unsigned frames_ = 0;
-    struct SourcesJob { std::function<std::vector<BrowserSource>()> list; HWND window; unsigned asked; };
+    // SEC-26: the list comes back in this shared slot; SourcesMessage only wakes the window (no pointer in a message).
+    struct SourcesSlot { std::mutex lock; std::vector<BrowserSource> found; unsigned asked = 0; bool ready = false; };
+    std::shared_ptr<SourcesSlot> sourcesSlot_ = std::make_shared<SourcesSlot>();
+    struct SourcesJob { std::function<std::vector<BrowserSource>()> list; HWND window; unsigned asked; std::shared_ptr<SourcesSlot> slot; };
     void RequestSources() {
         if (offscreen_ || !hwnd_ || !options_.hooks.sources) { LoadSources(); return; }
-        auto* job = new SourcesJob{options_.hooks.sources, hwnd_, ++sourcesAsked_}; sourcesLoading_ = true;
+        auto* job = new SourcesJob{options_.hooks.sources, hwnd_, ++sourcesAsked_, sourcesSlot_}; sourcesLoading_ = true;
         HANDLE thread = CreateThread(nullptr, 0, [](LPVOID p) -> DWORD {
             std::unique_ptr<SourcesJob> j(static_cast<SourcesJob*>(p));
-            auto* found = new std::vector<BrowserSource>(j->list());
-            if (!PostMessageW(j->window, SourcesMessage, j->asked, reinterpret_cast<LPARAM>(found))) delete found;   // the window is gone
+            auto found = j->list();
+            { std::lock_guard<std::mutex> hold(j->slot->lock); if (j->asked >= j->slot->asked) { j->slot->found = std::move(found); j->slot->asked = j->asked; j->slot->ready = true; } }
+            PostMessageW(j->window, SourcesMessage, j->asked, 0);   // the window may be gone: the slot is shared
             return 0;
         }, job, 0, nullptr);
         if (!thread) { delete job; sourcesLoading_ = false; LoadSources(); return; }
@@ -1151,8 +1156,9 @@ private:
         case HostMessage: if (options_.hooks.message) options_.hooks.message(w, l); return 0;
         case ReplayDoneMessage: if (exitReplay_) EndReplay(); return 0;
         case SourcesMessage: {
-            std::unique_ptr<std::vector<BrowserSource>> found(reinterpret_cast<std::vector<BrowserSource>*>(l));
-            if (found && static_cast<unsigned>(w) == sourcesAsked_) { AdoptSources(std::move(*found)); Arrange(); Invalidate(); if (uia_.Attached()) uia_.ChildrenChanged(0); }
+            std::vector<BrowserSource> found; bool fresh = false;
+            { std::lock_guard<std::mutex> hold(sourcesSlot_->lock); if (sourcesSlot_->ready && sourcesSlot_->asked == sourcesAsked_) { found = std::move(sourcesSlot_->found); sourcesSlot_->ready = false; fresh = true; } }
+            if (fresh) { AdoptSources(std::move(found)); Arrange(); Invalidate(); if (uia_.Attached()) uia_.ChildrenChanged(0); }
             return 0;
         }
         case WM_CTLCOLOREDIT:
