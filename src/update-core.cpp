@@ -475,6 +475,8 @@ Engine::State Engine::LoadState() const {
     return s;
 }
 void Engine::SaveState(const State& s) const {
+    cachedNextCheck_ = s.nextCheck;
+    cachedAt_ = Ticks() + 1;
     if (!EnsureDir(Updates())) return;
     UP::AtomicWriteFile(Updates() + L"\\state", "browser-update-state 1\nnext-check " + std::to_string(s.nextCheck) +
                                                     "\nfailures " + std::to_string(s.failures) + "\nnotified " +
@@ -604,8 +606,16 @@ bool Engine::AutoCheck() {
 
 DWORD Engine::AutoCheckDelayMs() const {
     if (!enabled_ || shutdown_ || !config_.automaticCheck) return 0;
-    State state = LoadState();
-    const std::int64_t wait = state.nextCheck - Now();
+    std::int64_t nextCheck;
+    const std::uint64_t at = cachedAt_.load(), ticks = Ticks();
+    if (at && ticks + 1 - at < 60 * 1000) {
+        nextCheck = cachedNextCheck_.load();
+    } else {  // first call, or another window may have checked since: read the shared file again
+        nextCheck = LoadState().nextCheck;
+        cachedNextCheck_ = nextCheck;
+        cachedAt_ = ticks + 1;
+    }
+    const std::int64_t wait = nextCheck - Now();
     if (wait <= 0 || wait > FailureMax) return AutoCheckMinMs;  // due (or corrupt): retry no sooner than the floor
     const std::int64_t ms = wait * 1000;
     return DWORD(std::min<std::int64_t>(AutoCheckMaxMs, std::max<std::int64_t>(AutoCheckMinMs, ms)));
@@ -806,8 +816,9 @@ void Engine::RunDownload(std::uint64_t gen, UP::Manifest m) {
         return fail(TR(update_error_locked));
     }
     // A scanner/indexer may still hold a file just extracted into `work`: the rename is retried briefly.
-    if (!UP::MoveDirectory(work, target, 15 * 1000)) {
+    if (!UP::MoveDirectory(work, target, 15 * 1000, nullptr, &cancel_)) {  // cancel / close never wait out the retries (PERF-19)
         UP::RemoveTree(work);
+        if (cancel_) return;
         return fail(TR(update_error_prepare));
     }
     {

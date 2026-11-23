@@ -298,11 +298,14 @@ bool ReconcileBridge(const std::wstring& root, const std::string& version, const
         if (!source.Ok() || !ReadAll(source.Get(), bytes, 256ull << 20)) return error = "bridge source invalid", false;
     }
     if (UP::PathExists(bin) && !RootedHandle(root, L"bin", true).Ok()) return error = "bin is not a plain directory", false;
-    const UP::Digest digest = UP::Sha256Of(bytes);
+    // Byte-for-byte (PERF-19): the launcher runs this before every browser start; a size mismatch needs no read, and
+    // equal bytes need no SHA-256 of either copy.
     auto publishedIs = [&](const std::wstring& rel) {
         RootedHandle h(root, rel, false);
+        LARGE_INTEGER size{};
+        if (!h.Ok() || !GetFileSizeEx(h.Get(), &size) || std::uint64_t(size.QuadPart) != bytes.size()) return false;
         std::string got;
-        return h.Ok() && ReadAll(h.Get(), got, 256ull << 20) && got.size() == bytes.size() && UP::Sha256Of(got) == digest;
+        return ReadAll(h.Get(), got, 256ull << 20) && got == bytes;
     };
     const bool present = UP::PathExists(final_);
     if (want && present && publishedIs(L"bin\\" + std::wstring(BridgeName))) {
