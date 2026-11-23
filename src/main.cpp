@@ -1259,11 +1259,17 @@ std::wstring HistoryFile(){return dataDir+L"\\history";}
 // Interprocess transaction (src/profile-store.h): visits made here are added to the file's counts,
 // removals here are applied there, and another window's removals are never undone.
 AddressBar::History historyBase;
+ProfileStore::Stamp historySeen; // PERF-01: the file as it was when `history` last equalled it (nothing left to merge)
 void SaveHistory(){
     if(smoke||privateWindow)return;
+    // Nothing changed here since the file was last read and the file was not replaced since: the
+    // transaction would read, merge and find nothing to do (e.g. every window activation).
+    if(history==historyBase&&ProfileStore::StampOf(HistoryFile())==historySeen)return;
+    ProfileStore::Lock lock(dataDir); /* held through the stamp below (the commit re-enters it: same thread) */
     const auto r=ProfileStore::CommitWith<AddressBar::History>(dataDir,HistoryFile(),historyBase,history,
         [](std::istream& in,bool* damaged){std::string b((std::istreambuf_iterator<char>(in)),std::istreambuf_iterator<char>());std::istringstream i2(b);auto h=AddressBar::History::Read(i2);if(damaged)*damaged=!b.empty()&&ProfileStore::RecordLines(b)!=h.Items().size();return h;},[](std::ostream& out,const AddressBar::History& h){h.Write(out);},
-        [](const AddressBar::History& b,const AddressBar::History& m,const AddressBar::History& t){return AddressBar::History::Merge(b,m,t);},5000,{"browser-history 1"},false); /* damaged: backed up, never rewritten */
+        [](const AddressBar::History& b,const AddressBar::History& m,const AddressBar::History& t){return AddressBar::History::Merge(b,m,t);},lock.Held()?5000:0,{"browser-history 1"},false); /* damaged: backed up, never rewritten */
+    historySeen=r==ProfileStore::Result::Unchanged?ProfileStore::StampOf(HistoryFile()):ProfileStore::Stamp{};
     if(r==ProfileStore::Result::Failed||r==ProfileStore::Result::Busy)Log(L"HISTORY save failed");
 }
 // Result pages of the search engines are not suggested back: typing "git" should
@@ -1314,7 +1320,7 @@ void RememberSiteIcon(const std::wstring& uri,const std::shared_ptr<const Native
 void ForgetSiteIcon(const std::wstring& site){if(site.empty())return;siteIcons.erase(site);siteIconsWritten.erase(site);siteIconsMissing.insert(site);if(smoke||privateWindow)return; /* review P2 */if(!DeleteFileW(SiteIconFile(site).c_str())&&GetLastError()!=ERROR_FILE_NOT_FOUND)Log(L"FAVICONS delete failed "+site);}
 void ClearSiteIcons(){siteIcons.clear();siteIconsMissing.clear();siteIconsWritten.clear();if(smoke||privateWindow)return; /* review P2 */std::error_code ignored;std::filesystem::remove_all(std::filesystem::path(dataDir)/L"favicons",ignored);}
 void LoadPopularSites(){std::ifstream in(std::filesystem::path(base+L"\\assets\\popular-sites.txt"),std::ios::binary);popularSites=AddressBar::ReadPopular(in);if(popularSites.empty())Log(L"ADDRESS popular sites unavailable");}
-void LoadHistory(){LoadPopularSites();if(smoke||privateWindow)return; /* point 8: a private window shows no history, normal or private */std::string bytes;{ProfileStore::Lock lock(dataDir);ProfileStore::ReadAll(HistoryFile(),bytes);}std::istringstream in(bytes);history=AddressBar::History::Read(in);historyBase=history;}
+void LoadHistory(){LoadPopularSites();if(smoke||privateWindow)return; /* point 8: a private window shows no history, normal or private */std::string bytes;{ProfileStore::Lock lock(dataDir);ProfileStore::ReadAll(HistoryFile(),bytes);}std::istringstream in(bytes);history=AddressBar::History::Read(in);historyBase=history;historySeen={};}
 // ---- New tab page (SETTINGS newtab) ----------------------------------------------
 // "Sites fréquents": the home tab shows the most visited hosts (AddressBar::TopSites, the
 // ranking of the address bar's host rows) as plain http(s) links. Self-contained document
@@ -3470,6 +3476,7 @@ BM::Store bookmarks; BM::Id lastFolder=BM::BarRoot; bool bookmarksSaveFailed=fal
 // merge (src/profile-store.h). Another window's changes arrive with every commit and on activation.
 BM::Store bookmarksBase;
 int popoverReturn=0; bool bookmarksDismissClick=false;
+ProfileStore::Stamp bookmarksSeen; // PERF-08: the file as it was when `bookmarks` last equalled it
 struct BandDrag { int index=-1; BM::Id id=0; POINT start{}; float grab=0; bool active=false; BM::Id parent=0; size_t from=0; BookmarkDrag::Drop drop; Workspace* owner=nullptr; } bandDrag;   // drop: where a release would land (bar or drawer)
 // A bookmark dragged out of a folder/overflow menu or the drawer (src/bookmark-drag.h): stable id + the profile it
 // belongs to; nothing moves until the drop, which is checked again (same profile shown, item still there, place valid).
@@ -3488,7 +3495,11 @@ void SaveBookmarks(){
     // Transaction under the profile lock: this window's changes (base → mine) replayed onto the file as
     // it is now, written atomically; the result (with the other windows' changes) becomes the state.
     std::map<BM::Id,BM::Id> remap;const BM::Store before=bookmarks;
-    const auto r=ProfileStore::Commit<BM::Store>(dataDir,BookmarksFile(),bookmarksBase,bookmarks,[&remap](const BM::Store& b,const BM::Store& m,const BM::Store& t){return BM::Store::Merge(b,m,t,&remap);},5000,{"browser-bookmarks 1"});
+    // PERF-08: nothing changed here and the file was not replaced since it last equalled this state: nothing to merge.
+    if(!bookmarksSaveFailed&&bookmarks==bookmarksBase&&ProfileStore::StampOf(BookmarksFile())==bookmarksSeen)return;
+    ProfileStore::Lock lock(dataDir); /* held through the stamp below (the commit re-enters it: same thread) */
+    const auto r=ProfileStore::Commit<BM::Store>(dataDir,BookmarksFile(),bookmarksBase,bookmarks,[&remap](const BM::Store& b,const BM::Store& m,const BM::Store& t){return BM::Store::Merge(b,m,t,&remap);},lock.Held()?5000:0,{"browser-bookmarks 1"});
+    bookmarksSeen=r==ProfileStore::Result::Unchanged?ProfileStore::StampOf(BookmarksFile()):ProfileStore::Stamp{};
     const bool ok=r==ProfileStore::Result::Written||r==ProfileStore::Result::Unchanged;
     if(!remap.empty()){bookmarkUndo.clear();Log(L"BOOKMARKS new ids remapped (another window used them)");}
     if(ok&&bookmarks!=before){if(!bookmarks.Find(lastFolder))lastFolder=BM::BarRoot;Defer([]{BookmarksChanged();});Log(L"BOOKMARKS merged with another window's changes");}
@@ -3504,13 +3515,13 @@ void LoadBookmarks(){
     if(smoke)return;
     namespace fs=std::filesystem;const fs::path path(BookmarksFile()),backup(BookmarksFile()+L".bak");std::error_code ec;
     if(!fs::exists(path,ec)){
-        bookmarksBase=BM::Store{}; // nothing on disk: everything in memory is new to the file
+        bookmarksBase=BM::Store{};bookmarksSeen={}; // nothing on disk: everything in memory is new to the file
         // No file: first run, or a lost one; a clean backup wins over an empty start.
         if(fs::exists(backup,ec)){std::ifstream in(backup,std::ios::binary);bool damaged=false;auto restored=BM::Store::Read(in,&damaged);if(!damaged&&restored.Size()){bookmarks=std::move(restored);Log(L"BOOKMARKS restored from bookmarks.bak");SaveBookmarks();}}
         return;
     }
     bool damaged=false;{ProfileStore::Lock lock(dataDir);std::string bytes;ProfileStore::ReadAll(path.wstring(),bytes);std::istringstream in(bytes);bookmarks=BM::Store::Read(in,&damaged);} // read under the profile lock
-    bookmarksBase=bookmarks; // what is on disk now
+    bookmarksBase=bookmarks;bookmarksSeen={}; // what is on disk now
     if(damaged){
         // Personal data, not a cache: keep the damaged file aside before anything rewrites it.
         const auto aside=fs::path(BookmarksFile()+L".damaged-"+TimeStamp());fs::copy_file(path,aside,fs::copy_options::overwrite_existing,ec);

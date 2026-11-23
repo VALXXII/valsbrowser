@@ -74,18 +74,42 @@ inline bool ReadAll(const std::wstring& path, std::string& out) {
     return ok;
 }
 
+// Identity of a file as it is on disk now (PERF-01/08): volume, file id, size and write time. Every
+// WriteAtomic renames a NEW file over the target, so any write by any window changes the file id. A
+// stamp equal to one taken earlier means the file was not replaced or modified in between. `known`
+// is false when the file could not be inspected: such a stamp never equals another.
+struct Stamp {
+    bool known = false, exists = false; DWORD volume = 0, idHigh = 0, idLow = 0, sizeHigh = 0, sizeLow = 0; FILETIME written{};
+    bool operator==(const Stamp& o) const {
+        return known && o.known && exists == o.exists && volume == o.volume && idHigh == o.idHigh && idLow == o.idLow && sizeHigh == o.sizeHigh && sizeLow == o.sizeLow
+            && written.dwLowDateTime == o.written.dwLowDateTime && written.dwHighDateTime == o.written.dwHighDateTime;
+    }
+    bool operator!=(const Stamp& o) const { return !(*this == o); }
+};
+inline Stamp StampOf(const std::wstring& path) {
+    Stamp s;
+    HANDLE f = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) { const DWORD e = GetLastError(); s.known = e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND; return s; }
+    BY_HANDLE_FILE_INFORMATION i{};
+    if (GetFileInformationByHandle(f, &i)) { s.known = s.exists = true; s.volume = i.dwVolumeSerialNumber; s.idHigh = i.nFileIndexHigh; s.idLow = i.nFileIndexLow; s.sizeHigh = i.nFileSizeHigh; s.sizeLow = i.nFileSizeLow; s.written = i.ftLastWriteTime; }
+    CloseHandle(f);
+    return s;
+}
+
 // Complete temp file (unique to this process), flushed, then renamed over the target.
-inline bool WriteAtomic(const std::wstring& path, const std::string& data) {
+// `durable` = false (PERF-08): for a hint file rebuilt at the next start (the window sidecar), the
+// same atomic rename but without FlushFileBuffers or a write-through rename.
+inline bool WriteAtomic(const std::wstring& path, const std::string& data, bool durable = true) {
     const std::wstring temp = path + L".tmp" + std::to_wstring(GetCurrentProcessId());
     HANDLE f = CreateFileW(temp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE) return false;
     DWORD written = 0;
-    const bool ok = WriteFile(f, data.data(), static_cast<DWORD>(data.size()), &written, nullptr) && written == data.size() && FlushFileBuffers(f);
+    const bool ok = WriteFile(f, data.data(), static_cast<DWORD>(data.size()), &written, nullptr) && written == data.size() && (!durable || FlushFileBuffers(f));
     CloseHandle(f);
     // A reader outside this store (indexer, antivirus, an older build) may hold the target open
     // without delete sharing for a moment: retry the rename briefly instead of failing the commit.
     bool moved = false;
-    for (int attempt = 0; ok && attempt < 100 && !(moved = MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)); ++attempt) {
+    for (int attempt = 0; ok && attempt < 100 && !(moved = MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | (durable ? MOVEFILE_WRITE_THROUGH : 0))); ++attempt) {
         const DWORD e = GetLastError(); if (e != ERROR_SHARING_VIOLATION && e != ERROR_ACCESS_DENIED && e != ERROR_LOCK_VIOLATION) break;
         Sleep(10);
     }
