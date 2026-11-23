@@ -116,6 +116,8 @@ def click_page(selector):
 def click_panel(selector=None, text=None):
     """A real click in the panel: on a selector, or on the visible control whose text / accessible name contains `text`
     (a button or role first, else the smallest element holding that text)."""
+    if text == 'Autoriser' or (selector and '.btn.primary' in selector and 'perm' in selector):
+        time.sleep(0.7)   # SEC-23: a permission card takes no « Autoriser » in its first 600 ms
     find = (f"document.querySelector({json.dumps(selector)})" if selector else
             "(function(){var t=" + json.dumps(text) + ";function vis(e){var r=e.getBoundingClientRect();return r.width>0&&r.height>0}"
             "function has(e){return ((e.innerText||'')+' '+(e.getAttribute('aria-label')||'')).indexOf(t)>=0}"

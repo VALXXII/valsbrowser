@@ -230,6 +230,8 @@ def front():
 
 def real_click_in_bubble(label):
     """A REAL mouse click (SendInput) on the bubble's button named `label`: the user's path into the chat page."""
+    if label == 'Autoriser':
+        time.sleep(0.7)   # SEC-23: a permission card takes no « Autoriser » in its first 600 ms
     bw = CC.bubble_window()
     if not bw:
         return False
