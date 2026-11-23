@@ -512,6 +512,9 @@ HRESULT BasicAuthenticationRequested(const std::shared_ptr<Tab>& t,ICoreWebView2
 bool ExternalSchemeRefused(const std::wstring& uri){
     const auto colon=uri.find(L':');if(colon==std::wstring::npos||colon==0)return true;
     std::wstring s=uri.substr(0,colon);std::transform(s.begin(),s.end(),s.begin(),towlower);
+    // SEC-22: a scheme is [a-z][a-z0-9+.-]+ (two characters at least: "c:" is a drive, not an application).
+    if(s.size()<2||s[0]<L'a'||s[0]>L'z')return true;
+    for(wchar_t c:s)if(!((c>=L'a'&&c<=L'z')||(c>=L'0'&&c<=L'9')||c==L'+'||c==L'.'||c==L'-'))return true;
     for(auto bad:{L"file",L"javascript",L"vbscript",L"data",L"shell",L"ms-msdt",L"search-ms",L"search",L"ms-officecmd",L"ms-cxh",L"ms-cxh-full",L"res",L"mk",L"its",L"ms-its",L"hcp",L"jar"})if(s==bad)return true;
     return false;
 }

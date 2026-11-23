@@ -121,6 +121,7 @@ int main(){
     {ExternalArgs a;LaunchingExternalUriScheme(live,&a);Expect(a.cancel==TRUE&&a.deferral.completed==1,"external scheme: engine launch cancelled, deferral completed once");}
     {ExternalArgs a;a.uri=L"ms-msdt:/id PCWDiagnostic";LaunchingExternalUriScheme(live,&a);Expect(a.cancel==TRUE&&a.deferral.completed==1,"dangerous scheme refused");}
     Expect(ExternalSchemeRefused(L"FILE:///c:/windows")&&ExternalSchemeRefused(L"search-ms:query=x")&&ExternalSchemeRefused(L"javascript:alert(1)")&&!ExternalSchemeRefused(L"mailto:a@b.c")&&!ExternalSchemeRefused(L"zoommtg://join"),"external scheme denylist");
+    Expect(ExternalSchemeRefused(L"c:\\windows\\x.exe")&&ExternalSchemeRefused(L"1app:x")&&ExternalSchemeRefused(L"a b:x")&&ExternalSchemeRefused(L"\x00e9t\x00e9:x")&&!ExternalSchemeRefused(L"ms-settings:privacy")&&!ExternalSchemeRefused(L"web+app.v2:x"),"SEC-22: external scheme shape ([a-z][a-z0-9+.-]+)");
     // Sandbox host matching: exact host only.
     Expect(IsSandboxUri(L"https://browser-debug.invalid/sandbox")&&IsSandboxUri(L"HTTPS://BROWSER-DEBUG.INVALID/sandbox?x")&&IsSandboxUri(L"https://browser-debug.invalid"),"sandbox URI recognised");
     Expect(!IsSandboxUri(L"https://browser-debug.invalid.evil.test/sandbox")&&!IsSandboxUri(L"http://browser-debug.invalid/sandbox")&&!IsSandboxUri(L"https://evil.test/https://browser-debug.invalid/"),"look-alike hosts are not the sandbox");
