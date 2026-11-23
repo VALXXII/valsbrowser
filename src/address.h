@@ -92,6 +92,12 @@ inline std::wstring SiteOf(const std::wstring& url) {
     auto host = ReadableHost(p.host); const auto colon = host.find(L':');
     return colon == std::wstring::npos ? host : host.substr(0, colon);
 }
+// A site's icon file name without extension (<data>\favicons\<name>.png, assets\sites\<name>.png|.ico).
+inline std::wstring SiteFileName(const std::wstring& site) {
+    std::wstring name = site;
+    for (auto& c : name) if (!(iswalnum(c) || c == L'.' || c == L'-')) c = L'_';
+    return name;
+}
 
 inline std::wstring PercentDecode(const std::wstring& s) {
     std::string bytes; bytes.reserve(s.size());

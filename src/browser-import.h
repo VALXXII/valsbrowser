@@ -93,7 +93,55 @@ struct Source {
 };
 struct Roots { std::wstring local, roaming; };   // %LOCALAPPDATA%, %APPDATA% (tests: synthetic folders)
 
-struct Bookmarks_ { Failure failure = Failure::None; std::vector<Item> roots; std::size_t ignored = 0; };
+// ---- Site icons of the imported bookmarks ---------------------------------------------------------------
+// The bar, its menus and the drawer show the icon remembered per SITE (AddressBar::SiteOf) in <data>\favicons,
+// written until now only when a tab showed the site: imported bookmarks the person had not opened here came without
+// icons. The source's own icons therefore come with the read — Chromium « Favicons », Firefox « favicons.sqlite »
+// (copied and opened like the history), an HTML export's ICON data — and src/import-icons.h saves them and fetches
+// the missing ones. Never a reason to refuse or fail an import: a missing, busy, damaged or unknown icon database
+// only means no icon from the source.
+using Icons = std::map<std::wstring, std::string>;   // site → image bytes (Icon::Raster)
+namespace Icon {
+inline constexpr std::size_t bytes = 256u << 10;     // one icon (as main.cpp RememberSiteIcon keeps a visit's)
+inline constexpr std::size_t total = 32u << 20;      // every icon of one read
+inline constexpr std::size_t sites = 5000;           // distinct sites looked up
+inline constexpr std::size_t links = 64;             // addresses kept per site (exact-page preference)
+inline constexpr std::size_t rows = 400000;          // page → icon mappings read from a source
+inline constexpr std::int64_t target = 32;           // preferred width: 16 DIP up to 200 %
+// A raster image Windows' own decoder reads (PNG, ICO, GIF, JPEG, BMP) within the bound: never SVG nor markup.
+inline bool Raster(const std::string& b) {
+    if (b.size() < 8 || b.size() > bytes) return false;
+    const auto* u = reinterpret_cast<const unsigned char*>(b.data());
+    return (u[0] == 0x89 && u[1] == 'P' && u[2] == 'N' && u[3] == 'G' && u[4] == 0x0D && u[5] == 0x0A && u[6] == 0x1A && u[7] == 0x0A)
+        || (u[0] == 0 && u[1] == 0 && u[2] == 1 && u[3] == 0 && (u[4] | u[5]) != 0)   // ICO with at least one image
+        || (u[0] == 'G' && u[1] == 'I' && u[2] == 'F' && u[3] == '8')
+        || (u[0] == 0xFF && u[1] == 0xD8 && u[2] == 0xFF)
+        || (u[0] == 'B' && u[1] == 'M');
+}
+// Width preference: the closest to `target`, larger before smaller (a larger one scales down cleanly); unknown last.
+inline std::int64_t Score(std::int64_t width) { return width <= 0 || width > 4096 ? 1000000 : width >= target ? width - target : (target - width) * 3; }
+// The raster image of a « data:image/…;base64,… » address (an HTML export's ICON, a page's inline icon); empty otherwise.
+inline std::string DataImage(const std::wstring& uri) {
+    const auto comma = uri.find(L',');
+    if (comma == std::wstring::npos || comma > 80 || uri.size() - comma - 1 > bytes * 2) return {};
+    std::wstring head = uri.substr(0, comma); for (auto& c : head) c = static_cast<wchar_t>(towlower(c));
+    if (head.rfind(L"data:image/", 0) != 0 || head.find(L";base64") == std::wstring::npos) return {};
+    std::string out; unsigned value = 0; int bits = 0;
+    for (std::size_t i = comma + 1; i < uri.size(); ++i) {
+        const wchar_t c = uri[i]; unsigned v = 0;
+        if (c >= L'A' && c <= L'Z') v = static_cast<unsigned>(c - L'A'); else if (c >= L'a' && c <= L'z') v = static_cast<unsigned>(c - L'a') + 26;
+        else if (c >= L'0' && c <= L'9') v = static_cast<unsigned>(c - L'0') + 52; else if (c == L'+' || c == L'-') v = 62; else if (c == L'/' || c == L'_') v = 63;
+        else if (c == L'=') break; else if (c == L' ' || c == L'\t' || c == L'\r' || c == L'\n') continue; else return {};
+        value = (value << 6) | v; bits += 6;
+        if (bits >= 8) { bits -= 8; out += static_cast<char>((value >> bits) & 0xFF); value &= (1u << bits) - 1; }
+        if (out.size() > bytes) return {};
+    }
+    return Raster(out) ? out : std::string();
+}
+// The sites of the http(s) links of `roots`: the bar's first (in order), then the rest; each with its addresses.
+struct Sites { std::vector<std::wstring> order; std::map<std::wstring, std::set<std::wstring>> links; };
+} // namespace Icon
+struct Bookmarks_ { Failure failure = Failure::None; std::vector<Item> roots; std::size_t ignored = 0; Icons icons; };
 struct History_ { Failure failure = Failure::None; std::vector<Visit> visits; std::size_t beyond = 0, ignored = 0; };
 struct ReadResult { Bookmarks_ bookmarks; History_ history; };
 
@@ -240,6 +288,9 @@ struct Api {
     int(__stdcall* exec)(sqlite3*, const char*, void*, void*, char**) = nullptr;
     int(__stdcall* busy_timeout)(sqlite3*, int) = nullptr;
     int (*db_config)(sqlite3*, int, ...) = nullptr;   // optional (SEC-17: defensive mode); variadic, so cdecl
+    // Optional: site icons only (« Site icons » below). Without them an import still works, it just brings no icon.
+    const void*(__stdcall* column_blob)(sqlite3_stmt*, int) = nullptr;
+    int(__stdcall* column_bytes)(sqlite3_stmt*, int) = nullptr;
     bool Ready() const { return dll && open_v2 && close && prepare_v2 && step && finalize && column_text16 && column_bytes16 && column_int64 && column_type && exec && busy_timeout; }
 };
 // Loaded once from System32 only (never from the application or current folder).
@@ -251,7 +302,7 @@ inline const Api& Get() {
         get(a.open_v2, "sqlite3_open_v2"); get(a.close, "sqlite3_close"); get(a.prepare_v2, "sqlite3_prepare_v2"); get(a.step, "sqlite3_step");
         get(a.finalize, "sqlite3_finalize"); get(a.column_text16, "sqlite3_column_text16"); get(a.column_bytes16, "sqlite3_column_bytes16");
         get(a.column_int64, "sqlite3_column_int64"); get(a.column_type, "sqlite3_column_type"); get(a.exec, "sqlite3_exec"); get(a.busy_timeout, "sqlite3_busy_timeout");
-        get(a.db_config, "sqlite3_db_config");
+        get(a.db_config, "sqlite3_db_config"); get(a.column_blob, "sqlite3_column_blob"); get(a.column_bytes, "sqlite3_column_bytes");
         return a;
     }();
     return api;
@@ -293,6 +344,13 @@ public:
     }
     std::int64_t Int(int col) const { return Get().column_int64(s_, col); }
     bool Null(int col) const { return Get().column_type(s_, col) == NULLTYPE; }
+    // A blob of at most `limit` bytes; empty when larger (never cut), absent or when the API lacks blobs.
+    std::string Blob(int col, std::size_t limit) const {
+        const auto& a = Get(); if (!a.column_blob || !a.column_bytes) return {};
+        const void* p = a.column_blob(s_, col); const int n = a.column_bytes(s_, col);   // SQLite's documented order: the pointer, then its size
+        if (!p || n <= 0 || static_cast<std::size_t>(n) > limit) return {};
+        return std::string(static_cast<const char*>(p), static_cast<std::size_t>(n));
+    }
 private:
     sqlite3_stmt* s_ = nullptr; int rc_ = 0;
 };
@@ -315,8 +373,9 @@ class Snapshot {
 public:
     ~Snapshot() { Clean(); }
     Snapshot() = default; Snapshot(const Snapshot&) = delete; Snapshot& operator=(const Snapshot&) = delete;
-    // `tempRoot` (tests) or the user's temporary folder.
-    Failure Take(const std::wstring& database, const std::wstring& tempRoot = L"", const Pin* pin = nullptr) {
+    // `tempRoot` (tests) or the user's temporary folder. `announce`: run the test seam (the history / places copy; never
+    // the icons' copy, so a test holding the read at « snapshot » stops once, at the same point as before).
+    Failure Take(const std::wstring& database, const std::wstring& tempRoot = L"", const Pin* pin = nullptr, bool announce = true) {
         Clean();
         struct Part { const wchar_t* suffix; HANDLE h = INVALID_HANDLE_VALUE; };
         Part parts[] = {{L""}, {L"-wal"}, {L"-journal"}};
@@ -340,7 +399,7 @@ public:
         }
         for (auto& p : parts) if (p.h != INVALID_HANDLE_VALUE) CloseHandle(p.h);
         if (r != Failure::None) Clean();
-        else if (SnapshotTakenForTest()) SnapshotTakenForTest()();
+        else if (announce && SnapshotTakenForTest()) SnapshotTakenForTest()();
         return r;
     }
     std::wstring Path() const { return folder_.empty() ? L"" : folder_ + L"\\db"; }
@@ -580,6 +639,27 @@ inline RootRole RoleOf(const std::string& key) {
     if (key == "synced" || key == "mobile______") return RootRole::Mobile;
     return RootRole::None;
 }
+// The sites of the http(s) links of `roots` (Icon::Sites): what sits directly on the bar first, in order — the icons
+// people see at once come first — then every link in source order; at most Icon::sites sites, Icon::links addresses each.
+inline Icon::Sites SitesOf(const std::vector<Item>& roots) {
+    Icon::Sites out;
+    auto add = [&](const Item& it) {
+        const std::wstring site = AddressBar::SiteOf(it.url); if (site.empty()) return;
+        auto f = out.links.find(site);
+        if (f == out.links.end()) { if (out.order.size() >= Icon::sites) return; out.order.push_back(site); f = out.links.emplace(site, std::set<std::wstring>{}).first; }
+        if (f->second.size() < Icon::links) f->second.insert(it.url);
+    };
+    bool marked = false; for (const Item& r : roots) if (RoleOf(r.key) != RootRole::None) marked = true;
+    if (marked) { for (const Item& r : roots) if (RoleOf(r.key) == RootRole::Bar) for (const Item& c : r.children) if (!c.folder) add(c); }
+    else for (const Item& r : roots) if (!r.folder) add(r);   // an HTML file without root marks: its top level is the bar
+    std::vector<const Item*> todo; for (auto r = roots.rbegin(); r != roots.rend(); ++r) todo.push_back(&*r);   // depth first, no recursion
+    while (!todo.empty()) {
+        const Item* it = todo.back(); todo.pop_back();
+        if (!it->folder) { add(*it); continue; }
+        for (auto c = it->children.rbegin(); c != it->children.rend(); ++c) todo.push_back(&*c);
+    }
+    return out;
+}
 inline std::vector<std::wstring> RootTitles(const std::string& key) {
     using I18n::Id; Id id;
     if (key == "bookmark_bar" || key == "toolbar_____") id = Id::bookmarks_bar_root;
@@ -812,7 +892,7 @@ inline Bookmarks_ ParseHtmlBookmarks(const std::string& bytes) {
     Item top; top.folder = true;
     std::vector<Item*> stack{&top};     // open <DL> containers
     std::unique_ptr<Item> pendingFolder; // <H3> seen, its <DL> not yet
-    bool sawDl = false; std::size_t count = 0;
+    bool sawDl = false; std::size_t count = 0, iconBytes = 0;
     std::size_t i = 0;
     // One lower-cased copy for tag scanning (titles keep their case through `text`).
     const std::wstring lower = Html::Lower(text);
@@ -867,6 +947,14 @@ inline Bookmarks_ ParseHtmlBookmarks(const std::string& bytes) {
             link.added = HtmlTime(Html::Number(Html::Attribute(inner, L"add_date")));
             link.title = textUntil(L"</a");
             if (link.url.empty()) { ++r.ignored; continue; }
+            // The export's own icon of the link (Firefox writes ICON="data:image/png;base64,…"): the first one per site.
+            if (r.icons.size() < Icon::sites) {
+                const std::wstring site = AddressBar::SiteOf(link.url);
+                if (!site.empty() && !r.icons.count(site)) {
+                    std::string image = Icon::DataImage(Html::Attribute(inner, L"icon"));
+                    if (!image.empty() && iconBytes + image.size() <= Icon::total) { iconBytes += image.size(); r.icons.emplace(site, std::move(image)); }
+                }
+            }
             stack.back()->children.push_back(std::move(link));
         }
     }
@@ -951,6 +1039,87 @@ inline History_ ReadHistory(Sql::sqlite3* db, Browser b) {
     if (total.Prepared() && total.Step() == Sql::ROW) { const std::int64_t n = total.Int(0); if (n > static_cast<std::int64_t>(r.visits.size() + r.ignored)) r.beyond = static_cast<std::size_t>(n) - r.visits.size() - r.ignored; }
     return r;
 }
+// Source icons (« Site icons » above). Per wanted site, up to 8 candidate icons ordered by `rank` (0 best: an icon of
+// one of its bookmarked pages before one of any page of the site) then `score` (Icon::Score of the width); the first
+// candidate holding a raster image within the bounds wins. Ids written into a statement are this database's integers,
+// formatted by us: no text of the source ever enters SQL.
+namespace detail {
+struct IconCandidate { int rank = 0; std::int64_t score = 0, id = 0; bool operator<(const IconCandidate& o) const { return rank != o.rank ? rank < o.rank : score != o.score ? score < o.score : id < o.id; } };
+using IconCandidates = std::map<std::wstring, std::vector<IconCandidate>>;
+inline void Offer(IconCandidates& all, const std::wstring& site, const IconCandidate& x) {
+    auto& v = all[site];
+    for (auto& y : v) if (y.id == x.id) { if (x < y) y = x; std::sort(v.begin(), v.end()); return; }
+    v.push_back(x); std::sort(v.begin(), v.end());
+    if (v.size() > 8) v.resize(8);
+}
+// `image(id)`: that candidate's best raster image, or empty.
+inline Icons Choose(const Icon::Sites& want, const IconCandidates& all, const std::function<std::string(std::int64_t)>& image) {
+    Icons out; std::size_t total = 0;
+    for (const std::wstring& site : want.order) {
+        const auto c = all.find(site); if (c == all.end()) continue;
+        for (const IconCandidate& k : c->second) {
+            std::string bytes = image(k.id);
+            if (bytes.empty()) continue;
+            if (total + bytes.size() > Icon::total) return out;   // the bound: the sites after it get theirs from the network
+            total += bytes.size(); out.emplace(site, std::move(bytes)); break;
+        }
+    }
+    return out;
+}
+inline std::string WidthOrder(const char* column) {   // SQL: Icon::Score of `column`
+    const std::string t = std::to_string(Icon::target), w = column;
+    return "CASE WHEN " + w + " <= 0 OR " + w + " > 4096 THEN 1000000 WHEN " + w + " >= " + t + " THEN " + w + " - " + t + " ELSE (" + t + " - " + w + ") * 3 END";
+}
+} // namespace detail
+// Chromium « Favicons »: icon_mapping (page → icon), favicons (its type: 1 is the site's favicon, others touch or
+// manifest icons, ranked after it), favicon_bitmaps (one PNG per size, the closest to Icon::target first).
+inline Icons ReadChromiumIcons(Sql::sqlite3* db, const Icon::Sites& want) {
+    if (want.order.empty() || !Sql::PlainTables(db, "'icon_mapping', 'favicons', 'favicon_bitmaps'", 3)) return {};
+    detail::IconCandidates all;
+    auto q = std::make_unique<Sql::Statement>(db, "SELECT m.page_url, m.icon_id, f.icon_type FROM icon_mapping m JOIN favicons f ON f.id = m.icon_id LIMIT 400001");
+    if (!q->Prepared()) q = std::make_unique<Sql::Statement>(db, "SELECT page_url, icon_id, 1 FROM icon_mapping LIMIT 400001");   // a schema without icon types
+    if (!q->Prepared()) return {};
+    for (std::size_t rows = 0; rows < Icon::rows && q->Step() == Sql::ROW; ++rows) {
+        const std::wstring page = q->Text(0), site = AddressBar::SiteOf(page);
+        const auto w = want.links.find(site); if (w == want.links.end()) continue;
+        detail::Offer(all, site, {(w->second.count(page) ? 0 : 2) + (q->Int(2) == 1 ? 0 : 1), 0, q->Int(1)});
+    }
+    q.reset();
+    return detail::Choose(want, all, [&](std::int64_t id) {
+        Sql::Statement b(db, ("SELECT image_data FROM favicon_bitmaps WHERE icon_id = " + std::to_string(id) + " AND image_data IS NOT NULL ORDER BY " + detail::WidthOrder("width") + ", id LIMIT 8").c_str());
+        while (b.Prepared() && b.Step() == Sql::ROW) { std::string x = b.Blob(0, Icon::bytes); if (Icon::Raster(x)) return x; }
+        return std::string();
+    });
+}
+// Firefox « favicons.sqlite »: moz_pages_w_icons (page), moz_icons_to_pages (page → icon), moz_icons (one row per size:
+// width, data). An icon of the site's root (« /favicon.ico », root = 1) is mapped to no page: it comes after the pages'
+// own, by its address's site. SVG (width 65535) and anything that is not a raster image are passed over.
+inline Icons ReadFirefoxIcons(Sql::sqlite3* db, const Icon::Sites& want) {
+    if (want.order.empty() || !Sql::PlainTables(db, "'moz_icons', 'moz_pages_w_icons', 'moz_icons_to_pages'", 3)) return {};
+    detail::IconCandidates all; std::size_t rows = 0;
+    {
+        Sql::Statement q(db, "SELECT p.page_url, i.id, i.width FROM moz_pages_w_icons p JOIN moz_icons_to_pages ip ON ip.page_id = p.id JOIN moz_icons i ON i.id = ip.icon_id LIMIT 400001");
+        if (!q.Prepared()) return {};
+        for (; rows < Icon::rows && q.Step() == Sql::ROW; ++rows) {
+            const std::wstring page = q.Text(0), site = AddressBar::SiteOf(page);
+            const auto w = want.links.find(site); if (w == want.links.end()) continue;
+            detail::Offer(all, site, {w->second.count(page) ? 0 : 1, Icon::Score(q.Int(2)), q.Int(1)});
+        }
+    }
+    {
+        Sql::Statement q(db, "SELECT icon_url, id, width FROM moz_icons WHERE root = 1 LIMIT 400001");   // no root column (very old): no root icons
+        for (; q.Prepared() && rows < Icon::rows && q.Step() == Sql::ROW; ++rows) {
+            const std::wstring site = AddressBar::SiteOf(q.Text(0));
+            if (want.links.count(site)) detail::Offer(all, site, {2, Icon::Score(q.Int(2)), q.Int(1)});
+        }
+    }
+    return detail::Choose(want, all, [&](std::int64_t id) {
+        Sql::Statement b(db, ("SELECT data FROM moz_icons WHERE id = " + std::to_string(id)).c_str());
+        if (!b.Prepared() || b.Step() != Sql::ROW) return std::string();
+        std::string x = b.Blob(0, Icon::bytes);
+        return Icon::Raster(x) ? x : std::string();
+    });
+}
 
 // ---- Reading a source (after the explicit « Importer ») --------------------------------------------------
 // A source identity (folder guid) must name ONE folder of the source. A damaged or hand-made source where two folders
@@ -966,7 +1135,23 @@ inline bool AmbiguousIds(const std::vector<Item>& roots) {
     return dup;
 }
 inline void RefuseAmbiguous(Bookmarks_& b) { if (b.failure == Failure::None && AmbiguousIds(b.roots)) { b = Bookmarks_{}; b.failure = Failure::Ambiguous; } }
-struct Options { bool bookmarks = false, history = false; std::wstring tempRoot; };
+// The source's icons for the sites of `roots` (Chromium, Firefox), read like its history: pinned folder, private copy,
+// one read transaction. Whatever goes wrong (no file, the browser running, a damaged or unknown database, no memory)
+// only means no icon from the source.
+inline Icons ReadSourceIcons(const Source& s, const std::vector<Item>& roots, const Pin& pin, const std::wstring& tempRoot) {
+    if (!Chromium(s.browser) && s.browser != Browser::Firefox) return {};
+    try {
+        const Icon::Sites want = SitesOf(roots);
+        if (want.order.empty()) return {};
+        Snapshot snap;
+        if (snap.Take(s.dir + (Chromium(s.browser) ? L"\\Favicons" : L"\\favicons.sqlite"), tempRoot, &pin, false) != Failure::None) return {};
+        Database db(snap.Path());
+        if (db.failure() != Failure::None) return {};
+        return Chromium(s.browser) ? ReadChromiumIcons(db.handle(), want) : ReadFirefoxIcons(db.handle(), want);
+    } catch (const std::bad_alloc&) { return {}; }
+}
+// `icons`: with the bookmarks, their sites' icons from the source (Bookmarks_::icons).
+struct Options { bool bookmarks = false, history = false, icons = true; std::wstring tempRoot; };
 inline ReadResult Read(const Source& s, const Options& o) {
     ReadResult r;
     // Pin the source's folders for the whole read (HTML: the chosen file's own folder).
@@ -978,6 +1163,7 @@ inline ReadResult Read(const Source& s, const Options& o) {
             std::string bytes; const Failure f = ReadFileBounded(s.dir, Bound::htmlBytes, bytes, &pin);
             if (f != Failure::None) r.bookmarks.failure = f; else r.bookmarks = ParseHtmlBookmarks(bytes);
             SecureZeroMemory(bytes.data(), bytes.size());
+            if (!o.icons) r.bookmarks.icons.clear();
         }
         return r;
     }
@@ -985,6 +1171,7 @@ inline ReadResult Read(const Source& s, const Options& o) {
         if (o.bookmarks) {
             std::string bytes; const Failure f = ReadFileBounded(s.dir + L"\\Bookmarks", Bound::jsonBytes, bytes, &pin);
             if (f != Failure::None) r.bookmarks.failure = f; else { r.bookmarks = ParseChromiumBookmarks(bytes); RefuseAmbiguous(r.bookmarks); }
+            if (o.icons && r.bookmarks.failure == Failure::None) r.bookmarks.icons = ReadSourceIcons(s, r.bookmarks.roots, pin, o.tempRoot);
         }
         if (o.history) {
             Snapshot snap; const Failure f = snap.Take(s.dir + L"\\History", o.tempRoot, &pin);
@@ -1002,6 +1189,8 @@ inline ReadResult Read(const Source& s, const Options& o) {
         if (o.bookmarks) { r.bookmarks = ReadFirefoxBookmarks(db.handle()); RefuseAmbiguous(r.bookmarks); }
         if (o.history) r.history = ReadHistory(db.handle(), s.browser);
     }
+    // Its icons live in another database of the profile, read once the places copy is closed.
+    if (o.bookmarks && o.icons && r.bookmarks.failure == Failure::None) r.bookmarks.icons = ReadSourceIcons(s, r.bookmarks.roots, pin, o.tempRoot);
     return r;
 }
 
