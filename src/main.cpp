@@ -432,7 +432,7 @@ void Update(){if(WorkspaceParked())return; /* a hidden profile's event: the wind
            !Check(t->view->get_CanGoForward(&canGoForward),L"get_CanGoForward"))return;
     }
     chrome.SetEnabled('B',canGoBack!=FALSE);chrome.SetEnabled('F',canGoForward!=FALSE);
-    chrome.SetEnabled('C',!t->home&&!t->uri.empty());AnnotationSyncChrome();if(!editing)SetWindowTextW(address,t->home?L"":t->uri.c_str());SetWindowTextW(window,(privateWindow?TRF(window_title_private,t->title):TRF(window_title,t->title)).c_str());BuildChrome();RefreshTools();InvalidateRect(window,nullptr,FALSE);
+    chrome.SetEnabled('C',!t->home&&!t->uri.empty());AnnotationSyncChrome();if(!editing)SetWindowTextW(address,t->home?L"":t->uri.c_str());SetWindowTextW(window,(privateWindow?TRF(window_title_private,t->title):TRF(window_title,t->title)).c_str());RefreshTools(); /* builds the chrome (PERF-07: no second BuildChrome) */InvalidateRect(window,nullptr,FALSE);
     ScrollbarRefresh(NativeChrome::Motion::Now()); // home <-> page hides or restores the handle
 }
 // Tab / profile switch transition (src/content-transition.h; functions defined before profile-workspace.h).
@@ -2768,7 +2768,8 @@ void CreateTab(std::wstring uri,int index,std::wstring title,const PopupHost::Re
         HRESULT result=t->view->add_SourceChanged(source,&token);source->Release();if(!Check(result,L"add_SourceChanged"))return S_OK;
         auto history=Callback<ICoreWebView2HistoryChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2*,IUnknown*)->HRESULT{auto tab=weak.lock();if(tab&&!tab->closed&&!halted&&tab==Active())Update();return S_OK;});
         result=t->view->add_HistoryChanged(history,&token);history->Release();if(!Check(result,L"add_HistoryChanged"))return S_OK;
-        auto title=Callback<ICoreWebView2DocumentTitleChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2* v,IUnknown*)->HRESULT{if(halted)return S_OK;auto t=weak.lock();if(!t||t->closed)return S_OK;LPWSTR s=nullptr;if(Check(v->get_DocumentTitle(&s),L"get_DocumentTitle")&&s){t->title=s;CoTaskMemFree(s);if(!t->home&&t->https.shown.empty()&&t->errorPage.shown.empty()&&!IsSandboxUri(t->uri)&&::history.SetTitle(t->uri,t->title)){SaveHistory();if(!WorkspaceParked())historyDrawer.Changed();}}Update();SchedulePublishProfileWindow();return S_OK;});
+        auto title=Callback<ICoreWebView2DocumentTitleChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2* v,IUnknown*)->HRESULT{if(halted)return S_OK;auto t=weak.lock();if(!t||t->closed)return S_OK;LPWSTR s=nullptr;if(Check(v->get_DocumentTitle(&s),L"get_DocumentTitle")&&s){t->title=s;CoTaskMemFree(s);if(!t->home&&t->https.shown.empty()&&t->errorPage.shown.empty()&&!IsSandboxUri(t->uri)&&::history.SetTitle(t->uri,t->title)){SaveHistory();if(!WorkspaceParked())historyDrawer.Changed();}}
+            /* PERF-07: only the active tab's title reaches the window title and the toolbar; another tab's only changes the strip */if(t==Active())Update();else if(!WorkspaceParked()){RefreshTools();InvalidateChrome();}SchedulePublishProfileWindow();return S_OK;});
         result=t->view->add_DocumentTitleChanged(title,&token);title->Release();if(!Check(result,L"add_DocumentTitleChanged"))return S_OK;
         auto nav=Callback<ICoreWebView2NavigationCompletedEventHandler,ICoreWebView2*,ICoreWebView2NavigationCompletedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2NavigationCompletedEventArgs* a)->HRESULT{return NavigationCompleted(weak.lock(),a);});
         result=t->view->add_NavigationCompleted(nav,&token);nav->Release();if(!Check(result,L"add_NavigationCompleted"))return S_OK;
@@ -3475,8 +3476,8 @@ BM::Store bookmarks; BM::Id lastFolder=BM::BarRoot; bool bookmarksSaveFailed=fal
 // What this process last read from or wrote to the shared file: the base of its next three-way
 // merge (src/profile-store.h). Another window's changes arrive with every commit and on activation.
 BM::Store bookmarksBase;
-int popoverReturn=0; bool bookmarksDismissClick=false;
 ProfileStore::Stamp bookmarksSeen; // PERF-08: the file as it was when `bookmarks` last equalled it
+int popoverReturn=0; bool bookmarksDismissClick=false;
 struct BandDrag { int index=-1; BM::Id id=0; POINT start{}; float grab=0; bool active=false; BM::Id parent=0; size_t from=0; BookmarkDrag::Drop drop; Workspace* owner=nullptr; } bandDrag;   // drop: where a release would land (bar or drawer)
 // A bookmark dragged out of a folder/overflow menu or the drawer (src/bookmark-drag.h): stable id + the profile it
 // belongs to; nothing moves until the drop, which is checked again (same profile shown, item still there, place valid).
@@ -3494,10 +3495,10 @@ void SaveBookmarks(){
     if(smoke)return;
     // Transaction under the profile lock: this window's changes (base → mine) replayed onto the file as
     // it is now, written atomically; the result (with the other windows' changes) becomes the state.
-    std::map<BM::Id,BM::Id> remap;const BM::Store before=bookmarks;
     // PERF-08: nothing changed here and the file was not replaced since it last equalled this state: nothing to merge.
     if(!bookmarksSaveFailed&&bookmarks==bookmarksBase&&ProfileStore::StampOf(BookmarksFile())==bookmarksSeen)return;
     ProfileStore::Lock lock(dataDir); /* held through the stamp below (the commit re-enters it: same thread) */
+    std::map<BM::Id,BM::Id> remap;const BM::Store before=bookmarks;
     const auto r=ProfileStore::Commit<BM::Store>(dataDir,BookmarksFile(),bookmarksBase,bookmarks,[&remap](const BM::Store& b,const BM::Store& m,const BM::Store& t){return BM::Store::Merge(b,m,t,&remap);},lock.Held()?5000:0,{"browser-bookmarks 1"});
     bookmarksSeen=r==ProfileStore::Result::Unchanged?ProfileStore::StampOf(BookmarksFile()):ProfileStore::Stamp{};
     const bool ok=r==ProfileStore::Result::Written||r==ProfileStore::Result::Unchanged;
