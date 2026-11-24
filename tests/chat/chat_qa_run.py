@@ -22,6 +22,10 @@ CSS = C.SITE / 'styles' / 'checkout.css'
 MOVED = 'margin-left: auto'
 
 
+class BatchBlockGone(Exception):
+    '''R24: the panel shows no « Traiter les annotations » block — the steps that drive it are skipped.'''
+
+
 def step(name, ok, detail=''):
     report['steps'].append({'step': name, 'ok': bool(ok), 'detail': str(detail)})
     print(('PASS ' if ok else 'FAIL ') + name + (' — ' + str(detail) if detail else ''), flush=True)
@@ -452,11 +456,18 @@ def run_main():
                     except Exception:
                         out.append(t)
             return out
-        step('panel WebView destroyed after staying closed', destroyed is not None and not panel_pages())
+        # O1 (0bcc02c, 20 Nov 2026; src/chat-host-ui.h, DestroyTimer: « !Ann::s.active »): in « Chat à droite » the panel's page is
+        # made in advance when the mode starts and KEPT, hidden, while the mode is on — destroyed after staying closed only once
+        # the mode is off. The mode is on here (its launcher is back): « destroyed » was this step's expectation of before O1
+        # (20:00 release's pass on e1521cf, 24 Nov: not destroyed, 1 page kept; the same code is in 0.3.833).
+        mode_on = launcher_visible()
+        step('panel WebView after staying closed: destroyed — or kept ready while the mode is on (O1)', (destroyed is not None and not panel_pages()) or (mode_on and destroyed is None),
+             f'mode on: {mode_on}, destroyed: {destroyed is not None}, panel pages: {len(panel_pages())}')
         step('agent stopped after the panel closed', logged(r'CHAT agent stopped \(idle', m11, 12))
         time.sleep(2.5)
         left = agent_processes()
-        step('rest again: 0 agent process, 0 panel WebView (the bubble\'s prepared page may stay, R18)', not left and not panel_pages(), f'{len(left)} agent process(es)')
+        step('rest again: 0 agent process; 0 panel WebView, or the one kept ready while the mode is on (O1; the bubble\'s prepared page may stay, R18)',
+             not left and (not panel_pages() or mode_on), f'{len(left)} agent process(es), {len(panel_pages())} panel page(s), mode on: {mode_on}')
         report['measures']['restAfterClose'] = {'agentProcesses': len(left), 'chatWebViews': 1 if C.panel_exists() else 0}
 
         # ---- V1.3 (the user's decision): with the chat closed, a click on an element OPENS the chat — the element is a
@@ -508,6 +519,17 @@ def run_main():
             C.post({'type': 'annotations.request'})                         # what the « /annotations » command of the panel sends
             posed = logged(r'CHAT batch (b_\w+) posed \(([^)]*)\): (\d+) annotation\(s\):((?: ann_\w+)+)', mT, 10)
             ids = posed.group(4).split() if posed else []
+            # R24 (the owner, 20 Nov 2026 — 986207e « Comment mode v3, page: R13, R17-R24 »): the suggestion « Traiter les annotations »
+            # and its block in the composer are removed from the panel — the page ignores `annotations.batch` (assets/chat-panel/
+            # panel.js: « R24: `annotations.batch` is ignored (no batch in the input) »), in 0.3.833 too. The host still poses the
+            # batch (its removal is lot R's). Every step below was written for the block in the composer: stale since then (11 red
+            # on the 20:00 release's pass, e1521cf). What holds tonight: the host poses the annotations kept above, the panel shows
+            # no block; the rest is skipped until lot R removes these steps with the batch.
+            time.sleep(0.8)   # the block, were it shown, would be drawn by now
+            no_block = not (C.panel("document.querySelectorAll('.batch-row').length") or 0)
+            step('R24 · « Traiter les annotations »: the host still poses the annotations kept above, the panel shows no batch block', len(ids) >= 3 and no_block, f'{len(ids)} annotation(s) posed, block shown: {not no_block}')
+            if no_block:
+                raise BatchBlockGone()
             step('« Traiter les annotations »: the site\'s pending annotations are posed in the composer', len(ids) >= 4, f'{len(ids)} annotation(s)')
             C.wait_for(lambda: 'à traiter' in C.panel_text(), 5)
             C.panel("(function(){var m=document.querySelector('.batch-more');if(m)m.click();return 1})()"); time.sleep(0.3)
@@ -550,6 +572,8 @@ def run_main():
             again = logged(r'CHAT batch (b_\w+) posed \(([^)]*)\): (\d+) annotation', mP, 10)
             step('what was left is still pending: a next batch offers it again', again is not None and int(again.group(3)) >= 3, again.group(0)[5:] if again else '')
             C.panel("(function(){document.querySelectorAll('.batch-row[aria-checked=true]').forEach(function(r){r.click()});return 1})()"); time.sleep(0.3)
+        except BatchBlockGone:
+            pass   # R24: no batch block in the panel — nothing more of it to drive
         except Exception as e:
             step('« Traiter les annotations » flow', False, repr(e))
         m15 = mark(); C.shortcut('D')
