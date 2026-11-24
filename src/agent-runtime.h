@@ -79,6 +79,10 @@ struct Environment {
     // BROWSER_CHAT_FAKE_AGENT=<fake-acp-agent.exe> [args...] replaces both agents (no CLI, no download).
     std::wstring fakeAgentExe;
     std::vector<std::wstring> fakeAgentArgs;
+    // Same conditions, with BROWSER_CHAT_FAKE_AGENT_LAUNCH_ONLY=1: the fake agent replaces the LAUNCHED process only.
+    // Detection (the CLI looked for, its login), preparation (the downloads) and the terminal sign-in are the real
+    // code: a first launch (no CLI, signed out, Node to download) can be played end to end (tests/chat/first_launch_o8.py).
+    bool fakeAgentLaunchOnly = false;
     bool signInConsoleHidden = false;  // tests only: RunTerminalSignIn without a visible console (never set by FromProcess)
     const Pins* pins = nullptr;  // nullptr = BuiltInPins() (tests pass altered pins)
 

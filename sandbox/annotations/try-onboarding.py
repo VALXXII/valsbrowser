@@ -112,7 +112,7 @@ def put_cli(folder: pathlib.Path, name: str, version: str, login: str, cli: path
     (folder / (name + '.login')).write_text(login, encoding='ascii')
 
 
-def agents_environment(root: pathlib.Path, profile: str, fresh: bool, mode: str, delay_ms: int) -> dict[str, str]:
+def agents_environment(root: pathlib.Path, profile: str, fresh: bool, mode: str, delay_ms: int, app: pathlib.Path) -> dict[str, str]:
     if profile == 'real':
         return {}
     home, local, roaming = root / 'home', root / 'local', root / 'roaming'
@@ -142,7 +142,20 @@ def agents_environment(root: pathlib.Path, profile: str, fresh: bool, mode: str,
         'BROWSER_FAKE_CLI': str(cli),
         'BROWSER_FAKE_INSTALL_MODE': mode,
         'BROWSER_FAKE_INSTALL_DELAY_MS': str(delay_ms),
+        **fake_agent(app),
     }
+
+
+def fake_agent(app: pathlib.Path) -> dict[str, str]:
+    """An honest simulated profile: the chat's session runs the tests' fake ACP agent (it answers « (essai) Réponse simulée »)
+    instead of the fake CLI, which cannot hold a session. Launch only (BROWSER_CHAT_FAKE_AGENT_LAUNCH_ONLY): the detection,
+    the runtime download and the sign-in stay the browser's real code on the fake profile."""
+    exe = app.parent / (app.name + '-test') / 'fake-acp-agent.exe'   # tools/release/build.py: <out>-test/fake-acp-agent.exe
+    if not exe.is_file():
+        print(f"Agent simulé introuvable ({exe}) : le chat de ce profil factice ne pourra pas répondre.")
+        return {}
+    return {'BROWSER_CHAT_FAKE_AGENT': f'"{exe}" --reply "(essai) Réponse simulée : avec un vrai agent, sa réponse apparaîtrait ici."',
+            'BROWSER_CHAT_FAKE_AGENT_LAUNCH_ONLY': '1'}
 
 
 def write_session(run: pathlib.Path, urls: list[str]) -> None:
@@ -227,7 +240,7 @@ def main() -> int:
         env['BROWSER_ANNOTATIONS_TEST'] = '1'   # garde-fou : aucune écriture dans les vrais dossiers, même si la redirection échouait
         env.pop('BROWSER_ANNOTATIONS_CONNECT_PATH', None)
         if a.agents:
-            env.update(agents_environment(home / 'agents-profile', a.agents, fresh, a.install_mode, a.install_delay_ms))
+            env.update(agents_environment(home / 'agents-profile', a.agents, fresh, a.install_mode, a.install_delay_ms, app))
             print(f'Agents        : profil « {a.agents} »' + (' — DÉTECTION ET INSTALLATEURS RÉELS (votre compte Windows)' if a.agents == 'real'
                   else f' (factice : dossiers sous {home / "agents-profile"}, faux installateur « {a.install_mode} »)'))
         print(f'Navigateur     : {run}\\browser.exe' + (' (fenêtre privée)' if a.private else ''))
