@@ -16,6 +16,7 @@
 #include "../../src/chat-tools.h"
 #include "../../src/chat-options.h"
 #include "../../src/chat-bubble.h"
+#include "../../src/annotation-settings.h"
 
 static int checks = 0, failures = 0;
 static void Check(bool ok, const char* what) { ++checks; if (!ok) { ++failures; std::printf("FAIL %s\n", what); } }
@@ -62,6 +63,29 @@ static void TestLocal() {
     }
 }
 
+// Réglages › Annotations (lot R, texts validated 2026-11-24): « Connecté · actif {quand} » — the moment is worded in the
+// interface language, never a French format inside an English sentence.
+static void TestAgentStatusText() {
+    namespace AS = AnnotationSettings;
+    const long long now = 1800000000;
+    const auto at = [&](long long ago) { AS::Agent a; a.known = true; a.detected = true; a.connected = true; a.lastReadAt = now - ago; return AS::StatusText(a, now); };
+    I18n::SetForProcess(I18n::Locale::Fr);
+    Check(at(10) == L"Connect\u00E9 \u00B7 actif \u00E0 l'instant" && at(130) == L"Connect\u00E9 \u00B7 actif il y a 2 min" && at(3 * 3600) == L"Connect\u00E9 \u00B7 actif il y a 3 h"
+          && at(30 * 3600) == L"Connect\u00E9 \u00B7 actif hier" && at(3 * 86400) == L"Connect\u00E9 \u00B7 actif il y a 3 jours",
+          "agent status (FR): Connecte - actif a l'instant / il y a 2 min / il y a 3 h / hier / il y a 3 jours");
+    I18n::SetForProcess(I18n::Locale::En);
+    Check(at(10) == L"Connected \u00B7 active just now" && at(130) == L"Connected \u00B7 active 2 min ago" && at(3 * 3600) == L"Connected \u00B7 active 3 h ago"
+          && at(30 * 3600) == L"Connected \u00B7 active yesterday" && at(3 * 86400) == L"Connected \u00B7 active 3 days ago",
+          "agent status (EN): Connected - active just now / 2 min ago / 3 h ago / yesterday / 3 days ago (the moment is in English too)");
+    Check(std::wstring(TR(connect_local_text)).rfind(L"Everything stays on this computer, never on servers.", 0) == 0 && std::wstring(TR(connect_local_text)).find(L"its provider (Anthropic or OpenAI)") != std::wstring::npos,
+          "connect window (EN): Everything stays on this computer..., with the provider notice");
+    I18n::SetForProcess(I18n::Locale::Fr);
+    Check(std::wstring(TR(connect_local_text)).rfind(L"Tout reste sur cet ordinateur, jamais sur des serveurs.", 0) == 0 && std::wstring(TR(connect_local_text)).find(L"son fournisseur (Anthropic ou OpenAI)") != std::wstring::npos,
+          "connect window (FR): Tout reste sur cet ordinateur..., with the provider notice");
+    const std::wstring tutorial = TR(annotation_onboarding_connect_body);
+    Check(tutorial.find(L"Tout reste sur cet ordinateur. Quand votre agent lit vos demandes,") != std::wstring::npos && tutorial.find(L"son fournisseur (Anthropic ou OpenAI)") != std::wstring::npos,
+          "tutorial (FR): Tout reste sur cet ordinateur never stands alone - the provider notice follows it");
+}
 static void TestPrompt() {
     using namespace ChatPrompt;
     Check(OneLine("a\nb\r\n\tc  d", 100) == "a b c d", "line breaks and tabs become single spaces");
@@ -1032,7 +1056,7 @@ static void TestAnchorStore(const std::wstring& root) {
 }
 
 int wmain() {
-    TestLocal(); TestPrompt(); TestTools(); TestMarks(); TestAgentPaths(); TestOptions(); TestBubble();
+    TestLocal(); TestAgentStatusText(); TestPrompt(); TestTools(); TestMarks(); TestAgentPaths(); TestOptions(); TestBubble();
     const std::wstring root = TempDir();
     TestStore(root); TestFolder(root); TestServed(root); TestAnchorStore(root);
     RemoveTree(root);
