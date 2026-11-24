@@ -1044,10 +1044,24 @@
       ]
     },
     "O5": {
-      "gap": {
-        "lot": "R",
-        "why": "cause prouvée sans fenêtre le 24/11 (tests/chat/final/replay_opening.py, « DÉFAUT CONNU ») : les messages en attente dans la bulle n'ont pas de hauteur limite, la saisie et les boutons du mode / du modèle sont dessinés sous la surface, hors de la zone cliquable — c'est aussi le « clic qui traverse la bulle » (#185, #219) et #110. À corriger dans assets/chat-panel (lot R) après la décision de design (combien de messages en attente montrer) ; le contrôle devient bloquant en le retirant de KNOWN. #82 (bulle qui saute après la bascule) : corrigé au lot 1 (areaMoving), à revoir en vraie fenêtre"
-      }
+      "tests": [
+        {
+          "suite": "replay-opening",
+          "what": "tests/chat/final/replay_opening.py — 4 messages en attente : saisie et boutons du mode / du modèle dans la surface que l'hôte montre et rend cliquable, à 269, 150, 120 et 104 px offerts (bloquant dès que la page contient le correctif du lot R) ; c'était aussi le « clic qui traverse la bulle » (#185, #219) et #110"
+        },
+        {
+          "suite": "chat-panel",
+          "what": "« bubble (queue, #110) » : peu de hauteur offerte (269, 150, 120, 104 px) — la liste des messages en attente prend ce qui reste, puis « +N en attente » seul ; saisie, boutons et « envoyer » entiers dans la surface ; la place revenue, la file revient comme validée"
+        },
+        {
+          "suite": "chat-panel",
+          "what": "« bubble (queue, lot R) » : 2 messages en attente au plus, 2 lignes chacun sous un fondu, « +N en attente », liste dépliée de 160 px au plus, saisie toujours entière"
+        },
+        {
+          "suite": "lot-r",
+          "what": "vraie fenêtre : 4 messages en attente dans une bulle, saisie entière ; #82 (bulle qui saute après la bascule, corrigé au lot 1 : areaMoving) à revoir en vraie fenêtre"
+        }
+      ]
     },
     "O6": {
       "tests": [

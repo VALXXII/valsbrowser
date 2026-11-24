@@ -642,7 +642,10 @@ Le rejeu reproduit le journal au pixel près. Deux défauts distincts, tous deux
    dessinés 340 à 370 px sous la surface, donc invisibles et hors de la zone cliquable. Le test cliquait à l'endroit où la
    page situe le bouton : le clic arrivait sur le site et ouvrait la bulle d'un autre élément. Pour l'utilisateur : une
    bulle sans saisie. **Pas corrigé ici** — c'est dans `assets/chat-panel/` (lot R) et il faut la décision de design
-   (combien de messages en attente montrer). Le rejeu le signale « DÉFAUT CONNU » ; il deviendra un contrôle bloquant.
+   (combien de messages en attente montrer). **Corrigé depuis par le lot R** (`358676e`, `d9dbf03` : 2 messages au plus,
+   « +N en attente », saisie toujours entière). Le rejeu regarde si la page testée contient ce correctif : sans lui il
+   dit « DÉFAUT CONNU, corrigé par le lot R » sans faire échouer ; avec lui — donc dès la fusion du lot R, sans rien
+   changer — le contrôle est bloquant, à 269, 150, 120 et 104 px offerts (vérifié sur la branche du lot R : 7 / 7).
 2. **La bulle s'ouvre à une mauvaise hauteur, puis se corrige** (vu : 460 → 250 → 460 px en un instant). Quand un autre
    élément travaille ou attend une autorisation, l'hôte envoyait la conversation à la page *avant* le message d'ouverture,
    puis les nouvelles limites, puis l'ouverture. La page répondait aussitôt avec une hauteur calculée pour la bulle
