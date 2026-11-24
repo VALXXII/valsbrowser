@@ -180,8 +180,11 @@ struct State {
     int sleepMinutes = 120;        // one of SleepChoices
     int zoomPercent = 100;         // one of ZoomChoices
     BookmarksBar bookmarksBar = BookmarksBar::Auto;
-    // Panneau latéral (#127): the column folded to its compact form (icons only). Changed by its button and
-    // Ctrl+Maj+, only (no Réglages line); a narrow window shows it compact without touching this choice.
+    // Window layout (#127, Val 2026-11-24): the tab bar at the top by default, for existing profiles and new installs;
+    // the side panel only when turned on (Réglages row to come). Applied live, no restart.
+    bool sidePanel = false;
+    // The side panel folded to its compact form (icons only). Changed by its button and Ctrl+Maj+, only; kept while
+    // the top bar is used; a narrow window shows it compact without touching this choice.
     bool sidebarCompact = false;
     std::uint32_t accent = DefaultAccent; // #RRGGBB
     std::wstring customSearch;     // Engine::Custom: http(s) template with %s (SearchTemplate)
@@ -213,7 +216,7 @@ struct State {
                confirmCloseTabs == o.confirmCloseTabs && closeWithLastTab == o.closeWithLastTab && adBlock == o.adBlock &&
                httpsOnly == o.httpsOnly && blockThirdPartyCookies == o.blockThirdPartyCookies && memorySaver == o.memorySaver &&
                muteBackground == o.muteBackground && autoplay == o.autoplay && grayscaleText == o.grayscaleText &&
-               bookmarksBar == o.bookmarksBar && sidebarCompact == o.sidebarCompact && accent == o.accent &&
+               bookmarksBar == o.bookmarksBar && sidePanel == o.sidePanel && sidebarCompact == o.sidebarCompact && accent == o.accent &&
                annotationConnectPrompt == o.annotationConnectPrompt && annotationConnectDeclines == o.annotationConnectDeclines &&
                annotationRetentionDays == o.annotationRetentionDays && defaultBrowserLaterAt == o.defaultBrowserLaterAt;
     }
@@ -223,7 +226,7 @@ enum class Change { Engine, RestoreTabs, DownloadFolder, AskWhereToSave, ReduceM
                     SearchSuggestions, Tracking, Passwords, Autofill, ClearOnExit, Sleep, Zoom,
                     CustomSearch, NewTabPage, Homepage, TabPosition, ConfirmCloseTabs, CloseWithLastTab,
                     AdBlock, HttpsOnly, ThirdPartyCookies, MemorySaver, MuteBackground, Autoplay, BookmarksBar, GrayscaleText,
-                    AnnotationConnectPrompt, AnnotationRetention, DefaultBrowserLater };
+                    AnnotationConnectPrompt, AnnotationRetention, DefaultBrowserLater, SidePanel };
 // Annotations: the connect modal stops opening by itself after this many « Plus tard » (src/annotation-mode.h).
 inline constexpr int MaxConnectDeclines = 3;
 inline constexpr int RetentionChoices[] = {7, 30, 90};
@@ -270,6 +273,7 @@ inline void Write(std::ostream& out, const State& s) {
         << "autoplay=" << Info(s.autoplay).key << '\n'
         << "grayscale-text=" << (s.grayscaleText ? 1 : 0) << '\n'
         << "bookmarks-bar=" << Info(s.bookmarksBar).key << '\n'
+        << "layout=" << (s.sidePanel ? "side-panel" : "top-bar") << '\n'
         << "sidebar=" << (s.sidebarCompact ? "compact" : "complete") << '\n'
         << "accent=" << AccentText(s.accent) << '\n'
         << "annotation-connect-prompt=" << (s.annotationConnectPrompt ? 1 : 0) << '\n'
@@ -317,6 +321,7 @@ inline State Read(std::istream& in) {
         else if (key == "custom-search") { std::wstring v; if (value.size() < 4096 && NativeChrome::Downloads::FromUtf8(value, v)) s.customSearch = SearchTemplate(v); }
         else if (key == "homepage") { std::wstring v; if (value.size() < 4096 && NativeChrome::Downloads::FromUtf8(value, v)) s.homepage = HomepageUrl(v); }
         else if (key == "bookmarks-bar") { for (int i = 0; i < BookmarksBarCount; ++i) if (value == Info(static_cast<BookmarksBar>(i)).key) s.bookmarksBar = static_cast<BookmarksBar>(i); }
+        else if (key == "layout") { if (value == "side-panel") s.sidePanel = true; else if (value == "top-bar") s.sidePanel = false; }
         else if (key == "sidebar") { if (value == "compact") s.sidebarCompact = true; else if (value == "complete") s.sidebarCompact = false; }
         else if (key == "accent") { std::uint32_t rgb = 0; if (ParseAccent(value, rgb)) s.accent = rgb; }
         else if (key == "download-folder") { std::wstring folder; if (value.size() < 32768 && NativeChrome::Downloads::FromUtf8(value, folder)) s.downloadFolder = folder; }

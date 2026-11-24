@@ -120,7 +120,7 @@ glisser, survol par-dessus la page, tiroirs) : liste pour la tournée de nuit de
 
 | # | Réponse | Dans le code |
 | --- | --- | --- |
-| 1 | Défaut gardé pour l'essai (Val confirme à 9 h) | la colonne remplace la barre ; `browser.exe --top-bar` garde l'ancienne pour comparer |
+| 1 | **Val (24 nov.) : la barre du haut reste le défaut** (anciens profils et nouvelles installations) ; le panneau latéral est une option à activer (ligne de Réglages dessinée par le Designer) | réglage `layout=top-bar\|side-panel` (`settings.sidePanel`, faux par défaut), appliqué à chaud sans redémarrage (`ApplyLayout`, `Change::SidePanel`) ; `browser.exe --side-panel` montre le panneau pour un lancement d'essai sans rien enregistrer |
 | 2 | Bouton + Ctrl+Maj+, mémorisé, pas de ligne de Réglages | clé `sidebar=complete\|compact` (`src/settings.h`) |
 | 3 | La grille remplace la barre de favoris ; Ctrl+Maj+B et Automatique / Toujours / Jamais s'y appliquent ; 2 rangées max, la 10ᵉ tuile devient « » » ; compact : 5 puis « » » ; dossier = menu natif ; Toujours + 0 favori : tuile pleine largeur étoile + « Ajouter cette page » + Ctrl D | `Chrome::Grid`, `BuildSidebar` (mêmes régions et menus que la barre) |
 | 4 | La liste défile avec un fondu, complet et compact | molette sur la liste, fondus de 24 DIP, l'onglet choisi revient dans la vue |
@@ -133,6 +133,19 @@ glisser, survol par-dessus la page, tiroirs) : liste pour la tournée de nuit de
 | 11 | Compact tout seul sous 800 DIP, sans toucher au choix | `Sidebar::Effective` ; Ctrl+Maj+, ouvre alors la colonne par-dessus |
 | 12 | Textes retirés de la planche 16 | rien à faire |
 | 13 | Contour de l'app partout (1 DIP blanc 10 % / 50 %) | `FocusRing` |
+
+### Disposition de la fenêtre (24 nov.)
+
+- Défaut : barre d'onglets en haut. Panneau latéral : réglage `layout=side-panel` (la ligne de Réglages viendra avec la
+  planche du Designer). Le passage est immédiat (pas de redémarrage) : glissers, colonne par-dessus la page, tiroirs et
+  popovers sont fermés, puis la fenêtre se remet en page. Le choix complet / compact du panneau est gardé à part
+  (`sidebar=complete|compact`), même quand la barre du haut est utilisée.
+- Ctrl+Maj+, ne fait rien avec la barre du haut (la touche va à la page, comme avant #127) et plie / déplie le panneau
+  quand il est affiché. Raison : avec la barre du haut il n'y a rien à plier, et un raccourci qui changerait toute la
+  disposition serait une surprise ; le seul interrupteur de disposition est la ligne de Réglages. Le raccourci n'est
+  listé dans le panneau Ctrl+/ que lorsque le panneau est affiché.
+- Grille des favoris (+10 / +20 / +40, comportement selon la largeur) : en attente des planches du Designer ; la
+  règle actuelle (2 rangées puis « » ») reste en place d'ici là.
 
 ## 7. Écarts connus avec la maquette (version d'essai)
 
@@ -162,7 +175,7 @@ glisser, survol par-dessus la page, tiroirs) : liste pour la tournée de nuit de
 
 ## 8. Vérifications en fenêtre réelle (tournée de nuit de Fix)
 
-Lanceur : `build/127-sidebar-trial/browser.exe` (preview : profil dans ce dossier, jamais celui de Val).
+Lanceurs : `build/127-sidebar-trial/Essayer le panneau lateral.cmd` (`browser.exe --side-panel`) et `Lancer (barre du haut, par defaut).cmd` (preview : profil dans ce dossier, jamais celui de Val).
 1. Ouverture : colonne complète, page en carte (4 coins arrondis), boutons de fenêtre, déplacement de la fenêtre par la
    bande du haut et le haut de la colonne, double-clic = agrandir, Aero Snap sur Agrandir.
 2. Ctrl+Maj+, et le bouton : pliage 180 ms, la page suit, choix gardé après redémarrage ; fenêtre < 800 : compact seul.

@@ -15,6 +15,12 @@ int main(){
         State s;s.bookmarksBar=bar;s.accent=0xA054CB;std::stringstream io;Write(io,s);assert(Read(io)==s);
     }
     {std::istringstream invalid("browser-settings 1\nbookmarks-bar=invalid\naccent=#XYZXYZ\n");assert(Read(invalid)==State{});}
+    // Window layout (#127, Val 24 nov.): the top bar by default (new installs and files without the key), the side panel
+    // only when turned on; its complete / compact choice is independent and kept.
+    {assert(!State{}.sidePanel);
+     for(bool side:{false,true})for(bool compact:{false,true}){State s;s.sidePanel=side;s.sidebarCompact=compact;std::stringstream io;Write(io,s);const State r=Read(io);assert(r==s&&r.sidePanel==side&&r.sidebarCompact==compact);}
+     std::istringstream older("browser-settings 1\nengine=bing\nsidebar=compact\n");const State o=Read(older);assert(!o.sidePanel&&o.sidebarCompact);
+     std::istringstream bad("browser-settings 1\r\nlayout=side-panel\r\nlayout=diagonal\r\n");assert(Read(bad).sidePanel);}
     // Panneau latéral (#127): complete by default, the folded choice survives restart, unknown values are ignored.
     {assert(!State{}.sidebarCompact);
      for(bool compact:{false,true}){State s;s.sidebarCompact=compact;std::stringstream io;Write(io,s);assert(Read(io)==s);}

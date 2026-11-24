@@ -20,7 +20,13 @@ int main(){
     Assert(Key('L')=='L');Assert(Key(VK_TAB)==']');
     Modifiers(true,true);Assert(Key(VK_PRIOR)==MoveTabLeft);Assert(Key(VK_NEXT)==MoveTabRight);Assert(Key(VK_TAB)=='[');Assert(Key('1')==0);Assert(Key('T')=='U');
     Assert(Key('N')=='P');Assert(chrome.Enabled('P'));
-    Assert(Key(VK_OEM_COMMA)==SidebarToggleCommand);   // Ctrl+Maj+, : plier / déplier le panneau (#127)   // Ctrl+Maj+N: nouvelle fenêtre privée, without any toolbar button
+    // #127 layout: the top bar by default; Ctrl+Maj+, folds the side panel only while it is the layout (else the page
+    // gets the key); turning the panel on and off keeps its complete / compact choice; --side-panel is not saved.
+    Assert(!chrome.sidebar&&!settings.sidePanel);Assert(Key(VK_OEM_COMMA)==0);Assert(!NativeChrome::ShortcutsPanel::SidePanelRows());
+    settings.sidePanel=true;settings.sidebarCompact=true;ApplyLayout();Assert(chrome.sidebar&&Key(VK_OEM_COMMA)==SidebarToggleCommand&&NativeChrome::ShortcutsPanel::SidePanelRows());
+    settings.sidePanel=false;ApplyLayout();Assert(!chrome.sidebar&&Key(VK_OEM_COMMA)==0&&settings.sidebarCompact);
+    sidePanelForced=true;ApplyLayout();Assert(chrome.sidebar&&!settings.sidePanel);sidePanelForced=false;ApplyLayout();Assert(!chrome.sidebar);
+    {std::istringstream older("browser-settings 1\nsidebar=compact\n");settings=BrowserSettings::Read(older);ApplyLayout();Assert(!chrome.sidebar&&settings.sidebarCompact);settings=BrowserSettings::State{};}   // Ctrl+Maj+N: nouvelle fenêtre privée, without any toolbar button
     Modifiers(false,false,true);Assert(Key('D')=='L');
     Modifiers();Assert(Key(VK_F6)==FocusChrome);Assert(Key('1')==0);
     for(int i=0;i<10;++i)pages.push_back(std::make_shared<Tab>());

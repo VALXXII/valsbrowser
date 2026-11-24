@@ -277,7 +277,7 @@ constexpr long long AccessibleToolbarKey=0x10001; // = AccessibleToolbar (declar
 extern Accessibility::Bridge accessibility;
 NativeChrome::BookmarkPopover::Popover bookmarkPopover; NativeChrome::BookmarkToast::Toast bookmarkToast; NativeChrome::BookmarksUI::Drawer bookmarksDrawer;
 // Panneau latéral (#127): section « Panneau latéral » below (src/sidebar.h, Chrome::BuildSidebar / PaintSidebar).
-constexpr int SidebarToggleCommand=NativeChrome::Chrome::SidebarToggleId;bool AnnotationButtonDimmed();RECT RegionScreen(int id);void UpdateFont();void SidebarPrepare();void ToggleSidebar();void SidebarHoles();bool SidebarDragMove(POINT point);void SidebarDragEnd(bool commit);
+constexpr int SidebarToggleCommand=NativeChrome::Chrome::SidebarToggleId;bool sidePanelForced=false;void ApplyLayout();bool AnnotationButtonDimmed();RECT RegionScreen(int id);void UpdateFont();void SidebarPrepare();void ToggleSidebar();void SidebarHoles();bool SidebarDragMove(POINT point);void SidebarDragEnd(bool commit);
 bool SyncBookmarkChrome();void BookmarksChanged();void ToggleBookmarksDrawer(bool keyboard);bool BookmarkedSite(const std::wstring& site);long long AccessibleBandItemKey(int region);
 // Self-update host hooks (no-ops in unstamped builds).
 std::wstring AboutTitle(){
@@ -1185,7 +1185,7 @@ int Key(UINT key){
     if(ctrl&&!alt){
         if(!shift&&key=='D')return 'K';
         if(shift&&key=='B')return BookmarkBarCommand;
-        if(shift&&key==VK_OEM_COMMA)return SidebarToggleCommand; // Ctrl+Maj+, : plier / déplier le panneau (#127)
+        if(shift&&key==VK_OEM_COMMA&&chrome.sidebar)return SidebarToggleCommand; // Ctrl+Maj+, : plier / déplier le panneau (#127), panel layout only
         if(shift&&key=='A')return AnnotateCommand; // Ctrl+Maj+A: mode Annotation (toggle)
         if(shift&&key=='D'&&AnnotationHistoryAvailable())return ChatCommand; // Ctrl+Maj+D: « Demander à l'agent » (chat intégré; starts the mode if needed)
         if(shift&&key=='O')return BookmarksDrawerCommand;
@@ -1766,7 +1766,7 @@ void SaveSettings(){
         [&text](const BrowserSettings::State& b,const BrowserSettings::State& m,const BrowserSettings::State& t){std::istringstream in(ProfileStore::MergeKeyValues(text(b),text(m),text(t)));return BrowserSettings::Read(in);},5000,{"browser-settings 1"});
     if(r==ProfileStore::Result::Failed||r==ProfileStore::Result::Busy)Log(L"SETTINGS save failed");
 }
-void LoadSettings(){if(smoke)return;std::string bytes;{ProfileStore::Lock lock(dataDir);ProfileStore::ReadAll(settingsFile,bytes);}std::istringstream in(bytes);settings=BrowserSettings::Read(in);settingsBase=settings;}
+void LoadSettings(){if(smoke)return;std::string bytes;{ProfileStore::Lock lock(dataDir);ProfileStore::ReadAll(settingsFile,bytes);}std::istringstream in(bytes);settings=BrowserSettings::Read(in);settingsBase=settings;ApplyLayout();}
 // Download folder: the chosen one, else the system Downloads folder.
 std::wstring SystemDownloadFolder(){PWSTR known=nullptr;std::wstring path;if(SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Downloads,0,nullptr,&known))&&known)path=known;CoTaskMemFree(known);return path;}
 std::wstring EffectiveDownloadFolder(){return settings.downloadFolder.empty()?SystemDownloadFolder():settings.downloadFolder;}
@@ -2357,6 +2357,7 @@ void SettingChanged(BrowserSettings::Change change){
     case Change::CustomSearch:break;
     case Change::TabPosition:case Change::ConfirmCloseTabs:case Change::CloseWithLastTab:case Change::MuteBackground:ApplyTabSettings();break;
     case Change::Autoplay:ApplyMediaSettings();break;
+    case Change::SidePanel:ApplyLayout();break;
     case Change::GrayscaleText:Log(settings.grayscaleText?L"SETTINGS grayscale text on: applies at next launch":L"SETTINGS grayscale text off: applies at next launch");break;
     // Réglages › « Annotations »: the launcher shows / hides at once; the launch prompt and the
     // retention are read by the mode when it next needs them (src/annotation-mode.h, Prefs).
@@ -4620,6 +4621,21 @@ SBar::Fold sidebarFold;SBar::Hover sidebarHover;bool sidebarReady=false;int side
 constexpr UINT_PTR SidebarFoldTimerId=0x5161,SidebarHoverTimerId=0x5162;
 double SidebarNowMs(){return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();}
 SBar::Mode SidebarEffective(){return SBar::Effective(settings.sidebarCompact?SBar::Mode::Compact:SBar::Mode::Complete,chrome.width);}
+// The window's layout (Val, 24 nov.): the tab bar at the top by default; the side panel when the setting « layout=
+// side-panel » is on (Réglages row to come: Change::SidePanel) or for a run started with --side-panel (not saved).
+// Called when the settings are loaded (start, profile switch) and when the setting changes: live, no restart. The
+// panel's own complete / compact choice is kept either way.
+bool SidePanelWanted(){return !smoke&&(settings.sidePanel||sidePanelForced);}
+void ApplyLayout(){
+    const bool want=SidePanelWanted();NativeChrome::ShortcutsPanel::SidePanelRows()=want;if(want==chrome.sidebar)return;
+    if(tabDrag.tab)CancelTabDrag(true);sidebarHover.Close();chrome.sidebarOverlay=false;chrome.sidebarDrag=-1;chrome.sidebarInsert=-1;
+    if(window){KillTimer(window,SidebarFoldTimerId);KillTimer(window,SidebarHoverTimerId);}
+    for(auto& t:pages)if(t&&t->holed){if(t->host&&IsWindow(t->host))SetWindowRgn(t->host,nullptr,TRUE);t->holed=false;}
+    chrome.sidebar=want;sidebarReady=false;sidebarShownTab=-1;
+    if(window){HideSuggestions();chrome.latched=0;CloseDownloadSurfaces(false);audioPanel.Close(false);settingsDrawer.Hide(false,false);historyDrawer.Hide(false,false);bookmarksDrawer.Hide(false,false);
+        Layout();bookmarkToast.Reposition();RepositionElementSurfaces();}
+    Log(want?L"LAYOUT side panel":L"LAYOUT top bar");
+}
 // Before every Build: the mode, the drawn width and titles (fold), the column over the page, per-tab details.
 void SidebarPrepare(){
     namespace V=NativeChrome::Design::Vertical;V::DrawerTopValue()=chrome.sidebar?SBar::Zone::bar:V::top;
@@ -5209,7 +5225,7 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){
 #if defined(BROWSER_E2E_VAULT_HOST)||defined(BROWSER_E2E_VAULT_ACTIVE)
     Vault::ActiveFlag()=true;   /* TEST HOSTS (tests/e2e/vault_host.cpp, tests/e2e/vault_product_host.cpp): already the default since activation; kept explicit */
 #endif
-    if(const wchar_t* r=wcsstr(args,L"--restore-window ")){r+=17;while(*r==L' ')++r;const wchar_t* e=r;while(*e&&*e!=L' ')++e;windowRequested.assign(r,e);}smoke=smoke||splitTest;engineRelaunched=wcsstr(args,L"--webview2-recovered")!=nullptr;launchArgs=args?args:L"";motionLabMode=!smoke&&wcsstr(args,L"--motion-lab")!=nullptr;chrome.sidebar=!smoke&&wcsstr(args,L"--top-bar")==nullptr; /* #127: the column replaces the top bar (Val's choice pending: --top-bar keeps the old one for comparison; the smoke suites assert the toolbar) */instance=hi;SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(FAILED(init))return 1;wchar_t path[32768];GetModuleFileNameW(nullptr,path,32768);PathRemoveFileSpecW(path);base=path;ResolveBrowserPaths();
+    if(const wchar_t* r=wcsstr(args,L"--restore-window ")){r+=17;while(*r==L' ')++r;const wchar_t* e=r;while(*e&&*e!=L' ')++e;windowRequested.assign(r,e);}smoke=smoke||splitTest;engineRelaunched=wcsstr(args,L"--webview2-recovered")!=nullptr;launchArgs=args?args:L"";motionLabMode=!smoke&&wcsstr(args,L"--motion-lab")!=nullptr;sidePanelForced=!smoke&&wcsstr(args,L"--side-panel")!=nullptr; /* #127: the top bar is the default (Val, 24 nov.); --side-panel shows the panel for this run without saving (trial launcher); the smoke suites assert the toolbar */instance=hi;SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(FAILED(init))return 1;wchar_t path[32768];GetModuleFileNameW(nullptr,path,32768);PathRemoveFileSpecW(path);base=path;ResolveBrowserPaths();
     // Interface language, pinned for this process BEFORE any dialog, window or WebView2 (src/ui-language.h): the
     // browser-wide preference at the data root (portable: next to the exe; installed: <root>\data). French by default.
     const UiLanguage::Loaded uiLanguage=UiLanguage::Load(dataDir);I18n::SetForProcess(uiLanguage.locale);
