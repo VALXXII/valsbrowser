@@ -641,7 +641,8 @@ void EnsureInit() {
     if (uiInit) return; uiInit = true; EnsurePost(); LoadOptionsCache();
     ChatPanelView::Hooks h;
     h.message = [](const std::string& json) { OnPanelMessage(json); };
-    h.created = [](bool ok) { stats.createdAt = Ann::NowMs(); Diag(ok ? (stats.requestedAt > 0 ? L"panel WebView created in " + Ann::Ms(stats.createdAt - stats.requestedAt) + L" ms" : std::wstring(L"panel WebView created in advance (no opening to time)")) : std::wstring(L"panel WebView could not be created"));   // a page made in advance has no request: it logged the time since the start, ~68 h (general test, 24 Nov 2026) if (!ok) { if (BubbleOpen()) CloseBubble(true); ClosePanel(); } else Layout(); };   // F7: a bubble without its WebView closes
+    // a page made in advance has no opening to time: its « created in N ms » counted from the browser's start (~68 h, general test of 24 Nov 2026)
+    h.created = [](bool ok) { stats.createdAt = Ann::NowMs(); Diag(!ok ? std::wstring(L"panel WebView could not be created") : stats.requestedAt > 0 ? L"panel WebView created in " + Ann::Ms(stats.createdAt - stats.requestedAt) + L" ms" : std::wstring(L"panel WebView created in advance")); if (!ok) { if (BubbleOpen()) CloseBubble(true); ClosePanel(); } else Layout(); };   // F7: a bubble without its WebView closes
     h.accelerator = [](int vk) { const int cmd = Key(UINT(vk)); if (cmd) { view.AcceleratorHandled(); PostMessageW(window, Shortcut, WPARAM(cmd), 0); } };
     h.crashed = [] { Diag(L"panel renderer failed: the panel is rebuilt at the next opening"); panelReady = false; if (Open()) ClosePanel(); view.Destroy(); };
     std::wstring exe = Ann::BrowserExe(); const auto slash = exe.find_last_of(L'\\');
