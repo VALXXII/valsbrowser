@@ -198,6 +198,10 @@
         {
           "suite": "chat-units",
           "what": "host_contract_test.py — M8"
+        },
+        {
+          "suite": "first-launch-liste",
+          "what": "2e lancement : le bouton du mode est là au premier clic"
         }
       ]
     },
@@ -558,6 +562,10 @@
         {
           "suite": "chat-panel",
           "what": "profil neuf : repli sur le modèle, jamais « Claude Code »"
+        },
+        {
+          "suite": "first-launch-liste",
+          "what": "profil neuf : le bouton nomme un modèle, jamais l'outil ; listes relues au 2e lancement"
         }
       ]
     },
@@ -922,6 +930,10 @@
         {
           "suite": "journeys",
           "what": "r46_coller_mode_stable"
+        },
+        {
+          "suite": "first-launch-liste",
+          "what": "le mode n'affiche jamais « Auto » pendant que la session démarre (agent qui démarre en « auto »)"
         }
       ]
     },
@@ -994,6 +1006,10 @@
         {
           "suite": "comment-129-130",
           "what": "vraie fenêtre : menu des modèles sur profil sans modèle connu ; bulle basse, autorisation, boutons à l'écran"
+        },
+        {
+          "suite": "first-launch-absent",
+          "what": "menu des modèles jamais vide sans aucun agent ; « liste » : avant toute liste"
         }
       ]
     },
@@ -1029,8 +1045,8 @@
     },
     "O5": {
       "gap": {
-        "lot": 1,
-        "why": "#82 : le clic du test est passé à travers la bulle (journal : « selecting #prix ») — à rejouer ; #110 : la saisie sort de la surface après une zone réduite à 444 px — l'échec enregistre maintenant l'état de la page et de l'hôte ; cause non prouvée sans vraie fenêtre"
+        "lot": "R",
+        "why": "cause prouvée sans fenêtre le 24/11 (tests/chat/final/replay_opening.py, « DÉFAUT CONNU ») : les messages en attente dans la bulle n'ont pas de hauteur limite, la saisie et les boutons du mode / du modèle sont dessinés sous la surface, hors de la zone cliquable — c'est aussi le « clic qui traverse la bulle » (#185, #219) et #110. À corriger dans assets/chat-panel (lot R) après la décision de design (combien de messages en attente montrer) ; le contrôle devient bloquant en le retirant de KNOWN. #82 (bulle qui saute après la bascule) : corrigé au lot 1 (areaMoving), à revoir en vraie fenêtre"
       }
     },
     "O6": {
@@ -1062,10 +1078,28 @@
       ]
     },
     "O8": {
-      "gap": {
-        "lot": 2,
-        "why": "4 parcours sur profil neuf à écrire"
-      }
+      "tests": [
+        {
+          "suite": "first-launch-absent",
+          "what": "absent : bulle sans agent, rien ne part, « Installer » ne télécharge rien, panneau"
+        },
+        {
+          "suite": "first-launch-non-connecte",
+          "what": "non-connecte : « Se connecter » en un clic, connexion abandonnée, connexion faite, message répondu"
+        },
+        {
+          "suite": "first-launch-node",
+          "what": "node : Node.js et l'adaptateur téléchargés au premier message, mesure affichée, message répondu une fois"
+        },
+        {
+          "suite": "first-launch-liste",
+          "what": "liste : aucun modèle connu puis liste reçue ; deuxième lancement"
+        },
+        {
+          "suite": "first-launch-page",
+          "what": "absent, non-connecte, node, liste — panneau et bulle"
+        }
+      ]
     },
     "O9": {
       "gap": {
@@ -1074,10 +1108,20 @@
       }
     },
     "O10": {
-      "gap": {
-        "lot": 2,
-        "why": "parcours clavier de la carte d'autorisation à écrire (SEC-23)"
-      }
+      "tests": [
+        {
+          "suite": "permission-keys-page",
+          "what": "focus, delai, maintenue, tab, boutons, a-la-place, deux, arrivee, annulee, echap, saisie — panneau et bulle"
+        },
+        {
+          "suite": "permission-keys-bulle",
+          "what": "bulle : le clavier arrive à la carte, 600 ms, touche maintenue, Tab, Autoriser, Refuser, Échap"
+        },
+        {
+          "suite": "permission-keys-panneau",
+          "what": "panneau : idem, deux cartes de suite, Échap maintenu"
+        }
+      ]
     },
     "O11": {
       "gap": {
@@ -1164,6 +1208,22 @@
         {
           "suite": "focus-annotation",
           "what": "tests/focus/annotation_focus_journey.py — Mode Focus et mode Annotation ensemble : bandeau et chat gardés, rien ne saute (propriétaire : Mode Focus)"
+        }
+      ]
+    },
+    "lot1b-ouverture-un-seul-accuse": {
+      "tests": [
+        {
+          "suite": "replay-opening",
+          "what": "tests/chat/final/replay_opening.py — l'ouverture seule reçoit une taille, la sienne ; affichée une fois, rien de corrigé ; pied dans la surface (fil long)"
+        },
+        {
+          "suite": "chat-units",
+          "what": "tests/chat/host_contract_test.py « lot 1b » (3 contrats) : aucun layout {open: false} avant le layout d'ouverture ; conversation « à part » envoyée une fois, avec l'ouverture"
+        },
+        {
+          "suite": "monkey-1",
+          "what": "monkey.py — après « shown at its place », plus de « bubble frame … (carried) » qui rétrécit puis regrandit (à relire dans le journal, vraie fenêtre)"
         }
       ]
     },

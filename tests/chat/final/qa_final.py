@@ -717,6 +717,16 @@ def leftover_from_app():
     return [l for l in r.stdout.splitlines() if l.strip()]
 
 
+def holds(text, token):
+    '''The token is in the text AS A WHOLE: « jt1x1 » is not in « … jt1x13 … ». The monkey numbers its messages (jt<seed>x<n>): from
+    the 10th on, a plain `in` found the 1st one's token in every conversation (real-window monkey of 24 Nov 2026, seed 1: 8
+    openings said to show « another conversation's message » — the test's, not the product's).'''
+    return bool(token) and re.search(r'(?<![0-9A-Za-z])' + re.escape(token) + r'(?![0-9A-Za-z])', text or '') is not None
+
+
+assert holds('vrai-lent jt1x13 et jt1x14', 'jt1x13') and not holds('vrai-lent jt1x13 et jt1x14', 'jt1x1') and holds('« jt1x1 »', 'jt1x1')
+
+
 # ---------------------------------------------------------------- the chat, through real input
 def chat_point(selector=None, text=None, kind='bubble'):
     """Screen point of a control of the chat page (by selector, or by its visible text / accessible name)."""
@@ -886,10 +896,10 @@ class Invariants:
         others = [t for s, t in self.m.conv.items() if s != sel and t]
         text = st.get('text', '')
         t1 = time.time()
-        while token and token not in text and time.time() - t1 < 1.0:   # the older exchanges are drawn after the first image (P, 176e603)
+        while token and not holds(text, token) and time.time() - t1 < 1.0:   # the older exchanges are drawn after the first image (P, 176e603)
             time.sleep(0.1); text = (chat_state('bubble').get('text') or '')
-        right_conv = (token in text if token else True) and not any(t in text for t in others)
-        d = {'ms': ms, 'surface': sf, 'page': pg, 'scroller': sc, 'token': token, 'othersShown': [t for t in others if t in text]}
+        right_conv = (holds(text, token) if token else True) and not any(holds(text, t) for t in others)   # whole tokens: jt1x1 is not in jt1x13
+        d = {'ms': ms, 'surface': sf, 'page': pg, 'scroller': sc, 'token': token, 'othersShown': [t for t in others if holds(text, t)]}
         if ms is None and point:   # O3: no bubble came — where the click went (the window under it, the foreground, the page element)
             d['underPoint'] = window_at(point); d['point'] = [int(point[0]), int(point[1])]
         # decision 5 (24 Nov 2026): « in less than 150 ms » is an objective (reported); the bubble on screen within the wait,
@@ -959,7 +969,7 @@ class Invariants:
         """After a send: the user's message is in the bubble (or the panel) it was sent from."""
         t0 = time.time(); ok = False
         while time.time() - t0 < 3 and not ok:
-            ok = token in (chat_state(kind).get('text') or ''); time.sleep(0.1)
+            ok = holds(chat_state(kind).get('text') or '', token); time.sleep(0.1)
         if not ok:
             self.r.step(f'{where} · invariant: the message sent is shown where it was sent ({kind})', False, token, {'action': where})
         return ok
