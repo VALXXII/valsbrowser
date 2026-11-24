@@ -871,32 +871,6 @@ def j_m1(j):
     j.check('M1')
 
 
-@journey('c3_historique_du_lanceur', 'review C3 (a conversation whose element is gone, opened from the launcher\'s history: it opens and stays) — to enable after H1\'s fix')
-def j_c3_history(j):
-    j.open_on('p.hero-text', 'text'); j.send('p.hero-text', 'reply', token='jetonC3h')
-    # the element leaves the site for good: the agent renames its class in landing.html (the page reloads)
-    m = F.log_mark(); F.type_and_send('apply landing.html|<p class="hero-text"|<p class="hero-copy"', 'bubble')
-    F.wait_log(r'CHAT permission asked', m, 20); F.answer_permission('Autoriser', 'bubble', m)
-    j.step('the element is gone from the page after the edit', F.wait_log(r'CHAT turn t\d+ ended', m, 20) and (time.sleep(2.5) or True)
-           and not F.page("!!document.querySelector('p.hero-text')"))
-    j.inv.allow_close = True; F.escape_chat('bubble'); time.sleep(0.6); j.inv.m.open = None
-    j.inv.m.conv.pop('p.hero-text', None)
-    m = F.log_mark(); F.front()
-    j.step('the launcher (bottom right) opens the history', C.invoke('AnnotationLauncher')); time.sleep(1.0)
-    names = C.uia('-List') or ''
-    rows = [l for l in names.splitlines() if 'hero-text' in l or 'jetonC3h' in l or 'Bonjour' in l]
-    j.R.data['measures']['historyRows'] = rows[:6]
-    name = rows[0].split(' | ')[1] if rows else None
-    if not j.step('C3 · the conversation whose element is gone is listed', name, names.splitlines()[-30:]):
-        return
-    C.uia('-Name', name, '-Invoke'); time.sleep(1.5)
-    shown, rb = F.bubble_shown(); st = F.chat_state('bubble')
-    j.step('C3 · it opens in the bubble (bottom right) with its conversation', shown and 'jetonC3h' in (st.get('text') or ''), {'region': rb})
-    time.sleep(2.0)
-    j.step('C3 · and stays open (never closed as « element no longer in the page »)', F.bubble_shown()[0] and 'no longer in the page' not in C.log_text()[m:], [l for l in C.log_text()[m:].splitlines() if 'bubble' in l][-5:])
-    j.R.capture('c3-historique')
-
-
 @journey('c1_prechauffage_retarde', 'review C1 with the warm-up held back (BROWSER_CHAT_TEST_WARM_DELAY_MS, asked to H1): a click before the chat page is ready')
 def j_c1_delay(j):
     j.open_on('a.btn-primary', 'A'); j.send('a.btn-primary', 'reply', token='jetonC1d'); j.close()

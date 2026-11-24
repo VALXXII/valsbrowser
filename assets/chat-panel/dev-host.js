@@ -306,7 +306,6 @@
     // B 1.7: the selection switch, on (pressed) and off
     "selection-active": [st(conv("Titre de la page")), { type: "thread.reset", conversationId: "c1", items: [] }, { type: "pick.state", active: true }],
     "selection-coupee": [st(conv("Titre de la page")), { type: "thread.reset", conversationId: "c1", items: [] }, { type: "pick.state", active: false }],
-    "garder-sans-texte": [st(conv("Titre de la page")), { type: "thread.reset", conversationId: "c1", items: [] }, () => send({ type: "element.attached", element: EL })],
     "envoyer-infobulle": [st(conv("Titre de la page")), { type: "thread.reset", conversationId: "c1", items: [] },
       () => send({ type: "element.attached", element: EL }), typeIn("Aligne-le à droite")],
     "6.4-pas-installe": [st({ agents: [Object.assign({}, CLAUDE, { status: "notInstalled", detail: "Pas installé" }), CODEX] }), { type: "thread.reset", conversationId: "new", items: [] }],

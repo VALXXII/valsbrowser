@@ -428,6 +428,9 @@ on_select = block_after(mode, 'void OnSelect(const std::shared_ptr<Tab>& t, AH::
 at_full = on_select.find('Chat::ComposerFull()')
 check(0 <= at_full < on_select.find('StartShot(t)') and 'Resume(false); return;' in on_select[at_full:at_full + 400] and at_full < on_select.find('shot = ShotJob{}'),
       'lot R: the click beyond 10 elements starts no native frame and no shot, and moves no focus')
+tg = block_after(ui, 'void Toggle(bool keyboard) {')
+check(0 <= tg.find('if (Open() && openedByMode) {') < tg.find('if (Open()) { ClosePanel(); return; }') and 'view.Focus()' in tg[:tg.find('if (Open()) { ClosePanel(); return; }')],
+      'lot R: Ctrl+Maj+D on the panel opened with the mode gives it the keyboard; only the next one closes it')
 
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')

@@ -720,6 +720,9 @@ void ClosePanel() {
 }
 void Toggle(bool keyboard) {
     (void)keyboard;
+    // Lot R: the panel the mode opened by itself (« Panneau ») was never asked for: the first Ctrl+Maj+D asks for it —
+    // the caret goes to its composer — and only the next one closes it.
+    if (Open() && openedByMode) { openedByMode = false; SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus(); Diag(L"Ctrl+Maj+D on the panel opened with the mode: the caret goes to the composer"); return; }
     if (Open()) { ClosePanel(); return; }
     if (!Ann::s.active) { AnnotationCommand(AnnotateCommand); if (!Ann::s.active) return; }
     openedByMode = false;   // asked for by the user (even when the mode's start already opened it)

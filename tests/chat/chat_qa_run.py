@@ -73,21 +73,6 @@ def agent_processes():
     return [r for r in C.descendants(Q.our_pid()) if 'fake-acp-agent' in (r.get('Name') or '').lower()]
 
 
-def launcher_visible():
-    import ctypes
-    import ctypes.wintypes as W
-    main = Q.main_window(); out = []
-    @ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
-    def cb(h, _):
-        name = ctypes.create_unicode_buffer(128); C.user32.GetClassNameW(h, name, 128)
-        title = ctypes.create_unicode_buffer(128); C.user32.GetWindowTextW(h, title, 128)
-        if name.value == 'BrowserAnnotationLayer' and title.value in ('Annotations', 'Annotation') and C.user32.IsWindowVisible(h):
-            out.append(title.value)
-        return True
-    C.user32.EnumChildWindows(main, cb, 0)
-    return bool(out)
-
-
 def perm_title():
     return C.panel("(function(){var t=document.querySelector('.perm .perm-t');return t?t.innerText:''})()") or ''
 
@@ -150,6 +135,7 @@ def run_main():
         wide = page_width()
 
         # ---- 6.8 viser: the mode, the band's button
+        m0 = mark()
         C.shortcut('A')
         step('mode on (Ctrl+Maj+A)', logged(r'ANNOTATE mode on'))
         time.sleep(0.9)
@@ -159,10 +145,9 @@ def run_main():
         capture('6.8-viser')
         ids = C.uia('-List')
         step('band button « Demander à l\'agent » exposed to UI Automation', 'AnnotationAskAgent' in ids, 'Ctrl+Maj+D')
-        step('launcher visible in the mode (panel closed)', launcher_visible())
+        step('lot R: in « Panneau » the chat opens with the mode, before any element is picked', logged(r'CHAT panel opened with the mode', m0, 10) is not None and not [w for w in Q.windows() if w[1] in ('BrowserAnnotationNote',) or (w[1] == 'BrowserAnnotationLayer' and len(w) > 2 and w[2] in ('Annotations', 'Annotation'))])
 
         # ---- open the panel (band button), first time: where is the code?
-        m0 = mark()
         step('band button invoked', C.invoke('AnnotationAskAgent'))
         # final QA: O1 — the panel's page is created and made ready IN ADVANCE when the mode starts (its « ready » comes before
         # the band button); opening it is then « panel in place »
@@ -175,7 +160,6 @@ def run_main():
         time.sleep(0.8)
         narrow = page_width()
         step('the page shrinks, it is not covered', narrow is not None and wide - narrow >= 370, f'page width {wide} -> {narrow} CSS px')
-        step('launcher hidden while the panel is open', not launcher_visible())
         sug = logged(r'CHAT folder suggestion from the process listening on the site\'s port \(pid \d+\): (.+)', 0, 10)   # final QA: O1, found during the warm-up
         step('folder detected from the port of the site (no admin rights)', sug is not None and sug.group(1).strip().lower() == str(C.SITE).lower(), sug.group(1).strip() if sug else 'none')
         # contract B 1.4: a sure detection (one server, its working folder is a project, the page's own file marks point
@@ -437,7 +421,6 @@ def run_main():
             print('DIAG', C.page('[innerWidth, outerWidth, devicePixelRatio, location.href]'), [w[1:] for w in Q.windows()])
             print('DIAG targets', [(t.get('type'), t.get('url')) for t in C.targets()])
             print('DIAG log', C.log_text().splitlines()[-25:])
-        step('launcher back', launcher_visible())
         destroyed = logged(r'CHAT panel WebView destroyed', m11, 12)
         # final QA: R18 — Mode Commentaire keeps its bubble's page created in advance (log « bubble WebView created in advance »):
         # « no chat WebView » means no PANEL page; the bubble's prepared page may stay
@@ -481,77 +464,23 @@ def run_main():
         focus_composer(); C.key_panel('Escape', 'Escape', 27)
         step('Échap in the panel closes it', logged(r'CHAT panel closed', m13, 5))
         time.sleep(0.5)
-        # ---- Ctrl+Entrée in the composer: an annotation without the agent (the note panel's « Ajouter » before V1.3).
-        #      Two of them for « Traiter les annotations » (the fake agent gives back a note that says « impossible » and
-        #      does not touch one that says « oublie »)
-        kept = []
-        for sel, text in (('.hint', 'Texte trop discret'), ('.btn-primary', 'Déplace ce bouton dans l\'en-tête (impossible sans le gabarit)'), ('#react-button', 'On oublie celle-ci pour le moment')):
-            mN = mark()
-            C.click_page(sel)
-            C.wait_for(lambda: C.panel_exists() and C.panel("document.querySelectorAll('.cin .chip').length"), 15)
-            time.sleep(0.3)
-            focus_composer(); C.type_panel(' ' + text); time.sleep(0.2)
-            C.key_panel('Enter', 'Enter', 13, modifiers=2)   # Ctrl+Entrée
-            kept.append(logged(r'CHAT annotation kept \(Ctrl\+Entrée\) ann_\w+: write ok', mN, 10) is not None)
-            time.sleep(0.4)
-        step('Ctrl+Entrée keeps each element and its words as a plain annotation (written, no turn)', all(kept) and 'CHAT turn t' not in C.log_text()[m13:], str(kept))
-        step('…the thread says it discreetly (« Gardé en annotation »)', 'Gardé en annotation' in C.panel_text())
-        capture('6.18-garde-en-annotation')
+        # ---- Lot R (2026-11-24): « garder en annotation » (Ctrl+Entrée) and « Traiter les annotations » are removed
+        #      (the old steps 6.15 to 6.18). Ctrl+Entrée now sends like Entrée; the old batch request does nothing.
         m14 = mark()
+        C.click_page('.hint')
+        C.wait_for(lambda: C.panel_exists() and C.panel("document.querySelectorAll('.cin .chip').length"), 15)
+        time.sleep(0.3)
+        focus_composer(); C.type_panel(' Texte trop discret'); time.sleep(0.2)
+        C.key_panel('Enter', 'Enter', 13, modifiers=2)   # Ctrl+Entrée
+        step('lot R: Ctrl+Entrée keeps no annotation, it starts a turn like Entrée',
+             logged(r'CHAT turn t\d+ started', m14, 20) is not None and 'annotation kept' not in C.log_text()[m14:] and 'Gardé en annotation' not in C.panel_text())
+        C.wait_for(lambda: 'Refuser' in C.panel_text() or logged(r'CHAT turn t\d+ ended', m14, 0.2) is not None, 15)
+        if 'Refuser' in C.panel_text():
+            C.click_panel(text='Refuser')
+        step('…and that turn ends cleanly', logged(r'CHAT turn t\d+ ended', m14, 30) is not None)
         time.sleep(0.4)
-
-        # ---- « Traiter les annotations » (contract B 1.4, Paper 186K-0): the pending annotations of the site are posed
-        #      in the composer, the ticked ones leave as one message, and that message is a card that follows each one
-        try:
-            C.wait_for(lambda: C.panel_exists() and logged(r'CHAT session start: ready', m12, 1) is not None, 20)
-            mT = mark()
-            C.post({'type': 'annotations.request'})                         # what the « /annotations » command of the panel sends
-            posed = logged(r'CHAT batch (b_\w+) posed \(([^)]*)\): (\d+) annotation\(s\):((?: ann_\w+)+)', mT, 10)
-            ids = posed.group(4).split() if posed else []
-            step('« Traiter les annotations »: the site\'s pending annotations are posed in the composer', len(ids) >= 4, f'{len(ids)} annotation(s)')
-            C.wait_for(lambda: 'à traiter' in C.panel_text(), 5)
-            C.panel("(function(){var m=document.querySelector('.batch-more');if(m)m.click();return 1})()"); time.sleep(0.3)
-            rows = C.panel("(function(){return Array.prototype.map.call(document.querySelectorAll('.batch-row'),function(r){return [r.dataset.id,r.getAttribute('aria-checked'),r.innerText]})})()") or []
-            step('…one line each, with its note, all ticked', len(rows) == len(ids) and all(r[1] == 'true' for r in rows) and any('Texte trop discret' in r[2] for r in rows), f'{len(rows)} line(s)')
-            capture('6.15-lot-avant-envoi')
-            keep = next((r[0] for r in rows if 'Texte trop discret' in r[2]), None)
-            if keep:
-                C.panel("(function(){var r=document.querySelector(\".batch-row[data-id='" + keep + "']\");if(r)r.click();return 1})()"); time.sleep(0.3)
-            focus_composer(); C.type_panel('Garde les couleurs du site.'); time.sleep(0.2)
-            mS = mark(); C.enter_panel()
-            sent = logged(r'CHAT batch b_\w+ sent: (\d+) of (\d+) annotation', mS, 8)
-            step('the ticked ones leave as one message; the unticked one stays for later', sent is not None and int(sent.group(1)) == len(ids) - 1 and int(sent.group(2)) == len(ids), sent.group(0)[5:] if sent else '')
-            working = logged(r'CHAT batch status (ann_\w+): working \(tool\)', mS, 20)
-            step('claim by the agent: the line says who takes care of it', working is not None)
-            C.wait_for(lambda: "s'en occupe" in C.panel_text(), 5)
-            capture('6.16-lot-en-cours')
-            ended = logged(r'CHAT turn t\d+ ended: end_turn', mS, 90)
-            over = logged(r'CHAT batch b_\w+ over: (\d+) done, (\d+) not handled', mS, 10)
-            step('the turn ends; each annotation has its outcome', ended is not None and over is not None and int(over.group(1)) >= 1 and int(over.group(2)) == 2, over.group(0)[5:] if over else '')
-            step('…and our annotation tools never asked for a card', 'permission asked' not in C.log_text()[mS:])
-            time.sleep(0.8)
-            card = C.panel("(function(){var c=document.querySelectorAll('.ann-card');c=c[c.length-1];return c?c.innerText:''})()") or ''
-            step('done: the agent\'s one-sentence summary on the line', "C'est corrigé dans le code (faux agent)." in card)
-            step('given back by the agent: its reason on the line', "Je n'ai pas trouvé cet élément dans le code." in card)
-            step('never touched: said plainly, it stays waiting', "ne l'a pas commencée. Elle reste en attente." in card)
-            C.panel("(function(){var c=document.querySelectorAll('.ann-card');c=c[c.length-1];if(c)c.scrollIntoView({block:'center'});return 1})()"); time.sleep(0.4)
-            capture('6.17-lot-termine')
-            C.panel("(function(){var b=document.querySelectorAll('.ann-inst');b=b[b.length-1];if(b)b.click();return 1})()"); time.sleep(0.4)
-            card2 = C.panel("(function(){var c=document.querySelectorAll('.ann-card');c=c[c.length-1];return c?c.innerText:''})()") or ''
-            step('« Voir la consigne » shows the exact text sent (tool names only there, and the precision)', 'browser_annotation_claim' in card2 and 'Garde les couleurs du site.' in card2 and 'browser_annotation_claim' not in card)
-            capture('6.17-lot-consigne')
-            mShow = mark()
-            C.panel("(function(){var c=document.querySelectorAll('.ann-card');c=c[c.length-1];var r=c&&c.querySelector('.ann-row');if(r)r.click();return 1})()")
-            shown = logged(r'CHAT mark « show » on the element: (found|not found)', mShow, 6)
-            step('a click on a line shows the annotation\'s element on the page', shown is not None and shown.group(1) == 'found', shown.group(0)[5:] if shown else '')
-            time.sleep(0.5); capture('6.17-lot-montrer-sur-la-page')
-            left = C.panel('window.__n=0') or 0
-            mP = mark(); C.post({'type': 'annotations.request'})
-            again = logged(r'CHAT batch (b_\w+) posed \(([^)]*)\): (\d+) annotation', mP, 10)
-            step('what was left is still pending: a next batch offers it again', again is not None and int(again.group(3)) >= 3, again.group(0)[5:] if again else '')
-            C.panel("(function(){document.querySelectorAll('.batch-row[aria-checked=true]').forEach(function(r){r.click()});return 1})()"); time.sleep(0.3)
-        except Exception as e:
-            step('« Traiter les annotations » flow', False, repr(e))
+        C.post({'type': 'annotations.request'}); time.sleep(0.6)             # what the old « /annotations » command sent
+        step('lot R: « Traiter les annotations » is gone — the old request poses nothing', 'CHAT batch' not in C.log_text()[m14:] and 'à traiter' not in C.panel_text())
         m15 = mark(); C.shortcut('D')
         step('Ctrl+Maj+D closes it', logged(r'CHAT panel closed', m15, 5))
         time.sleep(0.5)
@@ -580,7 +509,6 @@ def run_main():
             C.wait_for(lambda: C.panel_exists() and 'Où est le code de ce site' in C.panel_text(), 8)
             txt = C.panel_text()
             step('…the panel asks « Où est le code de ce site ? » and proposes the folder found', 'Où est le code de ce site' in txt and 'Utiliser' in txt)
-            step('…and the batch of the other site left the composer', 'à traiter' not in txt and 'annotation cochée' not in txt)
             capture('6.2-dossier')
             C.shortcut('A'); time.sleep(0.9)                                   # leave the mode: the panel closes with it
             C.ws_for('http://127.0.0.1:5184').call('Page.navigate', {'url': C.URL}); time.sleep(1.2)
