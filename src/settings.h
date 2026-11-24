@@ -198,6 +198,7 @@ struct State {
     bool annotationConnectPrompt = true; // « Connecter un agent » opens at the mode's launch while no agent is connected
     int annotationConnectDeclines = 0;   // « Plus tard » answers, 0..MaxConnectDeclines (at the max the modal stops opening)
     int annotationRetentionDays = 30;    // done annotations kept that long: one of RetentionChoices
+    bool annotationOnboarded = false;    // the mode's onboarding (#125, src/annotation-onboarding.h) was finished or skipped: never shown again
     // « Plus tard » on the Réglages card « Voulez-vous avoir Browser comme navigateur par défaut ? »: when (UTC seconds,
     // 0 = never). The card stays away DefaultBrowserLaterDays from then (DefaultBrowserCardDue).
     long long defaultBrowserLaterAt = 0;
@@ -212,7 +213,7 @@ struct State {
                muteBackground == o.muteBackground && autoplay == o.autoplay && grayscaleText == o.grayscaleText &&
                bookmarksBar == o.bookmarksBar && accent == o.accent &&
                annotationConnectPrompt == o.annotationConnectPrompt && annotationConnectDeclines == o.annotationConnectDeclines &&
-               annotationRetentionDays == o.annotationRetentionDays && defaultBrowserLaterAt == o.defaultBrowserLaterAt;
+               annotationRetentionDays == o.annotationRetentionDays && annotationOnboarded == o.annotationOnboarded && defaultBrowserLaterAt == o.defaultBrowserLaterAt;
     }
 };
 // What a panel interaction changed; the host applies and saves it.
@@ -271,6 +272,7 @@ inline void Write(std::ostream& out, const State& s) {
         << "annotation-connect-prompt=" << (s.annotationConnectPrompt ? 1 : 0) << '\n'
         << "annotation-connect-declines=" << s.annotationConnectDeclines << '\n'
         << "annotation-retention-days=" << s.annotationRetentionDays << '\n'
+        << "annotation-onboarded=" << (s.annotationOnboarded ? 1 : 0) << '\n'
         << "default-browser-later=" << s.defaultBrowserLaterAt << '\n';
 }
 inline State Read(std::istream& in) {
@@ -304,6 +306,7 @@ inline State Read(std::istream& in) {
         else if (key == "grayscale-text") flag(value, s.grayscaleText);
         else if (key == "annotation-launcher") {}   // V2 « Afficher le lanceur d'annotations »: since V3 the launcher only exists in the mode (read, ignored, not written back)
         else if (key == "annotation-connect-prompt") flag(value, s.annotationConnectPrompt);
+        else if (key == "annotation-onboarded") flag(value, s.annotationOnboarded);
         else if (key == "annotation-connect-declines") { for (int n = 0; n <= MaxConnectDeclines; ++n) if (value == std::to_string(n)) s.annotationConnectDeclines = n; }
         else if (key == "default-browser-later") { char* end = nullptr; const long long t = value.empty() || value.size() > 18 ? 0 : std::strtoll(value.c_str(), &end, 10); if (end && !*end && t > 0) s.defaultBrowserLaterAt = t; }
         else if (key == "annotation-retention-days") { for (int d : RetentionChoices) if (value == std::to_string(d)) s.annotationRetentionDays = d; }

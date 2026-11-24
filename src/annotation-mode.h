@@ -47,6 +47,7 @@
 #include "annotation-problem.h"
 #include "agent-connect.h"
 #include "annotation-ui.h"
+#include "annotation-onboarding.h"   // #125: the mode's onboarding (variant A), in the place of « Connecter un agent » the first time
 #include "annotation-script.h"
 #include "annotation-host.h"
 #include "annotation-capture.h"
@@ -71,6 +72,9 @@ struct Session {
 } s;
 std::uint64_t serials = 0;                    // never reset: a new session never matches an old result
 AUI::Banner banner; AUI::NotePopover note; AUI::Launcher launcher; AUI::ConnectModal connect; AUI::SelectionFrame frame; AUI::EntryVeil veil;
+// #125: the onboarding window, made when it opens (a closed one stays until the next, never deleted from its own callback).
+std::unique_ptr<NativeChrome::AnnotationOnboardingUI::Window> onboarding;
+bool OnboardingOpen() { return onboarding && onboarding->Visible(); }
 // V3 capture pipeline (src/annotation-frame.h): one shot at a time; it outlives the panel (« Ajouter » / Échap before
 // the image is ready) so the page is only told to resume once the engine has its frame.
 struct ShotJob { std::uint64_t serial = 0; std::int64_t pageSeq = -1; bool waiting = false, inFlight = false, deferred = false; AH::Selection sel; double selectedAt = 0, lag = -1, handoffAt = 0, frameMs = 0, panelMs = 0, hiddenAt = 0; };
@@ -138,6 +142,7 @@ namespace Prefs {
 #define ANN_HAS(Name, field) template<class S, class = void> struct Name : std::false_type {}; \
     template<class S> struct Name<S, std::void_t<decltype(std::declval<S&>().field)>> : std::true_type {};
 ANN_HAS(HasPrompt, annotationConnectPrompt) ANN_HAS(HasDeclines, annotationConnectDeclines) ANN_HAS(HasRetention, annotationRetentionDays)
+ANN_HAS(HasOnboarded, annotationOnboarded)
 #undef ANN_HAS
 constexpr int MaxDeclines = 3;
 int sessionDeclines = 0;   // without the key: counted for this run only
@@ -146,6 +151,13 @@ template<class S> int Declines(const S& st) { if constexpr (HasDeclines<S>::valu
 template<class S> void AddDecline(S& st) {
     if constexpr (HasDeclines<S>::value) { if (int(st.annotationConnectDeclines) < MaxDeclines) { st.annotationConnectDeclines = st.annotationConnectDeclines + 1; SaveSettings(); } }
     else { (void)st; if (sessionDeclines < MaxDeclines) ++sessionDeclines; }
+}
+// #125: the onboarding was finished or skipped once (without the key: for this run only).
+bool sessionOnboarded = false;
+template<class S> bool Onboarded(const S& st) { if constexpr (HasOnboarded<S>::value) return bool(st.annotationOnboarded); else return (void)st, sessionOnboarded; }
+template<class S> void SetOnboarded(S& st) {
+    if constexpr (HasOnboarded<S>::value) { if (!st.annotationOnboarded) { st.annotationOnboarded = true; SaveSettings(); } }
+    else { (void)st; sessionOnboarded = true; }
 }
 template<class S> std::int64_t Retention(const S& st) {
     if constexpr (HasRetention<S>::value) { const int d = int(st.annotationRetentionDays); return d == 7 || d == 30 || d == 90 ? std::int64_t(d) * 86400 : 0; }
@@ -427,7 +439,7 @@ DWORD WINAPI WatchMain(LPVOID p) {
     CloseHandle(ov.hEvent); CloseHandle(dir); return 0;
 }
 // V3: no launcher outside the mode, so no watch for its ring either.
-bool WatchWanted() { return uiReady && (s.active || launcher.HistoryVisible() || connect.Visible() || pendingInstall); }
+bool WatchWanted() { return uiReady && (s.active || launcher.HistoryVisible() || connect.Visible() || OnboardingOpen() || pendingInstall); }
 void SyncWatch() {
     if (WatchWanted()) {
         if (watch.thread || !EnsurePost()) return;
@@ -480,7 +492,12 @@ AUI::AppStatus StatusFor(int app, const AC::Status& st) {
     return {AUI::ConnectState::Idle, L""};
 }
 void ApplyAgents() {
-    if (s.active && banner.Visible() && !connect.Visible()) banner.SetReminder(!agents.any() && !Chat::Open());
+    if (s.active && banner.Visible() && !connect.Visible() && !OnboardingOpen()) banner.SetReminder(!agents.any() && !Chat::Open());
+    if (OnboardingOpen()) {   // A3 / A4 follow the agents (a failure stays shown until the next click)
+        auto follow = [](AUI::AgentKind a, const AUI::AppStatus& st) { if (st.state == AUI::ConnectState::Idle && onboarding->Status(a).state == AUI::ConnectState::Failed) return; onboarding->SetStatus(a, st); };
+        if (!connectBusy[0] && !(pendingInstall && !agents.claude.connected())) follow(AUI::AgentKind::Claude, StatusFor(0, agents.claude));
+        if (!connectBusy[1]) follow(AUI::AgentKind::Codex, StatusFor(1, agents.codex));
+    }
     if (connect.Visible()) {
         if (!connectBusy[0] && !(pendingInstall && !agents.claude.connected())) connect.SetStatus(AUI::AgentKind::Claude, StatusFor(0, agents.claude));
         if (!connectBusy[1]) connect.SetStatus(AUI::AgentKind::Codex, StatusFor(1, agents.codex));
@@ -532,7 +549,8 @@ void ConnectApp(AUI::AgentKind a, bool on, std::function<void(const AC::Report&)
     const int i = a == AUI::AgentKind::Claude ? 0 : 1;
     if (a == AUI::AgentKind::Other || connectBusy[i]) { if (then) { AC::Report r; r.result = AC::Result::Failed; r.message = I18n::U8(I18n::Id::connect_already_running); then(r); } return; }
     connectBusy[i] = true; Store();
-    if (on && connect.Visible()) connect.SetStatus(a, {AUI::ConnectState::Working, TRF(connect_connecting_to, a == AUI::AgentKind::Claude ? L"Claude" : L"Codex")});   // « Cliquez sur Installer » only once a .mcpb was opened
+    if (on && connect.Visible()) connect.SetStatus(a, {AUI::ConnectState::Working, TRF(connect_connecting_to, a == AUI::AgentKind::Claude ? L"Claude" : L"Codex")});
+    if (on && OnboardingOpen()) onboarding->SetStatus(a, {AUI::ConnectState::Working, TRF(connect_connecting_to, a == AUI::AgentKind::Claude ? L"Claude" : L"Codex")});   // #125 A3   // « Cliquez sur Installer » only once a .mcpb was opened
     auto report = std::make_shared<AC::Report>(); const auto target = ConnectTarget(); const std::wstring work = DataRoot() + L"\\annotations-connect";
     Run([a, on, report, target, work] {
             const auto env = ConnectEnv();
@@ -551,6 +569,7 @@ void ConnectApp(AUI::AgentKind a, bool on, std::function<void(const AC::Report&)
                 if (a == AUI::AgentKind::Claude) pendingInstall = report->result == AC::Result::PendingInstall;
                 if (report->ok() && card == Card::NoAgent && launcher.CardVisible()) { launcher.HideCard(); card = Card::None; }   // « Aucun agent ne la lit encore » is no longer true
                 if (connect.Visible()) connect.SetStatus(a, st);
+                if (OnboardingOpen()) onboarding->SetStatus(a, st);   // #125 A3
             } else if (connect.Visible()) {
                 if (report->result == AC::Result::Disconnected || report->result == AC::Result::NotConnected) connect.SetStatus(a, {AUI::ConnectState::Idle, L""});
                 else connect.SetStatus(a, {AUI::ConnectState::Connected, AH::Wide(report->message)});
@@ -1055,6 +1074,38 @@ void OnSubmit(const AUI::NoteSubmission& sub) {
 }
 
 // ---------------------------------------------------------------- lifecycle
+// #125 (variant A, src/annotation-onboarding.h): the first time the mode is turned on, its onboarding opens in the place of
+// « Connecter un agent », the mode on behind it. A3 connects through ConnectApp (the same code as the modal); « Autre app
+// ou réglage manuel » leaves it for the modal with the manual setup unfolded. Finished or skipped (« Plus tard », the close
+// button, Échap), it never comes back (setting annotation-onboarded); « --annotation-onboarding » shows it every time (QA).
+bool OnboardingForced() { static const bool forced = Onboarding::HasSwitch(GetCommandLineW(), AnnotationOnboarding::Switch); return forced; }
+void OnboardingClosed(AnnotationOnboarding::Ending end, bool manual) {
+    namespace AO = AnnotationOnboarding;
+    if (end != AO::Ending::None) Prefs::SetOnboarded(settings);
+    if (end == AO::Ending::Skipped && !manual) laterThisSession = true;   // « Plus tard »: no « Connecter un agent » modal in this session either
+    Log(std::wstring(L"ANNOTATE onboarding ") + (end == AO::Ending::Finished ? L"finished" : manual ? L"left for the manual setup" : L"skipped") + L" (" + (agents.claude.connected() ? L"Claude" : L"") +
+        (agents.codex.connected() ? L" Codex" : L"") + (agents.any() ? L" connected)" : L"no agent connected)") + (Prefs::HasOnboarded<BrowserSettings::State>::value ? L"" : L", not persisted: no setting key"));
+    if (manual && s.active) { OpenConnect(false, true); return; }
+    if (s.active) { banner.SetReminder(!agents.any() && !Chat::Open()); FocusPage(); }
+    SyncWatch();
+}
+bool OpenOnboarding() {
+    namespace OUI = NativeChrome::AnnotationOnboardingUI;
+    EnsureUi();
+    if (OnboardingOpen()) return true;
+    OUI::Options o; o.reduced = Reduced(); o.claude = StatusFor(0, agents.claude); o.codex = StatusFor(1, agents.codex);
+    if (pendingInstall && !agents.claude.connected()) o.claude = {AUI::ConnectState::Working, TR(connect_click_install_claude)};
+    o.hooks.connect = [](AUI::AgentKind a) { ConnectApp(a, true); };
+    o.hooks.closed = [](AnnotationOnboarding::Ending end, bool manual) { OnboardingClosed(end, manual); };
+    o.hooks.language = [](I18n::Locale l) { const bool ok = UiLanguage::Save(DataRoot(), l); Log(std::wstring(L"ANNOTATE onboarding language ") + (l == I18n::Locale::En ? L"en" : L"fr") + (ok ? L" saved" : L" NOT saved")); };
+    o.hooks.announce = [](const std::wstring& t) { Announce(t); };
+    onboarding = std::make_unique<OUI::Window>();
+    if (!onboarding->Open(instance, window, base, ClientScreen(), std::move(o))) { onboarding.reset(); Log(L"ANNOTATE onboarding could not open: « Connecter un agent » instead"); return false; }
+    if (s.active) banner.SetReminder(false, true);
+    SyncWatch(); RefreshAgents();
+    Log(std::wstring(L"ANNOTATE onboarding opened") + (OnboardingForced() ? L" (--annotation-onboarding)" : L" (first time)") + (ConnectRedirected() ? L", connection writes redirected to BROWSER_ANNOTATIONS_CONNECT_ROOT" : L""));
+    return true;
+}
 void ConnectClosed(AUI::ConnectEnd end) {
     if (end == AUI::ConnectEnd::Later && connectLaunch) {
         laterThisSession = true;
@@ -1158,6 +1209,9 @@ void Activate(const Start& st) {
     const bool direct = st.kind != 0;   // started on an element from the page menu: the note comes first
     RefreshAgents([started, direct, nonce] {
         if (!s.active || s.nonce != nonce) return;
+        AnnotationOnboarding::Launch first; first.onboarded = Prefs::Onboarded(settings); first.forced = OnboardingForced(); first.direct = direct; first.chatOpen = Chat::Open();
+        first.busy = connect.Visible() || note.Visible() || OnboardingOpen();
+        if (AnnotationOnboarding::ShouldShow(first) && OpenOnboarding()) return;   // #125: the first time, the onboarding (agents connected or not)
         if (agents.any()) { banner.SetReminder(false); return; }
         if (Chat::Open()) { banner.SetReminder(false); return; }   // the chat was asked for: no « Connecter un agent » modal, no reminder (its agent is the chat's)
         if (!direct && !laterThisSession && Prefs::Prompt(settings) && Prefs::Declines(settings) < Prefs::MaxDeclines && !connect.Visible() && !note.Visible()) {
@@ -1232,6 +1286,7 @@ void Exit(const wchar_t* why, bool pageChanged) {
     s = Session{}; s.draft = pageChanged ? std::wstring() : draft; ++serials;
     CtrlWatch();   // R31: the mode is off: no more reading, the state forgotten
     note.Close(!pageChanged); banner.Hide(); if (connect.Visible()) connect.Close(false);
+    if (OnboardingOpen()) { onboarding->Dismiss(); Log(L"ANNOTATE onboarding closed by the mode's exit (not answered: shown again next time)"); }
     veil.Interrupt();   // V3-B: an exit during the entry fades the veil from its value (none at the exit otherwise)
     card = Card::None;
     chrome.annotationBand = 0; SyncChrome(); Layout();
@@ -1277,7 +1332,7 @@ LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         watchSignal = false; if (!watch.thread) return 0;
         RefreshStatus();
         if (launcher.HistoryVisible()) LoadHistory(false, false);
-        if (connect.Visible() || pendingInstall) RefreshAgents();
+        if (connect.Visible() || OnboardingOpen() || pendingInstall) RefreshAgents();
         return 0;
     }
     if (m == WM_TIMER && w == HideTimer) { KillTimer(h, HideTimer); if (s.active && shot.waiting) { s.captureWanted = false; Log(L"ANNOTATE page did not confirm the hidden frame: capturing anyway"); Capture(ModeTab(), shot.serial); } ShowPanel(); return 0; }
@@ -1294,7 +1349,7 @@ bool AnnotationBandSliding() { return Ann::s.active && Ann::bandSliding; }   // 
 bool AnnotationSurfaceFocus() {
     if (!Ann::uiReady) return false;
     HWND f = GetFocus(); if (!f) return false;
-    for (HWND w : {Ann::note.Window(), Ann::connect.Window(), Ann::launcher.LauncherWindow(), Ann::launcher.CardWindow(), Ann::launcher.HistoryWindow(), Ann::launcher.ToastWindow(), Ann::banner.Window()})
+    for (HWND w : {Ann::note.Window(), Ann::connect.Window(), Ann::onboarding ? Ann::onboarding->Handle() : HWND(nullptr), Ann::launcher.LauncherWindow(), Ann::launcher.CardWindow(), Ann::launcher.HistoryWindow(), Ann::launcher.ToastWindow(), Ann::banner.Window()})
         if (w && (f == w || IsChild(w, f))) return true;
     return false;
 }

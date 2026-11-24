@@ -173,6 +173,12 @@ def existing_fixtures() -> None:
     onboarding_evidence.mkdir(parents=True, exist_ok=True)
     fixture('onboarding_render_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/onboarding/onboarding_render_test.cpp', 'src/native-lottie.cpp', THORVG,
             *UI_LIBS, '-loleaut32', '-lshell32'], [ROOT, onboarding_evidence])
+    # The annotation mode's onboarding (#125, Paper « MCP - Design UI UX » A1 – A4): flow, first-time rule and its setting,
+    # the four boards drawn off screen by the production window, Paper geometry, buttons, keys, A3's connected state.
+    annotation_onboarding_evidence = ROOT / 'build/annotation-onboarding-render'
+    annotation_onboarding_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('annotation_onboarding_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/onboarding/annotation_onboarding_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32'], [ROOT, annotation_onboarding_evidence])
 
 
 def peer_suites() -> None:
