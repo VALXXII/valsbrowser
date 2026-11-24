@@ -546,9 +546,13 @@ inline std::wstring CaptureScript() {
 }
 inline std::wstring CaptureScriptParams() { return L"{\"source\":" + JsonString(CaptureScript()) + L",\"worldName\":\"" + CaptureWorld + L"\"}"; }
 inline std::wstring CaptureBindingParams() { return std::wstring(L"{\"name\":\"") + CaptureBindingName + L"\",\"executionContextName\":\"" + CaptureWorld + L"\"}"; }
-// Frames of another site run in their own renderer: attached (paused) before they run, iframes only, then given
-// the same world, binding and auto-attach (nested frames), then resumed.
-inline std::wstring AutoAttachParams() { return L"{\"autoAttach\":true,\"waitForDebuggerOnStart\":true,\"flatten\":true,\"filter\":[{\"type\":\"iframe\",\"exclude\":false}]}"; }
+// Frames of another site run in their own renderer: attached (paused) before they run, then given the same world,
+// binding and auto-attach (nested frames), then resumed. The engine also holds the workers and worklets a document
+// starts while this is set, and one the filter leaves out is never announced, so nobody resumed it (every Worker
+// and AudioWorklet stalled; Cloudflare Turnstile never answered): every target is attached, all but frames only to
+// be resumed at once (tests/frame-workers/run.py). Service and shared workers are never held, and a DevTools session
+// would keep a service worker from stopping when idle: left out.
+inline std::wstring AutoAttachParams() { return L"{\"autoAttach\":true,\"waitForDebuggerOnStart\":true,\"flatten\":true,\"filter\":[{\"type\":\"service_worker\",\"exclude\":true},{\"type\":\"shared_worker\",\"exclude\":true},{}]}"; }
 // A JSON string value starting at `at`, unescaped (\uXXXX kept as UTF-16 units); false when it is not one.
 inline bool JsonStringAt(const std::wstring& j, std::size_t at, std::wstring& out) {
     out.clear(); if (at >= j.size() || j[at] != L'"') return false;

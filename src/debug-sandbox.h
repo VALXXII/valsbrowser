@@ -173,14 +173,14 @@ inline const std::vector<Entry>& Catalogue() {
             {L"Indication F11", L"fullscreen.hint", L"browser", nullptr}, {L"Indication clavier verrouillé", L"fullscreen.hint", L"locked", nullptr}}},
         {L"C8", L"Toasts d'état, notifications web, enregistrer la page", Status::Demo, L"Les notifications web restent celles de Windows (bouton Notifications en B02).", {
             {L"Réussite", L"toast.status", L"success", nullptr}, {L"Échec", L"toast.status", L"failure", nullptr}, {L"En cours", L"toast.status", L"progress", nullptr}, {L"Confirmation brève", L"toast.status", L"brief", nullptr}}},
-        {L"C9", L"Contexte — Toast « Page enregistrée »", Status::Demo, L"Fichier fictif ; Ctrl+S ouvre le vrai sélecteur Windows.", {{L"Afficher le toast", L"toast.pageSaved", L"default", nullptr}}},
+        {L"C9", L"Contexte — Toast « Page enregistrée »", Status::Demo, L"Fichier fictif. Pas de fonction « Enregistrer la page » : Ctrl+S ne fait rien (décision produit, #121).", {{L"Afficher le toast", L"toast.pageSaved", L"default", nullptr}}},
     };
     return list;
 }
 struct NativeKept { const wchar_t* title; const wchar_t* note; };
 inline const std::vector<NativeKept>& NativeWindows() {
     static const std::vector<NativeKept> list = {
-        {L"Sélecteur de fichiers", L"Ouvrir, enregistrer la page (Ctrl+S), choisir un dossier : fenêtre Windows, pré-remplie seulement."},
+        {L"Sélecteur de fichiers", L"Ouvrir un fichier, choisir un dossier : fenêtre Windows, pré-remplie seulement."},
         {L"Impression", L"Dialogue et aperçu d'impression (Ctrl+P) de WebView2 / Windows."},
         {L"Windows Hello", L"Vérification d'identité système (mots de passe, passkeys)."},
         {L"Centre de notifications", L"Notifications web : nom « Browser », icône fleur, origine en attribution."},

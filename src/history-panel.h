@@ -54,7 +54,7 @@ struct Scene {
     std::function<std::shared_ptr<const FaviconImage>(const std::wstring&)> icon;
     std::wstring query;
     int focus = 0; bool keyboard = false, caret = false;
-    float height = 600, fadeTop = 0, fadeBottom = 0, edgeOpacity = 1;
+    float height = 600, fadeTop = 0, fadeBottom = 0, edgeOpacity = 1, originX = 0; // originX: slide offset (DIP)
     std::int64_t nowMs = 0, offsetMs = 0;
     Motion::Time now{};
 };
@@ -168,7 +168,7 @@ public:
         Prepare();
         const float c = Design::Surface::canvas, width = Panel::width, height = s.height;
         target->Clear(D2D1::ColorF(c, c, c, 1));
-        target->SetTransform(D2D1::IdentityMatrix());
+        target->SetTransform(D2D1::Matrix3x2F::Translation(s.originX, 0));
         chrome_.keyboardModality = s.keyboard;
 
         chrome_.Text(TR(history_title), R(Panel::Title()), Panel::line, Design::Text::muted, false, true, -.16f);
@@ -245,7 +245,7 @@ private:
     std::array<Lane, PeriodCount> fold_;
     int hover_ = 0, pressed_ = 0, focus_ = 0, hoverRow_ = -1;
     bool keyboard_ = false, visible_ = false, closing_ = false, tracking_ = false, animatingPainted_ = false;
-    int appliedVisible_ = -1; RECT appliedOwner_{}, appliedWindow_{};
+    int appliedVisible_ = -1, appliedEntered_ = -1, lead_ = 0; RECT appliedOwner_{}, appliedWindow_{};
 
     float Dpi() const { return static_cast<float>(GetDpiForWindow(hwnd_ ? hwnd_ : owner_)); }
     int Px(float dip) const { return static_cast<int>(std::lround(dip * Dpi() / 96.f)); }
@@ -271,7 +271,7 @@ private:
     }
     // ---- Input ---------------------------------------------------------------
     int Hit(float x, float y, int& row) const {
-        row = -1;
+        row = -1; x -= LeadDip();   // window DIP -> content DIP while it slides
         auto inside = [&](Design::Box b) { return x >= b.left && x < b.right && y >= b.top && y < b.bottom; };
         if (inside(Panel::Close())) return CloseHit;
         if (!query_.empty() && inside(Layout::Clear())) return ClearHit;
@@ -434,34 +434,37 @@ private:
         if (!chrome_.RenderTarget()) chrome_.Resize();
         auto* target = chrome_.RenderTarget(); if (!target) return;
         const auto now = Motion::Now();
-        auto scene = MakeScene(now); const auto slots = SlotsAt(now); scene.slots = &slots;
+        auto scene = MakeScene(now); const auto slots = SlotsAt(now); scene.slots = &slots; scene.originX = LeadDip();
         target->BeginDraw();
-        view_.Paint(scene);
+        view_.Paint(scene); chrome_.KeyOut(scene.originX);
         if (target->EndDraw() == D2DERR_RECREATE_TARGET) { view_.Release(); chrome_.RecreateTarget(); }
     }
     void ClearPointer() { if (GetCapture() == hwnd_) ReleaseCapture(); reveals_.clear(); motion_.ClearInteractions(); hoverRow_ = -1; hover_ = pressed_ = 0; tracking_ = false; }
     // Window = the 268 DIP column docked to the owner's right edge under the toolbar,
-    // where the download and settings drawers dock. The slide moves it right; the
-    // region clips it to the owner's client area and rounds the corner it shares
-    // with the owner (no repaint while sliding).
-    void ApplyGeometry(Motion::Time now, bool force = false) {
-        if (!hwnd_) return;
+    // where the download and settings drawers dock. The window never moves while
+    // sliding (NativeUI::KeyedDrawer): a slide step is one present, the content drawn
+    // `lead_` pixels right of its place and the strip it has not entered keyed out.
+    // The region rounds the corner shared with the owner (empty while nothing has
+    // entered). Returns true when it painted.
+    bool ApplyGeometry(Motion::Time now, bool force = false) {
+        if (!hwnd_) return false;
         const RECT owner = OwnerClient();
         const int column = OwnerPx(Layout::width), top = owner.top + OwnerPx(Layout::top), height = std::max(1, static_cast<int>(owner.bottom - top));
         const int shown = static_cast<int>(std::lround(column * Motion::Clamp(slide_.Value(now))));
-        if (!force && shown == appliedVisible_ && EqualRect(&owner, &appliedOwner_)) return;
-        const bool resized = !EqualRect(&owner, &appliedOwner_);
-        appliedVisible_ = shown; appliedOwner_ = owner;
-        const RECT window{owner.right - shown, top, owner.right - shown + column, top + height};
+        if (!force && shown == appliedVisible_ && EqualRect(&owner, &appliedOwner_)) return false;
+        const bool resized = !EqualRect(&owner, &appliedOwner_), slid = shown != appliedVisible_;
+        appliedVisible_ = shown; appliedOwner_ = owner; lead_ = column - shown;
+        const RECT window{owner.right - column, top, owner.right, top + height};
         if (force || !EqualRect(&window, &appliedWindow_)) { SetWindowPos(hwnd_, nullptr, window.left, window.top, column, height, SWP_NOACTIVATE | SWP_NOZORDER); appliedWindow_ = window; }
-        HRGN region = nullptr;
-        if (shown > 0) {
-            const int r = OwnerPx(20); // the owner's right edge sits at x = shown in window pixels
-            region = IsZoomed(owner_) ? CreateRectRgn(0, 0, shown, height) : CreateRoundRectRgn(-r * 2, -r * 2, shown + 1, height + 1, r, r);
-        } else region = CreateRectRgn(0, 0, 0, 0);
-        SetWindowRgn(hwnd_, region, FALSE);
+        const int entered = shown > 0;
+        if (force || resized || entered != appliedEntered_) { SetWindowRgn(hwnd_, NativeUI::DrawerRegion(entered, column, height, OwnerPx(20), IsZoomed(owner_)), FALSE); appliedEntered_ = entered; }
         if (resized) { scroll_.Snap(std::clamp(scroll_.Target(), 0.f, MaxScroll(now, true))); RefreshTips(); }
+        if (force || !slid || shown == 0 || !IsWindowVisible(hwnd_)) return false;
+        PaintNow(); ValidateRect(hwnd_, nullptr);
+        return true;
     }
+    // Slide offset in DIP (content drawn right of its docked place while it enters or leaves).
+    float LeadDip() const { return lead_ * 96.f / std::max(1.f, Dpi()); }
     void Finish() {
         closing_ = false; visible_ = false; appliedVisible_ = -1; appliedWindow_ = {};
         ShowWindow(hwnd_, SW_HIDE);
@@ -563,6 +566,7 @@ public:
         if (!hwnd_) return false;
         tip_.Create(instance, hwnd_, root);
         NativeUI::ConfigureShadowlessPopup(hwnd_); // DWMWCP_DONOTROUND, no shadow: the region shapes it
+        NativeUI::KeyedDrawer(hwnd_);               // the slide's not-yet-entered strip is keyed out
         return SUCCEEDED(chrome_.Init(hwnd_, root));
     }
     // Release Direct2D/WIC before CoUninitialize; the owner destroys the window.
@@ -632,10 +636,11 @@ public:
     // Display-paced frame from the host clock; also paints the frame after motion ends.
     void Frame(Motion::Time now) {
         if (!visible_) return;
-        ApplyGeometry(now);
+        const bool painted = ApplyGeometry(now);
         if (closing_ && !slide_.Moving(now)) { Finish(); return; }
         const bool moving = NextWake(now).delay.has_value();
         if (moving || animatingPainted_) Invalidate();
+        if (painted) ValidateRect(hwnd_, nullptr);   // a slide step: already presented with its region
         if (!moving && animatingPainted_) RefreshTips();
         animatingPainted_ = moving;
         if (!moving) for (auto it = reveals_.begin(); it != reveals_.end();) { if (!it->second.Shown() && it->second.Idle(now)) it = reveals_.erase(it); else ++it; }

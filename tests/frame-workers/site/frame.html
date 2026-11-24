@@ -1,0 +1,9 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>frame</title>
+<!-- A cross-site frame (like Cloudflare Turnstile's challenge frame): runs the same worker checks and reports
+     each one to its parent. -->
+<script src="checks.js"></script>
+<script>
+runChecks('frame', (key, ok) => parent.postMessage({ frameCheck: key, ok }, '*'));
+</script>

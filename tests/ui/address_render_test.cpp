@@ -43,7 +43,7 @@ int wmain(int argc, wchar_t** argv) {
             {L"https", L"https://www.github.com/VALXXII/browser/issues/20", false, 0},
             {L"http", L"http://neverssl.com/online", false, 0},
             {L"certificate", L"https://expired.badssl.com/", true, 0},
-            {L"file", L"file:///C:/Users/<user>/Documents/rapport%20final.pdf", false, 0},
+            {L"file", L"file:///C:/Users/Camille/Documents/rapport%20final.pdf", false, 0},
             {L"long", L"https://docs.github.com/en/rest/issues/issues?apiVersion=2022-11-28#list-repository-issues-for-the-authenticated-user-with-filters", false, 0},
             {L"hover-http", L"http://neverssl.com/online", false, 'I'},
         };
