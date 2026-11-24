@@ -20,79 +20,98 @@ inline ChatApp ChatAppAt(int i) { return i == 1 ? ChatApp::Codex : ChatApp::Clau
 inline const wchar_t* ChatAppName(ChatApp a) { return a == ChatApp::ClaudeCode ? TR(agents_brand_claude_code) : TR(brand_codex); }
 
 enum class ChatState {
-    Unknown,        // first detection running: « Vérification… », no button
-    NotInstalled,   // no usable CLI (Claude Desktop alone included): « Pas installé » + Installer
-    TooOld,         // a CLI older than the chat supports: « Version 1.9 · trop ancienne » + Installer (installing again updates it)
-    Installing,     // the official installer runs: « Installation… », Installer kept and disabled
-    NeedsSignIn,    // installed, signed out: « Installé · pas connecté » + Se connecter
-    SigningIn,      // the sign-in console is open: « Connexion dans le navigateur web… », Se connecter kept and disabled
-    Ready,          // « Version 2.1 » + « ✓ Prêt »
-    InstallFailed,  // « L'installation n'a pas abouti » + Réessayer (the install again: it carries the consent)
-    SignInFailed,   // « La connexion n'a pas abouti » + Réessayer (the sign-in again)
+    Unknown,        // first detection running: « Vérification… », no icon, no button
+    NotInstalled,   // no usable CLI: ⤓ « Pas installé » + Installer (Claude Desktop alone: + the note why)
+    TooOld,         // a CLI older than the chat supports: ⤓ « Version trop ancienne » + Mettre à jour (an install)
+    Installing,     // the official installer runs: ⤓ (the Downloads morph) « Installation… » in the accent, no button
+    NeedsSignIn,    // installed, signed out: wifi « Pas connecté » + Se connecter
+    SigningIn,      // the sign-in console is open: wifi « Connexion… » in the accent + Annuler (neutral)
+    Ready,          // ✓ « Prêt · version 2.1 » in the accent, no button
+    InstallFailed,  // ☹ « Échec de l'installation » (danger) + Réessayer (neutral) + « Installer moi-même ↗ »
+    SignInFailed,   // ☹ « Échec de la connexion » (danger) + Réessayer (neutral)
 };
-struct ChatAgent { ChatState state = ChatState::Unknown; std::wstring version; };   // version: as the CLI said it (« 2.1.325 »)
+struct ChatAgent {
+    ChatState state = ChatState::Unknown;
+    std::wstring version;       // as the CLI said it (« 2.1.325 »)
+    bool desktopOnly = false;   // NotInstalled because only the Claude app is there: the row says why
+    bool cancellable = false;   // SigningIn and the host can stop it (AgentStatus::CancelSignIn): « Annuler » enabled
+};
 struct ChatAgents {
     ChatAgent claude, codex;
     ChatAgent& operator[](ChatApp a) { return a == ChatApp::ClaudeCode ? claude : codex; }
     const ChatAgent& operator[](ChatApp a) const { return a == ChatApp::ClaudeCode ? claude : codex; }
 };
 
-// The row's trailing control. None: the « ✓ Prêt » mark (Ready) or nothing (Unknown). While an install or a sign-in
-// runs, its button stays where it is (same label) and is disabled, like the drawer's other running actions.
-enum class ChatAction { None, Install, SignIn, Retry };
+// The row's button (Designer, « Ton agent » V1): ONE strong button per row, on the missing action, in the profile
+// accent (Installer, Mettre à jour, Se connecter: their click is the consent); Annuler and Réessayer are neutral; no
+// button while an install runs, when ready, or while detecting. ManualInstall is the error row's link, not a button.
+enum class ChatAction { None, Install, Update, SignIn, Cancel, Retry, ManualInstall };
 inline ChatAction ChatActionFor(const ChatAgent& a) {
     switch (a.state) {
-    case ChatState::NotInstalled: case ChatState::TooOld: case ChatState::Installing: return ChatAction::Install;   // TooOld: as A and the chat (no board)
-    case ChatState::NeedsSignIn: case ChatState::SigningIn: return ChatAction::SignIn;
+    case ChatState::NotInstalled: return ChatAction::Install;
+    case ChatState::TooOld: return ChatAction::Update;
+    case ChatState::NeedsSignIn: return ChatAction::SignIn;
+    case ChatState::SigningIn: return ChatAction::Cancel;
     case ChatState::InstallFailed: case ChatState::SignInFailed: return ChatAction::Retry;
     default: return ChatAction::None;
     }
 }
-inline bool ChatActionEnabled(const ChatAgent& a) { return a.state != ChatState::Installing && a.state != ChatState::SigningIn && ChatActionFor(a) != ChatAction::None; }
-// The buttons that install (Installer, Réessayer after a failed install) are the board's strong cyan
-// button: their click IS the consent (AgentStatus::UserClicked). Se connecter / Réessayer a sign-in: the neutral one.
-inline bool ChatActionStrong(const ChatAgent& a) {
-    const auto x = ChatActionFor(a);
-    return x == ChatAction::Install || (x == ChatAction::Retry && a.state == ChatState::InstallFailed);
-}
+inline bool ChatActionEnabled(const ChatAgent& a) { const auto x = ChatActionFor(a); return x != ChatAction::None && (x != ChatAction::Cancel || a.cancellable); }
+inline bool ChatActionStrong(const ChatAgent& a) { const auto x = ChatActionFor(a); return x == ChatAction::Install || x == ChatAction::Update || x == ChatAction::SignIn; }
 inline const wchar_t* ChatActionLabel(ChatAction x) {
     switch (x) {
-    case ChatAction::Install: return TR(agents_action_install);
-    case ChatAction::SignIn: return TR(agents_action_sign_in); case ChatAction::Retry: return TR(agents_action_retry); default: return L"";
+    case ChatAction::Install: return TR(agents_action_install); case ChatAction::Update: return TR(agents_action_update);
+    case ChatAction::SignIn: return TR(agents_action_sign_in); case ChatAction::Cancel: return TR(agents_action_cancel);
+    case ChatAction::Retry: return TR(agents_action_retry); case ChatAction::ManualInstall: return TR(agents_manual_install);
+    default: return L"";
     }
 }
-// The 6 DIP dot before the status (Paper): grey « Pas installé », amber « Installé · pas connecté », danger on a failure;
-// none before « Vérification… », « Installation… » or a version.
-enum class ChatDot { None, Idle, Pending, Danger };
-inline ChatDot ChatDotFor(const ChatAgent& a) {
+// The state under the name (the V1 tiles' icons, Phosphor Bold): ⤓ download, wifi, ✓ check, ☹ smiley-x-eyes.
+enum class ChatIcon { None, Download, Wifi, Check, Error };
+inline ChatIcon ChatIconFor(const ChatAgent& a) {
     switch (a.state) {
-    case ChatState::NotInstalled: case ChatState::TooOld: return ChatDot::Idle;
-    case ChatState::NeedsSignIn: case ChatState::SigningIn: return ChatDot::Pending;
-    case ChatState::InstallFailed: case ChatState::SignInFailed: return ChatDot::Danger;
-    default: return ChatDot::None;
+    case ChatState::NotInstalled: case ChatState::TooOld: case ChatState::Installing: return ChatIcon::Download;
+    case ChatState::NeedsSignIn: case ChatState::SigningIn: return ChatIcon::Wifi;
+    case ChatState::Ready: return ChatIcon::Check;
+    case ChatState::InstallFailed: case ChatState::SignInFailed: return ChatIcon::Error;
+    default: return ChatIcon::None;
     }
 }
-// « 2.1.325 » → « 2.1 » (Paper « Version 2.1 »): major.minor, what a person recognises.
+// Installing: the download icon moves with the Downloads button's own morph (reduced motion: still).
+inline bool ChatIconAnimated(const ChatAgent& a) { return a.state == ChatState::Installing; }
+// Its ink: what is under way or done in the profile accent, a failure in danger, the rest #A6A6A6.
+enum class ChatTone { Muted, Accent, Danger };
+inline ChatTone ChatToneFor(const ChatAgent& a) {
+    switch (a.state) {
+    case ChatState::Installing: case ChatState::SigningIn: case ChatState::Ready: return ChatTone::Accent;
+    case ChatState::InstallFailed: case ChatState::SignInFailed: return ChatTone::Danger;
+    default: return ChatTone::Muted;
+    }
+}
+// « 2.1.325 » → « 2.1 »: major.minor, what a person recognises.
 inline std::wstring ShortVersion(const std::wstring& v) {
     const auto first = v.find(L'.'); if (first == std::wstring::npos) return v;
     const auto second = v.find(L'.', first + 1); return second == std::wstring::npos ? v : v.substr(0, second);
 }
-// The status line under the agent's name.
+// The state's words.
 inline std::wstring ChatStatusText(const ChatAgent& a) {
     switch (a.state) {
     case ChatState::NotInstalled: return TR(agents_status_not_installed);
-    case ChatState::TooOld: return a.version.empty() ? std::wstring(TR(agents_status_too_old_bare)) : TRF(agents_status_too_old, ShortVersion(a.version));
+    case ChatState::TooOld: return TR(agents_status_too_old);
     case ChatState::Installing: return TR(agents_status_installing);
     case ChatState::NeedsSignIn: return TR(agents_status_signed_out);
     case ChatState::SigningIn: return TR(agents_status_signing_in);
-    case ChatState::Ready: return a.version.empty() ? std::wstring(TR(agents_status_installed)) : TRF(agents_status_version, ShortVersion(a.version));
+    case ChatState::Ready: return a.version.empty() ? std::wstring(TR(agents_ready)) : TRF(agents_status_ready_version, ShortVersion(a.version));
     case ChatState::InstallFailed: return TR(agents_status_install_failed);
     case ChatState::SignInFailed: return TR(agents_status_sign_in_failed);
     default: return TR(agents_status_checking);
     }
 }
-inline bool ChatStatusIsError(const ChatAgent& a) { return a.state == ChatState::InstallFailed || a.state == ChatState::SignInFailed; }
-inline bool ChatReadyMark(const ChatAgent& a) { return a.state == ChatState::Ready; }
+// Under the state (13 px #8C8C8C): only when the Claude app alone is installed — its Claude Code is not the chat's.
+inline std::wstring ChatNote(const ChatAgent& a) { return a.state == ChatState::NotInstalled && a.desktopOnly ? std::wstring(TR(agents_status_desktop_only)) : std::wstring(); }
+// The failed install's way out: « Installer moi-même ↗ » (the official page), under the state.
+inline bool ChatManualLink(const ChatAgent& a) { return a.state == ChatState::InstallFailed; }
+inline bool ChatStatusIsError(const ChatAgent& a) { return ChatToneFor(a) == ChatTone::Danger; }
 inline bool ChatKnown(const ChatAgents& agents) { return agents.claude.state != ChatState::Unknown && agents.codex.state != ChatState::Unknown; }
 // The root row's summary: the ready agents (« Claude Code », « Claude Code, Codex »), « Aucun agent prêt » once both are
 // known, nothing while the first detection runs.
@@ -110,11 +129,20 @@ inline bool BandReminder(const ChatAgents& agents, bool chatOpen) {
     for (int i = 0; i < ChatAppCount; ++i) if (agents[ChatAppAt(i)].state == ChatState::Ready) return false;
     return ChatKnown(agents);
 }
-// Paper « Réglages › Agents » (and the chat's block, same row): the exact colours.
+// Paper « Réglages › Agents » and Designer's answer (2026-11-24): the exact colours. The accent is the profile's
+// (Design::Accent, read per paint).
 namespace ChatInk {
-inline constexpr unsigned name = 0xFFFFFF, status = 0xA6A6A6, dotIdle = 0x8C8C8C, dotPending = 0xE6AC3D, danger = 0xFF7B6E;
-inline constexpr unsigned ready = 0x2FD1D9, strong = 0x0099A0, neutral = 0x2A2A2A, tile = 0x262626;
+inline constexpr unsigned name = 0xFFFFFF, status = 0xA6A6A6, note = 0x8C8C8C, danger = 0xFF7B6E, link = 0xE6E6E6;
+inline constexpr unsigned neutral = 0x2A2A2A, tile = 0x262626;
 inline constexpr float nameAlpha = .70f, noteAlpha = .50f;   // #FFFFFFB3, #FFFFFF80
+}
+// The state icons (Phosphor Bold 2.1.1, 256 units; the V1 tiles draw the same paths in a 112 box).
+namespace ChatGlyphs {
+inline constexpr const char* download = "M228,144v64a12,12,0,0,1-12,12H40a12,12,0,0,1-12-12V144a12,12,0,0,1,24,0v52H204V144a12,12,0,0,1,24,0Zm-108.49,8.49a12,12,0,0,0,17,0l40-40a12,12,0,0,0-17-17L140,115V32a12,12,0,0,0-24,0v83L96.49,95.51a12,12,0,0,0-17,17Z";
+inline constexpr const char* wifi = "M144,204a16,16,0,1,1-16-16A16,16,0,0,1,144,204ZM239.61,83.91a176,176,0,0,0-223.22,0,12,12,0,1,0,15.23,18.55,152,152,0,0,1,192.76,0,12,12,0,1,0,15.23-18.55Zm-32.16,35.73a128,128,0,0,0-158.9,0,12,12,0,0,0,14.9,18.81,104,104,0,0,1,129.1,0,12,12,0,0,0,14.9-18.81ZM175.07,155.3a80.05,80.05,0,0,0-94.14,0,12,12,0,0,0,14.14,19.4,56,56,0,0,1,65.86,0,12,12,0,1,0,14.14-19.4Z";
+inline constexpr const char* error = "M128,20A108,108,0,1,0,236,128,108.12,108.12,0,0,0,128,20Zm0,192a84,84,0,1,1,84-84A84.09,84.09,0,0,1,128,212Zm56.49-92.49a12,12,0,0,1-17,17L162,131l-5.51,5.52a12,12,0,0,1-17-17L145,114l-5.52-5.51a12,12,0,0,1,17-17L162,97l5.51-5.52a12,12,0,0,1,17,17L179,114Zm-68,17a12,12,0,0,1-17,0L94,131l-5.51,5.52a12,12,0,0,1-17-17L77,114l-5.52-5.51a12,12,0,0,1,17-17L94,97l5.51-5.52a12,12,0,0,1,17,17L111,114l5.52,5.51A12,12,0,0,1,116.49,136.49ZM144,180a16,16,0,1,1-16-16A16,16,0,0,1,144,180Z";
+inline constexpr const char* check = "M232.49,80.49l-128,128a12,12,0,0,1-17,0l-56-56a12,12,0,1,1,17-17L96,183,215.51,63.51a12,12,0,0,1,17,17Z";
+inline const char* For(ChatIcon icon) { return icon == ChatIcon::Download ? download : icon == ChatIcon::Wifi ? wifi : icon == ChatIcon::Check ? check : icon == ChatIcon::Error ? error : nullptr; }
 }
 
 // « Effacer toutes les annotations… »: an irreversible mass action. The confirmation names the count.

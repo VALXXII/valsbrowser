@@ -112,9 +112,13 @@ check(bool(re.search(r'#ifndef BROWSER_TON_AGENT_SCREEN\s*\n(//[^\n]*\n)*void Op
 
 # ---- 4. Settings: the click is the consent, the switch is gone -----------------------------------------------------
 act = body(mode, 'void ChatAgentAct(AnnotationSettings::ChatApp app, AnnotationSettings::ChatAction action) {')
-check('AgentStatus::Install(AgentStatus::UserClicked(agent))' in act and 'AgentStatus::Retry(AgentStatus::UserClicked(agent))' in act, 'Réglages › Agents: Install / Retry take their consent in ChatAgentAct (from the row\'s click)')
+check('AgentStatus::Install(AgentStatus::UserClicked(agent))' in act and 'AgentStatus::Retry(AgentStatus::UserClicked(agent))' in act, 'Réglages › Agents: Install / Update / Retry take their consent in ChatAgentAct (from the row\'s click)')
 users = [m.start() for m in re.finditer(r'AgentStatus::UserClicked\(', mode)]
-check(len(users) == 2 and all(act and mode.find(act) <= u <= mode.find(act) + len(act) for u in users), 'annotation-mode.h makes no consent anywhere else')
+check(len(users) >= 2 and all(act and mode.find(act) <= u <= mode.find(act) + len(act) for u in users), 'annotation-mode.h makes no consent anywhere else')
+check(bool(re.search(r'case AS::ChatAction::Cancel:\s*\n#ifdef AGENT_STATUS_CANCEL_SIGN_IN[^\n]*\n\s*started = AgentStatus::CancelSignIn\(agent\);\s*\n#endif', act.replace('\r\n', '\n'))),
+      '« Annuler » stops the sign-in through worker A\'s AgentStatus::CancelSignIn (when it exists)')
+view = read('chat-agents-view.h').replace('\r\n', '\n')
+check(bool(re.search(r'#ifdef AGENT_STATUS_CANCEL_SIGN_IN[^\n]*\n\s*a\.cancellable = true;\s*\n#endif', view)), 'without that API « Annuler » is shown dimmed (cancellable only with AGENT_STATUS_CANCEL_SIGN_IN)')
 activate_panel = body(panel, 'void Activate(int hit, bool keyboard) {')
 check('ChatAgentAction(' in activate_panel and 'hooks_.openExternalAgents()' in activate_panel, 'the drawer acts only from Activate (a click, Entrée, Espace, UIA Invoke)')
 check('AnnotationPrompt' not in panel and 'settings_connect_prompt' not in panel, 'Réglages: no « Proposer de connecter un agent » switch')

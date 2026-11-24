@@ -1517,10 +1517,22 @@ void ChatAgentAct(AnnotationSettings::ChatApp app, AnnotationSettings::ChatActio
     switch (action) {
     case AS::ChatAction::Install: started = AgentStatus::Install(AgentStatus::UserClicked(agent)); break;
     case AS::ChatAction::Retry: started = AgentStatus::Retry(AgentStatus::UserClicked(agent)); break;
+    case AS::ChatAction::Update: started = AgentStatus::Install(AgentStatus::UserClicked(agent)); break;   // TooOld: installing again updates it
     case AS::ChatAction::SignIn: started = AgentStatus::SignIn(agent); break;
+    case AS::ChatAction::Cancel:
+#ifdef AGENT_STATUS_CANCEL_SIGN_IN   // worker A: closes the sign-in console, back to « Pas connecté »
+        started = AgentStatus::CancelSignIn(agent);
+#endif
+        break;
+    case AS::ChatAction::ManualInstall: {   // « Installer moi-même ↗ »: the official page (its command to paste is there)
+        const auto manual = AgentStatus::ManualInstall(agent);
+        started = manual.url && reinterpret_cast<INT_PTR>(ShellExecuteW(window, L"open", manual.url, nullptr, nullptr, SW_SHOWNORMAL)) > 32;
+        break;
+    }
     default: return;
     }
-    Log(std::wstring(L"AGENTS settings ") + (action == AS::ChatAction::Install ? L"install" : action == AS::ChatAction::Retry ? L"retry" : L"sign-in") + L" " + AS::ChatAppName(app) + (started ? L": started" : L": refused (busy or not applicable)"));
+    static constexpr const wchar_t* names[] = {L"none", L"install", L"update", L"sign-in", L"cancel sign-in", L"retry", L"manual install page"};   // i18n-exempt: log words (AGENTS settings …)
+    Log(std::wstring(L"AGENTS settings ") + names[static_cast<int>(action)] + L" " + AS::ChatAppName(app) + (started ? L": started" : L": refused (busy, not applicable or not available)"));
 }
 void AnnotationOpenFolder() {
     const std::wstring root = Ann::Store().Root();
