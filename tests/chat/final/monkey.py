@@ -150,7 +150,11 @@ class Monkey:
     def toggle_layout(self, a):
         to = 'panel' if self.inv.m.layout == 'comment' else 'comment'
         if to == 'panel':   # the panel continues the conversation of the bubble that was open (its title is that element)
-            self.panel_conv = self.inv.m.open
+            # … when something was SENT from that bubble. A bubble with nothing sent leaves no conversation tied to its element
+            # (M6 / F5, ForgetUnsent: « nothing was sent from that bubble: its conversation is no longer tied to the element »):
+            # what the panel sends next is the panel's. Monkey seed 2 on ae51111 (#229 … #277): the model gave h2.section-title
+            # the panel's message (jt2x9), its bubble rightly opened a new conversation — 6 false « right conversation ».
+            self.panel_conv = self.inv.m.open if self.inv.m.conv.get(self.inv.m.open) else None
         self.inv.allow_close = True; F.set_layout(to); self.inv.m.layout = to; self.inv.m.open = None; self.inv.m.unknown = False
         return f'layout -> {to}', 0.4
 
@@ -166,7 +170,9 @@ class Monkey:
                 if vis:
                     sel = vis[int(a['r'][1] * len(vis))]; p = F.element_point(sel)
                     m = F.log_mark(); t = F.click_at(*p, settle=0.04)
-                    self.inv.after_element_click(sel, t, f'#{a["i"]} other application in front, click {sel}', mark=m)
+                    # point=p: monkey seed 2 on ae51111 (#261, O3 « click without a bubble »: the click reached the browser, the
+                    # page posted nothing) — the failure now records the window under the click, as the other clicks do
+                    self.inv.after_element_click(sel, t, f'#{a["i"]} other application in front, click {sel}', mark=m, point=p)
                     return f'other application, then a click on {sel}', 0.3
         F.front(); time.sleep(0.5); self.inv.m.hidden_by_other = False
         return 'other application, then back', 0.4

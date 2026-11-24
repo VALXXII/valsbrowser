@@ -912,8 +912,12 @@ class Invariants:
             if n > 1:
                 self.r.step(f'{where} · invariant: one « conversation of an element reopened » per click', False, n, {'action': where})
         self.m.open = sel; self.m.hidden_by_other = False; self.close_at = log_mark(); self.m.unknown = False
-        if ms is None:   # no bubble came (reported above): nothing open, no anchor — no cascade of follow-up failures
-            self.m.open = None; self.m.anchor = None; return
+        if ms is None:   # no bubble came (reported above, once): no anchor — no cascade of follow-up failures
+            # the bubble of BEFORE may rightly still be on screen when the click never opened anything (monkey seed 2 on ae51111:
+            # #102, the click was taken by another browser's window; #261, O3): a bubble the model cannot place — it said
+            # « closed -> no window » at each of the 6 next actions, twice
+            still, _ = bubble_shown()
+            self.m.open = None; self.m.anchor = None; self.m.unknown = bool(still); return
         el = element_screen(sel)
         if sel in EMBEDDED_BOX:   # the block clicked inside the iframe / the shadow root is the element (its host is only the anchor)
             r = page(EMBEDDED_BOX[sel]); pg0 = page_area(); kk = dpr()
