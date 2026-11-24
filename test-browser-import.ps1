@@ -22,3 +22,18 @@ if ($LASTEXITCODE -ne 0) { throw 'Import settings tests failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Import dialog render test compilation failed.' }
 & "$out/import_dialog_render_test.exe" $PSScriptRoot (Join-Path (Resolve-Path $out).Path 'import-render')
 if ($LASTEXITCODE -ne 0) { throw 'Import dialog render test failed (a blank or missing render).' }
+# Bookmark drag rules (pure) and « Placer le contenu dans la barre de favoris » through the real save / reload / undo.
+& $Compiler -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers -static tests/bookmark_drag_test.cpp -o "$out/bookmark_drag_test.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Bookmark drag test compilation failed.' }
+& "$out/bookmark_drag_test.exe"; if ($LASTEXITCODE -ne 0) { throw 'Bookmark drag tests failed.' }
+& $Compiler -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers -static -municode -Isrc tests/browser-import/bookmark_promote_test.cpp -o "$out/bookmark_promote_test.exe" -lshell32 -lole32 -ladvapi32
+if ($LASTEXITCODE -ne 0) { throw 'Bookmark promote test compilation failed.' }
+& "$out/bookmark_promote_test.exe" (Resolve-Path $out).Path; if ($LASTEXITCODE -ne 0) { throw 'Bookmark promote tests failed.' }
+# One drop as one transaction (src/bookmark-move.h): other windows, remaps, a refused write, saved undo.
+& $Compiler -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers -static -municode -Isrc tests/browser-import/bookmark_move_test.cpp -o "$out/bookmark_move_test.exe" -lshell32 -lole32 -ladvapi32
+if ($LASTEXITCODE -ne 0) { throw 'Bookmark move test compilation failed.' }
+& "$out/bookmark_move_test.exe" (Resolve-Path $out).Path; if ($LASTEXITCODE -ne 0) { throw 'Bookmark move tests failed.' }
+# Detected browsers with their logos (src/browser-catalog.h): synthetic registrations and roots; logos read as data.
+& $Compiler -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers -static -municode -Isrc tests/browser-import/browser_catalog_test.cpp -o "$out/browser_catalog_test.exe" -lshell32 -lole32 -ladvapi32 -lgdi32 -luser32
+if ($LASTEXITCODE -ne 0) { throw 'Browser catalog test compilation failed.' }
+& "$out/browser_catalog_test.exe" (Resolve-Path $out).Path; if ($LASTEXITCODE -ne 0) { throw 'Browser catalog tests failed.' }

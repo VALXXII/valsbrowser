@@ -2,7 +2,8 @@
 // browser-annotations-mcp.exe). The including file defines VI_DESCRIPTION, VI_INTERNAL and
 // VI_ORIGINAL first. Windows shows these strings in the file's Properties and in Task Manager,
 // and antivirus heuristics distrust unsigned executables whose metadata is empty.
-// tests/update-integration/run_all.py (check_app) requires every field below.
+// tests/update-integration/run_all.py (check_app) requires every field below. The product name the person sees is
+// "Browser" (capital B); file names (browser.exe, OriginalFilename, InternalName) keep their lowercase.
 #ifndef BROWSER_FILEVERSION
 #define BROWSER_FILEVERSION 0,2,0,0
 #define BROWSER_VERSION_TEXT "0.2.0"
@@ -23,7 +24,7 @@ BEGIN
   BEGIN
    VALUE "CompanyName", VI_PUBLISHER "\0"
    VALUE "FileDescription", VI_DESCRIPTION "\0"
-   VALUE "ProductName", "browser\0"
+   VALUE "ProductName", "Browser\0"
    VALUE "InternalName", VI_INTERNAL "\0"
    VALUE "OriginalFilename", VI_ORIGINAL "\0"
    VALUE "LegalCopyright", "Copyright 2026 " VI_PUBLISHER "\0"

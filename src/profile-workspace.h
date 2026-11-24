@@ -25,7 +25,7 @@ struct WorkspaceStash {
     std::vector<std::shared_ptr<Tab>> pages; int current = -1; std::vector<ClosedTab> closedTabs; bool sessionReady = false;
     std::wstring dataDir, profileDir, sessionFile, downloadsFile, settingsFile, profileId;
     BrowserSettings::State settings, settingsBase;
-    AddressBar::History history, historyBase;
+    AddressBar::History history, historyBase; ProfileStore::Stamp historySeen, bookmarksSeen;
     std::map<std::wstring, std::shared_ptr<const NativeChrome::FaviconImage>> siteIcons; std::set<std::wstring> siteIconsMissing; std::map<std::wstring, size_t> siteIconsWritten;
     std::vector<DL::Item> downloads, downloadsBase; bool downloadFolderOnProfile = false;
     std::vector<std::shared_ptr<PendingDownload>> pendingDownloads;
@@ -63,7 +63,7 @@ void Exchange(Workspace& w) {
     std::swap(pages, s.pages); std::swap(current, s.current); std::swap(closedTabs, s.closedTabs); std::swap(sessionReady, s.sessionReady);
     std::swap(dataDir, s.dataDir); std::swap(profileDir, s.profileDir); std::swap(sessionFile, s.sessionFile); std::swap(downloadsFile, s.downloadsFile); std::swap(settingsFile, s.settingsFile); std::swap(profileId, s.profileId);
     std::swap(settings, s.settings); std::swap(settingsBase, s.settingsBase);
-    std::swap(history, s.history); std::swap(historyBase, s.historyBase);
+    std::swap(history, s.history); std::swap(historyBase, s.historyBase); std::swap(historySeen, s.historySeen); std::swap(bookmarksSeen, s.bookmarksSeen);
     std::swap(siteIcons, s.siteIcons); std::swap(siteIconsMissing, s.siteIconsMissing); std::swap(siteIconsWritten, s.siteIconsWritten);
     std::swap(downloads, s.downloads); std::swap(downloadsBase, s.downloadsBase); std::swap(downloadFolderOnProfile, s.downloadFolderOnProfile);
     std::swap(pendingDownloads, s.pendingDownloads);
@@ -275,6 +275,7 @@ bool SwitchWorkspace(const std::wstring& id) {
     BringToGlobals(activeWorkspace); ++workspaceSwitches;
     // Leave: the on-screen state is saved and hidden; page-scoped surfaces close.
     CancelTabDrag(); CloseFindBar(false); CloseDownloadSurfaces(false); settingsDrawer.Hide(false, false); historyDrawer.Hide(false, false); bookmarksDrawer.Hide(false, false);
+    CloseVaultSurfaces();   // review N-2: the password list and the Edge deletion dialog belong to the profile that leaves
     editing = false; ShowWindow(address, SW_HIDE); hover = pressed = keyboardFocus = 0;
     BeginContentTransition(ContentTransition::Kind::Profile);   // snapshot of the outgoing profile's page, before it is hidden
     SaveSession(); PublishProfileWindow(true); HidePages();   // the profile left on screen stays this window's, cached

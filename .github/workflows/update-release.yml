@@ -8,8 +8,10 @@
 #
 # Activation prerequisites (done by the repository owner, not by this file):
 #   1. Public repo VALXXII/browser-releases exists with at least one commit on main.
-#   2. Secret UPDATES_RELEASE_TOKEN in VALXXII/browser: fine-grained PAT with
-#      "Contents: Read and write" on VALXXII/browser-releases ONLY.
+#   2. Secret UPDATES_RELEASE_TOKEN in the "release" environment of VALXXII/browser (Settings >
+#      Environments > release: deployment branches = "Selected branches" with main only, no required
+#      reviewer), NOT as a repository secret: fine-grained PAT with "Contents: Read and write" on
+#      VALXXII/browser-releases ONLY, with an expiry date.
 #   3. Repository variable UPDATES_PUBLISH_ENABLED = true (publishing is off otherwise;
 #      build + tests + packaging still run and upload a workflow artifact).
 #   4. This file is on the remote main branch. Local merges that are not pushed never
@@ -19,6 +21,11 @@ name: update-release
 on:
   push:
     branches: [main]
+    # The download page (hosted on Vercel from web/landing) and its tests never ship in the app:
+    # a push that only touches them publishes no new browser version.
+    paths-ignore:
+      - 'web/**'
+      - 'tests/landing/**'
   workflow_dispatch:
 
 # Least privilege: the default GITHUB_TOKEN can only read this repository.
@@ -28,6 +35,9 @@ permissions:
 jobs:
   build:
     name: Build, test, package (windows x64)
+    # Only in the source repository: the public copy of the code (VALXXII/valsbrowser) carries this file but
+    # builds and publishes nothing.
+    if: github.repository == 'VALXXII/browser'
     runs-on: windows-2022
     timeout-minutes: 60
     # A newer push to main supersedes an older build still in progress.
@@ -77,7 +87,7 @@ jobs:
           name: browser-${{ steps.identity.outputs.version }}-win-x64
           path: build/release/dist/
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 7
 
   publish:
     name: Publish to VALXXII/browser-releases
@@ -85,6 +95,11 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.repository == 'VALXXII/browser' && vars.UPDATES_PUBLISH_ENABLED == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # The release token lives in the "release" environment, restricted to the main branch (no reviewer:
+    # every merge to main still publishes on its own). A workflow pushed on any other branch cannot read it.
+    environment:
+      name: release
+      url: https://github.com/VALXXII/browser-releases/releases
     # Publications are serialized and never cancelled half-way; publish.py also refuses
     # to publish a version older than the newest one already in the feed.
     concurrency:
@@ -106,6 +121,8 @@ jobs:
           path: dist
 
       - name: Publish immutable release and latest manifest
+        # The token is given to this step only; job outputs reach the shell as variables, never as script text.
         env:
           GH_TOKEN: ${{ secrets.UPDATES_RELEASE_TOKEN }}
-        run: python3 tools/release/publish.py --repo VALXXII/browser-releases --dist dist --source-commit "${{ needs.build.outputs.commit }}"
+          SOURCE_COMMIT: ${{ needs.build.outputs.commit }}
+        run: python3 tools/release/publish.py --repo VALXXII/browser-releases --dist dist --source-commit "$SOURCE_COMMIT"

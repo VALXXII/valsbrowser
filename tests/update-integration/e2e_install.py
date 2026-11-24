@@ -26,6 +26,7 @@ drawer) is checked for preservation (installed) and exact one-time migration (po
 from __future__ import annotations
 import hashlib, json, os, shutil, subprocess, sys, time
 from pathlib import Path
+os.environ.setdefault('BROWSER_NO_ONBOARDING', '1')   # fresh installed layout: not the first-run window (src/onboarding-flow.h)
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
@@ -90,7 +91,8 @@ def build_fixtures(work: Path) -> dict:
     sh([GXX, *FLAGS, '-mconsole', f'-I{gen}', '-DBROWSER_HAS_BUILD_INFO', '-DTVG_STATIC', '-Ideps/thorvg-1.1.3/inc',
         f'-I{B.SDK / "include"}', 'tests/update-integration/host_e2e.cpp', 'src/native-lottie.cpp', *CORE,
         'src/update-toast.cpp', 'src/annotations.cpp', 'src/agent-connect.cpp',   # stamped dev identity: main.cpp compiles the annotation mode in
-        B.THORVG, '-o', host, *B.BROWSER_LIBS])
+        *B.CHAT_SOURCES,   # … and the chat that lives inside it (src/chat-host.h)
+        B.THORVG, '-o', host, *B.BROWSER_LIBS, *B.CHAT_LIBS])
     helper = work / 'update-helper.exe'
     sh([GXX, *FLAGS, '-mwindows', *B.HELPER_SOURCES, '-o', helper, *B.HELPER_LIBS])
     fake = work / 'fake-browser.exe'

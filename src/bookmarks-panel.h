@@ -24,6 +24,7 @@
 #include "history.h"
 #include "bookmarks.h"
 #include "accessibility.h"
+#include "bookmark-drag.h"
 
 namespace NativeChrome {
 namespace BookmarksUI {
@@ -61,6 +62,9 @@ public:
         // colours its EDIT (0: not ours) and follows the row after every paint (scroll, rebuild, resize).
         std::function<LRESULT(HDC, HWND)> editColor;
         std::function<void()> relayout;
+        // Drag a row (src/bookmark-drag.h): past the system threshold the drawer releases its capture and hands the
+        // bookmark to the owner's drag controller (the button is still down). Absent: rows are not draggable.
+        std::function<void(Bookmarks::Id, POINT)> dragStart;
     };
 private:
     HWND hwnd_ = nullptr, owner_ = nullptr;
@@ -69,8 +73,10 @@ private:
     std::vector<Row> rows_; std::set<Bookmarks::Id> open_{Bookmarks::BarRoot, Bookmarks::OtherRoot};
     std::wstring query_; Lane slide_, scroll_;
     int hover_ = 0, pressed_ = 0, focus_ = 0; bool keyboard_ = false, visible_ = false, closing_ = false, tracking_ = false;
-    int appliedVisible_ = -1; RECT appliedOwner_{};
+    int appliedVisible_ = -1, appliedEntered_ = -1, lead_ = 0; RECT appliedOwner_{};   // lead_: slide offset (window px), see ApplyGeometry
     Bookmarks::Id renaming_ = 0;   // its title is drawn by the owner's in-place editor
+    POINT pressAt_{};              // screen point of the left press (row drag threshold)
+    int dropRow_ = -1; BookmarkDrag::Mark dropMark_ = BookmarkDrag::Mark::None;   // drop feedback while the owner drags over the drawer
     float Dpi() const { return static_cast<float>(GetDpiForWindow(hwnd_ ? hwnd_ : owner_)); }
     int Px(float dip) const { return static_cast<int>(std::lround(dip * Dpi() / 96.f)); }
     int OwnerPx(float dip) const { return static_cast<int>(std::lround(dip * GetDpiForWindow(owner_) / 96.f)); }
@@ -134,6 +140,7 @@ private:
     D2D1_RECT_F Caret(float top) const { auto b = Panel::ActionBox(top, 1); return {b.left, b.top, b.right, b.bottom}; }
     int Actions(const Row& r) const { return r.folder ? (r.level == 0 ? 0 : 1) : 2; }
     int Hit(float x, float y) const {
+        x -= LeadDip();   // window DIP -> content DIP while it slides
         auto in = [&](Design::Box b) { return x >= b.left && x < b.right && y >= b.top && y < b.bottom; };
         if (in(Panel::Close())) return CloseHit;
         if (!query_.empty() && in(HistoryView::Layout::Clear())) return ClearHit;
@@ -240,7 +247,7 @@ private:
         auto* t = chrome_.RenderTarget(); if (!t || !chrome_.SolidBrush()) return;
         const auto now = Motion::Now(); const float c = Design::Surface::canvas, h = Height(), scroll = scroll_.Value(now);
         const bool focused = GetFocus() == hwnd_;
-        t->BeginDraw(); t->Clear(D2D1::ColorF(c, c, c, 1)); chrome_.keyboardModality = keyboard_;
+        t->BeginDraw(); t->Clear(D2D1::ColorF(c, c, c, 1)); t->SetTransform(D2D1::Matrix3x2F::Translation(LeadDip(), 0)); chrome_.keyboardModality = keyboard_;
         auto R = [](Design::Box b) { return D2D1_RECT_F{b.left, b.top, b.right, b.bottom}; };
         chrome_.Text(TR(bookmarks_title), R(Panel::Title()), Panel::line, Design::Text::muted, false, true, -.16f);
         const auto cv = motion_.Visual(CloseHit, now);
@@ -297,21 +304,41 @@ private:
             }
             if (focused && focus_ == row) chrome_.FocusRing({tile.left - 6, top - 6, Layout::width - Panel::padding + 6, top + Panel::tile + 6}, Design::Radius::control + 6);
         }
+        if (dropRow_ >= 0 && dropRow_ < static_cast<int>(rows_.size())) {   // drop feedback (owner's drag): accent tint into a folder, line before/after
+            const Row& r = rows_[dropRow_]; const float top = RowTop(dropRow_, scroll); const auto tile = Tile(r, top); const auto a = Design::Accent::Get();
+            if (dropMark_ == BookmarkDrag::Mark::Into) chrome_.FillBox({tile.left - 6, top - 6, Layout::width - Panel::padding + 6, top + Panel::tile + 6}, Design::Radius::control + 6, D2D1::ColorF(a.r, a.g, a.b, .18f));
+            else if (dropMark_ != BookmarkDrag::Mark::None) {
+                const bool after = dropMark_ == BookmarkDrag::Mark::After; const float y = after ? top + Panel::pitch - (Panel::pitch - Panel::tile) / 2 : top - (Panel::pitch - Panel::tile) / 2;
+                const float left = r.level == 0 ? Panel::padding + Layout::indent : (after && r.folder && r.open ? tile.left + Layout::indent : tile.left);
+                chrome_.FillBox({left, y - 1, Layout::width - Panel::padding, y + 1}, 1, D2D1::ColorF(a.r, a.g, a.b, 1));
+            }
+        }
         t->PopAxisAlignedClip();
         const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width));
         chrome_.Color(1, DownloadsUI::Popup::border); t->FillRectangle(D2D1::RectF(0, 0, px, h), chrome_.SolidBrush());
+        t->SetTransform(D2D1::Matrix3x2F::Identity()); chrome_.KeyOut(LeadDip());
         if (t->EndDraw() == D2DERR_RECREATE_TARGET) chrome_.RecreateTarget();
     }
-    void ApplyGeometry(Motion::Time now, bool force = false) {
-        if (!hwnd_) return;
+    // The window never moves while sliding (NativeUI::KeyedDrawer): a slide step is one present, the content drawn
+    // `lead_` pixels right of its place and the strip it has not entered keyed out. The region rounds the corner shared
+    // with the owner (empty while nothing has entered). Returns true when it painted.
+    bool ApplyGeometry(Motion::Time now, bool force = false) {
+        if (!hwnd_) return false;
         const RECT owner = OwnerClient(); const int column = OwnerPx(Layout::width), top = owner.top + OwnerPx(Layout::top), height = std::max(1, static_cast<int>(owner.bottom - top));
         const int shown = static_cast<int>(std::lround(column * Motion::Clamp(slide_.Value(now))));
-        if (!force && shown == appliedVisible_ && EqualRect(&owner, &appliedOwner_)) return;
-        appliedVisible_ = shown; appliedOwner_ = owner;
-        SetWindowPos(hwnd_, nullptr, owner.right - shown, top, column, height, SWP_NOACTIVATE | SWP_NOZORDER);
-        const int r = OwnerPx(20);
-        SetWindowRgn(hwnd_, shown > 0 ? (IsZoomed(owner_) ? CreateRectRgn(0, 0, shown, height) : CreateRoundRectRgn(-r * 2, -r * 2, shown + 1, height + 1, r, r)) : CreateRectRgn(0, 0, 0, 0), FALSE);
+        if (!force && shown == appliedVisible_ && EqualRect(&owner, &appliedOwner_)) return false;
+        const bool moved = force || !EqualRect(&owner, &appliedOwner_), slid = shown != appliedVisible_;
+        appliedVisible_ = shown; appliedOwner_ = owner; lead_ = column - shown;
+        if (moved) SetWindowPos(hwnd_, nullptr, owner.right - column, top, column, height, SWP_NOACTIVATE | SWP_NOZORDER);
+        const int entered = shown > 0;
+        if (force || moved || entered != appliedEntered_) { SetWindowRgn(hwnd_, NativeUI::DrawerRegion(entered, column, height, OwnerPx(20), IsZoomed(owner_)), FALSE); appliedEntered_ = entered; }
+        if (force || !slid || shown == 0 || !IsWindowVisible(hwnd_)) return false;
+        Paint(); ValidateRect(hwnd_, nullptr);
+        if (renaming_ && hooks_.relayout) hooks_.relayout();
+        return true;
     }
+    // Slide offset in DIP (content drawn right of its docked place while it enters or leaves).
+    float LeadDip() const { return lead_ * 96.f / std::max(1.f, Dpi()); }
     void Finish() { closing_ = false; visible_ = false; appliedVisible_ = -1; ShowWindow(hwnd_, SW_HIDE); }
     // ---- UI Automation -----------------------------------------------------------------
     static constexpr long long SearchKey = 2, CloseKey = 1, ListKey = 3;
@@ -353,13 +380,23 @@ private:
         case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); Paint(); EndPaint(h, &ps); if (renaming_ && hooks_.relayout) hooks_.relayout(); return 0; }
         case WM_CTLCOLOREDIT: if (hooks_.editColor) { if (const LRESULT brush = hooks_.editColor(reinterpret_cast<HDC>(w), reinterpret_cast<HWND>(l))) return brush; } break;
         case WM_SIZE: chrome_.Resize(); Invalidate(); return 0;
+        // Placed on a monitor at another DPI: WM_SIZE read the old DPI during the move; redraw at the new one.
+        case WM_DPICHANGED: chrome_.Resize(); Invalidate(); return 0;
         case WM_MOUSEACTIVATE: return MA_ACTIVATE;
-        case WM_ACTIVATE: if (LOWORD(w) == WA_INACTIVE && !holding_) { HWND to = reinterpret_cast<HWND>(l); if (!to || GetWindow(to, GW_OWNER) != owner_ || to == owner_) Hide(false, true); } return 0;
+        case WM_ACTIVATE: if (LOWORD(w) == WA_INACTIVE && !holding_ && !stayForTest) { HWND to = reinterpret_cast<HWND>(l); if (!to || GetWindow(to, GW_OWNER) != owner_ || to == owner_) Hide(false, true); } return 0;
         case WM_SETFOCUS: case WM_KILLFOCUS: Invalidate(); return 0;
         case WM_SETCURSOR: if (LOWORD(l) == HTCLIENT) { POINT p; GetCursorPos(&p); ScreenToClient(h, &p); SetCursor(LoadCursor(nullptr, Hit(p.x * s, p.y * s) == SearchHit ? IDC_IBEAM : IDC_ARROW)); return TRUE; } break;
-        case WM_MOUSEMOVE: { if (!tracking_) { TRACKMOUSEEVENT t{sizeof(t), TME_LEAVE, h, 0}; TrackMouseEvent(&t); tracking_ = true; } const int hit = Hit(GET_X_LPARAM(l) * s, GET_Y_LPARAM(l) * s); if (hit != hover_) Interact(hit, pressed_); return 0; }
+        case WM_MOUSEMOVE: {
+            // A pressed row (not its action buttons, not a root label, not while renaming) dragged past the threshold.
+            if ((w & MK_LBUTTON) && hooks_.dragStart && IsRowPart(pressed_) && HitPart(pressed_) == 0 && !renaming_) {
+                const int i = HitIndex(pressed_); POINT p{GET_X_LPARAM(l), GET_Y_LPARAM(l)}; ClientToScreen(h, &p);
+                if (i < static_cast<int>(rows_.size()) && rows_[i].level > 0 && (std::abs(p.x - pressAt_.x) > GetSystemMetrics(SM_CXDRAG) || std::abs(p.y - pressAt_.y) > GetSystemMetrics(SM_CYDRAG))) {
+                    const Bookmarks::Id id = rows_[i].id; if (GetCapture() == h) ReleaseCapture(); Interact(0, 0); hooks_.dragStart(id, p); return 0;
+                }
+            }
+            if (!tracking_) { TRACKMOUSEEVENT t{sizeof(t), TME_LEAVE, h, 0}; TrackMouseEvent(&t); tracking_ = true; } const int hit = Hit(GET_X_LPARAM(l) * s, GET_Y_LPARAM(l) * s); if (hit != hover_) Interact(hit, pressed_); return 0; }
         case WM_MOUSELEAVE: tracking_ = false; Interact(0, 0); return 0;
-        case WM_LBUTTONDOWN: { if (renaming_) SetFocus(h); /* a press elsewhere ends the in-place rename (blur commits) */ keyboard_ = false; const int hit = Hit(GET_X_LPARAM(l) * s, GET_Y_LPARAM(l) * s); if (hit == SearchHit) focus_ = SearchHit; if (hit) { SetCapture(h); Interact(hit, hit); } return 0; }
+        case WM_LBUTTONDOWN: { if (renaming_) SetFocus(h); /* a press elsewhere ends the in-place rename (blur commits) */ keyboard_ = false; pressAt_ = {GET_X_LPARAM(l), GET_Y_LPARAM(l)}; ClientToScreen(h, &pressAt_); const int hit = Hit(GET_X_LPARAM(l) * s, GET_Y_LPARAM(l) * s); if (hit == SearchHit) focus_ = SearchHit; if (hit) { SetCapture(h); Interact(hit, hit); } return 0; }
         case WM_LBUTTONUP: { const int hit = Hit(GET_X_LPARAM(l) * s, GET_Y_LPARAM(l) * s), was = pressed_; if (GetCapture() == h) ReleaseCapture(); Interact(hit, 0); if (was && was == hit) { if (IsRowPart(hit)) focus_ = RowHit(HitIndex(hit)); Activate(hit, false, (w & (MK_CONTROL | MK_SHIFT)) != 0); } return 0; }
         case WM_MBUTTONUP: { const int hit = Hit(GET_X_LPARAM(l) * s, GET_Y_LPARAM(l) * s); if (IsRowPart(hit) && HitPart(hit) == 0 && !rows_[HitIndex(hit)].folder && hooks_.open) hooks_.open(rows_[HitIndex(hit)].url, true); return 0; }
         case WM_RBUTTONDOWN: if (renaming_) SetFocus(h); return 0;
@@ -373,16 +410,23 @@ private:
     }
 public:
     bool holding_ = false; // a menu or the popover opened from the drawer: deactivation keeps it open
+    bool stayForTest = false; // QA only (--qa-drawer-stays, dev builds): an app that is not in the foreground keeps its drawer
     ULONGLONG hiddenAt = 0;
     ~Drawer() { Dispose(); }
-    void Dispose() { uia_.Detach(); chrome_.Dispose(); hwnd_ = nullptr; visible_ = false; }
+    void Dispose() {
+        // The window may outlive this object (a scope's end, the owner destroying it later): its messages
+        // then go to DefWindowProc, never to freed memory.
+        if (hwnd_) SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0);
+        uia_.Detach(); chrome_.Dispose(); hwnd_ = nullptr; visible_ = false;
+    }
     bool Create(HINSTANCE instance, HWND owner, const std::wstring& root, const Bookmarks::Store* store, Hooks hooks) {
         owner_ = owner; store_ = store; hooks_ = std::move(hooks); motion_.EnablePolish(); chrome_.SetMotion(&motion_); chrome_.textCacheLimit = 1024;
         WNDCLASSW wc{}; wc.lpfnWndProc = Proc; wc.hInstance = instance; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = L"LisiereBookmarksDrawer";
         RegisterClassW(&wc);
-        CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, TR(bookmarks_title), WS_POPUP, 0, 0, Px(Layout::width), Px(400), owner, nullptr, instance, this);
+        CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, TR(bookmarks_title), WS_POPUP | WS_CLIPCHILDREN, 0, 0, Px(Layout::width), Px(400), owner, nullptr, instance, this);
         if (!hwnd_) return false;
         NativeUI::ConfigureShadowlessPopup(hwnd_); // DWMWCP_DONOTROUND, no shadow: the region shapes it
+        NativeUI::KeyedDrawer(hwnd_);               // the slide's not-yet-entered strip is keyed out
         Accessibility::Host host; host.window = hwnd_;
         host.nodes = [this] { return Nodes(); };
         host.focused = [this]() -> long long { return GetFocus() == hwnd_ ? Key(IsRowPart(focus_) ? focus_ : focus_) : 0; };
@@ -397,6 +441,7 @@ public:
         return SUCCEEDED(chrome_.Init(hwnd_, root));
     }
     HWND Window() const { return hwnd_; }
+    UINT RenderDpiForTest() const { return chrome_.dpi; }   // the DPI the drawer is drawn at (tests/ui/address_popup_dpi_test.cpp)
     bool Visible() const { return visible_; }
     bool Open() const { return visible_ && !closing_; }
     bool Closing() const { return closing_; }
@@ -450,6 +495,33 @@ public:
     Bookmarks::Id Renaming() const { return renaming_; }
     void Changed() { if (!hwnd_ || !visible_) return; Rebuild(); scroll_.Snap(std::clamp(scroll_.Target(), 0.f, MaxScroll())); Invalidate(); if (uia_.Listening()) uia_.ChildrenChanged(ListKey); }
     // Keeps a row focused (after a move or an edit).
+    // ---- Drop target for the owner's drag controller (src/bookmark-drag.h) ----------------------------------------
+    // The place under `screen` for `dragged`, or invalid (outside the list, a search is active: no tree order there).
+    // Near the list's top/bottom edge it scrolls a step per pointer move (no timer at rest).
+    BookmarkDrag::ListDrop DropAt(POINT screen, Bookmarks::Id dragged) {
+        BookmarkDrag::ListDrop none; if (!hwnd_ || !visible_ || !store_ || !query_.empty()) return none;
+        RECT wr{}; GetWindowRect(hwnd_, &wr); if (!PtInRect(&wr, screen)) return none;
+        POINT p = screen; ScreenToClient(hwnd_, &p); const float k = 96.f / Dpi(), x = p.x * k, y = p.y * k; (void)x;
+        if (y < HistoryView::Layout::viewTop) return none;
+        const auto now = Motion::Now(); const float h = Height();
+        if (y < HistoryView::Layout::viewTop + 24 || y > h - 24) {
+            const float step = y < HistoryView::Layout::viewTop + 24 ? -Panel::pitch / 2 : Panel::pitch / 2;
+            const float to = std::clamp(scroll_.Target() + step, 0.f, MaxScroll()); if (to != scroll_.Target()) { scroll_.Snap(to); Invalidate(); }
+        }
+        const float scroll = scroll_.Value(now);
+        std::vector<BookmarkDrag::Row> rows; rows.reserve(rows_.size());
+        for (const Row& r : rows_) rows.push_back({r.id, r.level, r.folder, r.open});
+        for (int i = 0; i < static_cast<int>(rows_.size()); ++i) {
+            const float top = RowTop(i, scroll) - (Panel::pitch - Panel::tile) / 2;
+            if (y >= top && y < top + Panel::pitch) return BookmarkDrag::ListTarget(*store_, dragged, rows, i, (y - top) / Panel::pitch);
+        }
+        if (!rows_.empty() && y >= RowTop(static_cast<int>(rows_.size()) - 1, scroll)) {   // below the last row: end of the last root shown
+            const Bookmarks::Id root = store_->Find(Bookmarks::OtherRoot)->children.empty() ? Bookmarks::BarRoot : Bookmarks::OtherRoot;
+            BookmarkDrag::ListDrop r; if (BookmarkDrag::Accepts(*store_, dragged, root)) { r.drop = {root, Bookmarks::End, true}; r.row = static_cast<int>(rows_.size()) - 1; r.mark = BookmarkDrag::Mark::After; } return r;
+        }
+        return none;
+    }
+    void SetDropMarker(int row, BookmarkDrag::Mark mark) { if (row == dropRow_ && mark == dropMark_) return; dropRow_ = row; dropMark_ = mark; Invalidate(); }
     void FocusBookmark(Bookmarks::Id id) { for (int i = 0; i < static_cast<int>(rows_.size()); ++i) if (rows_[i].id == id) { keyboard_ = true; SetFocusHit(RowHit(i)); return; } }
     Motion::Wake NextWake(Motion::Time now) const {
         if (!visible_) return {};
@@ -458,9 +530,10 @@ public:
     }
     void Frame(Motion::Time now) {
         if (!visible_) return;
-        ApplyGeometry(now);
+        const bool slid = ApplyGeometry(now);
         if (closing_ && !slide_.Moving(now)) { Finish(); return; }
         if (NextWake(now).delay || painted_) Invalidate();
+        if (slid) ValidateRect(hwnd_, nullptr);   // a slide step: already presented with its region
         painted_ = NextWake(now).delay.has_value();
     }
     bool painted_ = false;

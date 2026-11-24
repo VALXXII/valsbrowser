@@ -67,12 +67,13 @@ struct Session {
     std::wstring draft;                       // kept when the panel is cancelled
     std::uint32_t pageAccent = 0x3E67FF;      // the accent the page script paints (0xRRGGBB): the window's SETTLED accent
     bool accentOwed = false;                  // an accent change waits for the capture under way (ShotDone)
+    bool paused = false;                      // chat intégré (V1.4): selection switched off, the chat panel stays open
 } s;
 std::uint64_t serials = 0;                    // never reset: a new session never matches an old result
 AUI::Banner banner; AUI::NotePopover note; AUI::Launcher launcher; AUI::ConnectModal connect; AUI::SelectionFrame frame; AUI::EntryVeil veil;
 // V3 capture pipeline (src/annotation-frame.h): one shot at a time; it outlives the panel (« Ajouter » / Échap before
 // the image is ready) so the page is only told to resume once the engine has its frame.
-struct ShotJob { std::uint64_t serial = 0; std::int64_t pageSeq = -1; bool waiting = false, inFlight = false; AH::Selection sel; double selectedAt = 0, lag = -1, handoffAt = 0, frameMs = 0, panelMs = 0, hiddenAt = 0; };
+struct ShotJob { std::uint64_t serial = 0; std::int64_t pageSeq = -1; bool waiting = false, inFlight = false, deferred = false; AH::Selection sel; double selectedAt = 0, lag = -1, handoffAt = 0, frameMs = 0, panelMs = 0, hiddenAt = 0; };
 ShotJob shot; bool resumeOwed = false; std::uint64_t frameSerial = 0;
 bool uiReady = false, purged = false, countLoaded = false, laterThisSession = false, connectLaunch = false;
 std::unique_ptr<BA::Store> store; std::mutex writeLock;
@@ -83,7 +84,7 @@ int claimed = 0;                              // launcher counter: annotations a
 bool statusBusy = false, statusDirty = false;
 enum class Card { None, Working, NoAgent, Added, Done, Read, Unhandled } card = Card::None; std::string cardId, cardSite;
 std::wstring loggedOnce;
-HWND post = nullptr; constexpr UINT JobDone = WM_APP + 1, WatchChanged = WM_APP + 2; constexpr UINT_PTR HideTimer = 1, FrameTimer = 2, PanelTimer = 3;
+HWND post = nullptr; constexpr UINT JobDone = WM_APP + 1, WatchChanged = WM_APP + 2, ShotStart = WM_APP + 3; constexpr UINT_PTR HideTimer = 1, FrameTimer = 2, PanelTimer = 3, CtrlTimer = 4;
 // V3: the note panel is built right after the engine is asked for the shot (building it takes 30-55 ms of the UI
 // thread: done before, it delayed the page's « hidden » and so the shot by as much). 60 ms at most after the click.
 struct PendingPanel { bool on = false; std::uint64_t serial = 0; AUI::NoteRequest req; RECT target{}, page{}; bool keyboard = false; } panel;
@@ -102,6 +103,35 @@ std::map<std::string, Cached> thumbs; std::map<std::string, BA::Entry> historyEn
 bool historyBusy = false, historyDirty = false; std::string historyFocus;   // detail to open once loaded (card « Voir l'annotation »)
 
 bool Reduced() { return motion.ReducedMotion(); }
+} // namespace Ann
+// Chat intégré (src/chat-host.h, included at the end of this file): what the mode asks it.
+namespace Chat {
+bool Open();                                             // the panel is open (or opening)
+bool Shown();                                            // … or still sliding out
+bool TakeSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible);   // V1.3: a local site's selection goes to the chat (opened if needed); false: the note panel
+void OnSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible);
+void SelectionChanged();                                 // V1.4: the selection was switched on / off (the aim button's state)
+void OnAnchor(const AnnotationHost::Envelope& e);        // Mode Commentaire: the bubble's element moved (or is gone)
+bool BubbleOpen();                                       // … its bubble is open (review M4: Escape closes it first)
+void CloseBubble(bool focusPage);
+bool CommentHistory(bool open, bool keyboard);           // Mode Commentaire: the launcher's history lists the conversations whose element is gone
+int CommentLauncherCount(bool workingOnly);              // … D3: -1 = not that layout; else how many of them (shown only when > 0)
+bool OpenFromHistory(const std::wstring& id);            // … and opens one of them
+void SwitchLayout(bool comment);                         // the band's switch (Paper 1AYP-0)
+void ScriptReady();                                      // the mode's page script is in the page
+bool OnCaptured(std::uint64_t serial, const AnnotationCapture::Result& r);   // true: the image was for the chat
+bool CommentFirst(const std::shared_ptr<Tab>& t);        // R18: Mode Commentaire — the bubble opens before the shot starts
+bool OpenEarly(const std::shared_ptr<Tab>& t, const AnnotationHost::Envelope& e);   // R18: the click's light « selecting »: the bubble opens now
+bool AskAvailable(const std::shared_ptr<Tab>& t);        // « Demander à l'agent » in the note panel (local sites)
+void AskFromNote(const std::wstring& draft);
+void Toggle(bool keyboard);                              // band button / Ctrl+Maj+D
+void ModeEntered();
+void ModeExited();
+bool KeepsMode(const std::shared_ptr<Tab>& t);           // a navigation of the chat's page keeps the mode (re-armed after)
+void PageNavigating(const std::shared_ptr<Tab>& t);
+void Layout();
+}
+namespace Ann {
 // ---------------------------------------------------------------- settings (src/annotation-entry.h): keys owned by the settings
 // worker, read when they exist (compile-time detection), defaults otherwise.
 namespace Prefs {
@@ -196,6 +226,8 @@ bool ConnectRedirected() { return !EnvVar(L"BROWSER_ANNOTATIONS_CONNECT_ROOT").e
 
 // ---------------------------------------------------------------- thread pool -> UI thread
 struct Job { std::function<void()> work, done; };
+// SEC-26: finished jobs wait here; JobDone carries no pointer (another process could post a forged one).
+std::mutex jobsMutex; std::vector<std::unique_ptr<Job>> jobsDone;
 LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l);
 bool EnsurePost() {
     if (post) return true;
@@ -208,7 +240,9 @@ VOID CALLBACK RunJob(PTP_CALLBACK_INSTANCE, PVOID p) {
     auto* j = static_cast<Job*>(p);
     try { MigrateOnce(); } catch (...) {}   // every job waits for the one-time merge of the old per-profile stores
     try { if (j->work) j->work(); } catch (...) {}
-    if (!post || !PostMessageW(post, JobDone, 0, reinterpret_cast<LPARAM>(j))) delete j;
+    if (!post) { delete j; return; }
+    { std::lock_guard<std::mutex> lock(jobsMutex); jobsDone.emplace_back(j); }
+    PostMessageW(post, JobDone, 0, 0);
 }
 void Run(std::function<void()> work, std::function<void()> done) {
     Store();
@@ -228,13 +262,14 @@ bool Available(const std::shared_ptr<Tab>& t, std::wstring* why) {
     if (InFullscreen() || PageFullscreenActive()) return no(TR(annotate_no_fullscreen));
     return true;
 }
+bool Selecting() { return s.active && !s.paused; }   // the mode as the user sees it: band, toolbar button, « viseur »
 void SyncChrome() {
-    chrome.annotateShown = true; chrome.annotateActive = s.active;
+    chrome.annotateShown = true; chrome.annotateActive = Selecting();
     std::wstring why; const bool ok = Available(Active(), &why);
     chrome.SetEnabled('N', ok || s.active);
-    chrome.annotateTip = s.active ? std::wstring(TR(annotate_tip_quit)) : ok ? std::wstring(TR(chrome_tip_annotate)) : TRF(annotate_tip_unavailable, why);
+    chrome.annotateTip = Selecting() ? std::wstring(TR(annotate_tip_quit)) : ok ? std::wstring(TR(chrome_tip_annotate)) : TRF(annotate_tip_unavailable, why);
     if (!chrome.paintAnnotate) chrome.paintAnnotate = [](ID2D1RenderTarget* t, ID2D1Factory* f, ID2D1SolidColorBrush* b, D2D1_RECT_F box, NativeChrome::Motion::InteractionVisual iv, bool focus) {
-        AUI::ToolbarVisual v; v.active = s.active; v.hover = chrome.Enabled('N') ? iv.hover : 0; v.press = iv.press; v.focus = focus; v.keyboard = keyboardModality; v.reduced = Reduced();
+        AUI::ToolbarVisual v; v.active = Selecting(); v.hover = chrome.Enabled('N') ? iv.hover : 0; v.press = iv.press; v.focus = focus; v.keyboard = keyboardModality; v.reduced = Reduced();
         AUI::PaintToolbarButton(t, f, b, box, v);
     };
 }
@@ -250,9 +285,14 @@ void RefreshCount();
 // V3 (retours §6): only in the mode, on the mode's tab, never in full screen.
 bool LauncherWanted() {
     auto t = Active();
-    return s.active && ModeTab() == t && !privateWindow && !halted && t && !t->closed && !InFullscreen() && !PageFullscreenActive() && !IsIconic(window);
+    return s.active && ModeTab() == t && !privateWindow && !halted && t && !t->closed && !InFullscreen() && !PageFullscreenActive() && !IsIconic(window) && !Chat::Open()
+        && Chat::CommentLauncherCount(false) != 0;   // D3: in Mode Commentaire, only when a conversation's element is gone
 }
-void ShowLauncher(int delayMs = 0) { launcher.Show(claimed > 0 ? AUI::LauncherState::Working : AUI::LauncherState::Rest, claimed, Reduced(), delayMs); }
+void ShowLauncher(int delayMs = 0) {
+    const int gone = Chat::CommentLauncherCount(true);   // D3: in Mode Commentaire it signals only the gone elements' conversations
+    const int n = gone >= 0 ? gone : claimed;
+    launcher.Show(n > 0 ? AUI::LauncherState::Working : AUI::LauncherState::Rest, n, Reduced(), delayMs);
+}
 // entering: the mode just started (the launcher follows the band by 120 ms). Leaving: animated (into its corner).
 void LauncherSync(bool entering = false) {
     if (!uiReady) return;
@@ -268,6 +308,7 @@ void Place() {
     if (s.active) banner.Move(BandRect());
     if (veil.Running()) veil.Move(PageClient(Active()));
     LauncherSync();
+    Chat::Layout();
 }
 
 // ---------------------------------------------------------------- page script
@@ -275,6 +316,35 @@ void Cmd(const std::shared_ptr<Tab>& t, const std::wstring& op, const std::wstri
     if (!t || !t->view.p || t->closed || halted) return;
     auto cb = Callback<ICoreWebView2ExecuteScriptCompletedHandler, HRESULT, LPCWSTR>([](HRESULT, LPCWSTR) -> HRESULT { return S_OK; });
     t->view->ExecuteScript(AUI::PageCommand(AH::Wide(s.nonce.empty() ? std::string("-") : s.nonce), op, arg).c_str(), cb); cb->Release();
+}
+// Final pass 1, R31: Ctrl held = the site as usual. The page sees Ctrl only when its own WebView has the keyboard (its
+// pointer moves carry no Ctrl flag otherwise: keyboard in the band, the bubble, the panel). The host reads the state of
+// the Ctrl key (GetAsyncKeyState: no hook, nothing else read) at each pointer move over the page (the page asks:
+// « mods ») and every ~30 ms, only while the mode is on and this window is in front, and tells the page the changes.
+// The page's zoom factor, read again when a page message needs it (it changes with Ctrl+= / Ctrl+- while the mode is on).
+void RefreshZoom(const std::shared_ptr<Tab>& t) {
+    if (!t || !t->controller.p) return;
+    double z = 0; if (FAILED(t->controller->get_ZoomFactor(&z)) || !(z > 0)) return;
+    if (std::fabs(z - s.zoom) > 1e-6) { Log(L"ANNOTATE zoom " + std::to_wstring(int(std::lround(s.zoom * 100))) + L" % -> " + std::to_wstring(int(std::lround(z * 100))) + L" %"); s.zoom = z; }
+}
+bool ctrlHeld = false;
+bool OursInFront() { DWORD pid = 0; const HWND fg = GetForegroundWindow(); if (fg) GetWindowThreadProcessId(fg, &pid); return fg && pid == GetCurrentProcessId(); }
+void CtrlPoll() {
+    const bool down = s.active && OursInFront() && (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    if (down == ctrlHeld) return;
+    ctrlHeld = down;
+    if (s.active && s.injected) Cmd(ModeTab(), L"ctrl", down ? L"true" : L"false");
+}
+// The ~30 ms reading runs only while the mode is on and the window is in front (WM_ACTIVATEAPP / show: AnnotationWindowState).
+// PERF-20: ~30 ms only while the pointer is over the page (where Ctrl changes what a click does); elsewhere every 200 ms,
+// enough to pass on a release (a pointer move over the page reads Ctrl at once anyway: « mods »).
+UINT ctrlPeriod = 0;
+bool PointerOverPage() { POINT p{}; if (!GetCursorPos(&p)) return true; const RECT r = PageScreen(ModeTab()); return PtInRect(&r, p) != FALSE; }
+void CtrlArm(UINT ms) { if (post && ms != ctrlPeriod) { SetTimer(post, CtrlTimer, ms, nullptr); ctrlPeriod = ms; } }
+void CtrlWatch() {
+    const bool on = s.active && OursInFront();
+    if (post) { if (on) CtrlArm(PointerOverPage() ? 30 : 200); else { KillTimer(post, CtrlTimer); ctrlPeriod = 0; } }
+    if (!on) CtrlPoll();   // released (or left behind): the page gets its selection back
 }
 // The accent the page script paints (its frame fill, edges, label, padding hatches, cursor dot): the native frame and
 // the capture's fill removal use the same value. It is the window's SETTLED accent (Design::Accent::Settled: the profile
@@ -410,7 +480,7 @@ AUI::AppStatus StatusFor(int app, const AC::Status& st) {
     return {AUI::ConnectState::Idle, L""};
 }
 void ApplyAgents() {
-    if (s.active && banner.Visible() && !connect.Visible()) banner.SetReminder(!agents.any());
+    if (s.active && banner.Visible() && !connect.Visible()) banner.SetReminder(!agents.any() && !Chat::Open());
     if (connect.Visible()) {
         if (!connectBusy[0] && !(pendingInstall && !agents.claude.connected())) connect.SetStatus(AUI::AgentKind::Claude, StatusFor(0, agents.claude));
         if (!connectBusy[1]) connect.SetStatus(AUI::AgentKind::Codex, StatusFor(1, agents.codex));
@@ -628,6 +698,7 @@ AUI::HistoryData HistoryFrom(const std::vector<BA::Entry>& entries) {
     return d;
 }
 void LoadHistory(bool open, bool keyboard) {
+    if (Chat::CommentHistory(open, keyboard)) return;   // Mode Commentaire: the conversations whose element is gone, only
     if (historyBusy) { historyDirty = true; return; }
     historyBusy = true;
     struct Out { std::vector<BA::Entry> entries; std::map<std::string, Cached> thumbs; std::vector<BA::Reader> readers; };
@@ -705,13 +776,13 @@ void HistoryStoreOp(const std::wstring& id, int op) {
 
 // ---------------------------------------------------------------- selection, capture, write
 void Exit(const wchar_t* why, bool pageChanged = false);
-void Resume() {
+void Resume(bool focusPage = true) {   // focusPage false: Mode Commentaire, the keyboard goes to the bubble (no 13-21 ms MoveFocus)
     auto t = ModeTab(); if (!t) return;
     s.frozen = false; s.cap = Cap::None; s.png.clear(); s.saving = s.captureWanted = false; s.pageSeq = -1; ++serials; s.serial = serials;
     // A shot still owed to the page's frame (« Ajouter » or Échap within ~60 ms of the click): the page resumes
     // once the engine has rendered it, never before (resuming would show the page's own edges in the shot).
     if (shot.waiting || shot.inFlight) resumeOwed = true; else Cmd(t, L"resume");
-    if (t->controller.p) t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+    if (focusPage && t->controller.p) t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
 }
 void Attach(const Late& l) {
     auto shot = l.shot; const std::string site = l.site, id = l.id; auto result = std::make_shared<BA::Outcome>();
@@ -733,6 +804,7 @@ void OnCaptured(std::uint64_t serial, const AnnotationCapture::Result& r, double
                   // i18n-exempt-next: log continuation
                   L") ready " + Ms(ms) + L" ms after the selection message" + (lag >= 0 ? L" (+" + Ms(lag) + L" ms click->host)" : L"") + (timing.empty() ? L"" : L" [" + timing + L"]") + L" utc-ms=" + std::to_wstring(UtcMs()));
     else Log(L"ANNOTATE capture unavailable (" + AH::Wide(r.path) + L"): " + AH::Wide(r.why));
+    if (Chat::OnCaptured(serial, r)) return;   // an element aimed for the chat: its image joins the chip
     if (auto it = std::find_if(lates.begin(), lates.end(), [&](const Late& l) { return l.serial == serial; }); it != lates.end()) {
         if (!r.ok) { lates.erase(it); return; }
         it->shot = std::make_shared<AnnotationCapture::Result>(r);
@@ -848,6 +920,7 @@ bool ShowFrame(const std::shared_ptr<Tab>& t, const AH::Selection& sel) {
     if (control) return false;
     AUI::FrameMark m; m.page = PageClient(t); m.dpr = sel.target.viewport.devicePixelRatio; m.accent = AccentRgb();
     m.x = sel.mark.x; m.y = sel.mark.y; m.w = sel.mark.w; m.h = sel.mark.h; m.lx = sel.mark.lx; m.ly = sel.mark.ly; m.lw = sel.mark.lw; m.lh = sel.mark.lh; m.text = AH::Wide(sel.mark.text);
+    m.rx = sel.mark.rx; m.ry = sel.mark.ry; m.rw = sel.mark.rw; m.rh = sel.mark.rh; m.rtext = AH::Wide(sel.mark.rtext);   // R14
     // V3-B: the spacing inspector (padding ring, gaps, value labels, the viewport of the hatches' phase)
     m.hasPad = sel.mark.hasPad; std::copy(sel.mark.pad, sel.mark.pad + 8, m.pad); m.radius = sel.mark.radius; m.innerRadius = sel.mark.innerRadius; m.vw = sel.mark.vw; m.vh = sel.mark.vh;
     for (const auto& b : sel.mark.bands) m.gaps.push_back({b.x, b.y, b.w, b.h});
@@ -860,7 +933,18 @@ bool ShowFrame(const std::shared_ptr<Tab>& t, const AH::Selection& sel) {
     return frame.Show(m);
 }
 std::wstring Clip(std::wstring t, size_t n) { for (auto& c : t) if (c == L'\n' || c == L'\r' || c == L'\t') c = L' '; if (t.size() > n) { t.resize(n); t += L"…"; } return t; }
+// The shot's start: the native copy of the frame on screen, then the page hides its own (« handoff ») — or, without the
+// native layer, the page hides its whole frame (V2). Called at once, or right after OnSelect (Mode Commentaire).
+void StartShot(const std::shared_ptr<Tab>& t) {
+    if (!t || !shot.waiting) return;
+    const auto& sel = shot.sel;
+    const double f0 = NowMs(); const bool native = ShowFrame(t, sel); shot.frameMs = NowMs() - f0; shot.handoffAt = NowMs();
+    if (native) { frameSerial = shot.serial; shot.pageSeq = sel.seq; Cmd(t, L"handoff", std::to_wstring(sel.seq)); }
+    else { shot.pageSeq = std::int64_t(shot.serial) + (std::int64_t(1) << 41); Cmd(t, L"hide", std::to_wstring(shot.pageSeq)); Log(L"ANNOTATE native frame unavailable: the page hides its frame for the shot"); }
+    if (s.serial == shot.serial) s.pageSeq = shot.pageSeq;
+}
 void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {
+    if (s.paused) return;   // V1.4: the selection is off (the page script sends none then)
     ++serials; s.serial = serials; s.frozen = true; s.cap = Cap::Pending; s.png.clear(); s.saving = false; s.sel = sel; s.pageSeq = sel.seq;
     s.selectedAt = NowMs(); s.clickLagMs = lag;
     BA::Annotation a;
@@ -879,7 +963,10 @@ void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {
     // pill are placed as if for the page's centre, so neither leaves the window.
     if (RECT in{}; !IntersectRect(&in, &target, &page)) { const LONG cx = (page.left + page.right) / 2, cy = (page.top + page.bottom) / 3; target = {cx - 1, cy - 1, cx + 1, cy + 1}; }
     else target = in;
-    AUI::NoteRequest req; req.draft = s.draft; req.capture = AUI::CaptureState::Pending;
+    // R18 (< 100 ms from the click to the bubble): in Mode Commentaire the bubble opens FIRST; the shot (taken from the
+    // page itself: the bubble is not in it) and its native frame follow.
+    const bool commentFirst = Chat::CommentFirst(t) && Chat::TakeSelection(t, s.serial, !AH::PlanClip(r, sel.target.viewport).ok);
+    AUI::NoteRequest req; req.draft = s.draft; req.capture = AUI::CaptureState::Pending; req.askAgent = Chat::AskAvailable(t);
     {   bool redacted = false; std::wstring shown = AH::Wide(BA::RedactUrl(a.source.url, &redacted));
         if (const auto at = shown.find(L"://"); at != std::wstring::npos) shown = shown.substr(at + 3);
         req.context.page = Clip(shown, 90);
@@ -907,12 +994,16 @@ void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {
         Log(L"ANNOTATE capture unavailable (plan): outside the viewport");
     } else {
         shot = ShotJob{}; shot.serial = s.serial; shot.sel = sel; shot.selectedAt = s.selectedAt; shot.lag = lag; shot.waiting = true; s.captureWanted = true;
-        const double f0 = NowMs(); const bool native = ShowFrame(t, sel); shot.frameMs = NowMs() - f0; shot.handoffAt = NowMs();
-        if (native) { frameSerial = s.serial; shot.pageSeq = sel.seq; Cmd(t, L"handoff", std::to_wstring(sel.seq)); }
-        else { shot.pageSeq = std::int64_t(s.serial) + (std::int64_t(1) << 41); Cmd(t, L"hide", std::to_wstring(shot.pageSeq)); Log(L"ANNOTATE native frame unavailable: the page hides its frame for the shot"); }
-        s.pageSeq = shot.pageSeq;
+        // Mode Commentaire (H1's opening time): the bubble is already open; the native frame (screen copy + a wait for the
+        // compositor, ~20 ms) and the shot start right after this message, so the UI thread goes back to the bubble now.
+        // The page's commands keep their order (the chat's « follow » was sent above, the « handoff » comes after).
+        if (commentFirst && EnsurePost() && PostMessageW(post, ShotStart, WPARAM(shot.serial), 0)) shot.deferred = true;
+        else StartShot(t);
         if (EnsurePost()) SetTimer(post, HideTimer, 800, nullptr);
     }
+    // chat intégré (V1.3): on a local site the element always becomes a chip of the chat's composer, the panel opening
+    // if it is closed; the picker goes on (the shot first). Elsewhere (no chat): the note panel, as before.
+    if (commentFirst || Chat::TakeSelection(t, s.serial, s.cap == Cap::Failed)) { Resume(!commentFirst); return; }
     panel.on = true; panel.serial = s.serial; panel.req = req; panel.target = target; panel.page = page; panel.keyboard = sel.keyboard;
     if (shot.waiting && shot.serial == s.serial && EnsurePost()) SetTimer(post, PanelTimer, 60, nullptr);   // shown by OnHidden, or by the timer
     else ShowPanel();
@@ -976,11 +1067,16 @@ void ConnectClosed(AUI::ConnectEnd end) {
 }
 void EnsureUi() {
     if (uiReady) return; uiReady = true;
-    AUI::BannerHooks bh; bh.exit = [] { Exit(L"quit"); }; bh.connect = [] { OpenConnect(false); }; bh.announce = [](const std::wstring& t) { Announce(t); };
+    AUI::BannerHooks bh; bh.exit = [] { Exit(L"quit"); };
+    bh.escape = [] { if (AH::OnEscape(false, Chat::BubbleOpen()) == AH::EscapeAction::CloseBubble) Chat::CloseBubble(true); else Exit(L"escape"); };   // as the page's Escape (review M4)
+    bh.connect = [] { OpenConnect(false); }; bh.announce = [](const std::wstring& t) { Announce(t); };
+    bh.chat = [] { Chat::SwitchLayout(false); };     // « Panneau »: the chat at the right (opens it)
+    bh.comment = [] { Chat::SwitchLayout(true); };   // « Commentaire »: a bubble on the element clicked
     banner.Init(instance, window, base, bh);
     AUI::NoteHooks nh;
     nh.submit = [](const AUI::NoteSubmission& sub) { OnSubmit(sub); };
     nh.cancel = [](const std::wstring& draft, bool) { s.draft = draft; Resume(); };
+    nh.ask = [](const std::wstring& draft) { Chat::AskFromNote(draft); };
     nh.announce = [](const std::wstring& t) { Announce(t); };
     note.Init(instance, window, base, nh);
     AUI::LauncherHooks lh;
@@ -999,7 +1095,7 @@ void EnsureUi() {
     lh.history.remove = [](const std::wstring& id) { HistoryStoreOp(id, 0); };
     lh.history.undo = [](const std::wstring& id) { HistoryStoreOp(id, 1); };
     lh.history.removeFinal = [](const std::wstring& id) { HistoryStoreOp(id, 2); };
-    lh.history.detail = [](const std::wstring& id) { HistoryDetail(id); };
+    lh.history.detail = [](const std::wstring& id) { if (Chat::OpenFromHistory(id)) return; HistoryDetail(id); };
     lh.history.copyEntry = [](const std::wstring& id) {
         const auto* e = FindHistory(id); if (!e) return;
         if (CopyToClipboard(AH::Wide(BA::ToMarkdown(*e, e->annotation.screenshot.present ? Store().ShotPath(e->annotation.siteKey, e->annotation.id) : L"")))) Log(L"ANNOTATE copied as Markdown " + id);
@@ -1039,6 +1135,7 @@ void Activate(const Start& st) {
     const std::wstring keepDraft = s.draft;
     s = Session{}; s.active = true; s.tab = t; s.navStamp = t->navStamp; ++serials; s.serial = serials; s.nonce = BA::NewClaimToken();
     if (s.nonce.empty()) { s.active = false; Log(L"ANNOTATE no random source"); return; }
+    CtrlWatch();   // R31
     { LPWSTR src = nullptr; if (SUCCEEDED(t->view->get_Source(&src)) && src) s.source = src; CoTaskMemFree(src); }
     s.origin = AH::OriginOf(t->uri); t->controller->get_ZoomFactor(&s.zoom); s.draft = keepDraft;
     s.pageAccent = SettledAccentRgb();   // the profile's colour, even when the entry falls inside its 120 ms fade
@@ -1046,13 +1143,14 @@ void Activate(const Start& st) {
     auto cb = Callback<ICoreWebView2ExecuteScriptCompletedHandler, HRESULT, LPCWSTR>([nonce](HRESULT hr, LPCWSTR result) -> HRESULT {
         if (!s.active || s.nonce != nonce) return S_OK;
         if (FAILED(hr) || !result || wcscmp(result, L"\"ok\"") != 0) { Log(L"ANNOTATE script injection failed"); Exit(L"injection"); Announce(TR(annotation_mode_unavailable)); }
-        else s.injected = true;
+        else { s.injected = true; Chat::ScriptReady(); }   // Mode Commentaire: the frames of the page's conversations
         return S_OK; });
     const ULONGLONG started = GetTickCount64();
     chrome.annotationBand = NativeChrome::Annotations::BannerSpec::height; SyncChrome(); Layout();   // the band first: the page is measured in its final viewport
     if (FAILED(t->view->ExecuteScript(AUI::PageScriptCall(Params(t, st)).c_str(), cb))) { cb->Release(); s.active = false; chrome.annotationBand = 0; SyncChrome(); Layout(); Log(L"ANNOTATE ExecuteScript refused"); return; }
     cb->Release();
     banner.Show(BandRect(), Reduced());
+    Chat::ModeEntered();   // the band's « Demander à l'agent » button
     if (!veil.Start(PageClient(t), Reduced())) Log(L"ANNOTATE entry veil unavailable");   // V3-B: entry only
     LauncherSync(true);
     if (!purged) { purged = true; const std::int64_t retention = Prefs::Retention(settings); Run([retention] { std::lock_guard<std::mutex> g(writeLock); Store().Purge(retention); }, nullptr); }   // retention: first use of the session
@@ -1061,6 +1159,7 @@ void Activate(const Start& st) {
     RefreshAgents([started, direct, nonce] {
         if (!s.active || s.nonce != nonce) return;
         if (agents.any()) { banner.SetReminder(false); return; }
+        if (Chat::Open()) { banner.SetReminder(false); return; }   // the chat was asked for: no « Connecter un agent » modal, no reminder (its agent is the chat's)
         if (!direct && !laterThisSession && Prefs::Prompt(settings) && Prefs::Declines(settings) < Prefs::MaxDeclines && !connect.Visible() && !note.Visible()) {
             const int elapsed = int(GetTickCount64() - started);
             OpenConnect(true); (void)elapsed;
@@ -1068,6 +1167,57 @@ void Activate(const Start& st) {
     });
     RefreshStatus(); SyncWatch();
     Log(L"ANNOTATE mode on (" + std::to_wstring(GetTickCount64() - started) + L" ms to inject request, accent " + AH::Wide(AccentInts(s.pageAccent)) + L") " + t->uri);
+}
+// Chat intégré (V1.4): the selection — the « viseur » cursor, the hover frame, a click that picks an element — can be
+// switched off while the chat panel stays open with its conversation and its chips (the panel's aim button,
+// Ctrl+Maj+A or the toolbar « Annoter » button while the chat is open). The page is the page again; the band goes up
+// and the toolbar button is no longer lit, as when the mode is off; the page script stays (the chat's marks, the
+// element's source). On again: the band comes back, the « viseur » too. Closing the chat while it is off ends the mode.
+// R25: the band slides in / out (the page and the chat panel are laid out under it at every frame: no jump). As short
+// as the band's own entrance, on the panel's curve; reduced motion: at once.
+inline constexpr int BandSlideInMs = 240, BandSlideOutMs = 240;   /* the entrance has more to do on its first frame (the band shown): a little longer */   // R25: ~12 frames at 60 Hz, regular steps
+AUI::Ramp bandSlide; bool bandSliding = false, bandHideAtEnd = false; int bandFrames = 0;
+void BandSlideApply(NativeChrome::Motion::Time now) {
+    const float full = float(AUI::BannerSpec::height), cur = AUI::BandSlideHeight(bandSlide.Value(now), full, Reduced());
+    chrome.annotationBand = cur; SyncChrome(); Layout();
+    banner.Slide(BandRect(), full - cur);
+}
+struct BandSlideClient : AUI::Animator::Client {
+    bool Frame(NativeChrome::Motion::Time now) override {
+        if (!s.active) { bandSliding = false; return false; }
+        BandSlideApply(now); ++bandFrames;
+        if (bandSlide.Moving(now)) return true;
+        bandSliding = false; Layout();   // R25: the one size change, on the side that is out of sight
+        if (bandHideAtEnd) { bandHideAtEnd = false; banner.Hide(false); chrome.annotationBand = 0; SyncChrome(); Layout(); }
+        Log(L"ANNOTATE band slide done (" + std::to_wstring(int(chrome.annotationBand)) + L" DIP, " + std::to_wstring(bandFrames) + L" frames)"); bandFrames = 0;
+        return false;
+    }
+} bandSlideClient;
+void SetSelecting(bool on) {
+    if (!s.active || s.paused == !on) return;
+    auto t = ModeTab();
+    s.paused = !on;
+    if (!on) {
+        if (note.Visible()) note.Close(false);
+        panel = PendingPanel{}; s.frozen = false;
+        Cmd(t, L"pick", L"false");
+    } else {
+        Cmd(t, L"pick", L"true");
+    }
+    // R25: the band slides; the page and the panel follow it frame by frame (Layout at every step)
+    const auto now = NativeChrome::Motion::Now(); const bool reduced = Reduced();
+    if (!bandSliding) bandSlide.Snap(on ? 0.f : 1.f);
+    bandSlide.Set(on ? 1.f : 0.f, now, reduced ? 0 : (on ? BandSlideInMs : BandSlideOutMs), AUI::Curves::easeOut);   // R25: no front-loaded jump (the band curve moved 22 px in its first frame)
+    bandHideAtEnd = !on;
+    if (!reduced) bandSliding = true;   // R25: from the first frame, the page only moves
+    if (on) { banner.Show(BandRect(), reduced); Chat::ModeEntered(); }
+    if (on && !reduced) { const auto at = NativeChrome::Motion::Now(); bandSlide.Snap(0.f); bandSlide.Set(1.f, at, BandSlideInMs, AUI::Curves::easeOut); }   // R25: the ramp starts after the band's first render
+    BandSlideApply(NativeChrome::Motion::Now());
+    if (reduced) { bandSliding = false; if (!on) { bandHideAtEnd = false; banner.Hide(false); chrome.annotationBand = 0; SyncChrome(); Layout(); } }
+    else { bandSliding = true; AUI::Animator::Get().Request(&bandSlideClient); }
+    Announce(on ? TR(annotation_selection_on) : TR(annotation_selection_off));
+    Log(std::wstring(L"ANNOTATE selection ") + (on ? L"on" : L"off (the chat stays open)"));
+    Chat::SelectionChanged();
 }
 void Exit(const wchar_t* why, bool pageChanged) {
     if (!s.active) return;
@@ -1080,6 +1230,7 @@ void Exit(const wchar_t* why, bool pageChanged) {
     // A capture still owed to a written annotation is lost if its page goes away (the note stays, without image).
     lates.erase(std::remove_if(lates.begin(), lates.end(), [](const Late& l) { return l.serial == s.serial && !l.shot; }), lates.end());
     s = Session{}; s.draft = pageChanged ? std::wstring() : draft; ++serials;
+    CtrlWatch();   // R31: the mode is off: no more reading, the state forgotten
     note.Close(!pageChanged); banner.Hide(); if (connect.Visible()) connect.Close(false);
     veil.Interrupt();   // V3-B: an exit during the entry fades the veil from its value (none at the exit otherwise)
     card = Card::None;
@@ -1088,9 +1239,40 @@ void Exit(const wchar_t* why, bool pageChanged) {
     if (pageChanged && hadPopover) Announce(TR(annotation_page_changed));
     SyncWatch();
     Log(std::wstring(L"ANNOTATE mode off (") + why + L")");
+    Chat::ModeExited();
+}
+// Chat intégré: the page of the mode was reloaded (by the chat after a turn, or by the dev server) while the chat panel
+// is open. The mode stays: band, panel and launcher do not move; the selection state is dropped and the page script is
+// injected again in the new document. Called once that document is complete.
+void Rearm(const std::shared_ptr<Tab>& t, std::function<void(bool)> then = nullptr) {
+    if (!s.active || ModeTab() != t || !t || !t->view.p) { if (then) then(false); return; }
+    std::wstring why;
+    if (!Available(t, &why)) { Exit(L"navigation", true); if (then) then(false); return; }
+    if (post) { KillTimer(post, HideTimer); KillTimer(post, FrameTimer); KillTimer(post, PanelTimer); }
+    panel = PendingPanel{}; frame.Destroy(); shot = ShotJob{}; resumeOwed = false; frameSerial = 0;
+    if (note.Visible()) { note.Close(false); Announce(TR(annotation_page_changed)); }
+    lates.erase(std::remove_if(lates.begin(), lates.end(), [](const Late& l) { return l.serial == s.serial && !l.shot; }), lates.end());
+    ++serials; s.serial = serials; s.frozen = s.saving = s.captureWanted = s.injected = false; s.cap = Cap::None; s.png.clear(); s.pageSeq = -1;
+    s.navStamp = t->navStamp; s.nonce = BA::NewClaimToken(); s.source.clear();
+    { LPWSTR src = nullptr; if (SUCCEEDED(t->view->get_Source(&src)) && src) s.source = src; CoTaskMemFree(src); }
+    s.origin = AH::OriginOf(t->uri); t->controller->get_ZoomFactor(&s.zoom); s.pageAccent = SettledAccentRgb();
+    const std::string nonce = s.nonce;
+    auto cb = Callback<ICoreWebView2ExecuteScriptCompletedHandler, HRESULT, LPCWSTR>([nonce, then](HRESULT hr, LPCWSTR result) -> HRESULT {
+        if (!s.active || s.nonce != nonce) { if (then) then(false); return S_OK; }
+        const bool ok = SUCCEEDED(hr) && result && wcscmp(result, L"\"ok\"") == 0;
+        if (!ok) { Log(L"ANNOTATE script re-injection failed"); Exit(L"injection"); Announce(TR(annotation_mode_unavailable)); }
+        else { s.injected = true; Log(L"ANNOTATE mode re-armed after a reload"); if (s.paused) Cmd(ModeTab(), L"pick", L"false"); Chat::ScriptReady(); }   // D1: a reload empties the page script: the chat's marks and the open bubble's element again
+        if (then) then(ok);
+        return S_OK; });
+    if (FAILED(t->view->ExecuteScript(AUI::PageScriptCall(Params(t, {})).c_str(), cb))) { cb->Release(); Exit(L"injection"); if (then) then(false); return; }
+    cb->Release();
 }
 LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
-    if (m == JobDone) { std::unique_ptr<Job> j(reinterpret_cast<Job*>(l)); LogMigration(); if (j->done && !halted) j->done(); return 0; }
+    if (m == JobDone) {
+        std::vector<std::unique_ptr<Job>> done; { std::lock_guard<std::mutex> lock(jobsMutex); done.swap(jobsDone); }
+        LogMigration(); for (auto& j : done) if (j->done && !halted) j->done(); return 0;
+    }
+    if (m == ShotStart) { if (s.active && shot.waiting && shot.deferred && shot.serial == std::uint64_t(w)) { shot.deferred = false; StartShot(ModeTab()); } return 0; }
     if (m == WatchChanged) {
         watchSignal = false; if (!watch.thread) return 0;
         RefreshStatus();
@@ -1100,6 +1282,7 @@ LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     if (m == WM_TIMER && w == HideTimer) { KillTimer(h, HideTimer); if (s.active && shot.waiting) { s.captureWanted = false; Log(L"ANNOTATE page did not confirm the hidden frame: capturing anyway"); Capture(ModeTab(), shot.serial); } ShowPanel(); return 0; }
     if (m == WM_TIMER && w == PanelTimer) { KillTimer(h, PanelTimer); ShowPanel(); return 0; }
+    if (m == WM_TIMER && w == CtrlTimer) { if (!s.active || !OursInFront()) { CtrlWatch(); return 0; } CtrlArm(PointerOverPage() ? 30 : 200); CtrlPoll(); return 0; }   // R31, PERF-20
     if (m == WM_TIMER && w == FrameTimer) { KillTimer(h, FrameTimer); frame.Hide(); return 0; }
     return DefWindowProcW(h, m, w, l);
 }
@@ -1107,6 +1290,7 @@ LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
 // ---------------------------------------------------------------- host entry points (declared at the top of main.cpp)
 bool AnnotationModeActive() { return Ann::s.active; }
+bool AnnotationBandSliding() { return Ann::s.active && Ann::bandSliding; }   // R25: the page and the chat panel only move meanwhile
 bool AnnotationSurfaceFocus() {
     if (!Ann::uiReady) return false;
     HWND f = GetFocus(); if (!f) return false;
@@ -1116,9 +1300,13 @@ bool AnnotationSurfaceFocus() {
 }
 void AnnotationSyncChrome() { Ann::SyncChrome(); Ann::LauncherSync(); }
 void AnnotationLayout() { Ann::Place(); }
-void AnnotationWindowState() { if (Ann::uiReady) Ann::banner.WindowStateChanged(); }   // V3-B: the wave's clock
+void AnnotationWindowState() { if (Ann::uiReady) Ann::banner.WindowStateChanged(); Ann::CtrlWatch(); }   // R31: Ctrl read only in front   // V3-B: the wave's clock
 void AnnotationAccentChanged() { Ann::AccentChanged(); }   // profiles-integration.h: the window's accent changed
-void AnnotationNavigation(const std::shared_ptr<Tab>& t) { if (Ann::s.active && Ann::ModeTab() == t) Ann::Exit(L"navigation", true); }
+void AnnotationNavigation(const std::shared_ptr<Tab>& t) {
+    if (!Ann::s.active || Ann::ModeTab() != t) return;
+    if (Chat::KeepsMode(t)) Chat::PageNavigating(t);   // chat intégré: the mode survives a reload of its page (Ann::Rearm)
+    else Ann::Exit(L"navigation", true);
+}
 void AnnotationTabChanged() { if (Ann::s.active && Ann::ModeTab() != Active()) Ann::Exit(L"tab change"); Ann::LauncherSync(); }   // i18n-exempt: log reason
 void AnnotationTabSleeping(const std::shared_ptr<Tab>& t) { if (Ann::s.active && Ann::ModeTab() == t) Ann::Exit(L"tab asleep"); }   // i18n-exempt: log reason
 bool AnnotationPageMessage(const std::shared_ptr<Tab>& t, ICoreWebView2WebMessageReceivedEventArgs* a) {
@@ -1134,23 +1322,37 @@ bool AnnotationPageMessage(const std::shared_ptr<Tab>& t, ICoreWebView2WebMessag
     if (source != s.source) { LogOnce(L"source"); return true; }
     if (t->navStamp != s.navStamp) { LogOnce(L"navStamp"); return true; }
     const auto c = AH::CheckMessage(utf8, s.nonce, std::int64_t(s.navStamp));
+    // R45 (125 / 150 %): the page's zoom as it is NOW (Ctrl+= / Ctrl+- after the mode started): the bubble's first
+    // placement (« selecting ») converts the element's CSS px with it; a stale 100 % put the bubble over the labels for
+    // a moment (« element 1310x60 » then « 1638x75 »), then the full « select » moved it.
+    if (c.env.op == AH::Op::Selecting || c.env.op == AH::Op::Select || c.env.op == AH::Op::Anchor) RefreshZoom(t);
     switch (c.env.op) {
     case AH::Op::Select: {
         double lag = -1;   // click -> host, from the page's Date.now() (same system clock)
         if (c.selection.at > 0) { FILETIME ft; GetSystemTimeAsFileTime(&ft); ULARGE_INTEGER u{}; u.LowPart = ft.dwLowDateTime; u.HighPart = ft.dwHighDateTime;
             const double now = double(u.QuadPart / 10000ULL) - 11644473600000.0; if (now - c.selection.at > -50 && now - c.selection.at < 10000) lag = std::max(0.0, now - c.selection.at); }
-        OnSelect(t, c.selection, lag); break; }
+        const double h0 = NowMs(); OnSelect(t, c.selection, lag);
+        Log(L"ANNOTATE « select » handled in " + Ms(NowMs() - h0) + L" ms on the UI thread"); break; }
     case AH::Op::Hidden: OnHidden(t, c.env.serial); break;
     case AH::Op::Shown: OnShown(c.env.serial); break;
-    case AH::Op::Escape: Exit(L"escape"); break;
+    case AH::Op::Escape:   // review M4 (b): an open bubble closes first, the mode stays
+        switch (AH::OnEscape(s.paused, Chat::BubbleOpen())) { case AH::EscapeAction::CloseBubble: Chat::CloseBubble(true); break; case AH::EscapeAction::Leave: Exit(L"escape"); break; default: break; }
+        break;
     case AH::Op::NoSelection: Announce(TR(annotation_no_selection)); break;
+    case AH::Op::Anchor: Chat::OnAnchor(c.env); break;
+    case AH::Op::Mods: CtrlPoll(); break;   // R31: a pointer move over the page: Ctrl read now
+    case AH::Op::Selecting: if (!s.paused) Chat::OpenEarly(t, c.env); break;   // R18: before the full « select » of the same seq
     default: LogOnce(AH::Wide(c.why.empty() ? std::string("invalid") : c.why)); break;
     }
     return true;
 }
 bool AnnotationCommand(int cmd) {
-    if (cmd == 'N' || cmd == AnnotateCommand) { if (Ann::s.active) Ann::Exit(L"toggle"); else Ann::Activate({}); return true; }
-    if (cmd == AnnotateExitCommand) { Ann::Exit(L"escape"); return true; }
+    if (cmd == 'N' || cmd == AnnotateCommand) {
+        if (Ann::s.active && Chat::Open()) { Ann::SetSelecting(Ann::s.paused); return true; }   // V1.4: with the chat open, the selection only
+        if (Ann::s.active) Ann::Exit(L"toggle"); else Ann::Activate({}); return true;
+    }
+    if (cmd == AnnotateExitCommand) { if (Chat::BubbleOpen()) { Chat::CloseBubble(true); return true; } Ann::Exit(L"escape"); return true; }   // M4 (Q's real window): Échap in the browser's window closes an open bubble first
+    if (cmd == ChatCommand) { Chat::Toggle(true); return true; }   // Ctrl+Maj+D: « Demander à l'agent » (starts the mode if needed)
     if (cmd == AnnotateHistoryCommand) {
         if (Ann::uiReady && Ann::launcher.HistoryVisible()) { Ann::launcher.HideHistory(); Ann::SyncWatch(); }
         else if (!privateWindow) Ann::OpenHistory(true);
@@ -1237,9 +1439,14 @@ void AnnotationMenuChoice(const std::shared_ptr<Tab>& tab, int choice) {
     Ann::Start st; st.kind = choice == AnnotateSelectionItem ? 2 : 1; st.at = m.at; st.text = m.text;
     Ann::Activate(st);
 }
+#include "chat-host.h"
 #else
 // Unstamped fixtures (tests that include main.cpp) and --channel release builds: no annotation mode.
+float ChatInsetDip() { return 0; }
+void ChatNavigationCompleted(const std::shared_ptr<Tab>&) {}
+void ChatShutdown() {}
 bool AnnotationModeActive() { return false; }
+bool AnnotationBandSliding() { return false; }
 bool AnnotationSurfaceFocus() { return false; }
 void AnnotationAccentChanged() {}
 void AnnotationSyncChrome() {}

@@ -24,7 +24,7 @@
 
 namespace E2EFixturePin {
 
-struct Manifest { std::wstring host; int port = 0; std::string sha256; bool loaded = false; };
+struct Manifest { std::wstring host; int port = 0, port2 = 0; std::string sha256; bool loaded = false; };   // port2: optional second fixture port (vault coverage: a cross-origin frame), same host and pin
 // Harness manifest: three lines « host=127.0.0.1 », « port=18445 », « sha256=<64 lowercase hex> ».
 inline Manifest Load(const std::wstring& path) {
     Manifest m; std::ifstream in(path.c_str()); std::string line;
@@ -34,9 +34,10 @@ inline Manifest Load(const std::wstring& path) {
         const std::string k = line.substr(0, eq), v = line.substr(eq + 1);
         if (k == "host") m.host.assign(v.begin(), v.end());
         else if (k == "port") { if (v.empty() || v.size() > 5 || v[0] == '0') return Manifest{}; for (char c : v) if (c < '0' || c > '9') return Manifest{}; m.port = std::atoi(v.c_str()); }   // review P-L3: exact digits
+        else if (k == "port2") { if (v.empty() || v.size() > 5 || v[0] == '0') return Manifest{}; for (char c : v) if (c < '0' || c > '9') return Manifest{}; m.port2 = std::atoi(v.c_str()); }
         else if (k == "sha256") { for (char c : v) if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return Manifest{}; m.sha256 = v; }
     }
-    m.loaded = m.host == L"127.0.0.1" && m.port > 1024 && m.port < 65536 && m.sha256.size() == 64;
+    m.loaded = m.host == L"127.0.0.1" && m.port > 1024 && m.port < 65536 && (m.port2 == 0 || (m.port2 > 1024 && m.port2 < 65536 && m.port2 != m.port)) && m.sha256.size() == 64;
     return m;
 }
 inline std::string Sha256Hex(const std::string& der) {
@@ -77,7 +78,7 @@ inline Verdict Decide(const Manifest& m, const std::wstring& requestUri, int sta
     if (!m.loaded) return no(L"no harness manifest");
     if (requestUri.rfind(L"https://", 0) != 0) return no(L"not https");
     const std::wstring rest = requestUri.substr(8); const auto end = rest.find_first_of(L"/?#"); const std::wstring auth = rest.substr(0, end);
-    if (auth != m.host + L":" + std::to_wstring(m.port)) return no(L"host or port differs");
+    if (auth != m.host + L":" + std::to_wstring(m.port) && (m.port2 == 0 || auth != m.host + L":" + std::to_wstring(m.port2))) return no(L"host or port differs");
     if (status != COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID) return no(L"status is not « authority not trusted »");
     if (!(now >= validFrom && now <= validTo)) return no(L"certificate not currently valid");
     if (der.empty() || Sha256Hex(der) != m.sha256) return no(L"fingerprint differs");

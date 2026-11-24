@@ -16,10 +16,10 @@ template<class I> struct Fake : I {
 LPWSTR Dup(const wchar_t* s){size_t n=(wcslen(s)+1)*sizeof(wchar_t);auto p=(LPWSTR)CoTaskMemAlloc(n);memcpy(p,s,n);return p;}
 struct Deferral : Fake<ICoreWebView2Deferral> { int completed=0; HRESULT STDMETHODCALLTYPE Complete() override{++completed;return S_OK;} };
 struct DialogArgs : Fake<ICoreWebView2ScriptDialogOpeningEventArgs> {
-    Deferral deferral; int accepted=0; COREWEBVIEW2_SCRIPT_DIALOG_KIND kind=COREWEBVIEW2_SCRIPT_DIALOG_KIND_CONFIRM;
-    HRESULT STDMETHODCALLTYPE get_Uri(LPWSTR* v) override{*v=Dup(L"https://exemple.test/page");return S_OK;}
+    Deferral deferral; int accepted=0; COREWEBVIEW2_SCRIPT_DIALOG_KIND kind=COREWEBVIEW2_SCRIPT_DIALOG_KIND_CONFIRM; std::wstring uri=L"https://exemple.test/page",message=L"Continuer ?";
+    HRESULT STDMETHODCALLTYPE get_Uri(LPWSTR* v) override{*v=Dup(uri.c_str());return S_OK;}
     HRESULT STDMETHODCALLTYPE get_Kind(COREWEBVIEW2_SCRIPT_DIALOG_KIND* v) override{*v=kind;return S_OK;}
-    HRESULT STDMETHODCALLTYPE get_Message(LPWSTR* v) override{*v=Dup(L"Continuer ?");return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_Message(LPWSTR* v) override{*v=Dup(message.c_str());return S_OK;}
     HRESULT STDMETHODCALLTYPE Accept() override{++accepted;return S_OK;}
     HRESULT STDMETHODCALLTYPE get_DefaultText(LPWSTR* v) override{*v=Dup(L"");return S_OK;}
     HRESULT STDMETHODCALLTYPE get_ResultText(LPWSTR* v) override{*v=Dup(L"");return S_OK;}
@@ -28,9 +28,9 @@ struct DialogArgs : Fake<ICoreWebView2ScriptDialogOpeningEventArgs> {
 };
 struct PermissionArgs : Fake<ICoreWebView2PermissionRequestedEventArgs> {
     Deferral deferral; COREWEBVIEW2_PERMISSION_STATE state=COREWEBVIEW2_PERMISSION_STATE_DEFAULT; int writes=0;
-    COREWEBVIEW2_PERMISSION_KIND kind=COREWEBVIEW2_PERMISSION_KIND_CAMERA;
+    COREWEBVIEW2_PERMISSION_KIND kind=COREWEBVIEW2_PERMISSION_KIND_CAMERA; std::wstring uri=L"https://meet.exemple.test/";
     explicit PermissionArgs(COREWEBVIEW2_PERMISSION_KIND k=COREWEBVIEW2_PERMISSION_KIND_CAMERA):kind(k){}
-    HRESULT STDMETHODCALLTYPE get_Uri(LPWSTR* v) override{*v=Dup(L"https://meet.exemple.test/");return S_OK;}
+    HRESULT STDMETHODCALLTYPE get_Uri(LPWSTR* v) override{*v=Dup(uri.c_str());return S_OK;}
     HRESULT STDMETHODCALLTYPE get_PermissionKind(COREWEBVIEW2_PERMISSION_KIND* v) override{*v=kind;return S_OK;}
     HRESULT STDMETHODCALLTYPE get_IsUserInitiated(BOOL* v) override{*v=TRUE;return S_OK;}
     HRESULT STDMETHODCALLTYPE get_State(COREWEBVIEW2_PERMISSION_STATE* v) override{*v=state;return S_OK;}
@@ -121,6 +121,7 @@ int main(){
     {ExternalArgs a;LaunchingExternalUriScheme(live,&a);Expect(a.cancel==TRUE&&a.deferral.completed==1,"external scheme: engine launch cancelled, deferral completed once");}
     {ExternalArgs a;a.uri=L"ms-msdt:/id PCWDiagnostic";LaunchingExternalUriScheme(live,&a);Expect(a.cancel==TRUE&&a.deferral.completed==1,"dangerous scheme refused");}
     Expect(ExternalSchemeRefused(L"FILE:///c:/windows")&&ExternalSchemeRefused(L"search-ms:query=x")&&ExternalSchemeRefused(L"javascript:alert(1)")&&!ExternalSchemeRefused(L"mailto:a@b.c")&&!ExternalSchemeRefused(L"zoommtg://join"),"external scheme denylist");
+    Expect(ExternalSchemeRefused(L"c:\\windows\\x.exe")&&ExternalSchemeRefused(L"1app:x")&&ExternalSchemeRefused(L"a b:x")&&ExternalSchemeRefused(L"\x00e9t\x00e9:x")&&!ExternalSchemeRefused(L"ms-settings:privacy")&&!ExternalSchemeRefused(L"web+app.v2:x"),"SEC-22: external scheme shape ([a-z][a-z0-9+.-]+)");
     // Sandbox host matching: exact host only.
     Expect(IsSandboxUri(L"https://browser-debug.invalid/sandbox")&&IsSandboxUri(L"HTTPS://BROWSER-DEBUG.INVALID/sandbox?x")&&IsSandboxUri(L"https://browser-debug.invalid"),"sandbox URI recognised");
     Expect(!IsSandboxUri(L"https://browser-debug.invalid.evil.test/sandbox")&&!IsSandboxUri(L"http://browser-debug.invalid/sandbox")&&!IsSandboxUri(L"https://evil.test/https://browser-debug.invalid/"),"look-alike hosts are not the sandbox");
@@ -194,12 +195,24 @@ int main(){
         PermissionArgs cam2(COREWEBVIEW2_PERMISSION_KIND_CAMERA);PermissionRequested(live,&cam2);run();
         originPrompt.Surface().Finish(OP::Id::Accept);run();originPrompt.Surface().FinishAnimationsForTest();
         Expect(chip()==std::vector<const char*>{SiteRequest::Path::camera}&&chrome.requestState==State::Granted,"camera granted: persistent chip");
+        // The same document asking again (Meet re-requests on each device check): answered from the
+        // answer already given, no new popover, never saved in the profile.
+        {PermissionArgs again(COREWEBVIEW2_PERMISSION_KIND_CAMERA);PermissionRequested(live,&again);run();
+         Expect(!promptOpen&&again.deferral.completed==1&&again.state==COREWEBVIEW2_PERMISSION_STATE_ALLOW,"repeat camera request: allowed silently, completed once");
+         PermissionArgs frame(COREWEBVIEW2_PERMISSION_KIND_CAMERA);frame.uri=L"https://tiers.exemple.test/";PermissionRequested(live,&frame);run();
+         Expect(promptOpen&&frame.deferral.completed==0,"another origin's frame asking: still prompted");
+         originPrompt.Abort();run();originPrompt.Surface().FinishAnimationsForTest();
+         PermissionArgs mic0(COREWEBVIEW2_PERMISSION_KIND_MICROPHONE);PermissionRequested(live,&mic0);run();
+         Expect(promptOpen&&mic0.deferral.completed==0,"a kind not answered yet: still prompted");
+         originPrompt.Abort();run();originPrompt.Surface().FinishAnimationsForTest();}
         ElementsNavigationStarting(live);run();
         Expect(chip().empty()&&!siteStates.count(live->serial),"navigation: granted state cleared");
         // A blocked request: the chip shows « bloqué » for this page.
         PermissionArgs mic2(COREWEBVIEW2_PERMISSION_KIND_MICROPHONE);PermissionRequested(live,&mic2);run();
         originPrompt.Surface().Finish(OP::Id::Cancel);run();originPrompt.Surface().FinishAnimationsForTest();
         Expect(mic2.state==COREWEBVIEW2_PERMISSION_STATE_DENY&&chip()==std::vector<const char*>{SiteRequest::Path::microphone}&&chrome.requestState==State::Blocked,"block: chip shows « bloqué »");
+        {PermissionArgs again(COREWEBVIEW2_PERMISSION_KIND_MICROPHONE);PermissionRequested(live,&again);run();
+         Expect(!promptOpen&&again.deferral.completed==1&&again.state==COREWEBVIEW2_PERMISSION_STATE_DENY,"repeat blocked request: denied silently, completed once");}
         ElementsNavigationStarting(live);run();
         // Notifications, then the user switches tab: cancelled, chip gone.
         auto other=std::make_shared<Tab>();other->uri=L"https://autre.exemple.test/";other->home=false;pages={live,other};
@@ -214,20 +227,16 @@ int main(){
         Expect(chip()==std::vector<const char*>{SiteRequest::Path::camera},"back on the tab: its grant shows again");
         siteStates.erase(live->serial);SyncRequestChip();ChipFrame(NativeChrome::Motion::Now()+NativeChrome::Motion::Milliseconds(400));
         originPrompt.Surface().FinishAnimationsForTest();
-        // Simulated engine args: kind 13 routed as persistent storage; kinds 4 / 0 / 14 keep their own copy;
+        // Persistent storage (kind 13) is never asked (user decision 2026-11-17, like Chrome / Edge): x.com asked on
+        // every visit. Allowed silently, nothing saved, no popover, no chip. Kinds 4 / 0 / 14 keep their own copy;
         // no collapsible help on the popover; each request answered once.
         {
             PermissionArgs store((COREWEBVIEW2_PERMISSION_KIND)13);PermissionRequested(live,&store);run();
-            Expect(promptOpen&&promptActive.spec.permissions==std::vector<int>{13}&&chip()==std::vector<const char*>{SiteRequest::Path::storage},"kind 13: routed as persistent storage, storage chip");
-            const auto& m=originPrompt.Surface().CurrentSpec();
-            Expect(m.title==L"meet.exemple.test veut protéger son stockage local"&&m.subtitle.find(L"otification")==std::wstring::npos,"kind 13: own title, never « notifications »");
-            bool help=false;for(auto& n:originPrompt.Surface().NodesForTest())if(n.role==Accessibility::Role::Text||n.expand!=0||n.name.find(L"Plus d'infos")!=std::wstring::npos)help=true;
-            Expect(!help&&store.deferral.completed==0&&store.writes==0,"kind 13: no collapsible help exposed, request pending");
-            ElementsNavigationStarting(live);run();
-            Expect(store.deferral.completed==1&&store.state==COREWEBVIEW2_PERMISSION_STATE_DENY&&store.writes==1&&!promptOpen,"kind 13 + navigation: denied once, not saved");
-            originPrompt.Surface().FinishAnimationsForTest();
+            Expect(!promptOpen&&store.deferral.completed==1&&store.state==COREWEBVIEW2_PERMISSION_STATE_ALLOW&&store.writes==1,"kind 13: allowed silently, completed once, no popover");
+            Expect(chip().empty()&&!SiteStateOf(live),"kind 13: no chip, nothing recorded for the site");
             PermissionArgs bell2(COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS);PermissionRequested(live,&bell2);run();
             Expect(originPrompt.Surface().CurrentSpec().title==L"meet.exemple.test veut vous envoyer des notifications"&&originPrompt.Surface().CurrentSpec().notices.empty()&&originPrompt.Surface().CurrentSpec().checkLabel.empty(),"kind 4: notifications title, no note, no check");
+            {bool help=false;for(auto& n:originPrompt.Surface().NodesForTest())if(n.role==Accessibility::Role::Text||n.expand!=0||n.name.find(L"Plus d'infos")!=std::wstring::npos)help=true;Expect(!help&&bell2.deferral.completed==0,"kind 4: no collapsible help exposed, request pending");}
             originPrompt.Surface().Finish(OP::Id::Cancel);run();
             Expect(bell2.deferral.completed==1&&bell2.state==COREWEBVIEW2_PERMISSION_STATE_DENY,"kind 4: Bloquer denies once (remember policy unchanged)");
             ElementsNavigationStarting(live);run();originPrompt.Surface().FinishAnimationsForTest();
@@ -344,7 +353,7 @@ int main(){
             }
             // E6: three distinct French reasons on the list row, other failures unchanged.
             Expect(DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS))==L"Bloqué · fichier dangereux"
-                &&DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED))==L"Bloqué · vérification de sécurité impossible"
+                &&DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED))==L"Bloqué · analyse impossible"
                 &&DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY))==L"Bloqué · règle de sécurité"
                 &&DL::FailureText(InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_DISCONNECTED))==L"Échec · Hors ligne","E6: blocked rows in French, by reason");
             // E2: the toast's progress format, no invented total (French interface: decimal comma, « Mo »).
@@ -369,8 +378,12 @@ int main(){
             DialogArgs third;ScriptDialogOpening(live,&third);run();
             Expect(third.deferral.completed==1&&third.accepted==0&&!modalOpen,"checked: the site's next dialogs are suppressed (answered « cancel »)");
             ElementsNavigationStarting(live);run();
-            DialogArgs fourth;ScriptDialogOpening(live,&fourth);run();
-            Expect(modalOpen&&modalActive.spec.checkLabel.empty(),"navigation lifts the block and restarts the count");
+            DialogArgs reloaded;reloaded.uri=L"https://exemple.test/autre";ScriptDialogOpening(live,&reloaded);run();
+            Expect(reloaded.deferral.completed==1&&reloaded.accepted==0&&!modalOpen,"SEC-25: a reload or another page of the same site keeps the block");
+            ElementsNavigationStarting(live);run();
+            DialogArgs fourth;fourth.uri=L"https://autre-site.test/";fourth.message=std::wstring(20000,L'x')+L"\xD83D\xDE00";ScriptDialogOpening(live,&fourth);run();
+            Expect(modalOpen&&modalActive.spec.checkLabel.empty(),"another site in the tab: no block, the count restarts");
+            Expect(modalActive.spec.message==std::wstring(10000,L'x')&&CapDialogText(L"ab\xD83D\xDE00",3)==L"ab"&&CapDialogText(L"abc",3)==L"abc","SEC-25: a page's dialog text is capped (10 000 characters, never half a surrogate pair)");
             finish(MD::AcceptButton);
             DialogArgs leave;leave.kind=COREWEBVIEW2_SCRIPT_DIALOG_KIND_BEFOREUNLOAD;ScriptDialogOpening(live,&leave);run();
             Expect(modalActive.spec.title==L"Quitter ce site ?","beforeunload: « Quitter » by default");
@@ -476,7 +489,18 @@ int main(){
         privateWindow=false;Log(L"control");
         Expect(!std::filesystem::is_empty(dir),"control: the same paths are written by a normal window");
         std::tie(dataDir,sessionFile,downloadsFile,settingsFile,logFile,smoke,sessionReady)=saved;std::filesystem::remove_all(dir,ec);
-        Expect(PrivateCommandLine(L"C:/b/browser.exe")==L"\"C:/b/browser.exe\" --private","private window: same executable, only --private passed");
+        Expect(PrivateCommandLine(L"C:/b/browser.exe",L"")==L"\"C:/b/browser.exe\" --private"&&PrivateCommandLine(L"C:/b/browser.exe",Profiles::DefaultId)==L"\"C:/b/browser.exe\" --private","private window from Personnel: same executable, only --private passed");
+        Expect(PrivateCommandLine(L"C:/b/browser.exe",L"ptravail01")==L"\"C:/b/browser.exe\" --private --profile ptravail01","R-2: private window from Travail: --profile of its opener (read-only vault of that profile)");
+        Expect(PrivateCommandLine(L"C:/b/browser.exe",L"..\\x --delete-profile y")==L"\"C:/b/browser.exe\" --private","R-2: an invalid profile id is never passed");
+        // Review R-2: a private window reads the vault of the profile it was opened from, and none when that profile is unknown.
+        { const std::wstring pdir=L"build/elements-integration/private-vault";std::error_code pec;std::filesystem::remove_all(pdir,pec);std::filesystem::create_directories(pdir,pec);
+          {Vault::Store st;st.Save(L"https://travail.test",L"synth-travail",L"Synth-7777!",1);std::ofstream f(std::filesystem::path(pdir+L"\\passwords"),std::ios::binary);st.Write(f);}
+          const std::wstring savedDir=dataDir;const std::wstring savedPrivateDir=privateVaultDir;dataDir=L"build/elements-integration/not-this-one";privateWindow=true;privateVaultDir=pdir;
+          Expect(VaultFile()==pdir+L"\\passwords"&&ReadVault(0)==VaultLoad::Ok&&vault.Entries().size()==1&&vault.Entries()[0].user==L"synth-travail","R-2: a private window reads its opener profile's vault, not the window's data root");
+          privateVaultDir.clear();
+          Expect(ReadVault(0)==VaultLoad::Ok&&vaultLoaded&&vault.Entries().empty(),"R-2: opener profile unknown: no vault is read (never another profile's)");
+          privateWindow=false;privateVaultDir=savedPrivateDir;dataDir=savedDir;vault=Vault::Store{};vaultBase=Vault::Store{};vaultLoaded=false;std::filesystem::remove_all(pdir,pec);
+          Expect(VaultFile()==dataDir+L"\\passwords","R-2: a normal window keeps its own profile's vault"); }
         // V5: the native fill control is not armed right after it appeared (500 ms, same tab and navigation).
         { chrome.vaultKey=true;vaultKeySerial=live->serial;vaultKeyNav=live->navStamp;vaultKeyShownAt=GetTickCount64();
           Expect(!VaultKeyArmed(),"V5: the fill control ignores an activation before 500 ms");
@@ -504,6 +528,34 @@ int main(){
            SetEvent(hold.done);WaitForSingleObject(th,5000);CloseHandle(th);CloseHandle(hold.ready);CloseHandle(hold.done);}
           {Vault::Store st;std::ofstream f(std::filesystem::path(VaultFile()),std::ios::binary);st.Write(f);}   // the account removed in another window
           Expect(ReadVault(1000)==VaultLoad::Ok&&vault.Entries().empty(),"F11: a fresh read honours a removal made elsewhere");
+          // Audit SEC-19: the periodic check re-reads and parses the file only when it changed since the last read.
+          { vaultCheckedAt=0;Expect(VaultCached()==std::make_pair(true,(std::size_t)0),"SEC-19: the periodic check reads the vault once");
+            vault.Save(L"https://memoire.test",L"synth",L"Synth-mem-0000!",2);   // memory only: a re-read would drop it
+            vaultCheckedAt=0;Expect(VaultCached()==std::make_pair(true,(std::size_t)1)&&vault.Entries().size()==1,"SEC-19: file unchanged: the periodic check does NOT re-read or parse it");
+            Sleep(30);{Vault::Store st;st.Save(L"https://a.test",L"synth",L"Synth-0000!",3);st.Save(L"https://b.test",L"synth",L"Synth-0001!",3);std::ostringstream o;st.Write(o);
+             Expect(ProfileStore::WriteAtomic(VaultFile(),o.str()),"SEC-19 fixture: another window commits two accounts");}
+            vaultCheckedAt=0;Expect(VaultCached()==std::make_pair(true,(std::size_t)2),"SEC-19: file changed: the periodic check re-reads it");
+            vaultCheckedAt=GetTickCount64();std::filesystem::remove(std::filesystem::path(VaultFile()),vec);Expect(VaultCached().second==2,"SEC-19: still at most one check every 2 s");
+            vaultCheckedAt=0;Expect(VaultCached()==std::make_pair(true,(std::size_t)0),"SEC-19: a removed file is seen at the next check (absent = empty)"); }
+          // Review N-8: a vault file over 16 MB is never read (unavailable, not empty) and never written.
+          { std::ofstream big(std::filesystem::path(VaultFile()),std::ios::binary);big<<Vault::Store::Header<<'\n';std::string pad(1<<20,'x');for(int k=0;k<17;++k)big<<pad; }
+          Expect(ReadVault(0)==VaultLoad::Unavailable&&!vaultLoaded,"N-8: a vault file over 16 MB is unavailable (not read, never an empty vault)");
+          std::filesystem::remove(std::filesystem::path(VaultFile()),vec);
+          // Review N-7: an entry Windows cannot decrypt here is said, never a silent nothing.
+          { Vault::Store st;st.Save(L"https://a.test",L"synth",L"Synth-0000!",1);std::ostringstream o;st.Write(o);std::string b=o.str();
+            Expect(ReadVault(0)==VaultLoad::Ok,"N-7 setup: empty vault");vault=st;Vault::Entry e=vault.Entries()[0];
+            std::wstring sec;const unsigned n0=vaultNoticesShown;
+            Expect(VaultRevealForFill(e,L"https://a.test",sec)&&sec==L"Synth-0000!"&&vaultNoticesShown==n0,"N-7: a readable entry is revealed for the fill, nothing said");Wipe(sec);
+            Expect(!VaultRevealForFill(e,L"https://b.test",sec)&&sec.empty()&&vaultNoticesShown==n0+1&&vaultLastNotice==L"Ce mot de passe ne peut pas être lu sur cet appareil.","N-7: an entry that cannot be decrypted here is said: « Ce mot de passe ne peut pas être lu sur cet appareil. »");
+            I18n::SetForProcess(I18n::Locale::En);VaultRevealForFill(e,L"https://b.test",sec);I18n::SetForProcess(I18n::Locale::Fr);
+            Expect(vaultLastNotice==L"This password can’t be read on this device.","N-7 in English: « This password can’t be read on this device. »");
+            vault=Vault::Store{};vaultBase=Vault::Store{}; }
+          // Review N-3: the 15 s time-out of a held login runs through the profile-scoped timer (DeferAfter), not a plain one.
+          { const auto d0=delayedJobs.size(),s0=sandboxTimers.size();VaultAwait& w=vaultAwait[4242];w.seq=7;std::weak_ptr<Tab> none;
+            VaultHoldTimeout(4242,7,none);
+            Expect(delayedJobs.size()==d0+1&&sandboxTimers.size()==s0,"N-3: the held login's time-out is a profile-scoped timer (DeferAfter: the profile that held it, never the one on screen)");
+            UINT_PTR id=0;for(auto& j:delayedJobs)id=j.first;auto job=std::move(delayedJobs[id]);delayedJobs.erase(id);KillTimer(nullptr,id);job();
+            Expect(!vaultAwait.count(4242),"N-3: when it fires, the held login is dropped"); }
           dataDir=savedDir;vault=Vault::Store{};vaultBase=Vault::Store{};vaultLoaded=false;std::filesystem::remove_all(vdir,vec); }
         // Review 885d322 #1: a pending capture (its secret) is bound to the tab's document and wiped.
         { PromptJob a;a.spec.secret=L"Synth-capture-0000!-long-enough";PromptJob b=std::move(a);
@@ -522,6 +574,89 @@ int main(){
           Expect(answered==4&&promptQueue.empty(),"capture: closing the tab drops the offer and its secret");
           Expect(!VaultOfferStillValid(live,o)&&!VaultOfferStillValid(nullptr,o),"capture: the show/answer guard refuses a tab whose engine source is not the capture origin (PumpPrompt and the answer use it; shown path covered by vault_e2e)");
           vaultCapture.clear(); }
+        // Engine passwords, owner decision « option A »: the activation date and the days of use are recorded; NOTHING is
+        // ever deleted automatically; after 30 days of use, with « Mots de passe » on and a readable vault, Réglages ›
+        // Mots de passe OFFERS the deletion; it happens only after a click AND the A5-style confirmation; the result is
+        // said (deleted, or failed with the reason) and, once deleted, the offer is gone for good.
+        { const std::wstring mdir=L"build/elements-integration/vault-migration";std::error_code mec;std::filesystem::remove_all(mdir,mec);std::filesystem::create_directories(mdir,mec);
+          const std::wstring savedDir=dataDir;dataDir=mdir;const bool wasActive=Vault::ActiveFlag(),wasOn=settings.passwords;const std::int64_t day=24LL*3600*1000,t0=1790000000000LL;
+          const std::wstring state=mdir+L"\\vault-engine-migration";settings.passwords=true;
+          int engineCalls=0;HRESULT engineAnswer=S_OK;
+          vaultEngineClearHook=[&](std::function<void(HRESULT)> done){++engineCalls;done(engineAnswer);};   // the engine call, injected
+          Vault::ActiveFlag()=false;Expect(VaultEngineMigrationStep(t0)==EngineStep::Nothing&&!std::filesystem::exists(state)&&!VaultEngineOfferDue(),"option A: vault inactive (engine-control test host): nothing recorded, no offer");
+          Vault::ActiveFlag()=true;privateWindow=true;Expect(VaultEngineMigrationStep(t0)==EngineStep::Nothing&&!std::filesystem::exists(state)&&!VaultEngineOfferDue(),"option A: a private window records nothing and offers nothing");
+          privateWindow=false;
+          Expect(VaultEngineMigrationStep(t0)==EngineStep::Recorded&&VaultEngineMigrationStep(t0+3600*1000)==EngineStep::Nothing,"option A: the first active start records the activation date (once)");
+          bool early=false;for(int k=1;k<29;++k)early=early||VaultEngineMigrationStep(t0+k*day)!=EngineStep::Nothing||VaultEngineOfferDue();
+          Expect(!early&&engineCalls==0,"option A: 29 days of use: no offer, nothing deleted");
+          AskVaultEngineDelete();Expect(engineCalls==0&&!modalOpen,"option A: before 30 days of use even a direct request deletes nothing (no dialog)");
+          Expect(VaultEngineMigrationStep(t0+400*day)==EngineStep::OfferDue&&engineCalls==0,"option A: the 30th day of use (whatever the calendar says): the offer is due, NOTHING deleted automatically");
+          Expect(VaultEngineOfferDue(),"option A: Réglages › Mots de passe shows the offer");
+          settings.passwords=false;Expect(!VaultEngineOfferDue(),"option A: no offer while « Mots de passe » is off");settings.passwords=true;
+          { std::ofstream bad(std::filesystem::path(mdir+L"\\passwords"),std::ios::binary);bad<<"pas un coffre\n"; }
+          Expect(!VaultEngineOfferDue(),"option A: no offer while the vault is unreadable");
+          std::filesystem::remove(mdir+L"\\passwords",mec);
+          Vault::ActiveFlag()=false;Expect(!VaultEngineOfferDue(),"option A: no offer while the vault is inactive");Vault::ActiveFlag()=true;
+          Expect(VaultEngineOfferDue(),"option A: the offer is back once everything allows it");
+          // The B05 list shows the offer with its button (real mode only).
+          NativeChrome::PasswordDemo::Window list;list.SetReal({},[](std::uint64_t){return false;});list.SetEngineOffer(true,[]{});
+          auto hasOffer=[&](const MD::Spec& sp){for(auto& l:sp.links)if(l.automationId==L"VaultEngineOffer")return true;return false;};
+          Expect(hasOffer(list.ListSpecForTest()),"option A: the B05 list carries the link row « Supprimer les anciens mots de passe… »");
+          list.SetEngineOffer(false,[]{});Expect(!hasOffer(list.ListSpecForTest()),"option A: no button when the offer is not due");
+          list.SetReadOnly(true);list.SetEngineOffer(true,[]{});Expect(!hasOffer(list.ListSpecForTest()),"option A: never in a read-only (private) list");list.SetReadOnly(false);
+          // The confirmation (A5 pattern): « Annuler » deletes nothing; « Supprimer » deletes; a failure is said with its reason.
+          instance=GetModuleHandleW(nullptr);
+          window=CreateWindowExW(WS_EX_TOOLWINDOW,L"STATIC",L"owner",WS_POPUP,0,0,1200,800,nullptr,nullptr,instance,nullptr);
+          wchar_t cwd[MAX_PATH]{};GetCurrentDirectoryW(MAX_PATH,cwd);
+          Expect(window&&modal.Create(instance,window,cwd,{}),"option A: modal surface created");
+          auto run=[]{for(int i=0;i<6&&!deferredJobs.empty();++i){auto jobs=std::move(deferredJobs);deferredJobs.clear();for(auto& j:jobs)j();}};
+          AskVaultEngineDelete();run();
+          Expect(modalOpen&&modal.CurrentSpec().automationId==L"DeleteEnginePasswords"&&modal.CurrentSpec().buttons.size()==2&&modal.CurrentSpec().buttons[1].role==MD::Role::Danger&&engineCalls==0,"option A: a click opens the confirmation (Annuler / destructive action), nothing deleted yet");
+          modal.Finish(MD::CancelButton);run();modal.FinishAnimationsForTest();
+          Expect(!modalOpen&&engineCalls==0&&VaultEngineOfferDue(),"option A: « Annuler »: nothing deleted, the offer stays");
+          // Review N-2: a profile switch (SwitchWorkspace -> CloseVaultSurfaces) closes the dialog; the list never comes back
+          // for the profile now on screen; a late deletion answer never touches another dialog.
+          { const unsigned n0=vaultNoticesShown;
+            AskVaultEngineDelete();run();std::ofstream(std::filesystem::path(mdir+L"\\passwords"),std::ios::binary)<<"pas un coffre\n";modal.Finish(MD::CancelButton);run();modal.FinishAnimationsForTest();
+            Expect(vaultNoticesShown==n0+1,"N-2 control: after « Annuler » the host tries to bring the list back (observable: the unreadable vault is said)");
+            std::filesystem::remove(mdir+L"\\passwords",mec);
+            AskVaultEngineDelete();run();Expect(modalOpen&&modal.CurrentSpec().automationId==L"DeleteEnginePasswords","N-2 setup: the confirmation is open");
+            std::ofstream(std::filesystem::path(mdir+L"\\passwords"),std::ios::binary)<<"pas un coffre\n";const unsigned n1=vaultNoticesShown;
+            CloseVaultSurfaces();run();modal.FinishAnimationsForTest();
+            Expect(!modalOpen&&engineCalls==0&&vaultNoticesShown==n1,"N-2: a profile switch closes the « Supprimer les anciens mots de passe de Browser ? » dialog, nothing deleted, the list does not come back");
+            std::filesystem::remove(mdir+L"\\passwords",mec);
+            std::function<void(HRESULT)> late;vaultEngineClearHook=[&](std::function<void(HRESULT)> done){++engineCalls;late=done;};
+            AskVaultEngineDelete();run();modal.ActivateForTest(MD::Dialog::ButtonHit(1));run();
+            Expect(engineCalls==1&&modalOpen&&modal.BusyForTest()&&late,"N-2 setup: the deletion is under way (busy)");
+            CloseVaultSurfaces();run();modal.FinishAnimationsForTest();
+            MD::Spec other;other.automationId=L"OtherDialog";other.title=L"Autre";other.buttons={{MD::AcceptButton,L"OK",MD::Role::Primary}};AskModal(other,nullptr,nullptr);run();
+            Expect(modalOpen&&modal.CurrentSpec().automationId==L"OtherDialog","N-2 setup: another dialog is open after the switch");
+            late(E_FAIL);run();
+            Expect(modalOpen&&modal.CurrentSpec().automationId==L"OtherDialog"&&modal.ErrorForTest().empty()&&!modal.BusyForTest()&&!vaultEngineJustDeleted,"N-2: a deletion answer arriving after the switch never touches the dialog now open");
+            modal.Abort();run();modal.FinishAnimationsForTest();engineCalls=0;
+            vaultEngineClearHook=[&](std::function<void(HRESULT)> done){++engineCalls;done(engineAnswer);}; }
+          engineAnswer=E_FAIL;AskVaultEngineDelete();run();
+          modal.ActivateForTest(MD::Dialog::ButtonHit(1));run();
+          Expect(engineCalls==1&&modalOpen&&!modal.BusyForTest()&&modal.ErrorForTest().find(L"0x80004005")!=std::wstring::npos&&VaultEngineOfferDue(),"option A: a failed deletion is said in the dialog with its reason; nothing recorded, the offer stays");
+          engineAnswer=S_OK;modal.ActivateForTest(MD::Dialog::ButtonHit(1));run();modal.FinishAnimationsForTest();
+          Vault::EngineMigration after;{std::string b;ProfileStore::ReadAll(state,b);Vault::EngineMigration::Read(b,after);}
+          Expect(engineCalls==2&&!modalOpen&&after.cleared>0&&!VaultEngineOfferDue(),"option A: « Supprimer » after the confirmation deletes, the dialog closes, the deletion is recorded and the offer is gone");
+          Expect(VaultEngineMigrationStep(t0+500*day)==EngineStep::Nothing&&!VaultEngineOfferDue(),"option A: the offer never comes back (next starts)");
+          AskVaultEngineDelete();run();Expect(!modalOpen&&engineCalls==2,"option A: after the deletion a direct request opens nothing");
+          { std::ofstream bad(std::filesystem::path(state),std::ios::binary);bad<<"autre chose\n"; }
+          Expect(VaultEngineMigrationStep(t0+501*day)==EngineStep::Recorded&&!VaultEngineOfferDue(),"option A: an unreadable state file is never taken as an old date (re-recorded: never an early offer)");
+          modal.Abort();run();modal.Dispose();DestroyWindow(window);window=nullptr;vaultEngineClearHook=nullptr;
+          settings.passwords=wasOn;Vault::ActiveFlag()=wasActive;dataDir=savedDir;std::filesystem::remove_all(mdir,mec); }
+        // Review V-5: the capture (DevTools domains) is attached only while it can be used.
+        { const bool wasActive=Vault::ActiveFlag(),wasOn=settings.passwords;
+          Vault::ActiveFlag()=false;settings.passwords=true;Expect(!VaultCaptureWanted(),"V-5: vault inactive (engine-control test host): no DevTools capture on any tab");
+          Vault::ActiveFlag()=true;settings.passwords=false;Expect(!VaultCaptureWanted(),"V-5: « Mots de passe » off: no DevTools capture");
+          settings.passwords=true;privateWindow=true;Expect(!VaultCaptureWanted(),"V-5: private window: no capture");
+          privateWindow=false;Expect(VaultCaptureWanted(),"V-5: vault active, « Mots de passe » on, normal window: capture attached");
+          Vault::ActiveFlag()=wasActive;settings.passwords=wasOn; }
+        // « Effacer en quittant » says what it really deletes (ClearBrowsingDataAll includes the engine's saved passwords and forms).
+        { const bool wasActive=Vault::ActiveFlag();Vault::ActiveFlag()=false;const std::wstring off=ClearOnExitNote();Vault::ActiveFlag()=true;const std::wstring on=ClearOnExitNote();Vault::ActiveFlag()=wasActive;
+          Expect(off.find(L"mots de passe")!=std::wstring::npos&&on.find(L"mots de passe")!=std::wstring::npos&&off!=on,"clear on exit: the note names the saved passwords it deletes (vault inactive: all of them; active: those not kept yet)"); }
         // A5 with engine categories but no engine profile (no live tab / older runtime): a real failure, never « effacé ».
         { HRESULT got=S_FALSE;StartClearSelected({false,true,true,false,false},1,[&](HRESULT hr){got=hr;});Expect(FAILED(got),"A5: cookies/cache selected without an engine profile is reported as a failure"); }
         // Startup recovery relaunch (PR62 contract): the mode and this window's session are kept.

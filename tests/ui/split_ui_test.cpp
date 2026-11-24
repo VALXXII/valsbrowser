@@ -277,6 +277,40 @@ int main() {
         QuitGroup(v0.group);
     }
 
+    // Text fit: the refusal pill (« Pas de place pour deux sites · 256 px de haut minimum chacun ») is drawn beside
+    // the pointer; dragged near the right or bottom edge of the window it must stay whole inside it (8 DIP margin),
+    // never cut by the window edge, in French and English, at 96 and 120 DPI.
+    {   int pillFailures = 0; wchar_t cwd[MAX_PATH]{}; GetCurrentDirectoryW(MAX_PATH, cwd);
+        const std::wstring evidence = std::wstring(cwd) + L"\\build\\text-fit-evidence"; CreateDirectoryW((std::wstring(cwd) + L"\\build").c_str(), nullptr); CreateDirectoryW(evidence.c_str(), nullptr);
+        for (auto lang : {I18n::Locale::Fr, I18n::Locale::En}) {
+            I18n::SetForProcess(lang);
+            for (UINT dpi : {96u, 120u}) for (float width : {560.f, 700.f, 300.f}) {
+                const float height = 420, k = dpi / 96.f;
+                NativeChrome::Chrome off; assert(SUCCEEDED(off.InitOffscreen(cwd, dpi, width, height)));
+                NativeChrome::SplitUI::Painter painter; painter.write = off.WriteFactory(); painter.fonts = off.FontCollection();
+                for (int needed : {2, 3}) for (auto o : {SV::Orientation::Row, SV::Orientation::Column}) for (float px : {width * .3f, width - 20}) for (float py : {200.f, height - 10}) {
+                    NativeChrome::SplitUI::Frame f; f.pill.shown = true; f.pill.x = px + 14; f.pill.y = py + 22; f.pill.title = RefusalTitle(needed); f.pill.detail = RefusalDetail(o);
+                    auto* t = off.RenderTarget(); t->BeginDraw(); t->Clear(D2D1::ColorF(0, 0, 0, 1)); painter.Draw(t, f); assert(SUCCEEDED(t->EndDraw()));
+                    const int W = (int)std::lround(width * k), H = (int)std::lround(height * k), m = (int)std::floor(8 * k);
+                    bool inside = true, drawn = false;
+                    auto lit = [&](int x, int y) { return (off.SurfacePixel((x + .5f) / k, (y + .5f) / k) & 0xFFFFFF) != 0; };
+                    for (int y = 0; y < H; ++y) for (int x = 0; x < W; ++x) {
+                        const bool band = x < m || y < m || x >= W - m || y >= H - m;
+                        if (band) { if (lit(x, y)) inside = false; }
+                        else if (!drawn && x % 3 == 0 && y % 3 == 0 && lit(x, y)) drawn = true;
+                    }
+                    if (!drawn || !inside) std::fprintf(stderr, "refusal pill %s: %ls / %ls, %u dpi, window %g, pointer %g,%g\n", drawn ? "crosses the window edge" : "not drawn", f.pill.title.c_str(), f.pill.detail.c_str(), dpi, width, px, py);
+                    if (!(drawn && inside)) ++pillFailures;
+                    if (needed == 2 && o == SV::Orientation::Column && px == width - 20 && py == 200.f)
+                        off.SavePng((evidence + L"\\split-refusal-pill-" + (lang == I18n::Locale::En ? L"en-" : L"fr-") + std::to_wstring(dpi) + L"-w" + std::to_wstring((int)width) + L".png").c_str());
+                }
+            }
+        }
+        I18n::SetForProcess(I18n::Locale::Fr);
+        std::printf("refusal pill: %d of 192 frames cross the window edge\n", pillFailures);
+        assert(pillFailures == 0);
+    }
+
     pages.clear(); DestroyWindow(window); window = nullptr;
     std::puts("PASS: reorder vs lift, split right, Escape restore, insert, refusal, replace keeps tabs, rails on shrink + reopen, keyboard and pointer resize, close hand-over, menu stacking, reverse, F6 panels, page fullscreen alone in a split, session groups, single tab, menu V2 (target header, other sites, homonyms, full group reason, replace, off-screen group), rounded page corners");
 }

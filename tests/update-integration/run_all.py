@@ -16,7 +16,7 @@ Steps:
   4. --app: static checks of the built application directory.
 """
 from __future__ import annotations
-import argparse, json, struct, subprocess, sys, time
+import argparse, json, shutil, struct, subprocess, sys, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -58,19 +58,39 @@ def existing_fixtures() -> None:
     # test-lottie.py: loading, frame clock, lottie, clipboard gate, design system, hover, ui
     run('test-lottie.py (native lottie/ui fixtures)', [sys.executable, ROOT / 'test-lottie.py'])
     fixture('session_test', [*STRICT, 'tests/session_test.cpp'])
+    # Address field model: display, suggestions, and what a typed text opens (links, local paths and file: URLs, searches).
+    fixture('address_test', [*STRICT, 'tests/address_test.cpp'])
+    fixture('history_index_test', ['-O2', *STRICT, 'tests/history_index_test.cpp'])
     # Interface language (design/browser-languages-plan.md): catalog, formats, plurals, the browser-wide
     # preference (temporary folders only), then Reglages > Langue on the real drawer (FR and EN processes).
     run('i18n coverage gate (catalog parity, no untranslated interface text)', [sys.executable, ROOT / 'tools/i18n/check_strings.py'])
     fixture('i18n_test', [*STRICT, 'tests/i18n_test.cpp'])
     # The ad blocker installs from a folder updates never move (src/adblock-folder.h; e2e: tests/e2e/adblock_update_e2e.py).
     fixture('adblock_folder_test', [*STRICT, 'tests/adblock_folder_test.cpp'])
+    # browser.log: origins only in release builds, capped at 1 MiB, erased with the browsing data (src/log-privacy.h, SEC-05).
+    fixture('log_privacy_test', [*STRICT, 'tests/log_privacy_test.cpp'])
+    # Directory loops that never throw (src/fs-safe.h, SEC-27): an unlistable sub-folder ends the loop, not the process.
+    fixture('fs_safe_test', [*STRICT, 'tests/fs_safe_test.cpp', '-ladvapi32'])
     # One taskbar identity for every installed version (src/taskbar-identity.h; e2e: tests/e2e/taskbar_identity_e2e.py).
     fixture('taskbar_identity_test', [*STRICT, 'tests/taskbar_identity_test.cpp', '-lole32', '-luuid', '-lshell32', '-lshlwapi'])
+    # Browser as a selectable default browser (src/default-browser.h: registration under a throwaway HKCU test key only,
+    # faked default status) and the link / file a launch opens (src/launch-args.h).
+    fixture('default_browser_test', [*STRICT, 'tests/default_browser_test.cpp', '-lole32', '-luuid', '-lshell32', '-lshlwapi', '-ladvapi32'])
+    default_browser_evidence = ROOT / 'build/default-browser/captures/settings'
+    default_browser_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('default_browser_settings_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/default_browser_settings_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt'], [ROOT, default_browser_evidence])
     language_evidence = ROOT / 'build/browser-languages/captures/settings'
     language_evidence.mkdir(parents=True, exist_ok=True)
     fixture('language_settings_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/language_settings_test.cpp', 'src/native-lottie.cpp', THORVG,
             *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt'], [ROOT, language_evidence])
     fixture('bookmarks_test', [*STRICT, 'tests/bookmarks_test.cpp'])
+    fixture('bookmark_drag_test', [*STRICT, 'tests/bookmark_drag_test.cpp'])   # drag and drop rules (src/bookmark-drag.h)
+    promote_work = OUT / 'bookmark-promote-work'
+    promote_work.mkdir(parents=True, exist_ok=True)
+    fixture('bookmark_promote_test', [*STRICT, '-municode', '-Isrc', 'tests/browser-import/bookmark_promote_test.cpp', '-lshell32', '-lole32', '-ladvapi32'], [promote_work])
+    fixture('bookmark_move_test', [*STRICT, '-municode', '-Isrc', 'tests/browser-import/bookmark_move_test.cpp', '-lshell32', '-lole32', '-ladvapi32'], [promote_work])
+    fixture('browser_catalog_test', [*STRICT, '-municode', '-Isrc', 'tests/browser-import/browser_catalog_test.cpp', '-lshell32', '-lole32', '-ladvapi32', '-lgdi32', '-luser32'], [promote_work])
     # Import from a browser (design/browser-data-import-plan.md): synthetic roots only, Windows' winsqlite3.dll
     import_work = OUT / 'browser-import-work'
     import_work.mkdir(parents=True, exist_ok=True)
@@ -94,8 +114,16 @@ def existing_fixtures() -> None:
     fixture('address_background_test', [*STRICT, 'tests/address_background_test.cpp', '-lgdi32', '-luser32', '-ldwmapi'])
     # Address selection in the profile colour: real EDIT pixels, keyboard/mouse/edit, live switch, 96/144/192 DPI
     fixture('address_selection_test', [*STRICT, 'tests/address_selection_test.cpp', '-lgdi32', '-luser32', '-ldwmapi', '-lcomctl32'])
+    # Typing flicker: every native text field shows no frame between before and after a keystroke (real EDITs, surface pixels)
+    flicker_evidence = ROOT / 'build/flicker-qa'
+    flicker_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('edit_flicker_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/ui/edit_flicker_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-lshell32', '-loleaut32', '-lmsimg32', '-lshcore'], [ROOT, flicker_evidence])
     fixture('shortcuts_test', ['-O0', *TVG, WV2, 'tests/shortcuts_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
     fixture('navigation_errors_test', [*LOOSE, *TVG, WV2, 'tests/navigation_errors_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
+    # A navigation the engine turned into a download is never an error page (src/download-navigation.h; real engine:
+    # tests/downloads/download_navigation_e2e.py)
+    fixture('download_navigation_test', [*STRICT, 'tests/download_navigation_test.cpp'])
     fixture('tab_drag_test', [*LOOSE, *TVG, WV2, 'tests/ui/tab_drag_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
     # Split view: pure model (zones, capacity, rails, springs) and host behaviour through WndProc
     fixture('split_view_test', [*STRICT, 'tests/split-view/split_view_test.cpp'])
@@ -104,6 +132,15 @@ def existing_fixtures() -> None:
     # Screen-reader view of the chrome through a real UI Automation client (issue #2)
     # Native menus: a submenu's row hover follows the pointer mid-entrance (cascade, keyboard, reduced motion)
     fixture('context_menu_hover_test', [*LOOSE, '-municode', *TVG, 'tests/ui/context_menu_hover_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS, '-lshell32', '-loleaut32'], [ROOT])
+    # Suggestions popup and Favoris drawer redraw at the DPI of the monitor they land on (SKIP with a single DPI, as on CI).
+    fixture('address_popup_dpi_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/ui/address_popup_dpi_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS, '-lshell32', '-loleaut32', '-lmsimg32', '-lshcore'], [ROOT])
+    fixture('select_all_test', [*STRICT, 'tests/ui/select_all_test.cpp', '-luser32', '-lcomctl32', '-ldwmapi', '-lgdi32'])
+    # Paint path (offscreen): bar favicons uploaded once, text cache kept across paints, audio/downloads icon repaint rates.
+    paint_evidence = ROOT / 'build/paint-perf-qa'
+    paint_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('paint_perf_render_test', [*STRICT, '-Wno-misleading-indentation', '-municode', *TVG, 'tests/ui/paint_perf_render_test.cpp', 'src/native-lottie.cpp', THORVG,
+            '-ld2d1', '-ldwrite', '-lwindowscodecs', '-lole32', '-luuid', '-lcomctl32', '-lgdi32', '-ldwmapi', '-lshell32'],
+            [ROOT, paint_evidence])
     fixture('accessibility_test', [*LOOSE, *TVG, WV2, 'tests/accessibility/accessibility_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS, '-loleaut32'])
     # Download history popover/drawer (upstream PR #28/#29, same line as test-downloads.ps1)
     downloads_evidence = ROOT / 'build/downloads-qa'
@@ -117,6 +154,25 @@ def existing_fixtures() -> None:
     fixture('history_panel_test', [*STRICT, '-municode', *TVG, 'tests/history/history_panel_test.cpp', 'src/native-lottie.cpp', THORVG,
             '-ld2d1', '-ldwrite', '-lwindowscodecs', '-lole32', '-luuid', '-lcomctl32', '-lgdi32', '-ldwmapi', '-lshell32'],
             [ROOT, history_evidence])
+    # First-run onboarding (Paper p-R-0): the flow, the first-run rule and the motion policy (pure), then the seven
+    # boards drawn off screen by the production window at 96 and 120 DPI (shaders on Direct3D, WARP without a GPU),
+    # with the Paper geometry, keyboard order, events and both languages. Real window: tests/onboarding/qa.py.
+    fixture('onboarding_flow_test', [*STRICT, 'tests/onboarding/onboarding_flow_test.cpp'])
+    # The 2 -> 3 transition as numbers: defaults, text round trip of the debug panel's file, bounds, timeline
+    fixture('onboarding_tuning_test', [*STRICT, 'tests/onboarding/onboarding_tuning_test.cpp'])
+    # Its import: board 3's lists and the commit into a profile folder, on synthetic sources only (*.example)
+    onboarding_sources, onboarding_work = OUT / 'onboarding-import-sources', OUT / 'onboarding-import-work'
+    for folder in (onboarding_sources, onboarding_work):
+        if folder.exists():
+            shutil.rmtree(folder)
+    onboarding_work.mkdir(parents=True)
+    run('synthetic import sources for the onboarding', [sys.executable, '-I', ROOT / 'tests/browser-import/make_sources.py', onboarding_sources])
+    fixture('onboarding_import_test', [*STRICT, '-municode', '-Isrc', 'tests/onboarding/onboarding_import_test.cpp', '-lshell32', '-lole32', '-ladvapi32', '-lgdi32', '-luser32'],
+            [onboarding_sources, onboarding_work])
+    onboarding_evidence = ROOT / 'build/onboarding-render'
+    onboarding_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('onboarding_render_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/onboarding/onboarding_render_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32'], [ROOT, onboarding_evidence])
 
 
 def peer_suites() -> None:
@@ -220,6 +276,17 @@ def check_app(app: Path) -> None:
             sys.exit(f'{exe.name}: FileVersion/ProductVersion {strings.get("FileVersion")}/{strings.get("ProductVersion")} != {info["version"]}')
         if strings['OriginalFilename'].lower() != exe.name.lower():
             sys.exit(f'{exe.name}: OriginalFilename is {strings["OriginalFilename"]}')
+        # The name Windows shows (Properties, Task Manager, SmartScreen) is the product « Browser », capital B; the
+        # file names keep their lowercase (browser.exe, update-helper.exe: updates and pins rely on them).
+        if strings['ProductName'] != 'Browser' or not strings['FileDescription'].startswith('Browser'):
+            sys.exit(f'{exe.name}: ProductName/FileDescription {strings["ProductName"]!r}/{strings["FileDescription"]!r} do not name « Browser »')
+    # The stable launcher (<root>\browser.exe = update-helper.exe) carries the name a pinned window shows: string 1
+    # (src/taskbar-identity.h NameResource; a plain string would read back « browser », window properties are atoms).
+    import ctypes
+    buf = ctypes.create_unicode_buffer(256)
+    shown = buf.value if ctypes.windll.shlwapi.SHLoadIndirectString(f'@{app / "update-helper.exe"},-1', buf, 256, None) == 0 else None
+    if shown != 'Browser':
+        sys.exit(f'update-helper.exe string 1 is {shown!r}, not « Browser » (pinned window name)')
     # App icon policy (tools/release/version.py): release -> live, dev -> preview. Both executables
     # embed exactly that ICO's 256 px image, never the other one, and assets/browser.ico is that ICO.
     sys.path.insert(0, str(ROOT / 'tools/release'))

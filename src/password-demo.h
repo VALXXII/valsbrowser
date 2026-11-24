@@ -38,11 +38,14 @@ public:
     struct Hooks { std::function<void()> wake; std::function<void(const std::wstring&)> announce; };
     enum class View { List, Detail, Confirm };
 private:
-    enum : int { BackButton = 20, DeleteButton = 21, ConfirmButton = 22, KeepButton = 23 };
+    enum : int { BackButton = 20, DeleteButton = 21, ConfirmButton = 22, KeepButton = 23, EngineLink = 24 };
     Modal::Dialog dialog_; Hooks hooks_; std::vector<Account> accounts_ = SampleAccounts();
     // B05 REAL mode (E8, vault): the vault's accounts WITHOUT any decrypted secret (no reveal), removal
     // through `remove_` (the vault transaction; false = not removed, said so). No « Démonstration » badge.
     bool real_ = false, readOnly_ = false; std::function<bool(std::uint64_t)> remove_;
+    // Owner decision « option A »: the engine's old saved passwords. `engineOffer_`: the deletion is offered (30 days of use,
+    // « Mots de passe » on, vault readable; never in a read-only list); `engineDeleted_`: the person deleted them.
+    bool engineOffer_ = false, engineDeleted_ = false; std::function<void()> engineAsk_;
     std::function<void()> closed_; View view_ = View::List; size_t current_ = 0;
     Modal::Spec Base() const {
         Modal::Spec s; s.kind = Modal::Kind::Passwords; s.scope = Modal::Scope::Window; s.width = 332; s.demo = !real_; s.closeButton = true;
@@ -51,10 +54,17 @@ private:
     }
     Modal::Spec ListSpec() const {
         Modal::Spec s = Base(); s.automationId = real_ ? L"PasswordList" : L"PasswordDemoList"; s.title = L"Mots de passe";
-        s.subtitle = readOnly_ ? L"Lecture seule dans une fenêtre privée : rien ne peut être modifié ici." : real_ ? L"Enregistrés par browser, chiffrés pour votre session Windows. Les mots de passe enregistrés auparavant restent proposés par le moteur." : L"Démonstration : comptes fictifs en mémoire, rien n'est enregistré.";
+        s.subtitle = readOnly_ ? L"Lecture seule dans une fenêtre privée : rien ne peut être modifié ici." : real_ ? std::wstring(engineDeleted_ || (engineOffer_ && !readOnly_) ? TR(vault_list_subtitle_short) : TR(vault_list_subtitle))   /* the offer's own line speaks of the engine */ : L"Démonstration : comptes fictifs en mémoire, rien n'est enregistré.";
+        // Option A: no Paper frame for this offer (flagged). Built from the small popups (A10, PUX-0): the explanation as an
+        // info line (B05's PW-COEXIST footer line), then the family's 32 DIP link row « label  › » (Paper QM2-0) that leads
+        // to the confirmation; both sit together above the list. No destructive button here: the danger is in the dialog.
+        if (real_ && !readOnly_ && engineOffer_ && !engineDeleted_) {
+            s.notices.push_back({DialogKit::Glyph::info, TR(vault_engine_offer_text), false});
+            s.links.push_back({EngineLink, TR(vault_engine_offer_action), L"VaultEngineOffer"});
+        } else if (real_ && engineDeleted_) s.notices.push_back({DialogKit::Glyph::checkCircle, TR(vault_engine_deleted), false});
         s.accountsTitle = L"Enregistrés · " + std::to_wstring(accounts_.size()); s.accountsNavigate = true;
         for (auto& a : accounts_) s.accounts.push_back({a.site + L" · " + a.user, std::wstring(12, L'\x2022')});
-        if (accounts_.empty()) s.accountsTitle = real_ ? L"Aucun mot de passe enregistré par browser" : L"Aucun mot de passe enregistré";
+        if (accounts_.empty()) s.accountsTitle = real_ ? L"Aucun mot de passe enregistré par Browser" : L"Aucun mot de passe enregistré";
         return s;
     }
     Modal::Spec DetailSpec(bool confirm) const {
@@ -107,7 +117,9 @@ public:
     bool Show(RECT area, std::function<void()> closed = {}) {
         if (dialog_.Visible()) return false;
         closed_ = std::move(closed); view_ = View::List;
-        return dialog_.Show(ListSpec(), area, [this](const Modal::Result&) { auto c = std::move(closed_); closed_ = nullptr; if (c) c(); });
+        // The offer's link closes the list (one surface at a time) and then asks the host for the confirmation.
+        return dialog_.Show(ListSpec(), area, [this](const Modal::Result& r) { auto c = std::move(closed_); closed_ = nullptr; if (c) c();
+            if (r.button == EngineLink && engineOffer_ && !engineDeleted_ && engineAsk_) { auto ask = engineAsk_; ask(); } });
     }
     void Hide() { dialog_.Abort(); }
     bool Visible() const { return dialog_.Visible(); }
@@ -118,6 +130,11 @@ public:
     void SetReadOnly(bool readOnly) { readOnly_ = readOnly; }
     void SetReal(std::vector<Account> accounts, std::function<bool(std::uint64_t)> remove) { for (auto& a : accounts_) SecureZeroMemory(a.password.data(), a.password.size() * sizeof(wchar_t)); accounts_ = std::move(accounts); for (auto& a : accounts_) a.password.clear(); remove_ = std::move(remove); real_ = true; }
     bool Real() const { return real_; }
+    // Option A: whether the deletion of the engine's old passwords is offered, and what the button asks the host.
+    void SetEngineOffer(bool offered, std::function<void()> ask) { engineOffer_ = offered; engineAsk_ = std::move(ask); engineDeleted_ = false; }
+    // The person deleted them: the offer goes, the list says so (this time it is shown).
+    void EngineDeleted() { engineDeleted_ = true; engineOffer_ = false; if (dialog_.Visible() && view_ == View::List) Go(View::List); }
+    Modal::Spec ListSpecForTest() const { return ListSpec(); }
     // Back to the fictitious demonstration (the sandbox): never shows real accounts.
     void SetDemo() { for (auto& a : accounts_) SecureZeroMemory(a.password.data(), a.password.size() * sizeof(wchar_t)); accounts_ = SampleAccounts(); remove_ = nullptr; real_ = false; readOnly_ = false; }
     Modal::Dialog& Surface() { return dialog_; }   // tests

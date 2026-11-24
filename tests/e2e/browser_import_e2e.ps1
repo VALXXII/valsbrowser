@@ -120,6 +120,19 @@ function Choose([int]$procId, $dialog, [string]$label, [string]$option) {
   if (!$item) { throw "no option $option" }
   Invoke $item; Start-Sleep -Milliseconds 500
 }
+# Opens the select's list and returns its rows (MenuItem elements), the list left open.
+function MenuRows([int]$procId, $dialog, [string]$label) {
+  $select = $dialog.FindFirst($TS::Descendants, (Cond $AE::NameProperty $label)); if (!$select) { throw "no select $label" }
+  $select.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
+  for ($i = 0; $i -lt 40; $i++) {
+    Start-Sleep -Milliseconds 150
+    foreach ($top in $AE::RootElement.FindAll($TS::Children, (Cond $AE::ProcessIdProperty $procId))) {
+      $found = @($top.FindAll($TS::Descendants, (Cond $AE::AutomationIdProperty 'MenuItem')))
+      if ($found.Count) { return $found }
+    }
+  }
+  return @()
+}
 function Check3($dialog, [string[]]$names) { $names | ForEach-Object { $dialog.FindFirst($TS::Descendants, (Cond $AE::NameProperty $_)) } }
 # Waits for the summary dialog, returns its text (the dialog's help: its body).
 function Result([int]$procId) { $r = Uia $procId 'ImportResult' '' 80; if (!$r) { return $null }; Start-Sleep -Milliseconds 300; return $r }
@@ -139,7 +152,7 @@ function Launch([string]$lang) {
 New-Item -ItemType Directory -Force $app | Out-Null
 robocopy $fix $app /E /NFL /NDL /NJH /NJS /NP /XD profile sessions profiles adblock favicons windows /XF profiles.txt session settings history downloads bookmarks prototype.log engine-args ui-language | Out-Null
 $python = (Get-Command python -ErrorAction SilentlyContinue).Source
-if (!$python) { $python = 'C:/Users/<user>/AppData/Local/Programs/Python/Python312/python.exe' }
+if (!$python) { $python = Join-Path $env:LOCALAPPDATA 'Programs/Python/Python312/python.exe' }
 & $python -I "$repo\tests\browser-import\make_sources.py" $sources
 if ($LASTEXITCODE -ne 0) { throw 'synthetic sources not created' }
 W "$app\profiles.txt" "browser-profiles 1`nlast=default`np=default|house|0|0|1|Personnel`n"
@@ -159,10 +172,23 @@ try {
   Check ($d.Current.HelpText -like '*« Personnel »*') "FR destination names this window's profile: $($d.Current.HelpText)"
   $select = $d.FindFirst($TS::Descendants, (Cond $AE::NameProperty 'Depuis'))
   Check ($select.Current.HelpText -eq 'Chrome') "FR first source is the synthetic Chrome profile: $($select.Current.HelpText)"
-  Check ((ToggleState $fav) -eq 'On' -and $fav.Current.IsEnabled -and $fav.Current.HelpText -eq 'Dans Autres favoris › Importés de Chrome') "FR bookmarks on, destination folder named: $($fav.Current.HelpText)"
+  Check ((ToggleState $fav) -eq 'On' -and $fav.Current.IsEnabled -and $fav.Current.HelpText -eq 'Dans la barre de favoris et Autres favoris, comme dans Chrome') "FR bookmarks on, destination folder named: $($fav.Current.HelpText)"
   Check ((ToggleState $hist) -eq 'On' -and $hist.Current.IsEnabled) 'FR history on'
   Check ((ToggleState $cook) -eq 'Off' -and !$cook.Current.IsEnabled -and $cook.Current.HelpText -eq 'Non disponibles : reconnectez-vous aux sites.') "FR cookies disabled with the reason: $($cook.Current.HelpText)"
   Visual $main $procId 'fr-1-dialog-chrome'
+  # Detected browsers (src/browser-catalog.h, synthetic registrations): every one listed, Comet installed without data and
+  # Opera (not supported) shown disabled with the reason; logos are decorative (no UIA node of their own).
+  $rows = MenuRows $procId $d 'Depuis'
+  $names = @($rows | ForEach-Object { $_.Current.Name })
+  Check (($names -join '|') -eq 'Comet|Chrome|Edge|Firefox|Opera Stable|Fichier de favoris HTML…') "FR source list: every detected browser, Comet first ($($names -join '|'))"
+  $comet = $rows | Where-Object { $_.Current.Name -eq 'Comet' }; $opera = $rows | Where-Object { $_.Current.Name -eq 'Opera Stable' }; $chrome = $rows | Where-Object { $_.Current.Name -eq 'Chrome' }
+  Check ($comet -and !$comet.Current.IsEnabled -and $comet.Current.HelpText -eq 'Installé, aucun favori ni historique trouvé') "FR Comet installed without data: disabled, says why ($($comet.Current.HelpText))"
+  Check ($opera -and !$opera.Current.IsEnabled -and $opera.Current.HelpText -eq 'Installé, pas encore pris en charge') "FR Opera not supported: disabled, says why ($($opera.Current.HelpText))"
+  Check ($chrome -and $chrome.Current.IsEnabled -and @($chrome.FindAll($TS::Children, [System.Windows.Automation.Condition]::TrueCondition)).Count -eq 0) 'FR Chrome enabled; its logo is not a UIA element'
+  Visual $main $procId 'fr-1b-source-list'
+  Invoke $chrome; Start-Sleep -Milliseconds 400
+  Check ($select.Current.HelpText -eq 'Chrome') 'FR list closed on the same source'
+  Check ((ReadText "$app\prototype.log") -match 'IMPORT dialog: 3 profiles, 0 recoverable, 2 browsers unavailable') 'FR log: counts only (no path, no name)'
   # Cancel: nothing written.
   $bm0 = Hash $bmFile; $h0 = Hash $hFile
   Invoke (Uia $procId 'DialogCancel'); Check (Gone $procId 'ImportBrowserData') 'FR cancel closes the dialog'
@@ -185,7 +211,7 @@ try {
   }
   $bm = ReadText $bmFile; $hs = ReadText $hFile
   Check ($bm -like "*`tMien`thttps://mine.example/*") 'FR existing bookmark kept'
-  Check ($bm -like "*`tImportés de Chrome`t*" -and $bm -like "*`tTravail 🛠 日本`t*" -and $bm -like "*`tAccueil — été ☀`thttps://home.example/*") 'FR imported tree with Unicode titles on disk'
+  Check ($bm -notlike "*`tImportés de Chrome`t*" -and $bm -like "*`t1`tF`t*`tTravail 🛠 日本`t*" -and $bm -like "*`tTravail 🛠 日本`t*" -and $bm -like "*`tAccueil — été ☀`thttps://home.example/*") 'FR imported tree with Unicode titles on disk, straight on the bar (no « Importés de Chrome » group)'
   Check (([regex]::Matches($bm, 'https://docs\.example/a')).Count -eq 3) 'FR intentional duplicates kept (2 in Travail, 1 in Perso)'
   Check ($bm -notlike '*javascript:*') 'FR javascript: bookmark not imported'
   Check ($hs -like '*https://mine.example/*' -and $hs -like '*https://news.example/today*' -and $hs -notlike '*chrome://*' -and $hs -notlike '*hidden.example*' -and $hs -notlike '*google.com/search*') 'FR history on disk: existing kept, imported added, internal/hidden/search excluded'
@@ -218,7 +244,7 @@ try {
   $d = OpenImport $procId $main 'Confidentialité'
   Choose $procId $d 'Depuis' 'Firefox'
   $fav, $hist, $cook = Check3 $d @('Favoris', 'Historique', 'Cookies et connexions')
-  Check ($fav.Current.HelpText -eq 'Dans Autres favoris › Importés de Firefox' -and (ToggleState $hist) -eq 'On') 'FR Firefox source: bookmarks into « Importés de Firefox », history on'
+  Check ($fav.Current.HelpText -eq 'Dans la barre de favoris et Autres favoris, comme dans Firefox' -and (ToggleState $hist) -eq 'On') 'FR Firefox source: bookmarks onto the bar / Autres favoris, history on'
   $bmBefore = Hash $bmFile
   Set-ItemProperty -LiteralPath $bmFile -Name IsReadOnly -Value $true
   Invoke (Uia $procId 'DialogImport'); $r = Result $procId
@@ -259,7 +285,7 @@ try {
       Check ($text -eq 'Favoris : 2 importés · 1 adresse non prise en charge') 'FR HTML import: 2 imported, javascript: refused, script content never read as a bookmark, no cookie line'
       Invoke (Uia $procId 'DialogOk'); Gone $procId 'ImportResult' | Out-Null }
     $bm = ReadText $bmFile
-    Check ($bm -like "*`tImportés d'un fichier HTML`t*" -and $bm -like "*`tExporté & rangé`t*" -and $bm -like "*`tUn — ①`thttps://html.example/one*" -and $bm -notlike '*script.example*') 'FR HTML bookmarks on disk, entities decoded'
+    Check ($bm -notlike "*`tImportés d'un fichier HTML`t*" -and $bm -like "*`t1`tF`t*`tExporté & rangé`t*" -and $bm -like "*`tUn — ①`thttps://html.example/one*" -and $bm -notlike '*script.example*') 'FR HTML bookmarks on disk, entities decoded'
   } else { Check $false 'FR HTML: file dialog controls not found' }
   $logText = ReadText "$app\prototype.log"
   Check ($logText -like '*IMPORT bookmarks saved imported=6*' -and $logText -notmatch 'home\.example|docs\.example|news\.example|html\.example|Travail|sources') 'FR log: counts only, no URL, title or source path'
@@ -274,7 +300,7 @@ try {
   Check ($cook -and !$cook.Current.IsEnabled -and $cook.Current.HelpText -eq 'Not available: sign in to sites again.') 'EN cookies unavailable, said why'
   Choose $procId $d 'From' 'Edge'
   $fav, $hist, $cook = Check3 $d @('Bookmarks', 'History', 'Cookies and sign-ins')
-  Check (!$hist.Current.IsEnabled -and $hist.Current.HelpText -eq 'No history in this profile.' -and $fav.Current.HelpText -eq 'In Other bookmarks › Imported from Edge') 'EN Edge profile: bookmarks only, history said missing'
+  Check (!$hist.Current.IsEnabled -and $hist.Current.HelpText -eq 'No history in this profile.' -and $fav.Current.HelpText -eq 'Into the bookmarks bar and Other bookmarks, as in Edge') 'EN Edge profile: bookmarks only, history said missing'
   Visual $main $procId 'en-1-dialog-edge'
   Invoke (Uia $procId 'DialogImport'); $r = Result $procId
   if ($r) { $text = $r.Current.HelpText; "     en: $($r.Current.Name) / $text"
@@ -288,7 +314,7 @@ try {
   if ($r) { $text = $r.Current.HelpText; "     en repeat: $text"
     Check ($text -like 'Bookmarks: 0 imported · 6 already there · 1 unsupported address*') 'EN repeat of the French Chrome import: everything already there'
     Invoke (Uia $procId 'DialogOk'); Gone $procId 'ImportResult' | Out-Null }
-  Check ((Hash $bmFile) -eq $bmFr -and ([regex]::Matches((ReadText $bmFile), "`t2`tF`t")).Count -eq $groups) 'EN repeat: bookmarks file unchanged, no second « Imported from Chrome » group'
+  Check ((Hash $bmFile) -eq $bmFr -and ([regex]::Matches((ReadText $bmFile), "`t2`tF`t")).Count -eq $groups) 'EN repeat: bookmarks file unchanged, no new folder'
   Close $procId $main
   # ================= Profile switch while the dialog is open =========================================================
   # The dialog names « Personnel » as the destination. Its scrim stops pointer and keyboard, but UI Automation can

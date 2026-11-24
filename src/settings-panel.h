@@ -34,6 +34,7 @@
 #include "settings.h"
 #include "context-menu.h"
 #include "native-ui.h"
+#include "tooltip.h"
 #include "modal.h"
 #include "accessibility.h"
 #include "svg-path.h"
@@ -41,6 +42,8 @@
 #include "profile-editor.h"
 #include "i18n.h"
 #include "ui-language.h"
+#include "onboarding-flow.h"   // the halftone loop (LoopPhase, HalftoneLoopSeconds, ShaderLoops)
+#include "shader-layer.h"     // the onboarding's halftone logo shader, drawn by the « navigateur par défaut » card
 
 namespace NativeChrome {
 namespace SettingsUI {
@@ -52,6 +55,9 @@ enum Hit : int {
     None = 0, Close = 1, Back = 2, EngineBase = 10, More = 20,
     RestoreTabs = 30, Folder = 31, AskWhere = 32, ReduceMotion = 33, Suggestions = 34, Passwords = 35, Autofill = 36, ClearOnExit = 37,
     ClearData = 40, CheckUpdates = 41, ResetAll = 42, ResetSite = 43, ManagePasswords = 44, ImportData = 46,
+    // The « navigateur par défaut » card at the bottom of the root (Paper « 01 · Réglages — racine »): « Plus tard » hides it
+    // for 30 days, « Browser par défaut » opens Windows' Default apps page on Browser.
+    DefaultLater = 47, DefaultMake = 48,
     Tracking = 50, Sleep = 51, Zoom = 52, Permissions = 53, HomePageHit = 54, TabPositionHit = 55, AutoplayHit = 56, BookmarksBarHit = 57,
     ConfirmClose = 38, CloseWithLastTab = 39, AdBlock = 60, HttpsOnly = 61, ThirdPartyCookies = 62, MemorySaver = 63, MuteBackground = 64, GrayscaleText = 65,
     CustomSearchField = 70, HomepageField = 71, SearchField = 72, SearchDismiss = 73,
@@ -96,6 +102,18 @@ inline constexpr float field = 32, fieldHint = 6, fieldRow = field + fieldHint +
 inline constexpr float TwoLine(size_t lines) { return 2 * twoLinePad + 20 + 2 + lines * descriptionLine; }
 // Footer of every settings view: hairline, 12, version (24), 16.
 inline constexpr float footer = 1 + 12 + slot + padBottom;                                        // 53
+// « Navigateur par défaut » card (Paper 1DQM-0, above the version, under the footer's hairline and its 12 DIP): the
+// halftone area (110 high, top corners 22, the shader node 308 x 159 at 0.2 / -3 over a #1D1D1D -> #121212 gradient,
+// then a #171717 radial veil 81 high at 33.2), the question 2 px up into it (14/20 Medium, centred, balanced, #FFFFFFE6),
+// 10, the two buttons (32 high, 12 padding, 10 apart, radius 6), 12, a white 4 % hairline (the footer's); 12 more to the version.
+inline constexpr float cardArt = 110, cardRadius = 22, cardShaderW = 308, cardShaderH = 159, cardShaderX = .2f, cardShaderY = -3;
+inline constexpr float cardVeilTop = 33.2f, cardVeilH = 81, cardText = cardArt - 2, cardLine = 20, cardTextWidth = 306;   // Paper's column
+inline constexpr float cardButton = 32, cardButtonPad = 12, cardButtonGap = 10;
+// The question's lines (1 or 2) set the height: 203 with two lines (French), 183 with one (English).
+inline constexpr float CardButtons(size_t lines) { return cardText + lines * cardLine + 10; }
+inline constexpr float CardHeight(size_t lines) { return CardButtons(lines) + cardButton + 12 + 1; }
+inline constexpr float CardBlock(size_t lines) { return CardHeight(lines) + 12; }                       // the card and the gap under it
+static_assert(CardHeight(2) == 203, "Paper 1DQM-0: 203 high with the two French lines");
 // Search results: a card 6 DIP under the field; rows of title + path (8 / 10 / 12 padding).
 inline constexpr float resultGap = 6, resultRow = 8 + 20 + 2 + 18 + 8, resultPadLeft = 10, resultPadRight = 12, maxResults = 7;
 inline constexpr float searchDim = .32f;                                                           // the root behind results (--opacity-browser-disabled)
@@ -497,6 +515,7 @@ public:
         std::function<void()> pickFolder;                           // modal folder picker (may change the state)
         std::function<void(bool keyboard)> managePasswords;          // E8: the vault manager (B05)
         std::function<std::pair<bool, std::size_t>()> vaultInfo;     // E8: {vault active here, account count}
+        std::function<std::wstring()> clearOnExitNote;               // « Effacer en quittant »: what it really deletes (depends on the vault)
         std::function<void(bool keyboard)> clearData;               // modal confirmation + clear; `keyboard`: how the row was activated (focus ring)
         std::function<void(bool keyboard)> importData;              // « Importer depuis un navigateur… » (src/browser-import.h); absent: no row
         std::function<void()> checkUpdates;
@@ -530,10 +549,15 @@ public:
         // saveLanguage: write it (true only once it is on disk). The process keeps its language until restarted.
         std::function<I18n::Locale()> savedLanguage;
         std::function<bool(I18n::Locale)> saveLanguage;
+        // The « navigateur par défaut » card (both optional; no card without defaultBrowser or unless it answers 0).
+        // defaultBrowser: -1 this copy is not registered with Windows, 0 not the default, 1 the default (read when the
+        // drawer opens and when the window comes back to the front). setDefaultBrowser: open Windows' Default apps page.
+        std::function<int()> defaultBrowser;
+        std::function<void()> setDefaultBrowser;
     };
 private:
-    HWND hwnd_ = nullptr, owner_ = nullptr, tip_ = nullptr;
-    std::vector<UINT_PTR> tips_; std::vector<std::wstring> tipTexts_;
+    HWND hwnd_ = nullptr, owner_ = nullptr;
+    Tooltip::Tools tip_;
     Chrome chrome_; Chrome* pc_ = &chrome_; Motion::State motion_;   // pc_: the surface painted (chrome_, or an offscreen one for RenderForTest)
     BrowserSettings::State* state_ = nullptr; Hooks hooks_;
     ID2D1GradientStopCollection* stops_ = nullptr; ID2D1LinearGradientBrush* fade_ = nullptr;
@@ -558,17 +582,25 @@ private:
     // Address fields: reveal lanes, a choice waiting for its address, the edit in progress.
     Lane customReveal_, homeReveal_; bool customPending_ = false, homePending_ = false;
     HWND edit_ = nullptr; int editing_ = 0; RECT editRect_{}; bool editShown_ = false; bool cancelEdit_ = false; HFONT editFont_ = nullptr; UINT editDpi_ = 0;
-    HBRUSH editBrush_ = nullptr; std::map<int, std::wstring> drafts_; std::map<int, bool> errors_;
+    HBRUSH editBrush_ = nullptr; COLORREF editBrushColor_ = 0; std::map<int, std::wstring> drafts_; std::map<int, bool> errors_;
     BrowserSettings::Autoplay launchAutoplay_ = BrowserSettings::Autoplay::Muted; bool launchCookies_ = false, launchGrayscale_ = false; // engine flags of this run
     int hover_ = 0, pressed_ = 0, focus_ = 0;
     I18n::Locale languageSaved_ = I18n::Current(); bool languageFailed_ = false;   // « Langue »: preference as saved, last save failed
+    int defaultBrowser_ = -1;   // the host's last answer (Hooks::defaultBrowser)
+    // The card shows while Browser is registered but not the default, unless « Plus tard » was answered < 30 days ago.
+    bool CardDue() const { return defaultBrowser_ == 0 && state_ && BrowserSettings::DefaultBrowserCardDue(*state_, NowSeconds()); }
+    bool CardIn(View v) const { return v == View::Main && CardDue(); }
+    // Its halftone: the onboarding's renderer and shader (src/onboarding-shaders.h), one layer, the onboarding's loop.
+    std::wstring root_; Onboarding::Shaders::Renderer gpu_; bool gpuTried_ = false; Onboarding::Shaders::Layer cardLayer_;
+    Motion::Time cardClock_{}; double cardSecondsForTest_ = -1; bool forceSoftwareForTest_ = false;
+    ID2D1PathGeometry* cardMask_ = nullptr; ID2D1RadialGradientBrush* cardVeil_ = nullptr; ID2D1LinearGradientBrush* cardGround_ = nullptr; ID2D1RenderTarget* cardBrushes_ = nullptr;
     // Profiles: the list as last read, the profile open in the detail view and its editor block.
     std::vector<ProfileItem> profiles_; int profileIndex_ = -1; std::wstring profileId_; ProfileEditor::Editor editor_;
     std::vector<std::wstring> profileNoteLines_, lastProfileNoteLines_;
     bool LastProfile() const { return profiles_.size() < 2; }
     bool ProfilesReadOnly() const { return hooks_.profilesReadOnly && hooks_.profilesReadOnly(); }
     bool keyboard_ = false, visible_ = false, closing_ = false, tracking_ = false, modal_ = false, animatingPainted_ = false, spinning_ = false;
-    int appliedVisible_ = -1; RECT appliedOwner_{}, appliedWindow_{};
+    int appliedVisible_ = -1, appliedEntered_ = -1, lead_ = 0; RECT appliedOwner_{}, appliedWindow_{};
     Motion::Time spinStart_{}, landStart_{};
     // Update spinner: a constant counter-clockwise turn while a check runs. When
     // it ends, the glyph keeps its speed and eases into the next full turn (cubic
@@ -630,7 +662,7 @@ private:
     // Footer height per view (DIP): main = clear + version; sites = note + "Tout retirer"; site = one danger row.
     float FooterHeight(View v) const {
         if (v == View::Profile) { const auto& note = LastProfile() ? lastProfileNoteLines_ : profileNoteLines_; return 1 + 12 + note.size() * Layout::descriptionLine + 8 + Layout::row + Layout::padBottom; }
-        return v == View::Sites ? 1 + 12 + 40 + 8 + Layout::row + Layout::padBottom : v == View::Site ? 1 + 12 + Layout::row + Layout::padBottom : Layout::footer;
+        return v == View::Sites ? 1 + 12 + 40 + 8 + Layout::row + Layout::padBottom : v == View::Site ? 1 + 12 + Layout::row + Layout::padBottom : Layout::footer + (CardIn(v) ? Layout::CardBlock(CardLines().size()) : 0);
     }
     float ViewBottom(View v) const { return Height() - FooterHeight(v); }
     LayoutInput Input() const {
@@ -708,6 +740,7 @@ private:
         lines_.clear();
         for (const auto& [hit, text] : Descriptions) lines_[hit] = Wrap(I18n::T(text.id), Layout::descriptionWidth);
         noSitesLines_ = Wrap(NoSitesDescription(), Layout::rowRight - 8 - Layout::textLeft);
+        if (hooks_.clearOnExitNote) lines_[ClearOnExit] = Wrap(hooks_.clearOnExitNote(), Layout::descriptionWidth);
         sitesNoteLines_ = Wrap(SitesNote(), Layout::rowRight - Layout::textLeft - 4);
         profileNoteLines_ = Wrap(TR(settings_profile_delete_note), Layout::rowRight - Layout::textLeft - 4);
         lastProfileNoteLines_ = Wrap(TR(settings_last_profile_note), Layout::rowRight - Layout::textLeft - 4);
@@ -830,13 +863,26 @@ private:
         const Design::Box knob{left, track.top + Layout::knobInset, left + Layout::knob + stretch, track.top + Layout::knobInset + Layout::knob};
         Fill(knob, Layout::knob / 2, knobGray, knobGray, knobGray, 1);
     }
+    // Label + trailing value on one line (value and nav rows): where each ends. The value is right-aligned
+    // before the chevron (8 DIP), the label stops 8 DIP before the value (and its glyph).
+    struct TrailingSpan { float labelLeft, labelRight, valueLeft, valueRight; };
+    TrailingSpan Trailing(const Slot& s) const {
+        const bool counted = s.hit == Permissions; const float right = Layout::Chevron(s.top).left;
+        float w = pc_->TextWidth(s.value, 14, counted, false, counted ? 0.f : -.14f);
+        TrailingSpan t; t.labelLeft = (s.icon || s.path || s.glyph) ? Layout::nameLeft : Layout::textLeft;
+        // The label keeps its natural width; the value (a profile name, a folder) gets the rest and trims. When even
+        // that leaves under 48 DIP, the value keeps 48 and the label trims instead.
+        const float labelW = pc_->TextWidth(s.text, 16, false, false, -.16f);
+        w = std::min(w, std::max(std::min(w, 48.f), right - 8 - (s.valueGlyph ? 16 + 6 : 0) - 8 - t.labelLeft - labelW));
+        t.valueRight = right - 8; t.valueLeft = t.valueRight - w; t.labelRight = right - w - (s.valueGlyph ? 16 + 6 : 0) - 16; return t;
+    }
     // Label + current value + chevron: opens its list of choices (native menu).
     void ValueRow(const Slot& s, Motion::Time now) {
         RowFocus(Layout::Row(s.top, s.height), s.hit);
         const auto v = Interaction(s.hit, now); const auto chevron = Layout::Chevron(s.top);
-        const float w = pc_->TextWidth(s.value, 14, false, false, -.14f);
+        const auto t = Trailing(s); const float w = t.valueRight - t.valueLeft;
         Lead(s, v.hover);
-        Label16(s.text, (s.icon || s.path || s.glyph) ? Layout::nameLeft : Layout::textLeft, s.top + 6, chevron.left - w - 16, .7f + .3f * v.hover);
+        Label16(s.text, t.labelLeft, s.top + 6, t.labelRight, .7f + .3f * v.hover);
         pc_->Text(s.value, {chevron.left - 8 - w - 1, s.top + 6, chevron.left - 8 + 1, s.top + 26}, 14, .5f + .2f * v.hover, false, false, -.14f);
         pc_->Icon(L"caret", R(chevron), 14, .5f + .3f * v.hover);
         // A pending note (applied at the next launch) or a save error under the label: aligned with the label
@@ -943,10 +989,9 @@ private:
         RowFocus(Layout::Row(s.top), s.hit);
         auto* t = pc_->RenderTarget(); const auto v = Interaction(s.hit, now); const auto chevron = Layout::Chevron(s.top);
         const bool counted = s.hit == Permissions; // a count reads in tabular figures; a summary in text
-        const float w = pc_->TextWidth(s.value, 14, counted, false, counted ? 0.f : -.14f);
+        const auto tr = Trailing(s); const float w = tr.valueRight - tr.valueLeft;
         Lead(s, v.hover);
-        const float glyphW = s.valueGlyph ? 16 + 6 : 0;
-        Label16(s.text, (s.icon || s.path || s.glyph) ? Layout::nameLeft : Layout::textLeft, s.top + 6, chevron.left - w - glyphW - 16, .7f + .3f * v.hover);
+        Label16(s.text, tr.labelLeft, s.top + 6, tr.labelRight, .7f + .3f * v.hover);
         if (!s.value.empty()) pc_->Text(s.value, {chevron.left - 8 - w - 1, s.top + 6, chevron.left - 8 + 1, s.top + 26}, 14, .5f + .2f * v.hover, counted, false, counted ? 0.f : -.14f);
         if (s.valueGlyph) { const float x = chevron.left - 8 - w - 6 - 16; pc_->PathGlyph(s.valueGlyph, {x, s.top + 8, x + 16, s.top + 24}, 16, D2D1::ColorF(s.ink.r, s.ink.g, s.ink.b, 1)); }
         D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
@@ -1009,6 +1054,133 @@ private:
         pc_->ink = D2D1::ColorF(1, 1, 1, 1);
     }
     void DangerContent(const Slot& s, Motion::Time now) { DangerRow(s.text.c_str(), s.top, s.hit, now, !s.disabled); }
+    // ---- « Navigateur par défaut » card -------------------------------------------------
+    // Shader frames only while someone can see them move: open (not leaving), on the root, the card shown, motion
+    // allowed, a hardware device (WARP draws one still frame). Hidden, the drawer asks the host for no frame at all.
+    bool CardLoops() const { return visible_ && !closing_ && CardIn(Current()) && Onboarding::ShaderLoops(Reduced(), gpu_.Animated(), true, false) && !page_.Moving(Motion::Now()); }
+    // A new halftone picture is due (30 a second, as the onboarding's lattice).
+    bool CardFrameDue(Motion::Time now) const { return CardLoops() && (cardLayer_.shaded == Motion::Time{} || std::chrono::duration<float, std::milli>(now - cardLayer_.shaded).count() >= 1000.f / 30 - 3); }
+    double CardSeconds(Motion::Time now) const {
+        if (cardSecondsForTest_ >= 0) return cardSecondsForTest_;
+        if (Reduced() || !gpu_.Animated()) return 0;   // reduced motion / software device: Paper's still frame
+        return std::chrono::duration<double>(now - cardClock_).count();
+    }
+    void DropCard() { cardLayer_.Drop(); Drop(cardMask_); Drop(cardVeil_); Drop(cardGround_); cardBrushes_ = nullptr; }
+    // Balanced two lines (CSS text-wrap: balance): the break that makes the longer line shortest.
+    // Measured once per drawer (the language is the process's; widths in DIP do not follow the DPI).
+    mutable std::vector<std::wstring> cardLines_;
+    const std::vector<std::wstring>& CardLines() const {
+        if (cardLines_.empty()) { if (pc_->TextWidth(TR(settings_default_browser_question), 14, true, false, 0) > 0) cardLines_ = BalancedLines(Layout::cardTextWidth); else { static std::vector<std::wstring> two(2); return two; } }   // fonts not ready yet: measured later
+        return cardLines_;
+    }
+    std::vector<std::wstring> BalancedLines(float width) const {
+        const std::wstring text = TR(settings_default_browser_question);
+        auto w = [this](const std::wstring& t) { return pc_->TextWidth(t, 14, true, false, 0); };
+        if (w(text) <= width) return {text};
+        std::vector<std::wstring> best; float bestW = 1e9f;
+        for (size_t at = text.find(L' '); at != std::wstring::npos; at = text.find(L' ', at + 1)) {
+            std::wstring a = text.substr(0, at), b = text.substr(at + 1);
+            const float m = std::max(w(a), w(b)); if (m <= width && m < bestW) { bestW = m; best = {a, b}; }
+        }
+        return best.empty() ? std::vector<std::wstring>{text} : best;
+    }
+    struct CardBox { Design::Box card, art, text, later, make; };
+    float CardButtonWidth(const wchar_t* label) const { return std::round((pc_->TextWidth(label, 14, true, false, 0) + 2 * Layout::cardButtonPad) * 4) / 4; }
+    CardBox CardBoxes(float top) const {
+        using namespace Layout; CardBox c;
+        const size_t lines = CardLines().size();
+        c.card = {rowLeft, top, rowRight, top + CardHeight(lines)}; c.art = {rowLeft, top, rowRight, top + cardArt};
+        c.text = {rowLeft, top + cardText, rowRight, top + cardText + lines * cardLine};
+        const float lw = CardButtonWidth(TR(settings_default_browser_later)), mw = CardButtonWidth(TR(settings_default_browser_make));
+        const float left = (rowLeft + rowRight - lw - cardButtonGap - mw) / 2, y = top + CardButtons(lines);
+        c.later = {left, y, left + lw, y + cardButton}; c.make = {left + lw + cardButtonGap, y, left + lw + cardButtonGap + mw, y + cardButton};
+        return c;
+    }
+    void EnsureCardGpu() {
+        if (gpuTried_) return; gpuTried_ = true;
+        namespace S = Onboarding::Shaders; S::Image logo;
+        if (!gpu_.Init(forceSoftwareForTest_)) return;
+        if (S::LoadPng(pc_->Imaging(), root_ + L"\\assets\\onboarding\\halftone-logo.png", logo)) gpu_.SetInput(S::Kind::Halftone, logo);
+    }
+    // The halftone area: ground gradient, the shader node, the veil, clipped to the top-rounded 110 DIP.
+    void CardArt(Design::Box art, Motion::Time now) {
+        using namespace Layout; namespace S = Onboarding::Shaders;
+        auto* t = pc_->RenderTarget(); auto* f = pc_->Factory(); if (!t || !f) return;
+        if (cardBrushes_ != t) { Drop(cardMask_); Drop(cardVeil_); Drop(cardGround_); cardBrushes_ = t; }
+        // Ground: linear-gradient(180deg, #1D1D1D 0%, #121212 51.38%) over the shader node's box.
+        const float nodeLeft = art.left + cardShaderX, nodeTop = art.top + cardShaderY;
+        if (!cardGround_) {
+            ID2D1GradientStopCollection* stops = nullptr; const D2D1_GRADIENT_STOP g[] = {{0, D2D1::ColorF(0x1D1D1D)}, {.5138f, D2D1::ColorF(0x121212)}};
+            if (SUCCEEDED(t->CreateGradientStopCollection(g, 2, &stops))) t->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({0, 0}, {0, cardShaderH}), stops, &cardGround_);
+            Drop(stops);
+        }
+        // Veil: radial-gradient(ellipse 185% 86.245% at 50% 96.45%, #171717 26.83%, #17171700 100%) over 308 x 81.
+        if (!cardVeil_) {
+            ID2D1GradientStopCollection* stops = nullptr; const D2D1_GRADIENT_STOP g[] = {{.2683f, D2D1::ColorF(0x171717, 1)}, {1, D2D1::ColorF(0x171717, 0)}};
+            if (SUCCEEDED(t->CreateGradientStopCollection(g, 2, &stops)))
+                t->CreateRadialGradientBrush(D2D1::RadialGradientBrushProperties({cardShaderW / 2, .9645f * cardVeilH}, {0, 0}, 1.85f * cardShaderW, .86245f * cardVeilH), stops, &cardVeil_);
+            Drop(stops);
+        }
+        // Top corners 22, square bottom: a rounded rectangle reaching 22 below the area, cut by the area's clip.
+        if (!cardMask_ && SUCCEEDED(f->CreatePathGeometry(&cardMask_))) {
+            ID2D1GeometrySink* sink = nullptr; const float w = art.right - art.left, h = cardArt, r = cardRadius;
+            if (SUCCEEDED(cardMask_->Open(&sink))) {
+                sink->BeginFigure({0, h}, D2D1_FIGURE_BEGIN_FILLED); sink->AddLine({0, r});
+                sink->AddArc(D2D1::ArcSegment({r, 0}, {r, r}, 0, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL)); sink->AddLine({w - r, 0});
+                sink->AddArc(D2D1::ArcSegment({w, r}, {r, r}, 0, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL)); sink->AddLine({w, h});
+                sink->EndFigure(D2D1_FIGURE_END_CLOSED); sink->Close(); sink->Release();
+            }
+        }
+        ID2D1Layer* layer = nullptr; D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
+        const auto at = D2D1::Matrix3x2F::Translation(art.left, art.top);
+        if (cardMask_ && SUCCEEDED(t->CreateLayer(nullptr, &layer))) t->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), cardMask_, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, at), layer);
+        else t->PushAxisAlignedClip(R(art), D2D1_ANTIALIAS_MODE_ALIASED);
+        if (cardGround_) { t->SetTransform(D2D1::Matrix3x2F::Translation(nodeLeft, nodeTop) * base); t->FillRectangle(D2D1::RectF(0, 0, cardShaderW, cardShaderH), cardGround_); t->SetTransform(base); }
+        // The shader node at the target's pixel density; a new picture only when the loop moved on.
+        EnsureCardGpu();
+        const D2D1_RECT_F node{nodeLeft, nodeTop, nodeLeft + cardShaderW, nodeTop + cardShaderH};
+        bool drawn = false;
+        if (gpu_.Ready()) {
+            const auto px = t->GetPixelSize(); const auto dip = t->GetSize(); const float scale = px.width / std::max(1.f, dip.width);
+            const unsigned ow = static_cast<unsigned>(std::lround(cardShaderW * scale)), oh = static_cast<unsigned>(std::lround(cardShaderH * scale));
+            const float drift = static_cast<float>(Onboarding::LoopPhase(CardSeconds(now), Onboarding::HalftoneLoopSeconds));
+            auto& l = cardLayer_; const bool current = l.bitmap && l.owner == t && l.frame.width == ow && l.frame.height == oh;
+            if (!current || l.key != drift) {
+                if (gpu_.Render(S::Kind::Halftone, S::HalftoneCard(drift), cardShaderW, cardShaderH, ow, oh, l.frame) && l.Upload(t)) { l.key = drift; l.shaded = now; }
+                else if (!current) l.Drop();
+            }
+            if (l.bitmap && l.owner == t) { t->DrawBitmap(l.bitmap, node, 1, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR); drawn = true; }
+        }
+        if (!drawn) if (auto* logo = pc_->AssetBitmap(L"onboarding\\halftone-logo.png")) {   // no shader: the plain picture, same framing
+            const float side = cardShaderW * .63f, cx = (node.left + node.right) / 2, cy = (node.top + node.bottom) / 2;
+            t->DrawBitmap(logo, D2D1::RectF(cx - side / 2, cy - side / 2, cx + side / 2, cy + side / 2), 1, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        }
+        if (cardVeil_) { t->SetTransform(D2D1::Matrix3x2F::Translation(art.left, art.top + cardVeilTop) * base); t->FillRectangle(D2D1::RectF(0, 0, cardShaderW, cardVeilH), cardVeil_); t->SetTransform(base); }
+        if (layer) { t->PopLayer(); layer->Release(); } else t->PopAxisAlignedClip();
+    }
+    void CardButton(Design::Box box, const wchar_t* label, int hit, bool primary, Motion::Time now) {
+        auto* t = pc_->RenderTarget(); auto* brush = pc_->SolidBrush(); const auto v = Interaction(hit, now);
+        if (primary) { const auto c = Design::Accent::StateColor(Design::Accent::Get(), v.hover, v.press); brush->SetColor(D2D1::ColorF(c.r, c.g, c.b, 1)); }
+        else brush->SetColor(D2D1::ColorF(1, 1, 1, 0x14 / 255.f + hoverTint * v.hover + pressTint * v.press));   // #FFFFFF14
+        t->FillRoundedRectangle(D2D1::RoundedRect(R(box), Design::Radius::control, Design::Radius::control), brush);
+        if (focus_ == hit) pc_->FocusRing(R(box), Design::Radius::control);
+        const float w = pc_->TextWidth(label, 14, true, false, 0), x = (box.left + box.right - w) / 2, y = (box.top + box.bottom - 20) / 2;
+        pc_->Text(label, {x, y, x + w + 1, y + 20}, 14, primary ? 1.f : 0xBF / 255.f + (1 - 0xBF / 255.f) * std::max(v.hover, v.press), false, true, 0);   // #FFFFFF / #FFFFFFBF
+    }
+    void Card(float top, Motion::Time now) {
+        auto* t = pc_->RenderTarget(); auto* brush = pc_->SolidBrush(); if (!t || !brush) return;
+        const auto c = CardBoxes(top);
+        CardArt(c.art, now);
+        const auto& lines = CardLines();
+        for (size_t k = 0; k < lines.size() && k < 2; ++k) {
+            const float w = pc_->TextWidth(lines[k], 14, true, false, 0), x = (c.text.left + c.text.right - w) / 2, y = c.text.top + k * Layout::cardLine;
+            pc_->Text(lines[k], {x, y, x + w + 1, y + Layout::cardLine}, 14, 0xE6 / 255.f, false, true, 0);   // #FFFFFFE6
+        }
+        CardButton(c.later, TR(settings_default_browser_later), DefaultLater, false, now);
+        CardButton(c.make, TR(settings_default_browser_make), DefaultMake, true, now);
+        const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width));
+        brush->SetColor(D2D1::ColorF(1, 1, 1, .04f)); t->FillRectangle(D2D1::RectF(c.card.left, c.card.bottom - px, c.card.right, c.card.bottom), brush);   // border-bottom: the footer's white 4 % hairline (designer, 2026-11-23; Paper had #FFFFFF14)
+    }
     void Footer(View view, Motion::Time now) {
         const float h = Height(), top = h - FooterHeight(view);
         auto* t = pc_->RenderTarget(); auto* brush = pc_->SolidBrush();
@@ -1028,6 +1200,7 @@ private:
                 pc_->Icon(L"caret", R(chevron), 14, .5f + .3f * v.hover); t->SetTransform(base);
             } else DangerRow(TR(settings_delete_profile), y, ProfileDelete, now, !ProfilesReadOnly());
         } else if (view != View::Sites && view != View::Site) {
+            if (CardIn(view)) Card(top + 13, now);
             // Version + check for updates. The glyph spins while a check runs.
             const auto version = hooks_.version ? hooks_.version() : Version{};
             const float y = h - Layout::padBottom - Layout::slot;
@@ -1145,12 +1318,13 @@ private:
     void PaintNow() {
         if (!pc_->RenderTarget()) pc_->Resize();
         auto* target = pc_->RenderTarget(); if (!target) return;
-        target->BeginDraw(); Paint(Motion::Now());
-        if (target->EndDraw() == D2DERR_RECREATE_TARGET) { Drop(fade_); Drop(stops_); pc_->RecreateTarget(); }
+        target->BeginDraw(); target->SetTransform(D2D1::Matrix3x2F::Translation(LeadDip(), 0)); Paint(Motion::Now()); target->SetTransform(D2D1::Matrix3x2F::Identity()); chrome_.KeyOut(LeadDip());
+        if (target->EndDraw() == D2DERR_RECREATE_TARGET) { Drop(fade_); Drop(stops_); DropCard(); pc_->RecreateTarget(); }
     }
 
     // ---- Input -----------------------------------------------------------------
     int HitAt(float x, float y) const {
+        x -= LeadDip();   // window DIP -> content DIP while it slides
         const View view = Current(); const float h = Height();
         auto in = [x, y](Design::Box b) { return x >= b.left && x < b.right && y >= b.top && y < b.bottom; };
         if (page_.Moving(Motion::Now())) return None;
@@ -1162,6 +1336,7 @@ private:
             if (in(Layout::Row(y))) return LastProfile() ? ProfileClearData : ProfilesReadOnly() ? None : ProfileDelete;
         } else if (view != View::Sites && view != View::Site) {
             if (in(Layout::Trailing(h - Layout::padBottom - Layout::slot, Layout::slot))) return CheckUpdates;
+            if (CardIn(view)) { const auto c = CardBoxes(footerTop + 13); if (in(c.later)) return DefaultLater; if (in(c.make)) return DefaultMake; }
         } else if (view == View::Sites) { if (!sites_.empty() && in(Layout::Row(footerTop + 13 + 40 + 8))) return ResetAll; }
         else if (in(Layout::Row(footerTop + 13))) return ResetSite;
         if (y < Layout::viewTop - Layout::groupGap / 2 || y >= footerTop) return None;
@@ -1188,7 +1363,7 @@ private:
         if (view == View::Main && Searching()) { order.push_back(SearchField); for (size_t i = 0; i < results_.size(); ++i) order.push_back(ResultBase + static_cast<int>(i)); return order; }
         for (const auto& s : Slots(view, Motion::Now())) if (s.hit && s.opacity > .5f && (!s.disabled || s.kind == Kind::Agent)) order.push_back(s.hit);   // a busy agent button keeps the focus
         if (view == View::Profile) { if (LastProfile()) order.push_back(ProfileClearData); else if (!ProfilesReadOnly()) order.push_back(ProfileDelete); }
-        else if (view != View::Sites && view != View::Site) { if (hooks_.version && hooks_.version().canCheck) order.push_back(CheckUpdates); }
+        else if (view != View::Sites && view != View::Site) { if (CardIn(view)) { order.push_back(DefaultLater); order.push_back(DefaultMake); } if (hooks_.version && hooks_.version().canCheck) order.push_back(CheckUpdates); }
         else if (view == View::Sites) { if (!sites_.empty()) order.push_back(ResetAll); }
         else order.push_back(ResetSite);
         return order;
@@ -1424,6 +1599,12 @@ private:
         }
         const float h = Height(), footerTop = h - FooterHeight(view);
         if (view != View::Sites && view != View::Site) {
+            if (CardIn(view)) {
+                const auto c = CardBoxes(footerTop + 13);
+                add(textKey++, Role::Text, TR(settings_default_browser_question), c.text).focusable = false;
+                auto& later = add(DefaultLater, Role::Button, TR(settings_default_browser_later), c.later); later.automationId = L"SettingsDefaultBrowserLater"; later.help = TR(settings_default_browser_later_help);
+                auto& make = add(DefaultMake, Role::Button, TR(settings_default_browser_make), c.make); make.automationId = L"SettingsDefaultBrowser"; make.help = TR(settings_default_browser_help);
+            }
             const auto version = hooks_.version ? hooks_.version() : Version{};
             if (!version.text.empty()) add(textKey++, Role::Text, version.text, {Layout::textLeft, h - Layout::padBottom - Layout::slot, Layout::rowRight, h - Layout::padBottom}).focusable = false;
             if (version.canCheck) add(CheckUpdates, Role::Button, TR(settings_check_updates), Layout::Trailing(h - Layout::padBottom - Layout::slot, Layout::slot)).enabled = !version.checking;
@@ -1628,6 +1809,12 @@ private:
         else if (hit == ClearData) { if (hooks_.clearData) Modal([&] { hooks_.clearData(keyboard); }); }
         else if (hit == ManagePasswords) { if (hooks_.managePasswords) Modal([&] { hooks_.managePasswords(keyboard); }); }
         else if (hit == ImportData) { if (hooks_.importData) Modal([&] { hooks_.importData(keyboard); }); }
+        else if (hit == DefaultMake) { if (hooks_.setDefaultBrowser) hooks_.setDefaultBrowser(); }
+        else if (hit == DefaultLater) {   // away for 30 days; the focus goes on to the version's button
+            state_->defaultBrowserLaterAt = NowSeconds(); if (hooks_.changed) hooks_.changed(Change::DefaultBrowserLater);
+            if (focus_ == DefaultLater || focus_ == DefaultMake) focus_ = keyboard && hooks_.version && hooks_.version().canCheck ? CheckUpdates : 0;
+            hover_ = pressed_ = 0; motion_.ClearInteractions();
+        }
         else if (hit == CheckUpdates) { if (hooks_.version && hooks_.version().canCheck && hooks_.checkUpdates) hooks_.checkUpdates(); Changed(); }
         Repoint(); RefreshTips(); Invalidate(); Schedule(Motion::Now());
     }
@@ -1667,17 +1854,6 @@ private:
             break;
         case WM_SETFOCUS: { const LRESULT r = DefSubclassProc(h, msg, w, l); self->ApplyCaret(); return r; }
         case WM_KILLFOCUS: if (self->editing_ && !self->cancelEdit_) self->Commit(false); break;
-        case WM_PAINT: {
-            // No comctl32 v6 (no cue banner): the placeholder is painted over the empty field, as when it rests.
-            const LRESULT r = DefSubclassProc(h, msg, w, l);
-            if (GetWindowTextLengthW(h) == 0 && self->editing_) {
-                HDC dc = GetDC(h); RECT rc; GetClientRect(h, &rc);
-                const auto old = SelectObject(dc, self->editFont_); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, self->Gray(.35f * .9f));
-                DrawTextW(dc, FieldTexts(self->editing_).placeholder, -1, &rc, DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
-                SelectObject(dc, old); ReleaseDC(h, dc);
-            }
-            return r;
-        }
         case WM_CHAR: if (w == L'\r' || w == 27 || w == L'\t') return 0; [[fallthrough]];
         case WM_CUT: case WM_PASTE: case WM_CLEAR: case WM_UNDO: case EM_REPLACESEL: {
             // Placeholder and error follow the text as it is typed.
@@ -1687,7 +1863,7 @@ private:
                 self->SetQuery(std::move(text));
             }
             if (self->errors_[self->editing_]) { self->errors_[self->editing_] = false; self->Invalidate(); }
-            InvalidateRect(h, nullptr, TRUE); return r;
+            return r;   // the field itself is recomposed by its EditBuffer (placeholder included): no repaint per keystroke
         }
         case WM_NCDESTROY: RemoveWindowSubclass(h, EditProc, 0); break;
         }
@@ -1706,10 +1882,17 @@ private:
     void StartEdit(int hit) {
         if (!hwnd_ || !state_) return;
         if (!edit_) {
-            edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL, 0, 0, 1, 1, hwnd_, nullptr, reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(hwnd_, GWLP_HINSTANCE)), nullptr);
+            edit_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_AUTOHSCROLL, 0, 0, 1, 1, hwnd_, nullptr, reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(hwnd_, GWLP_HINSTANCE)), nullptr); NativeUI::SelectAllOnCtrlA(edit_);
             if (!edit_) return;
             SendMessageW(edit_, EM_SETLIMITTEXT, 2048, 0);
             SetWindowSubclass(edit_, EditProc, 0, reinterpret_cast<DWORD_PTR>(this));
+            // No comctl32 v6 (no cue banner): the placeholder is drawn into the empty field's image, as when it rests.
+            NativeUI::EditBuffer::Attach(edit_, [this](HWND h, HDC dc, const RECT& client) {
+                if (GetWindowTextLengthW(h) != 0 || !editing_) return;
+                RECT rc = client; const auto old = SelectObject(dc, editFont_); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, Gray(.35f * .9f));
+                DrawTextW(dc, FieldTexts(editing_).placeholder, -1, &rc, DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+                SelectObject(dc, old);
+            });
         }
         const UINT dpi = GetDpiForWindow(hwnd_);
         if (!editFont_ || editDpi_ != dpi) {
@@ -1735,7 +1918,7 @@ private:
             const bool shown = !page_.Moving(now) && top >= s.clipTop - .5f && bottom <= s.clipBottom + .5f &&
                                top >= Layout::viewTop - Layout::groupGap / 2 && bottom <= ViewBottom(Current());
             const bool search = editing_ == SearchField;
-            const RECT r{Px(search ? SearchTextLeft() : Layout::textLeft), Px(top), Px(search ? ClearBox(s.top).left - 4 : Layout::rowRight - 8), Px(bottom)};
+            const RECT r{lead_ + Px(search ? SearchTextLeft() : Layout::textLeft), Px(top), lead_ + Px(search ? ClearBox(s.top).left - 4 : Layout::rowRight - 8), Px(bottom)};
             if (EqualRect(&r, &editRect_) && shown == editShown_) return; // moving it repaints: only when it changes
             editRect_ = r; editShown_ = shown;
             SetWindowPos(edit_, nullptr, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE | (shown ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
@@ -1778,14 +1961,8 @@ private:
     }
     void RefreshTips() {
         if (!tip_) return;
-        for (auto id : tips_) { TOOLINFOW t{}; t.cbSize = sizeof(t); t.hwnd = hwnd_; t.uId = id; SendMessageW(tip_, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&t)); }
-        tips_.clear(); tipTexts_.clear(); tipTexts_.reserve(8);
-        auto add = [&](UINT_PTR id, Design::Box b, std::wstring text) {
-            tipTexts_.push_back(std::move(text));
-            TOOLINFOW t{}; t.cbSize = sizeof(t); t.uFlags = TTF_SUBCLASS; t.hwnd = hwnd_; t.uId = id;
-            t.rect = {Px(b.left), Px(b.top), Px(b.right), Px(b.bottom)}; t.lpszText = const_cast<wchar_t*>(tipTexts_.back().c_str());
-            SendMessageW(tip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&t)); tips_.push_back(id);
-        };
+        tip_.Clear();
+        auto add = [&](UINT_PTR id, Design::Box b, std::wstring text) { tip_.Add(id, {Px(b.left), Px(b.top), Px(b.right), Px(b.bottom)}, std::move(text)); };
         add(Close, Layout::CloseButton(), TR(settings_close_tip));
         const View view = Current();
         if (view != View::Main) add(Back, Layout::BackButton(), TR(common_back));
@@ -1803,26 +1980,29 @@ private:
     // ---- Window ----------------------------------------------------------------
     RECT OwnerClient() const { RECT r{}; GetClientRect(owner_, &r); MapWindowPoints(owner_, nullptr, reinterpret_cast<POINT*>(&r), 2); return r; }
     // The 332 DIP column docked to the owner's right edge under the toolbar. The
-    // slide moves the window itself; the region clips it to the owner's client
-    // area and rounds the corner it shares with it.
-    void ApplyGeometry(Motion::Time now, bool force = false) {
-        if (!hwnd_) return;
+    // window never moves while sliding (NativeUI::KeyedDrawer): a slide step is one
+    // present, the content drawn `lead_` pixels right of its place and the strip it
+    // has not entered keyed out. The region rounds the corner shared with the owner
+    // (empty while nothing has entered). Returns true when it painted.
+    bool ApplyGeometry(Motion::Time now, bool force = false) {
+        if (!hwnd_) return false;
         const RECT owner = OwnerClient();
         const int column = OwnerPx(Layout::width), top = owner.top + OwnerPx(Layout::top), height = std::max(1, static_cast<int>(owner.bottom - top));
         const int shown = static_cast<int>(std::lround(column * Motion::Clamp(slide_.Value(now))));
-        if (!force && shown == appliedVisible_ && EqualRect(&owner, &appliedOwner_)) return;
-        const bool resized = !EqualRect(&owner, &appliedOwner_);
-        appliedVisible_ = shown; appliedOwner_ = owner;
-        const RECT window{owner.right - shown, top, owner.right - shown + column, top + height};
+        if (!force && shown == appliedVisible_ && EqualRect(&owner, &appliedOwner_)) return false;
+        const bool resized = !EqualRect(&owner, &appliedOwner_), slid = shown != appliedVisible_;
+        appliedVisible_ = shown; appliedOwner_ = owner; lead_ = column - shown;
+        const RECT window{owner.right - column, top, owner.right, top + height};
         if (force || !EqualRect(&window, &appliedWindow_)) { SetWindowPos(hwnd_, nullptr, window.left, window.top, column, height, SWP_NOACTIVATE | SWP_NOZORDER); appliedWindow_ = window; }
-        HRGN region = nullptr;
-        if (shown > 0) {
-            const int r = OwnerPx(20);
-            region = IsZoomed(owner_) ? CreateRectRgn(0, 0, shown, height) : CreateRoundRectRgn(-r * 2, -r * 2, shown + 1, height + 1, r, r);
-        } else region = CreateRectRgn(0, 0, 0, 0);
-        SetWindowRgn(hwnd_, region, FALSE);
+        const int entered = shown > 0;
+        if (force || resized || entered != appliedEntered_) { SetWindowRgn(hwnd_, NativeUI::DrawerRegion(entered, column, height, OwnerPx(20), IsZoomed(owner_)), FALSE); appliedEntered_ = entered; }
         if (resized) { for (int d = 0; d <= depth_; ++d) scrolls_[d].Snap(std::clamp(scrolls_[d].Target(), 0.f, MaxScroll(views_[d], now, true))); RefreshTips(); Invalidate(); }
+        if (force || !slid || shown == 0 || !IsWindowVisible(hwnd_)) return false;
+        PaintNow(); ValidateRect(hwnd_, nullptr);
+        return true;
     }
+    // Slide offset in DIP (content drawn right of its docked place while it enters or leaves).
+    float LeadDip() const { return lead_ * 96.f / std::max(1.f, Dpi()); }
     void Finish() {
         closing_ = false; visible_ = false; appliedVisible_ = -1; appliedWindow_ = {};
         ShowWindow(hwnd_, SW_HIDE);
@@ -1840,13 +2020,14 @@ private:
         case UiaInvoke: UiaAction(static_cast<int>(w), static_cast<long long>(l)); return 0;
         case WM_CTLCOLOREDIT: {
             { LRESULT r; if (editor_.CtlColor(reinterpret_cast<HWND>(l), reinterpret_cast<HDC>(w), r)) return r; }
-            // The EDIT blends into the field: its exact fill, text at 90% white.
+            // The EDIT blends into the field: its exact fill, text at 90% white. One brush per fill.
             HDC dc = reinterpret_cast<HDC>(w); const COLORREF fill = Gray(EditFill());
+            NativeUI::EditBuffer::Clip(reinterpret_cast<HWND>(l), dc);
             SetTextColor(dc, Gray(.9f)); SetBkColor(dc, fill);
-            if (editBrush_) DeleteObject(editBrush_);
-            editBrush_ = CreateSolidBrush(fill); return reinterpret_cast<LRESULT>(editBrush_);
+            if (!editBrush_ || fill != editBrushColor_) { if (editBrush_) DeleteObject(editBrush_); editBrush_ = CreateSolidBrush(fill); editBrushColor_ = fill; }
+            return reinterpret_cast<LRESULT>(editBrush_);
         }
-        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); PaintNow(); EndPaint(h, &ps); return 0; }
+        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); PaintNow(); EndPaint(h, &ps); NativeUI::EditBuffer::Flush(edit_); editor_.Flush(); return 0; }
         case WM_SIZE: pc_->Resize(); Invalidate(); return 0;
         case WM_DPICHANGED: ApplyGeometry(Motion::Now(), true); return 0;
         case WM_MOUSEACTIVATE: return MA_ACTIVATE;
@@ -1921,7 +2102,7 @@ public:
     // « Annotations » tests: the laid-out rows, the Tab order, hit testing, the UIA tree, the agents.
     std::vector<Slot> SlotsForTest() const { return Slots(Current(), Motion::Now(), true); }
     std::vector<int> FocusOrderForTest() const { return FocusOrder(); }
-    int HitForTest(float x, float y) const { return HitAt(x, y); }
+    int HitForTest(float x, float y) const { return HitAt(x + LeadDip(), y); }   // content DIP (layout boxes), wherever the slide is
     int FocusForTest() const { return focus_; }
     void KeyForTest(WPARAM key) { if (hwnd_) Handle(hwnd_, WM_KEYDOWN, key, 0); }
     std::vector<Accessibility::Node> AccessibleNodesForTest() const { return UiaNodes(); }
@@ -1929,6 +2110,7 @@ public:
     const AnnotationSettings::Agents& AgentsForTest() const { return agents_; }
     std::size_t AnnotationCountForTest() const { return annotationCount_; }
     Design::Box AgentActionForTest(const Slot& s) const { return AgentAction(s); }
+    TrailingSpan TrailingForTest(const Slot& s) const { return Trailing(s); }
     float TextWidthForTest(const std::wstring& text, float size) const { return pc_->TextWidth(text, size, false, false, size >= 16 ? -.16f : -.14f); }
     void SettleForTest() { slide_.Snap(slide_.Target()); page_.Snap(page_.Target()); for (auto& l : scrolls_) l.Snap(l.Target()); for (int i = 0; i < SwitchCount; ++i) { switches_[i].Snap(switches_[i].Target()); knobPress_[i].Snap(0); } }
     void ScrollForTest(float y) { scrolls_[depth_].Snap(std::clamp(y, 0.f, MaxScroll(Current(), Motion::Now(), true))); }
@@ -1942,32 +2124,37 @@ public:
         off.RenderTarget()->BeginDraw(); Paint(Motion::Now()); const HRESULT drawn = off.RenderTarget()->EndDraw();
         const bool ok = SUCCEEDED(drawn) && SUCCEEDED(off.SavePng(png.c_str()));
         for (auto& g : glyphs_) Drop(g.second); glyphs_ = std::move(keepGlyphs); Drop(fade_); Drop(stops_); fade_ = keepFade; stops_ = keepStops;
-        pc_ = &chrome_; heightOverride_ = 0; off.Dispose();
+        DropCard(); pc_ = &chrome_; heightOverride_ = 0; off.Dispose();
         return ok;
     }
     ~Drawer() { Dispose(); }
     bool Create(HINSTANCE instance, HWND owner, const std::wstring& root, BrowserSettings::State* state, Hooks hooks) {
-        owner_ = owner; state_ = state; hooks_ = std::move(hooks);
+        owner_ = owner; state_ = state; hooks_ = std::move(hooks); root_ = root;
         if (state_) { launchAutoplay_ = state_->autoplay; launchCookies_ = state_->blockThirdPartyCookies; launchGrayscale_ = state_->grayscaleText; } // engine flags in effect for this run
         motion_.EnablePolish(); pc_->SetMotion(&motion_); pc_->textCacheLimit = 384;
         WNDCLASSW wc{}; wc.lpfnWndProc = Proc; wc.hInstance = instance; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); wc.lpszClassName = L"LisiereSettingsDrawer";
         RegisterClassW(&wc);
         CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, TR(settings_title), WS_POPUP | WS_CLIPCHILDREN, 0, 0, Px(Layout::width), Px(400), owner, nullptr, instance, this);
         if (!hwnd_) return false;
-        tip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, 0, 0, 0, 0, hwnd_, nullptr, instance, nullptr);
-        NativeUI::StripTooltipShadow(tip_);
+        tip_.Create(instance, hwnd_, root);
         NativeUI::ConfigureShadowlessPopup(hwnd_); // DWMWCP_DONOTROUND, no shadow: the region shapes it
+        NativeUI::KeyedDrawer(hwnd_);               // the slide's not-yet-entered strip is keyed out
         AttachEditor(); AttachUia();
         return SUCCEEDED(chrome_.Init(hwnd_, root));
     }
     // Release Direct2D/WIC before CoUninitialize; the owner destroys the window.
     void Dispose() {
+        // The window may outlive this object (a scope's end, the owner destroying it later): its messages
+        // then go to DefWindowProc, never to freed memory.
+        if (hwnd_) SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0);
         if (editFont_) { DeleteObject(editFont_); editFont_ = nullptr; }
         if (editBrush_) { DeleteObject(editBrush_); editBrush_ = nullptr; }
         edit_ = nullptr; editing_ = 0; uia_.Detach(); editor_.Detach();
         for (auto& g : glyphs_) Drop(g.second); glyphs_.clear();
-        Drop(fade_); Drop(stops_); chrome_.Dispose(); hwnd_ = tip_ = nullptr; tips_.clear(); visible_ = false; }
+        Drop(fade_); Drop(stops_); DropCard(); gpu_.Dispose(); gpuTried_ = false; chrome_.Dispose(); tip_.Dispose(); hwnd_ = nullptr; visible_ = false; }
     HWND Window() const { return hwnd_; }
+    HWND EditForTest() const { return edit_; }   // the field being edited (search, address fields)
+    UINT RenderDpiForTest() const { return chrome_.dpi; }   // the DPI the drawer is drawn at (tests/ui/address_popup_dpi_test.cpp)
     bool Visible() const { return visible_; }
     bool Closing() const { return closing_; }
     bool Open() const { return visible_ && !closing_; }
@@ -2004,7 +2191,10 @@ public:
             for (int i = 0; i < SwitchCount; ++i) { switches_[i].Snap(SwitchValue(SwitchHits[i]) ? 1.f : 0.f); knobPress_[i].Snap(0); }
             LoadSites(); // the Autorisations row shows how many sites
             LoadAnnotations(); // the « Annotations » row shows the connected agents
+            RefreshProfiles(); // the « Profils » row (and its current profile) is there from the first frame
             if (hooks_.savedLanguage) { languageSaved_ = hooks_.savedLanguage(); languageFailed_ = false; }   // « Langue »: the preference as stored now
+            defaultBrowser_ = hooks_.defaultBrowser ? hooks_.defaultBrowser() : -1;   // the card: Windows' answer now
+            cardClock_ = now; cardLayer_.shaded = {};                               // its halftone loop starts on Paper's frame
             if (target != View::Main) { views_[1] = target; depth_ = 1; page_.Snap(1); scrolls_[1].Snap(0); }
         }
         { const auto version = hooks_.version ? hooks_.version() : Version{}; SetChecking(version.checking, now); }
@@ -2055,6 +2245,23 @@ public:
         auto order = FocusOrder(); if (focus_ && std::find(order.begin(), order.end(), focus_) == order.end()) focus_ = 0;
         RefreshTips(); Invalidate(); Schedule(now);
     }
+    // The person may have changed the default in Windows' Default apps page: read it again (window back in front).
+    void RefreshDefaultBrowser() {
+        if (!hwnd_ || !visible_ || !hooks_.defaultBrowser) return;
+        const int now = hooks_.defaultBrowser(); if (now == defaultBrowser_) return;
+        defaultBrowser_ = now;
+        if (focus_ == DefaultLater || focus_ == DefaultMake) { const auto order = FocusOrder(); if (std::find(order.begin(), order.end(), focus_) == order.end()) focus_ = 0; }   // the card went
+        Repoint(); RefreshTips(); Invalidate(); Schedule(Motion::Now());
+    }
+    int DefaultBrowserForTest() const { return defaultBrowser_; }
+    // The card: whether it shows, its boxes (DIP, drawer-local), whether its halftone loops, the loop's clock for captures.
+    bool CardShownForTest() const { return visible_ && CardIn(Current()); }
+    CardBox CardForTest() const { return CardBoxes(Height() - FooterHeight(View::Main) + 13); }
+    bool CardLoopsForTest() const { return CardLoops(); }
+    bool CardShaderReadyForTest() const { return gpu_.Ready(); }
+    void CardSecondsForTest(double seconds) { cardSecondsForTest_ = seconds; }
+    void ForceSoftwareShaderForTest() { forceSoftwareForTest_ = true; }
+    Motion::Wake NextWakeForTest() const { return NextWake(Motion::Now()); }
     void SetReducedMotion() { SyncReducedMotion(); Invalidate(); }
     bool Moving(Motion::Time now) const {
         bool moving = slide_.Moving(now) || plate_.Moving(now) || page_.Moving(now) || Spinning(now) || customReveal_.Moving(now) || homeReveal_.Moving(now);
@@ -2065,20 +2272,20 @@ public:
     }
     Motion::Wake NextWake(Motion::Time now) const {
         if (!visible_) return {};
-        auto wake = Motion::Earlier(motion_.NextWake(now), Moving(now) ? Motion::Frame() : Motion::Wake{});
+        auto wake = Motion::Earlier(motion_.NextWake(now), Moving(now) || CardLoops() ? Motion::Frame() : Motion::Wake{});
         if (LoadQuiet(now)) wake = Motion::Earlier(wake, Motion::Deadline(now, loadStart_ + Motion::Milliseconds(loadGraceMs)));   // then « Chargement… »
         return wake;
     }
     // Display-paced frame from the host clock; also paints the frame after motion ends.
     void Frame(Motion::Time now) {
         if (!visible_) return;
-        ApplyGeometry(now);
+        const bool painted = ApplyGeometry(now);
         if (closing_ && !slide_.Moving(now)) { Finish(); return; }
         PlaceEdit(now); SyncEditor(now);
-        // A window keeps only what it is painted with while its region shows it:
-        // the entering slide repaints as it uncovers; the exit moves finished pixels.
+        // A slide step is painted by ApplyGeometry (with its region); other motion repaints here.
         const bool content = (Moving(now) && !(closing_ && !page_.Moving(now))) || motion_.NextWake(now).delay.has_value();
-        if (content || animatingPainted_) Invalidate();
+        if (content || animatingPainted_ || CardFrameDue(now)) Invalidate();
+        if (painted) ValidateRect(hwnd_, nullptr);   // this frame is already presented
         // Rows moved under a still pointer (fold, scroll, navigation): hover follows the layout.
         if (!content && animatingPainted_) { RefreshTips(); Repoint(); }
         animatingPainted_ = content;

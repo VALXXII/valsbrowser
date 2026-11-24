@@ -7,7 +7,8 @@ ROOT = Path(__file__).resolve().parents[2]
 app = ROOT / 'build/bookmarks-preview'
 archive = ROOT / 'build/browser-bookmarks-preview.zip'
 names = ['browser.exe', 'update-helper.exe', 'WebView2Loader.dll', 'version.json',
-         'WebView2-LICENSE.txt', 'WebView2-NOTICE.txt', 'ThorVG-LICENSE.txt', 'RapidJSON-LICENSE.txt']
+         'WebView2-LICENSE.txt', 'WebView2-NOTICE.txt', 'ThorVG-LICENSE.txt', 'RapidJSON-LICENSE.txt',
+         'Gui-LICENSE.txt', 'Gui-NOTICE.txt']   # chat: logic adapted from Gui (Apache-2.0), tools/release/build.py LICENSES
 instructions = '''Preview Favoris - Windows x64
 
 Extraire tout ce dossier, puis lancer browser.exe.

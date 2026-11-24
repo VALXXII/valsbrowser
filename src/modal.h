@@ -191,12 +191,12 @@ public:
         t->DrawRoundedRectangle(D2D1::RoundedRect({r.left + px / 2, r.top + px / 2, r.right - px / 2, r.bottom - px / 2}, std::max(0.f, radius - px / 2), std::max(0.f, radius - px / 2)), b, px);
     }
     float Pixel() const { auto* t = Target(); if (!t) return 1; return t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width)); }
-    void DrawGlyph(const char* d, D2D1_RECT_F box, float size, D2D1_COLOR_F color, float viewMin = 0, float viewSize = 256) {
+    void DrawGlyph(const char* d, D2D1_RECT_F box, float size, D2D1_COLOR_F color, float viewMin = 0, float viewSize = 256, float viewMinY = 0) {
         auto* t = Target(); auto* b = Brush(); if (!t || !b || !chrome_ || !chrome_->Factory()) return;
         auto& g = glyphs_[d]; if (!g) g = SvgGeometry(chrome_->Factory(), d); if (!g) return;
         D2D1_MATRIX_3X2_F old; t->GetTransform(&old);
         const float k = size / viewSize, x = (box.left + box.right - size) / 2, y = (box.top + box.bottom - size) / 2;
-        t->SetTransform(D2D1::Matrix3x2F::Translation(-viewMin, 0) * D2D1::Matrix3x2F::Scale(k, k) * D2D1::Matrix3x2F::Translation(x, y) * old);
+        t->SetTransform(D2D1::Matrix3x2F::Translation(-viewMin, -viewMinY) * D2D1::Matrix3x2F::Scale(k, k) * D2D1::Matrix3x2F::Translation(x, y) * old);
         b->SetColor(color); t->FillGeometry(g, b); t->SetTransform(old);
     }
     // 16 px radio (B08 certificate rows): 1.5 px ring, filled 8 px dot when selected; `opacity` dims disabled rows.
@@ -266,26 +266,20 @@ struct EditField {
     HWND edit = nullptr; HBRUSH brush = nullptr; COLORREF color = 0; std::wstring placeholder; bool password = false;
     NativeUI::AccentCaret caret;
     void Destroy() { if (edit && IsWindow(edit)) DestroyWindow(edit); edit = nullptr; if (brush) DeleteObject(brush); brush = nullptr; }
-    void SetColor(COLORREF c) { if (brush && c == color) return; if (brush) DeleteObject(brush); brush = CreateSolidBrush(c); color = c; if (edit) InvalidateRect(edit, nullptr, TRUE); }
+    void SetColor(COLORREF c) { if (brush && c == color) return; if (brush) DeleteObject(brush); brush = CreateSolidBrush(c); color = c; if (edit) InvalidateRect(edit, nullptr, FALSE); }
     std::wstring Text() const { if (!edit) return {}; const int n = GetWindowTextLengthW(edit); std::wstring s(static_cast<size_t>(n) + 1, L'\0'); GetWindowTextW(edit, s.data(), n + 1); s.resize(static_cast<size_t>(n)); return s; }
     // Best effort for secrets: overwrite the EDIT buffer before clearing it.
     void Wipe() { if (!edit) return; const int n = GetWindowTextLengthW(edit); if (n > 0) { std::wstring fill(static_cast<size_t>(n), L'\x2022'); SetWindowTextW(edit, fill.c_str()); } SetWindowTextW(edit, L""); }
 };
-inline LRESULT CALLBACK PlaceholderProc(HWND h, UINT msg, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) {
-    auto* f = reinterpret_cast<EditField*>(data);
-    if (msg == WM_NCDESTROY) { RemoveWindowSubclass(h, PlaceholderProc, 0x5048); return DefSubclassProc(h, msg, w, l); }
-    if (msg == WM_PAINT && f && !f->placeholder.empty() && GetWindowTextLengthW(h) == 0) {
-        const LRESULT r = DefSubclassProc(h, msg, w, l);
-        HDC dc = GetDC(h); RECT rc{}; GetClientRect(h, &rc);
-        HFONT font = reinterpret_cast<HFONT>(SendMessageW(h, WM_GETFONT, 0, 0)); auto old = SelectObject(dc, font);
-        SetBkMode(dc, TRANSPARENT); SetTextColor(dc, NativeUI::AccentCaret::Mix(f->color, RGB(255, 255, 255), .5f)); // #FFFFFF80
-        DrawTextW(dc, f->placeholder.c_str(), -1, &rc, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX | DT_END_ELLIPSIS);
-        SelectObject(dc, old); ReleaseDC(h, dc);
-        if (GetFocus() == h) { HideCaret(h); ShowCaret(h); }
-        return r;
-    }
-    if (msg == WM_SETTEXT || msg == WM_CHAR || msg == WM_KEYDOWN || msg == WM_CUT || msg == WM_PASTE || msg == WM_CLEAR || msg == WM_UNDO) { const LRESULT r = DefSubclassProc(h, msg, w, l); InvalidateRect(h, nullptr, TRUE); return r; }
-    return DefSubclassProc(h, msg, w, l);
+// The placeholder, drawn into the field's composed image while it is empty (NativeUI::EditBuffer:
+// the field is recomposed when it becomes empty or stops being empty; no repaint per keystroke).
+inline void DrawPlaceholder(const EditField& f, HWND h, HDC dc, const RECT& client) {
+    if (f.placeholder.empty() || GetWindowTextLengthW(h) != 0) return;
+    RECT rc = client;
+    HFONT font = reinterpret_cast<HFONT>(SendMessageW(h, WM_GETFONT, 0, 0)); auto old = SelectObject(dc, font);
+    SetBkMode(dc, TRANSPARENT); SetTextColor(dc, NativeUI::AccentCaret::Mix(f.color, RGB(255, 255, 255), .5f)); // #FFFFFF80
+    DrawTextW(dc, f.placeholder.c_str(), -1, &rc, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX | DT_END_ELLIPSIS);
+    SelectObject(dc, old);
 }
 } // namespace DialogKit
 
@@ -311,11 +305,13 @@ inline constexpr const char* screen = SiteRequest::Path::screen;
 
 namespace Modal {
 namespace P = DialogKit::Paper;
-enum class Kind { Generic, Alert, Confirm, Prompt, BeforeUnload, ClearData, CloseWindow, OpenManyTabs, DeleteBookmarks, About, Private, Origin, Passwords };
+enum class Kind { Generic, Alert, Confirm, Prompt, BeforeUnload, ClearData, CloseWindow, OpenManyTabs, DeleteBookmarks, About, Private, Origin, Passwords, ReleaseNotes, EnginePasswords };
 enum class Role { Primary, Secondary, Danger, Quiet };
 // Page: scrim on `area`, 16 DIP under its top. Window: scrim on the owner's client area,
 // centred. Anchor: no scrim, under Spec::anchor (light dismiss).
-enum class Scope { Page, Window, Anchor };
+// Corner (« Nouveautés », user request 2026-11-16): bottom-right of the owner's client area (14 DIP from its right and
+// bottom edges, like the update toast's bottom-left inset), no scrim, never dismissed by a click elsewhere.
+enum class Scope { Page, Window, Anchor, Corner };
 inline constexpr int CancelButton = 0, AcceptButton = 1;
 inline constexpr int PrivateClearDataButton = 2;                        // A9 « Effacer les données… »
 inline constexpr int AboutCheckButton = 3, AboutRestartButton = 4, AboutDownloadButton = 5, AboutCancelButton = 7;   // A8 status actions (7: engine Cancel while downloading)
@@ -336,11 +332,15 @@ struct Select {
     std::wstring label; std::vector<std::wstring> options; int index = 0;
     std::function<std::vector<std::wstring>(int)> details;   // new check details for an option (A5 counts)
     std::function<std::vector<Check>(int)> checks;           // or the whole check list for an option (availability per import source)
+    // Optional, per option (import sources): a decorative logo (else the `icons` glyph), a second line in the list,
+    // and options shown but not selectable (they say why on their second line).
+    std::vector<std::shared_ptr<const FaviconImage>> images; std::vector<std::wstring> icons, descriptions; std::vector<bool> disabled;
+    bool Enabled(int i) const { return i >= 0 && i < static_cast<int>(options.size()) && !(i < static_cast<int>(disabled.size()) && disabled[static_cast<size_t>(i)]); }
 };
 enum class StatusIcon { None, Check, Download, Warning, Busy };
 struct Status { StatusIcon icon = StatusIcon::None; std::wstring title, detail; Button button; bool hasButton = false; };
 struct Info { std::wstring text, trailing; };                 // A6 download in progress row
-struct Link { int id = 0; std::wstring label; };
+struct Link { int id = 0; std::wstring label; std::wstring automationId; };   // a 32 DIP row « label  › » (A10 popups, Paper QM2-0)
 struct Notice { const char* glyph = nullptr; std::wstring text; bool boxed = false; }; // B06 lock box / info line
 // B01/B02 request rows. `toggle` (B02 « Clic sur la puce », EAC-0): -1 none, 1 on, 0 off. A toggle
 // only ever switches off from here (revoking); an off toggle is inert, re-granting needs the site
@@ -359,6 +359,32 @@ struct SourcePicker {
     std::wstring empty = TR(share_no_source);
     bool shown = false; int acceptId = 1;   // Modal::AcceptButton
 };
+// « Nouveautés » release notes (Paper p-L-0: 142E-0 Mini, 144O-0 Full opened; src/release-notes.h).
+// Sections are a heading (20 DIP glyph + 16/20 Medium) and items (16 DIP bullet + 16/20 regular,
+// balanced wrapping). `collapsed`: the Mini (fixed 218 DIP, clipped, bottom fade with « Voir tout »,
+// which expands in place to the Full view, height to content). `logo`: the Lottie file played in
+// the 20 DIP slot left of the title (static Paper glyph when it cannot be loaded).
+struct NoteSection { bool fixed = false; std::wstring title; std::vector<std::wstring> items; };
+struct Notes {
+    std::vector<NoteSection> sections; std::wstring logo, showAll, spoken; bool collapsed = false;
+    bool Shown() const { return !sections.empty(); }
+};
+namespace NotesPaper {
+inline constexpr float width = 343, pad = 17 /* padding 16 inside the 1 px border (border-box) */, gap = 16, row = 20, logo = 20, indent = 26 /* 20 + gap 6 */;
+inline constexpr float itemGap = 6, bullet = 16, miniHeight = 218, footer = 128, footerSolid = .5598f, footerInset = .2f;
+inline constexpr float closeTop = 11.8f, closeRight = 11.4f, close = 24, closeGlyph = 16;   // absolute 10.8 / 10.4 in the padding box
+inline constexpr float border = 0x0D / 255.f, rule = .10f /* #DDDDDD at --opacity-browser-focus */;
+inline constexpr float title = .9f * .9f /* #FFFFFFE6, opacity .9 */, heading = .9f /* #FFFFFFE6 */, item = .5f * .9f /* 50 %, opacity .9 */, glyph = .5f, closeInk = 0x82 / 255.f;
+inline constexpr float logoInk = .5f;   // --color-browser-text at --opacity-browser-secondary
+inline constexpr DialogKit::Style titleStyle{16, 20, true, -.01f, true}, headingStyle{16, 20, true, .01f, true}, itemStyle{16, 20, false, .01f, true};
+// Paper SVG exports, verbatim (viewBox origin and size beside each).
+inline constexpr const char* added = "M80 60.5A67.5 67.5 0 1 0 147.5 128 67.575 67.575 0 0 0 80 60.5Zm0 120a52.5 52.5 0 1 1 52.5-52.5A52.556 52.556 0 0 1 80 180.5Zm32.5-52.5a7.5 7.5 0 0 1-7.5 7.5H87.5v17.5a7.5 7.5 0 0 1-15 0V135.5H55a7.5 7.5 0 0 1 0-15h17.5V103a7.5 7.5 0 0 1 15 0v17.5h17.5A7.5 7.5 0 0 1 112.5 128Z";   // 1.6 49.704 160
+inline constexpr const char* fixed = "M110.306 59.694a7.5 7.5 0 0 1 0 10.625l-35 35a7.5 7.5 0 0 1-10.625 0l-15-15a7.5 7.5 0 1 1 10.625-10.625L70 89.375l29.694-29.7A7.5 7.5 0 0 1 110.306 59.694ZM147.5 80A67.5 67.5 0 1 1 80 12.5 67.575 67.575 0 0 1 147.5 80Zm-15 0a52.5 52.5 0 1 0-52.5 52.5A52.556 52.556 90 0 0 132.5 80Z";   // 0 0 160
+inline constexpr const char* plus = "M64 14C67.314 14 70 16.686 70 20L70 58L108 58C111.314 58 114 60.686 114 64C114 67.313 111.314 70 108 70L70 70L70 108C70 111.313 67.314 114 64 114C60.686 114 58 111.313 58 108L58 70L20 70C16.686 70 14 67.313 14 64C14 60.686 16.686 58 20 58L58 58L58 20C58 16.686 60.686 14 64 14Z";   // 0 0 128
+inline constexpr const char* check = "M116.245 40.245l-64 64a6 6 0 0 1-8.5 0l-28-28a6 6 0 1 1 8.5-8.5L48 91.5 107.755 31.755a6 6 0 0 1 8.5 8.5Z";   // 0 0 128
+// The logo's still pose (146I-0, 13 x 12.25 centred in the slot): used only when the Lottie cannot play.
+inline constexpr const char* logoPoster = "M48.001 250.363L48.049 240.981C48.051 240.535 48.43 240.178 48.89 240.19L59.287 240.226C61.157 240.272 61.667 242.743 59.96 243.484L54.486 245.391C54.03 245.589 53.645 245.909 53.375 246.314 53.342 246.363 53.316 246.416 53.293 246.47L51.265 251.246C50.347 252.733 47.992 252.096 48.001 250.363Z";   // 48 239.883 13 x 12.26
+}
 struct Spec {
     Kind kind = Kind::Generic; Scope scope = Scope::Window;
     std::wstring automationId, title, subtitle, body, origin /* « exemple.com indique » */, message /* page text */, footnote;
@@ -396,6 +422,9 @@ struct Spec {
     int armMs = 0;
     std::function<std::wstring(const std::vector<std::wstring>&)> validate; // inline error or ""
     std::function<void(int)> onButton;                         // buttons with closes = false
+    std::function<void()> onShown;                             // after Show really put the dialog on screen (not when queued)
+    bool activate = true;                                      // false (Scope::Corner only): shown without taking focus or activation
+    Notes notes;                                               // « Nouveautés » (Kind::ReleaseNotes)
     // Input that opened the dialog. Focus always lands on the initial control (Entrée / Échap work);
     // only the RING depends on it: Keyboard shows it at once, Pointer hides it until Tab / arrows /
     // Espace, Host asks Hooks::keyboard (the host's last chrome input). Page-originated requests
@@ -410,14 +439,22 @@ struct Result { int button = -1; std::vector<std::wstring> values; bool checked 
 // Second line of an account row: password dots keep Paper's 0.08em; any other text is not tracked.
 inline DialogKit::Style AccountHintStyle(const Account& a) { return {14, 16, false, a.plain ? 0.f : .08f}; }
 
-inline int ChooseFromMenu(ContextMenu::Menu& menu, const std::vector<std::wstring>& options, int current, RECT anchor, bool keyboard, bool reduced) {
+inline std::vector<ContextMenu::Item> SelectItems(const Select& select) {
     std::vector<ContextMenu::Item> items;
+    const auto& options = select.options;
     for (size_t i = 0; i < options.size(); ++i) {
         std::wstring label; for (wchar_t c : options[i]) { label += c; if (c == L'&') label += L'&'; }   // no mnemonics
-        items.push_back(ContextMenu::Command(static_cast<int>(i) + 1, std::move(label), L"", true, static_cast<int>(i) == current));
+        auto item = ContextMenu::Command(static_cast<int>(i) + 1, std::move(label), L"", select.Enabled(static_cast<int>(i)), static_cast<int>(i) == select.index);
+        if (i < select.images.size()) item.image = select.images[i];
+        if (i < select.icons.size()) item.icon = select.icons[i];
+        if (i < select.descriptions.size()) item.description = select.descriptions[i];
+        items.push_back(std::move(item));
     }
-    const int id = menu.Track(items, {anchor.right, anchor.bottom}, &anchor, keyboard, reduced, true, true);
-    return id > 0 && id <= static_cast<int>(options.size()) ? id - 1 : -1;
+    return items;
+}
+inline int ChooseFromMenu(ContextMenu::Menu& menu, const Select& select, RECT anchor, bool keyboard, bool reduced) {
+    const int id = menu.Track(SelectItems(select), {anchor.right, anchor.bottom}, &anchor, keyboard, reduced, true, true);
+    return id > 0 && id <= static_cast<int>(select.options.size()) && select.Enabled(id - 1) ? id - 1 : -1;
 }
 
 class Dialog {
@@ -427,7 +464,7 @@ public:
         // Native list for the Période select (B07 « Plus d'options »): chosen index or -1. Hosts with a
         // shared ContextMenu::Menu pass ChooseFromMenu on it; without a hook the dialog opens its own
         // (same shadowless menu). Choosing only changes the value: it never triggers the action.
-        std::function<int(const std::vector<std::wstring>&, int current, RECT anchorScreen, bool keyboard)> choose;
+        std::function<int(const Select&, RECT anchorScreen, bool keyboard)> choose;
         std::function<void()> dismiss;   // with `choose` / `menu`: end that list now (the dialog closed while it was open)
         // Command list (B07 « Plus d'options »): chosen id, 0 when dismissed. Hosts pass their shared
         // ContextMenu::Menu; without it the dialog opens its own (same shadowless menu).
@@ -448,9 +485,11 @@ public:
     static int SourceHit(size_t i) { return 8100 + static_cast<int>(i); }   // index into Spec::sources.items
     static bool IsCategory(int hit) { return hit >= 8000 && hit < 8100; }
     static bool IsSource(int hit) { return hit >= 8100 && hit < 8900; }
+    static constexpr int NotesExpandHit = 6150;                     // « Voir tout » (Mini)
+    static constexpr long long NoteTextKey = 9500;                   // UIA text nodes of the notes (not hits)
 private:
     using Kit = DialogKit::Kit;
-    enum class B { Badge, Head, Message, Select, Segments, Sources, Checks, Field, Notice, Rows, Info, Status, Links, Footnote, Check, Accounts, Danger, Error, Actions };
+    enum class B { Badge, Head, Message, Select, Segments, Sources, Checks, Field, Notice, Rows, Info, Status, Links, Footnote, Check, Accounts, Danger, Error, Actions, NoteHead, NoteRule, NoteText };
     struct Block { B type; size_t index; D2D1_RECT_F r; };
     struct Box { int hit = 0; D2D1_RECT_F r{}; };
     HWND hwnd_ = nullptr, scrim_ = nullptr, owner_ = nullptr, restore_ = nullptr; HINSTANCE instance_ = nullptr;
@@ -470,12 +509,25 @@ private:
     int hover_ = 0, pressed_ = 0, focus_ = 0;
     float thumbScale_ = 1; int sourceColumns_ = 2;   // B08 grid: shrinks thumbnails before overflowing
     Motion::Tween fade_; Motion::Time spinStart_{};
+    // « Nouveautés »: measured lines (parallel to the B::NoteText blocks) and the logo player, loaded on
+    // the first paint of an open notes dialog and released when it closes (no clock while closed).
+    struct NoteLine { size_t section = 0; int item = -1; float width = 0; };   // item -1: the heading
+    std::vector<NoteLine> noteLines_;
+    float notesAvail_ = 1e9f, notesFull_ = 0, notesBodyTop_ = 0;
+    Lottie::Asset logo_; bool logoTried_ = false, logoOk_ = false; Motion::Time logoStart_{};
+    std::vector<uint32_t> logoPixels_;
+    // One bitmap for the looping logo, refilled per frame; owned by `logoTarget_` (held, so a new target never shares its address).
+    ID2D1Bitmap* logoBitmap_ = nullptr; ID2D1RenderTarget* logoTarget_ = nullptr; unsigned logoSide_ = 0;
+    void DropLogoBitmap() { if (logoBitmap_) logoBitmap_->Release(); if (logoTarget_) logoTarget_->Release(); logoBitmap_ = nullptr; logoTarget_ = nullptr; logoSide_ = 0; }
     static constexpr long long GroupKey = 1, DangerKey = 7500;   // DangerKey: B07 card group (UIA only, not a hit)
 
     UINT Dpi() const { return GetDpiForWindow(hwnd_ ? hwnd_ : owner_); }
     int Px(float dip) const { return static_cast<int>(std::lround(dip * Dpi() / 96.f)); }
     float Dip(int px) const { return px * 96.f / Dpi(); }
     bool Anchored() const { return spec_.scope == Scope::Anchor; }
+    bool Cornered() const { return spec_.scope == Scope::Corner; }
+    bool Scrimmed() const { return !Anchored() && !Cornered(); }
+    static constexpr float CornerInset = 14, CornerTopReserve = 81;   // update-toast.h edgeInset / topReserve
     float Pad() const { return spec_.padding > 0 ? spec_.padding : P::padding; }
     float Gap() const { return spec_.gap > 0 ? spec_.gap : spec_.appTile ? P::aboutGap : P::gap; }
     float ContentWidth() const { return width_ - 2 * Pad(); }
@@ -625,7 +677,64 @@ private:
         float l = left;
         for (size_t i = 0; i < spec_.buttons.size(); ++i) { if (!spec_.buttons[i].leading) continue; const float w = kit_.Width(spec_.buttons[i].label, DialogKit::Type::button) + 8; boxes_.push_back({ButtonHit(i), {l, top, l + w, top + P::button}}); l += w + P::buttonGap; }
     }
+    // ---- « Nouveautés » layout (Paper 142E-0 / 144O-0) ----------------------------------------------
+    bool NotesOn() const { return spec_.notes.Shown(); }
+    // CSS text-wrap: balance: the narrowest width (not under the longest word) that keeps the line count
+    // the full width gives. One line keeps the full width.
+    float BalancedWidth(const std::wstring& text, DialogKit::Style s, float max) {
+        const int lines = static_cast<int>(std::lround(kit_.Height(text, s, max) / s.line));
+        if (lines <= 1) return max;
+        float lo = 0; size_t at = 0;
+        while (at < text.size()) { size_t end = text.find(L' ', at); if (end == std::wstring::npos) end = text.size(); if (end > at) lo = std::max(lo, kit_.Width(text.substr(at, end - at), s)); at = end + 1; }
+        float hi = max; lo = std::min(lo, max);
+        for (int k = 0; k < 14 && hi - lo > .25f; ++k) { const float mid = (lo + hi) / 2; if (std::lround(kit_.Height(text, s, mid) / s.line) <= lines) hi = mid; else lo = mid; }
+        return std::min(max, std::ceil(hi));
+    }
+    float NotesFooterTop() const { return height_ - NotesPaper::footer; }
+    void BuildNotes() {
+        namespace N = NotesPaper;
+        noteLines_.clear(); messageFull_ = messageHeight_ = 0;
+        const float left = Pad(), cw = ContentWidth(), right = left + cw;
+        float y = Pad();
+        blocks_.push_back({B::NoteHead, 0, {left, y, right, y + N::row}}); y += N::row;
+        boxes_.push_back({CloseHit, {width_ - N::closeRight - N::close, N::closeTop, width_ - N::closeRight, N::closeTop + N::close}});
+        notesBodyTop_ = y + N::gap / 2;   // the body (rules, headings, items) scrolls under the head in a short Full view
+        for (size_t s = 0; s < spec_.notes.sections.size(); ++s) {
+            const auto& sec = spec_.notes.sections[s];
+            y += N::gap; blocks_.push_back({B::NoteRule, s, {left, y, right, y + 1}}); y += 1;
+            y += N::gap; noteLines_.push_back({s, -1, cw - N::indent}); blocks_.push_back({B::NoteText, noteLines_.size() - 1, {left, y, right, y + N::row}}); y += N::row;
+            y += N::gap;
+            for (size_t i = 0; i < sec.items.size(); ++i) {
+                if (i) y += N::itemGap;
+                const float w = BalancedWidth(sec.items[i], N::itemStyle, cw - N::indent);
+                const float h = std::max(N::row, kit_.Height(sec.items[i], N::itemStyle, w));
+                noteLines_.push_back({s, static_cast<int>(i), w}); blocks_.push_back({B::NoteText, noteLines_.size() - 1, {left, y, right, y + h}}); y += h;
+            }
+        }
+        notesFull_ = y + Pad();
+        const float avail = std::max(120.f, notesAvail_);
+        if (spec_.notes.collapsed) {
+            height_ = std::min(N::miniHeight, avail);
+            // Footer overlay (145X-0): 128 high from the bottom edge, padding 16 from its own edges (left -0.2 / right -0.19
+            // past the padding box), the stretched 32 DIP button at its bottom.
+            const float bl = 1 - N::footerInset + 16, br = width_ - 1 + N::footerInset - 16;
+            boxes_.push_back({NotesExpandHit, {std::round(bl), height_ - 16 - P::button, std::round(br), height_ - 16}});
+        } else {
+            height_ = std::min(notesFull_, avail);
+            // Too short for the whole Full view: the body scrolls (wheel, ↑/↓, Pg↑/Pg↓), same as a long page message.
+            messageFull_ = notesFull_ - notesBodyTop_ - Pad(); messageHeight_ = std::max(0.f, height_ - notesBodyTop_ - Pad());
+            if (messageFull_ <= messageHeight_ + .5f) messageFull_ = messageHeight_ = 0;
+        }
+    }
+    void ExpandNotes() {
+        if (!NotesOn() || !spec_.notes.collapsed) return;
+        spec_.notes.collapsed = false; scroll_ = 0; hover_ = pressed_ = 0; motion_.ClearInteractions();
+        Place(false); FocusStop(CloseHit);
+        if (uia_.Listening()) uia_.ChildrenChanged(GroupKey);
+        if (spec_.onButton) spec_.onButton(NotesExpandHit);
+    }
     void Build() {
+        if (NotesOn()) { blocks_.clear(); boxes_.clear(); fieldTops_.assign(spec_.fields.size(), 0); BuildNotes(); return; }
         blocks_.clear(); boxes_.clear(); fieldTops_.assign(spec_.fields.size(), 0); messageHeight_ = messageFull_ = 0;
         const float left = Pad(), cw = ContentWidth(), right = left + cw;
         float y = Pad(); bool first = true; bool actionsLift = true;
@@ -745,16 +854,27 @@ private:
     }
     // Fit into the available height: the message viewport shrinks first (min 3 lines).
     void Fit(float available) {
+        notesAvail_ = available;
         messageLines_ = P::messageLines; thumbScale_ = 1; Build();
         while (height_ > available && spec_.sources.shown && thumbScale_ > .5f) { thumbScale_ -= .1f; Build(); }
-        while (height_ > available && messageLines_ > 3 && messageFull_ > messageLines_ * DialogKit::Type::message.line - 1) { --messageLines_; Build(); }
+        while (!NotesOn() && height_ > available && messageLines_ > 3 && messageFull_ > messageLines_ * DialogKit::Type::message.line - 1) { --messageLines_; Build(); }
         scroll_ = std::clamp(scroll_, 0.f, std::max(0.f, messageFull_ - messageHeight_));
     }
     RECT OwnerClient() const { RECT r{}; if (owner_) { GetClientRect(owner_, &r); MapWindowPoints(owner_, nullptr, reinterpret_cast<POINT*>(&r), 2); } return r; }
     RECT ScopeRect() const { return spec_.scope == Scope::Page ? area_ : OwnerClient(); }
     void Place(bool entering) {
         const float rise = entering && !reduced_ ? P::enterRise * (1 - Fade()) : 0;
-        if (Anchored()) {
+        if (Cornered()) {
+            RECT client = OwnerClient(); MONITORINFO mi{sizeof(mi)};
+            // A maximised custom-frame window extends past the monitor: keep the card on the work area (as the update toast).
+            if (owner_ && GetMonitorInfoW(MonitorFromWindow(owner_, MONITOR_DEFAULTTONEAREST), &mi)) { RECT c{}; if (IntersectRect(&c, &client, &mi.rcWork)) client = c; }
+            const float availW = Dip(client.right - client.left), availH = Dip(client.bottom - client.top);
+            width_ = std::clamp(availW - 2 * CornerInset, P::minWidth, spec_.width > 0 ? spec_.width : P::width);
+            Fit(std::max(120.f, availH - CornerTopReserve - 2 * CornerInset));
+            const int w = Px(width_), h = Px(height_);
+            const int x = client.right - Px(CornerInset) - w, y = client.bottom - Px(CornerInset) - h + Px(rise);
+            SetWindowPos(hwnd_, HWND_TOP, x, y, w, h, SWP_NOACTIVATE);
+        } else if (Anchored()) {
             RECT work{}; MONITORINFO mi{sizeof(mi)};
             if (GetMonitorInfoW(MonitorFromRect(&spec_.anchor, MONITOR_DEFAULTTONEAREST), &mi)) work = mi.rcWork; else work = OwnerClient();
             width_ = spec_.width > 0 ? spec_.width : P::width;
@@ -782,7 +902,7 @@ private:
     float Fade() const { return fade_.Value(Motion::Now()); }
     void ApplyAlpha() {
         const float a = Fade();
-        if (!Anchored()) SetLayeredWindowAttributes(scrim_, 0, static_cast<BYTE>(std::lround(255 * P::scrim * a)), LWA_ALPHA);
+        if (Scrimmed()) SetLayeredWindowAttributes(scrim_, 0, static_cast<BYTE>(std::lround(255 * P::scrim * a)), LWA_ALPHA);
         SetLayeredWindowAttributes(hwnd_, 0, static_cast<BYTE>(std::lround(255 * a)), LWA_ALPHA);
     }
     // ---- fields ---------------------------------------------------------------------------------
@@ -817,13 +937,14 @@ private:
         for (size_t i = 0; i < spec_.fields.size(); ++i) {
             const auto& f = spec_.fields[i]; auto& e = edits_[i];
             e.password = f.password; e.placeholder = f.placeholder;
-            e.edit = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | (f.password ? ES_PASSWORD : 0), 0, 0, 1, 1, hwnd_, nullptr, instance_, nullptr);
+            e.edit = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | (f.password ? ES_PASSWORD : 0), 0, 0, 1, 1, hwnd_, nullptr, instance_, nullptr); NativeUI::SelectAllOnCtrlA(e.edit);
             if (!e.edit) continue;
             SendMessageW(e.edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 0);
             SendMessageW(e.edit, EM_SETLIMITTEXT, static_cast<WPARAM>(std::max(1, f.maxLength)), 0);
             if (f.password) SendMessageW(e.edit, EM_SETPASSWORDCHAR, 0x2022, 0);
             SetWindowTextW(e.edit, f.value.c_str());
-            SetWindowSubclass(e.edit, DialogKit::PlaceholderProc, 0x5048, reinterpret_cast<DWORD_PTR>(&e));
+            DialogKit::EditField* field = &e;
+            NativeUI::EditBuffer::Attach(e.edit, [field](HWND h, HDC dc, const RECT& client) { DialogKit::DrawPlaceholder(*field, h, dc, client); });
             SetWindowSubclass(e.edit, EditProc, 0x4D44, reinterpret_cast<DWORD_PTR>(this));
             e.SetColor(FieldColor(i));
         }
@@ -853,6 +974,7 @@ private:
     // ---- focus ----------------------------------------------------------------------------------
     std::vector<int> Order() const {
         std::vector<int> o;
+        if (NotesOn() && spec_.notes.collapsed) o.push_back(NotesExpandHit);
         for (size_t i = 0; i < spec_.fields.size(); ++i) { o.push_back(FieldStop(i)); if (spec_.fields[i].reveal) o.push_back(RevealHit(i)); }
         if (spec_.hasSelect) o.push_back(SelectHit);
         for (size_t i = 0; i < spec_.rows.size(); ++i) if (spec_.rows[i].toggle == 1) o.push_back(RowHit(i));
@@ -885,6 +1007,7 @@ private:
         keyboard_ = true; FocusStop(o[static_cast<size_t>(i)]);
     }
     int InitialStop() const {
+        if (NotesOn()) return spec_.notes.collapsed ? NotesExpandHit : CloseHit;   // the Mini's action, else Fermer
         for (size_t i = 0; i < spec_.fields.size(); ++i) if (spec_.fields[i].value.empty() || i + 1 == spec_.fields.size()) return FieldStop(i);
         for (size_t i = 0; i < spec_.accounts.size(); ++i) if (!spec_.accounts[i].disabled) return AccountHit(i);
         for (size_t i = 0; i < spec_.rows.size(); ++i) if (spec_.rows[i].toggle == 1) return RowHit(i);
@@ -929,14 +1052,15 @@ private:
         closing_ = true; fade_.Set(0, Motion::Now(), Motion::Milliseconds(static_cast<int>(P::exitMs)), false, Motion::Curve::EaseOut);
         EnableWindow(hwnd_, FALSE);
         HWND back = restore_ && IsWindow(restore_) ? restore_ : owner_;
-        if (owner_) SetForegroundWindow(owner_);
-        if (back) SetFocus(back);
+        const bool hadFocus = !Cornered() || GetForegroundWindow() == hwnd_ || GetFocus() == hwnd_;
+        if (hadFocus) { if (owner_) SetForegroundWindow(owner_); if (back) SetFocus(back); }
         if (hooks_.wake) hooks_.wake();
         if (done) done(result);
         for (auto& v : result.values) SecureZeroMemory(v.data(), v.size() * sizeof(wchar_t));
     }
+    void ReleaseLogo() { DropLogoBitmap(); logo_.Clear(); logoTried_ = logoOk_ = false; logoPixels_.clear(); logoPixels_.shrink_to_fit(); }
     void FinishClosing() {
-        closing_ = false; fade_.Snap(0);
+        closing_ = false; fade_.Snap(0); ReleaseLogo();
         if (hwnd_) ShowWindow(hwnd_, SW_HIDE);
         if (scrim_) ShowWindow(scrim_, SW_HIDE);
         if (hwnd_) EnableWindow(hwnd_, TRUE);
@@ -965,15 +1089,15 @@ private:
     // value as it was; the dialog may be closed or replaced meanwhile, then the answer is dropped.
     void ChooseSelect(bool keyboard) {
         if (!open_ || busy_ || choosing_ || !spec_.hasSelect || spec_.select.options.empty()) return;
-        const auto options = spec_.select.options; const int current = spec_.select.index; const unsigned generation = generation_;
+        const Select select = spec_.select; const unsigned generation = generation_;
         const RECT anchor = ScreenOf(Find(SelectHit));
         keyboard_ = keyboard; focus_ = SelectHit; InvalidateRect(hwnd_, nullptr, FALSE);
         choosing_ = true; hostMenu_ = static_cast<bool>(hooks_.choose);
         int next = -1;
-        if (hooks_.choose) next = hooks_.choose(options, current, anchor, keyboard);
+        if (hooks_.choose) next = hooks_.choose(select, anchor, keyboard);
         else {
             if (!menu_) { menu_ = std::make_unique<ContextMenu::Menu>(); menu_->Init(instance_, hwnd_, root_); }
-            next = ChooseFromMenu(*menu_, options, current, anchor, keyboard, reduced_);
+            next = ChooseFromMenu(*menu_, select, anchor, keyboard, reduced_);
         }
         choosing_ = false;
         if (!open_ || generation != generation_ || !hwnd_ || !IsWindowVisible(hwnd_)) return;
@@ -981,7 +1105,7 @@ private:
         SetSelect(next);
     }
     void SetSelect(int index) {
-        if (index < 0 || index >= static_cast<int>(spec_.select.options.size()) || index == spec_.select.index) return;
+        if (!spec_.select.Enabled(index) || index == spec_.select.index) return;
         spec_.select.index = index;
         if (spec_.select.details) { const auto d = spec_.select.details(index); for (size_t i = 0; i < d.size() && i < spec_.checks.size(); ++i) spec_.checks[i].detail = d[i]; }
         if (spec_.select.checks) {
@@ -1011,6 +1135,7 @@ private:
         else if (hit == ManageHit) { if (!Armed()) return; Close(Collect(spec_.manageId)); }
         else if (hit >= 6900 && hit < 7000) ToggleReveal(static_cast<size_t>(hit - 6900));
         else if (hit == CloseHit) Cancel();
+        else if (hit == NotesExpandHit) ExpandNotes();
         else if (IsRow(hit)) { if (spec_.onButton) spec_.onButton(hit); }
         else if (IsCategory(hit)) SetCategory(hit - 8000, keyboard);
         else if (IsSource(hit)) {
@@ -1114,10 +1239,11 @@ private:
         switch (msg) {
         case WM_GETOBJECT: { LRESULT result; if (uia_.OnGetObject(h, w, l, result)) return result; break; }
         case WM_ERASEBKGND: return 1;
-        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); Paint(); EndPaint(h, &ps); return 0; }
+        case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); Paint(); EndPaint(h, &ps); for (auto& e : edits_) NativeUI::EditBuffer::Flush(e.edit); return 0; }
         case WM_CTLCOLOREDIT: {
             HDC dc = reinterpret_cast<HDC>(w); const int i = EditIndex(reinterpret_cast<HWND>(l));
             if (i < 0) break;
+            NativeUI::EditBuffer::Clip(reinterpret_cast<HWND>(l), dc);
             SetTextColor(dc, RGB(255, 255, 255)); SetBkColor(dc, edits_[static_cast<size_t>(i)].color); SetBkMode(dc, OPAQUE);
             return reinterpret_cast<LRESULT>(edits_[static_cast<size_t>(i)].brush);
         }
@@ -1126,6 +1252,8 @@ private:
         case WM_ACTIVATE:
             // Anchored popovers dismiss when the user goes elsewhere (not for our own menu).
             if (LOWORD(w) == WA_INACTIVE && open_ && Anchored() && !choosing_) PostMessageW(h, WM_APP + 2, 0, 0);
+            // A corner card shown without activation takes the keyboard once the user activates it (click, Alt+Tab).
+            if (LOWORD(w) != WA_INACTIVE && open_ && Cornered() && GetFocus() != hwnd_) { if (!focus_) focus_ = InitialStop(); SetFocus(hwnd_); }
             return 0;
         case WM_APP + 2: if (open_ && Anchored() && !choosing_ && GetForegroundWindow() != hwnd_) Close(Collect(-1)); return 0;
         case WM_MOUSEMOVE: { TRACKMOUSEEVENT t{sizeof(t), TME_LEAVE, h, 0}; TrackMouseEvent(&t); int hit = HitAt(GET_X_LPARAM(l) * scale, GET_Y_LPARAM(l) * scale); if (!Enabled(hit)) hit = 0; if (hit != hover_) { hover_ = hit; Interact(); } return 0; }
@@ -1135,7 +1263,7 @@ private:
         case WM_MOUSEWHEEL: Scroll(-static_cast<float>(GET_WHEEL_DELTA_WPARAM(w)) / WHEEL_DELTA * 3 * DialogKit::Type::message.line); return 0;
         case WM_KEYDOWN: if ((l & (1 << 30)) && (w == VK_RETURN || w == VK_SPACE)) return 0; if (Key(w)) return 0; break;   // review N1: auto-repeat of Entrée / Espace never activates
         case WM_SYSKEYDOWN: if (AltKey(w)) return 0; break;
-        case WM_SETFOCUS: InvalidateRect(h, nullptr, FALSE); return 0;
+        case WM_SETFOCUS: if (open_ && Cornered() && !restore_) { HWND from = reinterpret_cast<HWND>(w); restore_ = from && from != hwnd_ && !IsChild(hwnd_, from) ? from : nullptr; } InvalidateRect(h, nullptr, FALSE); return 0;
         case WM_DPICHANGED: if (open_) { MakeFont(); Place(false); } return 0;
         case WM_APP + 1: Activate(static_cast<int>(w), true); return 0;
         case WM_APP + 3: { const int k = static_cast<int>(w); if (IsCategory(k)) SetCategory(k - 8000, true); else if (IsSource(k)) SelectSource(static_cast<size_t>(k - 8100), true); return 0; }   // UIA Select: never shares
@@ -1210,11 +1338,108 @@ private:
         default: { kit_.Fill(t, 4, hex(0x202124)); const float cwh = (w - 18) / 2, chh = (h - 18) / 2; bar(6, 6, cwh, chh, 0x3C4043); bar(12 + cwh, 6, cwh, chh, 0x35363A); bar(6, 12 + chh, cwh, chh, 0x35363A); bar(12 + cwh, 12 + chh, cwh, chh, 0x3C4043); break; }
         }
     }
+    // ---- « Nouveautés » paint ------------------------------------------------------------------------
+    // The logo (assets/lottie/logo-spin.json, 512 x 512, 255 frames at 60 fps): ThorVG renders the whole
+    // 512 canvas into the 20 DIP slot at device pixels, so the drawing keeps its authored margins (about
+    // 13 DIP of ink, like the Paper still 146I-0). Only its coverage is kept and painted white at 50 %.
+    // Reduced motion: frame 0 (the authored rest pose), no clock.
+    static Lottie::Limits LogoLimits() { Lottie::Limits l; l.maxBytes = 2u * 1024 * 1024; l.maxFrames = 256; l.maxSeconds = 10; l.cacheFrames = false; return l; }
+    bool LogoAnimating() const {
+        if (!open_ || !NotesOn() || reduced_ || (logoTried_ && !logoOk_) || !hwnd_ || !IsWindowVisible(hwnd_)) return false;
+        return !(owner_ && IsIconic(owner_));
+    }
+    double LogoProgress(Motion::Time now) const {
+        if (reduced_ || !logoOk_) return 0;
+        const double d = logo_.Duration(); if (d <= 0) return 0;
+        return std::fmod(std::max(0.0, std::chrono::duration<double>(now - logoStart_).count()), d) / d;
+    }
+    bool DrawLogo(D2D1_RECT_F slot, double progress) {
+        auto* t = pc_->RenderTarget(); if (!t) return false;
+        if (!logoTried_) { logoTried_ = true; logoOk_ = !spec_.notes.logo.empty() && logo_.Load(spec_.notes.logo, LogoLimits()); }
+        if (!logoOk_) return false;
+        const float px = kit_.Pixel(), size = slot.right - slot.left;
+        const unsigned side = std::clamp(static_cast<unsigned>(std::ceil(size / px - .01f)), 1u, 64u);
+        const auto* f = logo_.Sample(progress, side); if (!f || f->bgra.size() != static_cast<size_t>(side) * side) return false;
+        logoPixels_.resize(f->bgra.size());
+        for (size_t i = 0; i < f->bgra.size(); ++i) { const uint32_t a = f->bgra[i] >> 24; logoPixels_[i] = (a << 24) | (a << 16) | (a << 8) | a; }   // premultiplied white
+        if (logoTarget_ != t || logoSide_ != side) DropLogoBitmap();
+        if (logoBitmap_) { if (FAILED(logoBitmap_->CopyFromMemory(nullptr, logoPixels_.data(), side * 4))) { DropLogoBitmap(); return false; } }
+        else {
+            if (FAILED(t->CreateBitmap(D2D1::SizeU(side, side), logoPixels_.data(), side * 4, D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)), &logoBitmap_)) || !logoBitmap_) { logoBitmap_ = nullptr; return false; }
+            logoTarget_ = t; logoTarget_->AddRef(); logoSide_ = side;
+        }
+        const float s = side * px, x = (slot.left + slot.right - s) / 2, y = (slot.top + slot.bottom - s) / 2;
+        t->DrawBitmap(logoBitmap_, {x, y, x + s, y + s}, NotesPaper::logoInk, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        return true;
+    }
+    void PaintNotes(Motion::Time now) {
+        namespace N = NotesPaper;
+        auto* t = pc_->RenderTarget(); const bool mini = spec_.notes.collapsed;
+        // Head: logo slot, title (Paper line box 14 centred in the 20 row: same baseline as a 20 line), close.
+        for (const auto& b : blocks_) if (b.type == B::NoteHead) {
+            const D2D1_RECT_F slot{b.r.left, b.r.top, b.r.left + N::logo, b.r.top + N::logo};
+            if (!DrawLogo(slot, LogoProgress(now))) kit_.DrawGlyph(N::logoPoster, slot, 13, DialogKit::White(N::logoInk), 48, 13, 239.883f);
+            kit_.Text(spec_.title, N::titleStyle, b.r.left + N::indent, b.r.top, b.r.right - b.r.left - N::indent - (N::close + 8), DialogKit::White(N::title));
+        }
+        {
+            const auto r = Find(CloseHit); const auto v = motion_.Visual(CloseHit, now);
+            if (v.hover > 0 || v.press > 0) kit_.Fill(r, Design::Radius::inset, RowFill(CloseHit, now));
+            kit_.DrawGlyph(DialogKit::Glyph::close, r, N::closeGlyph, DialogKit::White(N::closeInk + (1 - P::body) * v.hover));
+            if (Focused(CloseHit)) kit_.Ring(r, Design::Radius::inset, DialogKit::White(P::ring));
+        }
+        // Body: clipped inside the border (Mini: overflow clip) or under the head when the Full view scrolls.
+        const bool scrolls = !mini && messageFull_ > messageHeight_;
+        const D2D1_RECT_F clip = scrolls ? D2D1_RECT_F{1, notesBodyTop_, width_ - 1, height_ - Pad() + N::gap / 2} : D2D1_RECT_F{1, 1, width_ - 1, height_ - 1};
+        t->PushAxisAlignedClip(clip, D2D1_ANTIALIAS_MODE_ALIASED);
+        const float dy = scrolls ? -scroll_ : 0;
+        for (const auto& b : blocks_) {
+            const D2D1_RECT_F r{b.r.left, b.r.top + dy, b.r.right, b.r.bottom + dy};
+            if (r.bottom < clip.top || r.top > clip.bottom) continue;
+            if (b.type == B::NoteRule) kit_.Fill(r, 0, DialogKit::Rgb(0xDDDDDD, N::rule));
+            else if (b.type == B::NoteText) {
+                const auto& line = noteLines_[b.index]; const auto& sec = spec_.notes.sections[line.section];
+                if (line.item < 0) {
+                    if (sec.fixed) kit_.DrawGlyph(N::fixed, {r.left, r.top, r.left + 20, r.top + 20}, 20, DialogKit::White(N::glyph), 0, 160);
+                    else kit_.DrawGlyph(N::added, {r.left, r.top, r.left + 20, r.top + 20}, 20, DialogKit::White(N::glyph), 1.6f, 160, 49.704f);
+                    kit_.Text(sec.title, N::headingStyle, r.left + N::indent, r.top, line.width, DialogKit::White(N::heading));
+                } else {
+                    kit_.DrawGlyph(sec.fixed ? N::check : N::plus, {r.left + 2, r.top + 2, r.left + 2 + N::bullet, r.top + 2 + N::bullet}, N::bullet, DialogKit::White(N::glyph), 0, 128);
+                    kit_.Text(sec.items[static_cast<size_t>(line.item)], N::itemStyle, r.left + N::indent, r.top, line.width + 1, DialogKit::White(N::item), true);
+                }
+            }
+        }
+        t->PopAxisAlignedClip();
+        if (scrolls) {   // same discreet position mark as a long page message (not in Paper: says more text exists)
+            const float track = messageHeight_, thumb = std::max(16.f, track * messageHeight_ / messageFull_);
+            const float at = (track - thumb) * scroll_ / std::max(1.f, messageFull_ - messageHeight_);
+            kit_.Fill({width_ - 8, notesBodyTop_ + at, width_ - 6, notesBodyTop_ + at + thumb}, 1, DialogKit::White(.2f));
+        }
+        if (mini) {
+            // 145U-0: #171717 from transparent (top of the 128 DIP overlay) to opaque at 55.98 %, over the content.
+            const float top = NotesFooterTop(), c = Design::Surface::canvas;
+            const D2D1_GRADIENT_STOP stops[] = {{0, D2D1::ColorF(c, c, c, 0)}, {N::footerSolid, D2D1::ColorF(c, c, c, 1)}, {1, D2D1::ColorF(c, c, c, 1)}};
+            ID2D1GradientStopCollection* list = nullptr; ID2D1LinearGradientBrush* fade = nullptr;
+            if (SUCCEEDED(t->CreateGradientStopCollection(stops, 3, &list)) && SUCCEEDED(t->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({0, top}, {0, height_}), list, &fade)))
+                t->FillRectangle({1 - N::footerInset, top, width_ - 1 + N::footerInset, height_}, fade);
+            if (fade) fade->Release();
+            if (list) list->Release();
+            const auto r = Find(NotesExpandHit); const auto v = motion_.Visual(NotesExpandHit, now);
+            kit_.Button(r, spec_.notes.showAll, Kit::Tone::Secondary, v.hover, v.press, Focused(NotesExpandHit), false);
+        }
+    }
     void Paint() {
         if (pc_ == &chrome_ && !chrome_.RenderTarget()) chrome_.Resize();
         auto* t = pc_->RenderTarget(); if (!t || !pc_->SolidBrush()) return;
         const auto now = Motion::Now(); const float c = Design::Surface::canvas;
         t->BeginDraw(); t->Clear(D2D1::ColorF(c, c, c, 1));
+        if (NotesOn()) {
+            // Mini: the overlay covers the bottom border row (Paper bottom -1), so the frame is drawn first.
+            if (spec_.notes.collapsed) kit_.Ring({0, 0, width_, height_}, P::radius, DialogKit::White(NotesPaper::border));
+            PaintNotes(now);
+            if (!spec_.notes.collapsed) kit_.Ring({0, 0, width_, height_}, P::radius, DialogKit::White(NotesPaper::border));
+            if (t->EndDraw() == D2DERR_RECREATE_TARGET && pc_ == &chrome_) { kit_.Release(); DropLogoBitmap(); chrome_.RecreateTarget(); }
+            return;
+        }
         for (const auto& b : blocks_) {
             const float left = b.r.left, right = b.r.right, cw = right - left;
             switch (b.type) {
@@ -1302,7 +1527,16 @@ private:
                 kit_.Text(spec_.select.label, DialogKit::Type::body, left, r.top + 6, r.left - left - 8, DialogKit::White(P::body));
                 kit_.Fill(r, P::fieldRadius, DialogKit::Mix(DialogKit::Mix(DialogKit::Gray(Design::Surface::raised), DialogKit::Gray(Design::Surface::hover), v.hover), DialogKit::Gray(Design::Surface::pressed), v.press));
                 const std::wstring value = spec_.select.index >= 0 && spec_.select.index < static_cast<int>(spec_.select.options.size()) ? spec_.select.options[static_cast<size_t>(spec_.select.index)] : L"";
-                kit_.Text(value, DialogKit::Type::body, r.left + 10, r.top + 6, r.right - r.left - 10 - 8 - 14 - 8, DialogKit::White(busy_ ? P::disabled : 1));
+                float textLeft = r.left + 10;
+                const size_t at = static_cast<size_t>(std::max(spec_.select.index, 0));
+                const bool hasLogo = (at < spec_.select.images.size() && spec_.select.images[at]) || (at < spec_.select.icons.size() && !spec_.select.icons[at].empty());
+                if (hasLogo) {   // decorative: the field's UIA name is the option's text
+                    const D2D1_RECT_F logo{textLeft, r.top + 8, textLeft + 16, r.top + 24};
+                    if (!(at < spec_.select.images.size() && pc_->DrawSiteImage(spec_.select.images[at], logo, busy_ ? P::disabled : 1)) && at < spec_.select.icons.size() && !spec_.select.icons[at].empty())
+                        pc_->Icon(spec_.select.icons[at].c_str(), logo, 16, busy_ ? P::disabled : P::body);
+                    textLeft += 16 + 8;
+                }
+                kit_.Text(value, DialogKit::Type::body, textLeft, r.top + 6, r.right - textLeft - 8 - 14 - 8, DialogKit::White(busy_ ? P::disabled : 1));
                 kit_.DrawGlyph(DialogKit::Glyph::caretDown, {r.right - 8 - 14, r.top + 9, r.right - 8, r.top + 23}, 14, DialogKit::White(P::muted));
                 if (Focused(SelectHit)) kit_.Ring(r, P::fieldRadius, DialogKit::White(P::ring));
                 break;
@@ -1398,7 +1632,7 @@ private:
                     const float lw = kit_.Width(initial, letter);
                     kit_.Text(initial, letter, (avatar.left + avatar.right - lw) / 2, avatar.top + 6, lw + 1, DialogKit::White(P::secondaryText));
                     const float dim = spec_.accounts[i].disabled ? .32f : 1.f;   // Paper FW8-0: expired certificate at 32 %
-                    kit_.Text(spec_.accounts[i].user, DialogKit::Type::field, r.left + 42, r.top + 5, cw - 50, DialogKit::White(dim));
+                    kit_.Text(spec_.accounts[i].user, DialogKit::Type::field, r.left + 42, r.top + 5, cw - (spec_.accountsSelect ? 74 : 50), DialogKit::White(dim));   // ends 4 DIP before the radio
                     kit_.Text(spec_.accounts[i].masked, AccountHintStyle(spec_.accounts[i]), r.left + 42, r.top + 27, cw - (spec_.accountsSelect ? 74 : 50), DialogKit::White(P::muted * dim));
                     if (spec_.accountsSelect) kit_.Radio({r.right - 28, r.top + 16, r.right - 12, r.top + 32}, static_cast<int>(i) == spec_.accountSelected, dim);
                 }
@@ -1450,12 +1684,12 @@ private:
                 kit_.Text(spec_.danger.text, DialogKit::Type::detail, x, y + 40 + 12, iw, DialogKit::White(P::body), true);
                 break;
             }
-            case B::Actions: break;
+            case B::Actions: case B::NoteHead: case B::NoteRule: case B::NoteText: break;   // notes: PaintNotes
             }
         }
         PaintActions(now);
         kit_.Ring({0, 0, width_, height_}, P::radius, DialogKit::White(P::border));
-        if (t->EndDraw() == D2DERR_RECREATE_TARGET && pc_ == &chrome_) { kit_.Release(); chrome_.RecreateTarget(); }
+        if (t->EndDraw() == D2DERR_RECREATE_TARGET && pc_ == &chrome_) { kit_.Release(); DropLogoBitmap(); chrome_.RecreateTarget(); }
     }
     // ---- UI Automation --------------------------------------------------------------------------
     // B07 card for UIA (R1): file, real reason title and full text, from the spec (not the drawn, possibly
@@ -1468,9 +1702,27 @@ private:
         return s;
     }
     std::wstring AccessibleName() const { if (!spec_.title.empty()) return spec_.title; if (!spec_.origin.empty()) return spec_.origin; if (spec_.danger.shown) return spec_.danger.title; if (!spec_.accountsTitle.empty()) return spec_.accountsTitle; return TR(dialog_name); }
+    // « Nouveautés »: the whole text is the dialog's description (read on open, the Mini's hidden part
+    // included); each heading / item is a text node whose bounds follow the view (offscreen when clipped).
+    void NotesNodes(std::vector<Accessibility::Node>& nodes) {
+        const bool mini = spec_.notes.collapsed, scrolls = !mini && messageFull_ > messageHeight_;
+        const float top = scrolls ? notesBodyTop_ : 1, bottom = mini ? NotesFooterTop() + NotesPaper::footer * NotesPaper::footerSolid : height_ - 1, dy = scrolls ? -scroll_ : 0;
+        for (const auto& b : blocks_) {
+            if (b.type != B::NoteText) continue;
+            const auto& line = noteLines_[b.index]; const auto& sec = spec_.notes.sections[line.section];
+            Accessibility::Node n; n.key = NoteTextKey + static_cast<long long>(b.index); n.parent = GroupKey; n.role = Accessibility::Role::Text; n.focusable = false;
+            n.name = line.item < 0 ? sec.title : sec.items[static_cast<size_t>(line.item)];
+            const D2D1_RECT_F r{b.r.left, b.r.top + dy, b.r.right, b.r.bottom + dy};
+            n.offscreen = r.top >= bottom || r.bottom <= top; n.bounds = ScreenOf(r);
+            nodes.push_back(n);
+        }
+        if (mini) { Accessibility::Node n; n.key = NotesExpandHit; n.parent = GroupKey; n.name = spec_.notes.showAll; n.bounds = ScreenOf(Find(NotesExpandHit)); n.automationId = L"ReleaseNotesShowAll"; nodes.push_back(n); }
+        Accessibility::Node c; c.key = CloseHit; c.parent = GroupKey; c.name = TR(common_close); c.bounds = ScreenOf(Find(CloseHit)); c.automationId = L"DialogClose"; nodes.push_back(c);
+    }
     std::vector<Accessibility::Node> Nodes() {
         std::vector<Accessibility::Node> nodes; if (!open_) return nodes;
         Accessibility::Node g; g.key = GroupKey; g.role = Accessibility::Role::Group; g.name = AccessibleName();
+        if (NotesOn()) { g.help = spec_.notes.spoken; g.automationId = spec_.automationId; g.focusable = false; RECT wr{}; GetWindowRect(hwnd_, &wr); g.bounds = wr; nodes.push_back(g); NotesNodes(nodes); return nodes; }
         g.help = !spec_.message.empty() ? spec_.message : !spec_.body.empty() ? spec_.body : spec_.subtitle;
         if (spec_.message.empty() && !spec_.body.empty() && !spec_.bodyKeys.empty()) { g.help += L" "; for (size_t i = 0; i < spec_.bodyKeys.size(); ++i) g.help += (i ? L" + " : L"") + spec_.bodyKeys[i]; g.help += L"."; } if (!error_.empty()) g.help = error_;
         if (spec_.danger.shown && error_.empty()) g.help = DangerSpoken();   // R1: the full reason, never the ellipsised line
@@ -1490,11 +1742,14 @@ private:
         if (spec_.hasSelect) { const auto at = add(SelectHit, spec_.select.label, Find(SelectHit), !busy_); nodes[at].expand = 1; if (spec_.select.index >= 0 && spec_.select.index < static_cast<int>(spec_.select.options.size())) nodes[at].help = spec_.select.options[static_cast<size_t>(spec_.select.index)]; }
         for (size_t i = 0; i < spec_.checks.size(); ++i) { const auto at = add(CheckHit(i), spec_.checks[i].label, Find(CheckHit(i)), !spec_.checks[i].disabled && !busy_); nodes[at].toggle = spec_.checks[i].value ? 2 : 1; nodes[at].help = spec_.checks[i].detail; }
         if (spec_.hasStatus && spec_.status.hasButton) { const auto at = add(StatusHit, spec_.status.button.label, Find(StatusHit), Enabled(StatusHit)); nodes[at].help = spec_.status.title + L" · " + spec_.status.detail; }
-        for (size_t i = 0; i < spec_.links.size(); ++i) add(LinkHit(i), spec_.links[i].label, Find(LinkHit(i)), !busy_);
+        for (size_t i = 0; i < spec_.links.size(); ++i) add(LinkHit(i), spec_.links[i].label, Find(LinkHit(i)), !busy_, spec_.links[i].automationId);
         for (size_t i = 0; i < spec_.accounts.size(); ++i) { const auto at = add(AccountHit(i), spec_.accounts[i].user, Find(AccountHit(i)), !spec_.accounts[i].disabled); nodes[at].selected = spec_.accountsSelect && static_cast<int>(i) == spec_.accountSelected; nodes[at].help = spec_.accounts[i].masked; nodes[at].role = Accessibility::Role::ListItem; nodes[at].position = static_cast<int>(i) + 1; nodes[at].count = static_cast<int>(spec_.accounts.size()); }
         if (!spec_.manageLabel.empty()) add(ManageHit, spec_.manageLabel, Find(ManageHit), true);
         if (!spec_.checkLabel.empty()) { const auto at = add(SimpleCheckHit, spec_.checkLabel, Find(SimpleCheckHit), !busy_); nodes[at].toggle = spec_.checkValue ? 2 : 1; }
         if (spec_.danger.shown) { Accessibility::Node c; c.key = DangerKey; c.parent = GroupKey; c.role = Accessibility::Role::Group; c.focusable = false; c.name = spec_.danger.title + (spec_.danger.subtitle.empty() ? L"" : L" — " + spec_.danger.subtitle); c.help = spec_.danger.text; c.automationId = L"DangerousDownloadCard"; for (const auto& bl : blocks_) if (bl.type == B::Danger) c.bounds = ScreenOf(bl.r); nodes.push_back(c); }
+        // Notice lines (B05: the engine-passwords offer and its result, B06 lock box, info lines) are read too (UIA text,
+        // not focusable; keys 7600+, never a hit).
+        for (const auto& bl : blocks_) if (bl.type == B::Notice && bl.index < spec_.notices.size()) { Accessibility::Node t; t.key = 7600 + static_cast<long long>(bl.index); t.parent = GroupKey; t.role = Accessibility::Role::Text; t.focusable = false; t.name = spec_.notices[bl.index].text; t.automationId = L"DialogNotice"; t.bounds = ScreenOf(bl.r); nodes.push_back(t); }
         for (size_t i = 0; i < spec_.buttons.size(); ++i) { const auto at = add(ButtonHit(i), spec_.buttons[i].label, Find(ButtonHit(i)), !ButtonDisabled(spec_.buttons[i]), spec_.buttons[i].automationId); if (spec_.danger.shown) nodes[at].help = DangerSpoken(); }
         if (spec_.closeButton) add(CloseHit, TR(common_close), Find(CloseHit), true, L"DialogClose");
         return nodes;
@@ -1534,7 +1789,7 @@ public:
         // A list still tracking (Dispose from inside its loop) is only dismissed: its Track() is on the stack.
         if (choosing_) { if (hostMenu_) { if (hooks_.dismiss) hooks_.dismiss(); } else if (menu_) menu_->Cancel(); }
         else if (menu_) menu_->Dispose();   // its windows go with hwnd_ (their owner) below
-        uia_.Detach(); DestroyEdits(); kit_.Release(); chrome_.Dispose();
+        uia_.Detach(); DestroyEdits(); ReleaseLogo(); kit_.Release(); chrome_.Dispose();
         if (font_) DeleteObject(font_);
         font_ = nullptr;
         if (hwnd_ && IsWindow(hwnd_)) DestroyWindow(hwnd_);
@@ -1546,6 +1801,7 @@ public:
         if (!hwnd_ || open_) return false;
         if (closing_) FinishClosing();
         spec_ = std::move(spec); done_ = std::move(done); area_ = area; ++generation_;
+        ReleaseLogo(); logoStart_ = Motion::Now();
         busy_ = submitted_ = false; error_.clear(); fieldError_.clear(); busyLabel_.clear(); scroll_ = 0; hover_ = pressed_ = 0; focus_ = 0; motion_.ClearInteractions();
         keyboard_ = OpenedFromKeyboard(); open_ = true; spinStart_ = Motion::Now(); armedFrom_ = GetTickCount64() + static_cast<ULONGLONG>(spec_.armMs); foregroundForTest_ = false;
         HWND f = GetFocus(); restore_ = f && f != hwnd_ && !IsChild(hwnd_, f) ? f : nullptr;
@@ -1554,12 +1810,18 @@ public:
         CreateEdits();
         fade_.Snap(0); fade_.Set(1, Motion::Now(), Motion::Milliseconds(static_cast<int>(P::enterMs)), false, Motion::Curve::EaseOut);
         Place(true); ApplyAlpha();
-        if (!Anchored()) ShowWindow(scrim_, SW_SHOWNOACTIVATE); else ShowWindow(scrim_, SW_HIDE);
-        ShowWindow(hwnd_, SW_SHOW);
-        SetForegroundWindow(hwnd_);
-        FocusStop(InitialStop());
+        if (Scrimmed()) ShowWindow(scrim_, SW_SHOWNOACTIVATE); else ShowWindow(scrim_, SW_HIDE);
+        if (Cornered() && !spec_.activate) {   // the page keeps the keyboard; a click or UIA reaches the card
+            restore_ = nullptr; keyboard_ = false; focus_ = InitialStop();
+            ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+        } else {
+            ShowWindow(hwnd_, SW_SHOW);
+            SetForegroundWindow(hwnd_);
+            FocusStop(InitialStop());
+        }
         if (uia_.Listening()) { uia_.ChildrenChanged(GroupKey); uia_.Raise(GroupKey, UIA_Window_WindowOpenedEventId); }
         if (hooks_.wake) hooks_.wake();
+        if (open_ && IsWindowVisible(hwnd_) && spec_.onShown) { auto shown = spec_.onShown; shown(); }   // really on screen (not queued)
         return true;
     }
     // Replace the content of an open dialog (B05 list ↔ detail ↔ confirmation); keeps `done`.
@@ -1622,6 +1884,7 @@ public:
         Motion::Wake w = motion_.NextWake(now);
         if (fade_.Moving(now) || closing_) w = Motion::Earlier(w, Motion::Frame());
         if (open_ && !reduced_ && (busy_ || (spec_.hasStatus && spec_.status.icon == StatusIcon::Busy))) w = Motion::Earlier(w, Motion::Frame());
+        if (LogoAnimating()) w = Motion::Earlier(w, Motion::Frame());   // the « Nouveautés » logo loops only while shown
         return w;
     }
     void Frame(Motion::Time now) {
@@ -1659,6 +1922,7 @@ public:
     float HeightForTest() const { return height_; }
     float WidthForTest() const { return width_; }
     bool BusyForTest() const { return busy_; }
+    std::wstring ErrorForTest() const { return error_; }
     bool ClosingForTest() const { return closing_; }
     std::wstring FieldErrorForTest() const { return fieldError_; }
     void FinishAnimationsForTest() { fade_.Settle(); if (closing_) FinishClosing(); else if (open_) { Place(false); ApplyAlpha(); } }
@@ -1673,6 +1937,17 @@ public:
         return ok;
     }
     void PaintForTest() { Paint(); }
+    // « Nouveautés » (tests/release-notes): the body's measured blocks, the logo player's state, and a fixed
+    // logo instant (seconds into the loop; < 0 = the real clock) so renders at several instants are reproducible.
+    std::vector<D2D1_RECT_F> NoteBlocksForTest() const { std::vector<D2D1_RECT_F> v; for (auto& b : blocks_) if (b.type == B::NoteText || b.type == B::NoteRule) v.push_back(b.r); return v; }
+    bool NotesCollapsedForTest() const { return spec_.notes.collapsed; }
+    bool LogoLoadedForTest() const { return logoOk_; }
+    bool LogoAnimatingForTest() const { return LogoAnimating(); }
+    size_t LogoBytesForTest() const { return logo_.CacheBytes() + logoPixels_.capacity() * 4; }
+    void LogoAtForTest(double seconds) { logoStart_ = Motion::Now() - std::chrono::duration_cast<Motion::Clock::duration>(std::chrono::duration<double>(seconds)); }
+    float ScrollMaxForTest() const { return std::max(0.f, messageFull_ - messageHeight_); }
+    float ScrollForTest() const { return scroll_; }
+    bool ReducedForTest() const { return reduced_; }
 };
 
 
@@ -1773,6 +2048,17 @@ inline Spec DeleteBookmarksSpec(int count) {
     s.buttons = {Make(CancelButton, TR(common_cancel), Role::Secondary, false, true, true, L"DialogCancel"), Make(AcceptButton, TR(common_delete), Role::Danger, true, false, false, L"DialogDelete")};
     return s;
 }
+// Edge's old passwords, owner decision « option A ». No Paper frame of its own: the small-popup family (A10
+// « Récupération WebView2 », PUX-0 / QLT-0: this same surface at its Paper defaults, 400 wide, padding 16, gap 16, radius
+// 10) with the destructive action of A5 (ECR-0): the question as title, what is deleted and what is kept, « Annuler »
+// first and focused, « Supprimer les mots de passe » (danger, never the default Entrée). The host keeps it open in the
+// busy footer while Edge works (buttons[1].closes = false + onButton, SetBusy) and says a failure with SetError.
+inline Spec DeleteEnginePasswordsSpec() {
+    Spec s; s.kind = Kind::EnginePasswords; s.scope = Scope::Window; s.automationId = L"DeleteEnginePasswords";
+    s.title = TR(vault_engine_delete_title); s.body = TR(vault_engine_delete_body);
+    s.buttons = {Make(CancelButton, TR(common_cancel), Role::Secondary, false, true, true, L"DialogCancel"), Make(AcceptButton, TR(vault_engine_delete_action), Role::Danger, false, false, false, L"DialogDeleteEnginePasswords")};
+    return s;
+}
 // A8 states (same vocabulary as the update toast).
 enum AboutState { AboutUpToDate = 0, AboutReady = 1, AboutOffline = 2, AboutChecking = 3 };
 // `version`: running version (« 0.3.113 »); `detail`: second status line (check time,
@@ -1789,7 +2075,7 @@ inline Status AboutStatus(int state, const std::wstring& detail = L"", const std
 }
 inline Spec AboutSpec(const std::wstring& version, int state, const std::wstring& detail = L"", const std::wstring& next = L"") {
     Spec s; s.kind = Kind::About; s.scope = Scope::Window; s.automationId = L"AboutBrowser";
-    s.appTile = true; s.closeButton = true; s.title = L"browser";
+    s.appTile = true; s.closeButton = true; s.title = L"Browser";
     s.body = TRF(about_version_line, version.rfind(L"Version ", 0) == 0 ? version.substr(8) : version);   // i18n-exempt: legacy « Version » prefix in the given text
     s.status = AboutStatus(state, detail, next); s.hasStatus = true;
     s.links = {{AboutNotesLink, TR(about_release_notes)}, {AboutLicensesLink, TR(about_licenses)}, {AboutReportLink, TR(about_report)}};
@@ -1809,6 +2095,18 @@ inline Spec PrivateSpec(bool future = false) {
         s.footnote = TR(private_concept_footnote);
     }
     s.buttons = {Make(PrivateClearDataButton, TR(settings_clear_data), Role::Quiet, false, false, false, L"PrivateClearData"), Make(AcceptButton, TR(common_got_it), Role::Primary, true, true, true, L"DialogOk")};
+    return s;
+}
+// « Nouveautés » (Paper p-L-0 142E-0 Mini / 144O-0 Full): 343 DIP, no action row; X / Échap close (-1).
+// It replaces the « Mise à jour installée » toast when it opens after an update (src/main.cpp ShowUpdateView).
+// `collapsed`: the Mini with « Voir tout »; the Full view otherwise (À propos › Notes de version).
+// Placed bottom-right (Scope::Corner, user request 2026-11-16), not modal: the page stays usable.
+inline Spec ReleaseNotesSpec(std::vector<NoteSection> sections, std::wstring spoken, std::wstring logo, bool collapsed) {
+    Spec s; s.kind = Kind::ReleaseNotes; s.scope = Scope::Corner; s.automationId = L"ReleaseNotes";
+    s.title = TR(release_notes_title); s.closeButton = true;
+    s.width = NotesPaper::width; s.padding = NotesPaper::pad; s.gap = NotesPaper::gap;
+    s.notes.sections = std::move(sections); s.notes.spoken = std::move(spoken); s.notes.logo = std::move(logo);
+    s.notes.collapsed = collapsed; s.notes.showAll = TR(release_notes_show_all);
     return s;
 }
 } // namespace Modal

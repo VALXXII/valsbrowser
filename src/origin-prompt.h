@@ -47,6 +47,9 @@ struct Spec {
     std::vector<DemoAccount> accounts;   // PasswordFill (fictitious), ClientCertificate (name + issuer)
     std::wstring user;                   // BasicAuth / PasswordSave|Update: pre-filled identifier
     std::wstring secret;                 // PasswordSave|Update, real path only: the password just submitted (wiped by the host after)
+    std::wstring topOrigin;              // PasswordSave|Update, real path: the top-level origin the tab must still show (a frame's capture: its page's; empty: the offer's own origin)
+    bool inFrame = false;                // PasswordSave|Update, real path: captured in a frame, not the page itself (review N-5: said in the subtitle)
+    bool migration = false;              // PasswordSave, real path: a password the ENGINE had saved (autofilled): « Garder ce mot de passe dans Browser ? »
     // Extras (all optional):
     std::wstring frame;                  // ExternalApp: third-party frame host (no remembering offered)
     std::wstring app;                    // ExternalApp: application name (« Zoom Workplace »), else generic
@@ -151,7 +154,10 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
         if (!always) { m.checkLabel = TR(perm_remember); m.originCheck = true; }
         m.stretchButtons = true; m.softButtons = true;
         m.buttons = {button(Id::Cancel, TR(permission_choice_block), Role::Secondary, false, false, false, L"PermissionBlock"), button(Id::Accept, TR(permission_choice_allow), Role::Primary, true, false, false, L"PermissionAllow")};
-        m.checkValue = always;
+        // « Mémoriser pour ce site » starts checked (user decision 2026-11-17, like Chrome): an answer is kept for the
+        // site unless the user clears the check for this time only. Notifications are always remembered.
+        m.checkValue = true;
+        if (!s.demo) m.armMs = 500;   // SEC-22: a double click the page arranged cannot land on « Autoriser »
         break;
     }
     case Kind::BasicAuth: {
@@ -170,6 +176,7 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
     case Kind::ExternalApp: {
         // Title in the popovers' 16/20 role (user override of Paper's 20/24), tile on the title line.
         m.automationId = L"ExternalApplication"; m.scope = Scope::Page; m.tileGlyph = DialogKit::Glyph::external; m.softButtons = true;
+        if (!s.demo) m.armMs = 500;   // SEC-22: a key or click the page timed (it takes the focus) cannot launch the application
         std::wstring scheme = s.detail.substr(0, s.detail.find(L':'));
         if (!s.frame.empty()) {
             m.title = TR(external_title);
@@ -252,9 +259,10 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
     }
     case Kind::PasswordSave: case Kind::PasswordUpdate: {   // B04, Démonstration: nothing is stored
         const bool update = s.kind == Kind::PasswordUpdate;
-        m.automationId = update ? L"PasswordUpdate" : L"PasswordSave"; m.scope = Scope::Anchor; m.width = 360; m.closeButton = true; m.demo = s.demo;
-        m.title = update ? TR(password_update_title) : TR(password_save_title);
-        m.subtitle = s.demo ? TRF(password_subtitle_demo, s.origin) : TRF(password_subtitle, s.origin);
+        const bool keep = !update && !s.demo && s.migration;   // owner decision B: the same B04, worded as a migration
+        m.automationId = update ? L"PasswordUpdate" : keep ? L"PasswordKeep" : L"PasswordSave"; m.scope = Scope::Anchor; m.width = 360; m.closeButton = true; m.demo = s.demo;
+        m.title = update ? TR(password_update_title) : keep ? TR(password_keep_title) : TR(password_save_title);
+        m.subtitle = s.demo ? TRF(password_subtitle_demo, s.origin) : s.inFrame ? TRF(password_subtitle_frame, s.origin) : TRF(password_subtitle, s.origin);   // review N-5
         Field user; user.label = TR(auth_user); user.value = s.user; user.automationId = L"PasswordUser"; user.required = true;
         Field pass; pass.label = TR(settings_passwords_singular); pass.password = true; pass.reveal = true; pass.automationId = L"PasswordValue";
         pass.value = !s.demo ? s.secret : s.accounts.empty() ? L"exemple-fictif-2026" : s.accounts[0].hint;   // real: the submitted password; demo: fictitious
@@ -273,7 +281,7 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
             // Review F3: armed (500 ms, foreground) and, for an update, no default Entrée: replacing a stored
             // password always takes a deliberate click or Tab + Espace on « Mettre à jour ».
             m.armMs = 500;
-            m.buttons = {button(Id::Later, TR(common_later), Role::Secondary, false, true, false, L"PasswordLater"), button(Id::Accept, update ? TR(password_update) : TR(password_save), Role::Primary, !update, false, false, L"PasswordSaveConfirm")};
+            m.buttons = {button(Id::Later, TR(common_later), Role::Secondary, false, true, false, L"PasswordLater"), button(Id::Accept, update ? TR(password_update) : keep ? TR(password_keep) : TR(password_save), Role::Primary, !update, false, false, L"PasswordSaveConfirm")};
             if (m.accountsSelect) m.buttons[1].disabled = true;
             break;
         }
@@ -338,7 +346,7 @@ public:
     struct Hooks {
         std::function<void()> wake;
         // Native list of a select (B08 certificate / screen share): chosen index or -1.
-        std::function<int(const std::vector<std::wstring>&, int current, RECT anchorScreen, bool keyboard)> choose;
+        std::function<int(const Modal::Select&, RECT anchorScreen, bool keyboard)> choose;
         // B07 « Plus d'options » command list: chosen Command, 0 when dismissed (shared host menu).
         std::function<int(const std::vector<ContextMenu::Item>&, RECT anchorScreen, bool keyboard)> menu;
         std::function<void()> dismiss;   // end the host list now (the prompt closed while it was open)

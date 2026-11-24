@@ -59,6 +59,10 @@ struct Glyph { const char* d; float x, y, w, h; };
 namespace Glyphs {
 inline constexpr Glyph caretDown{"M216.49,104.49l-80,80a12,12,0,0,1-17,0l-80-80a12,12,0,0,1,17-17L128,159l71.51-71.52a12,12,0,0,1,17,17Z", 0, 0, 256, 256};
 inline constexpr Glyph info{"M108,84a16,16,0,1,1,16,16A16,16,0,0,1,108,84Zm128,44A108,108,0,1,1,128,20,108.12,108.12,0,0,1,236,128Zm-24,0a84,84,0,1,0-84,84A84.09,84.09,0,0,0,212,128Zm-72,36.68V132a20,20,0,0,0-20-20,12,12,0,0,0-4,23.32V168a20,20,0,0,0,20,20,12,12,0,0,0,4-23.32Z", 0, 0, 256, 256};
+// Mode Commentaire (Paper 1AYP-0): the band's layout switch — a speech bubble (comments on the page) and a window with
+// its right side panel (the chat panel; Paper draws it turned 180°, the panel on the right).
+inline constexpr Glyph commentBubble{"M74.187 31.76A35 35 0 0 0 7 45.502v28a7 7 0 0 0 7 7H37.918A35.066 35.066 0 0 0 70 101.502h28a7 7 0 0 0 7-7V66.502A35 35 0 0 0 74.187 31.76ZM98 94.502H70a28.061 28.061 90 0 1-24.36-14.188A34.969 34.969 90 0 0 76.431 39.25 28 28 0 0 1 98 66.502Z", 0, 0, 112, 112};
+inline constexpr Glyph sidePanel{"M94.5 17.5H17.5A7 7 0 0 0 10.5 24.5V87.5a7 7 0 0 0 7 7H94.5a7 7 0 0 0 7-7V24.5A7 7 0 0 0 94.5 17.5Zm0 70H38.5V24.5H94.5V87.5Z", 0, 0, 112, 112};
 inline constexpr Glyph check{"M232.49,80.49l-128,128a12,12,0,0,1-17,0l-56-56a12,12,0,1,1,17-17L96,183,215.51,63.51a12,12,0,0,1,17,17Z", 0, 0, 256, 256};
 inline constexpr Glyph close{"M208.49,191.51a12,12,0,0,1-17,17L128,145,64.49,208.49a12,12,0,0,1-17-17L111,128,47.51,64.49a12,12,0,0,1,17-17L128,111l63.51-63.52a12,12,0,0,1,17,17L145,128Z", 0, 0, 256, 256};
 inline constexpr Glyph plus{"M228,128a12,12,0,0,1-12,12H140v76a12,12,0,0,1-24,0V140H40a12,12,0,0,1,0-24h76V40a12,12,0,0,1,24,0v76h76A12,12,0,0,1,228,128Z", 0, 0, 256, 256};
@@ -454,13 +458,16 @@ inline float PiecesWidth(Ink& ink, const std::vector<Piece>& ps) {
 inline float Pieces(Ink& ink, const std::vector<Piece>& ps, D2D1_RECT_F r, Align align = Align::Center) {
     const float total = PiecesWidth(ink, ps), cy = (r.top + r.bottom) / 2;
     float x = align == Align::Center ? (r.left + r.right - total) / 2 : align == Align::Trailing ? r.right - total : r.left;
-    x = std::floor(x * 2 + .5f) / 2;
-    for (const auto& p : ps) {
-        const float w = PieceWidth(ink, p);
+    x = std::max(r.left, std::floor(x * 2 + .5f) / 2);   // a row wider than `r` starts at its left edge, never before it
+    for (size_t i = 0; i < ps.size(); ++i) {
+        const auto& p = ps[i]; float w = PieceWidth(ink, p);
         switch (p.kind) {
         case Piece::Text: {
-            const float right = std::min(r.right, x + w + 1);
+            // A text trims (ellipsis) before the pieces that follow it, so they stay inside `r` too.
+            float after = 0; for (size_t j = i + 1; j < ps.size(); ++j) after += ps[j - 1].gapAfter + PieceWidth(ink, ps[j]);
+            const float right = std::min(r.right - after, x + w + 1);
             ink.Text(p.text, p.font, {x, r.top, right, r.bottom}, p.color, false, Align::Leading, true);
+            w = std::min(w, std::max(0.f, right - x));
             if (p.underline) { const float base = cy - p.font.line / 2 + ink.BaselineOf(p.font) + 3; ink.Fill({x, base - .5f, x + w, base + .5f}, 0, p.color); }
             break; }
         case Piece::Icon: ink.Icon(*p.glyph, {x, cy - p.size / 2, x + p.size, cy + p.size / 2}, p.color, p.rotate); break;

@@ -27,6 +27,8 @@ FILES = {
     'debug-sandbox.h': 'internal QA page browser://debug (French review tool; the production components it opens are translated)',
     'motion-lab.h': 'review-only motion lab (--motion-lab), never in a user flow',
     'motion-tuning.h': 'motion lab persistence (keys, review tool)',
+    'onboarding-tuning.h': 'onboarding 2 -> 3 transition parameters: labels of the review panel (--onboarding-debug), French only like the motion lab',
+    'onboarding-debug.h': 'review-only tuning panel (--onboarding-debug), never in a user flow',
     'password-demo.h': 'B05 demonstration surface with fictitious accounts, opened only from the QA sandbox',
     'e2e-fixture-pin.h': 'end-to-end test hook compiled only into test hosts',
     'mcp-bridge.cpp': 'MCP stdio bridge: protocol schema, tool descriptions and errors for agents (developer text)',
@@ -45,7 +47,7 @@ FILES = {
 
 # Known non-interface literals: brands, product/engine names, fonts, technical tokens.
 TOKENS = {
-    'browser', 'WebView2', 'Microsoft Edge WebView2', 'Inter Display', 'Segoe UI', 'Segoe UI Variable', 'Segoe Fluent Icons',
+    'browser', 'Browser', 'WebView2', 'Microsoft Edge WebView2', 'Inter Display', 'Segoe UI', 'Segoe UI Variable', 'Segoe Fluent Icons',
     'Segoe MDL2 Assets', 'JetBrains Mono', 'DuckDuckGo', 'Google', 'Brave Search', 'Bing', 'Ecosia', 'Qwant', 'Claude',
     'Claude Desktop', 'Codex', 'OpenAI', 'Anthropic', 'GitHub', 'Windows', 'English', 'Français', 'uBlock Origin Lite',
     'ThorVG', 'Lottie', 'MCP', 'HTTPS', 'HTTP', 'JSON', 'TOML', 'PDF', 'URL', 'Ctrl', 'Alt', 'Tab',   # language-neutral keys only: no Maj/Shift/Entrée/Échap/Espace
@@ -56,10 +58,10 @@ LITERAL = re.compile(r'(?:\b(?:L|u8|u|U))?R"([^(\s]{0,16})\((.*?)\)\1"|(?:\b(?:L
 WORD = re.compile(r"[A-Za-zÀ-ÿ][A-Za-zà-ÿ'’]+")
 CAPWORD = r'[A-ZÀ-Ý][a-zà-ÿ]{2,}(?:-[a-zà-ÿ]{2,})*[.!?…]?' 
 ACCENT = re.compile(r'[À-ÿ«»…’—›]')
-# Diagnostics: logs, traces, and main.cpp's Fail/Check(hr, where) whose « where » is the failing API name
+# Diagnostics: logs, traces, and main.cpp's Fail/Check/CheckTab(hr, where) whose « where » is the failing API name
 # (the dialog's own wording around it is catalog text). Free functions only: a member call such as
 # profileDeleteDialog.Fail(...) or p->Check(...) is UI, never a diagnostic.
-LOGISH = re.compile(r'(?<![.>])\b(Log|LogLine|LogW|Trace|OutputDebugString[AW]?|Fault|MigrationStepFailed|Diag|Debug|Fail|Check|EngineDropped|WorkspaceEngineFailed|static_assert|SplitFail|SplitCheck|E2EHostAbort|ProfilesQaFail|WsqaFail|LogPermissionHr|MenuFail|unavailable|SandboxLog|CancelContentTransition)\s*\(|\bstd::(cerr|clog)\b|\bthrow\b|\bSmoke\b')
+LOGISH = re.compile(r'(?<![.>])\b(Log|LogLine|LogW|Trace|OutputDebugString[AW]?|Fault|MigrationStepFailed|Diag|Debug|Fail|Check|CheckTab|EngineDropped|WorkspaceEngineFailed|static_assert|SplitFail|SplitCheck|E2EHostAbort|ProfilesQaFail|WsqaFail|LogPermissionHr|MenuFail|unavailable|SandboxLog|CancelContentTransition)\s*\(|\bstd::(cerr|clog)\b|\bthrow\b|\bSmoke\b')
 # A narrow (char) literal that is a French sentence: two or more common French words.
 FRENCH_NARROW = re.compile(r'(?i)(?:\b(?:de|du|des|le|la|les|est|pas|sur|dans|une?|illisible|impossible|cliquez|configuration de)\b.*){2,}')
 TR_CALL = re.compile(r'\bTR[FP]?\(')

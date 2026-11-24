@@ -114,6 +114,12 @@ private:
         const float right = width_ - 1 - padRight - (HasClose() ? close + gap : 0), cy = height_ / 2;
         return {right - ActionWidth(), cy - action / 2, right, cy + action / 2};
     }
+    // Status toast: the message / detail lane, after the icon, before the action (or ✕), one line each.
+    D2D1_RECT_F StatusLane() {
+        using namespace Layout; const float x = 1 + padLeft + (spec_.icon != Icon::None ? 16 + gap : 0);
+        const float right = (HasAction() ? ActionBox().left : HasClose() ? CloseBox().left : width_ - 1 - padRight) - (HasAction() || HasClose() ? gap : 0);
+        return {x, 0, right, height_};
+    }
     D2D1_RECT_F CloseBox() const { if (!HasClose()) return {}; const float r = width_ - 1 - Layout::padRight, cy = height_ / 2; return {r - Layout::close, cy - Layout::close / 2, r, cy + Layout::close / 2}; }
     int HitAt(float x, float y) { if (HasAction() && PopupKit::Contains(ActionBox(), x, y)) return ActionHit; if (HasClose() && PopupKit::Contains(CloseBox(), x, y)) return CloseHit; return None; }
     void DrawIcon(D2D1_RECT_F box) {
@@ -184,9 +190,9 @@ private:
             float x = 1 + padLeft; if (spec_.icon != Icon::None) { DrawIcon({x, 12, x + 16, 28}); x += 16 + gap; }
             PopupKit::DrawText(chrome_, spec_.message, {x, 10, width_, 30}, Title(), PopupKit::White(.9f));
         } else {
-            float x = 1 + padLeft; const float cy = height_ / 2;
-            if (spec_.icon != Icon::None) { DrawIcon({x, cy - 8, x + 16, cy + 8}); x += 16 + gap; }
-            const float right = (HasAction() ? ActionBox().left : HasClose() ? CloseBox().left : width_ - 1 - padRight) - (HasAction() || HasClose() ? gap : 0);
+            const float cy = height_ / 2;
+            if (spec_.icon != Icon::None) DrawIcon({1 + padLeft, cy - 8, 1 + padLeft + 16, cy + 8});
+            const auto lane = StatusLane(); const float x = lane.left, right = lane.right;
             const float top = spec_.detail.empty() ? cy - 10 : cy - 20;
             PopupKit::DrawText(chrome_, spec_.message, {x, top, right, top + 20}, Title(), PopupKit::White(.9f));
             if (!spec_.detail.empty()) PopupKit::DrawText(chrome_, spec_.detail, {x, top + 20, right, top + 40}, {14, 20}, PopupKit::White(.5f));
@@ -347,6 +353,9 @@ public:
     void KeyForTest(WPARAM key) { SendMessageW(hwnd_, WM_KEYDOWN, key, 0); }
     void PaintForTest() { Paint(); }
     bool RenderForTest(const std::wstring& root, const wchar_t* png, UINT dpi = 96) { return PopupKit::RenderPng(root, width_, height_, dpi, png, surface_, [this] { Paint(); }); }
+    // Text fit: the status lane's width and the natural width of the message (its own type).
+    float StatusLaneWidthForTest() { const auto l = StatusLane(); return l.right - l.left; }
+    float MessageWidthForTest() { return PopupKit::Measure(chrome_, spec_.message, 8192, Title(), false).width; }
     void ExpireForTest() { if (visible_ && !leaving_) Leave(false); }
 };
 } // namespace ContextToast

@@ -6,3 +6,4 @@
 __pycache__/
 *.py[cod]
 /assets/extensions/
+.mcp.json

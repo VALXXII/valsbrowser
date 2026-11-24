@@ -67,20 +67,17 @@ try {
   $rt = (Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" | Where-Object { $_.CommandLine -like '*9367*' } | Select-Object -First 1).ExecutablePath
   "runtime: $rt"
 
-  # 1. Persistent storage (kind 13): the real engine request; the popover has no collapsible help (Paper B02).
+  # 1. Persistent storage (kind 13): never asked (user decision 2026-11-17, like Chrome / Edge). The real engine request
+  #    is allowed silently: no popover, no remember check, nothing saved, the page gets true.
   [void](Eval $ws "window.__persist='pending'; navigator.storage.persist().then(v=>window.__persist=String(v)); 1" $true)
   $asked = Wait-Log 'PERMISSION request kind=13 http://127\.0\.0\.1:18767'
   Check $asked 'engine raised PermissionRequested kind=13 (persistent storage) for the fixture origin'
   if ($asked) {
-    $group = Find-Id 'PermissionPrompt'; Check ($group -and $group.Current.Name -like '127.0.0.1*protéger son stockage local*') "popover title names persistent storage: $($group.Current.Name)"
-    Check ($group -and $group.Current.HelpText -eq "Protège les données locales du site quand le navigateur libère de l'espace. Les mots de passe sont gérés séparément.") 'popover subtitle (UIA help) explains persistent storage'
-    Check ($null -eq (Find-Id 'PermissionMore' 2)) 'no « Plus d''infos » row on the popover (UIA)'
-    Check ($null -ne (Find-Id 'PermissionBlock') -and $null -ne (Find-Id 'PermissionAllow') -and $null -ne (Find-Id 'DialogClose')) 'Bloquer, Autoriser and Fermer exposed'
-    Check ((Count-Name 'Mémoriser pour ce site') -eq 1) 'remember check exposed for persistent storage (control for the notifications check)'
-    Check ((Read-Page $ws 'window.__persist') -eq 'pending' -and -not ((Log-Text) -match 'PERMISSION kind=13 action=')) 'request pending until the user decides'
-    [void](Cdp-Send $ws 'Page.navigate' @{ url = $origin + 'other.html' }); Start-Sleep 2
-    Check (Wait-Log 'PERMISSION kind=13 action=0') 'navigation: the request is dismissed (action 0, not saved)'
-    Check (([regex]::Matches((Log-Text), 'PERMISSION kind=13 action=')).Count -eq 1) 'answered exactly once'
+    Check (Wait-Log 'PERMISSION kind=13 allowed silently') 'kind 13: allowed silently'
+    Check ($null -eq (Find-Id 'PermissionPrompt' 2)) 'kind 13: no popover'
+    for ($i = 0; $i -lt 20 -and (Read-Page $ws 'window.__persist') -eq 'pending'; $i++) { Start-Sleep -Milliseconds 250 }
+    Check ((Read-Page $ws 'window.__persist') -eq 'true') "page sees navigator.storage.persist() -> $(Read-Page $ws 'window.__persist')"
+    Check (-not ((Log-Text) -match 'PERMISSION chip shown')) 'kind 13: no request chip'
   }
 
   # 2. Notifications (kind 4): title, subtitle and buttons only; closed with the close button (Dismiss).

@@ -126,7 +126,9 @@ static bool Redirect(Env& e, const std::wstring& root) {
     e.env.openFile = [](const std::wstring&) { return false; };   // never opens anything
     e.env.driveType = [](const std::wstring&) { return unsigned(DRIVE_FIXED); };
     e.target.bridgeExe = e.app + L"\\browser-annotations-mcp.exe"; e.target.storeRoot = e.app + L"\\annotations"; e.target.version = "0.3.242";
-    WriteAll(e.target.bridgeExe, "MZ fake bridge");
+    // The relay must be a real program for this machine (agent-connect BridgeUsable, since 1d658b5: PE header and machine
+    // checked): a copy of this test executable (a « MZ » text file is refused, nothing gets written).
+    { wchar_t self[MAX_PATH]{}; GetModuleFileNameW(nullptr, self, MAX_PATH); if (!CopyFileW(self, e.target.bridgeExe.c_str(), FALSE)) { std::printf("ABORT: no relay copy\n"); return false; } }
     CreateDirectoryW(e.target.storeRoot.c_str(), nullptr);
     return true;
 }

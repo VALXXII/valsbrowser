@@ -5,7 +5,12 @@
 #include "build-info.h"
 #endif
 #include "app-icon.rc"
-#define VI_DESCRIPTION "browser launcher and updater"
+// String 1: the product name Windows shows for a pinned window (src/taskbar-identity.h NameResource).
+STRINGTABLE
+BEGIN
+ 1 "Browser"
+END
+#define VI_DESCRIPTION "Browser launcher and updater"
 #define VI_INTERNAL "update-helper"
 #define VI_ORIGINAL "update-helper.exe"
 #include "version-info.rc"

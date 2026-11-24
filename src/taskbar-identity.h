@@ -20,7 +20,16 @@
 
 namespace TaskbarIdentity {
 
+// The identifier never changes (pins, grouping and the default-browser registration name it); only the name the
+// person sees is « Browser », capital B (the executable, folders and keys keep « browser »).
 inline constexpr const wchar_t* AppId = L"ValXXII.browser";
+inline constexpr const wchar_t* ProductName = L"Browser";
+inline constexpr const wchar_t* ShortcutName = L"Browser.lnk";
+// The window's relaunch name is the launcher's string resource 1 (« Browser », src/update-helper.rc), never the plain
+// text: window properties are stored as global atoms, which ignore case, so a plain « Browser » reads back as
+// « browser » whenever any process already holds that atom (the previous version did).
+inline constexpr int NameStringId = 1;
+inline std::wstring NameResource(const std::wstring& launcher) { return L"@" + launcher + L",-" + std::to_wstring(NameStringId); }
 
 struct Identity {
     std::wstring aumid, launcher, relaunch, icon, name;
@@ -39,7 +48,7 @@ inline Identity ForInstalled(const std::wstring& exe, bool installed) {
     id.launcher = root + L"\\browser.exe";
     id.relaunch = L"\"" + id.launcher + L"\"";
     id.icon = root + L"\\browser.ico,0";
-    id.name = L"browser";
+    id.name = NameResource(id.launcher);
     return id;
 }
 
@@ -88,6 +97,17 @@ struct Link {
     std::wstring Target() const { wchar_t p[MAX_PATH * 4]{}; return ok() && SUCCEEDED(link->GetPath(p, MAX_PATH * 4, nullptr, SLGP_RAWPATH)) ? p : L""; }
 };
 
+// Our launcher shortcut in a Start Menu / desktop folder (the name setup-core.cpp writes). One place, so the path the
+// browser stamps at start (main.cpp StampTaskbarIdentity) is the one tests check.
+inline std::wstring LauncherShortcut(const std::wstring& folder) { return folder + L"\\" + ShortcutName; }
+
+// The name the file system holds for `path` (its real case), "" when absent.
+inline std::wstring OnDiskName(const std::wstring& path) {
+    WIN32_FIND_DATAW fd; HANDLE f = FindFirstFileW(path.c_str(), &fd);
+    if (f == INVALID_HANDLE_VALUE) return L"";
+    FindClose(f); return fd.cFileName;
+}
+
 inline std::wstring ShortcutId(const std::wstring& lnk) {
     Link l(lnk, true); if (!l.ok()) return L"";
     IPropertyStore* store = nullptr; if (FAILED(l.link->QueryInterface(IID_PPV_ARGS(&store)))) return L"";
@@ -123,6 +143,25 @@ inline Stamp StampShortcut(const std::wstring& lnk, const Identity& id) {
     const bool set = SetString(store, PKEY_AppUserModel_ID, id.aumid) && SUCCEEDED(store->Commit());
     store->Release();
     return set && SUCCEEDED(l.file->Save(lnk.c_str(), TRUE)) ? Stamp::Stamped : Stamp::Failed;
+}
+
+enum class Rename { Renamed, AlreadyNamed, NotOurs, Missing, Failed };
+// Setups before the « Browser » name wrote <folder>\browser.lnk. Our own one (target exactly `launcher`) is renamed
+// in place to Browser.lnk: a case-only rename of the SAME file (same path for Windows, same target, same identity,
+// same contents), so the Start Menu shows « Browser » and nothing pinned from it is lost. Anything else is left.
+inline Rename RenameShortcut(const std::wstring& folder, const std::wstring& launcher) {
+    const std::wstring lnk = LauncherShortcut(folder), onDisk = OnDiskName(lnk);
+    if (onDisk.empty()) return Rename::Missing;
+    if (onDisk == ShortcutName) return Rename::AlreadyNamed;
+    {
+        Link l(lnk, true);
+        if (!l.ok()) return Rename::Failed;
+        if (CompareStringOrdinal(l.Target().c_str(), -1, launcher.c_str(), -1, TRUE) != CSTR_EQUAL) return Rename::NotOurs;
+    }   // released before the rename
+    const std::wstring from = folder + L"\\" + onDisk;
+    if (!MoveFileExW(from.c_str(), lnk.c_str(), 0)) return Rename::Failed;
+    SHChangeNotify(SHCNE_RENAMEITEM, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, from.c_str(), lnk.c_str());
+    return Rename::Renamed;
 }
 
 }  // namespace TaskbarIdentity

@@ -12,6 +12,7 @@
 //    danger and the white focus ring never change. Edits to a profile reach every window of it.
 //  * Windows talk through WM_COPYDATA (« PROF ») and a registered broadcast message:
 //      tab <index>            bring this window forward on that tab (preview → Entrée)
+//      open <link or path>    open it in a new tab and come forward (main.cpp HandOverLaunchTarget)
 //      close-for-delete <id>  close (keeping the session for « Rouvrir ») — the profile is deleted
 //      delete-profile <id>    this window takes over the delete of another window's own profile
 //    BrowserProfilesChanged   the registry changed: reload it, repaint, re-apply the accent.
@@ -30,18 +31,25 @@ UINT ProfilesChangedMessage(){static const UINT m=RegisterWindowMessageW(L"Brows
 std::wstring ProfileExe(){std::wstring exe(32768,L'\0');const DWORD n=GetModuleFileNameW(nullptr,exe.data(),(DWORD)exe.size());exe.resize(n<exe.size()?n:0);return exe;}
 const Profiles::Profile* CurrentProfile(){return profileRegistry.Find(profileId);}
 Profiles::Profile DefaultProfileLook(){Profiles::Profile p;p.id=Profiles::DefaultId;p.name=Profiles::DefaultName();p.icon=Profiles::DefaultIcon;p.hue=0;p.intensity=0;p.neutral=true;return p;}
-void TabMenu(int anchor);int KeyboardAnchor();void StartWorkspaces();
+void TabMenu(int anchor);int KeyboardAnchor();void StartWorkspaces();void OpenHandedTarget(const std::wstring& target);
 // Same-window profiles (profile-workspace.h, end of main.cpp).
 bool SwitchWorkspace(const std::wstring& id);bool LeaveProfileHere(const std::wstring& id,bool openOther);std::vector<Profiles::WindowSlot> ThisWindowSlots();void RestoreWindowSet();int EvictProfileHere(const std::wstring& id);void WriteThisWindowSet();bool OpenSessionTabHere(const std::wstring& id,const std::wstring& session,int tab);void DisposeParkedWorkspaces();void MarkWorkspacePublish();void PublishDirtyWorkspaces();int WorkspaceQaCommand(const std::wstring& text);void EngineHeld(const std::wstring& id);
 // « --profile <id> » for every relaunch of this window (orphan relaunch, handover, engine recovery):
 // a session of Travail must be adopted by a Travail window, whatever « last used » says later.
 std::wstring ProfileArgument(){return profilesEnabled&&!privateWindow&&Profiles::ValidId(profileId)?L" --profile "+profileId:L"";}
+// Review R-2: the profile a private window opened from here belongs to (it reads that profile's vault, read-only):
+// this window's profile; for a private window, the profile it was itself opened from (so it stays the same).
+std::wstring privateOpener;
+std::wstring PrivateOpenerProfile(){return privateWindow?privateOpener:profilesEnabled?profileId:L"";}
 
 // ---- startup ------------------------------------------------------------------------------------
 // Called right after ResolveBrowserPaths(): `dataDir` is the data root. Smoke and private windows
 // keep the root as is (no registry write): private windows never belong to a profile.
 void SelectProfile(const wchar_t* args){
     profileRoot=dataDir;
+    if(privateWindow){   // review R-2: the vault of the profile this private window was opened from, read-only (none if unknown)
+        const std::wstring opener=ProfileArgs::Value(args?args:L"",L"--profile");privateVaultDir=Profiles::PrivateReadDir(profileRoot,opener);
+        privateOpener=!privateVaultDir.empty()&&opener!=Profiles::DefaultId&&Profiles::ValidId(opener)?opener:L"";}
     if(privateWindow||smoke||motionLabMode){Profiles::Profile d=DefaultProfileLook();profileRegistry.items={d};profilesEnabled=!privateWindow;return;}
     std::wstring requested;
     if(const wchar_t* p=args?wcsstr(args,L"--profile "):nullptr){p+=10;while(*p==L' ')++p;const wchar_t* e=p;while(*e&&*e!=L' ')++e;requested.assign(p,e);}
@@ -400,6 +408,8 @@ void TakeOverProfileDelete(const std::wstring& id){
 int ProfileCopyDataMessage(LPARAM l){
     const auto* cd=reinterpret_cast<const COPYDATASTRUCT*>(l);if(!cd||cd->dwData!=ProfileCopyData||!cd->lpData||cd->cbData<sizeof(wchar_t))return 0;
     std::wstring text(static_cast<const wchar_t*>(cd->lpData),cd->cbData/sizeof(wchar_t));while(!text.empty()&&!text.back())text.pop_back();
+    // « open <link or path> »: another launch (a link clicked elsewhere, « Ouvrir avec ») hands it to this window.
+    if(text.rfind(L"open " /* i18n-exempt: window protocol */,0)==0){if(privateWindow||text.size()<6)return 0;const std::wstring target=text.substr(5);Defer([target]{OpenHandedTarget(target);});return 1;}
     if(text.rfind(L"tab " /* i18n-exempt: window protocol */,0)==0){const int n=_wtoi(text.c_str()+4);Defer([n]{if(n>=0&&n<(int)pages.size())Select(n);if(IsIconic(window))ShowWindow(window,SW_RESTORE);SetForegroundWindow(window);});return 1;}
     // A profile being deleted leaves this window: switched away if on screen, its cache dropped (session kept
     // for « Rouvrir »); the window itself never closes for it. Private windows belong to no profile (review M2).

@@ -19,8 +19,8 @@ import json, os, re, shutil, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import language_e2e as E
 
-FR = {'names': {'Settings': 'Réglages', 'History': 'Historique', 'NewTab': 'Nouvel onglet'}, 'title': ' — browser'}
-EN = {'names': {'Settings': 'Settings', 'History': 'History', 'NewTab': 'New tab'}, 'title': ' — browser'}
+FR = {'names': {'Settings': 'Réglages', 'History': 'Historique', 'NewTab': 'Nouvel onglet'}, 'title': ' — Browser'}
+EN = {'names': {'Settings': 'Settings', 'History': 'History', 'NewTab': 'New tab'}, 'title': ' — Browser'}
 
 
 def engine_langs():

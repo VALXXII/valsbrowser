@@ -8,7 +8,9 @@ $out = Join-Path $root 'build/opus-lottie-qa'
 $venv = Join-Path $out 'venv'
 $py = Join-Path $venv 'Scripts/python.exe'
 if (!(Test-Path $py)) {
-    & 'C:/Users/<user>/AppData/Local/Programs/Python/Python312/python.exe' -m venv $venv
+    $python = (Get-Command python -ErrorAction SilentlyContinue).Source
+    if (!$python) { $python = Join-Path $env:LOCALAPPDATA 'Programs/Python/Python312/python.exe' }
+    & $python -m venv $venv
     & $py -m pip install --disable-pip-version-check -q --only-binary=:all: 'rlottie-python==1.3.8' 'pillow==13.0.0'
 }
 $gxx = Join-Path $root 'tools/w64devkit/bin/g++.exe'

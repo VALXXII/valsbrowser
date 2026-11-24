@@ -298,11 +298,14 @@ bool ReconcileBridge(const std::wstring& root, const std::string& version, const
         if (!source.Ok() || !ReadAll(source.Get(), bytes, 256ull << 20)) return error = "bridge source invalid", false;
     }
     if (UP::PathExists(bin) && !RootedHandle(root, L"bin", true).Ok()) return error = "bin is not a plain directory", false;
-    const UP::Digest digest = UP::Sha256Of(bytes);
+    // Byte-for-byte (PERF-19): the launcher runs this before every browser start; a size mismatch needs no read, and
+    // equal bytes need no SHA-256 of either copy.
     auto publishedIs = [&](const std::wstring& rel) {
         RootedHandle h(root, rel, false);
+        LARGE_INTEGER size{};
+        if (!h.Ok() || !GetFileSizeEx(h.Get(), &size) || std::uint64_t(size.QuadPart) != bytes.size()) return false;
         std::string got;
-        return h.Ok() && ReadAll(h.Get(), got, 256ull << 20) && got.size() == bytes.size() && UP::Sha256Of(got) == digest;
+        return ReadAll(h.Get(), got, 256ull << 20) && got == bytes;
     };
     const bool present = UP::PathExists(final_);
     if (want && present && publishedIs(L"bin\\" + std::wstring(BridgeName))) {
@@ -397,11 +400,20 @@ int RunLauncher(int argc, wchar_t** argv) {
         }
     }
     I18n::SetForProcess(UiLanguage::Load(root + L"\\data").locale);   // installed layout: <root>\data (French when absent)
-    MessageBoxW(nullptr, TR(launcher_install_broken), L"browser", MB_OK | MB_ICONERROR);
+    MessageBoxW(nullptr, TR(launcher_install_broken), L"Browser", MB_OK | MB_ICONERROR);
     return 2;
 }
 
 // ---------------------------------------------------------------- install
+
+// After every install (setup or update): the Apps entry follows the version and the « Browser » name, and Browser is
+// registered with Windows as a web browser for this root (src/default-browser.h), in the person's language. Existing
+// installs get the registration at their first update by this helper.
+void RefreshIntegration(const std::wstring& root, const std::string& version) {
+    SetupKey::RefreshDisplayVersion(root, version);
+    I18n::SetForProcess(UiLanguage::Load(root + L"\\data").locale);
+    if (!SetupKey::RegisterDefaultBrowser(root)) Log("default-browser registration not written");
+}
 
 struct Plan {
     std::string nonce, version, previousVersion, previousKind;
@@ -1014,7 +1026,7 @@ int RunInstall(const std::string& nonce) {
         commitRepair();
         RecoverAnnotationsMigration(root, nonce + "-post");
         Prune(root, p.version, keepPrevious, nonce);
-        SetupKey::RefreshDisplayVersion(root, p.version);
+        RefreshIntegration(root, p.version);
         Log("installed " + p.version + " (not launched)");
         return 0;
     }
@@ -1072,7 +1084,7 @@ int RunInstall(const std::string& nonce) {
         }
         commitRepair();
         Prune(root, p.version, keepPrevious, nonce);
-        SetupKey::RefreshDisplayVersion(root, p.version);
+        RefreshIntegration(root, p.version);
         Log("installed " + p.version);
         return 0;
     }
@@ -1098,7 +1110,7 @@ int RunInstall(const std::string& nonce) {
     // Still running but silent: do not kill it. The browser acknowledges itself later via the pending record.
     if (repairOpen) Log("repair left open: committed on the new version's ack, else rolled back by the next recovery");
     WriteResult(updates, "unconfirmed", p.version, "ack-timeout");
-    SetupKey::RefreshDisplayVersion(root, p.version);
+    RefreshIntegration(root, p.version);
     Log("ack timeout; new version left running");
     return 31;
 }

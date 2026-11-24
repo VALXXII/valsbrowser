@@ -8,15 +8,18 @@ Every case runs the REAL setup stub (test build: -DSETUP_TESTING) assembled exac
 update-core fake browser (acks its start like the real one) and whose update-helper.exe is the real helper
 (fault build). Isolation, per case under build/setup-tests/tmp/<case>:
   LOCALAPPDATA=<T>\\LocalAppData  -> install root <T>\\LocalAppData\\browser
-  BROWSER_SETUP_TEST_ROOT=<T>     -> Start Menu, Desktop, Temp under <T>; uninstall key under
+  BROWSER_SETUP_TEST_ROOT=<T>     -> Start Menu, Desktop, Temp under <T>; uninstall key and the default-browser
+                                     registration (src/default-browser.h) under
                                      HKCU\\Software\\browser-setup-tests\\<case> (deleted afterwards)
   TEMP/TMP=<T>\\Temp, BROWSER_SETUP_TEST_WEBVIEW2=1, BROWSER_SETUP_TEST_LANG=en
-The real %LOCALAPPDATA%\\browser, Start Menu, Desktop and uninstall entry are never read or written.
+The real %LOCALAPPDATA%\\browser, Start Menu, Desktop, uninstall entry and default-browser registration are never
+read or written.
 """
 from __future__ import annotations
 import argparse, ctypes, hashlib, json, os, shutil, struct, subprocess, sys, time, traceback, winreg
 from ctypes import wintypes as W
 from pathlib import Path
+os.environ.setdefault('BROWSER_NO_ONBOARDING', '1')   # fresh installed layout: not the first-run window (src/onboarding-flow.h)
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / 'build' / 'setup-tests'
@@ -216,16 +219,65 @@ class Case:
             return {}
 
     def cleanup_registry(self):
-        base = rf'Software\browser-setup-tests\{self.name}'
-        for sub in (base + r'\Uninstall\VALXXII.browser', base + r'\Uninstall', base):
-            try:
-                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, sub)
-            except OSError:
-                pass
+        delete_tree(rf'Software\browser-setup-tests\{self.name}')   # this case's own test key only
+
+    # Default-browser registration (src/default-browser.h), written by the setup and the helper under the case's key.
+    def db(self, rel: str) -> str:
+        return rf'Software\browser-setup-tests\{self.name}\DefaultBrowser\Software\{rel}'
+
+    def db_value(self, rel: str, name: str = ''):
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, self.db(rel)) as k:
+                return winreg.QueryValueEx(k, name)[0]
+        except OSError:
+            return None
+
+    def db_registered_ok(self, label: str):
+        root = str(self.root)
+        client = r'Clients\StartMenuInternet\ValXXII.browser'
+        caps = client + r'\Capabilities'
+        check(self.db_value(client) == 'Browser' and self.db_value(caps, 'ApplicationName') == 'Browser', f'{label}: listed as « Browser » in Applications par défaut')
+        check(self.db_value(client + r'\shell\open\command') == f'"{root}\\browser.exe"', f'{label}: client opens the stable launcher')
+        check(self.db_value(caps + r'\URLAssociations', 'http') == 'ValXXII.BrowserURL' and self.db_value(caps + r'\URLAssociations', 'https') == 'ValXXII.BrowserURL', f'{label}: http/https -> ValXXII.BrowserURL')
+        check(self.db_value(caps + r'\FileAssociations', '.html') == 'ValXXII.BrowserHTML' and self.db_value(caps + r'\FileAssociations', '.pdf') == 'ValXXII.BrowserPDF', f'{label}: .html/.pdf associations')
+        reg_apps = self.db_value('RegisteredApplications', 'ValXXII.browser')
+        check(reg_apps == self.db(caps), f'{label}: RegisteredApplications -> capabilities ({reg_apps})')
+        for prog in ('ValXXII.BrowserHTML', 'ValXXII.BrowserURL', 'ValXXII.BrowserPDF'):
+            cmd = self.db_value(rf'Classes\{prog}\shell\open\command')
+            check(cmd == f'"{root}\\browser.exe" --single-argument "%1"', f'{label}: {prog} opens "<root>\\browser.exe" --single-argument "%1" ({cmd})')
+            check(self.db_value(rf'Classes\{prog}\DefaultIcon') == f'{root}\\browser.ico,0', f'{label}: {prog} stable icon')
+        check(self.db_value(caps, 'ApplicationDescription') == 'Web browser for Windows.', f'{label}: description in the setup language (en)')
+
+    def db_absent(self) -> bool:
+        return all(self.db_value(rel, name) is None for rel, name in (
+            (r'Clients\StartMenuInternet\ValXXII.browser', ''), ('RegisteredApplications', 'ValXXII.browser'),
+            (r'Classes\ValXXII.BrowserURL\shell\open\command', ''), (r'Classes\ValXXII.BrowserHTML', ''),
+            (r'Classes\ValXXII.BrowserPDF', ''), (r'Classes\.html\OpenWithProgids', 'ValXXII.BrowserHTML')))
+
+    def on_disk_name(self, path: Path) -> str:
+        return next((n for n in os.listdir(path.parent) if n.lower() == path.name.lower()), '')
 
     def launches(self) -> list[str]:
         f = self.root / 'fake-launches.txt'
         return f.read_text().splitlines() if f.exists() else []
+
+
+def delete_tree(sub: str):
+    """Recursive delete of one test key (never anything outside HKCU\\Software\\browser-setup-tests)."""
+    assert sub.startswith('Software\\browser-setup-tests\\'), sub
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, sub) as k:
+            children = []
+            while True:
+                try:
+                    children.append(winreg.EnumKey(k, len(children)))
+                except OSError:
+                    break
+        for c in children:
+            delete_tree(sub + '\\' + c)
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, sub)
+    except OSError:
+        pass
 
 
 def check(cond, message):
@@ -295,11 +347,14 @@ def installed_ok(c: Case, v: str, payload_dir: Path, package: Path):
           'stable bridge in bin == versioned bridge')
     check((c.root / 'browser.ico').read_bytes() == (vdir / 'assets/browser.ico').read_bytes(), 'stable icon')
     check((c.root / 'uninstall.exe').read_bytes() == (OUT / f'stub-{v}.exe').read_bytes(), 'uninstall.exe == setup stub (no payload)')
-    start = c.programs / 'browser.lnk'
+    start = c.programs / 'Browser.lnk'
     check(start.exists() and c.shortcut_target(start).lower() == str(launcher).lower(), 'Start Menu shortcut -> stable launcher')
+    check(c.on_disk_name(start) == 'Browser.lnk', f'Start Menu shortcut named « Browser » ({c.on_disk_name(start)})')
     reg = c.reg()
     check(reg.get('DisplayVersion') == v and reg.get('InstallLocation') == str(c.root) and
           reg.get('UninstallString') == f'"{c.root}\\uninstall.exe"' and reg.get('NoModify') == 1, f'uninstall entry {reg}')
+    check(reg.get('DisplayName') == 'Browser', f'Applications et fonctionnalités: « Browser » ({reg.get("DisplayName")})')
+    c.db_registered_ok('default-browser registration')
     leftovers = [p.name for p in (c.root / 'updates/downloads').glob('*')] if (c.root / 'updates/downloads').exists() else []
     check(not leftovers, f'no downloads leftovers {leftovers}')
     check(not any((c.root / 'updates/staging').glob('*')) if (c.root / 'updates/staging').exists() else True, 'staging consumed')
@@ -530,6 +585,9 @@ def case_uninstall():
     c = Case('uninstall')
     c.setup(c.copy_setup('0.3.2', P['0.3.2']), '--no-launch', '--desktop')
     canaries = data_canaries(c.root)
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, c.db(r'Classes\.html\OpenWithProgids')) as k:   # another browser's value
+        winreg.SetValueEx(k, 'OtherApp.HTML', 0, winreg.REG_SZ, '')
+    c.db_registered_ok('before uninstall')
     # Refused while running.
     lock = c.root / 'data/profile/EBWebView/lockfile'
     lock.write_bytes(b'')
@@ -544,6 +602,8 @@ def case_uninstall():
         check(not (c.root / rel).exists(), f'{rel} removed')
     check(not (c.programs / 'browser.lnk').exists() and not (c.desktop / 'browser.lnk').exists(), 'shortcuts removed')
     check(not c.reg(), 'uninstall entry removed')
+    check(c.db_absent(), 'default-browser registration removed (Browser leaves Applications par défaut)')
+    check(c.db_value(r'Classes\.html\OpenWithProgids', 'OtherApp.HTML') == '', "another app's « Ouvrir avec » value kept")
     check(all(tree(c.root / 'data').get(k) == v for k, v in canaries.items()), 'data kept byte-identical')
     check(list((c.t / 'Temp').glob('browser-uninstall-*.exe')), 'uninstaller ran from a temp copy')
     # Reinstall finds the kept data; then remove everything incl. data.
@@ -573,6 +633,9 @@ def case_helper_refreshes_display_version():
     """After a setup install, the BROWSER'S updater (engine + helper, not the setup) updates: entry follows."""
     c = Case('engine_update_entry')
     c.setup(c.copy_setup('0.3.2', P['0.3.2']), '--no-launch')
+    # The helper writes the registration texts in the person's interface language (the browser-wide preference).
+    (c.root / 'data').mkdir(exist_ok=True)
+    (c.root / 'data/ui-language').write_bytes(b'browser-ui-language 1\nlanguage=en\n')
     feed = c.t / 'feed'
     feed.mkdir()
     shutil.copy(P['0.3.3'], feed / P['0.3.3'].name)
@@ -586,6 +649,30 @@ def case_helper_refreshes_display_version():
     check((c.root / 'current').read_text().strip() == '0.3.3', 'engine update installed 0.3.3')
     time.sleep(1)
     check(c.reg().get('DisplayVersion') == '0.3.3', f'DisplayVersion refreshed by the helper: {c.reg()}')
+    check(c.reg().get('DisplayName') == 'Browser', f'DisplayName « Browser » after the update ({c.reg().get("DisplayName")})')
+    c.db_registered_ok('existing install, after an engine update (helper)')
+    return c
+
+
+def case_existing_install_gets_name_and_registration():
+    """An install made before this change: « browser.lnk » shortcuts, « browser » in Apps, no default-browser
+    registration. The next setup (update) renames the shortcuts in place, names the entry « Browser » and registers."""
+    c = Case('legacy_name')
+    c.setup(c.copy_setup('0.3.2', P['0.3.2']), '--no-launch', '--desktop')
+    for lnk in (c.programs / 'Browser.lnk', c.desktop / 'Browser.lnk'):
+        os.rename(lnk, lnk.with_name('browser.lnk'))           # what the setups before « Browser » left
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, c.key, 0, winreg.KEY_SET_VALUE) as k:
+        winreg.SetValueEx(k, 'DisplayName', 0, winreg.REG_SZ, 'browser')
+    delete_tree(rf'Software\browser-setup-tests\{c.name}\DefaultBrowser')
+    check(c.on_disk_name(c.programs / 'browser.lnk') == 'browser.lnk' and c.db_absent(), 'legacy state prepared')
+    target_before = c.shortcut_target(c.programs / 'browser.lnk')
+    c.setup(c.copy_setup('0.3.3', P['0.3.3']), '--no-launch', '--desktop', label='update 0.3.2 -> 0.3.3 over a legacy install')
+    for folder in (c.programs, c.desktop):
+        names = [n for n in os.listdir(folder) if n.lower() == 'browser.lnk']
+        check(names == ['Browser.lnk'], f'{folder.name}: one shortcut, renamed « Browser.lnk » ({names})')
+    check(c.shortcut_target(c.programs / 'Browser.lnk') == target_before, 'same target (the stable launcher): what was pinned keeps working')
+    check(c.reg().get('DisplayName') == 'Browser', 'entry renamed « Browser »')
+    c.db_registered_ok('legacy install after update')
     return c
 
 
@@ -765,7 +852,7 @@ def case_serialization():
 
 CASES = [case_fresh_no_launch, case_fresh_launch_ack, case_update_keeps_data_and_repair, case_foreign_shortcuts,
          case_running_browser, case_damaged_setups, case_reparse_roots, case_faults_rollback, case_first_install_rollback,
-         case_uninstall, case_uninstall_data_junction, case_helper_refreshes_display_version,
+         case_uninstall, case_uninstall_data_junction, case_helper_refreshes_display_version, case_existing_install_gets_name_and_registration,
          case_repair_rollback, case_ancestor_junction, case_serialization]
 
 
