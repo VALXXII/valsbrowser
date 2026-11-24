@@ -202,6 +202,10 @@
         {
           "suite": "chat-units",
           "what": "host_contract_test.py — M8"
+        },
+        {
+          "suite": "first-launch-liste",
+          "what": "2e lancement : le bouton du mode est là au premier clic"
         }
       ]
     },
@@ -562,6 +566,10 @@
         {
           "suite": "chat-panel",
           "what": "profil neuf : repli sur le modèle, jamais « Claude Code »"
+        },
+        {
+          "suite": "first-launch-liste",
+          "what": "profil neuf : le bouton nomme un modèle, jamais l'outil ; listes relues au 2e lancement"
         }
       ]
     },
@@ -926,6 +934,10 @@
         {
           "suite": "journeys",
           "what": "r46_coller_mode_stable"
+        },
+        {
+          "suite": "first-launch-liste",
+          "what": "le mode n'affiche jamais « Auto » pendant que la session démarre (agent qui démarre en « auto »)"
         }
       ]
     },
@@ -998,6 +1010,10 @@
         {
           "suite": "comment-129-130",
           "what": "vraie fenêtre : menu des modèles sur profil sans modèle connu ; bulle basse, autorisation, boutons à l'écran"
+        },
+        {
+          "suite": "first-launch-absent",
+          "what": "menu des modèles jamais vide sans aucun agent ; « liste » : avant toute liste"
         }
       ]
     },
@@ -1056,10 +1072,28 @@
       }
     },
     "O8": {
-      "gap": {
-        "lot": 2,
-        "why": "4 parcours sur profil neuf à écrire"
-      }
+      "tests": [
+        {
+          "suite": "first-launch-absent",
+          "what": "absent : bulle sans agent, rien ne part, « Installer » ne télécharge rien, panneau"
+        },
+        {
+          "suite": "first-launch-non-connecte",
+          "what": "non-connecte : « Se connecter » en un clic, connexion abandonnée, connexion faite, message répondu"
+        },
+        {
+          "suite": "first-launch-node",
+          "what": "node : Node.js et l'adaptateur téléchargés au premier message, mesure affichée, message répondu une fois"
+        },
+        {
+          "suite": "first-launch-liste",
+          "what": "liste : aucun modèle connu puis liste reçue ; deuxième lancement"
+        },
+        {
+          "suite": "first-launch-page",
+          "what": "absent, non-connecte, node, liste — panneau et bulle"
+        }
+      ]
     },
     "O9": {
       "gap": {
@@ -1068,10 +1102,20 @@
       }
     },
     "O10": {
-      "gap": {
-        "lot": 2,
-        "why": "parcours clavier de la carte d'autorisation à écrire (SEC-23)"
-      }
+      "tests": [
+        {
+          "suite": "permission-keys-page",
+          "what": "focus, delai, maintenue, tab, boutons, a-la-place, deux, arrivee, annulee, echap, saisie — panneau et bulle"
+        },
+        {
+          "suite": "permission-keys-bulle",
+          "what": "bulle : le clavier arrive à la carte, 600 ms, touche maintenue, Tab, Autoriser, Refuser, Échap"
+        },
+        {
+          "suite": "permission-keys-panneau",
+          "what": "panneau : idem, deux cartes de suite, Échap maintenu"
+        }
+      ]
     },
     "O11": {
       "gap": {

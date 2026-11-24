@@ -96,6 +96,30 @@
       "timeout": 1800
     },
     {
+      "id": "permission-keys-page",
+      "title": "Carte d'autorisation au clavier (O10), page sans tête : panneau et bulle",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat-panel/permission_keys_o10.py"
+      ],
+      "timeout": 900,
+      "pendingMerge": "VALXXII/annotation-lot2"
+    },
+    {
+      "id": "first-launch-page",
+      "title": "Premier lancement (O8), page sans tête : les quatre états, panneau et bulle",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat-panel/first_launch_o8.py"
+      ],
+      "timeout": 600,
+      "pendingMerge": "VALXXII/annotation-lot2"
+    },
+    {
       "id": "page-v4",
       "title": "Script de la page (cadres, étiquettes, inspecteur), sans tête",
       "part": "day",
@@ -360,6 +384,91 @@
         "tests/chat/chat_qa_comment_129_130.py"
       ],
       "timeout": 1800
+    },
+    {
+      "id": "first-launch-absent",
+      "title": "Premier lancement (O8) : aucun agent sur l'ordinateur",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/first_launch_o8.py",
+        "--journey",
+        "absent"
+      ],
+      "timeout": 900,
+      "pendingMerge": "VALXXII/annotation-lot2"
+    },
+    {
+      "id": "first-launch-non-connecte",
+      "title": "Premier lancement (O8) : agent installé, pas connecté",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/first_launch_o8.py",
+        "--journey",
+        "non-connecte"
+      ],
+      "timeout": 1200,
+      "pendingMerge": "VALXXII/annotation-lot2"
+    },
+    {
+      "id": "first-launch-node",
+      "title": "Premier lancement (O8) : Node.js à télécharger (vrai téléchargement, ≈ 60 Mo)",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/first_launch_o8.py",
+        "--journey",
+        "node"
+      ],
+      "timeout": 1200,
+      "pendingMerge": "VALXXII/annotation-lot2"
+    },
+    {
+      "id": "first-launch-liste",
+      "title": "Premier lancement (O8) : aucun modèle connu, puis la liste reçue ; deuxième lancement",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/first_launch_o8.py",
+        "--journey",
+        "liste"
+      ],
+      "timeout": 1200,
+      "after": "first-launch-node (it reuses what that journey downloaded: build/o8-cache)",
+      "pendingMerge": "VALXXII/annotation-lot2"
+    },
+    {
+      "id": "permission-keys-bulle",
+      "title": "Carte d'autorisation au clavier (O10), vrai navigateur : bulle",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/permission_keys_o10.py",
+        "--journey",
+        "bulle"
+      ],
+      "timeout": 900,
+      "pendingMerge": "VALXXII/annotation-lot2"
+    },
+    {
+      "id": "permission-keys-panneau",
+      "title": "Carte d'autorisation au clavier (O10), vrai navigateur : panneau",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/permission_keys_o10.py",
+        "--journey",
+        "panneau"
+      ],
+      "timeout": 900,
+      "pendingMerge": "VALXXII/annotation-lot2"
     },
     {
       "id": "focus-annotation",
