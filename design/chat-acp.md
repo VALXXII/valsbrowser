@@ -239,6 +239,22 @@ Conséquences pour l'intégration :
    Claude — Demander `default`, Auto `auto` puis `acceptEdits`, Planifier = mode `plan`, jamais `bypassPermissions` ;
    Codex — Demander `read-only`, Auto `agent` puis `workspace-write`, Planifier = option `collaboration_mode` à
    `plan` (retour `default`), jamais `agent-full-access`. On ne propose que ce que la session annonce.
+   **Codex en « Demander » (essai réel du lot 5, 24/11/2026, Codex 0.166.0, codex-acp 2.6.0).** Lu dans le code de
+   l'adaptateur (`src/AgentMode.ts`) : `read-only` = bac à sable en lecture seule + approbation « à la demande »
+   (« Requires approval to edit files ») ; `workspace-write` et `agent` = écriture dans le dossier **sans demander** ;
+   `agent-full-access` = aucune limite. `read-only` est donc le seul mode où une modification attend l'accord de
+   l'utilisateur : la correspondance « Demander » → `read-only` est la bonne et ne change pas. À l'essai réel, Codex n'a
+   pourtant rien demandé : il a répondu que le projet était en lecture seule (aucune demande d'autorisation, aucun
+   fichier modifié). Deux corrections : (a) le navigateur dit à l'agent qu'une modification qui attend un accord se
+   demande, ne se refuse pas (`ChatPrompt::ApprovalRule`), en instructions ajoutées à celles de l'agent quand il les
+   accepte (`systemPrompt`, mode `append`, annoncé par codex-acp dans `sessionCapabilities.systemPrompt` ; pour Codex
+   ce sont ses « developer instructions ») et dans le préambule (version 4) ; (b) une annotation n'est « résolue » que si
+   le tour a modifié un fichier (`ChatOptions::AnnotationOutcome`), sinon elle est rendue avec sa raison. Les demandes
+   de Codex arrivent par `session/request_permission` : « Edit files » (`allow_once` « Yes, proceed »,
+   `allow_for_session`, `cancel`), « Run command? », et « Additional sandbox permissions » (`allow_permissions_turn`,
+   `allow_permissions_session`, `reject_permissions`). Le faux agent les imite avec `--codex-like`
+   (`tests/acp/acp_client_test.cpp`, « Codex in « Demander » »). **Limite** : que le vrai Codex demande bien, une fois
+   prévenu, ne se prouve que par un nouvel essai réel.
 2. Modèles et efforts : `FindModelOption` / `FindEffortOption` trouvent bien `model` + `effort` (Claude) et `model` +
    `reasoning_effort` (Codex). Les options `model_config` (`fast`, `ultracode`, `fast-mode`) et `agent` existent ; les
    afficher est un choix de C4/C2.

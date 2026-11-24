@@ -141,6 +141,15 @@ inline ModeSlot SlotOf(const std::string& kind, const std::string& id) {
 }
 // The kind the page receives (contract B §20): "edits", "auto", "ask", "plan".
 inline const char* SlotKind(ModeSlot s) { switch (s) { case ModeSlot::Edits: return "edits"; case ModeSlot::Auto: return "auto"; case ModeSlot::Ask: return "ask"; case ModeSlot::Plan: return "plan"; default: return "other"; } }
+// How a turn leaves the annotations of its elements. Lot 5's real trial with Codex (24 Nov 2026): a turn that changed no
+// file — Codex had refused in its read-only mode — was closed as « resolved ». An annotation is resolved only when the
+// turn ended normally AND changed something; a normal end with nothing changed gives it back, with the reason.
+// `changed`: the turn changed at least one file of the project; `planMode`: the session was in « Planifier ».
+enum class AnnotationEnd { Resolved, Planned, Unchanged, Stopped, Failed };
+inline AnnotationEnd AnnotationOutcome(const std::string& stopReason, bool changed, bool planMode) {
+    if (stopReason == "end_turn") return changed ? AnnotationEnd::Resolved : planMode ? AnnotationEnd::Planned : AnnotationEnd::Unchanged;
+    return stopReason == "cancelled" ? AnnotationEnd::Stopped : AnnotationEnd::Failed;
+}
 // The indices of `modes` (pairs kind, id) to show, in Paper's order, one per line (the first of a line wins).
 inline std::vector<std::size_t> PaperModes(const std::vector<std::pair<std::string, std::string>>& modes) {
     std::vector<std::size_t> out; bool taken[4] = {false, false, false, false};

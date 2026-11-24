@@ -263,6 +263,7 @@ void StartSession() {
     session = std::make_unique<Acp::Session>();
     const HWND target = post; session->SetWake([target] { if (target) PostMessageW(target, AcpWake, 0, 0); });
     Acp::StartOptions o; o.resolve = AgentRuntime::MakeResolver(RtEnv(), def->rt); o.cwd = U8(folder);
+    o.instructions = ChatPrompt::Instructions();   // lot 5 (Codex in « Demander »): an edit that needs the user's approval is asked for, never refused — sent only to an agent that takes instructions
     o.resumeSessionId = convo.data.head.agentId == agentId ? convo.data.head.sessionId : std::string();
     o.clientName = "browser";
 #ifdef BROWSER_VERSION_TEXT
@@ -791,9 +792,16 @@ void CompleteTurn(const std::string& stopReason, const CS::TurnSummary* summary,
     if (failed) { if (!turn.problem.title.empty()) SendError(turn.problem, ""); else { const auto p = ProblemFor(turn.failure, agentId); SendError(p, turn.failure.detail);
             if (turn.failure.code == Acp::ErrorCode::AuthRequired) Strip("auth", "danger", TRF(chat_strip_disconnected, W(Agent().name)), "connect", TR(chat_action_connect)); } }
     const bool done = stopReason == "end_turn";
-    const bool planned = done && !changed && CurrentModeKind() == "plan";   // a plan is not a change: the annotation goes back to waiting, with the reason
-    CloseAnnotations(turn.elements, done && !planned, done && !planned ? (LastParagraph(turn.summaryText).empty() ? U8(TRF(chat_resolve_default, AgentShort(agentId))) : LastParagraph(turn.summaryText))
-                                               : U8(planned ? std::wstring(TR(chat_release_planned)) : stopReason == "cancelled" ? std::wstring(TR(chat_release_stopped)) : std::wstring(TR(chat_release_failed))));
+    // Lot 5's real Codex trial: an annotation is « resolved » only when the turn changed something (a plan, an answer, a
+    // refusal are not a change: it goes back to waiting, with the reason). Without a snapshot, the files the agent's own
+    // edit calls named are the only sign there is.
+    const bool worked = summary ? changed : !turn.agentFiles.empty();
+    const auto outcome = ChatOptions::AnnotationOutcome(stopReason, worked, CurrentModeKind() == "plan");
+    const bool resolved = outcome == ChatOptions::AnnotationEnd::Resolved;
+    if (done && !resolved) Diag(std::wstring(L"the turn changed nothing: its annotation is given back, not resolved (") + (outcome == ChatOptions::AnnotationEnd::Planned ? L"a plan" : L"no file changed") + L")");   // i18n-exempt: log detail
+    CloseAnnotations(turn.elements, resolved, resolved ? (LastParagraph(turn.summaryText).empty() ? U8(TRF(chat_resolve_default, AgentShort(agentId))) : LastParagraph(turn.summaryText))
+                                               : U8(outcome == ChatOptions::AnnotationEnd::Planned ? std::wstring(TR(chat_release_planned)) : outcome == ChatOptions::AnnotationEnd::Unchanged ? std::wstring(TR(chat_release_unchanged))
+                                                    : outcome == ChatOptions::AnnotationEnd::Stopped ? std::wstring(TR(chat_release_stopped)) : std::wstring(TR(chat_release_failed))));
     Diag(L"turn " + W(turn.id) + L" ended: " + W(stopReason) + L" in " + Ann::Ms(ms) + L" ms" + (summary ? L", " + std::to_wstring(summary->changes.size()) + L" file(s) changed (+" + std::to_wstring(summary->additions) + L" -" + std::to_wstring(summary->deletions) + L")" : L", no snapshot"));
     FillTurnHeader();   // D6: kept with the turn (given back after a reload, in the history)
     const std::string markSelector = turn.markSelector; turnNavStamp = turn.navStamp;
