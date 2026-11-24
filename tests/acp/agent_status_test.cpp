@@ -67,6 +67,7 @@ static void ChatView() {
     Expect(std::string(v(S::Error, R::NotFoundAfterInstall).status) == "notInstalled" && !v(S::Error, R::NotFoundAfterInstall).cli, "chat (the « Installé » bug): an install that left no CLI is « Pas installé », never « Installé »");
     Expect(std::string(v(S::Error, R::SignInFailed).status) == "notConnected" && v(S::Error, R::SignInFailed).cli, "chat: a failed sign-in → still to sign in");
     Expect(!v(S::Unknown).known && std::string(v(S::Unknown).status) == "starting", "chat: before the first detection → « starting », unknown");
+    Expect(std::string(v(S::SigningIn).status) == "preparing" && v(S::SigningIn).text == T::SigningIn && v(S::SigningIn).cli, "chat: signing in → « Connexion… », not sendable (never « starting »)");
     // « Query closed before response received »: the turn's card says the real cause once the agent is checked again
     using E = Acp::ErrorCode;
     auto st = [](S state, R reason = R::None) { AS::Status s; s.state = state; s.reason = reason; return s; };

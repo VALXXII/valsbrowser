@@ -89,6 +89,7 @@ void SendTonAgent() {
     SJ::Value m = SJ::Value::Obj(); m.Set("show", SJ::Value::Bool(TonAgentShows()));
     m.Set("title", Str(TR(ton_agent_choose_title))); m.Set("body", Str(TR(ton_agent_chat_body))); m.Set("note", Str(TR(ton_agent_chat_paid)));
     m.Set("accent", Str(TonAgentAccent()));
+    m.Set("hint", Str(TR(ton_agent_chat_send_hint)));   // under the input while the agent cannot take what was typed
     SJ::Value rows = SJ::Value::Arr(); for (auto a : AgentStatus::AllAgents) rows.Push(TonAgentRow(a)); m.Set("rows", std::move(rows));
     Send("agents.setup", std::move(m));
 }

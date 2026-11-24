@@ -373,6 +373,10 @@
   const composer = h("div", { class: "composer" }, thumbs, cin,
     h(foot, null, h("div", { class: "tools" }, pickBtn, plusBtn, modeBtn), h("div", { class: "grow" }),
       h("div", { class: "model" }, modelBtn), sendWrap));
+  // « Ton agent »: while the agent cannot take a message (not installed, signed out, installing, signing in) what was typed
+  // stays and this line says why it does not go (the host's catalogue: `agents.setup.hint`). No board draws it yet: the
+  // keys row's look (12/16 #FFFFFF80), provisional.
+  const sendHint = h("div", { class: "send-hint", id: "send-hint", role: "status", hidden: true });
   const keysRow = h("div", { class: "keys", "aria-hidden": "true", hidden: true },
     h("span", { class: "k" }, h("span", { class: "kc" }, "↵"), "Envoyer"),
     h("span", { class: "k" }, h("span", { class: "kcs" }, h("span", { class: "kc" }, "Maj"), h("span", { class: "kc" }, "↵")), "Nouvelle ligne"));
@@ -416,6 +420,18 @@
     }
     const lines = composerText().split("\n").length;
     keysRow.hidden = BUB() || !(lines > 1 && document.activeElement === cin);
+    updateSendHint(running, content);
+  }
+  // The agent is why nothing can be sent (the site and the folder are fine): the typed text waits for it.
+  function agentBlocks() {
+    const a = curAgent();
+    return !!a && !S.st.disabledReason && !!S.st.folder && a.status !== "ready" && a.status !== "starting";
+  }
+  function updateSendHint(running, content) {
+    const on = !running && content && agentBlocks() && !!(TA && TA.hint);
+    if (sendHint.hidden !== !on) { sendHint.hidden = !on; publishSize(); }
+    if (on && sendHint.textContent !== TA.hint) sendHint.textContent = TA.hint;
+    if (on) sendBtn.setAttribute("aria-describedby", "send-tip send-hint"); else sendBtn.setAttribute("aria-describedby", "send-tip");
   }
   function onSendButton() {
     if (sendBtn.classList.contains("stop")) { post("stop"); return; }
@@ -1077,7 +1093,7 @@
     composer.classList.toggle("disabled", !!(S.st.disabledReason || (s && s.tone === "danger")));
     cin.setAttribute("contenteditable", S.st.disabledReason ? "false" : "true");
     cin.setAttribute("aria-disabled", S.st.disabledReason ? "true" : "false");
-    dock.append(stack, keysRow);
+    dock.append(stack, sendHint, keysRow);
     if (hadFocusInComposer) cin.focus();
     updateSend();
   }
@@ -1451,7 +1467,7 @@
     }
     const waiting = bQueue(); if (waiting) dock.appendChild(waiting);
     if (s) dock.appendChild(stripNode(s));
-    dock.appendChild(composer);
+    dock.append(composer, sendHint);
     if (waiting) bQueueFit(waiting);
     composer.classList.toggle("disabled", off);
     cin.setAttribute("contenteditable", S.st.disabledReason ? "false" : "true");
@@ -3021,7 +3037,7 @@
       rows.push({ id: r.id, name: r.name, icon: TA_ICONS.includes(r.icon) ? r.icon : "", ink: r.ink, status: r.status, animate: r.animate === true,
                   note: isStr(r.note, 300) ? r.note : "", manual: isStr(r.manual, 80) ? r.manual : "", action: a });
     }
-    return { show: m.show, title: m.title, body: m.body, note: m.note, accent: /^#[0-9A-Fa-f]{6}$/.test(m.accent || "") ? m.accent : "", rows };
+    return { show: m.show, title: m.title, body: m.body, note: m.note, accent: /^#[0-9A-Fa-f]{6}$/.test(m.accent || "") ? m.accent : "", hint: isStr(m.hint, 200) ? m.hint : "", rows };
   }
   // « Installation… »: the Downloads button's morph (design/lottie/download-progress.py: the same strokes, frames and loop —
   // the tray's arms curl into a ring in 233 ms while the arrow drops in, then the arrow bobs 12 units in 1.3 s), drawn in

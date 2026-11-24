@@ -96,6 +96,15 @@ padding 10, radius 6, 13/16 500; note 12/17 #8C8C8C. In the web page the animate
 drawn in SVG from `design/lottie/download-progress.py`'s data (tray → ring in 233 ms with its easing, the arrow dropping
 then bobbing 12 units every 1.3 s, a band cut around the arrow); reduced motion: the still icon.
 
+**Nothing is sent to an agent that is not ready** (Val, 24/11): while the chat's agent is not installed, signed out,
+installing or signing in (the hub's SigningIn is « preparing » for the page, never « starting »), « Envoyer » is off and
+Entrée does nothing; what was typed stays, and « Connectez un agent pour envoyer » (the catalogue's
+`ton_agent_chat_send_hint`, sent with `agents.setup`) shows under the input — panel and bubble; no board draws that line
+yet: the keys row's look (12/16 #FFFFFF80), provisional. An agent ready again: « Envoyer » works, the line goes, the text
+is still there. A turn that fails because its agent stopped shows ONE card (the cause checked again: FailureCause); the
+messages waiting behind it are held (not sent to fail the same way) until the agent is ready again or « Envoyer
+maintenant ».
+
 « Installer » of a missing agent elsewhere in the chat (the dock's strip « X n'est pas installé… », the model menu's
 header, the folder screen's agent rows) now opens the « Ton agent » screen (`agents.setup.open` → `OpenTonAgent(Chat)`)
 instead of the old runtime download (Val's decision via Fix, 24/11: the chat's « Installer » uses « Ton agent »; never an

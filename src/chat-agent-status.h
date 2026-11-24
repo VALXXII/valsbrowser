@@ -6,7 +6,7 @@
 
 namespace ChatAgentStatus {
 
-enum class Text { None, NotInstalled, TooOld, NotConnected, Starting, Installing, Installed, FirstUse };
+enum class Text { None, NotInstalled, TooOld, NotConnected, Starting, Installing, SigningIn, Installed, FirstUse };
 struct View {
     const char* status;   // the panel's word: "starting" | "notInstalled" | "notConnected" | "preparing" | "error" | "ready"
     Text text;
@@ -21,7 +21,7 @@ inline View Of(const AgentStatus::Status& s) {
     case S::NotInstalled: return s.reason == R::TooOld ? View{"error", Text::TooOld, false, true} : View{"notInstalled", Text::NotInstalled, false, true};
     case S::Installing: return {"preparing", Text::Installing, false, true};
     case S::NeedsSignIn: return {"notConnected", Text::NotConnected, true, true};
-    case S::SigningIn: return {"starting", Text::Starting, true, true};
+    case S::SigningIn: return {"preparing", Text::SigningIn, true, true};   // « Connexion… »: nothing can be sent until it is over (never « starting », which sends)
     case S::Ready: return {"ready", s.runtimeReady ? Text::Installed : Text::FirstUse, true, true};
     case S::Error:
         // a failed sign-in: still installed, to sign in again; a failed install: still not installed (never « Installé »)

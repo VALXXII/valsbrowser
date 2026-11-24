@@ -6,6 +6,7 @@ void ProcessQueue(); bool TakeShownAside(); void AttachQueuedAnchor(Queued& q); 
 void StartTurn(const std::string& text, const std::vector<std::string>& elementIds, const std::vector<std::string>& attachmentIds);
 void DisposeSession(const wchar_t* why);
 void SendPrompt(); void ModeSettled(); void ModeRefused(const Acp::Event& e);   // SEC-13
+void ReleaseHeldQueue(const wchar_t* why);   // « Ton agent »: the messages held behind an agent that stopped
 
 // ---------------------------------------------------------------- « Ton agent »: the agents' one status (src/agent-status.h)
 // The chat never detects agents on its own any more: it shows AgentStatus (src/chat-agent-status.h maps it), the same
@@ -18,6 +19,7 @@ std::wstring ChatAgentText(ChatAgentStatus::Text t) {
     case T::NotConnected: return TR(chat_agent_not_connected);
     case T::Starting: return TR(chat_agent_starting);
     case T::Installing: return TR(agents_installing);
+    case T::SigningIn: return TR(agents_status_signing_in);
     case T::Installed: return TR(chat_agent_installed);
     case T::FirstUse: return TR(chat_agent_first_use);
     case T::None: break;
@@ -66,6 +68,7 @@ void EnsureAgentStatus() {
         for (const auto& def : Agents) if (def.rt == s.agent) ApplyStatus(def.id, s);
         ChooseInstalledAgent(); SendState();
         AfterAgentChange(s, before);
+        if (s.Ready()) for (const auto& def : Agents) if (def.rt == s.agent && def.id == agentId) ReleaseHeldQueue(L"the agent is ready again");   // i18n-exempt: log detail
     });
     AgentStatus::Init(std::move(h));
 }
@@ -838,6 +841,15 @@ void StartTurn(const std::string& text, const std::vector<std::string>& elementI
 // « Ton agent »: a failed turn's card. When the agent stopped answering (its CLI closed — « Query closed before response
 // received » —, the process ended, a sign-in refused) the agents' one status is asked again first: ONE card then says the real
 // cause with its action (src/chat-agent-status.h FailureCause) — never the generic « Quelque chose n'a pas fonctionné ».
+// The messages waiting behind that turn wait on (held, still in the queue): sent to an agent that is gone, each would only
+// add the same card. They go once the agent is ready again (still ready after the check, a sign-in, an install), or at
+// « Envoyer maintenant ».
+bool queueHeldForAgent = false;
+void ReleaseHeldQueue(const wchar_t* why) {
+    if (!queueHeldForAgent) return;
+    queueHeldForAgent = false; Diag(std::wstring(L"the waiting messages go on: ") + why);   // i18n-exempt: log detail
+    ProcessQueue();
+}
 void ShowTurnFailure(const Acp::Error& failure, const std::string& agent, const std::string& turnId) {
     auto show = [agent, turnId](const Acp::Error& e) {
         SendError(ProblemFor(e, agent), e.detail, "thread", true, turnId);
@@ -847,10 +859,13 @@ void ShowTurnFailure(const Acp::Error& failure, const std::string& agent, const 
     if (!def || !ChatAgentStatus::Rechecked(failure.code)) { show(failure); return; }
     const auto rt = def->rt;
     Diag(L"turn failed (" + W(Acp::ErrorCodeName(failure.code)) + L"): the agent is checked again before saying why");   // i18n-exempt: log detail
+    queueHeldForAgent = true;   // until the check says: the next waiting message must not fail the same way first
     AgentStatus::Refresh([failure, rt, show] {
         Acp::Error e = failure; e.code = ChatAgentStatus::FailureCause(AgentStatus::Get(rt), failure.code);
         Diag(L"turn failure shown as " + W(Acp::ErrorCodeName(e.code)) + L" (agent " + W(AgentStatus::StateName(AgentStatus::Get(rt).state)) + L")");   // i18n-exempt: log detail
         show(e);
+        if (AgentStatus::Get(rt).Ready()) ReleaseHeldQueue(L"the agent is still ready");   // i18n-exempt: log detail
+        else if (!queue.empty()) Diag(L"the waiting messages are held until the agent is ready again");   // i18n-exempt: log detail
     });
 }
 void CompleteTurn(const std::string& stopReason, const CS::TurnSummary* summary, const std::vector<std::pair<std::string, CS::FileDiff>>* diffs = nullptr) {
@@ -930,6 +945,7 @@ void StopTurn() {
 void ProcessQueue() {
     if (!turn.active && queue.empty()) TakeShownAside();   // C2: nothing waits — the conversation shown becomes the engine's
     if (turn.active || queue.empty()) { SendQueue(); return; }
+    if (queueHeldForAgent) { SendQueue(); return; }   // « Ton agent »: the agent stopped (ShowTurnFailure) — they wait for it
     // Mode Commentaire: the next message may belong to another element's conversation — it becomes the engine's first
     if (const std::string c = queue.front().convId; !c.empty() && c != convo.data.head.id && !SwitchEngineTo(c)) { queue.pop_front(); ProcessQueue(); return; }
     Queued q = std::move(queue.front()); queue.pop_front(); SendQueue(); RefreshWaitStrip();

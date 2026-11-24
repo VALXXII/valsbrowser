@@ -414,7 +414,9 @@ op = block_after(ui, 'void OpenPanel() {')
 check('if (quietOpening) quietOpening = false;' in op and 'if (quietOpening && !BubbleOpen()) quietOpening = false;' in block_after(ui, 'if (type == "ready")'),
       'lot R: opened by the mode, the panel takes no keyboard focus (neither at once nor when its page is ready)')
 act = block_after(mode, 'void Activate(const Start& st) {')
-check('first.chatOpen = Chat::AskedFor();' in act and 'if (Chat::AskedFor()) {' in act and 'return Open() && !openedByMode;' in line_of(ui, 'bool AskedFor() {'),
+# « Ton agent »: « Connecter un agent » no longer opens by itself (the tutorial the first time, the band's reminder else):
+# the tutorial's rule is the one left to read « no chat asked ».
+check('first.chatOpen = Chat::AskedFor();' in act and 'return Open() && !openedByMode;' in line_of(ui, 'bool AskedFor() {'),
       'lot R: the launch rules (tutorial, « Connecter un agent ») still see « no chat asked » when the mode opened the panel itself')
 # « 10 éléments au maximum » (validated 2026-11-24): the strip, 4 s, and no frame nor shot for the click
 ts = block_after(ui, 'bool TakeSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible) {')
@@ -441,8 +443,9 @@ check('I18N(chat_agent_never_signed_in, L"{0} n\'est pas connecté.", L"{0} is n
       'signed out: the two sentences, FR and EN (never signed in / no longer signed in)')
 check('if (info.status == "notConnected") a.Set("notice", Str(info.signedIn ? TRF(chat_agent_signed_out, W(std::string(def.name))) : TRF(chat_agent_never_signed_in, W(std::string(def.name)))));' in host,
       'signed out: the state carries the sentence in the interface language — « plus connecté » only when the agent was seen signed in')
-ad = block_after(turn, 'void ApplyDetection(const std::string& id, const AgentRuntime::Detection& d) {')
-check(0 <= ad.find('if (d.login == AgentRuntime::Login::SignedIn) a.signedIn = true;') < ad.find('if (sessionReady && id == agentId) return;')
+# « Ton agent »: the chat reads the agents' one status (src/agent-status.h): « ready » is the detection that says signed in
+ad = block_after(turn, 'void ApplyStatus(const std::string& id, const AgentStatus::Status& s) {')
+check(0 <= ad.find('if (s.state == AgentStatus::State::Ready) a.signedIn = true;') < ad.find('if (sessionReady && id == agentId) return;')
       and turn.count('signedIn = true') == 2 and 'info.cli = info.prepared = true; info.signedIn = true;' in turn and 'bool signedIn = false;' in host,
       'signed out: « seen signed in » is set by a detection that says so and by a ready session, nowhere else; false at start')
 # Lot 5's real trial with Codex (24 Nov 2026): « Demander » = Codex's « read-only »; it refused instead of asking, and the

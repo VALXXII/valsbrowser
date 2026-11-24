@@ -320,7 +320,7 @@ int wmain(int argc, wchar_t** argv) {
         Check(dr.CurrentViewForTest() == SettingsUI::View::Annotations && !agentRows && !Find(slots, Kind::Nav, L"Autre app ou réglage manuel") && !Find(slots, Kind::Switch, L"Proposer de connecter un agent"),
               "« Annotations »: no MCP agent rows, no « Autre app ou réglage manuel », no « Proposer de connecter un agent »");
         std::vector<std::wstring> labels; for (auto& s : slots) if (s.kind == Kind::Label) labels.push_back(s.text);
-        Check(labels == std::vector<std::wstring>{L"Mode Annotation", L"Historique"}, "« Annotations »: groups « Mode Annotation », « Historique »");
+        Check(labels == std::vector<std::wstring>{L"Mode Annotation"}, "« Annotations »: one group « Mode Annotation » (lot R: the annotation history is gone)");
     }
     shot(L"annotations");
 

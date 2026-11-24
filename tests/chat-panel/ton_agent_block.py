@@ -6,6 +6,8 @@ src/chat-ton-agent.h does. Nothing touches the network, a real agent, an install
 
   python -I tests/chat-panel/ton_agent_block.py [--edge <msedge.exe>] [--out build/chat-qa/ton-agent]
 
+Nothing can be sent while the agent is not ready (Val): the typed text stays, « Envoyer » and Entrée do nothing, « Connectez
+un agent pour envoyer » says why under the input (panel and bubble); an agent ready again → « Envoyer » works, the line goes.
 Checks: the block in the place of « Que voulez-vous changer ? » on an empty chat (not over a thread, not once an agent is
 ready); its rows (logo, name, the status dot and words, the button: strong for install / retry, raised for sign-in); each
 button tells the host (`agents.setup.act`) — a busy one does not; after a failed install the two lines and « Installer
@@ -188,6 +190,40 @@ try:
           "panel: « Installer » → install Claude Code (the click is the consent), « Se connecter » → sign in to Codex", posted(["agents.setup.act"]))
     check(cdp.js("Array.from(document.querySelectorAll('.tas-btn')).map(b=>b.getAttribute('aria-label'))") == ["Installer Claude Code", "Se connecter Codex"], "panel: the buttons name their agent for screen readers")
 
+    # ---------------------------------------------------------------- nothing can be sent: the typed text waits (Val)
+    def typed(text):
+        cdp.js("(()=>{const c=document.querySelector('.cin');c.focus();document.execCommand('insertText',false," + json.dumps(text) + ")})()"); time.sleep(.15)
+    send_state = lambda: cdp.js("""(()=>{const b=document.querySelector('.send'),h=document.querySelector('.send-hint');
+      return {ready:b.classList.contains('ready'),disabled:b.getAttribute('aria-disabled'),hint:h&&!h.hidden&&h.getClientRects().length?h.textContent:null,
+        text:document.querySelector('.cin').textContent,described:b.getAttribute('aria-describedby')}})()""")
+    def press_enter():
+        cdp.js("document.querySelector('.cin').focus()")
+        for t in ("keyDown", "keyUp"): cdp.call("Input.dispatchKeyEvent", type=t, key="Enter", code="Enter", windowsVirtualKeyCode=13, nativeVirtualKeyCode=13)
+        time.sleep(.15)
+    typed("Rends ce bouton plus large")
+    s0 = send_state()
+    check(s0["disabled"] == "true" and not s0["ready"] and s0["hint"] == "Connectez un agent pour envoyer" and "send-hint" in (s0["described"] or ""),
+          "no agent ready: « Envoyer » off, « Connectez un agent pour envoyer » under the input (the button says it to screen readers)", s0)
+    n0 = len(posted(["send"])); press_enter(); cdp.js("document.querySelector('.send').click()"); time.sleep(.1)
+    s1 = send_state()
+    check(len(posted(["send"])) == n0 and s1["text"] == "Rends ce bouton plus large", "no agent ready: Entrée and « Envoyer » send nothing, the typed text stays", [posted(["send"])[n0:], s1])
+    shot("panneau-envoi-bloque", {"x": 0, "y": 0, "width": 380, "height": 664})
+    # Connexion… (the hub's SigningIn → « preparing »): still nothing to send
+    cdp.js("devHost.send(" + json.dumps({"type": "state", "agents": [{"id": "claude-code", "name": "Claude Code", "icon": "claude", "status": "preparing", "detail": "Connexion…", "models": []},
+                                                                      {"id": "codex", "name": "Codex", "icon": "codex", "status": "notConnected", "detail": "Pas connecté", "models": []}], "agentId": "claude-code"}) + ")"); time.sleep(.15)
+    s2 = send_state()
+    check(s2["disabled"] == "true" and s2["hint"] == "Connectez un agent pour envoyer" and s2["text"] == "Rends ce bouton plus large", "signing in (« Connexion… »): still nothing sent, the text and the line stay", s2)
+    # an agent ready: « Envoyer » works again, the line goes, the block leaves
+    cdp.js("devHost.send(" + json.dumps({"type": "state", "agents": [{"id": "claude-code", "name": "Claude Code", "icon": "claude", "status": "ready", "detail": "", "models": []},
+                                                                      {"id": "codex", "name": "Codex", "icon": "codex", "status": "notConnected", "detail": "Pas connecté", "models": []}], "agentId": "claude-code"}) + ")")
+    cdp.js("devHost.send(" + json.dumps({"type": "agents.setup", "show": False, "title": "Choisissez votre agent", "body": "x", "note": "y", "accent": "#0099A0", "hint": "Connectez un agent pour envoyer", "rows": []}) + ")"); time.sleep(.15)
+    s3 = send_state()
+    check(s3["ready"] and s3["disabled"] is None and s3["hint"] is None and s3["text"] == "Rends ce bouton plus large" and block() is None,
+          "an agent ready: « Envoyer » on again, the line gone, the text kept, the block gone", s3)
+    n0 = len(posted(["send"])); press_enter()
+    sent = posted(["send"])[n0:]
+    check(len(sent) == 1 and sent[0].get("text") == "Rends ce bouton plus large", "an agent ready: Entrée sends the text that waited", sent)
+
     # ---------------------------------------------------------------- installing: the morph, no button
     load("ta-installation"); b = block()
     check(b and row(b, 0) == ("Installation…", "accent", True, "", False) and b["rows"][0]["color"] == ACCENT and not b["rows"][0]["anim"], "installing: ⤓ « Installation… » in the accent, no button (reduced motion: the still icon)", b and b["rows"][0])
@@ -257,6 +293,15 @@ try:
     if b:
         r = cdp.js("(()=>{const a=document.getElementById('app').getBoundingClientRect();return {x:a.left,y:a.top,width:a.width,height:a.height}})()")
         shot("bulle-premier-message", r)
+    typed("Plus grand")
+    sb = send_state()
+    check(sb["disabled"] == "true" and sb["hint"] == "Connectez un agent pour envoyer" and sb["text"] == "Plus grand", "bubble: nothing sent while no agent is ready, the same line under the input", sb)
+    n0 = len(posted(["send"])); press_enter()
+    check(len(posted(["send"])) == n0 and send_state()["text"] == "Plus grand", "bubble: Entrée sends nothing, the text stays")
+    size2 = cdp.js("(window.__posted.filter(m=>m.type==='bubble.size').pop()||{})")
+    check(size2.get("height", 0) > size.get("height", 0), "bubble: its height asked grows with the line", [size, size2])
+    r = cdp.js("(()=>{const a=document.getElementById('app').getBoundingClientRect();return {x:a.left,y:a.top,width:a.width,height:a.height}})()")
+    shot("bulle-envoi-bloque", r)
     load("c-ta-erreur"); b = block()
     check(b and b["rows"][0]["link"] == "Installer moi-même ↗", "bubble: after a failure, « Échec de l'installation » and the link", b)
     if b:

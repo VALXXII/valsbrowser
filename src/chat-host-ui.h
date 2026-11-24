@@ -957,7 +957,7 @@ void OnPanelMessage(const std::string& json) {
         return;
     }
     if (type == "stop") { StopTurn(); return; }
-    if (type == "queue.sendNow") { const std::string id = m.Id("id"); for (auto it = queue.begin(); it != queue.end(); ++it) if (it->id == id) { Queued q = std::move(*it); queue.erase(it); queue.push_front(std::move(q)); break; } if (turn.active) StopTurn(); else ProcessQueue(); SendQueue(); return; }
+    if (type == "queue.sendNow") { const std::string id = m.Id("id"); for (auto it = queue.begin(); it != queue.end(); ++it) if (it->id == id) { Queued q = std::move(*it); queue.erase(it); queue.push_front(std::move(q)); break; } queueHeldForAgent = false; if (turn.active) StopTurn(); else ProcessQueue(); SendQueue(); return; }   // « Ton agent »: the person's choice lifts a hold
     if (type == "queue.remove" && m.Id("id") == "held") { void CancelHeld(); CancelHeld(); return; }   // queue: the cross of a held message
     if (type == "queue.remove") { const std::string id = m.Id("id"); queue.erase(std::remove_if(queue.begin(), queue.end(), [&](const Queued& q) { return q.id == id; }), queue.end()); SendQueue(); return; }
     if (type == "permission.respond") {

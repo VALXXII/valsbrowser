@@ -1768,6 +1768,7 @@ I18N(ton_agent_none_ready, L"Aucun agent prêt", L"No agent ready")
 // The chat's first message when no agent is ready (Paper 22N3-0 « Chat — premier message, rien n'est prêt »), panel and bubble;
 // its rows' states as the Designer set them for Réglages › Agents (an icon and the words, no coloured dot).
 I18N(ton_agent_chat_body, L"Le chat utilise Claude Code ou Codex, installés sur cet ordinateur.", L"The chat uses Claude Code or Codex, installed on this computer.")
+I18N(ton_agent_chat_send_hint, L"Connectez un agent pour envoyer", L"Connect an agent to send")
 I18N(ton_agent_chat_paid, L"Claude Code demande un compte Claude payant (Pro, Max, Team ou Enterprise).", L"Claude Code needs a paid Claude account (Pro, Max, Team or Enterprise).")
 I18N(ton_agent_row_checking, L"Recherche…", L"Checking…")
 I18N(ton_agent_row_not_installed, L"Pas installé", L"Not installed")

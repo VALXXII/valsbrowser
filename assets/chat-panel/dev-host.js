@@ -458,7 +458,7 @@
     signInFailed: () => ({ icon: "error", ink: "danger", status: "Échec de la connexion", action: { id: "retry", label: "Réessayer", strong: false } }),
   };
   const ta = (claude, codex, over) => Object.assign({ type: "agents.setup", show: true, title: "Choisissez votre agent", body: "Le chat utilise Claude Code ou Codex, installés sur cet ordinateur.",
-    note: "Claude Code demande un compte Claude payant (Pro, Max, Team ou Enterprise).", accent: "#0099A0",
+    note: "Claude Code demande un compte Claude payant (Pro, Max, Team ou Enterprise).", accent: "#0099A0", hint: "Connectez un agent pour envoyer",
     rows: [Object.assign({ id: "claude", name: "Claude Code" }, TA_ROW[claude]()), Object.assign({ id: "codex", name: "Codex" }, TA_ROW[codex]())] }, over || {});
   // the chat's own view of the same status (A's src/chat-agent-status.h)
   const TA_AGENTS = { agents: [Object.assign({}, CLAUDE, { status: "notInstalled", detail: "Pas installé", models: [] }), Object.assign({}, CODEX, { status: "notConnected", detail: "Pas connecté", models: [] })], agentId: "claude-code" };

@@ -414,6 +414,9 @@ svg.i { display: block; flex-shrink: 0; }
 .send.stop svg { opacity: 1; }
 @media (hover: hover) { .send.ready:hover { background: #5579FF; } }
 .keys { display: flex; align-items: center; gap: 12px; padding: 2px 0 0 4px; }
+/* « Ton agent »: « Connectez un agent pour envoyer » under the input (no board yet: the keys row's look, provisional) */
+.send-hint { padding: 2px 0 0 4px; color: var(--w50); font-size: 12px; line-height: 16px; }
+.send-hint[hidden] { display: none; }
 .keys span.k { display: flex; align-items: center; gap: 6px; color: var(--w50); font-size: 12px; line-height: 16px; }
 .kc { display: inline-flex; align-items: center; justify-content: center; height: 20px; min-width: 20px; padding: 2px 6px; border-radius: 4px; background: var(--fill6); color: var(--w50); font-size: 12px; line-height: 16px; }
 .kcs { display: flex; gap: 2px; }
