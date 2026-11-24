@@ -201,12 +201,13 @@ glisser, survol par-dessus la page, tiroirs) : liste pour la tournée de nuit de
 
 - Bas du trait du bord : Paper finit l'arc 2 DIP plus haut (sa page s'arrête à 734) ; le code suit la règle (arc
   concentrique au coin réel de la page, à 736).
-- Chat en panneau : ses coins arrondis viennent d'une région de fenêtre (bord crénelé, pas lissé) ; dans la barre du
+- Chat en panneau : coins lissés par quatre masques comme ceux de la page (rayon 8, filet #262626) ; dans la barre du
   haut, le chat reste comme aujourd'hui (collé au bord droit).
 - Annoter actif : le fond reste l'accent à 16 % (Paper #22452D pour Travail : pas de règle trouvée pour les autres profils).
 - Planches Paper avec 8 DIP de marge autour de la page : la règle de Val (4 DIP) gagne.
-- Pas encore : « Gérer les favoris » sous la grille dépliée et au pied du popover compact, glisser un favori sur un
-  dossier de la grille (planches du soir, à valider par Val).
+- « Gérer les favoris » (grille dépliée, pied du popover compact) ouvre le tiroir Favoris ; une case glissée sur une case
+  dossier y est rangée (repère : l'accent à 18 % de la barre, la case glissée atténuée — Paper ne dessine pas cet état).
+  Survol de la ligne « Gérer les favoris » : le blanc 4 % des outils (pas d'état de survol dans Paper).
 
 ## 8. Vérifications en fenêtre réelle (tournée de nuit de Fix)
 
