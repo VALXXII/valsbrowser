@@ -492,11 +492,16 @@ public:
     }
     ~Chrome(){Dispose();}
     void Dispose(){if(hwnd&&!followDpiGone&&IsWindow(hwnd))RemoveWindowSubclass(hwnd,FollowDpiProc,reinterpret_cast<UINT_PTR>(this));followDpiGone=true;ClearTextCache();if(eyeSlash){eyeSlash->Release();eyeSlash=nullptr;}DropGhostLayer();DropFade();Drop(lottieBitmap);DropDownloadIcon();DropAudioIcon();audioMeter.Clear();audioSide=0;DropRipple();dlTrack.Clear();dlFill.Clear();dlArrow.Clear();dlCut.Clear();dlSide=0;lottieSide=0;lottie.Clear();copyLottie.Clear();refreshLottie.Clear();ClearFaviconBitmaps();favicons.clear();for(auto& b:bitmaps)Drop(b.second);bitmaps.clear();Drop(brush);Drop(target);hwndTarget=nullptr;Drop(surface);Drop(wic);Drop(fonts);if(write&&fontLoader)write->UnregisterFontCollectionLoader(fontLoader);Drop(fontLoader);Drop(write);DropPathGlyphs();Drop(factory);}
-    HRESULT InitResources(const std::wstring& root){assets=root+L"\\assets\\";InitLottie();HRESULT hr=D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,&factory);if(FAILED(hr))return hr;
-        hr=DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,__uuidof(IDWriteFactory),(IUnknown**)&write);if(FAILED(hr))return hr;
-        fontLoader=new FontLoader(assets+L"fonts\\");hr=write->RegisterFontCollectionLoader(fontLoader);if(FAILED(hr))return hr;const UINT key=1;hr=write->CreateCustomFontCollection(fontLoader,&key,sizeof(key),&fonts);if(FAILED(hr))return hr;for(auto family:{L"Inter Display"}){UINT32 index;BOOL exists=FALSE;hr=fonts->FindFamilyName(family,&index,&exists);if(FAILED(hr)||!exists)return E_FAIL;}
-        hr=CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&wic));return hr;
+    // i18n-exempt-begin: start-up step names, written to the log only (startup_graphics_failed)
+    // The step InitResources / Resize last attempted (the host logs it with the HRESULT when the start fails).
+    const wchar_t* initStep=L"";
+    HRESULT InitResources(const std::wstring& root){assets=root+L"\\assets\\";InitLottie();initStep=L"Direct2D factory";HRESULT hr=D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,&factory);if(FAILED(hr))return hr;
+        initStep=L"DirectWrite factory";hr=DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,__uuidof(IDWriteFactory),(IUnknown**)&write);if(FAILED(hr))return hr;
+        initStep=L"font loader";fontLoader=new FontLoader(assets+L"fonts\\");hr=write->RegisterFontCollectionLoader(fontLoader);if(FAILED(hr))return hr;const UINT key=1;initStep=L"font collection (assets\\fonts)";hr=write->CreateCustomFontCollection(fontLoader,&key,sizeof(key),&fonts);if(FAILED(hr))return hr;
+        initStep=L"Inter Display font";for(auto family:{L"Inter Display"}){UINT32 index;BOOL exists=FALSE;hr=fonts->FindFamilyName(family,&index,&exists);if(FAILED(hr)||!exists)return FAILED(hr)?hr:E_FAIL;}
+        initStep=L"WIC imaging factory (COM)";hr=CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&wic));return hr;
     }
+    // i18n-exempt-end
     HRESULT Init(HWND h,const std::wstring& root){hwnd=h;followDpiGone=false;if(h)SetWindowSubclass(h,FollowDpiProc,reinterpret_cast<UINT_PTR>(this),reinterpret_cast<DWORD_PTR>(this));HRESULT hr=InitResources(root);return FAILED(hr)?hr:Resize();}
     // The window moved to a monitor with another DPI (or its scale changed) while the render
     // target kept the old one: everything inside was drawn too large or too small (bug
@@ -519,7 +524,7 @@ public:
     UINT32 SurfacePixel(float x,float y){UINT32 pixel=0;WICRect r{(INT)(x*dpi/96),(INT)(y*dpi/96),1,1};if(surface)surface->CopyPixels(&r,4,4,(BYTE*)&pixel);return pixel;}
     HRESULT Resize(){if(!factory||!hwnd)return S_OK;RECT r;GetClientRect(hwnd,&r);dpi=GetDpiForWindow(hwnd);width=(float)r.right*96/dpi;height=(float)r.bottom*96/dpi;
         if(target){target->SetDpi((float)dpi,(float)dpi);return hwndTarget->Resize(D2D1::SizeU(r.right,r.bottom));}
-        HRESULT hr=factory->CreateHwndRenderTarget(D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,D2D1::PixelFormat(),(float)dpi,(float)dpi),D2D1::HwndRenderTargetProperties(hwnd,D2D1::SizeU(r.right,r.bottom),presentOptions),&hwndTarget);if(FAILED(hr))return hr;target=hwndTarget;target->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);return target->CreateSolidColorBrush(D2D1::ColorF(1,1,1),&brush);
+        initStep=L"window render target" /* i18n-exempt: log only */;HRESULT hr=factory->CreateHwndRenderTarget(D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,D2D1::PixelFormat(),(float)dpi,(float)dpi),D2D1::HwndRenderTargetProperties(hwnd,D2D1::SizeU(r.right,r.bottom),presentOptions),&hwndTarget);if(FAILED(hr))return hr;target=hwndTarget;target->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);initStep=L"brush";return target->CreateSolidColorBrush(D2D1::ColorF(1,1,1),&brush);
     }
     void Color(float c,float alpha=1){brush->SetColor(D2D1::ColorF(c,c,c,alpha));}
     // Docked drawers (NativeUI::KeyedDrawer): the strip a sliding drawer has not entered yet, [0, lead) DIP, in the

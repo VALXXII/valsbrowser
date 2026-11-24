@@ -11,6 +11,8 @@ Set-Location $PSScriptRoot
 $out = 'build/sidebar-qa'
 New-Item -ItemType Directory -Force "$out/renders" | Out-Null
 $gxx = "$DependencyRoot/tools/w64devkit/bin/g++.exe"
+# Start-up guard: no // comment may swallow code in the one-line statement lists (the 0.3.850 trial's start failure).
+python tools/sidebar/check_line_comments.py; if ($LASTEXITCODE -ne 0) { throw 'check_line_comments failed.' }
 & $gxx -std=c++17 -Wall -Wextra -Werror -static tests/sidebar_test.cpp -o "$out/sidebar_test.exe"
 if ($LASTEXITCODE -ne 0) { throw 'sidebar_test compilation failed.' }
 & "./$out/sidebar_test.exe"; if ($LASTEXITCODE -ne 0) { throw 'sidebar_test failed.' }
