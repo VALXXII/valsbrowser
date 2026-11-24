@@ -667,6 +667,11 @@ public:
     }
     // True when focus last moved by keyboard (Tab, arrows, shortcuts); a pointer press clears it.
     bool keyboardModality=true;
+    // The address field's outline while it has the focus (Val #5, Paper « #FFFFFF0D, 1 px inside »): white 5 % after a
+    // click, in the three layouts; reached from the keyboard (Ctrl+L, F6, Tab) it keeps the focus ring's 50 % (WCAG 2.4.7).
+    static constexpr float addressRing=0x0D/255.f;
+    void AddressRing(D2D1_RECT_F box,float radius){const float a=keyboardModality?Design::Focus::keyboardOpacity:addressRing;Color(1,a);
+        target->DrawRoundedRectangle(D2D1::RoundedRect({box.left+.5f,box.top+.5f,box.right-.5f,box.bottom-.5f},radius-.5f,radius-.5f),brush,1);}
     void FocusRing(D2D1_RECT_F box,float radius){const float inset=Design::Size::focusStroke/2;box.left+=inset;box.top+=inset;box.right-=inset;box.bottom-=inset;Color(Design::Focus::color,Design::Focus::Opacity(keyboardModality));target->DrawRoundedRectangle(D2D1::RoundedRect(box,radius,radius),brush,Design::Size::focusStroke);}
     // Back/Forward pair (Paper): one segment, 6 DIP outer / 3 DIP inner corners, the 1 x 10
     // hairline between the halves drawn with Back. Same Raised states as before (hover,
@@ -1249,7 +1254,7 @@ public:
         const float labels=overlay?1.f:sidebarTitles;
         // Top: profile, fold button (+ Back / Forward / Reload in the complete column).
         {const auto plate=R(L.profile);profileRest=L.profilePlate?Design::ProfileButton::rest:0;DrawProfileButton(hover,focus,now,&plate);profileRest=Design::ProfileButton::rest;}
-        {const float hv=Hovered(SidebarToggleId,hover,now);if(hv>0)White(R(L.toggle),Design::Radius::control,K::toolHover*hv);if(focus==SidebarToggleId)FocusRing(R(L.toggle),Design::Radius::control);SideGlyph(SB::Glyph::fold,R(L.toggle),Design::Size::icon,K::glyph);}
+        {const float hv=Hovered(SidebarToggleId,hover,now);if(hv>0)White(R(L.toggle),Design::Radius::control,K::toolHover*hv);if(focus==SidebarToggleId)FocusRing(R(L.toggle),Design::Radius::control);SideGlyph(SB::Glyph::fold,R(L.toggle),Design::Size::icon,K::foldGlyph);}   /* #6: 50 % like Back / Forward / Reload */
         if(full)for(int id:{'B','F','R'})PaintSideButton(id,id=='B'?R(L.back):id=='F'?R(L.forward):R(L.reload),hover,focus,now);
         // Address in the column.
         if(full)PaintSideAddress(L,editing,hover,focus,now,labels);
@@ -1357,8 +1362,7 @@ public:
     void PaintSideAddress(const Sidebar::Layout& L,bool editing,int hover,int focus,Motion::Time now,float labels){
         namespace K=Sidebar::Look;const auto box=R(L.address);
         if(L.addressPlate||editing){White(box,Design::Radius::control,editing?K::fieldEditing:K::field);}DrawLoading(box);   // the compact bar's field has no background (Val's retouch 1WOG-0)
-        if(editing){Color(1,K::fieldRing);target->DrawRoundedRectangle(D2D1::RoundedRect({box.left+.5f,box.top+.5f,box.right-.5f,box.bottom-.5f},5.5f,5.5f),brush,1);}
-        else if(focus=='L')FocusRing(box,Design::Radius::control);
+        if(editing||focus=='L')AddressRing(box,Design::Radius::control);   // #5: 5 % after a click, 50 % from the keyboard
         const auto keepBar=bar,keepEdit=edit;const float k1=addressFont,k2=addressGlyph,k3=addressTextInset,k4=addressSlotInset,k5=addressSlotSize,k7=addressFadeSurface,k9=sideChipInset,k10=addressTextRight;const bool k6=addressHostOnly,k8=sideChip;
         const bool own=std::fabs(bar.left-L.address.left)<.01f&&std::fabs(bar.top-L.address.top)<.01f;if(!own)UseAddress(L);
         const auto keepRequest=request;if(!own)request=D2D1_RECT_F{};
@@ -1562,7 +1566,7 @@ public:
     // Smoke diagnostics: why AssetsReady() is false (bitmap count, keys that failed to load, font families).
     std::wstring AssetsReport(){std::wstring s=L"bitmaps="+std::to_wstring(bitmaps.size())+L" fonts="+std::to_wstring(fonts?fonts->GetFontFamilyCount():0)+L" missing=";for(auto& b:bitmaps)if(!b.second)s+=b.first+L";";return s;}
     void Paint(const std::vector<std::wstring>& titles,int selected,const std::wstring& uri,bool editing,int hover,int focus,const D2D1_RECT_F* dirty=nullptr,Motion::Time now=Motion::Now()){(void)uri;/* the field reads `address`, set by the host */if(!target||!brush)return;++textPass;Build((int)titles.size(),selected,&titles,now);target->BeginDraw();target->PushAxisAlignedClip(dirty?*dirty:D2D1::RectF(0,0,width,height),D2D1_ANTIALIAS_MODE_ALIASED);target->Clear(D2D1::ColorF(Design::Surface::canvas,Design::Surface::canvas,Design::Surface::canvas));if(!contentOnly&&sidebar)PaintSidebar(titles,selected,editing,hover,focus,now);else if(!contentOnly){
-        Round(bar,Design::Radius::control,Design::Surface::raised);DrawLoading(bar);if(focus=='L')FocusRing(bar,Design::Radius::control);
+        Round(bar,Design::Radius::control,Design::Surface::raised);DrawLoading(bar);if(focus=='L')AddressRing(bar,Design::Radius::control);   /* #5 */
         // Skip controls wholly outside the dirty rectangle (4 DIP margin covers focus rings).
         auto visible=[&](D2D1_RECT_F b){return !dirty||(b.right+4>dirty->left&&b.left-4<dirty->right&&b.bottom+4>dirty->top&&b.top-4<dirty->bottom);};
         DrawTabs(titles,selected,hover,focus,visible,now);

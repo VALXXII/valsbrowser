@@ -166,6 +166,19 @@ int wmain(int argc, wchar_t** argv) {
             Check(std::abs(painted - edit) <= 1, msg);
             return c.edit;
         };
+        {   // Val #5: the address outline while typing is white 5 % after a click (50 % from the keyboard); #6: the fold
+            // button's glyph at rest is white 50 % like Back / Forward / Reload.
+            Chrome c; Check(SUCCEEDED(c.InitOffscreen(root, 96, 1178, 738)), "offscreen chrome (ring)");
+            c.sidebar = true; c.addressEditing = true; c.keyboardModality = false; c.address = AddressBar::Describe(L"", false); c.Paint(titles, 0, L"", true, 0, 0);
+            const auto a = c.side.address; const int inside = (c.SurfacePixel((a.left + a.right) / 2, a.top + 6) >> 8) & 255, ring = (c.SurfacePixel((a.left + a.right) / 2, a.top + .5f) >> 8) & 255;
+            char msg[160]; std::snprintf(msg, sizeof msg, "address outline after a click: white 5 %% (ring %d over field %d)", ring, inside);
+            Check(ring > inside && ring - inside <= 15, msg);
+            c.keyboardModality = true; c.Paint(titles, 0, L"", true, 0, 0);
+            const int keyed = (c.SurfacePixel((a.left + a.right) / 2, a.top + .5f) >> 8) & 255; Check(keyed - inside > 60, "from the keyboard the outline keeps 50 % (accessibility)");
+            c.addressEditing = false; c.Paint(titles, 0, L"", false, 0, 0); int fold = 0; const auto t = c.side.toggle;
+            for (float y = t.top; y < t.bottom; ++y) for (float x = t.left; x < t.right; ++x) fold = std::max(fold, (int)((c.SurfacePixel(x, y) >> 8) & 255));
+            std::snprintf(msg, sizeof msg, "fold button glyph at 50 %% (brightest %d, ~139)", fold); Check(fold > 110 && fold < 160, msg);
+        }
         const auto col = field(true, false, "column");
         Check(Near(col.right, 248 - 8 - 8), "column: the EDIT spans the field while typing (to its padding)");
         field(true, true, "compact bar");

@@ -110,8 +110,9 @@ inline constexpr float titleActive = 1, titleHover = 0xE6 / 255.f, titleRest = 0
 inline constexpr float tileRest = 0x0A / 255.f, tileHover = 0x14 / 255.f, compactTile = 0x0F / 255.f, moreRest = 0x0A / 255.f, moreOpen = 0x1F / 255.f, toggleText = .5f;
 inline constexpr float line = 0x0F / 255.f;                         // separators (1Q1P-0, 1Q0B-0 border)
 inline constexpr float toolHover = 0x0A / 255.f, toolOpen = 0x1A / 255.f;   // 04 1Q9J-0, 07 1QMH-0
-inline constexpr float glyph = 0xB3 / 255.f, glyphMuted = 0x80 / 255.f, settingsGlyph = .5f;   // 1Q0D-0 opacity .5
-inline constexpr float field = 0x14 / 255.f, fieldEditing = 0x0A / 255.f, fieldRing = 0x80 / 255.f;   // 06 1QH8-0
+inline constexpr float glyph = 0xB3 / 255.f, glyphMuted = 0x80 / 255.f, settingsGlyph = .5f;
+inline constexpr float foldGlyph = .5f;   // « Basculer compact » at rest: white 50 % like Précédent / Suivant / Actualiser (Val #6, Paper updated)   // 1Q0D-0 opacity .5
+inline constexpr float field = 0x14 / 255.f, fieldEditing = 0x0A / 255.f;   // 06 1QH8-0 (its ring: Chrome::AddressRing, 5 %)
 inline constexpr float dragged = 0x29 / 255.f, draggedBorder = 0x26 / 255.f, origin = .3f, insertion = 2;   // 05
 }
 // Motion (16 « Valeurs »; 03 note): the width moves in 180 ms, titles fade first in 80 ms; the pointer rests 400 ms
