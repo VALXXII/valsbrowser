@@ -46,6 +46,7 @@ int wmain(int argc, wchar_t** argv) {
             {L"file", L"file:///C:/Users/Camille/Documents/rapport%20final.pdf", false, 0},
             {L"long", L"https://docs.github.com/en/rest/issues/issues?apiVersion=2022-11-28#list-repository-issues-for-the-authenticated-user-with-filters", false, 0},
             {L"hover-http", L"http://neverssl.com/online", false, 'I'},
+            {L"local-long", L"http://localhost:5173/checkout/etape-2?panier=abc123&retour=/boutique/produits/chaussures-de-course-legeres", false, 0},
         };
         for (auto& s : states) {
             chrome.address = AddressBar::Describe(s.uri, s.cert); chrome.addressEditing = false;
@@ -61,6 +62,28 @@ int wmain(int argc, wchar_t** argv) {
                 Check(chrome.edit.left == chrome.bar.left + 32, "EDIT text starts in the 32 DIP lane");
             }
         }
+        // « Local » (Paper #127 « Proposition — Adresse · pastille « Local » (validée) », « Barre du haut »): the pill in the
+        // profile's colours (src/local-pill.h) — Personnel (no profile button: the neutral grey), Travail, a violet profile.
+        struct Profile { const wchar_t* name; bool shown; UINT32 ink, plate, hover; };
+        const Profile profiles[] = {{L"personnel", false, 0xB3B3B3, 0x373737, 0x3F3F3F}, {L"travail", true, 0x6FD087, 0x303A32, 0x344438}, {L"violet", true, 0xBCA7FF, 0x38363E, 0x413D4B}};
+        for (const auto& p : profiles) for (bool hover : {false, true}) {
+            chrome.profileButton.shown = p.shown; chrome.profileButton.ink = D2D1::ColorF(p.ink);
+            chrome.address = AddressBar::Describe(L"http://localhost:5173/checkout"); chrome.addressEditing = false;
+            chrome.Paint(titles, 0, L"http://localhost:5173/checkout", false, hover ? 'I' : 0, 0);
+            const std::wstring name = std::wstring(L"local-") + p.name + (hover ? L"-hover" : L"");
+            Check(SUCCEEDED(chrome.SavePng((out + L"\\address-" + name + suffix).c_str())), "local snapshot");
+            const auto pill = chrome.indicator; const float cy = (pill.top + pill.bottom) / 2;
+            Check(pill.left == chrome.bar.left + 6 && pill.bottom - pill.top == 20 && pill.right - pill.left == 59, "Local pill: 6 into the field, 59 x 20");
+            Check((chrome.SurfacePixel(pill.left + 2, cy) & 0xffffff) == (hover ? p.hover : p.plate), "Local pill: the profile's ink at 10 % (16 % on hover), solid over #292929");
+            bool icon = false; for (float x = pill.left + 5; x < pill.left + 19 && !icon; x += .5f) for (float y = cy - 7; y < cy + 7 && !icon; y += .5f) icon = (chrome.SurfacePixel(x, y) & 0xffffff) == p.ink;
+            Check(icon, "Local pill: the monitor glyph in the profile's ink");
+            bool text = false; for (float x = pill.left + 23; x < pill.right - 5 && !text; x += .5f) for (float y = cy - 6; y < cy + 6 && !text; y += .5f) text = (chrome.SurfacePixel(x, y) & 0xffffff) == p.ink;
+            Check(text, "Local pill: « Local » in the profile's ink");
+            if (dpi == 96) Check((chrome.SurfacePixel(pill.right + 6 + .5f, cy) & 0xffffff) == 0x545454u && (chrome.SurfacePixel(pill.right + 6 + .5f, cy - 6) & 0xffffff) == 0x292929u, "Local pill: the 1 x 10 divider #545454, 6 after it");
+            bool tip = false; for (auto& g : chrome.regions) if (g.id == 'I' && g.tip && std::wstring(g.tip) == L"Projet sur cet ordinateur") tip = true;
+            Check(tip && chrome.Hit((pill.left + pill.right) / 2, cy) == 'I', "Local pill: its own hover region, tooltip « Projet sur cet ordinateur »");
+        }
+        chrome.profileButton.shown = false; chrome.profileButton.ink = D2D1::ColorF(1, 1, 1, 1);
         // Editing: the indicator slot shows the active suggestion's glyph; no 'I' region.
         chrome.address = AddressBar::Describe(L"https://github.com/"); chrome.addressEditing = true; chrome.editIcon = L"search";
         chrome.Paint(titles, 0, L"", true, 0, 'L');

@@ -19,6 +19,7 @@
 #include "loading.h"
 #include "tab-motion.h"
 #include "address.h"
+#include "local-pill.h"
 #include "bookmarks-bar.h"
 #include "svg-path.h"
 #include "site-request.h"
@@ -929,7 +930,7 @@ public:
     D2D1_RECT_F AddressSlot()const{const float c=AddressCenter(),l=bar.left+addressSlotInset;return {l,c-addressSlotSize/2,l+addressSlotSize,c+addressSlotSize/2};}
     float ChipWidth(const wchar_t* label){namespace A=Design::Address;if(sideChip)return 2*SideChip::pad+SideChip::icon+SideChip::gap+TextWidth(label,SideChip::font,false,false,0);return A::chipPadLeft+Design::Size::icon+Design::Space::xs+TextWidth(label,Design::Type::label.size,true,false,Design::Type::label.tracking)+A::chipPadRight;}
     // Hit/tooltip box of the indicator: the icon slot, or the whole chip. None while editing.
-    D2D1_RECT_F IndicatorBox(){if(addressEditing||address.security==AddressBar::Security::Empty)return {};auto box=AddressSlot();const wchar_t* chip=address.chip();
+    D2D1_RECT_F IndicatorBox(){if(addressEditing||address.security==AddressBar::Security::Empty)return {};if(address.security==AddressBar::Security::Local)return LocalPillBox();auto box=AddressSlot();const wchar_t* chip=address.chip();
         if(*chip&&sideChip){const float cy=AddressCenter(),l=bar.left+sideChipInset;return {l,cy-SideChip::height/2,l+ChipWidth(chip),cy+SideChip::height/2};}
         if(*chip){box.right=box.left+ChipWidth(chip);}return box;}
     // #127 side panel layouts (Paper « Annotation · 1 à 7 (validées) » 1ZTU-0 / 1ZU8-0): the « Non sécurisé » pill is 20 high,
@@ -937,6 +938,24 @@ public:
     // field (10 in the compact bar's), then 6, the 1 x 10 divider, 6, the address.
     struct SideChip{static constexpr float height=20,pad=5,icon=14,gap=4,font=13,text=.7f,divider=6,columnInset=6;};
     bool sideChip=false;float sideChipInset=0;
+    // #127 « Local » pill (Design::Address::LocalPill, AddressBar::Security::Local): its width and its box in the field
+    // (6 after the field's edge, 20 high, centred).
+    float LocalPillWidth(){namespace A=Design::Address;return A::localPad+A::localIcon+A::localGap+std::ceil(TextWidth(TR(address_local),A::localText))+A::localPad;}   // whole DIP, as Paper's 59
+    D2D1_RECT_F LocalPillBox(){namespace A=Design::Address;const float c=AddressCenter(),l=bar.left+(sideChip?sideChipInset:A::localLead);return {l,c-A::localHeight/2,l+LocalPillWidth(),c+A::localHeight/2};}
+    // The profile's ink, as the profile button shows it (its target colour); without a profile button, the neutral grey.
+    ProfileColor::Rgb8 LocalInk()const{const auto& b=profileButton;if(!b.shown)return ProfileColor::Neutral();
+        auto byte=[](float v){return static_cast<std::uint8_t>(std::lround(std::clamp(v,0.f,1.f)*255));};return {byte(b.ink.r),byte(b.ink.g),byte(b.ink.b)};}
+    static D2D1_COLOR_F Solid(ProfileColor::Rgb8 c){return D2D1::ColorF(c.r/255.f,c.g/255.f,c.b/255.f,1);}
+    // The pill in `box` with one colour set: LocalPill::For(LocalInk(),true) in the top bar's #292929 field (DrawAddress);
+    // #127's compact bar (no field, on #171717) calls it with LocalPill::For(LocalInk(),false) and draws its divider in
+    // that set's `divider`.
+    void DrawLocalPill(D2D1_RECT_F box,bool hover,const LocalPill::Colors& c){
+        namespace A=Design::Address;const float cy=(box.top+box.bottom)/2;
+        FillBox(box,A::localRadius,Solid(hover?c.hover:c.plate));
+        const D2D1_RECT_F glyph{box.left+A::localPad,cy-A::localIcon/2,box.left+A::localPad+A::localIcon,cy+A::localIcon/2};
+        PathGlyph(A::monitorPath,glyph,A::localIcon,Solid(c.ink));
+        ink=Solid(c.ink);Text(TR(address_local),{glyph.right+A::localGap,cy-16,box.right,cy+16},A::localText,1);ink=D2D1::ColorF(1,1,1,1);
+    }
     // Pending permission request (Paper B01 « Puce permission »): set by the host while the
     // request's popover is open for the active tab, cleared with it. Glyphs are SiteRequest::Path
     // strings (the popover's own), the tip names the request for the tooltip and UI Automation.
@@ -948,7 +967,7 @@ public:
     float requestMix=1,requestAlpha=1,requestShift=-1;bool requestLive=true;
     D2D1_RECT_F request{};
     // Chip box: 2 DIP after the security slot (or its « Non sécurisé » plate). None while editing.
-    D2D1_RECT_F RequestBox(){if(requestGlyphs.empty())return {};const auto i=IndicatorBox();if(i.right<=i.left)return {};namespace L=SiteRequest::Layout;const float c=AddressCenter(),l=i.right+L::lead;return {l,c-L::height/2,l+SiteRequest::ChipWidth(requestGlyphs.size(),requestState),c+L::height/2};}
+    D2D1_RECT_F RequestBox(){if(requestGlyphs.empty())return {};const auto i=IndicatorBox();if(i.right<=i.left)return {};namespace L=SiteRequest::Layout;const auto pill=VaultPillBox();const float c=AddressCenter(),l=pill.right>pill.left?pill.right+VaultPillLayout::requestGap:i.right+L::lead;return {l,c-L::height/2,l+SiteRequest::ChipWidth(requestGlyphs.size(),requestState),c+L::height/2};}
     std::map<const char*,ID2D1PathGeometry*> pathGlyphs; // factory resources: survive target loss
     void DropPathGlyphs(){for(auto& g:pathGlyphs)if(g.second)g.second->Release();pathGlyphs.clear();}
     void PathGlyph(const char* d,D2D1_RECT_F box,float size,D2D1_COLOR_F color){
@@ -980,14 +999,31 @@ public:
         if(m<1&&requestFrom!=requestState)DrawChipState(requestFrom,box,a*(1-m));
         DrawChipState(requestState,box,a*(requestFrom!=requestState?m:1.f));}
     D2D1_COLOR_F DangerColor(float a=1)const{return D2D1::ColorF(Design::Danger::r,Design::Danger::g,Design::Danger::b,a);}
-    // B03 native key control (no icon asset yet: a drawn key; final glyph from the Paper writer). Ghost button.
-    bool vaultKey=false;static constexpr int VaultKeyId=906;   // not a character id: 'W' is Ctrl+W (close tab)
+    // B03 native key control, #121 point 4 variant C (Paper « Clé dans la barre d'adresse · A / B / C », C chosen by the
+    // owner): a pill right after the padlock with the number of saved accounts, the B01 pill's look (get_jsx 1MI5-0):
+    // #FFFFFF14, radius 4, height 24, padding 6 / 7, gap 4, key 14 #FFFFFFCC, count Inter 13/16 Medium #FFFFFFCC; 2 DIP
+    // after the padlock slot, the URL 8 DIP after it (4 group padding + 4 gap). It is chrome (a page cannot draw here,
+    // review P15); what it opens and its arming are unchanged (review §5). States (board « Listes sous le champ + bulle ·
+    // états », 1OE3-0): hovered, #FFFFFF24 with the key and the number in white (the same outline key, Phosphor Bold:
+    // owner decision 24 November); with a B01 request pill,
+    // the key first, the request pill 4 DIP after it (margin 2 + gap 2).
+    bool vaultKey=false;int vaultKeyCount=0;static constexpr int VaultKeyId=906;   // not a character id: 'W' is Ctrl+W (close tab)
+    static constexpr const char* VaultKeyGlyph="M160,12A84.09,84.09,0,0,0,79.43,119.53L23.51,175.51A12,12,0,0,0,20,184v40a12,12,0,0,0,12,12H72a12,12,0,0,0,12-12V212H96a12,12,0,0,0,12-12V188h12a12,12,0,0,0,8.49-3.51l7.93-7.94A84,84,0,1,0,160,12Zm0,144a59.66,59.66,0,0,1-24.43-5.18,12,12,0,0,0-13.48,2.45L115,164H96a12,12,0,0,0-12,12v12H72a12,12,0,0,0-12,12v12H44V189l58.73-58.73a12,12,0,0,0,2.45-13.48A60,60,0,1,1,160,156Zm36-76a16,16,0,1,1-16-16A16,16,0,0,1,196,80Z";
+    struct VaultPillLayout{static constexpr float lead=2,height=24,radius=4,padLeft=6,padRight=7,icon=14,gap=4,textSize=13,trail=8,requestGap=4,plate=0x14/255.f,hoverPlate=0x24/255.f,ink=0xCC/255.f,hoverInk=1;};
+    std::wstring VaultKeyCountText()const{return std::to_wstring(std::max(1,vaultKeyCount));}
+    // Shown whenever the host says so (VaultKeyVisible), as the key was before #121: also after a leading chip (« Non
+    // sécurisé » on a page whose certificate error was accepted, #127 « Local » on a project of this computer), right after
+    // its plate (2 DIP, as after the padlock; not drawn by a board next to « Local »). Hidden only while the address is
+    // edited (the EDIT covers that lane; the indicator is gone too).
+    D2D1_RECT_F VaultPillBox(){using P=VaultPillLayout;if(!vaultKey||addressEditing||address.security==AddressBar::Security::Empty)return {};const auto i=IndicatorBox();if(i.right<=i.left)return {};
+        const float c=AddressCenter(),l=i.right+P::lead,w=P::padLeft+P::icon+P::gap+TextWidth(VaultKeyCountText(),P::textSize,true)+P::padRight;return {l,c-P::height/2,l+w,c+P::height/2};}
     void DrawVaultKey(D2D1_RECT_F box,float hover,bool focused){
-        if(hover>0)FillBox(box,Design::Radius::button,D2D1::ColorF(1,1,1,.06f*std::clamp(hover,0.f,1.f)));
-        if(focused)FocusRing(box,Design::Radius::button);
-        const float cx=(box.left+box.right)/2,cy=(box.top+box.bottom)/2;brush->SetColor(D2D1::ColorF(1,1,1,.8f));
-        target->DrawEllipse(D2D1::Ellipse({cx-3.5f,cy},3.5f,3.5f),brush,1.5f);
-        target->DrawLine({cx,cy},{cx+7,cy},brush,1.5f);target->DrawLine({cx+5,cy},{cx+5,cy+3},brush,1.5f);target->DrawLine({cx+7,cy},{cx+7,cy+2.5f},brush,1.5f);
+        using P=VaultPillLayout;const float h=std::clamp(hover,0.f,1.f),ink=P::ink+(P::hoverInk-P::ink)*h;
+        FillBox(box,P::radius,D2D1::ColorF(1,1,1,P::plate+(P::hoverPlate-P::plate)*h));
+        if(focused)FocusRing(box,P::radius);
+        const float cy=(box.top+box.bottom)/2,gx=box.left+P::padLeft;
+        PathGlyph(VaultKeyGlyph,{gx,cy-P::icon/2,gx+P::icon,cy+P::icon/2},P::icon,D2D1::ColorF(1,1,1,ink));
+        Text(VaultKeyCountText(),{gx+P::icon+P::gap,box.top,box.right,box.bottom},P::textSize,ink,false,true,0);
     }
     // Profile button (region 900, Paper p-I-0 P01): the profile's Fill glyph on a plate of its ink.
     // `open`: the profile menu is showing (pressed look held). Private windows leave it off.
@@ -1065,12 +1101,20 @@ public:
         namespace A=Design::Address;using AddressBar::Security;using AddressBar::Tone;
         const auto slot=AddressSlot();const float right=std::min(edit.right,addressTextRight),cy=AddressCenter();
         const D2D1_RECT_F line{0,bar.top,0,bar.bottom};
-        if(editing){if(!DrawSiteImage(editFavicon,slot))Icon(editIcon?editIcon:address.icon(),slot,addressGlyph,addressGlyphOpacity);return;}
+        if(editing){if(!DrawSiteImage(editFavicon,slot)){if(!editIcon&&address.security==Security::Local)PathGlyph(A::monitorPath,slot,sidebar?addressGlyph:A::localIcon,D2D1::ColorF(1,1,1,addressGlyphOpacity));else Icon(editIcon?editIcon:address.icon(),slot,addressGlyph,addressGlyphOpacity);}return;}
         if(address.security==Security::Empty){Icon(L"search",slot,addressGlyph,addressGlyphOpacity);
             Text(TR(chrome_address_placeholder),{bar.left+addressTextInset,line.top,right,line.bottom},addressFont,Design::Text::address,false,Design::Type::address.medium,AddressTracking());return;}
         const bool danger=address.security==Security::CertificateError;
         float x=bar.left+addressTextInset;
-        if(const wchar_t* chip=address.chip();*chip){
+        if(address.security==Security::Local){
+            // Paper (« Barre du haut »; #127 « Adresse · pastille « Local » » 1ZWP-0: the column's field the same, the compact bar
+            // on #171717 its « no field » colours): pill in the profile's colours, 6, the 1 × 10 divider, 6, the address.
+            const auto pill=LocalPillBox();const auto c=LocalPill::For(LocalInk(),!sidebar||addressHostOnly);DrawLocalPill(pill,indicatorHover,c);
+            float edge=pill.right;{const auto key=VaultPillBox();if(key.right>key.left)edge=std::ceil(key.right);}   // #121: the key pill follows « Local » (drawn with the regions), the divider after it, on a whole DIP as after « Local »
+            if(request.right>request.left){DrawRequestChip(request);edge=request.right;}
+            const float d=edge+A::localDivider;brush->SetColor(Solid(c.divider));target->FillRectangle(D2D1::RectF(d,cy-5,d+1,cy+5),brush);
+            x=d+1+A::localDivider;
+        }else if(const wchar_t* chip=address.chip();*chip){
             D2D1_RECT_F plate{slot.left,slot.top,slot.left+ChipWidth(chip),slot.bottom};if(sideChip)plate=IndicatorBox();
             const float lift=indicatorHover?.04f:0;
             FillBox(plate,A::chipRadius,danger?DangerColor(Design::Danger::plate+lift):D2D1::ColorF(1,1,1,A::chipPlate+lift));
@@ -1081,14 +1125,18 @@ public:
             if(sideChip)Text(chip,{glyph.right+SideChip::gap,line.top,plate.right,line.bottom},SideChip::font,danger?1.f:SideChip::text,false,false,0);
             else Text(chip,{glyph.right+Design::Space::xs,line.top,plate.right,line.bottom},Design::Type::label.size,danger?1.f:A::secondary,false,true,Design::Type::label.tracking);
             ink=D2D1::ColorF(1,1,1,1);
-            float edge=plate.right;if(request.right>request.left){DrawRequestChip(request);edge=request.right;}
+            float edge=plate.right;{const auto pill=VaultPillBox();if(pill.right>pill.left)edge=std::ceil(pill.right);}   // #121: the key pill follows the chip (drawn with the regions); divider on a whole DIP
+            if(request.right>request.left){DrawRequestChip(request);edge=request.right;}
             const float gap=sideChip?SideChip::divider:A::divider,d=edge+gap;Color(1,.2f);target->FillRectangle(D2D1::RectF(d,cy-5,d+1,cy+5),brush);
             x=d+1+gap;
         }else{
             if(indicatorHover)FillBox(slot,A::chipRadius,D2D1::ColorF(1,1,1,A::chipPlate));
             Icon(address.icon(),slot,addressGlyph,addressGlyphOpacity);
             // B01: lock (50 %) stays in its slot; the request chip follows, the URL moves past it.
-            if(request.right>request.left){DrawRequestChip(request);x=requestShift>=0?bar.left+addressTextInset+requestShift:request.right+SiteRequest::Layout::trail+Design::Space::xs;}
+            // #121 C: the key pill comes first (drawn with the regions), the request chip after it.
+            const auto pill=VaultPillBox();const float pillShift=pill.right>pill.left?pill.right-pill.left+VaultPillLayout::requestGap:0;
+            if(pill.right>pill.left)x=pill.right+VaultPillLayout::trail;
+            if(request.right>request.left){DrawRequestChip(request);x=requestShift>=0?bar.left+addressTextInset+pillShift+requestShift:request.right+SiteRequest::Layout::trail+Design::Space::xs;}
         }
         // Runs share one baseline; the overflowing tail is clipped under a fade, never ellipsised.
         target->PushAxisAlignedClip(D2D1::RectF(x,line.top,right,line.bottom),D2D1_ANTIALIAS_MODE_ALIASED);
@@ -1667,12 +1715,12 @@ public:
         regions.push_back({'m',{width-118,4,width-86,36},TR(chrome_tip_minimize)});regions.push_back({'M',{width-78,4,width-46,36},TR(chrome_tip_maximize)});regions.push_back({'X',{width-38,4,width-6,36},TR(chrome_tip_close_window)});
         {namespace T=Design::Toolbar;regions.push_back({'B',{T::backLeft,44,T::backRight,76},TR(chrome_tip_back)});regions.push_back({'F',{T::forwardLeft,44,T::forwardRight,76},TR(chrome_tip_forward)});regions.push_back({'R',{T::reloadLeft,44,T::reloadRight,76},navigationLoading?TR(chrome_tip_stop):TR(chrome_tip_reload)});bar={T::addressLeft,44,width-(annotateShown?AnnotateRight()+24+Design::Space::controlGap:audioShown?AudioLeft+Design::Space::controlGap:AudioRight),76};}edit={bar.left+Design::Address::textInset,44,bar.right-70,76};
         indicator=IndicatorBox();if(indicator.right>indicator.left)regions.push_back({'I',indicator,address.tip(),false});
+        // B03 (vault, review §5), #121 C: the key pill right after the padlock, only when the host says so.
+        {const auto pill=VaultPillBox();if(pill.right>pill.left)regions.push_back({VaultKeyId,pill,TR(chrome_tip_fill_password)});}
         request=RequestBox();if(request.right>request.left&&requestLive)regions.push_back({'Q',request,requestTip.c_str(),false});
         // Field actions, right to left 8 DIP apart (Paper): star, copy link. Reload/Stop lives
         // only in the standalone toolbar button; the field text runs to 10 DIP before Copy.
-        // B03 (vault, review §5): « Remplir un mot de passe enregistré », left of Copy, only when the host says so.
-        regions.push_back({'L',{bar.left,44,bar.right-(vaultKey?96.f:64.f),76},TR(chrome_tip_address)});
-        if(vaultKey){regions.push_back({VaultKeyId,{bar.right-92,48,bar.right-68,72},TR(chrome_tip_fill_password)});}
+        regions.push_back({'L',{bar.left,44,bar.right-64.f,76},TR(chrome_tip_address)});
         regions.push_back({'C',{bar.right-60,48,bar.right-36,72},TR(chrome_tip_copy_link)});
         regions.push_back({'K',{bar.right-28,48,bar.right-4,72},starred?TR(chrome_tip_edit_bookmark):TR(chrome_tip_add_bookmark)});
         if(annotateShown)regions.push_back({'N',{width-AnnotateRight()-24,48,width-AnnotateRight(),72},AnnotateTip()});

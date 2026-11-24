@@ -79,6 +79,7 @@
 #include "trace-erase.h"
 #include "log-privacy.h"
 #include "password-vault.h"
+#include "form-memory.h"   // #121: typed-info store, the forms world, placement (design/security-review-autofill-under-field.md)
 #include "profiles.h"   // Profiles::ValidId for the private window command line (review R-2)
 #ifdef BROWSER_E2E_FIXTURE_HOOK
 // TEST HOST ONLY (tests/e2e/mtls_host.cpp): the fixture pin. The release and dev browser never define
@@ -275,7 +276,7 @@ void RefreshTools();
 struct ICoreWebView2ContextMenuRequestedEventArgs; HRESULT PageContextMenu(const std::shared_ptr<Tab>& tab,ICoreWebView2ContextMenuRequestedEventArgs* args);
 void ExtraCommand(int cmd);
 // Paper « Éléments & popups » integration (src/elements-integration.h, included below).
-void ElementsTabChanged(); void ElementsTabClosed(const std::shared_ptr<Tab>& t); bool IsSandboxUri(const std::wstring& uri);
+void ElementsTabChanged(); void ElementsTabClosed(const std::shared_ptr<Tab>& t); void FormsTabClosed(const std::shared_ptr<Tab>& t); bool IsSandboxUri(const std::wstring& uri);
 // B01 address-bar request chip (elements-integration.h): derived from the open permission popover.
 // B07: a download the engine blocked (malicious / security check / policy).
 void ElementsDangerousDownload(int id,const std::wstring& path,const std::wstring& uri,COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason);
@@ -416,8 +417,8 @@ void SyncAddressDisplay(){auto t=Active();chrome.address=t&&!t->home?AddressBar:
 // Stable tab serials let the strip animate opens/closes and the selection fade
 // without index reuse transferring one tab's visual state to its neighbour.
 void SyncTabKeys(){chrome.tabKeys.clear();for(auto& t:pages)chrome.tabKeys.push_back(t->serial);}
-void SyncVaultKey();
-void BuildChrome(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */chrome.privateChip=false; /* user polish: the incognito control in the profile slot replaces the « Privée » chip (privacy stays in its name, tooltip and title) */SyncVaultKey(); /* decision 7: the chip is the private indication; P stays a normal command */SyncAddressDisplay();SyncBookmarkChrome();SyncTabKeys();auto titles=Titles();auto now=NativeChrome::Motion::Now();chrome.contentOnly=InFullscreen(); /* fullscreen: the page alone */SidebarPrepare();chrome.Build((int)pages.size(),current,&titles,now);SyncSplitDecor();if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(now);}}
+void SyncVaultKey(); void FormsSync(); void FormsHideAll();
+void BuildChrome(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */FormsSync(); /* #121: the list and the bubble belong to one tab, document and place (P8) */chrome.privateChip=false; /* user polish: the incognito control in the profile slot replaces the « Privée » chip (privacy stays in its name, tooltip and title) */SyncVaultKey(); /* decision 7: the chip is the private indication; P stays a normal command */SyncAddressDisplay();SyncBookmarkChrome();SyncTabKeys();auto titles=Titles();auto now=NativeChrome::Motion::Now();chrome.contentOnly=InFullscreen(); /* fullscreen: the page alone */SidebarPrepare();chrome.Build((int)pages.size(),current,&titles,now);SyncSplitDecor();if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(now);}}
 // After a pointer close the strip keeps its tab width until the pointer leaves
 // it, so repeated clicks keep landing on close buttons.
 void LockTabWidth(){chrome.lockedTab=chrome.strip.tab;}
@@ -1232,7 +1233,7 @@ void CloseAt(int index,CloseReason why=CloseReason::User){if(halted||index<0||in
     if(why==CloseReason::User&&pages.size()==1&&settings.closeWithLastTab&&!smoke){Log(L"TABS last tab closed: closing the window");PostMessageW(window,WM_CLOSE,0,0);return;}
     CancelTabDrag();const bool active=index==current;int next=NativeChrome::SelectionAfterClose((int)pages.size(),current,index);
     {auto closing=pages[index];if(active&&closing->group){auto m=Members(closing->group);auto it=std::find(m.begin(),m.end(),closing);std::shared_ptr<Tab> heir=it!=m.end()&&it+1!=m.end()?*(it+1):it!=m.begin()&&it!=m.end()?*(it-1):nullptr;if(heir){const int j=TabIndexOf(heir);next=j>index?j-1:j;}}}
-    if(!WorkspaceParked()){motion.ClearInteractions();hover=pressed=keyboardFocus=0;}auto t=pages[index];if(why!=CloseReason::Placeholder&&!t->home&&!t->uri.empty()){if(closedTabs.size()==25)closedTabs.erase(closedTabs.begin());closedTabs.push_back({t->uri,t->title,index});}ElementsTabClosed(t);t->closed=true;t->favicon.Close();if(t->controller.p&&!KeepControllerForDownloads(t))t->controller->Close();pages.erase(pages.begin()+index);DissolveSmallGroups();RefreshAudio();
+    if(!WorkspaceParked()){motion.ClearInteractions();hover=pressed=keyboardFocus=0;}auto t=pages[index];if(why!=CloseReason::Placeholder&&!t->home&&!t->uri.empty()){if(closedTabs.size()==25)closedTabs.erase(closedTabs.begin());closedTabs.push_back({t->uri,t->title,index});}ElementsTabClosed(t);FormsTabClosed(t);t->closed=true;t->favicon.Close();if(t->controller.p&&!KeepControllerForDownloads(t))t->controller->Close();pages.erase(pages.begin()+index);DissolveSmallGroups();RefreshAudio();
     if(pages.empty()){current=-1;NewTab(NewTabTarget());}else if(active)Select(next);else{current=next;motion.SelectTab((int)pages[current]->serial,NativeChrome::Motion::Now());ApplyPages();Update();}
 }
 enum ShortcutCommand { FocusChrome=3000, FindPage, PrintActive, FocusChromeBack, MoveTabLeft='{', MoveTabRight='}', SelectTabBase=3010 };
@@ -2010,8 +2011,9 @@ bool WipeLocalTraceFiles(){
     {bool erased=true;{std::lock_guard<std::mutex> guard(logLock);if(!logFile.empty())erased=LogPrivacy::Erase(logFile);}if(!erased)Log(L"CLEAR log file busy: not deleted");}
     return ok;
 }
+void FormsWipe();   // src/forms-integration.h: the e-mails typed and sent (#121 P13), erased with the engine's form data
 void ClearLocalTraces(){
-    closedTabs.clear();history.Clear();ClearSiteIcons();if(!WorkspaceParked())historyDrawer.Changed();
+    FormsWipe();closedTabs.clear();history.Clear();ClearSiteIcons();if(!WorkspaceParked())historyDrawer.Changed();
     downloads.erase(std::remove_if(downloads.begin(),downloads.end(),[](const DL::Item& d){return d.state!=DL::State::InProgress&&d.state!=DL::State::Paused;}),downloads.end());
     PruneDownloadOps();   // this profile's operations only
     if(!WipeLocalTraceFiles())Log(L"CLEAR local traces: NOT fully erased on disk");DownloadsChanged();
@@ -2057,7 +2059,7 @@ void ApplyPrivacySettings(){
             if(!formsLogged){Log(L"SETTINGS ICoreWebView2Settings4 unavailable: password and autofill switches ignored");formsLogged=true;}continue;}
         // Review P1: a private window's engine never saves passwords or form data (Chromium would keep
         // them in the on-disk private profile).
-        HRESULT hr=s4->put_IsPasswordAutosaveEnabled(settings.passwords&&!privateWindow&&!Vault::Active()?TRUE:FALSE); /* new saves go to our vault only once it is active (decision 1); older engine passwords keep filling */if(SUCCEEDED(hr))hr=s4->put_IsGeneralAutofillEnabled(settings.autofill&&!privateWindow?TRUE:FALSE);
+        HRESULT hr=s4->put_IsPasswordAutosaveEnabled(settings.passwords&&!privateWindow&&!Vault::Active()?TRUE:FALSE); /* new saves go to our vault only once it is active (decision 1); older engine passwords keep filling */if(SUCCEEDED(hr))hr=s4->put_IsGeneralAutofillEnabled(Forms::EngineAutofill&&settings.autofill&&!privateWindow?TRUE:FALSE); /* #121 P13: our list replaces the engine's (never two lists); its saved form data is kept, never deleted */
         if(FAILED(hr)&&!formsLogged){Log(L"SETTINGS password/autofill settings failed "+HrText(hr));formsLogged=true;}
         {static int lastAutosave=-1;BOOL on=FALSE;   // review R-5: what the ENGINE reports (read back), logged on change only
          if(SUCCEEDED(s4->get_IsPasswordAutosaveEnabled(&on))&&(on?1:0)!=lastAutosave){lastAutosave=on?1:0;Log(std::wstring(L"SETTINGS engine password autosave ")+(on?L"on":L"off")+L" (read back from the engine)");}}
@@ -2371,6 +2373,7 @@ const std::wstring& PopupQa();
 void InjectAudioScript(const std::shared_ptr<Tab>& t,const PopupHost::RequestPtr& popup); // audio-integration.h
 #include "elements-integration.h"
 #include "tabs-position-icon.h"
+#include "forms-integration.h"   // #121: our list under a page field, our validation bubble (design/security-review-autofill-under-field.md)
 void SyncLatch();
 #include "audio-integration.h"
 #include "profiles-integration.h"
@@ -2511,6 +2514,12 @@ void ShowSettings(){
     settingsDrawer.Show();SyncUpdateToastReserve();
 }
 void ToggleSettings(){if(settingsDrawer.Open()){settingsDrawer.Hide(true,true);return;}ShowSettings();}
+// #121: « Gérer la saisie automatique » opens Réglages on its section.
+void ShowSettingsAt(NativeChrome::SettingsUI::View v){
+    if(!settingsDrawer.Window())return;
+    CloseAudioDrawer();CloseDownloadSurfaces();historyDrawer.Hide(false,true);bookmarksDrawer.Hide(false,true);chrome.latched='S';InvalidateChrome();
+    settingsDrawer.Show(v);SyncUpdateToastReserve();
+}
 void CreateSettingsPanel(){
     NativeChrome::SettingsUI::Drawer::Hooks hooks;
     hooks.schedule=[](NativeChrome::Motion::Time now){ScheduleMotion(now);};
@@ -5231,7 +5240,7 @@ case WM_DPICHANGED:{contentTransition.Cancel();auto r=(RECT*)l;SetWindowPos(h,nu
     LayoutUpdateToast();
 #endif
     return 0;}
-case WM_SIZE:HideSuggestions();motionMinimized=w==SIZE_MINIMIZED;contentTransition.Cancel(); /* resize / minimise / maximise */AnnotationWindowState();if(!motionMinimized){Layout();audioPanel.OwnerChanged();downloadDrawer.Reposition();settingsDrawer.Reposition();historyDrawer.Reposition();bookmarksDrawer.Reposition();bookmarkToast.Reposition();RepositionElementSurfaces();}else{CloseDownloadSurfaces(false);audioPanel.Close(false);settingsDrawer.Hide(false,false);historyDrawer.Hide(false,false);bookmarksDrawer.Hide(false,false);bookmarkPopover.Hide();bookmarkToast.HideNow();}ScheduleMotion(NativeChrome::Motion::Now());
+case WM_SIZE:HideSuggestions();FormsHideAll();motionMinimized=w==SIZE_MINIMIZED;contentTransition.Cancel(); /* resize / minimise / maximise */AnnotationWindowState();if(!motionMinimized){Layout();audioPanel.OwnerChanged();downloadDrawer.Reposition();settingsDrawer.Reposition();historyDrawer.Reposition();bookmarksDrawer.Reposition();bookmarkToast.Reposition();RepositionElementSurfaces();}else{CloseDownloadSurfaces(false);audioPanel.Close(false);settingsDrawer.Hide(false,false);historyDrawer.Hide(false,false);bookmarksDrawer.Hide(false,false);bookmarkPopover.Hide();bookmarkToast.HideNow();}ScheduleMotion(NativeChrome::Motion::Now());
 #ifdef BROWSER_UPDATES
     // Minimised: the toast stops its clock/timer (zero wakes); otherwise SetOwnerVisible(true)
     // re-lays the card out (bottom-left anchor, drawer reserve kept).
@@ -5239,7 +5248,7 @@ case WM_SIZE:HideSuggestions();motionMinimized=w==SIZE_MINIMIZED;contentTransiti
 #endif
     return 0;
 case WM_PARENTNOTIFY:{const UINT e=LOWORD(w);if(e==WM_LBUTTONDOWN||e==WM_RBUTTONDOWN||e==WM_MBUTTONDOWN||e==WM_XBUTTONDOWN||e==0x0246 /* WM_POINTERDOWN */){ContentTransitionInput(L"click");if(chrome.sidebarPopover)SidebarPopover(false);}break;}
-case WM_MOVE:contentTransition.Cancel();RepositionElementSurfaces();HideSuggestions();SyncStatusBubble();audioPanel.OwnerChanged();downloadDrawer.Reposition();settingsDrawer.Reposition();historyDrawer.Reposition();bookmarksDrawer.Reposition();bookmarkToast.Reposition();if(bookmarkPopover.Visible())bookmarkPopover.Hide();
+case WM_MOVE:contentTransition.Cancel();RepositionElementSurfaces();HideSuggestions();FormsHideAll();SyncStatusBubble();audioPanel.OwnerChanged();downloadDrawer.Reposition();settingsDrawer.Reposition();historyDrawer.Reposition();bookmarksDrawer.Reposition();bookmarkToast.Reposition();if(bookmarkPopover.Visible())bookmarkPopover.Hide();
 #ifdef BROWSER_UPDATES
     LayoutUpdateToast();
 #endif
@@ -5284,7 +5293,7 @@ case WM_DROPFILES:{HDROP drop=(HDROP)w;const UINT n=DragQueryFileW(drop,0xFFFFFF
     DragFinish(drop);if(opened){Select((int)pages.size()-1);Log(L"OPEN dropped files: "+std::to_wstring(opened));}return 0;}
 case WM_ACTIVATE:if(LOWORD(w)!=WA_INACTIVE){vaultKeyShownAt=GetTickCount64();PublishProfileWindow();settingsDrawer.RefreshDefaultBrowser();}   /* review N6: the key re-arms when the window is activated */
     if(chrome.floating)FocusEvaluate(); /* Mode Focus: the pointer poll runs while the window is in front (or the panel still shows) */if(chrome.sideHidden)SideFocusEvaluate(); /* #127: the same for the column's left band */
-    if(LOWORD(w)==WA_INACTIVE){CancelTabDrag(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(0,0);}else if(!smoke&&!halted)Defer([]{if(!bandDrag.active)SaveBookmarks();if(sessionReady){SaveHistory();SaveDownloads();if(!WorkspaceParked())historyDrawer.Changed();DownloadsChanged();}}); /* pick up the other windows' changes, a wipe included (S5) */return 0;
+    if(LOWORD(w)==WA_INACTIVE){FormsHideAll();CancelTabDrag(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(0,0);}else if(!smoke&&!halted)Defer([]{if(!bandDrag.active)SaveBookmarks();if(sessionReady){SaveHistory();SaveDownloads();if(!WorkspaceParked())historyDrawer.Changed();DownloadsChanged();}}); /* pick up the other windows' changes, a wipe included (S5) */return 0;
 case WM_SHOWWINDOW:AnnotationWindowState();break; // V3-B: the annotation band's wave stops in the background (WM_ACTIVATEAPP: below)
 case WM_DISPLAYCHANGE:Layout();break;
 case WM_SETTINGCHANGE:ApplyReducedMotion();return 0; // Windows' switch, OR'd with the app's own

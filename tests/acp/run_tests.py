@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build and run the integrated chat's agent tests: the ACP client and the agent runtime.
 
-    python -I tests/acp/run_tests.py [--quick] [--real] [--real-only]
+    python -I tests/acp/run_tests.py [--quick] [--no-console] [--real] [--real-only]
 
   acp_client_test      pure helpers (error classification, environment block, quoting), then end to end against the
                        fake agent (tests/acp/fake_agent.cpp): start, chunks, thoughts, tools with diff, permission,
@@ -12,6 +12,9 @@
                        terminal sign-in; then REAL downloads of the pinned Node.js and adapters from nodejs.org and
                        registry.npmjs.org into a temporary folder, fingerprints checked, cache, refusals
   --quick              skip the real downloads (about 120 MB)
+  --no-console         skip the ONE test that opens a visible console window (the terminal sign-in of
+                       agent_runtime_test): for runs outside the night round. The run then says
+                       « acp: 1 test skipped (--no-console) »; tests/annotation-general replays it at night
   --real               also probe the REAL adapters with the user's own claude / codex CLI: initialize + session/new in
                        an empty temporary folder, never session/prompt (nothing is consumed), once as the user is and
                        once with the CLI's configuration redirected to an empty folder (what "signed out" looks like).
@@ -315,6 +318,7 @@ def leftover_processes():
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--quick", action="store_true")
+    parser.add_argument("--no-console", action="store_true")
     parser.add_argument("--real", action="store_true")
     parser.add_argument("--real-only", action="store_true")
     args = parser.parse_args()
@@ -335,7 +339,10 @@ def main():
             make_fixtures(TMP / "fixtures")
             run([OUT / "acp_client_test.exe", OUT / "fake-acp-agent.exe", TMP / "client"], "acp_client_test", env=env)
             cmd = [OUT / "agent_runtime_test.exe", OUT / "fake-acp-agent.exe", OUT / "fake-cli.exe", TMP / "runtime", TMP / "fixtures"]
-            run(cmd + ([] if args.quick else ["--network"]), "agent_runtime_test" + (" (no network)" if args.quick else " (with real downloads)"), env=env)
+            run(cmd + ([] if args.quick else ["--network"]) + (["--no-console"] if args.no_console else []),
+                "agent_runtime_test" + (" (no network)" if args.quick else " (with real downloads)") + (" (no console)" if args.no_console else ""), env=env)
+            if args.no_console:
+                print("acp: 1 test skipped (--no-console): the terminal sign-in, which opens a visible console")
         if args.real or args.real_only:
             real_probe(env)
     finally:

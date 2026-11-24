@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Essai du mode Annotation (#125) comme un nouvel utilisateur : l'onboarding, et où « Annoter » marche.
 
-    python sandbox/annotations/try-onboarding.py --app <dossier d'un build> [--keep] [--private] [--welcome] [--english] [--dry-run]
+    python sandbox/annotations/try-onboarding.py --app <dossier d'un build> [--keep] [--private] [--welcome] [--english] [--local-pill] [--dry-run]
 
 1. copie le build dans un dossier temporaire neuf (%TEMP%\\browser-essai-onboarding-annotation\\app) : profil, réglages et
    session vides, donc un nouvel utilisateur. --keep garde la copie de l'essai précédent : l'onboarding, déjà vu ou passé,
@@ -35,6 +35,8 @@ import time
 HERE = pathlib.Path(__file__).resolve().parent
 URL = 'http://127.0.0.1:5173/'
 ONLINE = 'https://example.com/'   # a harmless public page (IANA's example domain): the « site en ligne » case
+ONLINE_HTTP = 'http://example.com/'   # the same page over http: « Non sécurisé » (the --local-pill trial's contrast)
+LOCALHOST = 'http://localhost:5173/'   # the demo page by name: « Local » too
 FILE_PAGE = '''<!doctype html>
 <html lang="fr"><head><meta charset="utf-8"><title>Fichier local — essai</title>
 <style>
@@ -96,6 +98,7 @@ def main() -> int:
     ap.add_argument('--private', action='store_true', help="une fenêtre privée sur la page locale (reprend l'essai précédent s'il existe)")
     ap.add_argument('--welcome', action='store_true', help="comme une nouvelle installation : la fenêtre d'accueil d'abord (son étape « Mode Annotation » propose le tutoriel)")
     ap.add_argument('--english', action='store_true', help='interface en anglais')
+    ap.add_argument('--local-pill', action='store_true', help="essai de la pastille « Local » de l'adresse (#127) : 127.0.0.1, localhost, un fichier, un site en http et en https")
     ap.add_argument('--dry-run', action='store_true', help='tout préparer (copie, pages) sans ouvrir le navigateur (vérification sans écran)')
     ap.add_argument('--layout', choices=('top', 'side', 'compact'), help="#127 : disposition des onglets pour ce lancement (--tab-layout, rien n'est enregistré)")
     ap.add_argument('--name', default='browser-essai-onboarding-annotation', help="dossier de l'essai dans %%TEMP%% (un essai par nom)")
@@ -109,7 +112,7 @@ def main() -> int:
     if not (app / 'browser.exe').is_file():
         print(f'Build introuvable : {app}\\browser.exe', file=sys.stderr)
         return 1
-    home = pathlib.Path(tempfile.gettempdir()) / a.name
+    home = pathlib.Path(tempfile.gettempdir()) / ('browser-essai-pastille-local' if a.local_pill else a.name)
     run, agents, site, files = home / 'app', home / 'agents', home / 'site', home / 'fichier-local'
     keep = a.keep or a.private
     fresh = not keep or not (run / 'browser.exe').is_file()
@@ -133,7 +136,8 @@ def main() -> int:
         page.write_text(FILE_PAGE, encoding='utf-8', newline='\n')
     file_url = page.as_uri()
     if fresh:
-        write_session(run, [URL, file_url, ONLINE])
+        # --local-pill: « Local » on 127.0.0.1 and localhost, « Fichier » on the file, « Non sécurisé » on http, the lock on https.
+        write_session(run, [URL, LOCALHOST, file_url, ONLINE_HTTP, ONLINE] if a.local_pill else [URL, file_url, ONLINE])
     if a.english:
         (run / 'ui-language').write_text('browser-ui-language 1\nlanguage=en\n', encoding='utf-8', newline='\n')   # src/ui-language.h
     prepare_agents(agents)
@@ -163,6 +167,8 @@ def main() -> int:
         print(f'Page locale    : {URL}   (Annoter allumé)')
         print(f'Fichier local  : {file_url}   (Annoter allumé)')
         print(f'Site en ligne  : {ONLINE}   (Annoter éteint)')
+        if a.local_pill:
+            print(f'Pastille « Local » : {URL} et {LOCALHOST} ; « Fichier » : le fichier ; « Non sécurisé » : {ONLINE_HTTP} ; cadenas : {ONLINE}')
         command = [str(run / 'browser.exe')] + (['--private', URL] if a.private else ['--onboarding'] if a.welcome else []) + ([f'--tab-layout={a.layout}'] if a.layout else [])
         if a.dry_run:
             import urllib.request

@@ -106,6 +106,7 @@ def launch():
         except OSError:
             pass
     (app / 'session').write_text('browser-session-2\n0\n1\n' + json.dumps(LANDING) + '\n0\n', encoding='utf-8', newline='\n')
+    C.mark_tutorial_seen(app)   # #125: the tutorial (its veil, its own windows) is not what this suite reads
     shutil.rmtree(C.SITE, ignore_errors=True); shutil.copytree(ROOT / 'sandbox' / 'chat' / 'site', C.SITE)
     for sub in ('AppData/Roaming/Claude', 'AppData/Local', 'home/.codex'):
         (C.AGENTS / sub).mkdir(parents=True, exist_ok=True)
@@ -183,6 +184,15 @@ class Tree:
             n, found = n2, found2
         elif settle:
             check(f'{label}: main window tree whole ({n} >= 90 % of {self.base}, {s} s)', True)
+        if needle and not found:
+            # General test of 24 Nov 2026 (1 read in 25, twice): the tree was whole (283 / 305 elements) but the chat's words were
+            # not in THAT walk — read at once after a wheel while the thread was being drawn again (a turn ending). The same rule
+            # as a short walk: read again 0.5 s later. Still missing = a screen reader loses the chat (FAIL); there again = the
+            # walk crossed the thread while it changed (FindAll is not atomic), noted with what the first read held.
+            time.sleep(0.5); n3, found3, r3, _ = self.main_count(needle)
+            notes.append({'step': label, 'needle': needle, 'first read': r, 'elements': n, 'again after 0.5 s': {'found': found3, 'elements': n3}})
+            print(f'  chat not in this walk ({n} elements): read again 0.5 s later -> {"found" if found3 else "STILL MISSING"} ({n3} elements)', flush=True)
+            found, r = found3, r3
         if needle:
             check(f"{label}: the chat found in the main window's tree (« {needle} »)", found, r)
         if settle:
@@ -196,7 +206,7 @@ class Tree:
         for i in range(rounds):
             wheel_page(700 if i % 2 == 0 else -700)
             self.step(f'{label} {i}', needle, settle=False)
-        check(f'{label}: {rounds} reads right after a wheel, {len(notes) - before} short walk(s), none still short 0.5 s later',
+        check(f'{label}: {rounds} reads right after a wheel, {len(notes) - before} read again (short walk or chat not in the walk), none still wrong 0.5 s later',
               all(r['ok'] for r in results if r['step'].startswith(label)))
 
 

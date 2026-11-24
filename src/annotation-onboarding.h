@@ -25,7 +25,9 @@
 //     6, accent, top radius 3, 12/16 #FFFFFFE6); the mode's crosshair (32) at the pointer; « 1 Cliquez sur « Payer » »
 //     (h 36, radius 18, #171717, padding 8 / 12, gap 8: disc 20 accent « 1 » 11/12 600, 13/16 500 white) at (350, 228).
 //     A3: the button framed (no radius) with « button.btn-primary »; the note (board 6's, 305 wide) at (304, 196) with the
-//     typed text 14/20 #FFFFFFE6 and the caret « | » in the profile's light ink (#0AF4FF on the board).
+//     typed text 14/20 #FFFFFFE6 and the caret « | » in the profile's light ink (#0AF4FF on the board). The note arrives
+//     written (« Rends ce bouton plus large », Val 2026-11-24: « Envoyez la demande »), « Envoyer » on; still editable
+//     (emptied: the hint #FFFFFF99 and « Envoyer » at 32 %).
 //     A4: the button 260 wide; under it the measure (1.5 accent lines, « 160 → 260 » 11/14 600 #007D83 on the board, gap 6,
 //     h 16, 6 below); « Fait » (pill as above, disc with check 12) 12 right of the button.
 //   A5 three rows (1S3K-0 at (120, 84), 480 wide, gap 14): localhost (on), « Fichier  …/boutique/index.html » (on),
@@ -119,6 +121,8 @@ private:
     Motion::Time opened_{}, lastStep_{}, changed_{}, left_{}, grewAt_{};
     Step shown_ = Step::What, from_ = Step::What; bool changing_ = false, entering_ = false, leaving_ = false;
     Part part_ = Part::None; D2D1_POINT_2F pointer_{-100, -100}; bool caretOn_ = true;   // A2's hovered element and the pointer; A3's caret blink
+    bool noteActive_ = false;   // A3: the person clicked or edited the written note (the caret shows from then on)
+    bool NoteActive() const { return noteActive_ || flow_.text() != flow_.suggestion(); }
     double secondsForTest_ = -1;
 
     // ---- small helpers ----
@@ -297,7 +301,7 @@ private:
         if (now == Step::Closed) { Blink(false); Leave(); return; }
         from_ = shown_; shown_ = now; changed_ = Motion::Now(); changing_ = !offscreen_;
         grewAt_ = now == Step::Result ? changed_ : Motion::Time{};
-        focus_ = now == Step::Write ? static_cast<int>(Field) : keyboard_ ? static_cast<int>(Primary) : static_cast<int>(None); hover_ = None; pressed_ = None; part_ = Part::None;
+        focus_ = now == Step::Write ? static_cast<int>(Field) : keyboard_ ? static_cast<int>(Primary) : static_cast<int>(None); hover_ = None; pressed_ = None; part_ = Part::None; noteActive_ = false;
         Blink(now == Step::Write);
         Arrange(); Invalidate(); RequestFrame();
         if (uia_.Attached()) uia_.ChildrenChanged(0);
@@ -324,6 +328,7 @@ private:
     void SetLanguage(I18n::Locale l) {
         if (l == I18n::Current()) return;
         I18n::SetForProcess(l);
+        flow_.Suggest(TR(annotation_onboarding_write_hint));   // A3's written note follows the language unless edited
         if (options_.hooks.language) options_.hooks.language(l);
         if (hwnd_) SetWindowTextW(hwnd_, Title(flow_.step()).c_str());
         Arrange(); Invalidate();
@@ -349,7 +354,7 @@ private:
         case Secondary: if (before == Step::What) flow_.Skip(); else flow_.Back(); break;
         case Primary: flow_.Next(); break;
         case Payer: flow_.Pick(Part::Pay); break;
-        case Field: focus_ = Field; Invalidate(); return;
+        case Field: focus_ = Field; noteActive_ = true; Blink(true); Invalidate(); return;
         case Send: flow_.Send(); break;
         case ClaudeRow: case CodexRow: if (before == Step::Connect && options_.hooks.connect) options_.hooks.connect(id == ClaudeRow ? A::AgentKind::Claude : A::AgentKind::Codex); return;
         case Manual: if (before != Step::Connect) return; manual_ = true; flow_.Skip(); break;
@@ -371,14 +376,14 @@ private:
         if (flow_.step() != Step::Write) return;
         std::wstring t = flow_.text();
         for (wchar_t ch : text) { if (ch == L'\r' || ch == L'\n' || ch == L'\t') ch = L' '; if (ch >= 0x20 && t.size() < MaxNote) t += ch; }
-        const bool could = flow_.CanSend(); flow_.SetText(t); caretOn_ = true; Blink(true);
+        const bool could = flow_.CanSend(); flow_.SetText(t); noteActive_ = true; caretOn_ = true; Blink(true);
         Arrange(); Invalidate();
         if (could != flow_.CanSend() && uia_.Attached()) uia_.ChildrenChanged(500);
     }
     void Erase() {
         if (flow_.step() != Step::Write || flow_.text().empty()) return;
         std::wstring t = flow_.text(); t.pop_back(); if (!t.empty() && IS_HIGH_SURROGATE(t.back())) t.pop_back();
-        flow_.SetText(t); caretOn_ = true; Blink(true); Arrange(); Invalidate();
+        flow_.SetText(t); noteActive_ = true; caretOn_ = true; Blink(true); Arrange(); Invalidate();
     }
     void Paste() {
         if (offscreen_ || !hwnd_ || !OpenClipboard(hwnd_)) return;
@@ -500,11 +505,14 @@ private:
         } else if (s == Step::Write) {
             DrawFrame(PartBox(Part::Pay, left, payW), L"button.btn-primary", 0, alpha);   // i18n-exempt: a CSS selector in the trial
             const float textH = NoteTextHeight();
-            P::DemoNote(*c_, glyphs_, Layout::noteLeft, Layout::noteTop, textH, Accent(), alpha, flow_.CanSend() ? 1.f : K::Token::disabled);
-            const auto caret = K::Col(Tone(0x0AF4FF), (caretOn_ ? 1.f : 0.f) * alpha);
+            // « Envoyer » on: the accent and the 3 ring of the profile's light ink at 35 % (Paper 1S33-0, #0AF4FF59 on the board).
+            const bool on = flow_.CanSend();
+            P::DemoNote(*c_, glyphs_, Layout::noteLeft, Layout::noteTop, textH, Accent(), alpha, on ? 1.f : K::Token::disabled, on ? K::Col(Tone(0x0AF4FF), (0x59 / 255.f) * alpha) : D2D1_COLOR_F{0, 0, 0, 0});
+            // The written note shows no caret (Paper 1S2M-0); it appears once the person edits or clicks the note.
+            const auto caret = K::Col(Tone(0x0AF4FF), (caretOn_ && NoteActive() ? 1.f : 0.f) * alpha);
             std::vector<K::Span> runs;
             if (flow_.text().empty()) { runs.push_back({L"|", caret}); runs.push_back({TR(annotation_onboarding_write_hint), PopupKit::White(.6f * alpha)}); }
-            else { runs.push_back({flow_.text(), PopupKit::White(.9f * alpha)}); runs.push_back({L"|", caret}); }
+            else { runs.push_back({flow_.text(), PopupKit::White(.9f * alpha)}); if (NoteActive()) runs.push_back({L"|", caret}); }
             const auto field = NoteField();
             K::Spans(*c_, runs, {field.left, field.top, field.right, field.top + textH}, {14, 20, 400, 0}, DWRITE_TEXT_ALIGNMENT_LEADING, true);
             if (focus_ == Send && keyboard_) PopupKit::InsetRing(*c_, Rect(Send), 8);
@@ -807,7 +815,7 @@ public:
     bool Open(HINSTANCE instance, HWND owner, const std::wstring& root, RECT ownerClient, Options options) {
         if (open_) return true;
         instance_ = instance; owner_ = owner; root_ = root; options_ = std::move(options); claude_ = options_.claude; codex_ = options_.codex;
-        flow_ = AO::Flow(options_.start); manual_ = silent_ = false; offscreen_ = false; focus_ = hover_ = pressed_ = None; keyboard_ = false; glow_.clear(); part_ = Part::None;
+        flow_ = AO::Flow(options_.start); flow_.Suggest(TR(annotation_onboarding_write_hint)); noteActive_ = false; manual_ = silent_ = false; offscreen_ = false; focus_ = hover_ = pressed_ = None; keyboard_ = false; glow_.clear(); part_ = Part::None;
         if (!PopupKit::Register(instance, L"BrowserAnnotationOnboarding", Proc) || !PopupKit::Register(instance, L"BrowserAnnotationOnboardingVeil", VeilProc)) return false;
         veil_ = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"BrowserAnnotationOnboardingVeil", L"", WS_POPUP, ownerClient.left, ownerClient.top, ownerClient.right - ownerClient.left, ownerClient.bottom - ownerClient.top, owner, nullptr, instance, nullptr);
         if (veil_) SetLayeredWindowAttributes(veil_, 0, 0, LWA_ALPHA);
@@ -852,7 +860,7 @@ public:
     // ---- tests: the same drawing code into an offscreen target, and the events without a window ----
     void SetupForTest(const std::wstring& root, Options options) {
         root_ = root; options_ = std::move(options); claude_ = options_.claude; codex_ = options_.codex; offscreen_ = true; open_ = true;
-        flow_ = AO::Flow(options_.start); manual_ = silent_ = false; shown_ = from_ = flow_.step(); changing_ = leaving_ = false; focus_ = hover_ = pressed_ = None; keyboard_ = false; part_ = Part::None; pointer_ = {-100, -100};
+        flow_ = AO::Flow(options_.start); flow_.Suggest(TR(annotation_onboarding_write_hint)); noteActive_ = false; manual_ = silent_ = false; shown_ = from_ = flow_.step(); changing_ = leaving_ = false; focus_ = hover_ = pressed_ = None; keyboard_ = false; part_ = Part::None; pointer_ = {-100, -100};
         if (flow_.step() == Step::Write) focus_ = Field;
     }
     bool OpenForTest() const { return open_; }
@@ -860,6 +868,7 @@ public:
     bool KeyForTest(WPARAM key) { Arrange(); return Key(key); }
     void TypeForTest(const std::wstring& text) { Arrange(); Type(text); }
     void EraseForTest() { Erase(); }
+    bool NoteActiveForTest() const { return NoteActive(); }   // A3: the caret shows (the note was clicked or edited)
     // A2: the pointer at (x, y) and, when `click`, a click there.
     // `measure`: a text measurer for the parts sized by their text (the title), the window having no target of its own here.
     void PointForTest(float x, float y, bool click, Chrome* measure = nullptr) {

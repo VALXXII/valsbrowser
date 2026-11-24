@@ -118,6 +118,11 @@ def existing_fixtures() -> None:
     import_render.mkdir(parents=True, exist_ok=True)
     fixture('import_dialog_render_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/browser-import/import_dialog_render_test.cpp', 'src/native-lottie.cpp', THORVG,
             *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt', '-ladvapi32'], [ROOT, import_render])
+    # #121: typed-info store, engine import (fixture SQLite), forms world, placement, arming, our list and bubble rendered
+    # offscreen (no window). The Paper comparison of those renders runs in test-form-memory.ps1 (needs Pillow).
+    forms_out = OUT / 'form-memory'; forms_out.mkdir(parents=True, exist_ok=True)
+    fixture('form_memory_test', [*LOOSE, '-Werror', '-municode', '-Isrc', *TVG, 'tests/form_memory_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32', '-ladvapi32'], [ROOT, forms_out])
     bookmarks_evidence = ROOT / 'build/bookmarks-ui-qa'
     bookmarks_evidence.mkdir(parents=True, exist_ok=True)
     fixture('bookmarks_ui_test', [*LOOSE, '-municode', *TVG, WV2,
