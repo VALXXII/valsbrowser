@@ -987,7 +987,8 @@ class Invariants:
                 try:   # the element scrolled away with its bubble: nothing to see, nothing to check
                     el0 = element_screen(self.m.open); a0 = self.m.anchor
                     guess = (el0[0] + a0[0], el0[1] + a0[1], el0[0] + a0[0] + self.m.size[0], el0[1] + a0[1] + self.m.size[1])
-                    if intersect(guess, page_area()) is None:
+                    part = intersect(guess, page_area())   # what of it is still in the page area (rule 6: it leaves with its element)
+                    if part is None or part[2] - part[0] <= 40 or part[3] - part[1] <= 30:   # a sliver: bubble_shown() asks for more than 40 x 30 px
                         expect = False
                 except Exception:
                     pass
@@ -1024,7 +1025,7 @@ class Invariants:
                         a = (sf[0] - el[0], sf[1] - el[1], sf[3] - el[3])
                         if abs(a[0] - self.m.anchor[0]) > 2 or (abs(a[1] - self.m.anchor[1]) > 2 and abs(a[2] - self.m.anchor[2]) > 2):
                             # #130 wins over R29: a bubble that grew past the bottom slid up along its element (same side) — not a defect
-                            if not re.search(r'the bubble at the end of the document moves up once|slid up along its element', C.log_text()[self.log_at:]):
+                            if not re.search(r'the bubble at the end of the document moves up once|slid up along its element|it goes (above|below) it \(#130 C rule 10\)', C.log_text()[self.log_at:]):
                                 broken['stuck to its element (±2 px)'] = {'now': a, 'at opening': self.m.anchor, 'surface': sf, 'element': el}
                             self.rebase()
                     # #130 (blocking, « bulle-entiere »): its element whole on screen and the page not scrolled since the bubble

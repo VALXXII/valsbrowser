@@ -225,6 +225,8 @@ class Monkey:
         kind = 'bubble' if self.inv.m.layout == 'comment' else 'panel'
         if kind == 'bubble' and not self.inv.m.open:
             return 'send: no bubble', 0.1
+        if F.chat_state(kind).get('perm'):   # real-window monkey of 24 Nov 2026 (#63, #72): the card replaces the input — the user answers it first
+            return 'send: a permission waits (its card replaces the input)', 0.1
         self.tok += 1; token = f'jt{self.seed}x{self.tok}'
         sc = a['scenario']
         if sc == 'apply':
@@ -353,7 +355,7 @@ class Monkey:
         F.front(); F.click_at((b[0] + b[2]) // 2, (b[1] + b[3]) // 2, settle=0.03); time.sleep(0.05)
         m = F.log_mark(); t = F.click_at(*p, settle=0.0)
         self.inv.m.layout = 'comment'
-        self.inv.after_element_click(sel, t, f'#{a["i"]} switch then click {sel}', mark=m)
+        self.inv.after_element_click(sel, t, f'#{a["i"]} switch then click {sel}', mark=m, point=p)
         st = F.chat_state('bubble'); aw = (st['app'][2] - st['app'][0]) if st.get('app') else 0
         if self.inv.m.open and abs(aw - 320) > 2:
             self.R.step(f'#{a["i"]} invariant: the bubble has the bubble layout (M5: a 320 px surface)', False, {'surface width': aw, 'window': st.get('w')})

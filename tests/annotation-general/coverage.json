@@ -1159,6 +1159,14 @@
         }
       ]
     },
+    "focus-annotation": {
+      "tests": [
+        {
+          "suite": "focus-annotation",
+          "what": "tests/focus/annotation_focus_journey.py — Mode Focus et mode Annotation ensemble : bandeau et chat gardés, rien ne saute (propriétaire : Mode Focus)"
+        }
+      ]
+    },
     "R-retrait-ancien-système": {
       "tests": [
         {
