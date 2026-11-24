@@ -549,3 +549,60 @@ Sécurité du passage : configurations réelles de Claude et de Codex inchangée
 - Le lanceur n'a jamais tourné en mode `--night`.
 - Le garde-fou « processus resté ouvert = échec » peut se montrer trop strict avec les vraies fenêtres ; s'il l'est, la
   nuit le dira avec le nom du processus.
+
+## 8. Lot 1 — bulle et clic (24/11, branche `VALXXII/annotation-lot1`)
+
+État : **codé en partie, pas encore validé.** Les règles 7, 9 et 10 de #130 sont codées et prouvées sans fenêtre. Les deux
+bugs O3 et O5 ne sont **pas** prouvés corrigés : leur cause demande un passage en vraie fenêtre. Le lot ne sort qu'après
+un `--night` vert sur son commit exact.
+
+### Ce qui est fait
+
+| Sujet | Changement | Preuve sans fenêtre |
+|---|---|---|
+| #130 C règle 9 — élément sans côté libre | Dessous, sinon dessus, à 12 px ; dans l'élément (coin bas-droit, 8 px) seulement quand l'élément remplit la page affichée. `src/chat-bubble.h`, `Place()` | Unités « #130 C rule 9 » |
+| #130 C règle 10 — jamais par-dessus l'élément | Si aucun côté ne tient la hauteur : le côté qui a le plus de place, hauteur limitée à cette place (le fil défile). Si elle est au maximum de son côté et que l'autre a plus de place, elle bascule. `Place()`, `FlipSide()`, `PlaceBubble()` | Unités « #130 C rule 10 » ; contrats |
+| #130 C règle 7 — plus de défilement automatique | Le navigateur ne fait plus défiler la page du site pour montrer une carte : l'ancien correctif de R47 (`RevealCard`) est retiré de l'hôte | Contrat « #130 C rule 7 » |
+| #130 C règle 8 — boutons dans le pied | Rien à coder : la carte d'autorisation est déjà dans le pied de la bulle, le fil défile au-dessus | Page : « the request is in the bubble, in place of the input », « at its maximum height the thread scrolls » |
+| #130 C règle 4, fenêtre basse | Une bulle qui a un côté libre y reste même si la fenêtre est basse : hauteur limitée à la page − 16 px | Unité « a low window » |
+| O3, un chemin fermé | En Commentaire, plus rien ne renvoie un clic vers l'ancienne note : le refus « 10 puces en cours » du panneau ne s'applique plus à la bulle. Les deux sorties silencieuses de l'ouverture anticipée sont journalisées | Contrats « O3 » |
+| Test sensible à la vitesse | `tests/chat-panel/run.py` : la carte est armée à coup sûr avant « Entrée = Autoriser » (accord de Builder) | 10 passages sur 10 de la suite (873 / 873 chacun) ; c'était 2 échecs sur 12 sur main |
+| Règles 7 à 10 allumées dans les tests en vraie fenêtre | `C130_LOT1_RULES = True` (`tests/chat/final/qa_final.py`) ; distance dans l'élément : 8 px | À la prochaine nuit |
+
+Le produit entier compile sans avertissement (`tools/release/build.py`, version 0.3.848). Unités du chat et 115 contrats
+sur 115 : verts.
+
+Règle 6 (l'élément sort de l'écran, la bulle le suit) : c'est déjà le comportement, vérifié en unité. Les règles 5 et 11
+restent au lot 4.
+
+### Ce qui n'est pas corrigé, et pourquoi
+
+**O3 — clic sans bulle.** Les enregistrements du 22/11 ont été relus (sans fenêtre). Pour les quatre clics en échec
+(#116, #144, #146, #159), le journal du navigateur ne contient **aucun message de la page** : ni « selecting », ni
+« select ». Le clic n'est donc pas arrivé au script de la page, ou celui-ci l'a ignoré. Le chemin fermé ci-dessus n'est
+pas celui-là. Pistes, aucune prouvée : le clic tombe sur une autre fenêtre du navigateur (le panneau qui glisse encore,
+une fenêtre native posée sur la page), ou le script croit Ctrl enfoncé.
+
+**O5 — bulle déplacée après un menu (#82).** Le journal montre que le clic du test sur le bouton du mode est passé **à
+travers** la bulle et a sélectionné un élément de la page (`#prix`) : c'est une nouvelle bulle ailleurs, pas un saut.
+Soit le test a visé 30 px trop bas (la bulle venait d'être replacée), soit le bas de la bulle ne prenait pas les clics.
+
+**O5 — saisie hors de la bulle après un redimensionnement (#110).** L'hôte offrait bien 420 px ; la saisie était 176 px
+sous la surface. La cause est dans la page de la bulle et n'a pas pu être reproduite sans fenêtre.
+
+Pour les trois, le harnais enregistre maintenant ce qu'il faut pour conclure au prochain passage :
+
+- un clic sans bulle note la fenêtre réellement sous le pointeur, celle qui est devant, et l'élément de la page (`underPoint`) ;
+- la saisie hors de la bulle note l'état de la page (hauteur reçue, hauteur dessinée, quelle partie ne rétrécit pas) et de l'hôte.
+
+### Étapes de nuit
+
+1. `python tests/annotation-general/run.py --night --build` sur le commit de la branche (≈ 1 h 45, prévoir 2 h 15).
+2. Lire dans `build/chat-qa/final/monkey-1/echec-*.json` les champs `underPoint` (O3) et `page` / `host` (O5).
+   Pour rejouer seul : `python tests/chat/final/monkey.py --seed 1 --until 160` (≈ 5 min, même build).
+3. Corriger O3 et O5 d'après ces relevés, écrire les parcours `o3_…` et `o5_…`, retirer leurs trous de `coverage.json`.
+4. Nouveau `--night` complet sur le commit corrigé. Vert = le lot peut sortir.
+
+À surveiller au premier passage : les règles 9 et 10 changent la place de la bulle sur les éléments larges
+(`section.hero`, `div.plans`, les titres). Les suites écrites pour l'ancienne place (bulle sur l'élément, au coin du clic)
+peuvent demander une mise à jour d'attente ; chacune sera listée dans le rapport.
