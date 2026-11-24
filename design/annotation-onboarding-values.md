@@ -1,96 +1,85 @@
-# Annotation mode onboarding (#125, variant A) — Paper values
+# Annotation mode tutorial (#125 v2) — Paper values
 
-Source: Paper « Browser Design » (`01M6Q7YT14ZKMGET54ASPNGQEC`) › page « MCP - Design UI UX » (`p-H-0`), row 1 under
-« #125 · Onboarding du mode Annotation — 3 propositions ». Read with `get_jsx` (CSS of every node) — never from a
-screenshot. Code: `src/annotation-onboarding.h` (window), `src/annotation-onboarding-flow.h` (flow, first-time rule),
-`src/onboarding-parts.h` (the pieces shared with the first-run onboarding, `src/onboarding.h`), host
-`src/annotation-mode.h`. Tests: `tests/onboarding/annotation_onboarding_test.cpp`, audit `tests/onboarding/annotation_compare.py`.
+Source: Paper « Browser Design » (`01M6Q7YT14ZKMGET54ASPNGQEC`) › page « #125 v2 — Tutoriel annotation (validé) » (`p-Y-0`),
+validated by Val on 2026-11-24. Read with `get_jsx` / `get_computed_styles` (CSS of every node) — never from a screenshot.
 
-| Board | Node | Title |
-| --- | --- | --- |
-| A1 | `1MLX-0` | « Proposition — Onboarding annotation · A1 À quoi ça sert » |
-| A2 | `1MNM-0` | « · A2 Où ça marche » |
-| A3 | `1MPB-0` | « · A3 Connecter » |
-| A4 | `1MR0-0` | « · A4 Prêt » |
+Code: `src/annotation-onboarding.h` (window), `src/annotation-onboarding-flow.h` (flow, trial, first-time rule),
+`src/annotation-local-card.h` (E1b), `src/onboarding-parts.h` (pieces shared with the first-run onboarding, `src/onboarding.h`,
+whose board 6 is E2), `src/annotation-sites.h` (where « Annoter » is on), host `src/annotation-mode.h`.
+Tests: `tests/onboarding/annotation_onboarding_test.cpp` (offscreen renders + behaviour), `tests/onboarding/onboarding_render_test.cpp`
+(E2 = board 6), `tests/annotations/annotation_sites_test.cpp`, `tests/annotations/annotation_private_test.cpp`;
+audit `tests/onboarding/annotation_compare.py` (Paper exports in `design/annotation-onboarding-evidence/paper-v2/`).
 
-Variants B (`1MUR-0`, `1MWL-0`) and C (`1N0F-0` …) are not coded.
+| Board | Node | | Board | Node |
+| --- | --- | --- | --- | --- |
+| A1 Bienvenue | `1RTD-0` | | A5 Où ça marche | `1S3J-0` |
+| A2 Essai : choisir | `1RVB-0` (violet `1SAY-0`) | | A6 Connecter | `1S4U-0` |
+| A3 Essai : écrire | `1RZ5-0` (violet `1S7Y-0`) | | A7 Prêt | `1S62-0` |
+| A4 Essai : résultat | `1RX8-0` (violet `1SDI-0`) | | E1a / E1b / E2 | `1TX1-0` / `1STD-0` / `1SWL-0` |
 
-## Common to the four boards (= board 6 of the first-run onboarding)
+## Common to the seven steps (= board 6 of the first-run onboarding)
 
 | Part | Value |
 | --- | --- |
 | window | 720 × 580, radius 12, `#000000`, no border |
-| GrainGradient (`1MNL-0`, `1MPA-0`, `1MQZ-0`, `1MSO-0`) | 725 × 407 at (−2, −2), background `#DEFDFF`; speed 1, scale 1, softness 0.7, intensity 0.15, noise 0, shape wave, colors `#0AF4FF` `#0099A0` `#01292C`, back transparent — same node as board 6 `1CJ9-0`; board 6's dither on top (its tuning defaults) |
-| veil (`1MNK-0` …) | bottom 1, height 330, left −2, right −7 → y 249 … 579: `linear-gradient(in oklab 179.87deg, #00000000 0.3%, #000000 47.2%)` |
-| header (`1MNB-0`) | 48 high, padding 10 / 12: « Français » 14/20 500 `#474747` + chevron 16 (`m7 10 5 5 5-5`, stroke 1.8) in a 28-high box, padding-inline 6, gap 4, radius 6, at (12, 10); close 28 × 28 radius 6, cross 16 (`m7 7 10 10m0-10L7 17`) at (680, 10) |
-| text block (`1MN8-0`) | column, gap 5, its bottom at y 498 (16 above the footer): title 32/38 500, letter-spacing −0.035 em, white, centred; body 14/20 400 `#B3B3B3` centred, one line (A1) or two (`<br>`: A2 – A4) → title at y 435 or 415 |
-| footer (`1MMZ-0`) | 66 high at y 514, padding-inline 19: secondary at x 19, primary right-aligned at x 701, y 531 |
-| buttons | h 32, radius 6, padding-inline 12, 14/20 500 white; secondary `--color-browser-raised` `#292929`, primary `#0099A0` |
-| progress (`1MSP-0`) | absolute, centred on (360, 547): 4 pills h 6 radius 3, gap 6; the current one 16 wide `#FFFFFF`, the others 6 wide `#FFFFFF40` |
+| GrainGradient | 725 × 407 at (−2, −2), background `#DEFDFF`; speed 1, scale 1, softness 0.7, intensity 0.15, noise 0, shape wave, colors `#0AF4FF` `#0099A0` `#01292C`; board 6's dither on top (Val kept it) |
+| veil | y 249 … 579: `linear-gradient(in oklab 179.87deg, #00000000 0.3%, #000000 47.2%)` |
+| header | « Français » 14/20 500 `#474747` + chevron 16 at (12, 10), close 28 at (680, 10) |
+| text block | bottom at y 498: title 32/38 500 −0.035 em white, gap 5, body 14/20 `#B3B3B3`, centred (one or two lines) |
+| footer | 66 high at y 514, padding-inline 19; buttons h 32 radius 6 padding-inline 12, 14/20 500 white, y 531: secondary `#292929` at x 19, primary accent right-aligned at 701; A2 and A3: « Passer l'essai » text button `#FFFFFFB3` (no fill; white on hover — Val's default #7) |
+| progress | 7 pills h 6 radius 3, gap 6, centred on (360, 547): current 16 wide `#FFFFFF`, others 6 `#FFFFFF40` |
 
-Labels: A1 « Plus tard » / « Suivant »; A2 « Retour » / « Suivant »; A3 « Retour » / « Continuer »; A4 « Retour » / « Annoter ma page ».
+Labels: A1 « Plus tard » / « Suivant »; A2, A3 « Retour » / « Passer l'essai »; A4 « Recommencer » / « Suivant »;
+A5 « Retour » / « Suivant »; A6 « Retour » / « Continuer »; A7 « Retour » / « Terminer ».
 
-## A1 « À quoi ça sert »
+Colours follow the profile like the annotation mode (Val): the boards are drawn for the sample profile (200° / 88 %); the
+gradient and the inks (`#2FD1D9`, `#0AF4FF`, `#007D83`) move with `OnboardingKit::Rehue`, the fills (`#0099A0`) with
+`OnboardingKit::Accent` — board 6's own formulas. « Personnel » (no colour): the mode's blue `#3E67FF` for the fills, the
+gradient turned to its hue (Val, answer 8).
 
-Title « Bienvenue sur le mode Annotation », body « Cliquez sur un élément de votre projet et décrivez le changement. »
-(Val's final text). Illustration `1MLY-0` 557 × 124 at (81, 155): exactly board 6's `1CHL-0` (button 240 × 44 `#1C1C1C`
-radius 8 « Payer 48,00 € » 15/20 600; frame 248 × 52 at (−4, 20) border 2 `#0099A0` fill `#3E67FF14`; tags h 20
-padding-inline 6 `#0099A0` top radius 3, 13/18 `#FFFFFFE6` « button.btn-primary » / « 240x64 »; crosshair 32 at (196, 30);
-note 305 wide at (252, 20) `#171717` radius 16 padding 12 gap 12, 14/20 `#FFFFFFE6`, footer row: plus 14 at 50 %, shield 13,
-Claude 14 `#D97757` + « Opus 5.5 » 12/16 500 `#FFFFFFE6` + « Moyen » 12/16 `#FFFFFF80`, send 28 × 28 `#0099A0` radius 8).
-Drawn by the same function (`OnboardingParts::AnnotationDemo`).
-
-## A2 « Où ça marche »
-
-Title « Sur vos projets en cours »; body « Le mode Annotation marche sur les sites qui tournent sur votre ordinateur, /
-comme localhost:5173. Sur les autres sites, il reste éteint. »
+## A2 – A4: the trial on a fake page
 
 | Node | Value |
 | --- | --- |
-| `1MTD-0` | column at (120, 104), 480 wide, gap 14 |
-| `1MTE-0` local row | h 48, `#171717`, radius 12, padding-left 16, right 8, gap 10 |
-| `1MTF-0` | 16/20 400, −0.01 em: « localhost » `#FFFFFF` + « :5173 » `#FFFFFF80`; grows |
-| `1MTG-0` button | h 32, radius 8, padding-inline 10, gap 6, `#0099A0`: crosshair 14 (32 view box, stroke 3 white, round caps) + « Annoter » 13/16 500 white |
-| `1MTK-0` web row | same, `#171717E6`: « lemonde.fr » `#FFFFFF99` + « /planete » `#FFFFFF4D`; button `#FFFFFF0F`, glyph and label `#FFFFFF52` |
-| `1MTQ-0` tooltip | align end (right at x 600), `#171717`, border 1 `#FFFFFF14`, radius 8, padding 6 / 10, gap 2, max-width 280: 13/18 `#FFFFFFE6` « Seulement sur vos projets locaux », 13/18 `#FFFFFF80` « Lancez votre projet, puis ouvrez localhost. » |
+| page `1S12-0` | 420 × 236 at (150, 64) — (110, 64) on A3 —, `#F4F3F1`, radius 10, clipped |
+| header `1S13-0` | 36, `#FFFFFF`, border-bottom 1 `#00000012`, padding 16: « Boutique » 13/16 600 `#1C1C1C`, « Site d'exemple » 11/14 `#00000073` |
+| body `1S16-0` | padding 16, gap 10: « Paiement » 18/22 600 −0.02 em `#1C1C1C`; two fields h 30 `#FFFFFF`, border 1 `#00000014`, radius 6, padding 10, 12/16 `#0000004D`; « Payer 48,00 € » 160 × 36 `#1C1C1C` radius 8, 13/16 600 white |
+| A2 frame `1S1F-0` | 168 × 44 at (162, 224) = the button 4 out, border 2 accent, fill accent 8 %, radius 2; tag `1S1G-0` h 18 above it, padding 6, accent, top radius 3, « button » 12/16 `#FFFFFFE6` |
+| A2 pointer `1S1I-0` | the mode's crosshair 32 (white 4, `#1C1C1C` 1.6, accent dot r 2.6 ringed 1.2 white) |
+| A2 coach `1S1M-0` | at (350, 228): h 36, radius 18, `#171717`, padding 8 / 12, gap 8: disc 20 accent « 1 » 11/12 600 white, « Cliquez sur « Payer » » 13/16 500 white |
+| A3 frame `1S2H-0` | the button framed (no radius) + « button.btn-primary » |
+| A3 note `1S2K-0` | board 6's note at (304, 196), 305 wide: « Rends ce bouton plus large » 14/20 `#FFFFFFE6` + caret « \| » `#0AF4FF` |
+| A4 button | 260 wide; measure `1S2…` at (166, 270) 260 × 16: lines 1.5 accent, « 160 → 260 » 11/14 600 `#007D83`, gap 6; « Fait » pill at (438, 228) (disc with check 12) |
 
-## A3 « Connecter »
+Behaviour (Val's defaults 3 – 6, confirmed): every element of the page is framed with its tag under the pointer (header,
+h2, input, button) and the Windows pointer becomes the drawn crosshair over the page; only « Payer » picks; A3's note is
+typed for real (hint « Rends ce bouton plus large » `#FFFFFF99`, « Envoyer » dimmed to 32 % until something is typed, any
+text works); A4: 160 → 260 in 400 ms, then « Fait » and the measure fade in over 200 ms; « Recommencer » back to A2; between
+trial steps the page stays and glides (A3 sits 40 to the left).
 
-Title « Connectez votre agent »; body « Browser règle Claude ou Codex pour vous, en un clic. / Vos notes et captures
-restent sur cet ordinateur. »
+## A5 – A7
 
-| Node | Value |
-| --- | --- |
-| `1MTU-0` card | at (180, 112), 360 wide, `#171717`, radius 16, padding 12, column gap 8 |
-| `1MTV-0` connected | h 40, border 1 `#FFFFFF14`, radius 8, centred, gap 6: Claude logo 16 (view box 0.667 1.6 21.333, `#D97757`) + « Claude est connecté » 14/18 500 white + check 14 (256 view box) `#2FD1D9` |
-| `1MU1-0` to connect | h 40, `#292929`, radius 8, gap 6: « Connecter avec Codex » 14/18 500 white + OpenAI logo 16 (view box 0 1.6 21.333) white |
-| `1MU5-0` | padding-top 4, centred: « Autre app ou réglage manuel » 12/16 `#FFFFFF80` |
+A5 `1S3K-0` at (120, 84), 480 wide, gap 14: rows h 48 radius 12 padding 16 / 8 (« localhost:5173 », « Fichier  …/boutique/index.html »
+with « Fichier » and « …/boutique/ » at 50 %, « lemonde.fr/planete » off at `#171717E6`); buttons h 32 radius 8 accent or
+`#FFFFFF0F`; tooltip « Seulement sur vos projets et fichiers locaux » / « Ouvrez votre projet en local ou un fichier. ».
+A6 = v1 A3 (card at (180, 112), rows 40, states of the « Connecter un agent » modal). A7 = v1 A4 (keys, status pill), « Terminer ».
 
-States Paper does not draw take the « Connecter un agent » modal's (`src/annotation-connect.h`, Paper 1.2 – 1.4) at this
-row's size: en cours `#FFFFFF0A` + border `#FFFFFF14`, turning ring 14 `#FFFFFFB3` + label `#FFFFFFCC`; échec raised +
-border `#FF7B6E66`, « Réessayer avec … », message 12/16 `#FF7B6E` under the row (warning-circle 13); connected with a note
-(« Redémarrez Claude pour l'activer ») 12/16 `#FFFFFF99` under the row. Hover of a row: `#292929` → `#333333`, pressed
-`#3E3E3E` (the footer's buttons). See « Open points » in the PR.
+## E1a / E1b / E2
 
-## A4 « Prêt »
-
-Title « Tout est prêt »; body « Sur votre projet, appuyez sur Ctrl + Maj + A, cliquez un élément / et écrivez ce qui
-doit changer. Claude s'occupe du reste. » (the connected agent's name).
-
-| Node | Value |
-| --- | --- |
-| `1MUD-0` | column, left 0 right 0, top 120, centred, gap 20 |
-| `1MUE-0` keys | row, gap 10, centred |
-| `1MUF-0` / `1MUI-0` keys | h 56, `#171717`, border-bottom 3 `#0B0B0B`, radius 12 (inner bottom corners 12 × 9), padding-inline 18, 20/24 500 white « Ctrl », « Maj » |
-| `1MUL-0` key « A » | 56 × 56, same |
-| `1MUH-0` / `1MUK-0` | « + » 18/24 500 `#0B3B3D` |
-| `1MUN-0` status | h 32, `#171717`, radius 16, padding-inline 12, gap 8: dot 8 × 8 radius 4 `#2FD1D9` + « Claude est connecté » 13/16 500 `#FFFFFFE6` |
+* E1a `1TX2-0`: the toolbar button greyed (glyph at 32 %, no hover), tooltip « Mode Annotation - seulement sur vos projets et
+  fichiers locaux » (Val's answer 1).
+* E1b `1STF-0`: 316 × 178, `#171717`, border 1 `#FFFFFF14`, radius 12, padding 16, gap 12; title 16/20 600 −0.01 em white; gap 4;
+  body 14/20 `#B3B3B3` with the host 500 white; « Compris » raised / « Découvrir en 1 minute » accent, h 28, radius 6,
+  padding 12, 13/16 500. At (744, 80) for the button 1053 … 1077 × 48 … 72: 8 below the button, right edge 5 left of its centre.
+* E2 `1SWL-0`: board 6 with « Mode Annotation », « Pour les sites que vous construisez : cliquez sur un élément et décrivez le
+  changement. » / « Marche sur vos projets en local. Essayez sur une page d'exemple, ça prend une minute. », « Plus tard »
+  (79 wide) and « Essayer en 1 minute » (146 wide), no progress.
 
 ## Measuring against Paper
 
-`get_jsx` gives the CSS; the exports (`design/annotation-onboarding-evidence/paper/A*@96.png`, `@120.png` = 1x and 1.25x)
-are tagged « Display P3 Gamut with sRGB Transfer » (`#0099A0` is stored as 67, 151, 158): `annotation_compare.py` converts
-them to sRGB first. They are also rasterised about half a pixel below and right of the CSS boxes (every edge of an opaque
-box is a half-covered row); the code keeps the CSS boxes on whole pixels. Measured adjustment: the key caps' labels sit one
-row lower than a line box at 134.5 (see `DrawKey`). Text weight: the first-run onboarding's DirectWrite parameters
-(`OnboardingParts::TextLook`).
+The exports are « Display P3 Gamut with sRGB Transfer » (`#0099A0` is stored as 67, 151, 158): `annotation_compare.py`
+converts them to sRGB. They are rasterised about half a pixel below and right of the CSS boxes; the code keeps the CSS
+boxes on whole pixels. Measured adjustment: the key caps' labels one row lower than a line box at 134.5 (`DrawKey`).
+Text weight: the first-run onboarding's DirectWrite parameters. The violet boards use a « hue » blend over the cyan
+gradient and a fill `#7A5CE0` (OKLCH chroma 0.192, above any profile's 0.16): the code applies the onboarding's formulas to
+a violet profile instead, so the violet renders are close but not identical (see `compare-96.txt`).

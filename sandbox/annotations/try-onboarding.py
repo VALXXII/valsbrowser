@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Essai du mode Annotation (#125) comme un nouvel utilisateur : l'onboarding, et où « Annoter » marche.
 
-    python sandbox/annotations/try-onboarding.py --app <dossier d'un build> [--keep] [--private] [--english] [--dry-run]
+    python sandbox/annotations/try-onboarding.py --app <dossier d'un build> [--keep] [--private] [--welcome] [--english] [--dry-run]
 
 1. copie le build dans un dossier temporaire neuf (%TEMP%\\browser-essai-onboarding-annotation\\app) : profil, réglages et
    session vides, donc un nouvel utilisateur. --keep garde la copie de l'essai précédent : l'onboarding, déjà vu ou passé,
@@ -11,7 +11,8 @@
    local (…\\fichier-local\\index.html).
 3. ouvre le navigateur avec trois onglets : la page locale (Annoter allumé), le fichier local (allumé) et
    https://example.com/ (site en ligne : Annoter éteint, grisé, avec son info-bulle). --private ouvre une fenêtre privée
-   sur la page locale (même règle). La connexion des agents est redirigée vers un dossier de test
+   sur la page locale (même règle). --welcome commence par la fenêtre d'accueil d'une nouvelle installation (« --onboarding ») :
+   son étape « Mode Annotation » propose « Essayer en 1 minute », qui ouvre le tutoriel une fois le navigateur ouvert. La connexion des agents est redirigée vers un dossier de test
    (BROWSER_ANNOTATIONS_CONNECT_ROOT, comme run-sandbox.py --agents sandbox) : « Connecter avec Claude / Codex » écrit dans
    de fausses configurations, jamais dans les vraies.
 4. à la fermeture du navigateur, arrête la page de démonstration : rien ne reste en marche.
@@ -93,6 +94,7 @@ def main() -> int:
     ap.add_argument('--app', required=True, help='dossier du build (browser.exe, assets\\…)')
     ap.add_argument('--keep', action='store_true', help="reprendre l'essai précédent (sans remise à zéro)")
     ap.add_argument('--private', action='store_true', help="une fenêtre privée sur la page locale (reprend l'essai précédent s'il existe)")
+    ap.add_argument('--welcome', action='store_true', help="comme une nouvelle installation : la fenêtre d'accueil d'abord (son étape « Mode Annotation » propose le tutoriel)")
     ap.add_argument('--english', action='store_true', help='interface en anglais')
     ap.add_argument('--dry-run', action='store_true', help='tout préparer (copie, pages) sans ouvrir le navigateur (vérification sans écran)')
     a = ap.parse_args()
@@ -159,7 +161,7 @@ def main() -> int:
         print(f'Page locale    : {URL}   (Annoter allumé)')
         print(f'Fichier local  : {file_url}   (Annoter allumé)')
         print(f'Site en ligne  : {ONLINE}   (Annoter éteint)')
-        command = [str(run / 'browser.exe')] + (['--private', URL] if a.private else [])
+        command = [str(run / 'browser.exe')] + (['--private', URL] if a.private else ['--onboarding'] if a.welcome else [])
         if a.dry_run:
             import urllib.request
             with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(URL, timeout=5) as r:
