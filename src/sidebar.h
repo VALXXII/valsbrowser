@@ -431,6 +431,20 @@ inline float ScrollToShow(const Layout& L, int i) {
     return std::clamp(s, 0.f, L.maxScroll);
 }
 
+// ---- Row motion (#127, parity point 3) ---------------------------------------------------------------------------
+// The tab strip's open / close model (Motion::TabStripMotion, src/tab-motion.h) runs unchanged on the vertical axis: the
+// row height stands for the tab width, the row gap for the tab gap. Each row is presented at its cumulative slot, so an
+// opening row grows to its full height and pushes the rows under it (and « + Nouvel onglet »); a closing row leaves a
+// ghost at full height in its old place that blurs out while its slot collapses and the rows under it glide up. Same
+// springs (.30 s open, .22 s close), 150 ms exit, reduced motion as the strip. Hit regions stay on the functional layout.
+struct RowMetrics { float lead = 0, row = 0, gap = 0; };
+inline RowMetrics Rows(Mode m) { return m == Mode::Complete ? RowMetrics{Complete::tabGap, Complete::tabRow, Complete::tabGap} : RowMetrics{Compact::tabsLead - 1, Compact::tabRow, Compact::tabGap}; }
+// A row at content-space `slot` (cumulative, before the list's scroll), `presence` of its height (1 at rest).
+inline Box ShownRow(const Layout& L, float slot, float presence, float scroll) {
+    const auto m = Rows(L.mode); const float t = L.tabsView.top + m.lead + slot - scroll;
+    return {L.tabsView.left, t, L.tabsView.right, t + m.row * std::clamp(presence, 0.f, 1.f)};
+}
+
 // ---- Fold animation --------------------------------------------------------------------------------------------
 // t = 1 complete, 0 compact. Folding, the titles fade out over the first 80 ms while the width eases over 180 ms;
 // unfolding, the width eases over 180 ms and the titles come back over the last 80 ms. Reduced motion: at once.

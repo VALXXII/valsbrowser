@@ -3,6 +3,7 @@
 // B « Favoris · 10 / 20 / 40 replié / déplié / panneau 300 / 360 / compact, 40 ») and Val's 4 DIP page inset. The client
 // is the artboard's inside (1180 x 740 with its 1 DIP border: 1178 x 738).
 #include "../src/sidebar.h"
+#include "../src/tab-motion.h"   // #127 parity 3: the strip's open / close model on the rows
 #include <cstdio>
 #include <cmath>
 
@@ -169,6 +170,40 @@ int main() {
         Check(Same(R::Handle(K.column, K.page), 34, 32, 40, 736), "compact handle along its page");
         S::Fold f; f.panel = 300; f.Set(S::Mode::Complete, 0, false); Check(Near(f.ColumnWidth(0), 300), "the fold opens to the chosen width");
         f.Set(S::Mode::Compact, 1000, true); Check(Near(f.ColumnWidth(1000), 300) && Near(f.ColumnWidth(1180), 40), "and folds from it");
+    }
+    // ---- Row motion (#127 parity 3): the strip's TabStripMotion on the vertical axis (Sidebar::ShownRow).
+    {
+        namespace M = NativeChrome::Motion;
+        const auto L = S::Compute(Complete(-1, 30)); const auto m = S::Rows(L.mode); const float pitch = m.row + m.gap;
+        Check(Near(m.lead, 2) && Near(m.row, 32) && Near(m.gap, 2) && Near(S::Rows(S::Mode::Compact).row, 36) && Near(S::Rows(S::Mode::Compact).gap, 2), "rows: 32 + 2 (complete), 36 + 2 (compact)");
+        for (int i : {0, 3, 29}) Check(Same(S::ShownRow(L, i * pitch, 1, L.scroll), L.tabs[i].left, L.tabs[i].top, L.tabs[i].right, L.tabs[i].bottom), "at rest the presented rows are the layout's");
+        Check(Same(S::ShownRow(L, 30 * pitch, 1, L.scroll), L.newTab.left, L.newTab.top, L.newTab.right, L.newTab.bottom), "« + Nouvel onglet » after the last slot");
+        // The model's scroll range equals the column's (its view leaves out the lead and the « + » row).
+        auto deep = Complete(-1, 30); deep.scroll = 1e6f; const auto D = S::Compute(deep);
+        M::TabStripMotion sm; std::vector<unsigned> keys; for (unsigned k = 1; k <= 30; ++k) keys.push_back(k);
+        const M::Time t0 = M::Now(); const float view = D.tabsView.Height() - m.lead - m.row;
+        sm.Sync(keys, {m.row, D.scroll, view, true}, m.gap, t0);
+        Check(Near(sm.Sample(t0).scroll, D.scroll, .05f) && Near(D.scroll, D.maxScroll), "presented scroll = the column's, even at the end of the list");
+        // Opening: the new row grows from nothing and pushes the rows under it; settled after the spring.
+        M::TabStripMotion om; std::vector<unsigned> five{1, 2, 3, 4, 5}; om.Sync(five, {m.row, 0, 600, false}, m.gap, t0);
+        std::vector<unsigned> six{1, 2, 9, 3, 4, 5};
+        Check(om.Sync(six, {m.row, 0, 600, false}, m.gap, t0), "opening a tab starts motion");
+        auto f = om.Sample(t0); Check(f.items.size() == 6 && f.items[2].key == 9 && Near(f.items[2].presence, 0) && Near(f.items[3].slot, 2 * pitch) && Near(f.items[2].opacity, 0), "opening row: no height, no content, the next row still in place");
+        f = om.Sample(t0 + M::Milliseconds(120)); Check(f.items[2].presence > .2f && f.items[2].presence < 1 && f.items[3].slot > 2 * pitch && f.items[3].slot < 3 * pitch, "mid-open: it grows and pushes the rows under it");
+        f = om.Sample(t0 + M::Milliseconds(1500)); Check(Near(f.items[2].presence, 1) && Near(f.items[3].slot, 3 * pitch) && !f.moving, "settled: full height, rows one pitch apart");
+        // Closing: a ghost stays in its old place (index -1), blurs out in 150 ms while its slot collapses.
+        const M::Time t1 = t0 + M::Milliseconds(2000); std::vector<unsigned> back{1, 2, 3, 4, 5};
+        Check(om.Sync(back, {m.row, 0, 600, false}, m.gap, t1), "closing a tab starts motion");
+        f = om.Sample(t1 + M::Milliseconds(60)); bool ghost = false; for (auto& it : f.items) if (it.key == 9) ghost = it.index < 0 && it.exit > 0 && it.exit < 1 && it.presence < 1 && Near(it.slot, 2 * pitch);
+        Check(ghost && f.items.back().index == 4, "closing row: a ghost in its old place, blurring out, the live rows renumbered");
+        f = om.Sample(t1 + M::Milliseconds(1500)); Check(f.items.size() == 5 && Near(f.items[2].slot, 2 * pitch) && !f.moving, "after the close: the ghost is gone, the rows glided up");
+        // Reduced motion: geometry snaps; an opening row cross-fades (150 ms), a closing one goes at once.
+        M::TabStripMotion rm; rm.SetReducedMotion(true); rm.Sync(five, {m.row, 0, 600, false}, m.gap, t0); rm.Sync(six, {m.row, 0, 600, false}, m.gap, t0);
+        f = rm.Sample(t0); Check(Near(f.items[2].presence, 1) && Near(f.items[2].fill, 0) && Near(f.items[3].slot, 3 * pitch), "reduced motion: the row is there at once, fading in");
+        f = rm.Sample(t0 + M::Milliseconds(200)); Check(Near(f.items[2].fill, 1), "reduced motion: faded in after 150 ms");
+        rm.Sync(back, {m.row, 0, 600, false}, m.gap, t0 + M::Milliseconds(300)); Check(rm.Sample(t0 + M::Milliseconds(300)).items.size() == 5, "reduced motion: a closed row leaves at once (no ghost)");
+        // A presented row is clipped to its presence (an opening row is a sliver first).
+        Check(Near(S::ShownRow(L, 0, .25f, 0).Height(), 8) && Near(S::ShownRow(L, 0, 2, 0).Height(), 32), "presence scales the row's height (clamped to 1)");
     }
     if (failures) { std::printf("%d failure(s)\n", failures); return 1; }
     std::printf("sidebar_test: ok\n");

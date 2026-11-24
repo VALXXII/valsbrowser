@@ -395,6 +395,23 @@ public:
         Drop(gradient);Drop(stops);
         brush->SetColor(D2D1::ColorF(c,c,c,o));target->FillRectangle(D2D1::RectF(edge,close.top,titleRight,close.bottom),brush);}
     std::map<unsigned,TabSnapshot> tabSnapshots; // what a closing tab looked like, drawn while it blurs out
+    // #127 parity 3: the column's rows run the same model on the vertical axis (Sidebar::ShownRow); its own instance, its
+    // own snapshots for the ghosts. The host asks both for frames (TabsNextWake) and settles / resets both.
+    Motion::TabStripMotion sideMotion;Motion::TabLayoutFrame sideFrame;std::map<unsigned,TabSnapshot> sideSnapshots;
+    Motion::Wake TabsNextWake(Motion::Time now)const{return Motion::Earlier(tabMotion.NextWake(now),sideMotion.NextWake(now));}
+    void SettleTabs(){tabMotion.Settle();sideMotion.Settle();}
+    void SetTabsReducedMotion(bool reduced){tabMotion.SetReducedMotion(reduced);sideMotion.SetReducedMotion(reduced);}
+    void ResetTabMotion(){tabMotion.Reset();sideMotion.Reset();sideFrame={};sideSnapshots.clear();}   // a layout switch: no stale open / close
+    void SyncSideMotion(int count,Motion::Time now){
+        const auto m=Sidebar::Rows(side.mode);const float pitch=m.row+m.gap;
+        // The model's content is the rows alone: its view leaves out the lead and « + Nouvel onglet », so its scroll range
+        // is the column's (Layout::maxScroll).
+        const float view=side.tabsView.Height()-m.lead-m.row;
+        if(!TabKeysValid(count)){sideFrame={};sideFrame.tab=m.row;sideFrame.scroll=side.scroll;sideFrame.view=view;for(int i=0;i<count;i++){Motion::TabItem it;it.key=TabKey(i);it.index=i;it.slot=pitch*i;sideFrame.items.push_back(it);}sideFrame.content=pitch*count;return;}
+        if(sideMotion.ReducedMotion()!=motion->ReducedMotion())sideMotion.SetReducedMotion(motion->ReducedMotion());
+        if(sideMotion.Sync(tabKeys,{m.row,side.scroll,view,true},m.gap,now,false))   /* overflow: the model honours the list's own view */tabMotionStarted=true;
+        sideFrame=sideMotion.Sample(now);
+    }
     bool TabKeysValid(int count)const{return motion&&(int)tabKeys.size()==count;}
     unsigned TabKey(int n)const{return n>=0&&n<(int)tabKeys.size()?tabKeys[n]:(unsigned)(n+1);}
     bool TakeTabMotionStarted(){const bool started=tabMotionStarted;tabMotionStarted=false;return started;}
@@ -1045,10 +1062,10 @@ public:
     // #127: the folder tile under (x, y) a dragged bookmark `dragged` could be filed in (grid, compact column, « » » popover), else -1.
     int SideFolderAt(float x,float y,unsigned dragged){if(!sidebar)return -1;const int hit=Hit(x,y);if(!IsBookmark(hit))return -1;const int i=BookmarkIndex(hit);
         return i<(int)bandItems.size()&&bandItems[i].folder&&bandItems[i].id!=dragged?i:-1;}
-    void BuildSidebar(int count,int selected,const std::vector<std::wstring>* titles){
+    void BuildSidebar(int count,int selected,const std::vector<std::wstring>* titles,Motion::Time now=Motion::Now()){
         namespace SB=Sidebar;
         sideTools.clear();if(annotateShown)sideTools.push_back('N');if(audioShown)sideTools.push_back('V');sideTools.push_back('Y');sideTools.push_back('D');sideTools.push_back('S');
-        side=SB::Compute(SideInput(sidebarMode,count,sidebarColumn!=SB::Width(sidebarMode,sidebarWidth)?sidebarColumn:-1));sidebarScroll=side.scroll;if(side.gridOpen||!side.grid.Scrolls())sidebarGridScroll=side.grid.scroll;
+        side=SB::Compute(SideInput(sidebarMode,count,sidebarColumn!=SB::Width(sidebarMode,sidebarWidth)?sidebarColumn:-1));sidebarScroll=side.scroll;if(side.gridOpen||!side.grid.Scrolls())sidebarGridScroll=side.grid.scroll;SyncSideMotion(count,now);
         if(sidebarOverlay){sideOver=SB::Compute(SideInput(SB::Mode::Complete,count,side.column,true));sideOver.scroll=side.scroll;}
         // The compact « » » popover: all the bookmarks, its tiles first (it covers the column's right and the page).
         if(sidebarPopover&&!sidebarOverlay&&side.more&&side.mode==SB::Mode::Compact&&!side.tiles.empty()){sidePop=SB::ComputePopover(side.column,side.tiles.back(),(int)bandItems.size(),sidebarPopoverScroll,height);sidebarPopoverScroll=sidePop.grid.scroll;
@@ -1164,23 +1181,63 @@ public:
             const auto ink=Design::Accent::Ink();brush->SetColor(annotateActive?D2D1::ColorF(ink.r,ink.g,ink.b,1):D2D1::ColorF(1,1,1,annotateDimmed||!Enabled('N')?Design::Text::disabled:Sidebar::Look::glyph));target->FillGeometry(g,brush);target->SetTransform(old);}
     }
     // Tab rows (01 1Q1K-0 / 1Q1C-0 / 1Q17-0; compact 1Q4Z-0): active #3E3E3E, hover white 4 %, rest none.
-    void DrawSideTab(const Sidebar::Layout& L,int i,const std::wstring& title,int selected,int hover,int focus,Motion::Time now,D2D1_RECT_F row,float alpha,float labels){
-        namespace K=Sidebar::Look;const bool full=L.mode==Sidebar::Mode::Complete;const bool active=i==selected;
+    // `row`: the full row (content keeps it, as the strip's content keeps the settled width); `shown`: the presented
+    // surface while the row opens or the list moves (null: the row); `content` / `fillFactor`: the strip's TabItem
+    // opacity and reduced-motion fill. The selection fades like the strip's (Motion::TabSelection, 120 ms ease-out):
+    // the surface goes from the hover white to #3E3E3E, the title to full white. Returns the surface grey (ghosts).
+    float DrawSideTab(const Sidebar::Layout& L,int i,const std::wstring& title,int selected,int hover,int focus,Motion::Time now,D2D1_RECT_F row,float alpha,float labels,const D2D1_RECT_F* shown=nullptr,float content=1,float fillFactor=1){
+        namespace K=Sidebar::Look;const bool full=L.mode==Sidebar::Mode::Complete;
+        const float emphasis=sidebarDrag<0&&motion&&animateSelection&&i<(int)tabKeys.size()?Motion::Clamp(motion->selection.Visual((int)TabKey(i),now)):(i==selected?1.f:0.f);
+        const bool active=emphasis>.5f;
         const float h=std::max(Hovered(TabBase+i,hover,now),Hovered(CloseBase+i,hover,now));
-        if(active)Round(row,Design::Radius::control,K::tabActive);else if(h>0)White(row,Design::Radius::control,K::tabHover*h);
+        const D2D1_RECT_F surface=shown?*shown:row;const float c=Design::Surface::canvas,base=c+(1-c)*K::tabHover*std::clamp(h,0.f,1.f);
+        const float fill=c+((base+(K::tabActive-base)*emphasis)-c)*fillFactor;
+        if(fill>c+.001f&&surface.bottom-surface.top>.5f)Round(surface,std::min(Design::Radius::control,(surface.bottom-surface.top)/2),fill);
+        if(shown)target->PushAxisAlignedClip(surface,D2D1_ANTIALIAS_MODE_ALIASED);
+        alpha*=content;
         const Sidebar::Box rb{row.left,row.top,row.right,row.bottom};
         const auto fav=Sidebar::FaviconIn(rb,L.mode);
         const bool asleep=!active&&i<(int)sleeping.size()&&sleeping[i];
         DrawFavicon(i,R(fav),(asleep?.4f:1.f)*alpha);
         if(focus==TabBase+i)FocusRing(row,Design::Radius::control);
-        if(!full)return;
+        if(!full){if(shown)target->PopAxisAlignedClip();return fill;}   // compact: the icon alone
         const bool closeShown=h>0||focus==CloseBase+i;
         const auto t=Sidebar::TitleIn(rb,closeShown);
-        const float o=(active?K::titleActive:h>0?K::titleRest+(K::titleHover-K::titleRest)*h:asleep?.32f:K::titleRest)*labels*alpha;
+        const float rest=h>0?K::titleRest+(K::titleHover-K::titleRest)*h:asleep?.32f:K::titleRest;
+        const float o=(rest+(K::titleActive-rest)*emphasis)*labels*alpha;
         Text(title,R(t),Design::Type::label.size,o,false,active,0);
-        if(closeShown){const auto c=R(Sidebar::CloseIn(rb));const float press=motion?motion->Visual(CloseBase+i,now).press:0;
-            SideGlyph(Sidebar::Glyph::close,c,Sidebar::Complete::closeGlyph*Motion::PressScale(press,motion&&motion->ReducedMotion()),K::glyph*std::max(h,focus==CloseBase+i?1.f:0.f)*labels*alpha);
-            if(focus==CloseBase+i)FocusRing(c,Design::Radius::button);}
+        if(closeShown){const auto cb=R(Sidebar::CloseIn(rb));const float press=motion?motion->Visual(CloseBase+i,now).press:0;
+            SideGlyph(Sidebar::Glyph::close,cb,Sidebar::Complete::closeGlyph*Motion::PressScale(press,motion&&motion->ReducedMotion()),K::glyph*std::max(h,focus==CloseBase+i?1.f:0.f)*labels*alpha);
+            if(focus==CloseBase+i)FocusRing(cb,Design::Radius::button);}
+        if(shown)target->PopAxisAlignedClip();
+        return fill;
+    }
+    // A closing row's ghost (the strip's DrawGhost on a row): drawn as it last looked, at full height in its old place,
+    // into the shared ghost layer, then composited with the blur (0 -> 4 DIP) and opacity (1 -> 0) of the exit.
+    void DrawSideGhost(const Sidebar::Layout& L,const Motion::TabItem& item,float labels){
+        auto it=sideSnapshots.find(item.key);if(it==sideSnapshots.end())return;
+        const float alpha=1-std::clamp(item.exit,0.f,1.f);if(alpha<=.002f)return;
+        const auto& snap=it->second;const auto rect=R(Sidebar::ShownRow(L,item.slot,1,sideFrame.scroll));
+        const float pad=3*Motion::TabExitBlur,w=rect.right-rect.left+2*pad,h=rect.bottom-rect.top+2*pad;
+        if(!ghostLayer||ghostLayerSize.width!=w||ghostLayerSize.height!=h){Drop(ghostLayer);ghostLayerSize={};
+            if(FAILED(target->CreateCompatibleRenderTarget(D2D1::SizeF(w,h),&ghostLayer))||!ghostLayer){Drop(ghostLayer);return;}
+            ghostLayerSize={w,h};}
+        auto* main=SwapTarget(ghostLayer);ghostLayer->BeginDraw();ghostLayer->Clear(D2D1::ColorF(0,0,0,0));
+        const Sidebar::Box box{pad,pad,pad+rect.right-rect.left,pad+rect.bottom-rect.top};
+        if(snap.fill>Design::Surface::canvas+.001f)Round(R(box),Design::Radius::control,snap.fill);
+        const auto fav=R(Sidebar::FaviconIn(box,L.mode));if(!DrawSiteImage(snap.favicon,fav))Icon(L"favicon",fav,16);
+        if(L.mode==Sidebar::Mode::Complete)Text(snap.title,R(Sidebar::TitleIn(box,false)),Design::Type::label.size,(snap.selected?Sidebar::Look::titleActive:Sidebar::Look::titleRest)*labels,false,snap.selected,0);
+        HRESULT hr=ghostLayer->EndDraw();SwapTarget(main);if(FAILED(hr))return;
+        ID2D1Bitmap* bitmap=nullptr;if(FAILED(ghostLayer->GetBitmap(&bitmap))||!bitmap)return;
+        target->PushAxisAlignedClip(R(L.tabsView),D2D1_ANTIALIAS_MODE_ALIASED);
+        const D2D1_POINT_2F origin{rect.left-pad,rect.top-pad};
+        if(BlurReady()){
+            const float sigma=Motion::TabExitBlur*std::clamp(item.exit,0.f,1.f);
+            blurEffect->SetInput(0,bitmap);blurEffect->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION,D2D1_PROPERTY_TYPE_FLOAT,(const BYTE*)&sigma,sizeof(sigma));
+            blurContext->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(),nullptr,D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,D2D1::IdentityMatrix(),alpha),nullptr);
+            blurContext->DrawImage(blurEffect,origin);blurContext->PopLayer();blurEffect->SetInput(0,nullptr);++ghostBlurDraws;
+        }else{target->DrawBitmap(bitmap,D2D1::RectF(origin.x,origin.y,origin.x+w,origin.y+h),alpha);++ghostFadeDraws;}
+        target->PopAxisAlignedClip();Drop(bitmap);
     }
     // The column's own fills and glyphs (the shared toolbar buttons are painted by PaintSideButton).
     void PaintSideColumn(const Sidebar::Layout& L,const std::vector<std::wstring>& titles,int selected,bool editing,int hover,int focus,Motion::Time now,bool overlay){
@@ -1202,11 +1259,23 @@ public:
         Color(1,K::line);target->FillRectangle(R(L.line),brush);
         target->PushAxisAlignedClip(R(L.tabsView),D2D1_ANTIALIAS_MODE_ALIASED);
         const int n=std::min((int)titles.size(),(int)L.tabs.size());
-        for(int i=0;i<n;++i){if(L.tabs[i].bottom<=L.tabsView.top||L.tabs[i].top>=L.tabsView.bottom)continue;
-            const std::wstring title=titles[i].empty()?std::wstring(i<(int)sideHome.size()&&sideHome[i]?TR(tab_new):TR(chrome_tab_untitled_tip)):titles[i];
-            DrawSideTab(L,i,title,selected,hover,focus,now,R(L.tabs[i]),i==sidebarDrag?K::origin:1.f,labels);}
-        {const auto r=R(L.newTab);const float hv=Hovered('T',hover,now);if(hv>0)White(r,Design::Radius::control,K::tabHover*hv);if(focus=='T')FocusRing(r,Design::Radius::control);
-            const auto f=SB::FaviconIn(L.newTab,L.mode);SideGlyph(SB::Glyph::plus,R(f),14,K::newTab);
+        auto titleOf=[&](int i){return titles[i].empty()?std::wstring(i<(int)sideHome.size()&&sideHome[i]?TR(tab_new):TR(chrome_tab_untitled_tip)):titles[i];};
+        const bool moving=!overlay&&sidebarDrag<0&&&L==&side&&!sideFrame.items.empty();
+        auto newRow=L.newTab;
+        if(moving){   // the strip's model on rows: ghosts under, live rows at their presented slots, « + » after them
+            for(auto& it:sideFrame.items)if(it.index<0)DrawSideGhost(L,it,labels);
+            for(auto& it:sideFrame.items){const int i=it.index;if(i<0||i>=n)continue;
+                const auto rowFull=SB::ShownRow(L,it.slot,1,sideFrame.scroll),rowShown=SB::ShownRow(L,it.slot,it.presence,sideFrame.scroll);
+                if(rowFull.bottom<=L.tabsView.top||rowFull.top>=L.tabsView.bottom)continue;
+                const auto title=titleOf(i);const auto shown=R(rowShown);
+                const float fill=DrawSideTab(L,i,title,selected,hover,focus,now,R(rowFull),1.f,labels,&shown,it.opacity,it.fill);
+                auto& snap=sideSnapshots[it.key];snap.title=title;snap.favicon=i<(int)favicons.size()?favicons[i]:nullptr;snap.fill=fill;snap.selected=i==selected;}
+            for(auto s=sideSnapshots.begin();s!=sideSnapshots.end();){if(std::none_of(sideFrame.items.begin(),sideFrame.items.end(),[&](const Motion::TabItem& i){return i.key==s->first;}))s=sideSnapshots.erase(s);else ++s;}
+            const auto r=SB::ShownRow(L,sideFrame.content,1,sideFrame.scroll);newRow=r;}
+        else for(int i=0;i<n;++i){if(L.tabs[i].bottom<=L.tabsView.top||L.tabs[i].top>=L.tabsView.bottom)continue;
+            DrawSideTab(L,i,titleOf(i),selected,hover,focus,now,R(L.tabs[i]),i==sidebarDrag?K::origin:1.f,labels);}
+        {const auto r=R(newRow);const float hv=Hovered('T',hover,now);if(hv>0)White(r,Design::Radius::control,K::tabHover*hv);if(focus=='T')FocusRing(r,Design::Radius::control);
+            const auto f=SB::FaviconIn(newRow,L.mode);SideGlyph(SB::Glyph::plus,R(f),14,K::newTab);
             if(full)Text(TR(tab_new),{f.right+SB::Complete::tabIconGap,r.top,r.right-SB::Complete::tabPad,r.bottom},Design::Type::label.size,K::newTab*labels,false,false,0);}
         // Drag (05): the place it leaves stays hollow (30 %), an accent line marks where it lands, the row follows the pointer.
         if(sidebarDrag>=0&&sidebarDrag<n){
@@ -1365,7 +1434,7 @@ public:
     void Build(int count,int selected,const std::vector<std::wstring>* titles=nullptr,Motion::Time now=Motion::Now()){regions.clear();tips.clear();if(contentOnly)return;
         if(!sidebar){sideChip=false;addressTextRight=1e9f;}
         if(!sidebar&&addressFadeSurface!=Design::Surface::raised){addressFadeSurface=Design::Surface::raised;DropAddressFade();}   // the top bar's field
-        if(sidebar){BuildSidebar(count,selected,titles);return;}
+        if(sidebar){BuildSidebar(count,selected,titles,now);return;}
         addressHostOnly=false;addressGlyphOpacity=Design::Address::secondary;addressFont=Design::Type::address.size;addressGlyph=Design::Size::icon;addressTextInset=Design::Address::textInset;addressSlotInset=Design::Address::slotInset;addressSlotSize=Design::Address::slot;
         namespace TS=Design::TabStrip;
         // Private window: reserve the chip and its 6 DIP row gap before any tab computation (capacity,

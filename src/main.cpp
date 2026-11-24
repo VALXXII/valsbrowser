@@ -329,20 +329,20 @@ void InvalidateMotion(NativeChrome::Motion::Time now){
     chrome.downloadIcon.Settle(now);chrome.nav.Settle(now);AudioFrame(now);
     // Repainted only when its pose changes (60 poses a second at most at the authored speed), not on every compositor tick.
     {static NativeChrome::DownloadIcon::Pose painted;static bool known=false;const auto pose=chrome.downloadIcon.At(now);if(!known||pose!=painted){InvalidateDownloadIcon();painted=pose;known=true;}}
-    const bool full=motionFullFrames||motion.NextWake(now).delay||chrome.tabMotion.NextWake(now).delay||chrome.lottie.NextWake(now,motion.ReducedMotion()).delay||chrome.nav.NextWake(now).delay;
+    const bool full=motionFullFrames||motion.NextWake(now).delay||chrome.TabsNextWake(now).delay||chrome.lottie.NextWake(now,motion.ReducedMotion()).delay||chrome.nav.NextWake(now).delay;
     if(full){InvalidateChrome();return;}
     auto t=Active();if(chrome.LoadingSignature(t?t->loading.Sample(now,motion.ReducedMotion()):NativeChrome::Loading::Visual{})==paintedLoading)return;
     auto d=chrome.LoadingDirty();RECT r{S(d.left),S(d.top),S(d.right),S(d.bottom)};InvalidateRect(window,&r,FALSE);
 }
 void ScheduleMotion(NativeChrome::Motion::Time now){
-    const bool reduced=motion.ReducedMotion();auto ui=NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(motion.NextWake(now),chrome.tabMotion.NextWake(now)),chrome.lottie.NextWake(now,reduced)),chrome.nav.NextWake(now));motionFullFrames=ui.delay.has_value();
+    const bool reduced=motion.ReducedMotion();auto ui=NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(motion.NextWake(now),chrome.TabsNextWake(now)),chrome.lottie.NextWake(now,reduced)),chrome.nav.NextWake(now));motionFullFrames=ui.delay.has_value();
     auto wake=NativeChrome::Motion::Earlier(ui,NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(downloadPanel.NextWake(now),downloadDrawer.NextWake(now)),settingsDrawer.NextWake(now)),NativeChrome::Motion::Earlier(historyDrawer.NextWake(now),bookmarksDrawer.NextWake(now))));wake=NativeChrome::Motion::Earlier(wake,chrome.downloadIcon.NextWake(now));wake=NativeChrome::Motion::Earlier(wake,AudioNextWake(now));wake=NativeChrome::Motion::Earlier(wake,ElementsNextWake(now));if(current>=0&&current<(int)pages.size())wake=NativeChrome::Motion::Earlier(wake,pages[current]->loading.NextWake(now,reduced));if(SplitAnimating()||GripsAnimating())wake=NativeChrome::Motion::Earlier(wake,NativeChrome::Motion::Frame());wake=NativeChrome::Motion::Earlier(wake,ScrollbarWake(now));if(halted||motionMinimized||!wake.delay){KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();return;}
     // A deadline due within one nominal frame is served by the next compositor tick.
     if(frameClockReady&&(wake.frames||*wake.delay<=*NativeChrome::Motion::Frame().delay)){if(motionDeadline){KillTimer(window,MotionTimerId);motionDeadline.reset();}frameClock.Request();return;}
     frameClock.Cancel();
     auto due=now+*wake.delay;if(motionDeadline&&*motionDeadline<=due)return;
     KillTimer(window,MotionTimerId);motionDeadline=due;
-    if(!SetTimer(window,MotionTimerId,(UINT)wake.delay->count(),nullptr)){motionDeadline.reset();motion.SetReducedMotion(true);chrome.tabMotion.Settle();motion.copy.Clear();ClearChromeMotion();motion.SetInteraction(hover,0,now);InvalidateChrome();}
+    if(!SetTimer(window,MotionTimerId,(UINT)wake.delay->count(),nullptr)){motionDeadline.reset();motion.SetReducedMotion(true);chrome.SettleTabs();motion.copy.Clear();ClearChromeMotion();motion.SetInteraction(hover,0,now);InvalidateChrome();}
 }
 void UpdateInteraction(int newHover,int newPressed){hover=newHover;pressed=newPressed;auto now=NativeChrome::Motion::Now();int group=NativeChrome::IsClose(hover)?NativeChrome::TabBase+NativeChrome::TabIndex(hover):hover;motion.SetInteraction(group,pressed==hover?pressed:0,now);InvalidateChrome();ScheduleMotion(now);}
 
@@ -1444,7 +1444,7 @@ void RestoreSession(){KeepContentTransition keep; // a cold profile's tabs come 
     if(!overflow.empty())Defer([overflow]{ShowPartialRestoreToast(overflow);});
     if(pages.empty())NewTab(opening.empty()?NewTabTarget():opening);else{if(pages.size()==state.urls.size())ApplySessionGroups(state.groups);Select(state.active);if(!opening.empty()){NewTab(opening);Select((int)pages.size()-1);}}
     // Restored (or first) tabs are the initial state: no entrance cascade, no selection fade.
-    BuildChrome();chrome.tabMotion.Settle();motion.selection.Settle();BuildChrome();InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());
+    BuildChrome();chrome.SettleTabs();motion.selection.Settle();BuildChrome();InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());
     sessionReady=true;if(splitTest)SetTimer(window,SplitTestTimer,1500,nullptr);
 }
 
@@ -1909,7 +1909,7 @@ bool ReducedMotionPreferred(){NativeChrome::Motion::SetAppReducedMotion(settings
 void ApplyReducedMotion(){
     const bool reduced=ReducedMotionPreferred();
     // Settles running interactions; a half-played copy Lottie must not resume later.
-    motion.SetReducedMotion(reduced);chrome.tabMotion.SetReducedMotion(reduced);if(reduced)ClearChromeMotion();
+    motion.SetReducedMotion(reduced);chrome.SetTabsReducedMotion(reduced);if(reduced)ClearChromeMotion();
     downloadPanel.SetReducedMotion(reduced);downloadDrawer.SetReducedMotion(reduced);historyDrawer.SetReducedMotion(reduced);bookmarksDrawer.SetReducedMotion(reduced);
     SyncUpdateToastMotion();
     settingsDrawer.SetReducedMotion();ElementsReducedMotion(reduced);
@@ -4763,7 +4763,7 @@ void ApplyLayout(){
     if(tabDrag.tab)CancelTabDrag(true);sidebarHover.Close();chrome.sidebarOverlay=false;chrome.sidebarDrag=-1;chrome.sidebarInsert=-1;
     if(window){KillTimer(window,SidebarFoldTimerId);KillTimer(window,SidebarHoverTimerId);}
     for(auto& t:pages)if(t&&t->holed){if(t->host&&IsWindow(t->host))SetWindowRgn(t->host,nullptr,TRUE);t->holed=false;}
-    chrome.sidebar=want;sidebarReady=false;sidebarShownTab=-1;
+    chrome.sidebar=want;sidebarReady=false;sidebarShownTab=-1;chrome.ResetTabMotion();   // the other layout starts settled
     if(window){HideSuggestions();chrome.latched=0;CloseDownloadSurfaces(false);audioPanel.Close(false);settingsDrawer.Hide(false,false);historyDrawer.Hide(false,false);bookmarksDrawer.Hide(false,false);
         Layout();bookmarkToast.Reposition();RepositionElementSurfaces();}
     Log(want?L"LAYOUT side panel":L"LAYOUT top bar");

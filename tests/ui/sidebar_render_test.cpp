@@ -130,6 +130,29 @@ int wmain(int argc, wchar_t** argv) {
         c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.Paint(titles, 0, L"", false, 0, 0);
         Check(c.side.tools.size() == 4 && c.Hit(20, (c.side.tools[0].top + c.side.tools[0].bottom) / 2) == 'N', "compact: Annoter first of four tools");
     }
+    {   // #127 parity 3: the strip's open / close / selection motion on the column's rows, through the real painter. Frames:
+        // an opening row mid-way (it grows, the rows under it are pushed), settled, a closing row's ghost mid-way.
+        Motion::State ms(false); ms.EnablePolish();
+        Chrome c; Check(SUCCEEDED(c.InitOffscreen(root, 96, 1178, 738)), "offscreen chrome (motion)");
+        c.sidebar = true; c.SetMotion(&ms); c.animateSelection = true; c.address = AddressBar::Describe(L"https://lemonde.fr/", false);
+        std::vector<std::wstring> five(titles.begin(), titles.end()), six = five; six.insert(six.begin() + 2, L"Nouvel article — Le Monde");
+        std::vector<std::shared_ptr<const FaviconImage>> f5(icons.begin(), icons.end()), f6 = f5; f6.insert(f6.begin() + 2, Tile(0x3E67FF));
+        const auto t0 = Motion::Now(); c.tabKeys = {1, 2, 3, 4, 5}; c.SetFavicons(f5); c.sideHome.assign(5, false); c.sideDetails.assign(5, L"");
+        ms.SelectTab(1, t0); ms.selection.Settle(); c.Paint(five, 0, L"", false, 0, 0, nullptr, t0);
+        const float pitch = Sidebar::Rows(Sidebar::Mode::Complete).row + Sidebar::Rows(Sidebar::Mode::Complete).gap;
+        c.tabKeys = {1, 2, 9, 3, 4, 5}; c.SetFavicons(f6); c.sideHome.assign(6, false); c.sideDetails.assign(6, L"");
+        ms.SelectTab(9, t0); c.Paint(six, 2, L"", false, 0, 0, nullptr, t0); c.Paint(six, 2, L"", false, 0, 0, nullptr, t0 + Motion::Milliseconds(90));   // the change, then a frame 90 ms in
+        Check(c.sideFrame.items.size() == 6 && c.sideFrame.items[2].presence > .1f && c.sideFrame.items[2].presence < .95f && c.sideFrame.items[3].slot > 2 * pitch && c.sideFrame.items[3].slot < 3 * pitch, "mid-open: the new row grows, the next one pushed down");
+        Check(SUCCEEDED(c.SavePng((out + L"\\anim-ouverture-90ms.png").c_str())), "frame: opening");
+        c.Paint(six, 2, L"", false, 0, 0, nullptr, t0 + Motion::Milliseconds(1500));
+        Check(Near(c.sideFrame.items[3].slot, 3 * pitch) && !c.sideFrame.moving, "settled after the spring");
+        Check(SUCCEEDED(c.SavePng((out + L"\\anim-ouverture-fin.png").c_str())), "frame: opened");
+        const auto t1 = t0 + Motion::Milliseconds(2000); c.tabKeys = {1, 2, 3, 4, 5}; c.SetFavicons(f5); c.sideHome.assign(5, false); c.sideDetails.assign(5, L"");
+        ms.SelectTab(2, t1); c.Paint(five, 1, L"", false, 0, 0, nullptr, t1); c.Paint(five, 1, L"", false, 0, 0, nullptr, t1 + Motion::Milliseconds(60));
+        bool ghost = false; for (auto& it : c.sideFrame.items) ghost = ghost || (it.key == 9 && it.index < 0 && it.exit > 0 && it.exit < 1);
+        Check(ghost && c.ghostBlurDraws + c.ghostFadeDraws > 0, "closing: the ghost is drawn (blur, or fade without Direct2D 1.1)");
+        Check(SUCCEEDED(c.SavePng((out + L"\\anim-fermeture-60ms.png").c_str())), "frame: closing");
+    }
     {   // Val (24 nov.): the address field is ONE colour while typing: the native EDIT's colour (WM_CTLCOLOREDIT uses
         // Chrome::EditSurface) is the colour painted under it, in the column, the compact bar and the top bar; the EDIT spans
         // the field while typing (Copy / the star are hidden), the address drawn at rest stops before them.
