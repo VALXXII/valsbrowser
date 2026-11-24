@@ -1050,7 +1050,7 @@
     "O5": {
       "gap": {
         "lot": "R",
-        "why": "cause prouvée sans fenêtre le 24/11 (tests/chat/final/replay_opening.py, « DÉFAUT CONNU ») : les messages en attente dans la bulle n'ont pas de hauteur limite, la saisie et les boutons du mode / du modèle sont dessinés sous la surface, hors de la zone cliquable — c'est aussi le « clic qui traverse la bulle » (#185, #219) et #110. À corriger dans assets/chat-panel (lot R) après la décision de design (combien de messages en attente montrer) ; le contrôle devient bloquant en le retirant de KNOWN. #82 (bulle qui saute après la bascule) : corrigé au lot 1 (areaMoving), à revoir en vraie fenêtre"
+        "why": "cause prouvée sans fenêtre le 24/11 (tests/chat/final/replay_opening.py) : les messages en attente dans la bulle n'avaient pas de hauteur limite, la saisie et les boutons du mode / du modèle étaient dessinés sous la surface, hors de la zone cliquable — c'est aussi le « clic qui traverse la bulle » (#185, #219) et #110. Corrigé par le lot R dans assets/chat-panel (358676e, d9dbf03). Le rejeu regarde si la page testée contient ce correctif : sans lui il dit « DÉFAUT CONNU, corrigé par le lot R » sans faire échouer ; avec lui (dès la fusion du lot R) le pied dans la surface est bloquant, à 269, 150, 120 et 104 px offerts. À la fusion du lot R : remplacer ce trou par le test { suite: replay-opening, « 4 messages en attente : saisie et boutons dans la surface » } — marquer le lot R fait sans le faire rend --check rouge. #82 (bulle qui saute après la bascule) : corrigé au lot 1 (areaMoving), à revoir en vraie fenêtre"
       }
     },
     "O6": {

@@ -15,12 +15,16 @@ What it says:
      layout: the sizes the page publishes, and the surface the host shows after each (shown, then corrected);
   2. the host of lot 1b — the opening layout only, then the conversation: one size, its acknowledgement, nothing corrected;
   3. the foot is inside the surface at rest (a long thread: the thread scrolls);
-  4. the same with 4 messages waiting in the bubble — KNOWN OPEN DEFECT O5 / #110 (assets/chat-panel, lot R; a design
-     decision is asked): the waiting messages have no height limit, the input and the buttons are drawn under the surface,
-     out of the clickable area — a click aimed at them reaches the site's page. Said « DÉFAUT CONNU » while it fails (the exit
-     code stays 0), « CORRIGÉ » when it passes: then remove it from KNOWN below, it becomes a blocking check.
+  4. the same with 4 messages waiting in the bubble (O5 / #110, and the clicks « through » the bubble #185 / #219): the
+     waiting messages had no height limit, the input and the buttons were drawn under the surface, out of the clickable
+     area — a click aimed at them reached the site's page. Fixed by lot R in assets/chat-panel (358676e, d9dbf03: 2 messages
+     at most, « +N en attente », the input always whole).
+     BLOCKING as soon as the page under test has lot R's fix — the script looks for it in the page itself (LOT_R_FIX below),
+     so nothing is to be switched on at the merge: then the foot must be inside the surface at 269 px offered and at the
+     small heights (150, 120, 104). On a page WITHOUT the fix (this branch before lot R is merged, an older version given
+     with --assets) the same failure is said « DÉFAUT CONNU, corrigé par le lot R » and does not turn the pass red.
 
-Exit code 0 when every check passes (known open defects aside), 1 otherwise.
+Exit code 0 when every check passes (the known defect of a page without lot R's fix aside), 1 otherwise.
 """
 import base64, ctypes, glob, http.server, json, os, pathlib, re, socket, struct, subprocess, sys, tempfile, threading, time, urllib.request
 
@@ -35,7 +39,21 @@ ARGS = sys.argv[1:]
 ASSETS = pathlib.Path(ARGS[ARGS.index('--assets') + 1]).resolve() if '--assets' in ARGS else ROOT / 'assets'
 EDGE = next(iter(sorted(glob.glob(os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Microsoft', 'EdgeCore', '*', 'msedge.exe'))
                         + glob.glob(os.path.join(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)'), 'Microsoft', 'EdgeCore', '*', 'msedge.exe')), reverse=True)), None)
-KNOWN = {'pied-file-attente': 'O5 / #110 — les messages en attente n\'ont pas de hauteur limite (assets/chat-panel, lot R ; décision de design demandée)'}
+
+
+def lot_r_fix():
+    """Lot R's fix of O5 / #110 is in the page under test: its waiting messages are bounded to the room left (`bQueueRoom`,
+    assets/chat-panel/panel.js, d9dbf03). Read in the page itself — true on every commit that holds the fix, whatever its branch."""
+    try:
+        return 'function bQueueRoom(' in (ASSETS / 'chat-panel' / 'panel.js').read_text(encoding='utf-8')
+    except OSError:
+        return False
+
+
+LOT_R_FIX = lot_r_fix()
+# without lot R's fix in the page, the foot out of the surface is the defect lot R fixes: said, never a failure of this commit
+KNOWN = {} if LOT_R_FIX else {'pied-file-attente': 'O5 / #110 — les messages en attente n\'ont pas de hauteur limite ; corrigé par le lot R (assets/chat-panel), '
+                                                   'pas encore dans la page testée : le contrôle devient bloquant tout seul dès que le lot R est fusionné'}
 
 # the opening of #219 (CSS px): below its element 269 are free, above it 307; the bubble's window is 782 wide
 ROOM_BELOW, ROOM_ABOVE, TOP_BELOW, TOP_ABOVE = 269, 307, 400, 212
@@ -44,9 +62,7 @@ results = []
 
 def check(cid, ok, name, detail=''):
     known = cid in KNOWN
-    mark = 'PASS' if ok else ('DÉFAUT CONNU' if known else 'FAIL')
-    if ok and known:
-        mark = 'CORRIGÉ (retirer de KNOWN)'
+    mark = 'PASS' if ok else ('DÉFAUT CONNU, corrigé par le lot R' if known else 'FAIL')
     print(f'{mark} {name}' + (f' — {detail}' if detail and not ok else ''), flush=True)
     if known and not ok:
         print(f'       {KNOWN[cid]}', flush=True)
@@ -208,18 +224,19 @@ def main() -> int:
             q = [{'id': f'q{conv}{i}', 'text': 'Change la couleur du bouton en vert, puis applique styles/landing.css display: flex; gap: 8px; jeton ' + str(i), 'after': 'p.hero-text'} for i in range(waiting)]
             return [st, {'type': 'thread.reset', 'conversationId': conv, 'items': cdp.js(f'window.__thread({json.dumps(conv)},{turns})')}, {'type': 'queue', 'items': q}, {'type': 'focus', 'target': 'composer'}]
 
-        def opening(turns, waiting, before_1b):
+        def opening(turns, waiting, before_1b, room=ROOM_BELOW):
             """The click on h2.section-title while the bubble of div.old is open and a turn runs elsewhere (its conversation is
-            shown « aside »). Returns what the host showed after each size, and the page's measure at rest."""
+            shown « aside »); `room`: the height offered below the element. Returns what the host showed after each size, and
+            the page's measure at rest."""
             start()
             viewport(782, 1320)
             conv = conversation('cnew', turns, waiting)
             if before_1b:   # ShowAside sent the conversation first; PlaceBubble told the new bounds twice (room, then inset); then the opening layout
                 send(*conv[:3]); frames(1)
-                send(lay(False, ROOM_BELOW, 'below', 0), lay(False, ROOM_BELOW, 'below', TOP_BELOW), lay(True, ROOM_BELOW, 'below', TOP_BELOW), *conv)
+                send(lay(False, room, 'below', 0), lay(False, room, 'below', TOP_BELOW), lay(True, room, 'below', TOP_BELOW), *conv)
             else:
-                send(lay(True, ROOM_BELOW, 'below', TOP_BELOW), *conv)
-            host = {'size': -1, 'waiting': True, 'side': 'below', 'room': ROOM_BELOW, 'top': TOP_BELOW, 'h': 0}
+                send(lay(True, room, 'below', TOP_BELOW), *conv)
+            host = {'size': -1, 'waiting': True, 'side': 'below', 'room': room, 'top': TOP_BELOW, 'h': 0}
             shown = []; got_all = []
             for _ in range(8):
                 frames(2)
@@ -233,7 +250,7 @@ def main() -> int:
                     host['size'] = h; hc = max(40, min(520, h))
                     if host['waiting']:   # the first size: placed with it (Place, src/chat-bubble.h) — neither side holds more than its room
                         host['waiting'] = False
-                        if hc > ROOM_BELOW:
+                        if hc > room:
                             host.update(side='above', room=ROOM_ABOVE); viewport(782, 919)
                         host['h'] = min(hc, host['room'])
                     else:
@@ -261,12 +278,15 @@ def main() -> int:
         # 3. the foot inside the surface (a long thread)
         check('pied-fil-long', inside(host, m), 'a long thread: the input and the mode / model buttons are inside the surface the host shows (the thread scrolls)', json.dumps(m))
 
-        # 4. four messages waiting in the bubble
-        got, shown, host, m = opening(1, 4, False)
-        foot = host['top'] + host['h']
-        check('pied-file-attente', inside(host, m),
-              '4 messages waiting: the input and the mode / model buttons are inside the surface the host shows',
-              f'surface {host["top"]}..{foot} CSS px in the window, page: input {m["input"]}, mode {m["mode"]}, model {m["model"]}, foot {m["dock"]} ({m["waiting"]} waiting) — drawn {m["model"][1] - foot if m["model"] else "?"} px under the surface, out of the clickable area')
+        # 4. four messages waiting in the bubble: blocking with lot R's fix in the page (then at the small heights too), said « known » without it
+        print('lot R (messages en attente bornés) dans la page testée : ' + ('oui — le pied dans la surface est un contrôle bloquant' if LOT_R_FIX
+              else 'non — le pied hors de la surface est le défaut connu que le lot R corrige (bloquant dès sa fusion)'), flush=True)
+        for room in (ROOM_BELOW, 150, 120, 104) if LOT_R_FIX else (ROOM_BELOW,):
+            got, shown, host, m = opening(1, 4, False, room)
+            foot = host['top'] + host['h']
+            check('pied-file-attente', inside(host, m) and host['h'] <= room,
+                  f'4 messages waiting, {room} px offered: the input and the mode / model buttons are inside the surface the host shows',
+                  f'surface {host["top"]}..{foot} CSS px in the window ({host["side"]}), page: input {m["input"]}, mode {m["mode"]}, model {m["model"]}, foot {m["dock"]} — drawn {m["model"][1] - foot if m["model"] else "?"} px under the surface, out of the clickable area')
     finally:
         subprocess.run(['taskkill', '/PID', str(proc.pid), '/T', '/F'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     ok = all(results)
