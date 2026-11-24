@@ -40,7 +40,6 @@
 
 #ifdef BROWSER_ANNOTATIONS
 #include "annotations.h"
-#include "annotation-problem.h"
 #include "agent-connect.h"
 #include "annotation-ui.h"
 #include "annotation-private.h"      // #125: a private window's annotations are erased when it closes

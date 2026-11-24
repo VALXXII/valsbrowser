@@ -87,7 +87,6 @@ struct Timing {
     Bezier curve = Curves::out;
 };
 inline Timing ModalTiming() { return {}; }
-inline Timing NoteTiming() { Timing t; t.enter = Spec::noteIn; t.exit = Spec::noteOut; return t; }
 inline Timing PillTiming() { Timing t; t.enter = Spec::pillUnfold; t.exit = Spec::noteOut; t.delay = Spec::pillDelay; t.from = 1; t.to = 1; return t; }
 
 // One surface's presence: opacity and scale ramps (enter 0.96 -> 1, exit -> 0.98), both
