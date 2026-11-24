@@ -524,6 +524,14 @@ public:
     void KeyOut(float lead){if(lead<=0||!target||!brush)return;D2D1_MATRIX_3X2_F m;target->GetTransform(&m);target->SetTransform(D2D1::Matrix3x2F::Identity());
         const auto mode=target->GetAntialiasMode();target->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);brush->SetColor(D2D1::ColorF(1,0,1,1));
         target->FillRectangle(D2D1::RectF(0,0,lead,target->GetSize().height+1),brush);target->SetAntialiasMode(mode);target->SetTransform(m);}
+    // The same key colour over a GDI region (target pixels), rectangle by rectangle, aliased: the keyed-out silhouette is
+    // exactly the region's, pixel for pixel (the downloads drawer's morph: what its growing shape does not cover yet).
+    void KeyOutRegion(HRGN region){if(!region||!target||!brush)return;const DWORD size=GetRegionData(region,0,nullptr);if(size<sizeof(RGNDATAHEADER))return;
+        std::vector<BYTE> data(size);auto* rgn=reinterpret_cast<RGNDATA*>(data.data());if(GetRegionData(region,size,rgn)!=size)return;
+        float dx=96,dy=96;target->GetDpi(&dx,&dy);const float kx=96.f/dx,ky=96.f/dy;
+        D2D1_MATRIX_3X2_F m;target->GetTransform(&m);target->SetTransform(D2D1::Matrix3x2F::Identity());const auto mode=target->GetAntialiasMode();target->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);brush->SetColor(D2D1::ColorF(1,0,1,1));
+        const RECT* r=reinterpret_cast<const RECT*>(rgn->Buffer);for(DWORD i=0;i<rgn->rdh.nCount;++i)target->FillRectangle(D2D1::RectF(r[i].left*kx,r[i].top*ky,r[i].right*kx,r[i].bottom*ky),brush);
+        target->SetAntialiasMode(mode);target->SetTransform(m);}
     void Round(D2D1_RECT_F r,float radius,float c){Color(c);target->FillRoundedRectangle(D2D1::RoundedRect(r,radius,radius),brush);}
     // Enable tabular figures explicitly for counters; titles and URLs keep proportional digits.
     HRESULT MakeTextLayout(const std::wstring& value,D2D1_RECT_F slot,float size,bool tabular,bool medium,float tracking,IDWriteTextLayout** output,TextMeasure& placement){
