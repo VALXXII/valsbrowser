@@ -22,6 +22,7 @@
 #include "bookmarks-bar.h"
 #include "svg-path.h"
 #include "site-request.h"
+#include "emoji-text.h"
 #include <set>
 #include <tuple>
 #include <cstring>
@@ -58,7 +59,7 @@ inline int TabIndex(int id){return IsClose(id)?id-CloseBase:IsTab(id)?id-TabBase
 inline int SelectionAfterClose(int count,int active,int closed){if(count<=1)return -1;if(closed<active)return active-1;if(closed==active)return std::min(active,count-2);return active;}
 inline Design::ButtonVariant VariantFor(int id){if(id=='m'||id=='M'||id=='X')return Design::ButtonVariant::Window;if(id=='C'||id=='K')return Design::ButtonVariant::Embedded;if(id=='B'||id=='F'||id=='R')return Design::ButtonVariant::Raised;if(IsClose(id))return Design::ButtonVariant::TabClose;return Design::ButtonVariant::Ghost;}
 inline float ControlSurface(int id,float amount){return Design::Resolve(VariantFor(id),{amount,0}).surface;}
-struct TextMeasure {float lineHeight=0,baseline=0,originY=0,inkTop=0,inkBottom=0;bool trimmed=false;};
+struct TextMeasure {float lineHeight=0,baseline=0,originY=0,inkTop=0,inkBottom=0;bool trimmed=false;EmojiText::Style emoji;};
 struct Region{int id;D2D1_RECT_F rect;const wchar_t* tip;bool focusable=true;};
 class Chrome {
     HWND hwnd=nullptr;std::wstring assets;ID2D1Factory* factory=nullptr;ID2D1RenderTarget* target=nullptr;ID2D1HwndRenderTarget* hwndTarget=nullptr;IWICBitmap* surface=nullptr;ID2D1SolidColorBrush* brush=nullptr;
@@ -524,6 +525,14 @@ public:
     void KeyOut(float lead){if(lead<=0||!target||!brush)return;D2D1_MATRIX_3X2_F m;target->GetTransform(&m);target->SetTransform(D2D1::Matrix3x2F::Identity());
         const auto mode=target->GetAntialiasMode();target->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);brush->SetColor(D2D1::ColorF(1,0,1,1));
         target->FillRectangle(D2D1::RectF(0,0,lead,target->GetSize().height+1),brush);target->SetAntialiasMode(mode);target->SetTransform(m);}
+    // The same key colour over a GDI region (target pixels), rectangle by rectangle, aliased: the keyed-out silhouette is
+    // exactly the region's, pixel for pixel (the downloads drawer's morph: what its growing shape does not cover yet).
+    void KeyOutRegion(HRGN region){if(!region||!target||!brush)return;const DWORD size=GetRegionData(region,0,nullptr);if(size<sizeof(RGNDATAHEADER))return;
+        std::vector<BYTE> data(size);auto* rgn=reinterpret_cast<RGNDATA*>(data.data());if(GetRegionData(region,size,rgn)!=size)return;
+        float dx=96,dy=96;target->GetDpi(&dx,&dy);const float kx=96.f/dx,ky=96.f/dy;
+        D2D1_MATRIX_3X2_F m;target->GetTransform(&m);target->SetTransform(D2D1::Matrix3x2F::Identity());const auto mode=target->GetAntialiasMode();target->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);brush->SetColor(D2D1::ColorF(1,0,1,1));
+        const RECT* r=reinterpret_cast<const RECT*>(rgn->Buffer);for(DWORD i=0;i<rgn->rdh.nCount;++i)target->FillRectangle(D2D1::RectF(r[i].left*kx,r[i].top*ky,r[i].right*kx,r[i].bottom*ky),brush);
+        target->SetAntialiasMode(mode);target->SetTransform(m);}
     void Round(D2D1_RECT_F r,float radius,float c){Color(c);target->FillRoundedRectangle(D2D1::RoundedRect(r,radius,radius),brush);}
     // Enable tabular figures explicitly for counters; titles and URLs keep proportional digits.
     HRESULT MakeTextLayout(const std::wstring& value,D2D1_RECT_F slot,float size,bool tabular,bool medium,float tracking,IDWriteTextLayout** output,TextMeasure& placement){
@@ -541,6 +550,8 @@ public:
         IDWriteTypography* typo=nullptr;write->CreateTypography(&typo);
         // Inter Display variants of the Paper type ramp: cv01-cv04 + cv13; key caps take cv11 instead of cv13.
         if(typo){for(auto tag:{DWRITE_MAKE_OPENTYPE_TAG('c','v','0','1'),DWRITE_MAKE_OPENTYPE_TAG('c','v','0','2'),DWRITE_MAKE_OPENTYPE_TAG('c','v','0','3'),DWRITE_MAKE_OPENTYPE_TAG('c','v','0','4'),keycap?DWRITE_MAKE_OPENTYPE_TAG('c','v','1','1'):DWRITE_MAKE_OPENTYPE_TAG('c','v','1','3')})typo->AddFontFeature({(DWRITE_FONT_FEATURE_TAG)tag,1});if(tabular)typo->AddFontFeature({DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES,1});layout->SetTypography(typo,{0,(UINT32)value.size()});Drop(typo);}
+        // Emoji: system colour font per cluster, Inter's line box kept (src/emoji-text.h).
+        placement.emoji=EmojiText::Prepare(write,layout,value,fonts,L"Inter Display");
         DWRITE_TEXT_METRICS metrics{};layout->GetMetrics(&metrics);
         DWRITE_LINE_METRICS line{};UINT32 count=0;layout->GetLineMetrics(&line,1,&count);
         placement.lineHeight=std::max(metrics.height,line.height);placement.baseline=line.baseline;
@@ -584,8 +595,8 @@ public:
         // Restrict horizontal overflow to its slot, but retain all measured
         // vertical glyph ink. All labels use the full 32 DIP control height.
         auto clip=slot;clip.top=std::min(slot.top,m.inkTop-96.f/dpi);clip.bottom=std::max(slot.bottom,m.inkBottom+96.f/dpi);
-        target->PushAxisAlignedClip(clip,D2D1_ANTIALIAS_MODE_ALIASED);brush->SetColor(D2D1::ColorF(ink.r,ink.g,ink.b,opacity));
-        target->DrawTextLayout(D2D1::Point2F(slot.left,m.originY),layout,brush,D2D1_DRAW_TEXT_OPTIONS_NONE);
+        target->PushAxisAlignedClip(clip,D2D1_ANTIALIAS_MODE_ALIASED);
+        EmojiText::Draw(target,D2D1::Point2F(slot.left,m.originY),layout,brush,D2D1::ColorF(ink.r,ink.g,ink.b,opacity),m.emoji);
         target->PopAxisAlignedClip();Drop(layout);
     }
     ID2D1Bitmap* IconBitmap(const wchar_t* name){int imageDpi=384;for(int d:{96,120,144,168,192,240,288,384})if(d>=int(dpi)){imageDpi=d;break;}std::wstring key=std::wstring(name)+L"-"+std::to_wstring(imageDpi)+L".png";auto& bitmap=bitmaps[key];

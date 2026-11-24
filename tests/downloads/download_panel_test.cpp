@@ -14,6 +14,31 @@ using namespace NativeChrome::Downloads;
 static int failures = 0;
 static void Expect(bool ok, const char* what) { if (!ok) { std::fprintf(stderr, "FAIL %s\n", what); ++failures; } }
 
+// Engine state → row (the bug: a download the engine holds after its last byte stayed « 100 % » forever).
+static void HeldChecks() {
+    using namespace Engine;
+    Expect(MapEngineState(Completed, 0, false) == State::Completed && MapEngineState(InProgress, 0, false) == State::InProgress && MapEngineState(InProgress, 0, true) == State::Paused, "engine states: completed, in progress, paused by the user");
+    Expect(MapEngineState(Interrupted, ReasonUserPaused, false) == State::Paused && MapEngineState(Interrupted, ReasonUserCanceled, false) == State::Cancelled, "engine interrupts: paused, cancelled");
+    Expect(MapEngineState(Interrupted, 10, false) == State::Failed && MapEngineState(Interrupted, 1, false) == State::Failed, "engine interrupts: anything else fails (blocked reasons keep the B07 path)");
+    const std::int64_t mb = 57430695;
+    Expect(!HeldForDecision(InProgress, mb, mb, false, -1) && !HeldForDecision(InProgress, mb, mb, false, HoldGraceMs - 1), "every byte in: not held before the grace");
+    Expect(HeldForDecision(InProgress, mb, mb, false, HoldGraceMs) && HeldForDecision(InProgress, mb, mb, false, 240000), "every byte in, still in progress past the grace: held (measured: no event ever follows)");
+    Expect(!HeldForDecision(Completed, mb, mb, false, 240000) && !HeldForDecision(Interrupted, mb, mb, false, 240000), "a completed or interrupted download is never held");
+    Expect(!HeldForDecision(InProgress, mb - 1, mb, false, 240000) && !HeldForDecision(InProgress, 5, 0, false, 240000) && !HeldForDecision(InProgress, mb, mb, true, 240000), "missing bytes, unknown size or a user pause: never held");
+    Item held; held.state = State::InProgress; held.held = true;
+    Expect(ActionsFor(held).first == Action::Discard && ActionsFor(held).second == Action::Keep, "held actions: Supprimer, Conserver");
+    Expect(std::wcscmp(IconFor(Action::Discard), L"trash") == 0 && std::wcscmp(IconFor(Action::Keep), L"check") == 0, "held actions' drawer glyphs");
+    // Popover: the card takes its row's place, 20 from neighbouring tiles; « View all » 16 under the last element.
+    std::vector<Item> list(3); list[1].state = State::InProgress; list[1].held = true;
+    const float card = HeldCard::Height(72);
+    auto slots = DownloadsUI::PopoverSlots(list, card);
+    Expect(slots.size() == 4 && slots[0].height == 0 && slots[1].height == card && slots[1].top == 16 + 32 + 20 && slots[2].top == slots[1].top + card + 20 && slots[3].top == slots[2].top + 32 + 16, "popover: card spacing");
+    Expect(DownloadsUI::PopoverHeight(slots) == slots[3].top + 16 + 16, "popover height follows the card");
+    auto plain = DownloadsUI::PopoverSlots(list);
+    Expect(plain[1].height == 0 && plain[1].top == 64, "without a measured card the held row is a plain row");
+    Expect(HeldCard::Button(0, card, 0).right + HeldCard::buttonGap == HeldCard::Button(0, card, 1).left && HeldCard::Button(0, card, 1).right == HeldCard::right - HeldCard::inset && HeldCard::Button(0, card, 0).bottom == card - HeldCard::inset, "card buttons: two equal halves, 12 inside");
+}
+
 static void ModelChecks() {
     Expect(Bytes(52848230, 209715200) == L"50.4/200MB", "bytes in total's unit");
     Expect(Bytes(512, 2048) == L"0.5/2KB", "sub-unit received");
@@ -106,6 +131,7 @@ static void ModelChecks() {
     Expect(start[1].top == 16 && start[0].opacity == 0 && start.back().kind == DownloadsUI::SlotKind::ViewAll && start.back().opacity == 1, "morph starts as the popover");
     Expect(end[1].top == 48 && end[0].opacity == 1 && end.back().opacity == 0 && end[5].opacity == 1, "morph lands on the drawer");
     Expect(half[1].kind == DownloadsUI::SlotKind::Row && half[1].clipBottom == 12 + 24 + .5f * (12 + 4 * 48) && half[1].opacity == .5f, "folding rows are clipped and faded");
+    HeldChecks();
 }
 
 struct Fixture {
@@ -147,6 +173,22 @@ struct Fixture {
         const float height = Panel::Height(shown, !rows.empty());
         DownloadsUI::Scene scene; scene.viewBottom = height - Panel::padding / 2;
         return Paint(name, dpi, height, rows, hovered, DownloadsUI::PopoverSlots(rows), entrance, focus, scene);
+    }
+    // Popover with a held download's card (Paper B07b « A · Ambre »), height measured like the app.
+    bool Held(const wchar_t* name, UINT dpi, std::vector<Item>& rows, int focus = 0, std::map<int, int> hovered = {}) {
+        float card = 0;
+        { Chrome measure; if (FAILED(measure.InitOffscreen(root, dpi, Panel::width, 200))) return false; DownloadsUI::View v(measure); card = v.CardHeight(); v.Release(); measure.Dispose(); }
+        if (card <= 0) { std::fprintf(stderr, "held card not measured\n"); return false; }
+        auto slots = DownloadsUI::PopoverSlots(rows, card); const float height = DownloadsUI::PopoverHeight(slots);
+        DownloadsUI::Scene scene; scene.viewBottom = height - Panel::padding / 2;
+        std::printf("held card: %.0f DIP high, popover %.0f DIP\n", card, height);
+        return Paint(name, dpi, height, rows, hovered, slots, 1, focus, scene);
+    }
+    bool HeldDrawer(const wchar_t* name, UINT dpi, std::vector<Item>& rows) {
+        std::array<std::vector<int>, PeriodCount> groups; for (size_t i = 0; i < rows.size(); ++i) groups[0].push_back(static_cast<int>(i));
+        auto slots = DownloadsUI::DrawerSlots(rows, groups, {1, 1, 1, 1, 1}, 0);
+        DownloadsUI::Scene scene; scene.viewTop = DrawerLayout::viewTop; scene.viewBottom = 200; scene.edge = true;
+        return Paint(name, dpi, 200, rows, {}, slots, 1, 0, scene);
     }
     // Drawer: three periods holding the four Paper rows; `open` per period.
     bool Drawer(const wchar_t* name, UINT dpi, float height, std::array<float, PeriodCount> open, float scroll, int focus = 0) {
@@ -381,6 +423,134 @@ static int CancelSurfaceChecks(const std::wstring& root) {
     return failures;
 }
 
+// ---- "View all" morph: nothing from before shows at the growing edges (user report 2026-11-23: small flashes) ----
+// The drawer is a colour-keyed layered window (NativeUI::KeyedDrawer): DWM shows its surface through its window region,
+// the key colour transparent, and a present only reaches the pixels inside the region in force when it presents. So the
+// surface is first filled with a colour the drawer never draws (what an earlier session leaves there), then the real morph
+// runs frame by frame (off screen, DWM-cloaked, never activated) and, after the hand-off and after every frame, the surface
+// is read through the region: no pixel DWM may show can still hold that colour. The region must also stay the same for the
+// whole morph (one present per frame; it only drops the margin strip once landed), and the first and last frames show
+// exactly the shapes the region used to cut (the popover's, the docked column's).
+namespace MorphFlash {
+constexpr uint32_t stale = 0x01FE03, key = 0xFF00FF;   // 0xRRGGBB as a 32-bit DIB holds them
+struct Shot { int w = 0, h = 0; std::vector<uint32_t> px; std::vector<uint8_t> inRegion; HRGN region = nullptr; };
+static bool Read(HWND hwnd, Shot& s) {
+    RECT c{}; GetClientRect(hwnd, &c); s.w = c.right; s.h = c.bottom; if (s.w <= 0 || s.h <= 0) return false;
+    BITMAPINFO bi{}; bi.bmiHeader.biSize = sizeof(bi.bmiHeader); bi.bmiHeader.biWidth = s.w; bi.bmiHeader.biHeight = -s.h; bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr; HDC dc = GetDC(hwnd); HDC mem = CreateCompatibleDC(dc); HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!bmp || !bits) { DeleteDC(mem); ReleaseDC(hwnd, dc); return false; }
+    HGDIOBJ old = SelectObject(mem, bmp); auto* p = static_cast<uint32_t*>(bits); const size_t n = static_cast<size_t>(s.w) * s.h;
+    BitBlt(mem, 0, 0, s.w, s.h, dc, 0, 0, SRCCOPY); GdiFlush(); s.px.assign(p, p + n);
+    if (s.region) DeleteObject(s.region);
+    s.region = CreateRectRgn(0, 0, 0, 0); if (GetWindowRgn(hwnd, s.region) == ERROR) { DeleteObject(s.region); s.region = CreateRectRgn(0, 0, s.w, s.h); }
+    PatBlt(mem, 0, 0, s.w, s.h, BLACKNESS); FillRgn(mem, s.region, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH))); GdiFlush();
+    s.inRegion.resize(n); for (size_t i = 0; i < n; ++i) s.inRegion[i] = (p[i] & 0xFFFFFF) != 0;
+    SelectObject(mem, old); DeleteObject(bmp); DeleteDC(mem); ReleaseDC(hwnd, dc); return true;
+}
+static bool Shown(const Shot& s, size_t i) { return s.inRegion[i] && (s.px[i] & 0xFFFFFF) != key; }
+static int StaleShown(const Shot& s) { int n = 0; for (size_t i = 0; i < s.px.size(); ++i) if (Shown(s, i) && (s.px[i] & 0xFFFFFF) == stale) ++n; return n; }
+// Pixels where "shown by DWM" differs from `expected` (the region the morph used to cut, window pixels).
+static int Mismatch(const Shot& s, HRGN expected) { int n = 0; for (int y = 0; y < s.h; ++y) for (int x = 0; x < s.w; ++x) if (Shown(s, static_cast<size_t>(y) * s.w + x) != (PtInRegion(expected, x, y) != FALSE)) ++n; return n; }
+}
+static int MorphFlashChecks(const std::wstring& root) {
+    using namespace NativeChrome; using namespace NativeChrome::Downloads; namespace UI = NativeChrome::DownloadsUI; using namespace MorphFlash;
+    int failures = 0; auto expect = [&](bool ok, const char* what) { std::printf("%s %s\n", ok ? "ok  " : "FAIL", what); if (!ok) ++failures; };
+    // 1. Pure: the keyed-out silhouette is the GDI region's, pixel for pixel (round-rect shapes as the morph makes them, four scales).
+    for (UINT dpi : {96u, 120u, 144u, 192u}) {
+        Chrome chrome; if (FAILED(chrome.InitOffscreen(root, dpi, 160, 160))) { expect(false, "keyed silhouette: offscreen chrome"); continue; }
+        const int side = static_cast<int>(160 * dpi / 96), radius = static_cast<int>(std::lround(Panel::radius * dpi / 96.f));
+        int wrong = 0;
+        for (float t : {0.f, .13f, .5f, .87f}) {
+            auto lerp = [t](int a, int b) { return static_cast<int>(std::lround(a + (b - a) * t)); };
+            const int d = static_cast<int>(std::lround(radius * (1 - t))) * 2 + 1;
+            HRGN shape = CreateRoundRectRgn(lerp(3, 9), lerp(17, 0), lerp(side - 40, side - 2) + 1, lerp(side / 2, side - 1) + 1, d, d), outside = CreateRectRgn(0, 0, side, side);
+            CombineRgn(outside, outside, shape, RGN_DIFF);
+            auto* target = chrome.RenderTarget(); target->BeginDraw(); target->Clear(D2D1::ColorF(Design::Surface::canvas, Design::Surface::canvas, Design::Surface::canvas, 1));
+            chrome.KeyOutRegion(outside); target->EndDraw();
+            for (int y = 0; y < side; ++y) for (int x = 0; x < side; ++x) {
+                const bool keyed = chrome.SurfacePixel((x + .5f) * 96 / dpi, (y + .5f) * 96 / dpi) == 0xFFFF00FFu;
+                if (keyed != (PtInRegion(outside, x, y) != FALSE)) ++wrong;
+            }
+            DeleteObject(shape); DeleteObject(outside);
+        }
+        chrome.Dispose();
+        std::printf("     keyed silhouette at %u DPI: %d pixel(s) differ from the GDI region\n", dpi, wrong);
+        expect(wrong == 0, "keyed silhouette: exactly the GDI round-rect region's pixels (no antialiased key, no gap)");
+    }
+    // 2. The real drawer and its morph.
+    WNDCLASSW wc{}; wc.lpfnWndProc = DefWindowProcW; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"DownloadMorphTestOwner"; RegisterClassW(&wc);
+    const int ownerW = 1280, ownerH = 900;
+    HWND owner = CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, L"", WS_POPUP, -12000, -12000, ownerW, ownerH, nullptr, nullptr, wc.hInstance, nullptr);
+    std::vector<Item> items(6);
+    for (int i = 0; i < 6; ++i) { items[i].id = i + 1; items[i].state = State::Completed; items[i].path = L"C:\\d\\file-" + std::to_wstring(i + 1) + L".bin"; }
+    UI::Host::Hooks hooks; hooks.schedule = [](Motion::Time) {};
+    UI::Drawer drawer;
+    if (!drawer.Create(wc.hInstance, owner, root, &items, hooks)) { expect(false, "morph: drawer created"); DestroyWindow(owner); return failures; }
+    HWND hwnd = drawer.Window(); BOOL cloak = TRUE; DwmSetWindowAttribute(hwnd, DWMWA_CLOAK, &cloak, sizeof(cloak));
+    drawer.Warm();   // docked size and place, hidden: as while the popover is open
+    // What an earlier session leaves in the surface (never painted by this morph): the stale colour everywhere.
+    SetWindowRgn(hwnd, nullptr, FALSE); SetWindowPos(hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    { RECT c{}; GetClientRect(hwnd, &c); HDC dc = GetDC(hwnd); HBRUSH b = CreateSolidBrush(RGB(0x01, 0xFE, 0x03)); FillRect(dc, &c, b); DeleteObject(b); ReleaseDC(hwnd, dc); }
+    DwmFlush(); Shot shot; const bool readable = Read(hwnd, shot) && (shot.px[shot.px.size() / 2] & 0xFFFFFF) == stale;
+    ShowWindow(hwnd, SW_HIDE);
+    if (!readable) {
+        std::printf("skip morph surface checks: this session gives no readable layered-window surface (no desktop composition)\n");
+    } else {
+        // The popover where ShowDownloads puts it: right edge 6 DIP in from the owner's, top 8 DIP under the toolbar (76 DIP).
+        RECT ownerClient{}; GetClientRect(owner, &ownerClient); MapWindowPoints(owner, nullptr, reinterpret_cast<POINT*>(&ownerClient), 2);
+        const float k = GetDpiForWindow(owner) / 96.f; auto px = [k](float dip) { return static_cast<int>(std::lround(dip * k)); };
+        const RECT from{ownerClient.right - px(DrawerLayout::margin) - px(Panel::width), ownerClient.top + px(76) + px(Panel::anchorGap),
+                        ownerClient.right - px(DrawerLayout::margin), ownerClient.top + px(76) + px(Panel::anchorGap) + px(Panel::Height(4, true))};
+        drawer.MorphForTest(from);
+        RECT w{}; GetWindowRect(hwnd, &w); const int width = w.right - w.left, height = w.bottom - w.top, margin = px(DrawerLayout::margin), r = px(20);
+        auto ownerClip = [&] { return CreateRoundRectRgn(-r * 2, -r * 2, width + 1, height + 1, r, r); };
+        // Hand-off frame: exactly the popover's shape (the region the morph used to start from), nothing stale.
+        Read(hwnd, shot);
+        {   const RECT f{from.left - w.left, from.top - w.top, from.right - w.left, from.bottom - w.top}; const int d = px(Panel::radius) * 2 + 1;
+            HRGN expected = ownerClip(), shape = CreateRoundRectRgn(f.left, f.top, f.right + 1, f.bottom + 1, d, d); CombineRgn(expected, expected, shape, RGN_AND);
+            const int off = Mismatch(shot, expected); std::printf("     hand-off frame: %d pixel(s) off the popover's shape, %d stale\n", off, StaleShown(shot));
+            expect(off == 0 && StaleShown(shot) == 0, "morph: the hand-off frame shows exactly the popover's shape, nothing left from before");
+            DeleteObject(shape); DeleteObject(expected); }
+        // Every frame, driven like the host's frame clock.
+        HRGN previous = CreateRectRgn(0, 0, 0, 0); CombineRgn(previous, shot.region, nullptr, RGN_COPY);
+        int frames = 0, staleFrames = 0, stalePixels = 0, reshapes = 0;
+        while (drawer.MorphingForTest() && frames < 1000) {
+            drawer.Frame(Motion::Now()); ++frames;
+            if (!Read(hwnd, shot)) break;
+            const int n = StaleShown(shot); if (n) { ++staleFrames; stalePixels += n; }
+            if (!EqualRgn(previous, shot.region)) { ++reshapes; CombineRgn(previous, shot.region, nullptr, RGN_COPY); }
+            Sleep(4);
+        }
+        DeleteObject(previous);
+        std::printf("     morph: %d frames, %d with stale pixels shown (%d pixels), %d region change(s)\n", frames, staleFrames, stalePixels, reshapes);
+        expect(frames >= 10 && !drawer.MorphingForTest(), "morph: ran frame by frame to its end");
+        expect(staleFrames == 0, "morph: no frame shows what the window held before at its growing edges (the flashes)");
+        expect(reshapes <= 1, "morph: the window region stays the same while it grows (one present per frame), it only drops the margin strip once landed");
+        // Landed: exactly the docked column (the owner's rounded corner kept), the margin strip gone.
+        {   HRGN expected = ownerClip(), column = CreateRectRgn(margin, 0, width, height); CombineRgn(expected, expected, column, RGN_AND);
+            const int off = Mismatch(shot, expected); std::printf("     landed: %d pixel(s) off the docked column\n", off);
+            expect(off == 0, "morph: lands on exactly the docked column");
+            DeleteObject(column); DeleteObject(expected); }
+        // Closed mid-morph (Échap): it slides out from where it is; nothing from before shows on the way.
+        drawer.Hide(true, false); ShowWindow(hwnd, SW_SHOW);
+        { RECT c{}; GetClientRect(hwnd, &c); SetWindowRgn(hwnd, nullptr, FALSE); HDC dc = GetDC(hwnd); HBRUSH b = CreateSolidBrush(RGB(0x01, 0xFE, 0x03)); FillRect(dc, &c, b); DeleteObject(b); ReleaseDC(hwnd, dc); }
+        DwmFlush(); ShowWindow(hwnd, SW_HIDE);
+        drawer.MorphForTest(from);
+        int closing = 0, closingStale = 0;
+        for (int i = 0; i < 1000 && drawer.Visible(); ++i) {
+            if (i == 5) drawer.Hide(true, true);
+            drawer.Frame(Motion::Now()); if (!drawer.Visible() || !Read(hwnd, shot)) break;
+            ++closing; if (StaleShown(shot)) ++closingStale;
+            Sleep(4);
+        }
+        std::printf("     closed mid-morph: %d frames, %d with stale pixels shown\n", closing, closingStale);
+        expect(closing > 5 && closingStale == 0 && !drawer.Visible() && !IsWindowVisible(hwnd), "morph closed midway (Échap): slides out, nothing from before on the way, then hidden");
+    }
+    if (shot.region) DeleteObject(shot.region);
+    drawer.Dispose(); DestroyWindow(hwnd); DestroyWindow(owner);
+    return failures;
+}
+
 int wmain(int argc, wchar_t** argv) {
     // This drawer's Paper copy is English: its strings are checked in an English process, set explicitly
     // (never the OS language). The French wording is checked in tests/i18n_test.cpp.
@@ -391,6 +561,7 @@ int wmain(int argc, wchar_t** argv) {
         if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 2;
         Fixture f(argv[1], argv[2]);
         failures += CancelSurfaceChecks(f.root);
+        failures += MorphFlashChecks(f.root);
         // Same scales as the Paper exports: x2.875 (first frame), x1.875 (View all + drawer).
         const UINT paper = 276, drawerPaper = 180;
         Expect(f.Render(L"panel-paper.png", paper, {{2, -1}, {4, -1}}), "render Paper states");
@@ -448,6 +619,22 @@ int wmain(int argc, wchar_t** argv) {
                 Expect(f.Drawer((L"fr-drawer-" + d + L".png").c_str(), dpi, 728, {1, 1, 1, 1, 1}, 0), "render French drawer");
             }
             I18n::SetForProcess(I18n::Locale::En);
+        }
+        // Held download (B07b): popover card and drawer row, French, 1x / 1.25x / 2x; English at 1x.
+        {
+            std::vector<Item> held(3);
+            held[0].id = 1; held[0].path = L"C:\\Users\\a\\Downloads\\browser-0.3.715-win-x64-setup.exe"; held[0].state = State::InProgress; held[0].held = true; held[0].received = held[0].total = 57430695;
+            held[1].id = 2; held[1].path = L"C:\\Users\\a\\Downloads\\Facture_EDF_octobre.pdf"; held[1].state = State::Completed; held[1].received = held[1].total = 217088;
+            held[2].id = 3; held[2].path = L"C:\\Users\\a\\Downloads\\HP_M110_Setup_v3.2.1.exe"; held[2].state = State::Failed; held[2].reason = ReasonCode(I18n::Id::download_blocked_dangerous);
+            I18n::SetForProcess(I18n::Locale::Fr);
+            for (UINT dpi : {96u, 120u, 192u}) {
+                const std::wstring d = std::to_wstring(dpi);
+                Expect(f.Held((L"held-card-fr-" + d + L".png").c_str(), dpi, held), "render held card");
+                Expect(f.HeldDrawer((L"held-drawer-fr-" + d + L".png").c_str(), dpi, held), "render held drawer row");
+            }
+            Expect(f.Held(L"held-card-fr-focus.png", 192, held, DownloadsUI::ActionHit(1, 1)), "render held card focus");
+            I18n::SetForProcess(I18n::Locale::En);
+            Expect(f.Held(L"held-card-en-96.png", 96, held), "render held card (en)");
         }
         // Real toolbar (Chrome::Paint) with the animated icon, cropped to the button.
         {

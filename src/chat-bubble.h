@@ -30,10 +30,10 @@ inline void Fit(int& w, int& h, const Rect& area, int margin, int maxW, int maxH
 // A side is taken only if the bubble, at its CURRENT height, is whole in the visible area from that exact position: right,
 // left, below, above; else inside the element, its visible corner nearest to the click. Then (R29) it grows from its fixed
 // edge; past the visible area the user scrolls. `prefer`: the side of the open bubble, kept while it still fits.
-// `margin` and `hPlan` are no longer used for the choice (kept for the callers; R44's planning moved the bubble away).
+// #130 C: a side with no room under the bubble — slid up along that side (`margin` from the page area's edges), before
+// below / above (no flip above the element).
 inline Placement Place(const Rect& element, int w, int h, const Rect& area, int gap, int margin, Side prefer = Side::Right, int lead = 0,
                        int hPlan = 0, Point click = {}, int corner = 0) {
-    (void)margin;
     // the height planned for: the one the bubble WILL have (hPlan: its conversation's last height, or 520), at least its current one
     const int H = std::min(std::max(h, hPlan), area.H());
     auto exact = [&](Side s) -> Placement {   // Paper's exact positions; the rect has the current height, on the edge that stays
@@ -49,7 +49,21 @@ inline Placement Place(const Rect& element, int w, int h, const Rect& area, int 
     auto planned = [&](const Placement& p) { return p.fromBottom ? Rect{p.rect.left, p.rect.bottom - H, p.rect.right, p.rect.bottom} : Rect{p.rect.left, p.rect.top, p.rect.right, p.rect.top + H}; };
     auto whole = [&](const Rect& r) { return r.left >= area.left && r.top >= area.top && r.right <= area.right && r.bottom <= area.bottom; };
     if (prefer != Side::Inside) { const auto p = exact(prefer); if (whole(planned(p))) return p; }
-    for (Side s : {Side::Right, Side::Left, Side::Below, Side::Above}) { const auto p = exact(s); if (whole(planned(p))) return p; }
+    for (Side s : {Side::Right, Side::Left}) { const auto p = exact(s); if (whole(planned(p))) return p; }
+    // #130, variant C (Paper « #130 Bulle sans place dessous · C remonte le long du côté (validée) », Val's choice): no room
+    // under it at its side — the bubble stays NEXT TO its element (same side, same 12 px gap: 8 px from the selection frame)
+    // and slides up along it until it is whole, its bottom `margin` (8 px) above the page area's bottom, never higher than
+    // `margin` under the banner (the page area's top); never above the element (no flip). Right first, then left.
+    for (Side s : {Side::Right, Side::Left}) {
+        auto p = exact(s);
+        if (p.rect.left < area.left || p.rect.right > area.right || H > area.H() - 2 * margin) continue;
+        const int top0 = p.rect.top, top1 = Clamp(top0, area.top + margin, area.bottom - margin - H);
+        p.rect.top = top1; p.rect.bottom = top1 + h; p.slid = std::abs(top1 - top0);
+        p.why = s == Side::Right ? "right of the element, slid along it to be whole (#130 C: +12, 8 px from the page area's edges)"
+                                 : "left of the element, slid along it to be whole (#130 C: -12, 8 px from the page area's edges)";
+        return p;
+    }
+    for (Side s : {Side::Below, Side::Above}) { const auto p = exact(s); if (whole(planned(p))) return p; }
     // Decision (R44 first: the bubble is WHOLE at its opening). 1) a side at Paper's exact place (above); 2) slid along a
     // side — the side with the most room where its width (right / left) or its height (below / above) fits, slid just enough
     // to be whole, the 12 px gap exact (only Paper's -4 alignment gives way); 3) else over the element (below)
@@ -213,9 +227,9 @@ inline bool VisualHosting(const std::wstring& visualSwitch) { return visualSwitc
 inline bool TransparentBackground(bool visual, bool inBubble) { return visual || inBubble; }
 // R29 / R38: once placed, the bubble keeps its anchor for the whole conversation — the same offset from its element,
 // the same fixed edge (its top; its bottom when it is above the element). A new card, an open diff, an expanded
-// permission or error only make it grow away from that edge; it is never moved to fit the window (the user scrolls).
-// Only exception: at the end of the document, where the page cannot scroll further and the bubble would be cut, it
-// moves up once by what is missing (`BottomShift`).
+// permission or error only make it grow away from that edge. #130 wins over R29 (the bubble is always whole in the window):
+// a new size that takes it past the bottom of the page area slides it up along its element (`PastBottom`, `SlideUp`); and
+// at the end of the document it moves up by what is missing (`BottomShift`).
 struct Anchor { bool set = false; Side side = Side::Right; bool fromRight = false, fromBottom = false; int dx = 0, dy = 0; };   // dy: from the element's top to the fixed edge
 inline Anchor AnchorOf(const Placement& p, const Rect& element) {
     Anchor a; a.set = true; a.side = p.side; a.fromRight = p.fromRight || p.side == Side::Left; a.fromBottom = p.fromBottom || p.side == Side::Above;
@@ -227,6 +241,19 @@ inline Rect Anchored(const Anchor& a, const Rect& element, int w, int h) {
     if (a.fromRight) { r.right = element.left + a.dx; r.left = r.right - w; } else { r.left = element.left + a.dx; r.right = r.left + w; }
     if (a.fromBottom) { r.bottom = element.top + a.dy; r.top = r.bottom - h; } else { r.top = element.top + a.dy; r.bottom = r.top + h; }
     return r;
+}
+// #130 (the user: « la bulle reste toujours entièrement dans la fenêtre »; it wins over R29): a new size that takes the
+// bubble closer than `margin` (8 px) to the bottom of the page area while its element is on screen (not a scroll: the
+// user's own; rule 5 of the board, recomputing during a scroll, comes later) — variant C (Paper « #130 Bulle sans place
+// dessous · C remonte le long du côté (validée) »): at its side (or over its element) it slides up along it by what is
+// missing (`SlideUp`), never higher than `margin` under the banner; at most page area − 2 × margin high, its thread scrolls
+// inside with the top fade (Paper 1ANU-0), its input and foot always shown.
+inline bool PastBottom(const Rect& surface, const Rect& element, const Rect& area, int margin = 0) {
+    return surface.H() > 0 && surface.bottom > area.bottom - margin && element.bottom > area.top && element.top < area.bottom;
+}
+inline int SlideUp(const Rect& surface, const Rect& area, int margin) {
+    const int over = surface.bottom - (area.bottom - margin);
+    return over > 0 ? std::min(over, std::max(0, surface.top - (area.top + margin))) : 0;
 }
 inline int BottomShift(const Rect& surface, const Rect& area, int margin, bool atDocumentEnd) {
     const int over = surface.bottom - (area.bottom - margin);
