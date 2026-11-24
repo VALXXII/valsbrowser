@@ -69,6 +69,9 @@ captures (a 76.8 DIP step), the bar gone in the same capture; no frame in betwee
 - The comment bubble (mode Commentaire) does not follow its element during the slide: the live page is still at its old box,
   the bubble follows the live page.
 - Window resized or moved during the motion: the motion ends at once on its target (no picture stretched).
+- First press latency: on the hidden desktop the first page picture of a session costs ~210 ms (the next ones ~20 ms), even
+  after a throwaway capture at idle; the screen shows the unchanged layout meanwhile (no glitch, a delay). To measure on the
+  real screen at night: the log says « FOCUS motion in (… page picture N ms …) ».
 
 ## Tests
 
