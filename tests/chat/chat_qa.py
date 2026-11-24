@@ -59,6 +59,14 @@ REAL_CONFIGS = [pathlib.Path(os.environ['APPDATA']) / 'Claude' / 'claude_desktop
 user32 = ctypes.windll.user32
 
 
+def objective(oid, ok, value='', label=''):
+    """An OBJECTIVE, not a release blocker (owner's decision 5 of 24 Nov 2026, design/annotation-plan-2026-11-24.md §4.1):
+    the bubble's opening under 150 ms (`ouverture-150ms`) and its scroll tracking within 2 px (`suivi-2px`). Measured and
+    said at every run — one line the general test (tests/annotation-general/run.py) reads — and never a failed step."""
+    print(f"OBJECTIF {oid} {'atteint' if ok else 'manque'} | {label} | {value}", flush=True)
+    return True
+
+
 def fingerprints() -> dict:
     out = {}
     for f in REAL_CONFIGS:

@@ -401,9 +401,20 @@ Conséquences pour la lecture des règles du test :
 - La bonne place après un redimensionnement (sans animation) est déjà dans le lot 1 (O5). Le lot 4 y ajoute le
   glissement de la règle 5.
 
-La planche montre un seul cas : un bouton en bas de page, la bulle à sa droite, un tour en cours. Ce qu'elle ne dit pas
-est listé au §5 comme **questions pour Designer** (6 questions). Tant qu'elles n'ont pas de réponse, le test général
-ne vérifie pas ces cas.
+Les six cas que la première planche ne montrait pas sont **validés par le propriétaire le 24/11** (planche « #130 Bulle
+sans place dessous · C règles (validées) », à droite de la planche C, règles 6 à 11) :
+
+| Règle | Vérification | Sort |
+|---|---|---|
+| 6. L'élément sort de l'écran au défilement : la bulle le suit et sort avec lui, elle revient avec lui | « Bulle entière » ne vaut que tant que l'élément est à l'écran. Élément sorti : aucune bulle retenue au bord, aucune bulle fermée ; au retour, même conversation, même brouillon | Lot 4 (avec la règle 5) |
+| 7. Le navigateur ne fait jamais défiler la page pour montrer une carte (ancien R47 retiré) | Pendant un tour avec autorisation, la position de défilement de la page du site ne change pas sans action de l'utilisateur | Lot 1 |
+| 8. Carte d'autorisation : Refuser / Autoriser restent dans le pied toujours visible | Les deux boutons sont dans la zone de page et répondent à un vrai clic, quelle que soit la longueur du fil | Lot 1 |
+| 9. Élément sans côté libre : dessous, sinon dessus, à 8 px ; sinon dans l'élément, coin bas-droit, à 8 px du bord | `section.hero` et `div.plans` : position mesurée pour chacun des trois cas. Remplace R44 (coin le plus proche du clic, 12 px) | Lot 1 |
+| 10. Jamais par-dessus l'élément : la bulle bascule de l'autre côté (dessus ↔ dessous), sinon hauteur limitée + défilement (règle 4) | Aucun pixel commun avec l'élément tant qu'un côté a la place ; sinon règle 4 | Lot 1 |
+| 11. « Réduire les animations » : placement direct. Défilement continu : la bulle colle à l'élément, elle ne glisse qu'au changement de côté | Mouvement réduit : aucune image intermédiaire. Défilement continu : le glissement de 120 ms n'apparaît qu'au changement de côté | Lot 4 |
+
+« Lot 1 » veut dire : vérifié par le test général dès que la branche `VALXXII/fix-129-bubble-model-menu` est fusionnée ;
+si un de ces points n'y est pas encore codé, il est corrigé au lot 1.
 
 Tests écrits pour R29 dont l'attente change. Chaque changement sera listé dans le rapport (règle 7 du §4.1) avec la
 référence « décision 1 du 24/11 » :
@@ -413,8 +424,8 @@ référence « décision 1 du 24/11 » :
 | `tests/chat/chat_units_test.cpp:579` | « never moved to fit the window (the user scrolls) » : le bas peut dépasser la zone | La surface ne dépasse jamais la zone |
 | `tests/chat/chat_units_test.cpp:587` | Une seule exception, en fin de document, un seul décalage | Règle générale, à chaque nouvelle hauteur |
 | `tests/chat/host_contract_test.py:286` | La hauteur n'est jamais limitée par la place sous le bord fixe | Inversé : hauteur limitée à la page affichée − 16 px (règle 4) |
-| `tests/chat/final/journeys.py:128` (`r44_…`) | Hauteur naturelle, jamais réduite pour tenir | Entière dans la zone, à l'ouverture et après |
-| `tests/chat/final/journeys.py:150` (`r47_…`) | La page du site défile pour montrer la carte | Boutons visibles sans compter sur le défilement de la page |
+| `tests/chat/final/journeys.py:128` (`r44_…`) | Hauteur naturelle, jamais réduite pour tenir ; dans l'élément, au coin le plus proche du clic | Entière dans la zone ; dessous, sinon dessus, sinon coin bas-droit de l'élément à 8 px (règle 9) |
+| `tests/chat/final/journeys.py:150` (`r47_…`) | La page du site défile pour montrer la carte | La page ne défile jamais toute seule (règle 7) ; boutons dans le pied toujours visible (règle 8) |
 | `tests/chat/final/journeys.py:383` | Pendant le tour, la bulle ne bouge jamais | Elle peut se replacer pour rester entière ; sans saut |
 | `tests/chat/chat_qa_comment_v4.py:173` | La surface garde son coin au pixel pendant le tour et le diff | Idem tant qu'elle tient ; sinon replacée, entière |
 | `tests/chat/chat_qa_comment_v4b.py:280` (T4) | Fin de document : un décalage au plus | Entière partout, pas seulement en fin de document |
@@ -429,7 +440,7 @@ main `86697e0` et seront à relire après sa fusion.
 
 | # | Décision | Pourquoi |
 |---|---|---|
-| 1 | ~~#130 remplace-t-il R29 ?~~ **Tranchée le 24/11 : oui.** La bulle reste toujours entièrement dans la fenêtre. **Variante C choisie** : elle remonte le long du côté de l'élément | Attentes du test au §4.4 ; règles 1 à 4 sur la branche en cours, règle 5 (défilement, redimensionnement) au lot 4 ; 6 questions pour Designer ci-dessous |
+| 1 | ~~#130 remplace-t-il R29 ?~~ **Tranchée le 24/11 : oui.** La bulle reste toujours entièrement dans la fenêtre. **Variante C choisie** : elle remonte le long du côté de l'élément | Attentes du test au §4.4 ; règles 1 à 4 et 7 à 10 sur la branche en cours puis au lot 1, règles 5, 6 et 11 (défilement) au lot 4 |
 | 2 | ~~Fichiers locaux (`file://`) et fenêtre privée après #125 ?~~ **Tranchée le 24/11 : Annoter reste allumé** sur les deux | Comportement d'aujourd'hui gardé (note native, pas de chat) ; à tester au lot 3 |
 | 3 | ~~Le « lot » (Traiter les annotations ensemble) ?~~ **Tranchée le 24/11 : retiré en entier**, hôte, page et tests | Lot 5 |
 | 4 | ~~Un essai réel avec Claude Code et un avec Codex ?~~ **Tranchée le 24/11 : oui**, une petite demande chacun, sur une copie de test seulement | Lot 5 ; comptes du propriétaire, rien d'autre que la copie |
@@ -438,32 +449,24 @@ main `86697e0` et seront à relire après sa fusion.
 
 Maquettes : je n'ai **pas ouvert Paper** pour ce document. Points à confirmer avec Designer avant de coder :
 
-- O1 : planche validée « #130 Bulle sans place dessous · C remonte le long du côté (validée) », lue le 24/11. Elle
-  laisse 6 questions (ci-dessous).
+- O1 : planches validées « #130 Bulle sans place dessous · C remonte le long du côté (validée) » et « … · C règles
+  (validées) », lues le 24/11 : 11 règles, plus aucune question ouverte.
 - #125 : bouton Annoter éteint et son info-bulle (planche A2 de la v1 ; la v2 attend le choix du propriétaire).
 - O4 : si le suivi parfait est impossible, une alternative est à dessiner (R39b le prévoit : « proposer sans appliquer »).
 - C3 : bulle gardée à sa dernière place quand son élément a disparu pendant le travail : aucun état visuel connu.
 
-### Questions pour Designer — #130, variante C
+### Questions pour Designer — #130, variante C : toutes réglées
 
-La planche validée ne montre qu'un bouton en bas de page avec la bulle à sa droite. Elle ne répond pas à :
+Les 6 questions posées le 24/11 ont leur réponse sur la planche « C règles (validées) », règles 6 à 11 (§4.4) :
 
-1. **Élément sorti de l'écran.** L'utilisateur défile et l'élément quitte la page affichée, par le haut ou par le bas.
-   Les règles 2 et 3 gardent la bulle entre le bandeau et le bas de la page : elle resterait donc à l'écran sans son
-   élément à côté. Reste-t-elle là, suit-elle l'élément hors de l'écran, ou se masque-t-elle jusqu'à son retour ?
-2. **Défilement automatique de la page du site.** Aujourd'hui, quand une carte d'autorisation arrive sous le bas de la
-   fenêtre, le navigateur fait défiler la page du site pour la montrer (correctif de R47, `src/chat-comment.h:716-727`).
-   Avec la règle 4 ce n'est plus nécessaire : on le retire, ou on le garde ?
-3. **Carte d'autorisation.** La règle 4 dit que « le champ de saisie et le pied restent toujours visibles ». La carte
-   avec Refuser / Autoriser fait-elle partie de ce pied, ou défile-t-elle avec le fil ? Le ticket #130 demande que ces
-   boutons soient toujours visibles et cliquables ; la planche ne montre pas de carte.
-4. **Élément sans côté libre.** Un élément aussi large que la page (`section.hero`, `div.plans`) n'a de place ni à
-   droite ni à gauche. Aujourd'hui la bulle se pose alors dessous, dessus, ou dans l'élément au coin le plus proche du
-   clic (R44). La règle 2 dit « sans le couvrir » : que fait-on quand c'est impossible ?
-5. **Bulle posée sous ou sur l'élément.** Quand elle est dessous et que la place manque, « remonter » la ferait passer
-   sur l'élément. Quand elle est dessus, elle grandit vers le haut : la règle 3 suffit-elle, ou passe-t-elle à côté ?
-6. **Mouvement.** Le glissement de 120 ms : placement direct en mouvement réduit ? Et pendant un défilement continu,
-   repart-il vers la nouvelle cible à chaque pas (interruptible), comme les autres suivis de la page ?
+| Question | Réponse validée |
+|---|---|
+| 1. Élément sorti de l'écran | La bulle le suit et sort avec lui, elle revient avec lui (règle 6) |
+| 2. Défilement automatique de la page du site | Retiré : le navigateur ne déplace jamais la page de l'utilisateur (règle 7) |
+| 3. Carte d'autorisation | Refuser / Autoriser sont dans le pied toujours visible (règle 8) |
+| 4. Élément sans côté libre | Dessous, sinon dessus, à 8 px ; sinon dans l'élément, coin bas-droit, à 8 px (règle 9) |
+| 5. Bulle sous ou sur l'élément | Jamais par-dessus : elle bascule de l'autre côté, sinon hauteur limitée et défilement intérieur (règle 10) |
+| 6. Mouvement | Placement direct avec « Réduire les animations » ; en défilement continu elle colle à l'élément et ne glisse qu'au changement de côté (règle 11) |
 
 ## 6. Suites passées aujourd'hui (sans fenêtre, main `86697e0`)
 

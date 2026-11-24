@@ -217,7 +217,8 @@ def run_main():
         lat = round((first - t_click) * 1000) if first else None
         report['measures']['r18'] = {'clickToSurfaceMs': lat, 'log': [l for l in C.log_text()[m2:].splitlines() if 'bubble shown' in l or 'bubble opened' in l]}
         # final QA: the final plan's invariant is « in less than 150 ms » (design/chat-comment-final-plan.md), not 100
-        step('R18 · a real click: the bubble\'s surface on screen in less than 150 ms', lat is not None and lat < 150, report['measures']['r18'])
+        step('R18 · a real click: the bubble\'s surface comes on screen', lat is not None, report['measures']['r18'])
+        C.objective('ouverture-150ms', lat is not None and lat < 150, lat, 'comment-v4b R18: click to surface, ms')   # decision 5: an objective
         logged(r'CHAT panel ready', 0, 5); time.sleep(0.8)
 
         # ---- T6: a CSS-only turn (glide), frame by frame

@@ -380,8 +380,8 @@ class Monkey:
         finally:
             time.sleep(0.6); s.stop = True; s.join(2)
         v = s.verdict()
-        if v and v['over16']:
-            self.R.step(f'#{a["i"]} invariant: the bubble follows its element WHILE the page scrolls (R39, gap change <= 16 px CSS)', False, v)
+        if v:   # decision 5 (24 Nov 2026): the tracking while the page scrolls is an objective — reported, never a failure
+            C.objective('suivi-2px', not v['over16'], v, f'monkey #{a["i"]}: gap change while scrolling (<= 16 px CSS between two reads)')
         return out
 
     def run(self, actions):

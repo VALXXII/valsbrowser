@@ -851,8 +851,11 @@ class Invariants:
             time.sleep(0.1); text = (chat_state('bubble').get('text') or '')
         right_conv = (token in text if token else True) and not any(t in text for t in others)
         d = {'ms': ms, 'surface': sf, 'page': pg, 'scroller': sc, 'token': token, 'othersShown': [t for t in others if t in text]}
-        self.r.step(f'{where} · click on {sel}: the bubble is entirely visible (page area), natural height, < 150 ms, the right conversation',
-                    ms is not None and ms < 150 and inside and natural and right_conv, d, {'action': where})
+        # decision 5 (24 Nov 2026): « in less than 150 ms » is an objective (reported); the bubble on screen within the wait,
+        # whole, at its height, with the right conversation, is what fails
+        self.r.step(f'{where} · click on {sel}: the bubble is entirely visible (page area), natural height, the right conversation',
+                    ms is not None and inside and natural and right_conv, d, {'action': where})
+        C.objective('ouverture-150ms', ms is not None and ms < 150, ms, f'{where} · click on {sel}')
         if mark is not None:
             n = len(re.findall(r'conversation of an element reopened', C.log_text()[mark:]))
             if n > 1:
