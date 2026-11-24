@@ -32,6 +32,7 @@ bool ChatAgentsAvailable();
 AnnotationSettings::ChatAgents ChatAgentsStatus();             // the status now (cheap, UI thread)
 void ChatAgentsWatch(std::function<void()> changed);           // `changed` on the UI thread after every change of an agent
 void ChatAgentsRefresh();                                      // detect both again (the view was opened)
+void ChatAgentsPageOpened(const std::wstring& url);            // a link handed over by another launch opened in a tab (a CLI's sign-in page?)
 // The row's button. Call it from that click (mouse or keyboard) ONLY: Install / Retry take the install's consent there
 // (AgentStatus::UserClicked); SignIn opens the CLI's own sign-in. Nothing installs by itself.
 void ChatAgentAct(AnnotationSettings::ChatApp app, AnnotationSettings::ChatAction action);

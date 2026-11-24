@@ -298,6 +298,19 @@ static void CancelSignInCase() {
            "cancel: back to « Se connecter » (reason cancelled, not an error), at once — not after the 15 min timeout");
     Expect(!RunningFrom(exe), "cancel: the sign-in console's process is gone");
     Expect(!AS::CancelSignIn(C), "cancel: nothing left to cancel");
+    // « Browser voit tout seul quand c'est fait » (3b): signed in in the web page while the console still waits — a
+    // detection asked meanwhile (focus back in Browser, the tutorial back over its tab) sees it: the console closes, « Prêt ».
+    Expect(AS::SignIn(C) && AS::Get(C).state == S::SigningIn, "signed in meanwhile: a sign-in running (its console waits)");
+    Pump(5000, [&] { return RunningFrom(exe); });
+    bool asked = false; AS::Refresh([&] { asked = true; }); Pump(15000, [&] { return asked; });
+    Expect(asked && AS::Get(C).state == S::SigningIn && RunningFrom(exe), "signed in meanwhile: still signed out → the detection changes nothing, the console keeps waiting");
+    WriteText(exe + L".login", "0");   // the person finished in the web page
+    const ULONGLONG t2 = GetTickCount64(); AS::Refresh();
+    Pump(15000, [&] { return AS::Get(C).state != S::SigningIn; });
+    Expect(AS::Get(C).Ready() && GetTickCount64() - t2 < 5000, "signed in meanwhile: the detection sees it → « Prêt » at once");
+    Pump(5000, [&] { return !RunningFrom(exe); });
+    Expect(!RunningFrom(exe), "signed in meanwhile: the waiting sign-in console is closed");
+    WriteText(exe + L".login", "1"); AS::Refresh(); Pump(15000, [&] { return AS::Get(C).state == S::NeedsSignIn; });   // signed out again
     // The browser closing still ends a sign-in.
     Expect(AS::SignIn(C), "shutdown: a sign-in running");
     Pump(5000, [&] { return RunningFrom(exe); });

@@ -128,7 +128,10 @@ bool Retry(const Consent& consent);          // Error: the failed step again (in
 // NeedsSignIn (reason Cancelled, not an error); signed in meanwhile → Ready. Listeners are called as for any change.
 #define AGENT_STATUS_CANCEL_SIGN_IN 1
 bool CancelSignIn(Agent agent);
-void Refresh();                              // detect both again (window focus, settings opened, chat opened)
+// detect both again (window focus, settings opened, chat opened). An agent signing in is not detected again: its CLI is
+// asked whether it is signed in already (finished in the web page while the console waits) — then the console closes
+// and the sign-in's own end says Ready.
+void Refresh();
 void Refresh(Agent agent);
 void Refresh(std::function<void()> done);    // both again, then `done` on the UI thread (after the listeners)
 

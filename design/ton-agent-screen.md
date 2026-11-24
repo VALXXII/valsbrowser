@@ -2,33 +2,50 @@
 
 Paper « Browser Design » › « Onboarding agents — Ton agent (maquette prête) » (file 01M6Q7YT14ZKMGET54ASPNGQEC, page p-12-0).
 Branch `VALXXII/ton-agent-ui`, on A's `VALXXII/ton-agent` (the agents' one status: `src/agent-status.h`,
-`design/ton-agent-interface.md`). Everything here reads that status and nothing else; nothing installs without the click
-of a strong button (`AgentStatus::UserClicked`).
+`design/ton-agent-interface.md`). Everything here reads that status and nothing else; nothing installs without a click
+(`AgentStatus::UserClicked`): on the screen, the tile's own click (Val, 2026-11-24: « la tuile lance l'action », Paper note
+265A-0); in the chat's block and Réglages › Agents, the row's button.
 
 ## 1. The screen
 
 One window, two uses:
 
 - **the tutorial's sixth step** (#125, `src/annotation-onboarding.h`, in the place of « Connecter »): progress dots, « Plus
-  tard » goes on to A7, « Retour » (once an agent is ready) to A5, « Ouvrir le chat » ends the tutorial (finished) and
-  opens the chat with that agent;
+  tard » goes on to A7, « Continuer » (once an agent is ready) too;
 - **alone** (`Options::alone`): the band's reminder, the chat, Réglages — `OpenTonAgent` below. No progress; « Plus
-  tard », the close button and Échap close it; « Ouvrir le chat » closes it and opens the chat.
+  tard », the close button and Échap close it; « Continuer » closes it and opens the chat with the ready agent.
+
+The footer never holds an action: « Plus tard » on the left, « Continuer » (accent) on the right only once an agent is
+ready (every board, « Prêt » included).
 
 What it shows is decided in `src/annotation-onboarding-agent.h` (pure, tested):
 
-| target's state | title / body (catalogue) | target tile | strong button | card top |
+| target's state | title / body (catalogue) | its tile (the click) | under the tiles | card top |
 | --- | --- | --- | --- | --- |
-| first detection | Choisissez votre agent | no mark | « Installer X » dimmed | centred on 220 |
-| not installed (also Claude Desktop only, too old) | Choisissez votre agent | ⤓ Installer, at rest | « Installer X » | centred on 220 (141.5 → 141) |
-| installing | Installation de X / Ça peut prendre… | ⤓ Installation... animated, cyan outline | « Installation… » dimmed (#1F4A4C, #FFFFFF99) | 123 |
-| needs sign-in / signing in | Connectez X (Claude Code: its paid plan; Codex: its ChatGPT account) | 📶 Connecter, cyan outline | « Se connecter à X » (dimmed while the console is open) | centred |
-| ready | X est prêt / Il travaille sur vos projets… | ✓ Prêt, cyan outline | « Ouvrir le chat » (+ « Retour » in the tutorial) | 140 |
-| failed | Choisissez votre agent + the two lines under the tiles | ☹ Erreur, danger outline and 10 % | « Réessayer » (+ « Installer moi-même ↗ » after an install) | 72 |
+| first detection | Choisissez votre agent | no mark, no click | — | centred on 220 |
+| not installed (also Claude Desktop only) | Choisissez votre agent | ⤓ Installer, at rest (click: install) | — | centred on 220 (141.5 → 141) |
+| too old (no board: provisional) | Choisissez votre agent | ⤓ Mettre à jour, at rest (click: install again) | — | centred |
+| installing | Installation de X / Ça peut prendre… | ⤓ Installation... animated, cyan; the other tile waits (32 %, no click) | — | 123 |
+| needs sign-in | Connectez X (Claude Code: its paid plan; Codex: its ChatGPT account) | 📶 Connecter, at rest (click: sign in) | — | centred |
+| signing in (3b 263M-0) | Connexion en cours / Terminez la connexion dans l'onglet ouvert, puis revenez ici. | 📶 Connexion…, cyan, no click | two lines + « Rouvrir la page de connexion ↗ » when its tab was closed | 72 |
+| ready | X est prêt / Il travaille sur vos projets… | ✓ Prêt, cyan, no click | — | 140 |
+| install failed | Choisissez votre agent | ☹ Erreur, danger (hover: « Réessayer »; click: retry) | two lines + « Installer moi-même ↗ » | 72 |
+| sign-in failed (5 25OI-0) | Connectez X / Connectez-vous une fois avec votre compte Claude, … | ☹ Connexion échouée, danger (hover: « Réessayer ») | two lines (Claude Code: its paid account) | 72 |
 
-- **Target**: before any click, the agent that is busy, else ready, else failed (Claude Code first), else Claude Code
-  (Claude Code 1 Choisir); a click on a tile makes it the target (Codex 1 Choisir: « Installer Codex », no outline yet).
-  Only the target is outlined, and only once acted on.
+- **The tile is the button** (265A-0): its click runs its action at once and is the consent. Hovered, a tile with an
+  action shows the hand, #262626 with inset 1 #3A3A3A and its mark white (at rest #1F1F1F, #2A2A2A, #A6A6A6); a failed
+  one keeps its danger frame and says « Réessayer » in #FF7B6E. Installation… / Connexion… / Prêt: no hover, no click.
+  While one agent installs the other tile waits: dimmed (the disabled token, 32 % — Val's rule, no board draws it yet).
+- **Target**: the tile acted on (the text above the footer follows it); before any click, the agent that is busy, else
+  ready, else failed (Claude Code first), else Claude Code. Busy tiles are cyan wherever they are; a ready or failed tile
+  when it is the target.
+- **Connexion dans un autre onglet** (263M-0, note 265A-0): the CLI's sign-in opens its page with the default browser.
+  When that is Browser, the page opens in a tab (a link handed over by the CLI's launch: `TonAgentPageOpened`): the
+  window steps aside while another tab is in front (hidden with its veil, the browser usable), and comes back over the
+  tab it was opened over — still signing in: 3b; signed in meanwhile: Prêt (the hub's sign-in check:
+  `AgentStatus::Refresh` while the console waits). The page's address is kept for « Rouvrir la page de connexion ↗ »
+  once its tab is closed; another default browser hands nothing over: no link. Back in Browser from another app while a
+  sign-in runs: the agents are asked again (`Ann::AgentsFocusBack`).
 - **« Installation… »**: the Downloads button's Lottie layers (`src/download-icon.h`: track, fill, arrow, cut-out; the
   same frames, start morph and 1.3 s loop) composed in one ink, the profile's light accent (#2FD1D9 on the boards). At
   the end the arrow morphs into the check (`download-success.json`, 400 ms; held 600 ms before « Connecter » when a
@@ -40,9 +57,11 @@ What it shows is decided in `src/annotation-onboarding-agent.h` (pure, tested):
   chat's own test) or « Aucun agent prêt »; its sentence names that agent or « Votre agent ». Never « connecté » when the
   chat would say « Pas installé » (the MCP status the tutorial used to show is ignored).
 - Refresh: when the screen is shown and when its window is activated again (back from the web page or PowerShell).
-- Keyboard: Tab through the tiles, « Installer moi-même », the footer, language, close; ← → between the tiles; Espace /
-  Entrée picks a tile; Entrée elsewhere = the strong button; Échap = close. UIA: the tiles are buttons named by the
-  agent, their mark as status; the failure lines are text.
+- Keyboard: Tab through the tiles with an action, the link, the footer, language, close; ← → between those tiles;
+  Espace / Entrée on a tile runs it; Entrée elsewhere = « Continuer »; Échap = close. UIA: a tile with an action is a
+  button named by it (« Installer Claude Code », « Se connecter à Codex », « Réessayer l'installation de … »), its mark
+  as status (waiting: disabled, « Disponible après l'installation en cours »); without one, a text (name, mark); the
+  lines under the tiles are text.
 
 Values (Paper, exact): card 400 × (157 | 160 | 228) at x 160, #171717, radius 16, padding 12, gap 10; tile radius 12,
 padding 26 / 12 / 18, at rest #1F1F1F with inset 1 #2A2A2A, current #192A2A inset 1.5 #2FD1D9, failed danger 10 % inset 1.5

@@ -5493,7 +5493,7 @@ bool HandOverLaunchTarget(){
 // Receiver side (ProfileCopyDataMessage « open <target> »): a new tab, this window brought forward.
 void OpenHandedTarget(const std::wstring& target){
     const std::wstring url=LaunchUrl(target);if(url.empty())return;
-    NewTab(url);Select((int)pages.size()-1);Log(L"OPEN handed target in a new tab");
+    NewTab(url);Select((int)pages.size()-1);ChatAgentsPageOpened(url); /* « Ton agent »: a CLI's sign-in page, Browser being the default browser */Log(L"OPEN handed target in a new tab");
     if(IsIconic(window))ShowWindow(window,SW_RESTORE);SetForegroundWindow(window);
 }
 // browser.exe [switches] [<url>|<path>] or [switches] --single-argument <url|path>: the target apart from the switches.

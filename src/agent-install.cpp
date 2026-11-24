@@ -399,7 +399,24 @@ void Unsubscribe(int id) { H().listeners.erase(id); }
 namespace {
 void RefreshOne(Agent agent, std::function<void()> done) {
     auto& h = H();
-    if (!h.initialised || h.shuttingDown || Get(agent).Busy()) { if (done) done(); return; }
+    if (!h.initialised || h.shuttingDown || Get(agent).state == State::Installing) { if (done) done(); return; }
+    if (Get(agent).state == State::SigningIn) {
+        // « Browser voit tout seul quand c'est fait » (Paper 263M-0): the sign-in may be finished in the web page while
+        // its console still waits. Signed in already: the console closes (as « Annuler » does) and the sign-in's own end
+        // detects again — « Prêt ». Still signed out: nothing changes, the console keeps waiting.
+        struct Seen { AgentRuntime::Detection d; bool desktop = false; };
+        auto seen = std::make_shared<Seen>();
+        RunOff([seen, agent] { const auto env = Environment(); seen->d = DoDetect(env, agent); seen->desktop = DesktopInstalled(env); },
+               [seen, agent, done] {
+                   auto& hub = H(); auto& stop = hub.signInStop[Index(agent)];
+                   if (!hub.shuttingDown && Get(agent).state == State::SigningIn && stop && FromDetection(seen->d, seen->desktop).Ready()) {
+                       Log(std::wstring(Name(agent)) + L": signed in while its sign-in console waits — the console closes");
+                       stop->store(true);
+                   }
+                   if (done) done();
+               });
+        return;
+    }
     const unsigned ticket = ++h.detecting[Index(agent)];
     struct Out { AgentRuntime::Detection d; bool desktop = false; };
     auto out = std::make_shared<Out>();

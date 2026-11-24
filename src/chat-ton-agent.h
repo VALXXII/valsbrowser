@@ -92,6 +92,44 @@ void SendTonAgent() {
     SJ::Value rows = SJ::Value::Arr(); for (auto a : AgentStatus::AllAgents) rows.Push(TonAgentRow(a)); m.Set("rows", std::move(rows));
     Send("agents.setup", std::move(m));
 }
+// ---- « Connexion dans un autre onglet » (Paper 263M-0, note 265A-0) ----
+// Each CLI's sign-in (`claude auth login`, `codex login`) opens its page with the system's default browser. When that is
+// Browser, the page arrives as a link handed over by another launch (main.cpp OpenHandedTarget → TonAgentPageOpened) and
+// opens in a tab: it is kept while that agent signs in, and offered again (« Rouvrir la page de connexion ↗ ») once its
+// tab is closed. Another default browser: nothing arrives here, no link (the CLI's console still shows the address).
+struct TonSignInPage { std::wstring url; std::weak_ptr<Tab> tab; bool seen = false; };
+TonSignInPage tonSignInPages[2];
+std::weak_ptr<Tab> tonAgentTab;   // the tab the screen alone was opened over: set aside for a sign-in, it comes back there
+int tonSignInListener = 0;
+// The sign-in page's hosts: Claude Code's OAuth page (claude.ai, anthropic.com, claude.com), Codex's (auth.openai.com,
+// chatgpt.com). https only, no user part.
+bool TonSignInHost(AgentStatus::Agent a, const std::wstring& url) {
+    std::wstring u = url; for (auto& ch : u) ch = static_cast<wchar_t>(towlower(ch));
+    if (u.rfind(L"https://", 0) != 0) return false;
+    const auto end = u.find_first_of(L"/?#", 8); std::wstring host = u.substr(8, end == std::wstring::npos ? std::wstring::npos : end - 8);
+    if (host.find(L'@') != std::wstring::npos) return false;
+    if (const auto colon = host.find(L':'); colon != std::wstring::npos) host = host.substr(0, colon);
+    auto under = [&host](const std::wstring& d) { return host == d || (host.size() > d.size() && host.compare(host.size() - d.size(), d.size(), d) == 0 && host[host.size() - d.size() - 1] == L'.'); };
+    return a == AgentStatus::Agent::Codex ? under(L"openai.com") || under(L"chatgpt.com") : under(L"claude.ai") || under(L"anthropic.com") || under(L"claude.com");
+}
+void ListenTonSignIn() {
+    if (tonSignInListener) return;
+    tonSignInListener = AgentStatus::Subscribe([](const AgentStatus::Status& s) { if (s.state != AgentStatus::State::SigningIn) tonSignInPages[TonAgent::Index(s.agent)] = TonSignInPage{}; });   // the sign-in ended: forgotten
+}
+// 3b's link: the page, once its tab is closed (while it is open the person goes back to it themselves).
+std::wstring TonSignInPageFor(AgentStatus::Agent a) {
+    const auto& p = tonSignInPages[TonAgent::Index(a)];
+    return p.seen && p.tab.expired() && AgentStatus::Get(a).state == AgentStatus::State::SigningIn ? p.url : std::wstring();
+}
+// « Rouvrir la page de connexion ↗ »: that page in a new tab (the screen steps aside: the tab changed).
+void ReopenSignInPage(AgentStatus::Agent a) {
+    auto& p = tonSignInPages[TonAgent::Index(a)];
+    if (!p.seen || AgentStatus::Get(a).state != AgentStatus::State::SigningIn || !TonSignInHost(a, p.url)) return;
+    const std::wstring url = p.url;
+    ::NewTab(url); p.tab = ::Active(); SetForegroundWindow(::window);
+    Diag(std::wstring(L"Ton agent: the sign-in page of ") + (a == AgentStatus::Agent::Codex ? L"Codex" : L"Claude Code") + L" opened again in a tab");
+}
+
 // « Installer moi-même ↗ »: the official command to the clipboard, the official page in a new tab.
 void OpenOfficialPage(const std::wstring& url) { if (url.rfind(L"https://", 0) == 0) { ::NewTab(url); Diag(L"Ton agent: the official install page opened in a new tab"); } }
 void InstallMyself(AgentStatus::Agent a) {
@@ -134,6 +172,8 @@ const bool tonAgentFallbacks = [] {
     auto& f = NativeChrome::AnnotationOnboardingUI::Fallbacks();
     f.openChat = [](AgentStatus::Agent a) { OpenChatFor(a); };
     f.openPage = [](const std::wstring& url) { OpenOfficialPage(url); };
+    f.signInPage = [](AgentStatus::Agent a) { return TonSignInPageFor(a); };
+    f.reopenSignIn = [](AgentStatus::Agent a) { ReopenSignInPage(a); };
     return true;
 }();
 
@@ -144,8 +184,8 @@ void OpenTonAgent(TonAgentFrom from) {
     namespace OUI = NativeChrome::AnnotationOnboardingUI; namespace AO = AnnotationOnboarding;
     const wchar_t* who = from == TonAgentFrom::Band ? L"the band's reminder" : from == TonAgentFrom::Settings ? L"Réglages" : L"the chat";   // i18n-exempt: log detail
     Chat::EnsureAgentStatus();
-    if (Ann::OnboardingOpen()) { Ann::onboarding->Raise(); Log(std::wstring(L"TON AGENT asked by ") + who + L": the tutorial is open (its « Ton agent » step), brought to the front"); return; }
-    if (Chat::tonAgentWindow && Chat::tonAgentWindow->Visible()) { Chat::tonAgentWindow->Raise(); return; }
+    if (Ann::OnboardingOpen()) { if (Ann::onboarding->Aside()) Ann::onboardingTab = ::Active(); Ann::onboarding->Raise(Ann::ClientScreen()); Log(std::wstring(L"TON AGENT asked by ") + who + L": the tutorial is open (its « Ton agent » step), brought to the front"); return; }
+    if (Chat::tonAgentWindow && Chat::tonAgentWindow->Visible()) { if (Chat::tonAgentWindow->Aside()) Chat::tonAgentTab = ::Active(); Chat::tonAgentWindow->Raise(Ann::ClientScreen()); return; }
     OUI::Options o; o.reduced = Ann::Reduced(); o.alone = true; Ann::TintTutorial(o);
     o.hooks.closed = [](AO::Ending end, bool) {
         Log(std::wstring(L"TON AGENT closed (") + (end == AO::Ending::Finished ? L"« Ouvrir le chat »" : L"later") + L")");
@@ -157,5 +197,27 @@ void OpenTonAgent(TonAgentFrom from) {
     o.hooks.announce = [](const std::wstring& t) { Ann::Announce(t); };
     Chat::tonAgentWindow = std::make_unique<OUI::Window>();
     if (!Chat::tonAgentWindow->Open(instance, window, base, Ann::ClientScreen(), std::move(o))) { Chat::tonAgentWindow.reset(); Log(std::wstring(L"TON AGENT could not open (asked by ") + who + L")"); return; }
+    Chat::tonAgentTab = ::Active();
     Log(std::wstring(L"TON AGENT opened by ") + who);
+}
+// AnnotationTabChanged (src/annotation-mode.h): the screen alone steps aside while a sign-in's page is in front and comes
+// back over the tab it was opened over (that tab closed meanwhile: it goes, nothing answered).
+void TonAgentTabChanged() {
+    auto& w = Chat::tonAgentWindow; if (!w || !w->Visible()) return;
+    const auto start = Chat::tonAgentTab.lock();
+    if (!start) { if (w->Aside()) { w->Dismiss(); Log(L"TON AGENT closed: the tab it was opened over is gone"); } return; }
+    const bool was = w->Aside();
+    w->TabInFront(start == ::Active(), Ann::ClientScreen());
+    if (w->Aside() != was) Log(was ? L"TON AGENT back over its tab (the agents detected again)" : L"TON AGENT set aside: a sign-in page is in front");
+}
+// main.cpp OpenHandedTarget: a link handed over by another launch, opened in the tab in front. While an agent signs in and
+// the link is its sign-in page (Browser is the default browser), it is kept for « Rouvrir la page de connexion ↗ ».
+// Never logged (the address carries the sign-in's one-time state).
+void TonAgentPageOpened(const std::wstring& url) {
+    for (auto a : AgentStatus::AllAgents) {
+        if (AgentStatus::Get(a).state != AgentStatus::State::SigningIn || !Chat::TonSignInHost(a, url)) continue;
+        Chat::ListenTonSignIn(); Chat::tonSignInPages[TonAgent::Index(a)] = Chat::TonSignInPage{url, ::Active(), true};
+        Log(std::wstring(L"TON AGENT the sign-in page of ") + (a == AgentStatus::Agent::Codex ? L"Codex" : L"Claude Code") + L" opened in a tab (kept to open it again)");
+        return;
+    }
 }

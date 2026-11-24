@@ -194,8 +194,9 @@ int wmain(int argc, wchar_t** argv) {
         Expect(Near(claude.left, 172) && Near(claude.top, 152) && Near(claude.right, 355) && Near(claude.bottom, 288) && Near(codex.left, 365) && Near(codex.right, 548), "A6 geometry: the tiles 183 × 136 at (172, 152) and x 365 (card at 140)");
     }
     f.window.SetStatus(A::AgentKind::Codex, {A::ConnectState::Connected, L""});   // the MCP status: no longer shown
-    Expect(f.connects == 0 && f.window.SecondaryForTest() == L"Retour" && f.window.PrimaryForTest() == L"Ouvrir le chat", "A6: Claude Code ready → « Retour », « Ouvrir le chat » (no MCP row)");
-    f.window.ActivateForTest(UI::Window::CodexRow); Expect(f.connects == 0 && f.window.PrimaryForTest() == L"Se connecter à Codex" && f.window.SecondaryForTest() == L"Plus tard", "A6: the Codex tile picked → « Se connecter à Codex », « Plus tard »");
+    Expect(f.connects == 0 && f.window.SecondaryForTest() == L"Plus tard" && f.window.PrimaryForTest() == L"Continuer" && f.window.PrimaryEnabledForTest(), "A6: Claude Code ready → « Plus tard », « Continuer » (no MCP row)");
+    Expect(f.window.TileNameForTest(AgentStatus::Agent::Codex) == L"Se connecter à Codex" && f.window.TileEnabledForTest(AgentStatus::Agent::Codex) && !f.window.TileEnabledForTest(AgentStatus::Agent::Claude),
+           "A6: the Codex tile's click signs in (« Se connecter à Codex »); the ready Claude Code tile has no click");
     f.window.ActivateForTest(UI::Window::Secondary);
     Expect(f.window.Flow().step() == Step::Ready, "A6 « Plus tard » → A7");
     Expect(f.Shot(L"A7"), "render: A7 « Tout est prêt »");

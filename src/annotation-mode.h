@@ -72,6 +72,8 @@ std::uint64_t serials = 0;                    // never reset: a new session neve
 AUI::Banner banner; AUI::ConnectModal connect; AUI::SelectionFrame frame; AUI::EntryVeil veil;
 // #125: the onboarding window, made when it opens (a closed one stays until the next, never deleted from its own callback).
 std::unique_ptr<NativeChrome::AnnotationOnboardingUI::Window> onboarding;
+std::weak_ptr<Tab> onboardingTab;   // the tab it was opened over: set aside for a sign-in (TutorialTabChanged), it comes back there
+bool onboardingMode = false;        // the mode was on over that tab when the tutorial stepped aside (on again at its return)
 // #125 (Val, 2026-11-24): what a private window annotates is erased when it closes (src/annotation-private.h): this
 // process's ledger (opened at its first note), and the notes still being written (the close waits for them).
 AnnotationPrivate::Ledger privateLedger; std::atomic<int> jobsInFlight{0};
@@ -764,6 +766,7 @@ bool OpenOnboarding(AnnotationOnboarding::Step start = AnnotationOnboarding::Ste
     o.hooks.announce = [](const std::wstring& t) { Announce(t); };
     onboarding = std::make_unique<OUI::Window>();
     if (!onboarding->Open(instance, window, base, ClientScreen(), std::move(o))) { onboarding.reset(); Log(L"ANNOTATE onboarding could not open: « Connecter un agent » instead"); return false; }
+    onboardingTab = Active(); onboardingMode = false;
     if (s.active) banner.SetReminder(false, true);
     SyncWatch(); RefreshAgents();
     Log(std::wstring(L"ANNOTATE onboarding opened") + (OnboardingForced() ? L" (--annotation-onboarding)" : L" (first time)") + (ConnectRedirected() ? L", connection writes redirected to BROWSER_ANNOTATIONS_CONNECT_ROOT" : L""));
@@ -854,6 +857,7 @@ void Activate(const Start& st) {
         if (!s.active || s.nonce != nonce) return;
         AnnotationOnboarding::Launch first; first.onboarded = Prefs::Onboarded(settings); first.forced = OnboardingForced(); first.direct = direct; first.chatOpen = Chat::AskedFor();
         first.busy = connect.Visible() || OnboardingOpen();
+        if (OnboardingOpen()) { banner.SetReminder(false, true); return; }   // the tutorial back over its tab (a sign-in): no reminder under it
         if (AnnotationOnboarding::ShouldShow(first) && OpenOnboarding()) return;   // #125: the first time, the onboarding (agents connected or not)
         banner.SetReminder(ReminderWanted());   // « Ton agent »: no « Connecter un agent » window by itself any more; the reminder is the chat's
     });
@@ -919,12 +923,40 @@ void Exit(const wchar_t* why) {
     s = Session{}; ++serials;
     CtrlWatch();   // R31: the mode is off: no more reading, the state forgotten
     banner.Hide(); if (connect.Visible()) connect.Close(false);
-    if (OnboardingOpen()) { onboarding->Dismiss(); Log(L"ANNOTATE onboarding closed by the mode's exit (not answered: shown again next time)"); }
+    if (OnboardingOpen() && !onboarding->Aside()) { onboarding->Dismiss(); Log(L"ANNOTATE onboarding closed by the mode's exit (not answered: shown again next time)"); }
     veil.Interrupt();   // V3-B: an exit during the entry fades the veil from its value (none at the exit otherwise)
     chrome.annotationBand = 0; SyncChrome(); Layout();
     SyncWatch();
     Log(std::wstring(L"ANNOTATE mode off (") + why + L")");
     Chat::ModeExited();
+}
+// « Connexion dans un autre onglet » (Paper note 265A-0): a sign-in started from the tutorial's « Ton agent » step opens its
+// page in a tab of Browser (the default browser): the tutorial steps aside while another tab is in front (the mode's exit
+// with its tab does not close it), and comes back over the tab it was opened over — the mode on again there if it was,
+// the agents detected again. That tab closed meanwhile: the tutorial goes (not answered: shown again next time).
+void TutorialTabChanged() {
+    if (!OnboardingOpen()) return;
+    const auto start = onboardingTab.lock(); const auto front = Active();
+    if (!onboarding->Aside()) {
+        const bool mode = s.active;
+        onboarding->TabInFront(start && start == front, ClientScreen());
+        if (onboarding->Aside()) { onboardingMode = mode; Log(L"ANNOTATE onboarding set aside: a sign-in page is in front"); }
+        return;
+    }
+    if (!start) { onboarding->Dismiss(); Log(L"ANNOTATE onboarding closed: the tab it was opened over is gone (shown again next time)"); return; }
+    if (start != front) return;
+    if (onboardingMode && !s.active) Activate({});
+    onboarding->TabInFront(true, ClientScreen());
+    Log(L"ANNOTATE onboarding back over its tab (« Ton agent »: the agents detected again)");
+}
+// « Connexion dans un autre navigateur » (Paper note 265A-0): back in Browser while a sign-in runs, the agents are asked
+// again — signed in meanwhile, « Prêt » (AgentStatus::Refresh checks it while the sign-in console waits). The tutorial,
+// the screen alone, the chat's block and Réglages › Agents all follow that one status.
+void AgentsFocusBack() {
+    static bool front = true;
+    const HWND f = GetForegroundWindow(); const bool now = f && (f == window || GetAncestor(f, GA_ROOTOWNER) == window);
+    if (now && !front) for (auto a : AgentStatus::AllAgents) if (AgentStatus::Get(a).state == AgentStatus::State::SigningIn) AgentStatus::Refresh(a);
+    front = now;
 }
 // Chat intégré: the page of the mode was reloaded (by the chat after a turn, or by the dev server) while the chat panel
 // is open. The mode stays: band and panel do not move; the selection state is dropped and the page script is
@@ -998,7 +1030,7 @@ bool AnnotationSurfaceFocus() {
 }
 void AnnotationSyncChrome() { Ann::SyncChrome(); }
 void AnnotationLayout() { Ann::Place(); }
-void AnnotationWindowState() { if (Ann::uiReady) Ann::banner.WindowStateChanged(); Ann::CtrlWatch(); }   // R31: Ctrl read only in front   // V3-B: the wave's clock
+void AnnotationWindowState() { if (Ann::uiReady) Ann::banner.WindowStateChanged(); Ann::CtrlWatch(); Ann::AgentsFocusBack(); }   // R31: Ctrl read only in front   // V3-B: the wave's clock   // « Ton agent »: back from a sign-in elsewhere
 void AnnotationAccentChanged() { Ann::AccentChanged(); }   // profiles-integration.h: the window's accent changed
 void AnnotationNavigation(const std::shared_ptr<Tab>& t) {
     if (Ann::localCard.Visible()) Ann::localCard.Close();   // #125 v2 E1b: the card was about the page that leaves
@@ -1006,7 +1038,12 @@ void AnnotationNavigation(const std::shared_ptr<Tab>& t) {
     if (Chat::KeepsMode(t)) Chat::PageNavigating(t);   // chat intégré: the mode survives a reload of its page (Ann::Rearm)
     else Ann::Exit(L"navigation");
 }
-void AnnotationTabChanged() { if (Ann::localCard.Visible()) Ann::localCard.Close(); if (Ann::s.active && Ann::ModeTab() != Active()) Ann::Exit(L"tab change"); }   // i18n-exempt: log reason
+void AnnotationTabChanged() {
+    if (Ann::localCard.Visible()) Ann::localCard.Close();
+    Ann::TutorialTabChanged();   // « Ton agent »: before the mode's exit (a tutorial set aside for a sign-in stays open)
+    if (Ann::s.active && Ann::ModeTab() != Active()) Ann::Exit(L"tab change");   // i18n-exempt: log reason
+    TonAgentTabChanged();        // the screen alone, likewise
+}
 void AnnotationTabSleeping(const std::shared_ptr<Tab>& t) { if (Ann::s.active && Ann::ModeTab() == t) Ann::Exit(L"tab asleep"); }   // i18n-exempt: log reason
 bool AnnotationPageMessage(const std::shared_ptr<Tab>& t, ICoreWebView2WebMessageReceivedEventArgs* a) {
     using namespace Ann;
@@ -1069,6 +1106,7 @@ bool ChatAgentsAvailable() { return true; }
 AnnotationSettings::ChatAgents ChatAgentsStatus() { return Ann::ChatAgentsNow(); }
 void ChatAgentsWatch(std::function<void()> changed) { AgentStatus::Subscribe([changed](const AgentStatus::Status&) { if (changed) changed(); }); }
 void ChatAgentsRefresh() { AgentStatus::Refresh(); }
+void ChatAgentsPageOpened(const std::wstring& url) { TonAgentPageOpened(url); }
 // Called from the row's click only (the drawer's Activate): Install / Retry get their consent HERE, from that click.
 void ChatAgentAct(AnnotationSettings::ChatApp app, AnnotationSettings::ChatAction action) {
     namespace AS = AnnotationSettings; const auto agent = AS::ToAgent(app); bool started = false;
@@ -1175,6 +1213,7 @@ bool ChatAgentsAvailable() { return false; }
 AnnotationSettings::ChatAgents ChatAgentsStatus() { return {}; }
 void ChatAgentsWatch(std::function<void()>) {}
 void ChatAgentsRefresh() {}
+void ChatAgentsPageOpened(const std::wstring&) {}
 void ChatAgentAct(AnnotationSettings::ChatApp, AnnotationSettings::ChatAction) {}
 void ChatAgentsStartup() {}    // « Ton agent » (worker A): no chat, no agents' status
 void ChatAgentsShutdown() {}
