@@ -113,7 +113,7 @@ inline constexpr float toolHover = 0x0A / 255.f, toolOpen = 0x1A / 255.f;   // 0
 inline constexpr float glyph = 0xB3 / 255.f, glyphMuted = 0x80 / 255.f, settingsGlyph = .5f;
 inline constexpr float foldGlyph = .5f;   // « Basculer compact » at rest: white 50 % like Précédent / Suivant / Actualiser (Val #6, Paper updated)   // 1Q0D-0 opacity .5
 inline constexpr float field = 0x14 / 255.f, fieldEditing = 0x0A / 255.f;   // 06 1QH8-0 (its ring: Chrome::AddressRing, 5 %)
-inline constexpr float dragged = 0x29 / 255.f, draggedBorder = 0x26 / 255.f, origin = .3f, insertion = 2;   // 05
+inline constexpr float dragged = 0x2A / 255.f, draggedBorder = 0x26 / 255.f, origin = .3f, insertion = 2;   // 05; motion spec §1: lifted on #2A2A2A
 inline constexpr float lifted = 0x3A / 255.f;   // a row dragged onto the page: its empty place's 1 DIP outline #3A3A3A (24BH-0, 24CB-0)
 }
 // Motion (16 « Valeurs »; 03 note): the width moves in 180 ms, titles fade first in 80 ms; the pointer rests 400 ms

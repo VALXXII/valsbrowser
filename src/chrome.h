@@ -410,6 +410,19 @@ public:
     // Back / Forward / Reload, the address) glide from where they are to the new layout's places: a morph of position
     // and size on the fold's spring (.35 s), retargeted from the presented box. Outside a fold they sit on the layout
     // (snapped); reduced motion: at once. Hit regions always follow the layout. Host: sideMorphing during the fold.
+    // Motion spec §1 « Réordonner »: while a row is lifted it grows to x1.02 (1.0 / .15 s) on #2A2A2A and follows the
+    // pointer 1:1 from where it was grabbed; the other rows step aside (1.0 / .2 s) as soon as its centre passes their
+    // middle (no insertion line); dropped, it goes to its place with the pointer's speed (.85 / .3 s, a slight bounce).
+    // Per tab key, a vertical offset added to the laid-out row. Reduced motion: the drag stays 1:1, the rest jumps.
+    static constexpr float liftScale=1.02f,liftResponse=.15f,stepResponse=.20f,dropResponse=.30f,dropDamping=.85f;
+    std::map<unsigned,Motion::Spring> rowShift;Motion::Spring liftGrow{.0005f};int liftedRow=-1;
+    struct RowDropState{unsigned key=0;float top=0,velocity=0;bool pending=false;} rowDrop;
+    float RowShift(unsigned key,Motion::Time now)const{auto it=rowShift.find(key);return it==rowShift.end()?0.f:it->second.Value(now);}
+    bool ReorderMoving(Motion::Time now)const{if(liftGrow.Moving(now))return true;for(auto& e:rowShift)if(e.second.Moving(now))return true;return false;}
+    // The host, at the drop (before the list is reordered): the dropped row's last top and the pointer's vertical speed.
+    void RowDropped(unsigned key,float top,float velocity,Motion::Time now){rowDrop={key,top,velocity,true};
+        // The rows that stepped aside are re-laid out by the move: their offsets keep only what was still on its way.
+        for(auto& e:rowShift){if(e.first==key)continue;const float v=e.second.Value(now),t=e.second.Target();e.second.Snap(v-t);e.second.Set(0,now,stepResponse,!motion||motion->ReducedMotion());}}
     struct MorphBox{Motion::Spring l{.05f},t{.05f},r{.05f},b{.05f};bool known=false;};std::map<int,MorphBox> sideMorph;bool sideMorphing=false;
     D2D1_RECT_F Morph(int key,const Sidebar::Box& to,Motion::Time now){auto& m=sideMorph[key];const bool reduced=!motion||motion->ReducedMotion();
         if(!m.known||!sideMorphing||reduced){m.l.Snap(to.left);m.t.Snap(to.top);m.r.Snap(to.right);m.b.Snap(to.bottom);m.known=true;}
@@ -418,7 +431,7 @@ public:
     bool MorphMoving(Motion::Time now)const{for(auto& e:sideMorph){const auto& m=e.second;if(m.l.Moving(now)||m.t.Moving(now)||m.r.Moving(now)||m.b.Moving(now))return true;}return false;}
     static constexpr float selectionResponse=.25f;
     bool PlateMoving(Motion::Time now)const{return selTop.Moving(now)||selBottom.Moving(now)||selLeft.Moving(now)||selRight.Moving(now);}
-    Motion::Wake TabsNextWake(Motion::Time now)const{auto w=Motion::Earlier(tabMotion.NextWake(now),sideMotion.NextWake(now));return PlateMoving(now)?Motion::Earlier(w,Motion::Frame()):w;}
+    Motion::Wake TabsNextWake(Motion::Time now)const{auto w=Motion::Earlier(tabMotion.NextWake(now),sideMotion.NextWake(now));return PlateMoving(now)||ReorderMoving(now)?Motion::Earlier(w,Motion::Frame()):w;}
     void SettleTabs(){tabMotion.Settle();sideMotion.Settle();selTop.Settle();selBottom.Settle();selLeft.Settle();selRight.Settle();}
     void SetTabsReducedMotion(bool reduced){tabMotion.SetReducedMotion(reduced);sideMotion.SetReducedMotion(reduced);}
     void ResetTabMotion(){tabMotion.Reset();sideMotion.Reset();sideFrame={};sideSnapshots.clear();selPlateKey=0;}   // a layout switch: no stale open / close
@@ -1065,7 +1078,7 @@ public:
     D2D1_RECT_F chatFrame{};
     float sidebarTitles=1;                               // titles and labels (fold animation)
     float sidebarScroll=0;                               // tab list scroll
-    int sidebarDrag=-1;float sidebarDragY=0;int sidebarInsert=-1;   // tab dragged in the list: its row, pointer top, drop slot
+    int sidebarDrag=-1;float sidebarDragY=0,sidebarDragTopAtDrop=0;int sidebarInsert=-1;   // tab dragged in the list: its row, pointer top, drop slot
     std::vector<std::wstring> sideDetails;               // host: per tab, the tooltip's second line (domain)
     std::vector<bool> sideHome;                          // host: per tab, the new-tab page (globe + « Nouvel onglet »)
     Sidebar::Layout side,sideOver;                       // last layouts: the docked column, the column over the page
@@ -1326,11 +1339,12 @@ public:
             const float pitch=SB::Rows(L.mode).row+SB::Rows(L.mode).gap;
             for(auto& it:sideFrame.items)if(it.index<0)DrawSideGhost(L,it,labels);
             for(auto& it:sideFrame.items){const int i=it.index;if(i!=selected||i<0||i>=n||i==liftedIndex||PairShown(L,i,selected))continue;   // the plate first, under every row (not a displayed pair: its own #262626)
-                const float dy=(it.slot-i*pitch)-(sideFrame.scroll-L.scroll);auto r=L.tabs[i];r.top+=dy;r.bottom=r.top+L.tabs[i].Height()*std::clamp(it.presence,0.f,1.f);PaintSelectionPlate(R(r),it.key,now);}
+                const float dy=(it.slot-i*pitch)-(sideFrame.scroll-L.scroll)+RowShift(it.key,now);auto r=L.tabs[i];r.top+=dy;r.bottom=r.top+L.tabs[i].Height()*std::clamp(it.presence,0.f,1.f);PaintSelectionPlate(R(r),it.key,now);}
             for(auto& it:sideFrame.items){const int i=it.index;if(i<0||i>=n)continue;
                 // The laid-out row (split blocks keep their offsets and insets), moved by what the motion adds: its slot's
                 // distance from rest and the presented scroll; height scaled by its presence.
-                const float dy=(it.slot-i*pitch)-(sideFrame.scroll-L.scroll);auto rowFull=L.tabs[i];rowFull.top+=dy;rowFull.bottom+=dy;
+                if(rowDrop.pending&&it.key==rowDrop.key){auto& sp=rowShift[it.key];sp.Snap(rowDrop.top-L.tabs[i].top);sp.Throw(0,now,dropResponse,dropDamping,rowDrop.velocity,!motion||motion->ReducedMotion());rowDrop.pending=false;}
+                const float dy=(it.slot-i*pitch)-(sideFrame.scroll-L.scroll)+RowShift(it.key,now);auto rowFull=L.tabs[i];rowFull.top+=dy;rowFull.bottom+=dy;
                 auto rowShown=rowFull;rowShown.bottom=rowShown.top+rowFull.Height()*std::clamp(it.presence,0.f,1.f);
                 if(rowFull.bottom<=L.tabsView.top||rowFull.top>=L.tabsView.bottom)continue;
                 if(i==liftedIndex){emptySlot(R(rowFull));continue;}
@@ -1339,23 +1353,32 @@ public:
                 auto& snap=sideSnapshots[it.key];snap.title=title;snap.favicon=i<(int)favicons.size()?favicons[i]:nullptr;snap.fill=fill;snap.selected=i==selected;}
             for(auto s=sideSnapshots.begin();s!=sideSnapshots.end();){if(std::none_of(sideFrame.items.begin(),sideFrame.items.end(),[&](const Motion::TabItem& i){return i.key==s->first;}))s=sideSnapshots.erase(s);else ++s;}
             const float dn=(sideFrame.content-n*pitch)-(sideFrame.scroll-L.scroll);newRow.top+=dn;newRow.bottom+=dn;}
-        else for(int i=0;i<n;++i){if(L.tabs[i].bottom<=L.tabsView.top||L.tabs[i].top>=L.tabsView.bottom)continue;
-            if(i==liftedIndex){emptySlot(R(L.tabs[i]));continue;}
-            DrawSideTab(L,i,titleOf(i),selected,hover,focus,now,R(L.tabs[i]),i==sidebarDrag?K::origin:1.f,labels);}
+        else{const bool reduced=!motion||motion->ReducedMotion();
+            const float step=sidebarDrag>=0&&sidebarDrag<n?L.tabs[sidebarDrag].Height()+SB::Rows(L.mode).gap:0.f;
+            for(int i=0;i<n;++i){
+                // §1: the rows between the lifted row's place and where it would land step aside by its pitch.
+                float target=0;if(sidebarDrag>=0&&sidebarInsert>=0&&i!=sidebarDrag){if(sidebarInsert<sidebarDrag&&i>=sidebarInsert&&i<sidebarDrag)target=step;else if(sidebarInsert>sidebarDrag&&i>sidebarDrag&&i<=sidebarInsert)target=-step;}
+                auto& sp=rowShift[TabKey(i)];sp.Set(target,now,stepResponse,reduced);
+                auto row=L.tabs[i];const float o=sp.Value(now);row.top+=o;row.bottom+=o;
+                if(row.bottom<=L.tabsView.top||row.top>=L.tabsView.bottom)continue;
+                if(i==liftedIndex){emptySlot(R(row));continue;}
+                if(i==sidebarDrag)continue;   // it is the lifted row, drawn over the list below
+                DrawSideTab(L,i,titleOf(i),selected,hover,focus,now,R(row),1.f,labels);}}
         PaintSideMenuTargets(L);
         {const auto r=R(newRow);const float hv=Hovered('T',hover,now);if(hv>0)White(r,Design::Radius::control,K::tabHover*hv);if(focus=='T')FocusRing(r,Design::Radius::control);
             const auto f=SB::FaviconIn(newRow,L.mode);SideGlyph(SB::Glyph::plus,R(f),14,K::newTab);
             if(full)Text(TR(tab_new),{f.right+SB::Complete::tabIconGap,r.top,r.right-SB::Complete::tabPad,r.bottom},Design::Type::label.size,K::newTab*labels,false,false,0);}
         // Drag (05): the place it leaves stays hollow (30 %), an accent line marks where it lands, the row follows the pointer.
         if(sidebarDrag>=0&&sidebarDrag<n){
-            if(sidebarInsert>=0&&sidebarInsert<n&&sidebarInsert!=sidebarDrag){const auto& t=L.tabs[sidebarInsert];const auto a=Design::Accent::Get();
-                const float e=sidebarInsert<(int)L.split.size()&&L.split[sidebarInsert].Member()?SB::Split::pad:0.f;   // a split view block: its edge
-                const float y=sidebarInsert>sidebarDrag?t.bottom+e+1:t.top-e-1;
-                FillBox({t.left-e+6,y-K::insertion/2,t.right+e-6,y+K::insertion/2},1,D2D1::ColorF(a.r,a.g,a.b,1));}
-            const auto& o=L.tabs[sidebarDrag];const D2D1_RECT_F d{o.left,sidebarDragY,o.right,sidebarDragY+o.Height()};
+            if(liftedRow!=sidebarDrag){liftedRow=sidebarDrag;liftGrow.Snap(1);liftGrow.Set(liftScale,now,liftResponse,!motion||motion->ReducedMotion());}
+            const auto& o=L.tabs[sidebarDrag];const float k=liftGrow.Value(now),cx=(o.left+o.right)/2,cy=sidebarDragY+o.Height()/2;
+            D2D1_MATRIX_3X2_F keep;target->GetTransform(&keep);target->SetTransform(D2D1::Matrix3x2F::Scale(k,k,{cx,cy})*keep);
+            const D2D1_RECT_F d{o.left,sidebarDragY,o.right,sidebarDragY+o.Height()};
             Round(d,Design::Radius::control,K::dragged);Color(1,K::draggedBorder);target->DrawRoundedRectangle(D2D1::RoundedRect({d.left+.5f,d.top+.5f,d.right-.5f,d.bottom-.5f},5.5f,5.5f),brush,1);
             const SB::Box db{d.left,d.top,d.right,d.bottom};DrawFavicon(sidebarDrag,R(SB::FaviconIn(db,L.mode)));
-            if(full)Text(titles[sidebarDrag].empty()?std::wstring(TR(tab_new)):titles[sidebarDrag],R(SB::TitleIn(db,false)),Design::Type::label.size,labels,false,false,0);}
+            if(full)Text(titles[sidebarDrag].empty()?std::wstring(TR(tab_new)):titles[sidebarDrag],R(SB::TitleIn(db,false)),Design::Type::label.size,labels,false,false,0);
+            target->SetTransform(keep);}
+        else liftedRow=-1;
         target->PopAxisAlignedClip();
         // List fades (answer 4): 24 DIP of canvas over rows scrolled out at the top / bottom.
         if(L.scroll>.5f)DrawVerticalFade(L.tabsView.left,L.tabsView.top,L.tabsView.right,L.tabsView.top+Design::TabStrip::fade,overlay);

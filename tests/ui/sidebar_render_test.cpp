@@ -23,7 +23,7 @@
 using namespace NativeChrome;
 static int checks = 0;
 static void Check(bool ok, const char* what) { ++checks; if (!ok) { std::fprintf(stderr, "FAIL: %s\n", what); std::exit(1); } }
-static bool Near(float a, float b) { return std::fabs(a - b) < .01f; }
+static bool Near(float a, float b, float e = .01f) { return std::fabs(a - b) < e; }
 // A 16 x 16 stand-in favicon (Paper draws letter tiles): a rounded square of one colour.
 static std::shared_ptr<const FaviconImage> Tile(unsigned rgb, bool round = false) {
     auto f = std::make_shared<FaviconImage>(); f->width = f->height = 32; f->stride = 32 * 4; f->pixels.assign(32 * 32 * 4, 0);
@@ -176,6 +176,17 @@ int wmain(int argc, wchar_t** argv) {
         Check(c.MorphMoving(t3 + Motion::Milliseconds(90)) && !c.MorphMoving(t3 + Motion::Milliseconds(2000)), "the morph settles");
         Check(SUCCEEDED(c.SavePng((out + L"\\anim-pliage-90ms.png").c_str())), "frame: folding");
         (void)profileFrom; c.sideMorphing = false;
+        // Spec §1 « Réordonner »: the lifted row grows to x1.02 (.15 s); the rows it passes step aside (.2 s), no insertion line.
+        c.sidebarMode = Sidebar::Mode::Complete; c.sidebarColumn = Sidebar::Complete::width; c.sidebarTitles = 1; c.bandShown = false;
+        const auto t4 = t3 + Motion::Milliseconds(3000); c.Paint(five, 0, L"", false, 0, 0, nullptr, t4);
+        c.sidebarDrag = 0; c.sidebarInsert = 2; c.sidebarDragY = c.side.tabs[1].top + 6;
+        c.Paint(five, 0, L"", false, 0, 0, nullptr, t4); c.Paint(five, 0, L"", false, 0, 0, nullptr, t4 + Motion::Milliseconds(60));
+        const float step = c.side.tabs[0].Height() + Sidebar::Rows(Sidebar::Mode::Complete).gap, s1 = c.RowShift(2, t4 + Motion::Milliseconds(60)), g = c.liftGrow.Value(t4 + Motion::Milliseconds(60));
+        std::snprintf(msg, sizeof msg, "reorder: rows step aside (%.1f of %.1f), the lifted row grows (%.3f)", s1, -step, g);
+        Check(s1 < -1 && s1 > -step && g > 1.001f && g < 1.021f && Near(c.RowShift(4, t4 + Motion::Milliseconds(60)), 0), msg);
+        Check(SUCCEEDED(c.SavePng((out + L"\\anim-reordonner-60ms.png").c_str())), "frame: reorder");
+        c.Paint(five, 0, L"", false, 0, 0, nullptr, t4 + Motion::Milliseconds(1500)); Check(Near(c.RowShift(2, t4 + Motion::Milliseconds(1500)), -step, .05f) && Near(c.liftGrow.Value(t4 + Motion::Milliseconds(1500)), 1.02f, .001f), "settled: a whole step, x1.02");
+        c.sidebarDrag = -1; c.sidebarInsert = -1;
     }
     {   // Val (24 nov.): the address field is ONE colour while typing: the native EDIT's colour (WM_CTLCOLOREDIT uses
         // Chrome::EditSurface) is the colour painted under it, in the column, the compact bar and the top bar; the EDIT spans

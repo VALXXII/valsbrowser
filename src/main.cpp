@@ -4952,12 +4952,16 @@ void SidebarWheel(POINT client,int delta){const float d=GetDpiForWindow(window)/
     chrome.sidebarScroll=std::clamp(L.scroll-delta/120.f*48.f,0.f,L.maxScroll);BuildChrome();InvalidateChrome();}
 // A right click on the list's empty space opens the tab list menu, as on the empty tab row before.
 // Vertical drag in the list (05): the row follows the pointer, its place stays hollow, an accent line marks the drop.
+struct RowSample{float y;double ms;};std::vector<RowSample> rowTrail;   // the lifted row's last positions (its speed at the drop)
 bool SidebarDragMove(POINT point){
     if(!tabDrag.tab)return false;const float d=GetDpiForWindow(window)/96.f,y=point.y/d;
     const int from=TabIndexOf(tabDrag.tab);if(from<0){CancelTabDrag();return true;}
     const auto& L=chrome.SideColumn();if(from>=(int)L.tabs.size())return true;
     const float h=L.tabs[from].Height();
-    chrome.sidebarDrag=from;chrome.sidebarDragY=std::clamp(y-tabDrag.grabY,L.tabsView.top-h/2,L.tabsView.bottom-h/2);
+    // §1: 1:1 from the grab point; past the list's ends a rubber band instead of a hard stop.
+    {const float raw=y-tabDrag.grabY,lo=L.tabsView.top-h/2,hi=L.tabsView.bottom-h/2;chrome.sidebarDragY=raw<lo?lo-SBar::Resize::Rubber(lo-raw)*.5f:raw>hi?hi+SBar::Resize::Rubber(raw-hi)*.5f:raw;}
+    {const double t=SidebarNowMs();rowTrail.push_back({chrome.sidebarDragY,t});while(rowTrail.size()>2&&t-rowTrail.front().ms>80)rowTrail.erase(rowTrail.begin());}
+    chrome.sidebarDrag=from;
     chrome.sidebarInsert=SBar::BlockMove(L.split,from,SBar::DropSlot(L,y)).insert;   // a split view block moves whole, never lands inside another
     if(y<L.tabsView.top+16&&L.scroll>0)chrome.sidebarScroll=std::max(0.f,L.scroll-8);else if(y>L.tabsView.bottom-16&&L.scroll<L.maxScroll)chrome.sidebarScroll=std::min(L.maxScroll,L.scroll+8);
     InvalidateChrome();return true;
@@ -4991,7 +4995,7 @@ void SidebarMoveBlock(int first,int count,int dest){
     motion.ClearInteractions();hover=pressed=keyboardFocus=0;Update();
 }
 void SidebarDragEnd(bool commit){
-    const int from=chrome.sidebarDrag,to=chrome.sidebarInsert;chrome.sidebarDrag=-1;chrome.sidebarInsert=-1;
+    const int from=chrome.sidebarDrag,to=chrome.sidebarInsert;chrome.sidebarDragTopAtDrop=chrome.sidebarDragY;chrome.sidebarDrag=-1;chrome.sidebarInsert=-1;
     if(!commit||from<0||!tabDrag.tab)return;
     const float d=GetDpiForWindow(window)/96.f,x=tabDrag.at.x/d,y=tabDrag.at.y/d;   // the last pointer of the drag (what the list showed)
     const auto& L=chrome.SideColumn();
@@ -5000,7 +5004,10 @@ void SidebarDragEnd(bool commit){
         const BM::Id id=bookmarks.Add(BM::BarRoot,BM::End,t->title==TR(tab_new)?L"":t->title,t->uri,NativeChrome::DownloadsUI::UnixNowMs());
         if(id){PushUndo({{BookmarkStep::Created,id}},TR(bookmark_undo_add));SaveBookmarks();BookmarksChanged();AnnounceBookmark(TRF(bookmark_added_to,bookmarks.Find(BM::BarRoot)->title));}
         return;}
+    {const float v=rowTrail.size()>=2&&rowTrail.back().ms>rowTrail.front().ms?(float)((rowTrail.back().y-rowTrail.front().y)/((rowTrail.back().ms-rowTrail.front().ms)/1000)):0.f;rowTrail.clear();
+        chrome.RowDropped(chrome.TabKey(from),chrome.sidebarDragTopAtDrop,v,NativeChrome::Motion::Now());}   // §1: to its place with the pointer's speed
     if(to>=0&&to!=from){const auto m=SBar::BlockMove(L.split,from,to);if(m.Moves())SidebarMoveBlock(m.first,m.count,m.dest);}
+    if(window){InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());}
 }
 void UpdateFont(){if(font)DeleteObject(font);font=CreateFontW(-S(chrome.addressFont),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,0,0,ANTIALIASED_QUALITY,0,L"Inter Display");SendMessageW(address,WM_SETFONT,(WPARAM)font,TRUE);}
 // WebView2 startup recovery (defined before wWinMain): installer worker notifications, shutdown.
