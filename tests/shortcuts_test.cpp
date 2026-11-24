@@ -71,6 +71,19 @@ int main(){
       SetTabsPosition(P::Compact);chrome.side=SBar::Compute(chrome.SideInput(SBar::Mode::Compact,3));Assert(EmptyAreaMenuAt(0,20,chrome.side.tabsView.bottom-4)&&!EmptyAreaMenuAt(0,60,300));
       SetTabsPosition(P::Top);Assert(EmptyAreaMenuAt(0,600,20)&&EmptyAreaMenuAt('T',300,20)&&!EmptyAreaMenuAt(NativeChrome::TabBase,100,20)&&!EmptyAreaMenuAt(0,600,60));   // the top bar's tab row only
       Assert(EmptyAreaMenuItems()[3].segments[0].active);}
+     // #127 × Mode Focus (Designer 24 nov., Paper 2091-0 / 20EJ-0): in a side layout Focus hides the column (no floating top
+     // panel): the page 4 DIP from every edge, no window buttons, nothing to hit; Ctrl+Maj+, brings the column (pinned) and
+     // sends it away, Échap too; the drawers start at the page's top.
+     {SetTabsPosition(P::Side);const bool wasSmoke=smoke;smoke=true;settings.focusMode=true;BuildChrome();
+      Assert(!FocusWanted()&&SideFocusWanted()&&chrome.sideHidden&&!chrome.floating&&!chrome.sideShown);
+      {const auto c=ContentBox();Assert(c.left==4&&c.top==4&&c.right==chrome.width-4&&c.bottom==chrome.height-4);}
+      Assert(chrome.regions.empty()&&chrome.side.close.Empty()&&NativeChrome::Design::Vertical::DrawerTop()==4&&!chrome.sidebarResizable);
+      Assert(Key(VK_OEM_COMMA)==SidebarToggleCommand);Command(SidebarToggleCommand);Assert(sideReveal.open&&sideReveal.pinned);
+      Command(SidebarToggleCommand);Assert(!sideReveal.open);
+      ToggleSidebar();Assert(sideReveal.open&&SideFocusEscape()&&!sideReveal.open&&!SideFocusEscape());
+      chrome.annotationBand=32;BuildChrome();{const auto c=ContentBox();Assert(c.top==32&&chrome.side.top==32&&chrome.side.profile.top==40&&NativeChrome::Design::Vertical::DrawerTop()==32);}
+      chrome.annotationBand=0;settings.focusMode=false;BuildChrome();Assert(!chrome.sideHidden&&ContentBox().left==chrome.SidebarZoneLeft()&&!chrome.regions.empty());
+      smoke=wasSmoke;}
      SetTabsPosition(P::Top);Assert(!chrome.sidebar&&LayoutLine()==L"layout: top");
      // Files written by the trial builds migrate (layout + sidebar keys).
      {std::istringstream older("browser-settings 1\nlayout=side-panel\nsidebar=compact\n");settings=BrowserSettings::Read(older);ApplyLayout();Assert(chrome.sidebar&&settings.tabsPosition==P::Compact);settings=BrowserSettings::State{};ApplyLayout();Assert(!chrome.sidebar);}}   // Ctrl+Maj+N: nouvelle fenêtre privée, without any toolbar button

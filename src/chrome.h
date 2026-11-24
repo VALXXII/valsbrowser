@@ -1120,7 +1120,11 @@ public:
     const Sidebar::Layout& SideColumn()const{return sidebarOverlay?sideOver:side;}
     static D2D1_RECT_F R(const Sidebar::Box& b){return {b.left,b.top,b.right,b.bottom};}
     // The page zone's left edge while the column docks (the fold animation moves it).
-    float SidebarZoneLeft()const{return sidebarColumn;}
+    float SidebarZoneLeft()const{return sideHidden?Sidebar::Zone::inset:sidebarColumn;}
+    // Mode Focus in the side layouts (src/sidebar.h FocusSide): the column is hidden (the page takes the window); it comes
+    // back over the page, `sideShown` while it is there at rest (painted by the window, hit-tested; during its slide the
+    // host shows a picture of it instead, RenderSideColumn).
+    bool sideHidden=false,sideShown=false;
     // Bookmarks grid, variant B (Paper « Favoris · … (validée) »; the « » » + menu variant A is archived): the complete column
     // folds to two rows with « Tous les favoris (N) », unfolds to five rows then scrolls; the compact one keeps four and
     // « » », which opens every bookmark in a popover at its right. Host state: unfolded, both scrolls, the popover.
@@ -1129,7 +1133,7 @@ public:
     static constexpr int SidebarGridToggleId=908,SidebarMoreId='O',SidebarManageId=910;   // 910: « Gérer les favoris » (grid or popover foot)   // « » » keeps the band overflow's id (its tile, its keyboard stop)
     Sidebar::Input SideInput(Sidebar::Mode m,int count,float zoneLeft=-1,bool compactZone=false)const{Sidebar::Input in;in.mode=m;in.zoneLeft=zoneLeft;in.width=width;in.height=height;
         if(compactZone){in.zoneSet=true;in.zoneMode=Sidebar::Mode::Compact;}
-        in.grid=bandShown;in.bookmarks=(int)bandItems.size();in.gridOpen=sidebarGridOpen;in.gridScroll=sidebarGridScroll;in.tabs=count;in.tools=(int)std::max<size_t>(1,sideTools.size());in.scroll=sidebarScroll;in.band=annotationBand;in.reserve=sidebarReserve;in.panel=sidebarWidth;in.groups=tabGroups;return in;}
+        in.grid=bandShown;in.bookmarks=(int)bandItems.size();in.gridOpen=sidebarGridOpen;in.gridScroll=sidebarGridScroll;in.tabs=count;in.tools=(int)std::max<size_t>(1,sideTools.size());in.scroll=sidebarScroll;in.band=annotationBand;in.reserve=sidebarReserve;in.hidden=sideHidden;in.top=sideHidden?std::max(0.f,annotationBand):0.f;in.panel=sidebarWidth;in.groups=tabGroups;return in;}
     // Visible bookmark tiles of the column (index i = bandItems[i]): complete, the grid's at its scroll; compact, the first
     // four (five when they all fit).
     int SideBookmarkTiles(const Sidebar::Layout& L)const{if(L.emptyGrid)return 0;if(L.mode==Sidebar::Mode::Complete)return (int)L.grid.tiles.size();return L.more?(int)L.tiles.size()-1:(int)L.tiles.size();}
@@ -1188,6 +1192,7 @@ public:
         regions.push_back({'m',R(side.minimize),TR(chrome_tip_minimize)});regions.push_back({'M',R(side.maximize),TR(chrome_tip_maximize)});regions.push_back({'X',R(side.close),TR(chrome_tip_close_window)});
         // « Redimensionner »: the column's right edge along the page (keyboard: ← → ±16, Maj ±64, Début / Fin, Entrée 248).
         if(sidebarResizable&&!sidebarOverlay&&!side.page.Empty()){edgeTip=TR(sidebar_tip_resize);regions.push_back({SidebarEdgeId,R(SB::Resize::Handle(side.column,side.page)),edgeTip.c_str()});}
+        if(sideHidden){if(!sideShown)regions.clear();else regions.erase(std::remove_if(regions.begin(),regions.end(),[](const Region& r){return r.rect.right<=r.rect.left||r.rect.bottom<=r.rect.top;}),regions.end());}   // Mode Focus: no window buttons; the column away, nothing to hit
         (void)selected;
     }
     // The field at a layout's place, with Paper's metrics: in the column the domain alone (01 1Q29-0 « lemonde.fr »),
@@ -1345,9 +1350,11 @@ public:
     void PaintSideColumn(const Sidebar::Layout& L,const std::vector<std::wstring>& titles,int selected,bool editing,int hover,int focus,Motion::Time now,bool overlay){
         namespace SB=Sidebar;namespace K=SB::Look;const bool full=L.mode==SB::Mode::Complete;
         const float col=overlay?L.column:sidebarColumn;
-        if(overlay){if(auto g=TabShape({0,0,L.column+SB::Overlay::border,height},0,SB::Overlay::radius)){Color(Design::Surface::canvas);target->FillGeometry(g,brush);g->Release();}
+        if(overlay&&L.hidden){const float g=((SB::FocusSide::borderRgb>>16)&255)/255.f;Color(Design::Surface::canvas);target->FillRectangle(D2D1::RectF(0,L.top,L.column,height),brush);
+            brush->SetColor(D2D1::ColorF(g,g,g,1));target->FillRectangle(D2D1::RectF(L.column,L.top,L.column+SB::FocusSide::border,height),brush);}   // Mode Focus (2091-0 / 20EJ-0)
+        else if(overlay){if(auto g=TabShape({0,0,L.column+SB::Overlay::border,height},0,SB::Overlay::radius)){Color(Design::Surface::canvas);target->FillGeometry(g,brush);g->Release();}
             if(auto g=CornerBox({.5f-SB::Overlay::radius,-.5f-SB::Overlay::radius,L.column+.5f,height+.5f},0,SB::Overlay::radius,SB::Overlay::radius,0)){Color(1,SB::Overlay::borderAlpha);target->DrawGeometry(g,brush,SB::Overlay::border);g->Release();}}
-        target->PushAxisAlignedClip(D2D1::RectF(0,0,col,height),D2D1_ANTIALIAS_MODE_ALIASED);
+        target->PushAxisAlignedClip(D2D1::RectF(0,L.top,col,height),D2D1_ANTIALIAS_MODE_ALIASED);
         const float labels=overlay?1.f:sidebarTitles;
         // Top: profile, fold button (+ Back / Forward / Reload in the complete column).
         {const auto plate=overlay?R(L.profile):Morph(900,L.profile,now);profileRest=L.profilePlate?Design::ProfileButton::rest:0;DrawProfileButton(hover,focus,now,&plate);profileRest=Design::ProfileButton::rest;}
@@ -1549,6 +1556,8 @@ public:
         if(gb){gb->Release();}if(col){col->Release();}if(cap){cap->Release();}g->Release();}
     void PaintSidebar(const std::vector<std::wstring>& titles,int selected,bool editing,int hover,int focus,Motion::Time now){
         namespace SB=Sidebar;
+        if(sideHidden){if(sideShown)PaintSideColumn(side,titles,selected,editing,hover,focus,now,true);
+            PaintSidePopover(hover,focus,now);DrawChatFrame();DrawSplit();return;}   // Mode Focus (src/sidebar.h FocusSide)
         // Window bar: compact navigation + address (02 1Q3F-0), window buttons.
         if(!side.addressInColumn){for(int id:{'B','F','R'}){const auto& b=id=='B'?side.back:id=='F'?side.forward:side.reload;PaintSideButton(id,Morph(id,b,now),sidebarOverlay?0:hover,sidebarOverlay?0:focus,now,1,side.navPlates);}PaintSideAddress(side,editing&&!sidebarOverlay,hover,focus,now,1);}
         for(int id:{'m','M','X'})DrawWindowGlyph(id,id=='m'?R(side.minimize):id=='M'?R(side.maximize):R(side.close),hover,focus,now);
@@ -1743,6 +1752,29 @@ public:
             Drop(cpu);Drop(dc);Drop(bitmap);Drop(bt);
         }
         panel=savedPanel;origin=savedOrigin;return ok;
+    }
+    // Mode Focus in the side layouts: the column at rest drawn alone into premultiplied BGRA pixels (its width + the 1 DIP
+    // border, from its top to the window's bottom): the picture the host slides over the page (src/main.cpp « #127 ×
+    // Mode Focus »; a moving hole in the page windows would lag a frame). False without Direct2D 1.1.
+    bool RenderSideColumn(const std::vector<std::wstring>& titles,int selected,bool editing,int hover,int focus,Motion::Time now,std::vector<uint32_t>& out,UINT& w,UINT& h){
+        if(!sidebar||!sideHidden||!target||!brush||contentOnly)return false;
+        ++textPass;Build((int)titles.size(),selected,&titles,now);
+        const float s=dpi/96.f,top=side.top,cw=side.column+Sidebar::FocusSide::border;w=(UINT)std::lround(cw*s);h=(UINT)std::lround(std::max(1.f,height-top)*s);
+        bool ok=false;ID2D1BitmapRenderTarget* bt=nullptr;
+        if(w&&h&&SUCCEEDED(target->CreateCompatibleRenderTarget(D2D1::SizeF(w/s,h/s),D2D1::SizeU(w,h),D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED),D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_NONE,&bt))&&bt){
+            bt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+            auto* main=SwapTarget(bt);bt->BeginDraw();bt->Clear(D2D1::ColorF(0,0,0,0));bt->SetTransform(D2D1::Matrix3x2F::Translation(0,-top));
+            PaintSideColumn(side,titles,selected,editing,hover,focus,now,true);
+            bt->SetTransform(D2D1::Matrix3x2F::Identity());const HRESULT hr=bt->EndDraw();SwapTarget(main);
+            ID2D1Bitmap* bitmap=nullptr;ID2D1DeviceContext* dc=nullptr;ID2D1Bitmap1* cpu=nullptr;
+            if(SUCCEEDED(hr)&&SUCCEEDED(bt->GetBitmap(&bitmap))&&bitmap&&SUCCEEDED(bt->QueryInterface(__uuidof(ID2D1DeviceContext),reinterpret_cast<void**>(&dc)))&&dc){
+                const D2D1_BITMAP_PROPERTIES1 props=D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_CPU_READ|D2D1_BITMAP_OPTIONS_CANNOT_DRAW,D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED),(float)dpi,(float)dpi);
+                if(SUCCEEDED(dc->CreateBitmap(D2D1::SizeU(w,h),nullptr,0,&props,&cpu))&&cpu&&SUCCEEDED(cpu->CopyFromBitmap(nullptr,bitmap,nullptr))){
+                    D2D1_MAPPED_RECT m{};if(SUCCEEDED(cpu->Map(D2D1_MAP_OPTIONS_READ,&m))){out.resize((size_t)w*h);for(UINT y=0;y<h;++y)memcpy(&out[(size_t)y*w],m.bits+(size_t)y*m.pitch,(size_t)w*4);cpu->Unmap();ok=true;}}
+            }
+            Drop(cpu);Drop(dc);Drop(bitmap);Drop(bt);
+        }
+        return ok;
     }
     // The tab row, the toolbar and the band in chrome-local DIP (`dirty` too). `lowerEdge`: the normal chrome's hairline
     // and split canvas under it (the floating panel has neither: DrawSplit runs on the canvas before the panel).

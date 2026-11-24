@@ -308,6 +308,7 @@ void CheckForUpdates(); bool UpdateCheckAvailable(); bool FocusUpdateToast(); bo
 void SetUpdateToastTop(float dip); float UpdateToastHeight(); // the bookmarks band and the undo toast keep clear of it
 void SyncUpdateToastMotion();
 constexpr int CheckUpdatesCommand=3020;
+bool SideFocusWanted();void SideFocusReset();void SideFocusEvaluate();void SideRevealChanged();void SideSlideFrame();void SidePictureHide();void SideFocusForAddress();void SideFocusCommand(int cmd);bool SideFocusEscape();
 void InvalidateChrome(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */if(chrome.floating){InvalidateFocusPanel();return;}RECT r;GetClientRect(window,&r);if(!chrome.sidebar)r.bottom=std::min(r.bottom,(LONG)S(chrome.ContentTop()));InvalidateRect(window,&r,FALSE);}
 // Frame wakes are display-paced by FrameClock (one outstanding notification, worker
 // dormant when idle). Deadline-only dwells keep a single one-shot SetTimer. If the
@@ -405,7 +406,7 @@ bool Check(HRESULT hr,const wchar_t* op){if(FAILED(hr)){Fail(op,hr);return false
 // A refused per-tab operation (find, reload, favicon, interstitial): logged, never the loss of the engine.
 bool CheckTab(HRESULT hr,const wchar_t* op){if(FAILED(hr)){wchar_t code[32];swprintf(code,32,L"0x%08lX",(unsigned long)hr);Log(std::wstring(L"WEBVIEW2 refused ")+op+L" "+code);return false;}return !halted;}
 std::shared_ptr<Tab> Active(){return current>=0&&current<(int)pages.size()?pages[current]:nullptr;}
-void FocusAddress(){if(InFullscreen())return; /* no address field over a fullscreen page */editing=true;FocusAnchor(L"address field"); /* Mode Focus: the panel at once, at rest (the field sits there); i18n-exempt: log tag */ShowWindow(address,SW_SHOW);SetFocus(address);SendMessageW(address,EM_SETSEL,0,-1);InvalidateRect(window,nullptr,FALSE);}
+void FocusAddress(){if(InFullscreen())return; /* no address field over a fullscreen page */editing=true;SideFocusForAddress(); /* #127 Focus: the column at once, with its field */FocusAnchor(L"address field"); /* Mode Focus: the panel at once, at rest (the field sits there); i18n-exempt: log tag */ShowWindow(address,SW_SHOW);SetFocus(address);SendMessageW(address,EM_SETSEL,0,-1);InvalidateRect(window,nullptr,FALSE);}
 std::vector<std::wstring> Titles(){std::vector<std::wstring> titles;for(auto& t:pages)titles.push_back(t->title);return titles;}
 std::shared_ptr<const NativeChrome::FaviconImage> SiteIcon(const std::wstring& site);
 // What the field reads: the active tab's address and security outside editing; while
@@ -741,7 +742,7 @@ std::vector<PageCorner> PageCorners(){
     std::vector<PageCorner> out;if((!kRoundWhenMaximized&&IsZoomed(window))||InFullscreen())return out;
     const auto c=ContentBox();auto v=CurrentSplit();std::vector<SV::Box> boxes;
     if(v.group){for(auto& s:v.a.slots)if(!s.rail)boxes.push_back(s.box);}else{auto t=Active();if(t&&t->shown)boxes.push_back(c);}
-    const bool leftCovered=chrome.sidebar&&chrome.sidebarOverlay;
+    const bool leftCovered=chrome.sidebar&&(chrome.sidebarOverlay||(chrome.sideHidden&&chrome.sideShown));
     for(auto& b:boxes){for(int top=0;top<2;++top){if(std::fabs((top?b.top:b.bottom)-(top?c.top:c.bottom))>.5f)continue;if(!leftCovered&&std::fabs(b.left-c.left)<.5f)out.push_back({b,false,top!=0});if(std::fabs(b.right-c.right)<.5f)out.push_back({b,true,top!=0});}}
     return out;
 }
@@ -1237,7 +1238,7 @@ void CloseAt(int index,CloseReason why=CloseReason::User){if(halted||index<0||in
 enum ShortcutCommand { FocusChrome=3000, FindPage, PrintActive, FocusChromeBack, MoveTabLeft='{', MoveTabRight='}', SelectTabBase=3010 };
 std::vector<int> ShownPanels(){std::vector<int> out;auto v=CurrentSplit();if(v.group)for(auto& s:v.a.slots)if(!s.rail)out.push_back(TabIndexOf(v.members[s.member]));return out;}
 void Close(){CloseAt(current);}
-void Command(int cmd){if(cmd==MotionLabCommand){if(motionLabMode)motionLab.Toggle();return;}if(halted||!chrome.Enabled(cmd))return;
+void Command(int cmd){if(cmd==MotionLabCommand){if(motionLabMode)motionLab.Toggle();return;}if(halted||!chrome.Enabled(cmd))return;SideFocusCommand(cmd);
     if(tabDrag.tab){CancelTabDrag();if(GetCapture()==window)ReleaseCapture();UpdateInteraction(hover,0);}auto t=Active();if(cmd>=SelectTabBase&&cmd<SelectTabBase+9){Select(cmd==SelectTabBase+8?(int)pages.size()-1:cmd-SelectTabBase);return;}switch(cmd){case FocusChrome:ToggleChromeFocus();break;case FocusChromeBack:ToggleChromeFocus(true);break;case FindPage:OpenFindBar();break;case '{':MoveTab(current,current-1);break;case '}':MoveTab(current,current+1);break;case 'L':FocusAddress();break;case ']':if(!pages.empty())Select((current+1)%(int)pages.size());break;case '[':if(!pages.empty())Select((current+(int)pages.size()-1)%(int)pages.size());break;case 'T':NewTab(NewTabTarget(),UserTabIndex());FocusAddress();break;case 'W':Close();break;case 'U':ReopenTab();break;case 'R':if(t&&t->view.p&&t->loading.IsLoading()){Check(t->view->Stop(),L"Stop");break;}if(t&&t->view.p&&CheckTab(t->view->Reload(),L"Reload")){t->refreshing=true;auto now=NativeChrome::Motion::Now();chrome.lottie.RefreshBegin(now);SyncStopMorph(now);InvalidateChrome();ScheduleMotion(now);}break;case 'H':Navigate(t,L"");break;case 'B':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoBack(&yes);if(yes&&Check(t->view->GoBack(),L"GoBack")){auto now=NativeChrome::Motion::Now();chrome.nav.back.Kick(-1,now,motion.ReducedMotion(),TravelParams(true));InvalidateChrome();ScheduleMotion(now);}}break;case 'F':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoForward(&yes);if(yes&&Check(t->view->GoForward(),L"GoForward")){auto now=NativeChrome::Motion::Now();chrome.nav.forward.Kick(1,now,motion.ReducedMotion(),TravelParams(false));InvalidateChrome();ScheduleMotion(now);}}break;default:ExtraCommand(cmd);break;}}
 bool BookmarkPopoverFocus();bool SmokeBookmarks();bool FolderRenameFocus();
 bool EscapeOwnedBySurface(HWND focus); // below, after the surfaces: a drawer or a toolbar popover with the keyboard closes on its own Échap
@@ -4806,7 +4807,7 @@ LRESULT CALLBACK AddressProc(HWND h,UINT msg,WPARAM w,LPARAM l,UINT_PTR,DWORD_PT
 // Focus mode (branch VALXXII/Mode-Focus, not in main) plugs in here: design/127-sidebar-plan.md § 4.
 HWND PageHostWindow(Tab& t);
 namespace SBar=NativeChrome::Sidebar;
-SBar::Fold sidebarFold;SBar::Hover sidebarHover;bool sidebarReady=false;int sidebarShownTab=-1;
+SBar::Fold sidebarFold;SBar::Hover sidebarHover;SBar::FocusReveal sideReveal;NativeChrome::Motion::Spring sideSlide;NativeChrome::Motion::Tween sideFade;bool sideLive=false,sideDrawerHold=false,sidePolling=false;bool sidebarReady=false;int sidebarShownTab=-1;
 // The panel's presented width (motion spec §5): a spring towards the profile's width; a rubber-banded release springs
 // back to its bound (.3 s), a double-click goes to 248 (.35 s); at rest it sits on the saved width.
 NativeChrome::Motion::Spring sideWidthSpring{.05f};bool sideWidthKnown=false;
@@ -4861,8 +4862,10 @@ void SidebarPopover(bool open){if(!chrome.sidebar)open=false;if(open==chrome.sid
 // Before every Build: the mode, the drawn width and titles (fold), the column over the page, per-tab details.
 void SidebarPrepare(){
     namespace V=NativeChrome::Design::Vertical;chrome.sidebarReserve=DrawerReserveDip();
-    // Drawers start under the window bar: 40 in the complete layout, 25 in the compact one (Paper 07 / 11).
-    V::DrawerTopValue()=!chrome.sidebar?V::top:(SidebarEffective()==SBar::Mode::Compact?SBar::Zone::compactDrawerTop:SBar::Zone::drawerTop);
+    {const bool hidden=SideFocusWanted();if(hidden!=chrome.sideHidden){chrome.sideHidden=hidden;SideFocusReset();}}   // Mode Focus: the column hides
+    // Drawers start under the window bar: 40 in the complete layout, 25 in the compact one (Paper 07 / 11); in Focus at the
+    // page's top (4, under the annotation banner when it is there).
+    V::DrawerTopValue()=!chrome.sidebar?V::top:chrome.sideHidden?std::max(chrome.annotationBand,SBar::Zone::inset):(SidebarEffective()==SBar::Mode::Compact?SBar::Zone::compactDrawerTop:SBar::Zone::drawerTop);
     if(window){bookmarkToast.pageLeftPx=chrome.sidebar?S(chrome.SidebarZoneLeft()):0;bookmarkToast.pageBottomPx=chrome.sidebar?S(SBar::Zone::inset):0;}
     if(!chrome.sidebar){chrome.sidebarResizable=false;chrome.sidebarEdge=0;LogLayout();return;}const double now=SidebarNowMs();const auto mode=SidebarEffective();
     // The complete width: the profile's « side-width », or the edge being dragged.
@@ -4878,10 +4881,11 @@ void SidebarPrepare(){
     if(sidebarFold.target!=SBar::Mode::Compact||moving){sidebarHover.Close();chrome.sidebarPopover=false;}
     chrome.sidebarMode=SidebarEdgeDragging()?chrome.sidebarMode:sidebarFold.CompleteLayout(now)?SBar::Mode::Complete:SBar::Mode::Compact;   /* folding: complete for the titles' 80 ms, then compact (its pieces glide); unfolding: complete at once */
     chrome.sidebarColumn=sidebarFold.ColumnWidth(now);chrome.sidebarTitles=sidebarFold.Titles(now);chrome.sidebarOverlay=sidebarHover.open;
+    if(chrome.sideHidden){sidebarHover.Close();chrome.sidebarOverlay=false;if(sideReveal.wide){chrome.sidebarMode=SBar::Mode::Complete;chrome.sidebarTitles=1;}}   // Focus: its own way back (SideFocusEvaluate); the address in compact: the complete column
     chrome.sideMorphing=moving||chrome.MorphMoving(NativeChrome::Motion::Now());   // §2: the pieces glide while the column folds
     chrome.annotateDimmed=chrome.annotateShown&&AnnotationButtonDimmed();
     // The edge handle: docked, settled, and the window wide enough for the chosen layout (not compact by itself).
-    chrome.sidebarResizable=!sidebarHover.open&&!moving&&chrome.width>=SBar::autoCompactBelow&&!InFullscreen();if(!chrome.sidebarResizable&&!SidebarEdgeDragging())chrome.sidebarEdge=0;
+    chrome.sidebarResizable=!sidebarHover.open&&!moving&&chrome.width>=SBar::autoCompactBelow&&!InFullscreen()&&!chrome.sideHidden;if(!chrome.sidebarResizable&&!SidebarEdgeDragging())chrome.sidebarEdge=0;
     LogLayout();
     chrome.sideHome.clear();chrome.sideDetails.clear();for(auto& t:pages){chrome.sideHome.push_back(t->home);chrome.sideDetails.push_back(t->home?std::wstring():BareDomain(t->uri));}
     // The selected tab's row is brought into the list's view (a new tab, Ctrl+Tab, Ctrl+1…9).
@@ -4891,6 +4895,7 @@ void SidebarPrepare(){
 // the choice is kept and the complete column opens over the page instead (Designer, answer 11).
 void ToggleSidebar(){
     if(!chrome.sidebar)return;
+    if(chrome.sideHidden){sideReveal.Toggle();SideRevealChanged();if(sideReveal.open){SetFocus(window);keyboardModality=true;keyboardFocus=NativeChrome::TabBase+std::max(0,current);InvalidateChrome();}return;}   // Mode Focus: in, then out
     if(chrome.width<SBar::autoCompactBelow){if(sidebarHover.open)sidebarHover.Close();else sidebarHover.Open();Layout();return;}
     sidebarHover.Close();
     // The fold button and Ctrl+Maj+, switch Panneau latéral <-> Panneau compact in the setting (a trial run forced with
@@ -4911,7 +4916,7 @@ struct EdgeDrag{bool active=false;float offset=0;SBar::Resize::State state{SBar:
 } edgeDrag;DWORD edgeClickAt=0;
 void SidebarWidthTo(float w,float response){const auto mnow=NativeChrome::Motion::Now();if(!sideWidthKnown||!window){sideWidthSpring.Snap(w);sideWidthKnown=true;return;}sideWidthSpring.Set(w,mnow,response,motion.ReducedMotion());if(window)SetTimer(window,0x5161 /* SidebarFoldTimerId */,15,nullptr);}
 bool SidebarEdgeDragging(){return edgeDrag.active;}
-constexpr UINT_PTR SidebarEdgeFadeTimerId=0x5163;
+constexpr UINT_PTR SidebarEdgeFadeTimerId=0x5163,SideFocusPollTimerId=0x5164,SideSlideTimerId=0x5165,SideSlideLiveTimerId=0x5166;
 void SidebarEdgeLook(int state){if(edgeDrag.active)state=2;if(!chrome.sidebarResizable&&!edgeDrag.active)state=0;if(chrome.sidebarEdge==state)return;
     if(state==1&&chrome.sidebarEdge==0){chrome.edgeHoverAt=NativeChrome::Motion::Now();if(window)SetTimer(window,SidebarEdgeFadeTimerId,15,nullptr);}   // §5: the line fades in (120 ms) after 150 ms
     chrome.sidebarEdge=state;if(window){SyncCornerMasks();InvalidateChrome();}}
@@ -4963,8 +4968,9 @@ bool SidebarEdgeKey(WPARAM key){if(!chrome.sidebar)return false;const bool shift
 // While the complete column is open over the page, every page window under it gets a window region without the
 // column: the main window draws the column there and gets the pointer; the page keeps its size and place.
 void SidebarHoles(){
-    const bool over=chrome.sidebar&&chrome.sidebarOverlay&&!InFullscreen(),pop=chrome.sidebar&&chrome.sidebarPopover&&!InFullscreen()&&!chrome.sidePop.box.Empty();const bool open=over||pop;
-    const RECT hole=over?RECT{0,0,S(chrome.sideOver.column+SBar::Overlay::border),S(chrome.height)}:RECT{0,S(chrome.sidePop.box.top),S(chrome.sidePop.box.right),S(chrome.sidePop.box.bottom)};
+    const bool focusCol=chrome.sidebar&&chrome.sideHidden&&chrome.sideShown&&!InFullscreen();   // Mode Focus: the column back at rest
+    const bool over=chrome.sidebar&&(chrome.sidebarOverlay||focusCol)&&!InFullscreen(),pop=chrome.sidebar&&chrome.sidebarPopover&&!InFullscreen()&&!chrome.sidePop.box.Empty();const bool open=over||pop;
+    const RECT hole=focusCol?RECT{0,S(chrome.side.top),S(chrome.side.column+SBar::FocusSide::border),S(chrome.height)}:over?RECT{0,0,S(chrome.sideOver.column+SBar::Overlay::border),S(chrome.height)}:RECT{0,S(chrome.sidePop.box.top),S(chrome.sidePop.box.right),S(chrome.sidePop.box.bottom)};
     for(auto& t:pages){if(!t||!t->controller.p)continue;HWND h=t->host&&IsWindow(t->host)?t->host:(t->placedVisible==1?PageHostWindow(*t):nullptr);if(!h)continue;
         RECT w{};GetWindowRect(h,&w);MapWindowPoints(nullptr,window,(POINT*)&w,2);RECT cut{};
         if(open&&t->placedVisible==1&&IntersectRect(&cut,&hole,&w)){HRGN all=CreateRectRgn(0,0,w.right-w.left,w.bottom-w.top),sub=CreateRectRgn(cut.left-w.left,cut.top-w.top,cut.right-w.left,cut.bottom-w.top);
@@ -4983,6 +4989,131 @@ void SidebarPointer(float x,float y){(void)y;
 void SidebarPointerLeft(){if(!chrome.sidebar||tabDrag.tab)return;KillTimer(window,SidebarHoverTimerId);const bool was=sidebarHover.open;sidebarHover.Leave();if(was&&!sidebarHover.open)Layout();}
 void SidebarHoverDue(){KillTimer(window,SidebarHoverTimerId);if(!sidebarHover.Due(SidebarNowMs()))return;POINT p;GetCursorPos(&p);ScreenToClient(window,&p);const float d=GetDpiForWindow(window)/96.f;
     if(p.x<0||p.x/d>=chrome.side.column||p.y<0||p.y/d>=chrome.height){sidebarHover.Leave();return;}sidebarHover.Open();Layout();}
+// ---- #127 × Mode Focus: the side layouts' hidden column (src/sidebar.h FocusSide; Designer 24 nov., Paper 2091-0 / 20EJ-0)
+// Focus in a side layout hides the column: the page takes the window minus 4 DIP. The pointer resting 400 ms in the
+// window's left 8 DIP brings it back over the page (under the annotation banner); it leaves when the pointer leaves it,
+// unless something holds it (a drawer opened from it, a menu, a drag, the field being typed in). Ctrl+Maj+, (and the
+// fold button) bring it / send it away and Échap sends it away. Over the pages it is a hole in their windows, like the
+// column over the page in a narrow window; while it slides a picture of it moves instead (a moving hole would lag the
+// pages by a frame, the same reason as Focus's top panel): in on a critically damped 0.3 s spring, out 0.2 s, from the
+// displayed position (caught mid-flight, it turns back); reduced motion: in place, a 120 ms fade.
+bool SideFocusWanted(){return settings.focusMode&&chrome.sidebar&&!halted&&!InFullscreen();}
+struct SidePicture{HWND hwnd=nullptr;HDC mem=nullptr;HBITMAP bmp=nullptr;HGDIOBJ old=nullptr;int w=0,h=0,alpha=-1;bool shown=false,broken=false;} sidePic;
+void SideRevealLive(bool live);
+LRESULT CALLBACK SidePictureProc(HWND h,UINT msg,WPARAM w,LPARAM l){
+    switch(msg){
+    case WM_NCHITTEST:return HTCLIENT;
+    case WM_ERASEBKGND:return 1;
+    case WM_PAINT:{PAINTSTRUCT ps;BeginPaint(h,&ps);EndPaint(h,&ps);return 0;}
+    case WM_MOUSEACTIVATE:return MA_NOACTIVATE;
+    case WM_SETCURSOR:SetCursor(LoadCursor(nullptr,IDC_ARROW));return TRUE;
+    // A press on the sliding column: at rest at once (live), then the same press on the column under the pointer.
+    case WM_LBUTTONDOWN:case WM_RBUTTONDOWN:case WM_MBUTTONDOWN:case WM_LBUTTONDBLCLK:{if(sideReveal.open){sideSlide.Snap(1);sideFade.Snap(1);SideRevealLive(true);}POINT p{};GetCursorPos(&p);ScreenToClient(window,&p);return SendMessageW(window,msg,w,MAKELPARAM(p.x,p.y));}
+    case WM_MOUSEMOVE:case WM_LBUTTONUP:case WM_RBUTTONUP:case WM_MBUTTONUP:{POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};MapWindowPoints(h,window,&p,1);return SendMessageW(window,msg,w,MAKELPARAM(p.x,p.y));}
+    }
+    return DefWindowProcW(h,msg,w,l);
+}
+void SidePictureRelease(){if(sidePic.mem){if(sidePic.old)SelectObject(sidePic.mem,sidePic.old);DeleteDC(sidePic.mem);}if(sidePic.bmp)DeleteObject(sidePic.bmp);sidePic.mem=nullptr;sidePic.bmp=nullptr;sidePic.old=nullptr;sidePic.alpha=-1;}
+void SidePictureHide(){if(sidePic.hwnd&&sidePic.shown)ShowWindow(sidePic.hwnd,SW_HIDE);sidePic.shown=false;SidePictureRelease();}
+// The picture at slide position `pos` (0 off to the left .. 1 at rest), `alpha` 0 .. 1 (reduced motion's fade).
+void SidePictureMove(float pos,float alpha){
+    if(!sidePic.shown||!sidePic.hwnd||!sidePic.mem)return;const float s=GetDpiForWindow(window)/96.f;
+    const int a=(int)std::lround(std::clamp(alpha,0.f,1.f)*255);
+    if(a!=sidePic.alpha){HDC screen=GetDC(nullptr);POINT src{0,0};SIZE size{sidePic.w,sidePic.h};BLENDFUNCTION blend{AC_SRC_OVER,0,(BYTE)a,AC_SRC_ALPHA};
+        UpdateLayeredWindow(sidePic.hwnd,screen,nullptr,&size,sidePic.mem,&src,0,&blend,ULW_ALPHA);ReleaseDC(nullptr,screen);sidePic.alpha=a;}
+    SetWindowPos(sidePic.hwnd,HWND_TOP,(int)std::lround((std::clamp(pos,0.f,1.f)-1)*sidePic.w),(int)std::lround(chrome.side.top*s),0,0,SWP_NOSIZE|SWP_NOACTIVATE|SWP_SHOWWINDOW);
+}
+// A fresh picture of the column at rest. False when it cannot be made: the column then comes and goes in place (live).
+bool SidePictureShow(){
+    if(sidePic.broken||!window)return false;
+    SyncAddressDisplay();std::vector<std::wstring> titles;std::vector<std::shared_ptr<const NativeChrome::FaviconImage>> icons;
+    for(auto& t:pages){titles.push_back(t->title);icons.push_back(t->favicon.image);}chrome.SetFavicons(std::move(icons));
+    {std::vector<bool> asleep;for(auto& t:pages)asleep.push_back(t->sleeping);chrome.sleeping=std::move(asleep);}
+    std::vector<std::uint32_t> px;UINT w=0,h=0;
+    if(!chrome.RenderSideColumn(titles,current,editing,0,0,NativeChrome::Motion::Now(),px,w,h)){sidePic.broken=true;Log(L"FOCUS column picture unavailable: the column comes in place");return false;}
+    HINSTANCE inst=instance?instance:GetModuleHandleW(nullptr);
+    if(!sidePic.hwnd){static bool registered=false;if(!registered){WNDCLASSW wc{};wc.lpfnWndProc=SidePictureProc;wc.hInstance=inst;wc.lpszClassName=L"BrowserSideSlide";wc.style=CS_DBLCLKS;RegisterClassW(&wc);registered=true;}
+        sidePic.hwnd=CreateWindowExW(WS_EX_LAYERED|WS_EX_NOACTIVATE,L"BrowserSideSlide",L"",WS_CHILD,0,0,1,1,window,nullptr,inst,nullptr);
+        if(!sidePic.hwnd){sidePic.broken=true;Log(L"FOCUS column picture window unavailable: the column comes in place");return false;}}
+    SidePictureRelease();
+    BITMAPINFO bi{};bi.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);bi.bmiHeader.biWidth=(LONG)w;bi.bmiHeader.biHeight=-(LONG)h;bi.bmiHeader.biPlanes=1;bi.bmiHeader.biBitCount=32;bi.bmiHeader.biCompression=BI_RGB;
+    HDC screen=GetDC(nullptr);sidePic.mem=CreateCompatibleDC(screen);void* bits=nullptr;sidePic.bmp=CreateDIBSection(sidePic.mem,&bi,DIB_RGB_COLORS,&bits,nullptr,0);ReleaseDC(nullptr,screen);
+    if(!sidePic.mem||!sidePic.bmp||!bits){SidePictureRelease();sidePic.broken=true;Log(L"FOCUS column picture refused: the column comes in place");return false;}
+    memcpy(bits,px.data(),px.size()*4);sidePic.old=SelectObject(sidePic.mem,sidePic.bmp);sidePic.w=(int)w;sidePic.h=(int)h;sidePic.alpha=-1;sidePic.shown=true;
+    return true;
+}
+// Live: the column painted by the window in a hole of the pages (at rest); not live: the pages whole again.
+void SideRevealLive(bool live){
+    if(live==sideLive)return;sideLive=live;chrome.sideShown=live&&chrome.sideHidden;
+    BuildChrome();SidebarHoles();SyncCornerMasks();InvalidateRect(window,nullptr,FALSE);if(!IsIconic(window))UpdateWindow(window);
+    if(live&&sidePic.shown)SetTimer(window,SideSlideLiveTimerId,60,nullptr);   // the picture bridges the frame the pages' new region takes
+    Log(live?L"FOCUS column shown":L"FOCUS column away");
+}
+void SideSlideFrame(){
+    if(!window)return;const auto now=NativeChrome::Motion::Now();
+    const float pos=sideSlide.Value(now),alpha=sideFade.Value(now);SidePictureMove(pos,alpha);
+    if(sideSlide.Moving(now)||sideFade.Moving(now))return;
+    KillTimer(window,SideSlideTimerId);
+    if(sideReveal.open)SideRevealLive(true);else SidePictureHide();
+}
+// The reveal changed (pointer, shortcut, Échap, the address): the slide (or the fade) from where it is shown.
+void SideRevealChanged(){
+    if(!window||!chrome.sideHidden)return;const auto now=NativeChrome::Motion::Now();const bool reduced=motion.ReducedMotion(),open=sideReveal.open;
+    namespace FS=SBar::FocusSide;
+    if(sideReveal.wide||!open)BuildChrome();   // the complete column for the field (compact layout), or back
+    if(!open&&sideLive){if(!SidePictureShow()){SideRevealLive(false);return;}sideSlide.Snap(1);sideFade.Snap(1);SidePictureMove(1,1);SideRevealLive(false);}
+    else if(open&&!sideLive&&!sidePic.shown){if(!SidePictureShow()){SideRevealLive(true);return;}if(reduced){sideSlide.Snap(1);sideFade.Snap(0);}else{sideFade.Snap(1);if(sideSlide.Value(now)<=0)sideSlide.Snap(0);}SidePictureMove(sideSlide.Value(now),sideFade.Value(now));}
+    if(reduced){sideSlide.Snap(1);sideFade.Set(open?1.f:0.f,now,std::chrono::milliseconds((int)FS::reducedFadeMs),false,NativeChrome::Motion::Curve::SmoothStep);}
+    else{sideFade.Snap(1);sideSlide.Set(open?1.f:0.f,now,open?FS::enterResponse:FS::exitResponse);}
+    SetTimer(window,SideSlideTimerId,15,nullptr);SideSlideFrame();
+    Log(open?(sideReveal.pinned?L"FOCUS column in (shortcut)":L"FOCUS column in (left edge)"):L"FOCUS column out");
+}
+// Focus on / off or the layout changed: nothing shown, nothing moving.
+void SideFocusReset(){
+    sideReveal.Close();sideDrawerHold=false;sideSlide.Snap(0);sideFade.Snap(1);
+    if(window){KillTimer(window,SideSlideTimerId);KillTimer(window,SideSlideLiveTimerId);}
+    SidePictureHide();if(sideLive){sideLive=false;chrome.sideShown=false;}
+    if(!chrome.sideHidden&&sidePolling&&window){KillTimer(window,SideFocusPollTimerId);sidePolling=false;}
+    if(chrome.sideHidden&&window)SideFocusEvaluate();
+}
+// What keeps the column while the pointer is elsewhere: Focus's own rules (a menu, the field, a drag, a popover…), a
+// drawer opened from the column (Designer: it stays while that drawer is open), the « » » popover.
+bool FocusHold();bool FocusKeep();
+bool SideFocusHolds(){
+    if(sideDrawerHold&&DrawerReserveDip()<=0&&!downloadDrawer.Visible())sideDrawerHold=false;
+    return sideDrawerHold||chrome.sidebarPopover||FocusHold()||FocusKeep();
+}
+// Every ~30 ms while the window is in front or the column is there (over a page the window gets no mouse message).
+void SideFocusEvaluate(){
+    if(!window)return;
+    if(!chrome.sideHidden){if(sidePolling){KillTimer(window,SideFocusPollTimerId);sidePolling=false;}return;}
+    POINT sp{};const bool pointer=GetCursorPos(&sp)!=FALSE;POINT cp=sp;ScreenToClient(window,&cp);
+    const float k=96.f/GetDpiForWindow(window),x=cp.x*k,y=cp.y*k;
+    HWND fg=GetForegroundWindow();const bool front=fg&&(fg==window||GetAncestor(fg,GA_ROOTOWNER)==window)&&IsWindowVisible(window)&&!IsIconic(window);
+    const bool buttons=GetAsyncKeyState(VK_LBUTTON)<0||GetAsyncKeyState(VK_RBUTTON)<0||GetAsyncKeyState(VK_MBUTTON)<0;
+    RECT wr{};GetWindowRect(window,&wr);const bool ours=pointer&&front&&PtInRect(&wr,sp);
+    const float top=chrome.side.top;namespace FS=SBar::FocusSide;
+    const bool inBand=ours&&!buttons&&x>=0&&x<FS::edge&&y>=top&&y<chrome.height;
+    const bool overColumn=ours&&(sideLive||sidePic.shown)&&x>=0&&x<chrome.side.column+FS::border&&y>=top&&y<chrome.height;
+    const double ms=SidebarNowMs();
+    if(sideReveal.Pointer(ms,inBand,overColumn,sideReveal.open&&SideFocusHolds()))SideRevealChanged();
+    const bool poll=front||sideReveal.open||sidePic.shown;
+    if(poll&&!sidePolling)sidePolling=SetTimer(window,SideFocusPollTimerId,30,nullptr)!=0;
+    else if(!poll&&sidePolling){KillTimer(window,SideFocusPollTimerId);sidePolling=false;}
+}
+// The field needs the column (Ctrl+L, F6, typing): at rest at once (the keyboard does not wait for a slide).
+void SideFocusForAddress(){
+    if(!chrome.sideHidden||!window)return;
+    sideReveal.ForAddress(SidebarEffective()==SBar::Mode::Compact);KillTimer(window,SideSlideTimerId);SidePictureHide();sideSlide.Snap(1);sideFade.Snap(1);
+    if(!sideLive)SideRevealLive(true);else BuildChrome();
+    Layout();
+}
+// A drawer opened from the shown column keeps it (Designer, board 15's rule).
+void SideFocusCommand(int cmd){
+    if(!chrome.sideHidden||!sideReveal.open)return;
+    if(cmd=='Y'||cmd=='S'||cmd=='D'||cmd=='V'||cmd==BookmarksDrawerCommand||cmd==NativeChrome::Chrome::SidebarManageId)sideDrawerHold=true;
+}
+bool SideFocusEscape(){if(!chrome.sideHidden||!sideReveal.open)return false;sideReveal.Close();sideDrawerHold=false;SideRevealChanged();if(editing)FocusPage();return true;}
 // Window dragging: the bar right of the column, and the column's top above the field (complete) / the fold button (compact).
 bool SidebarCaption(float x,float y){if(!chrome.sidebar)return false;const auto& L=chrome.SideColumn();const float col=chrome.sidebarOverlay?L.column:chrome.side.column;
     if(x>=col)return y<chrome.side.bar;return y<(L.mode==SBar::Mode::Complete?L.address.top:L.toggle.bottom);}
@@ -5012,7 +5143,7 @@ bool SidebarDragMove(POINT point){
 // edge into the page lifts like a top bar tab (SplitDragMove: the same card, drop preview, refusal and split creation);
 // back 20 DIP inside the column, reordering resumes. The column open over the page (narrow window) is column too: its
 // own edge, and it closes at the lift so the whole page takes the drop.
-float SidebarDropEdge(){return chrome.sidebarOverlay?chrome.sideOver.column+SBar::Overlay::border:ContentBox().left;}
+float SidebarDropEdge(){if(chrome.sideHidden)return chrome.sideShown?chrome.side.column+SBar::FocusSide::border:ContentBox().left;return chrome.sidebarOverlay?chrome.sideOver.column+SBar::Overlay::border:ContentBox().left;}
 void SidebarLift(){
     chrome.sidebarDrag=-1;chrome.sidebarInsert=-1;   // no row follows in the list: the row's place stays empty (liftedIndex)
     // The card fits its title (Paper 24BU-0: 8 · favicon 16 · 8 · title 14 medium · 10), at most 240 like the drop chip;
@@ -5123,7 +5254,7 @@ case WM_SETCURSOR:if(LOWORD(l)==HTCLIENT&&(HWND)w==h){POINT p;GetCursorPos(&p);S
     float px=p.x/d,py=p.y/d;const bool overPanel=chrome.floating&&chrome.Local(px,py); // Mode Focus: no separator under the floating panel
     if(v.group&&(sepDrag.active||(!overPanel&&SeparatorAt(p.x/d,p.y/d,v)>=0))){SetCursor(LoadCursor(nullptr,v.a.orientation==SV::Orientation::Row?IDC_SIZEWE:IDC_SIZENS));return TRUE;}}break;
 case WM_PAINT:{PAINTSTRUCT paint;BeginPaint(h,&paint);++chromePaints;SyncAddressDisplay();std::vector<std::wstring> titles;std::vector<std::shared_ptr<const NativeChrome::FaviconImage>> icons;for(auto&t:pages){titles.push_back(t->title);icons.push_back(t->favicon.image);}chrome.SetFavicons(std::move(icons));{std::vector<bool> asleep;for(auto&t:pages)asleep.push_back(t->sleeping);chrome.sleeping=std::move(asleep);}auto t=Active();D2D1_RECT_F dirty{paint.rcPaint.left*96.f/GetDpiForWindow(h),paint.rcPaint.top*96.f/GetDpiForWindow(h),paint.rcPaint.right*96.f/GetDpiForWindow(h),paint.rcPaint.bottom*96.f/GetDpiForWindow(h)};chrome.loading=t?t->loading.Sample(NativeChrome::Motion::Now(),motion.ReducedMotion()):NativeChrome::Loading::Visual{};{auto b=ChromeClient(chrome.LoadingDirty());if(dirty.left<=b.left&&dirty.top<=b.top&&dirty.right>=b.right&&dirty.bottom>=b.bottom)paintedLoading=chrome.LoadingSignature(chrome.loading);}chrome.keyboardModality=keyboardModality;SyncTabKeys();chrome.Paint(titles,current,t&&!t->home?t->uri:L"",editing,hover,GetFocus()==address?'L':GetFocus()==h?keyboardFocus:0,&dirty);EndPaint(h,&paint);if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());}if(editing)RedrawWindow(address,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_UPDATENOW);return 0;}
-case WM_MOUSEMOVE:{if(chrome.floating)FocusEvaluate(true); /* Mode Focus: the pointer on the window's own surface (hit box strip, panel) */
+case WM_MOUSEMOVE:{if(chrome.floating)FocusEvaluate(true); /* Mode Focus: the pointer on the window's own surface (hit box strip, panel) */if(chrome.sideHidden)SideFocusEvaluate(); /* #127: its left band, its column */
     if(outerDrag.active){OuterDragMove({GET_X_LPARAM(l),GET_Y_LPARAM(l)});return 0;}ChromeTipHover(GET_X_LPARAM(l),GET_Y_LPARAM(l));{const float d=GetDpiForWindow(h)/96.f,x=GET_X_LPARAM(l)/d,y=GET_Y_LPARAM(l)/d;SidebarPointer(x,y);
     if(sepDrag.active){SeparatorMove(x,y);return 0;}
     if(SidebarEdgeDragging()){SidebarEdgeMove(x);return 0;}
@@ -5152,7 +5283,7 @@ case WM_DROPFILES:{HDROP drop=(HDROP)w;const UINT n=DragQueryFileW(drop,0xFFFFFF
     for(UINT i=0;i<n&&i<32;++i){const UINT len=DragQueryFileW(drop,i,nullptr,0);if(!len)continue;std::wstring path(len+1,L'\0');DragQueryFileW(drop,i,path.data(),len+1);path.resize(len);NewTab(AddressBar::FileUrlFromPath(path));++opened;}
     DragFinish(drop);if(opened){Select((int)pages.size()-1);Log(L"OPEN dropped files: "+std::to_wstring(opened));}return 0;}
 case WM_ACTIVATE:if(LOWORD(w)!=WA_INACTIVE){vaultKeyShownAt=GetTickCount64();PublishProfileWindow();settingsDrawer.RefreshDefaultBrowser();}   /* review N6: the key re-arms when the window is activated */
-    if(chrome.floating)FocusEvaluate(); /* Mode Focus: the pointer poll runs while the window is in front (or the panel still shows) */
+    if(chrome.floating)FocusEvaluate(); /* Mode Focus: the pointer poll runs while the window is in front (or the panel still shows) */if(chrome.sideHidden)SideFocusEvaluate(); /* #127: the same for the column's left band */
     if(LOWORD(w)==WA_INACTIVE){CancelTabDrag(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(0,0);}else if(!smoke&&!halted)Defer([]{if(!bandDrag.active)SaveBookmarks();if(sessionReady){SaveHistory();SaveDownloads();if(!WorkspaceParked())historyDrawer.Changed();DownloadsChanged();}}); /* pick up the other windows' changes, a wipe included (S5) */return 0;
 case WM_SHOWWINDOW:AnnotationWindowState();break; // V3-B: the annotation band's wave stops in the background (WM_ACTIVATEAPP: below)
 case WM_DISPLAYCHANGE:Layout();break;
@@ -5171,7 +5302,7 @@ case WM_RBUTTONUP:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET
 case WM_CONTEXTMENU:if(GET_X_LPARAM(l)==-1&&GET_Y_LPARAM(l)==-1&&GetFocus()==h){int tabIndex=NativeChrome::TabIndex(keyboardFocus);if(tabIndex>=0&&tabIndex<(int)pages.size()){keyboardModality=true;TabContextMenu(tabIndex,keyboardFocus);return 0;}if(keyboardFocus==900||keyboardFocus=='S'){keyboardModality=true;Command(keyboardFocus);return 0;}
     if(NativeChrome::IsBookmark(keyboardFocus)&&NativeChrome::BookmarkIndex(keyboardFocus)<(int)chrome.bandItems.size()){keyboardModality=true;const RECT r=RegionScreen(keyboardFocus);BookmarkContextMenu(chrome.bandItems[NativeChrome::BookmarkIndex(keyboardFocus)].id,{r.left,r.bottom},&r,true);if(GetForegroundWindow()==window&&!bookmarkPopover.Visible())SetFocus(window);InvalidateChrome();return 0;}}break;
 case WM_MOUSEWHEEL:{POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(h,&p);if(chrome.sidebar){SidebarWheel(p,GET_WHEEL_DELTA_WPARAM(w));return 0;}float wx=p.x*96.f/GetDpiForWindow(h),wy=p.y*96.f/GetDpiForWindow(h);if(chrome.Local(wx,wy)&&S(wy)<S(44)&&!pages.empty())Command(GET_WHEEL_DELTA_WPARAM(w)>0?'[':']');return 0;}
-case WM_KEYDOWN:if(w==VK_ESCAPE&&chrome.sidebarPopover){SidebarPopover(false);return 0;}if(w==VK_ESCAPE&&chrome.sidebar&&sidebarHover.open&&!tabDrag.tab){sidebarHover.Close();Layout();return 0;} /* #127: Échap closes the column opened over the page */if(w==VK_ESCAPE&&sepDrag.active){CancelSeparator();return 0;}if(splitResize>=0&&SplitResizeKey(w))return 0;if(w==VK_ESCAPE&&tabDrag.tab){CancelTabDrag(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;}
+case WM_KEYDOWN:if(w==VK_ESCAPE&&chrome.sidebarPopover){SidebarPopover(false);return 0;}if(w==VK_ESCAPE&&SideFocusEscape())return 0;if(w==VK_ESCAPE&&chrome.sidebar&&sidebarHover.open&&!tabDrag.tab){sidebarHover.Close();Layout();return 0;} /* #127: Échap closes the column opened over the page */if(w==VK_ESCAPE&&sepDrag.active){CancelSeparator();return 0;}if(splitResize>=0&&SplitResizeKey(w))return 0;if(w==VK_ESCAPE&&tabDrag.tab){CancelTabDrag(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;}
     if(w==VK_ESCAPE&&outerDrag.active){OuterDragEnd(true);return 0;}
     if(w==VK_ESCAPE&&bandDrag.index>=0){BandDragEnd(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;}
     if(GetFocus()==h&&BandKey(w)){SyncAccessibility();return 0;}if(w==VK_TAB||((w==VK_RETURN||w==VK_SPACE)&&keyboardFocus)||((w==VK_LEFT||w==VK_RIGHT||(chrome.sidebar&&(w==VK_UP||w==VK_DOWN)))&&NativeChrome::IsTab(keyboardFocus)))keyboardModality=true;if(w==VK_TAB){auto order=chrome.FocusOrder();if(order.empty())return 0;auto it=std::find(order.begin(),order.end(),keyboardFocus);int index=it==order.end()?-1:(int)(it-order.begin());index=it==order.end()?(GetKeyState(VK_SHIFT)<0?(int)order.size()-1:0):(index+(GetKeyState(VK_SHIFT)<0?-1:1)+(int)order.size())%(int)order.size();keyboardFocus=order[index];InvalidateRect(h,nullptr,FALSE);ChromeTipFocus(keyboardFocus);return 0;}if((w==VK_RETURN||w==VK_SPACE)&&keyboardFocus){if(NativeChrome::IsClose(keyboardFocus))CloseAt(NativeChrome::TabIndex(keyboardFocus));else if(NativeChrome::IsTab(keyboardFocus)){Select(NativeChrome::TabIndex(keyboardFocus));SetFocus(h);}else Command(keyboardFocus);return 0;}
@@ -5212,6 +5343,9 @@ case WM_TIMER:
     if(w==SidebarFoldTimerId){Layout();if(!sidebarFold.Moving(SidebarNowMs())&&!chrome.MorphMoving(NativeChrome::Motion::Now())&&!sideWidthSpring.Moving(NativeChrome::Motion::Now())){KillTimer(h,SidebarFoldTimerId);Layout();}return 0;}
     if(w==SidebarEdgeFadeTimerId){SyncCornerMasks();InvalidateChrome();if(chrome.sidebarEdge!=1||chrome.EdgeAlpha(NativeChrome::Motion::Now())>=1)KillTimer(h,SidebarEdgeFadeTimerId);return 0;}
     if(w==SidebarHoverTimerId){SidebarHoverDue();return 0;}
+    if(w==SideFocusPollTimerId){SideFocusEvaluate();return 0;}
+    if(w==SideSlideTimerId){SideSlideFrame();return 0;}
+    if(w==SideSlideLiveTimerId){KillTimer(h,SideSlideLiveTimerId);if(chrome.sideShown)SidePictureHide();return 0;}
     if(w==FocusPollTimerId){FocusEvaluate();return 0;}
     if(w==FocusSlideTimerId){KillTimer(h,FocusSlideTimerId);if(focusLive)FocusSlideHide();return 0;}   // Mode Focus: the live panel is on screen, its picture goes
     if(w==AudioTimerId){KillTimer(h,AudioTimerId);RefreshAudio();return 0;}
@@ -5477,7 +5611,7 @@ std::vector<HWND> ShownPageWindows(){std::vector<HWND> v;for(auto& t:pages)if(t&
 double FocusMs(NativeChrome::Motion::Time t){return std::chrono::duration<double,std::milli>(t.time_since_epoch()).count();}
 float focusPlaced=-1;bool focusPolling=false,focusCovering=false,focusCoveringLive=false;RECT focusPainted{};
 struct FocusHole{HWND host=nullptr;std::vector<FM::Pixels> spans;};std::map<unsigned,FocusHole> focusHoles;   // by tab serial
-bool FocusWanted(){return settings.focusMode&&!halted&&!InFullscreen();}
+bool FocusWanted(){return settings.focusMode&&!halted&&!InFullscreen()&&!chrome.sidebar;}   /* the side layouts hide their column instead (#127, SideFocusWanted) */
 // The panel's surroundings (Layout, before the chrome is measured): the annotation banner's height above it and the chat
 // card's strip on its right; nothing outside focus mode.
 void FocusAbove(){chrome.SetPanelAbove(chrome.floating?FM::Above{std::max(0.f,chrome.annotationBand),FM::ChatReserve(ChatInsetDip())}:FM::Above{});}

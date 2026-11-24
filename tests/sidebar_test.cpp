@@ -313,6 +313,33 @@ int main() {
         Check(S::Designated({3, 4}, 0, 5) == std::vector<int>{0, 3, 4} && S::Designated({3}, 3, 5) == std::vector<int>{3} && S::Designated({1}, -1, 5) == std::vector<int>{1}, "a group's members, once each");
         Check(S::Designated({7}, 1, 5).empty() && S::Designated({2, 9}, 8, 5) == std::vector<int>{2}, "out of range: dropped");
     }
+    // Mode Focus in the side layouts (Designer 24 nov.; Paper 2091-0 / 20EJ-0): the column hides, the page takes the window
+    // minus 4 (no window bar, no window buttons), the column comes back from `top` (under the banner) over the page.
+    {
+        S::Input in; in.width = 1180; in.height = 740; in.tabs = 5; in.hidden = true;
+        auto L = S::Compute(in);
+        Check(L.hidden && Same(L.page, 4, 4, 1176, 736) && Near(L.bar, 4) && L.band.Empty() && Near(L.drawerTop, 4), "Focus: the page 4 from every edge, drawers from 4");
+        Check(L.close.Empty() && L.maximize.Empty() && L.minimize.Empty(), "Focus: no window buttons");
+        Check(Near(L.column, 248) && Same(L.profile, 8, 8, 40, 40) && Same(L.tabs[0], 8, 103, 240, 135) && Same(L.tools[0], 8, 700, 64.5f, 732), "Focus: the column (when it comes back) as docked, from 0");
+        in.band = 32; in.top = 32; L = S::Compute(in);
+        Check(Same(L.band, 4, 0, 1176, 32) && Same(L.page, 4, 32, 1176, 736) && Near(L.bar, 0) && Near(L.drawerTop, 32), "Focus + annotation: the banner across the top, the page under it (2091-0)");
+        Check(Near(L.top, 32) && Same(L.profile, 8, 40, 40, 72) && Same(L.address, 8, 82, 240, 114) && Same(L.tabs[0], 8, 135, 240, 167) && Near(L.tools[0].bottom, 732) && Near(L.footerLine.top, 691), "Focus + annotation: the column under the banner, its foot at the bottom");
+        in.reserve = 320; L = S::Compute(in);
+        Check(Same(L.page, 4, 32, 856, 736), "Focus: a drawer open, the page stops 4 before it");
+        in.reserve = 0; in.mode = S::Mode::Compact; L = S::Compute(in);
+        { S::Input d = in; d.hidden = false; d.top = 0; d.band = 0; const auto D = S::Compute(d);
+          Check(Near(L.column, 40) && Same(L.page, 4, 32, 1176, 736) && Near(L.profile.top, D.profile.top + 32) && Near(L.tabs[0].top, D.tabs[0].top + 32), "Focus compact: the 40 column under the banner (20EJ-0)"); }
+        S::FocusReveal r;
+        Check(!r.Pointer(0, true, false, false) && !r.Pointer(399, true, false, false) && r.Pointer(400, true, false, false) && r.open && !r.pinned, "left band 400 ms: the column comes");
+        Check(!r.Pointer(410, false, true, false) && r.open, "over the column: it stays");
+        Check(!r.Pointer(420, false, false, true) && r.open, "held (a drawer opened from it, a menu): it stays");
+        Check(r.Pointer(430, false, false, false) && !r.open, "the pointer leaves it: it goes");
+        Check(!r.Pointer(500, true, false, false) && !r.Pointer(600, false, false, false) && !r.Pointer(1000, true, false, false) && r.Remaining(1200) > 0 && !r.open, "leaving the band restarts the 400 ms");
+        r.Toggle(); Check(r.open && r.pinned && !r.Pointer(1300, false, false, false) && r.open, "Ctrl+Maj+,: in, and the pointer leaving keeps it");
+        r.Toggle(); Check(!r.open && !r.pinned, "Ctrl+Maj+, again: out");
+        r.ForAddress(true); Check(r.open && r.pinned && r.wide, "the address in compact: the complete column, pinned");
+        r.Close(); Check(!r.open && !r.wide, "Échap: out");
+    }
     if (failures) { std::printf("%d failure(s)\n", failures); return 1; }
     std::printf("sidebar_test: ok\n");
     return 0;
