@@ -1042,7 +1042,7 @@
     "O12": {
       "gap": {
         "lot": 3,
-        "why": "parcours local_en_ligne : file:// et fenêtre privée restent allumés (décision 2)"
+        "why": "après la fusion de #125 (Builder, src/annotation-sites.h) : parcours local_en_ligne — localhost, *.localhost, 127.x, [::1] et file:// local allumés, fenêtre privée même règle, site en ligne et adresse du réseau local éteints ; réécrire chat_qa_run.py:600 et chat_qa_v12.py:220 (le mode s'arrête au lieu de « site pas local »)"
       }
     }
   }
