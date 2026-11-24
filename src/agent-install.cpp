@@ -346,7 +346,8 @@ struct Hub {
     std::map<int, Listener> listeners;
     int nextId = 1;
     unsigned detecting[2] = {0, 0};   // detections in flight (a newer one wins)
-    std::shared_ptr<std::atomic<bool>> cancel = std::make_shared<std::atomic<bool>>(false);
+    std::shared_ptr<std::atomic<bool>> cancel = std::make_shared<std::atomic<bool>>(false);   // the browser closes: everything stops
+    std::shared_ptr<std::atomic<bool>> signInStop[2];   // the sign-in running for this agent: « Annuler » sets it
 };
 Hub& H() {
     static Hub hub;
@@ -464,24 +465,46 @@ bool SignIn(Agent agent) {
     if (!h.initialised || h.shuttingDown || cur.Busy() || !(cur.state == State::NeedsSignIn || signInError)) return false;
     Status s = cur; s.state = State::SigningIn; s.reason = Reason::None; s.detail.clear(); Set(s);
     ++h.detecting[Index(agent)];
-    struct Out { bool ran = false, timedOut = false; std::string error; AgentRuntime::Detection d; bool desktop = false; };
+    struct Out { bool ran = false, timedOut = false, cancelled = false; std::string error; AgentRuntime::Detection d; bool desktop = false; };
     auto out = std::make_shared<Out>();
-    RunOff([out, agent] {
+    auto stop = std::make_shared<std::atomic<bool>>(false); h.signInStop[Index(agent)] = stop;
+    auto all = h.cancel;
+    RunOff([out, agent, stop, all] {
                const auto env = Environment();
                constexpr unsigned timeout = 15 * 60 * 1000;
-               if (H().host.signIn) out->ran = H().host.signIn(env, agent, timeout, &out->error);
+               if (H().host.signIn) out->ran = H().host.signIn(env, agent, timeout, &out->error);   // injected (tests): not interruptible
                else {
                    auto console = AgentRuntime::RunTerminalSignIn(env, agent, AgentRuntime::DefaultTerminalSignIn(agent), &out->error);
                    out->ran = console.Started();
-                   if (out->ran) { out->timedOut = !console.Wait(timeout); console.Close(); }
+                   if (out->ran) {
+                       // the wait in short steps: « Annuler » (CancelSignIn) or the browser closing ends it at once
+                       const ULONGLONG deadline = GetTickCount64() + timeout;
+                       while (!console.Wait(100)) {
+                           if (stop->load() || all->load()) { out->cancelled = true; break; }
+                           if (GetTickCount64() >= deadline) { out->timedOut = true; break; }
+                       }
+                       console.Close();   // kills the console's process tree (its job) if it is still open
+                   }
                }
+               if (stop->load() || all->load()) out->cancelled = true;
                const auto again = Environment(); out->d = DoDetect(again, agent); out->desktop = DesktopInstalled(again);
            },
-           [out, agent] {
-               Status found = FromDetection(out->d, out->desktop); found.detail = out->error;
-               if (found.state == State::NeedsSignIn) { found.state = State::Error; found.reason = out->timedOut ? Reason::SignInTimeout : Reason::SignInFailed; }
+           [out, agent, stop] {
+               auto& hub = H(); if (hub.signInStop[Index(agent)] == stop) hub.signInStop[Index(agent)].reset();
+               Status found = FromDetection(out->d, out->desktop); found.detail = out->cancelled ? "sign-in cancelled" : out->error;
+               if (found.state == State::NeedsSignIn) {
+                   if (out->cancelled) found.reason = Reason::Cancelled;   // cancelling is not a failure: back to « Se connecter »
+                   else { found.state = State::Error; found.reason = out->timedOut ? Reason::SignInTimeout : Reason::SignInFailed; }
+               }
                Set(found);
            });
+    return true;
+}
+
+bool CancelSignIn(Agent agent) {
+    auto& stop = H().signInStop[Index(agent)];
+    if (Get(agent).state != State::SigningIn || !stop) return false;
+    stop->store(true);   // the worker closes the console within 0.1 s, then detects again (the normal end)
     return true;
 }
 

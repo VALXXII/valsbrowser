@@ -9,8 +9,10 @@
 #define UNICODE
 #endif
 #include <windows.h>
+#include <psapi.h>
 
 #include <cstdio>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -226,6 +228,76 @@ static void Profiles() {
     SetEnvironmentVariableW(L"BROWSER_AGENT_INSTALL_SCRIPT", nullptr); SetEnvironmentVariableW(L"BROWSER_AGENT_PATH_KEY", nullptr);
 }
 
+// ---------------------------------------------------------------- « Annuler » while signing in (CancelSignIn)
+// An asynchronous host, as the browser's: the work on another thread, `done` queued for this (« UI ») thread, which pumps.
+struct DoneQueue { CRITICAL_SECTION cs; std::vector<std::function<void()>> items; DoneQueue() { InitializeCriticalSection(&cs); } };
+static DoneQueue& Q() { static DoneQueue q; return q; }
+static void AsyncRun(std::function<void()> work, std::function<void()> done) {
+    struct Job { std::function<void()> work, done; };
+    auto* job = new Job{std::move(work), std::move(done)};
+    HANDLE t = CreateThread(nullptr, 0, [](void* p) -> DWORD {
+        Job* j = static_cast<Job*>(p); j->work();
+        EnterCriticalSection(&Q().cs); Q().items.push_back(std::move(j->done)); LeaveCriticalSection(&Q().cs);
+        delete j; return 0; }, job, 0, nullptr);
+    if (t) CloseHandle(t);
+}
+static void Pump(unsigned ms, const std::function<bool()>& until) {
+    const ULONGLONG end = GetTickCount64() + ms;
+    for (;;) {
+        std::vector<std::function<void()>> take;
+        EnterCriticalSection(&Q().cs); take.swap(Q().items); LeaveCriticalSection(&Q().cs);
+        for (auto& f : take) f();
+        if ((until && until()) || GetTickCount64() >= end) return;
+        Sleep(10);
+    }
+}
+// Whether a process runs from this exact file (the fake CLI's sign-in console).
+static bool RunningFrom(const std::wstring& exe) {
+    bool found = false;
+    DWORD ids[4096], bytes = 0;
+    if (!EnumProcesses(ids, sizeof ids, &bytes)) return false;
+    for (DWORD i = 0; i < bytes / sizeof(DWORD) && !found; ++i) {
+        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ids[i]); if (!h) continue;
+        wchar_t path[MAX_PATH * 2]; DWORD n = MAX_PATH * 2;
+        if (QueryFullProcessImageNameW(h, 0, path, &n) && CompareStringOrdinal(path, int(n), exe.c_str(), -1, TRUE) == CSTR_EQUAL) found = true;
+        CloseHandle(h);
+    }
+    return found;
+}
+static void CancelSignInCase() {
+    using S = AS::State; using R = AS::Reason; const auto C = RT::Agent::Claude;
+    const auto p = Profile(L"signin");
+    const std::wstring exe = p.home + L"\\.local\\bin\\claude.exe";
+    PutCli(p.home + L"\\.local\\bin", L"claude.exe", "2.1.325 (Claude Code)", "1");
+    WriteText(exe + L".signin", "hang");   // the person never finishes in the web page
+    AS::Host h;
+    h.dataRoot = Work + L"\\data"; h.run = AsyncRun;
+    // no h.signIn: the browser's own sign-in (RunTerminalSignIn) on the fake CLI, without a window (headless test)
+    h.environment = [p] { RT::Environment e; e.dataRoot = Work + L"\\data"; e.userProfile = p.home; e.localAppData = p.local; e.appData = p.roaming; e.path = L""; e.freshUserEnvironment = false; e.signInConsoleHidden = true; return e; };
+    AS::Init(h);
+    Pump(15000, [&] { return AS::Get(C).state == S::NeedsSignIn; });
+    Expect(AS::Get(C).state == S::NeedsSignIn, "cancel: Claude Code installed, signed out");
+    Expect(!AS::CancelSignIn(C), "cancel: refused when the agent is not signing in");
+    Expect(AS::SignIn(C) && AS::Get(C).state == S::SigningIn, "cancel: « Se connecter » opens the sign-in (the fake CLI never finishes)");
+    Pump(800, [&] { return RunningFrom(exe); });
+    Expect(RunningFrom(exe), "cancel: the sign-in console is running");
+    const ULONGLONG t0 = GetTickCount64();
+    Expect(AS::CancelSignIn(C), "cancel: « Annuler » while signing in");
+    Pump(15000, [&] { return AS::Get(C).state != S::SigningIn; });
+    const ULONGLONG took = GetTickCount64() - t0;
+    Expect(AS::Get(C).state == S::NeedsSignIn && AS::Get(C).reason == R::Cancelled && took < 5000,
+           "cancel: back to « Se connecter » (reason cancelled, not an error), at once — not after the 15 min timeout");
+    Expect(!RunningFrom(exe), "cancel: the sign-in console's process is gone");
+    Expect(!AS::CancelSignIn(C), "cancel: nothing left to cancel");
+    // The browser closing still ends a sign-in.
+    Expect(AS::SignIn(C), "shutdown: a sign-in running");
+    Pump(800, [&] { return RunningFrom(exe); });
+    const ULONGLONG t1 = GetTickCount64();
+    AS::Shutdown();
+    Pump(15000, [&] { return AS::Get(C).state != S::SigningIn; });
+    Expect(AS::Get(C).state != S::SigningIn && GetTickCount64() - t1 < 5000 && !RunningFrom(exe), "shutdown: the browser closing kills the sign-in console at once");
+}
+
 // A fresh work folder every run (the fake profiles must start empty). Only ever under the folder the runner gives.
 static void RemoveTree(const std::wstring& dir) {
     WIN32_FIND_DATAW fd; HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
@@ -251,7 +323,7 @@ int wmain(int argc, wchar_t** argv) {
     Hub();
     if (argc >= 4) {
         FakeCli = argv[1]; Work = argv[2]; FakeScript = argv[3];
-        RemoveTree(Work); MakeDir(Work); Installer(); Profiles();
+        RemoveTree(Work); MakeDir(Work); Installer(); Profiles(); CancelSignInCase();
     } else std::printf("(no fake CLI / work dir / fake script given: installer and profile checks skipped)\n");
     Expect(RealUserPath() == realPath, "safety: the user's real PATH (HKCU\\Environment) untouched");
     std::printf("%d checks, %d failures\n", checks, failures);
