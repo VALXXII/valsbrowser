@@ -10,6 +10,18 @@ void StartBatchTurn(const std::string& precision, const std::string& batchId, co
 void DisposeSession(const wchar_t* why);
 void SendPrompt(); void ModeSettled(); void ModeRefused(const Acp::Event& e);   // SEC-13
 
+// ---------------------------------------------------------------- « Ton agent »: the agents' one status (src/agent-status.h)
+// Started once with the browser (ChatAgentsStartup, main) — or on the first need of the chat. Everyone reads it.
+void EnsureAgentStatus() {
+    static bool started = false; if (started) return; started = true;
+    AgentStatus::Host h;
+    h.dataRoot = Ann::DataRoot();
+    h.run = [](std::function<void()> work, std::function<void()> done) { Ann::Run(std::move(work), std::move(done)); };
+    h.log = [](const std::wstring& s) { Diag(s); };
+    h.environment = [] { return RtEnv(); };
+    AgentStatus::Init(std::move(h));
+}
+
 // ---------------------------------------------------------------- detection and preparation (off the UI thread)
 void ApplyDetection(const std::string& id, const AgentRuntime::Detection& d) {
     auto& a = agentInfo[id]; a.known = true; a.cli = d.Usable(); a.prepared = !d.NeedsPrepare();
@@ -918,3 +930,7 @@ void ViewChanges(const std::string& panelTurn, const std::string& path) {
 }
 
 } // namespace Chat
+
+// « Ton agent » (design/ton-agent-interface.md): the agents' status starts with the browser, its work stops with it.
+void ChatAgentsStartup() { Chat::EnsureAgentStatus(); }
+void ChatAgentsShutdown() { AgentStatus::Shutdown(); }

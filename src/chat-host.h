@@ -45,6 +45,7 @@
 #include "chat-panel-view.h"
 #include "acp-client.h"
 #include "agent-runtime.h"
+#include "agent-status.h"   // « Ton agent »: the agents' one status (design/ton-agent-interface.md)
 #include "change-snapshots.h"
 
 namespace Chat {
