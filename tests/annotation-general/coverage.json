@@ -1222,6 +1222,22 @@
           "what": "vraie fenêtre : 11ᵉ et 12ᵉ clics, bandeau « 10 éléments au maximum… », disparition seule, rien d'ajouté"
         }
       ]
+    },
+    "R-file-attente-bulle": {
+      "tests": [
+        {
+          "suite": "chat-panel",
+          "what": "« bubble (queue, lot R) » : 2 messages en attente au plus, 2 lignes chacun sous un fondu, « +N en attente » (13 px, #A6A6A6), liste dépliée de 160 px au plus, saisie toujours entière (cause de O5 #110)"
+        },
+        {
+          "suite": "chat-units",
+          "what": "host_contract_test.py — « lot R (O5): the queue message carries the « +N en attente » line »"
+        },
+        {
+          "suite": "lot-r",
+          "what": "vraie fenêtre : 4 messages en attente dans une bulle, 2 montrés, « +2 en attente », liste dépliée, saisie entière"
+        }
+      ]
     }
   }
 }

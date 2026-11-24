@@ -667,6 +667,35 @@ try:
         check(cdp.js("V('.strip')") == 0 and cdp.js("V('.bq-cap')") == 1, "bubble (queue): the host's `wait` strip, which says the same sentence, is not shown twice")
         click(".bq-cap .icon-btn")
         check(q == ["Mets ce titre en gras", "Commencera après le travail en cours sur button.btn-primary", 1] and "queue.remove:q1" in posted(), "bubble (queue): a request written during another element's turn waits, with its discreet line and « × »", str(q))
+        # Lot R (validated by the owner, 24 Nov 2026; O5: 4 waiting messages = 532 px for a 428 px bubble, the input left the
+        # surface): 2 waiting messages at most, each cut at 2 lines under a fade; « +N en attente » opens the whole list
+        # (160 px at most, its own scroll, a fade at its top) and closes it; the input always whole
+        load("c-file-attente-4")
+        QL_JS = """(()=>{const a=document.getElementById('app').getBoundingClientRect(),c=document.querySelector('.composer').getBoundingClientRect(),m=document.querySelector('.bq-more'),l=document.querySelector('.bq-list'),t=Array.from(document.querySelectorAll('.bq-tx'));
+          const first=document.querySelector('.bq');
+          return {n:document.querySelectorAll('.bq').length,more:m?m.innerText.trim():'',exp:m?m.getAttribute('aria-expanded'):'',color:m?getComputedStyle(m).color:'',size:m?getComputedStyle(m).fontSize:'',chevron:!!(m&&m.querySelector('svg')),
+                  texts:t.map(x=>x.textContent.slice(0,9)),heights:t.map(x=>Math.round(x.getBoundingClientRect().height)),cut:t.map(x=>x.classList.contains('cut')),dots:t.some(x=>getComputedStyle(x).textOverflow==='ellipsis'||x.textContent.endsWith('…')),
+                  input:c.height>30&&c.top>=a.top-1&&c.bottom<=a.bottom+1,above:!!(m&&first&&m.getBoundingClientRect().bottom<=first.getBoundingClientRect().top+1),
+                  list:l?Math.round(l.getBoundingClientRect().height):0,scrolls:l?l.scrollHeight>l.clientHeight+1:false,atEnd:l?Math.abs(l.scrollTop+l.clientHeight-l.scrollHeight)<2:false,fade:l?l.classList.contains('scrolled'):false,
+                  focus:document.activeElement?document.activeElement.className:''}})()"""
+        q4 = cdp.js(QL_JS); h4 = sizes()[-1]
+        check(q4["n"] == 2 and q4["texts"] == ["Troisième", "Quatrième"] and q4["more"] == "+2 en attente" and q4["exp"] == "false" and q4["above"] and q4["chevron"],
+              "bubble (queue, lot R): 4 waiting messages — the 2 most recent are shown, « +2 en attente » above them", json.dumps(q4, ensure_ascii=False)[:300])
+        check(q4["color"] == "rgb(166, 166, 166)" and q4["size"] == "13px", "bubble (queue, lot R): « +N en attente » is 13 px, grey #A6A6A6", f"{q4['color']} {q4['size']}")
+        check(max(q4["heights"]) <= 40 and q4["cut"] == [True, False] and not q4["dots"], "bubble (queue, lot R): each waiting message is cut at 2 lines under a fade, never « … »", f"{q4['heights']} {q4['cut']}")
+        check(q4["input"] and h4[1] <= 520, "bubble (queue, lot R): the input stays whole inside the bubble (the queue shrinks, never the input)", f"{h4} {q4['input']}")
+        click(".bq-more"); time.sleep(.25)
+        q5 = cdp.js(QL_JS); h5 = sizes()[-1]
+        check(q5["n"] == 4 and q5["exp"] == "true" and q5["list"] <= 160 and q5["scrolls"] and q5["atEnd"] and q5["fade"] and "bq-more" in q5["focus"],
+              "bubble (queue, lot R): a click on « +2 en attente » opens the whole list — 160 px at most, its own scroll (at its end), a fade at its top; the focus stays on the line", json.dumps(q5, ensure_ascii=False)[:300])
+        check(q5["input"] and h5[1] <= 520, "bubble (queue, lot R): list open, the input is still whole inside the bubble", f"{h5} {q5['input']}")
+        click(".bq-more"); time.sleep(.25)
+        q6 = cdp.js(QL_JS)
+        check(q6["n"] == 2 and q6["exp"] == "false" and sizes()[-1] == h4, "bubble (queue, lot R): a second click closes it (back to 2 messages, same size as before)", f"{q6['n']} {sizes()[-1]} {h4}")
+        host({"type": "queue", "more": "+{n} waiting", "items": [{"id": "q1", "text": "Premier", "after": "button.btn-primary"}, {"id": "q2", "text": "Deuxième", "after": "button.btn-primary"}, {"id": "q3", "text": "Troisième", "after": "button.btn-primary"}]})
+        check(cdp.js("document.querySelector('.bq-more').innerText.trim()") == "+1 waiting" and cdp.js("document.querySelectorAll('.bq').length") == 2, "bubble (queue, lot R): the count line is worded by the host (interface language): « +1 waiting »")
+        host({"type": "queue", "items": [{"id": "q1", "text": "Premier", "after": "button.btn-primary"}, {"id": "q2", "text": "Deuxième", "after": "button.btn-primary"}]})
+        check(cdp.js("!document.querySelector('.bq-more') && document.querySelectorAll('.bq').length") == 2, "bubble (queue, lot R): 2 waiting messages or fewer: no « +N en attente » line")
         # monkey seed 3 #63/#70: in the bubble of an element that already has an exchange, the user writes and presses Entrée while
         # another element's turn runs; the host queues it (queue.items[].after) — the waiting message is seen AT ONCE in this
         # bubble, whole, inside the visible surface: dimmed user bubble, « Commencera après le travail en cours sur … », « × »

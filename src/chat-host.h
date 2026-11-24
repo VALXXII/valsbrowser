@@ -391,7 +391,9 @@ void SendQueue() {
     }
     {   std::string text;   // queue #70: a message held until its element is ready (image) is shown as waiting, in its bubble
         if (HeldFor(shown, text)) { SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(std::string("held"))); o.Set("text", Str(ClipUtf8(text, 400))); items.Push(std::move(o)); } }
-    SJ::Value m = SJ::Value::Obj(); m.Set("items", std::move(items)); Send("queue", std::move(m));
+    // lot R (validated 2026-11-24): the bubble shows 2 waiting messages at most; the line that counts the others is worded
+    // here, in the interface language (« +{n} en attente »: the page puts the number in)
+    SJ::Value m = SJ::Value::Obj(); m.Set("items", std::move(items)); m.Set("more", Str(TRF(chat_queue_more, L"{n}"))); Send("queue", std::move(m));
 }
 // Context gauge (contract B 1.2): tokens used / window, as the agent last reported them for this conversation.
 void SendUsage() {

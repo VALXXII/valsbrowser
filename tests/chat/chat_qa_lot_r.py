@@ -14,6 +14,7 @@
   4  A private window: the chat works there; what it keeps (conversation, element sent) lives beside the private
      ledger and is erased when the window closes, and at the next start after the window was killed.
   5  Nothing of the old annotation system is left on screen: no note window, no launcher, Ctrl+Maj+H does nothing.
+  6  Commentaire, 4 messages waiting in a bubble (O5): 2 shown, « +2 en attente » opens the list, the input stays whole.
 
 Same guards as tests/chat/chat_qa.py (own copy of the build, own profile, BROWSER_ANNOTATIONS_TEST=1, agent
 configurations redirected, real configurations fingerprinted). The online site, the fake localhost and the LAN
@@ -293,6 +294,46 @@ def part_local_en_ligne():
         m3 = mark(); C.shortcut('A'); logged(r'ANNOTATE mode off', m3, 6); time.sleep(0.6)
 
 
+def part_queue():
+    """4 messages written in a bubble while another element's turn runs: they wait there (O5: they pushed the input out)."""
+    if not step('6 · back on the sandbox site', navigate(C.URL, None) and C.page("!!document.querySelector('.btn-primary')")):
+        return
+    m = mark(); C.shortcut('A'); logged(r'ANNOTATE mode on', m, 8); time.sleep(1.5); dismiss_connect()
+    m1 = mark(); C.invoke('AnnotationLayoutComment')
+    if not step('6 · « Commentaire » chosen', logged(r'CHAT layout: Commentaire', m1, 6) is not None):
+        return
+    time.sleep(1.2)
+    m2 = mark(); C.click_page('.btn-primary'); logged(r'CHAT bubble opened on', m2, 10); time.sleep(1.2)
+    C.panel("document.getElementById('composer-input').focus()"); C.type_panel('vrai-lent jetonLotR'); time.sleep(0.2); C.enter_panel()
+    step('6 · a slow turn runs on a first element', logged(r'CHAT turn t\d+ started', m2, 20) is not None)
+    m3 = mark(); C.click_page('.title'); logged(r'CHAT bubble opened on', m3, 10); time.sleep(1.2)
+    for i in range(1, 5):
+        C.panel("document.getElementById('composer-input').focus()"); C.type_panel(f'Message en attente numéro {i}'); time.sleep(0.15); C.enter_panel(); time.sleep(0.45)
+    state = """(function(){var a=document.getElementById('app').getBoundingClientRect(),c=document.querySelector('.composer'),m=document.querySelector('.bq-more'),l=document.querySelector('.bq-list');
+      var r=c?c.getBoundingClientRect():null;
+      return {n:document.querySelectorAll('.bq').length,more:m?m.innerText.trim():'',open:m?m.getAttribute('aria-expanded'):'',list:l?Math.round(l.getBoundingClientRect().height):0,
+              input:!!r&&r.height>30&&r.top>=a.top-1&&r.bottom<=a.bottom+1&&r.bottom<=innerHeight+1,app:[Math.round(a.width),Math.round(a.height)],win:[innerWidth,innerHeight]}})()"""
+    st = C.wait_for(lambda: (lambda s: s if s and s.get('more') else None)(C.panel(state)), 6) or C.panel(state) or {}
+    report['measures']['queue'] = {'closed': st}
+    step('6 · 4 messages wait in the bubble: the 2 most recent are shown, « +2 en attente » above them', st.get('n') == 2 and st.get('more') == '+2 en attente' and st.get('open') == 'false', st)
+    step('6 · …the input is whole inside the bubble (O5)', bool(st.get('input')), st)
+    capture('6-file-attente')
+    try:
+        C.click_panel(selector='.bq-more'); time.sleep(0.5)
+    except RuntimeError as e:
+        step('6 · the « +N en attente » line can be clicked', False, e)
+    st2 = C.panel(state) or {}
+    report['measures']['queue']['open'] = st2
+    step('6 · a click opens the whole list (160 px at most), the input still whole', st2.get('n') == 4 and st2.get('open') == 'true' and 0 < st2.get('list', 0) <= 160 and bool(st2.get('input')), st2)
+    capture('6-file-attente-ouverte')
+    try:
+        C.click_panel(selector='.bq-more'); time.sleep(0.4)
+    except RuntimeError:
+        pass
+    st3 = C.panel(state) or {}
+    step('6 · a second click closes it', st3.get('n') == 2 and st3.get('open') == 'false', st3)
+
+
 def part_private():
     url = f'http://127.0.0.1:{PORT_ALL}/'
     before_store, before_convs = store_entries(), normal_conversations()
@@ -351,6 +392,7 @@ def run_main():
         part_panel_at_start()
         part_ten_elements()
         part_local_en_ligne()
+        part_queue()
     except Exception:
         step('lot R (normal window): the script ran to its end', False, traceback.format_exc()[-500:])
     finally:

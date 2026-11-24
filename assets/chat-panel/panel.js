@@ -63,7 +63,7 @@
           modes: [], mode: null, conversation: null, running: false, suggestions: [], capabilities: {}, disabledReason: null },
     users: new Map(), turns: new Map(), tools: new Map(),
     lastUser: null, lastTurn: null, lastAt: 0,
-    perms: [], queue: [], strips: new Map(), history: null, historyOpen: false, commands: [],
+    perms: [], queue: [], queueOpen: false, queueMore: "", strips: new Map(), history: null, historyOpen: false, commands: [],
     picking: false, menu: null, atBottom: true, newCount: 0,
     cEls: new Map(), cAtt: new Map(), editing: null, replay: false, fatal: false,
     planPending: null,
@@ -1358,6 +1358,7 @@
     resetGen++;
     closeChanges();
     S.usage = null; S.usageWarned = false; renderGauge();
+    S.queueOpen = false;
     clear(log); S.users.clear(); S.turns.clear(); S.tools.clear(); S.perms = []; S.lastUser = null; S.lastTurn = null; S.lastAt = 0; S.planPending = null; S.editing = null;
     S.atBottom = true; S.newCount = 0; newSteps.hidden = true;
     S.berr = null; closeView(true); bTipHide();
@@ -1406,7 +1407,7 @@
     const p = S.perms[0], s = activeStrip(), running = !!S.st.running, none = !log.firstChild;
     const err = !running && !p ? S.berr : null;
     const off = !!(S.st.disabledReason || (s && s.tone === "danger"));
-    const key = JSON.stringify(["b", p && p.requestId, S.perms.length, s, S.queue, S.st.disabledReason, running, err && err.id, !!S.bview, none, S.outbox && S.outbox.shown && S.outbox.text]);
+    const key = JSON.stringify(["b", p && p.requestId, S.perms.length, s, S.queue, S.queueOpen, S.st.disabledReason, running, err && err.id, !!S.bview, none, S.outbox && S.outbox.shown && S.outbox.text]);
     if (!force && key === lastDockKey) { composer.classList.toggle("disabled", off); updateSend(); return; }
     lastDockKey = key;
     const a = document.activeElement;
@@ -1426,10 +1427,10 @@
       if (mine && document.hasFocus()) dockFocusSoon();
       updateSend(); return;
     }
-    for (const q of S.queue) dock.appendChild(bQueued(q));
-    if (S.outbox && S.outbox.shown) dock.appendChild(bQueued({ text: S.outbox.text, local: true }));
+    const waiting = bQueue(); if (waiting) dock.appendChild(waiting);
     if (s) dock.appendChild(stripNode(s));
     dock.appendChild(composer);
+    if (waiting) bQueueFit(waiting);
     composer.classList.toggle("disabled", off);
     cin.setAttribute("contenteditable", S.st.disabledReason ? "false" : "true");
     cin.setAttribute("aria-disabled", S.st.disabledReason ? "true" : "false");
@@ -1525,13 +1526,45 @@
   }
   // One agent turn at a time: a request written in another element's bubble waits (B 1.8 `queue.items[].after`).
   function bQueued(q) {
-    if (q.local) return h("div", { class: "bq", role: "group", "aria-label": "Message envoyé" }, h("div", { class: "bubble pending", text: q.text }));
+    if (q.local) return h("div", { class: "bq", role: "group", "aria-label": "Message envoyé" }, h("div", { class: "bubble pending" }, h("span", { class: "bq-tx", text: q.text })));
     return h("div", { class: "bq", role: "group", "aria-label": "Message en attente" },
-      h("div", { class: "bubble pending", text: q.text }),
+      h("div", { class: "bubble pending" }, h("span", { class: "bq-tx", text: q.text })),
       h("div", { class: "bq-cap" },
         // H1 c342b23: « held » = kept the time the element's image gets ready, then sent
         h("span", { class: "tx" }, q.after ? ["Commencera après le travail en cours sur ", h("span", { class: "el", text: q.after })] : q.id === "held" ? "Envoi dans un instant…" : "En file : commencera après le travail en cours"),
         h("button", { class: "icon-btn", type: "button", "aria-label": "Retirer ce message de la file", onclick: () => post("queue.remove", { id: q.id }) }, icon("close"))));
+  }
+
+  // Lot R (validated by the owner, 2026-11-24; fixes O5 — 4 waiting messages pushed the input out of the bubble): the
+  // bubble shows the 2 most recent waiting messages, each cut at 2 lines under a fade (never « … »). With more than 2, a
+  // compact line « +N en attente » above them opens the whole list (160 px high at most, its own scroll, a fade at its
+  // top) and closes it again. The queue shrinks, never the input.
+  function bQueue() {
+    const all = S.queue.slice();
+    if (S.outbox && S.outbox.shown) all.push({ text: S.outbox.text, local: true });
+    const more = Math.max(0, all.length - 2);
+    if (!more) S.queueOpen = false;
+    if (!all.length) return null;
+    const box = h("div", { class: "bqs" + (S.queueOpen ? " open" : "") });
+    if (more) {
+      const label = (S.queueMore && S.queueMore.includes("{n}") ? S.queueMore : "+{n} en attente").replace("{n}", String(more));
+      box.appendChild(h("button", { class: "bq-more", type: "button", "aria-expanded": String(!!S.queueOpen), "aria-controls": "bq-list",
+        onclick: () => { S.queueOpen = !S.queueOpen; renderDock(true); const b = dock.querySelector(".bq-more"); if (b) b.focus(); } },
+        h("span", { text: label }), icon("chevron", "cv")));
+    }
+    const list = h("div", { class: "bq-list", id: "bq-list" });
+    for (const q of (S.queueOpen ? all : all.slice(-2))) list.appendChild(bQueued(q));
+    box.appendChild(list);
+    return box;
+  }
+  // Once in the page: which texts are cut (their fade), the open list at its end (the most recent), its top fade.
+  function bQueueFit(box) {
+    for (const t of box.querySelectorAll(".bq-tx")) t.classList.toggle("cut", t.scrollHeight > t.clientHeight + 1);
+    const list = box.querySelector(".bq-list");
+    if (!list || !box.classList.contains("open")) return;
+    const fade = () => list.classList.toggle("scrolled", list.scrollTop > 0);
+    list.addEventListener("scroll", fade, { passive: true });
+    list.scrollTop = list.scrollHeight; fade();
   }
 
   // The diff « en grand » (Paper 19ON-0 for a request, 19IO-0 for a finished turn): it takes the bubble, the thread waits.
@@ -2856,6 +2889,7 @@
     },
     queue(m) {
       S.queue = m.items.filter((q) => q && ID.test(q.id) && isStr(q.text)).map((q) => ({ id: q.id, text: q.text, after: isStr(q.after, 300) ? q.after : "" }));
+      if (isStr(m.more, 80)) S.queueMore = m.more;
       for (const q of S.queue) outboxEnd(q.text);
       renderDock();
     },

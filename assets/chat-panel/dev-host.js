@@ -251,6 +251,11 @@
     "c-menu-effort-gauche": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }, () => { window.__grant = { right: 0 }; }, wait(30), click(".model .m"), wait(40), click(".menu .mi[data-key=effort]"), wait(120)],
     "c-menu-plus": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }, wait(30), click(".tools .tb[aria-label=Joindre]"), wait(60)],
     "c-menu-plus-incertain": [LAY(), st({ askFolder: true }), { type: "thread.reset", conversationId: "new", items: [] }, wait(30), click(".tools .tb[aria-label=Joindre]"), wait(60)],
+    // lot R: 4 waiting messages in the bubble (O5: they pushed the input out) — 2 shown, « +2 en attente » opens the list
+    "c-file-attente-4": [LAY({ element: "h1.title" }), st(), { type: "thread.reset", conversationId: "new", items: [] },
+      { type: "queue", more: "+{n} en attente", items: [{ id: "q1", text: "Premier message en attente", after: "button.btn-primary" }, { id: "q2", text: "Deuxième message en attente", after: "button.btn-primary" },
+        { id: "q3", text: "Troisième message, long : aligne le bouton à droite sur grand écran, garde-le en pleine largeur sur mobile, et vérifie que le texte reste lisible sur les deux thèmes sans toucher au reste de la page." },
+        { id: "q4", text: "Quatrième message", after: "button.btn-primary" }] }],
     "c-infobulle-envoyer": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }, typeIn(CASK), blur],
     "c-mode-auto": [LAY(), st({ mode: "acceptEdits" }), { type: "thread.reset", conversationId: "new", items: [] }],
     "c-plan": [LAY(), st(Object.assign({ mode: "plan" }, conv("Paiement sur mobile"))), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart(),
