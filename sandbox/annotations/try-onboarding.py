@@ -72,6 +72,30 @@ def wait_port(host: str, port: int, timeout: float = 10.0) -> bool:
     return False
 
 
+def stop_orphan_server(script: pathlib.Path) -> bool:
+    """Port 5173 held by THIS trial's own demo server (the copy of serve.py beside it) whose launcher is gone — its console
+    closed with the cross before --parent existed: that server only, by its process id. Anything else keeps the port (and
+    the trial refuses to start)."""
+    if sys.platform != 'win32':
+        return False
+    ps = ("$c = Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort 5173 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; "
+          "if ($c) { $p = Get-CimInstance Win32_Process -Filter \"ProcessId=$($c.OwningProcess)\"; "
+          "$alive = [bool](Get-Process -Id $p.ParentProcessId -ErrorAction SilentlyContinue); \"$($p.ProcessId)`t$alive`t$($p.CommandLine)\" }")
+    try:
+        out = subprocess.run(['powershell', '-NoProfile', '-Command', ps], capture_output=True, text=True, timeout=30).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    parts = out.split('\t', 2)
+    if len(parts) != 3 or not parts[0].isdigit() or parts[1] != 'False' or str(script).lower() not in parts[2].lower():
+        return False
+    subprocess.run(['taskkill', '/F', '/PID', parts[0]], capture_output=True)
+    for _ in range(30):
+        if not port_open('127.0.0.1', 5173):
+            return True
+        time.sleep(0.1)
+    return False
+
+
 def prepare_agents(root: pathlib.Path) -> None:
     """Faux dossiers de configuration de Claude et Codex (la détection regarde leur présence)."""
     claude = root / 'AppData' / 'Roaming' / 'Claude'
@@ -189,12 +213,14 @@ def main() -> int:
     if not (app / 'browser.exe').is_file():
         print(f'Build introuvable : {app}\\browser.exe', file=sys.stderr)
         return 1
+    home = pathlib.Path(tempfile.gettempdir()) / ('browser-essai-pastille-local' if a.local_pill else 'browser-essai-onboarding-annotation')
+    if port_open('127.0.0.1', 5173) and stop_orphan_server(home / 'serveur' / 'serve.py'):
+        print("Le serveur d'un essai précédent (sa fenêtre fermée) tenait encore la page de démonstration : arrêté.")
     if port_open('127.0.0.1', 5173):
         # Never reuse a server already there: it may serve the repository's own files, which the agent would then edit.
         print("Le port 5173 est déjà pris (un autre essai ou un autre serveur est ouvert) : fermez-le, puis relancez.\n"
               "L'essai ne démarre pas, pour que l'agent ne modifie jamais d'autres fichiers que la copie de la page.", file=sys.stderr)
         return 1
-    home = pathlib.Path(tempfile.gettempdir()) / ('browser-essai-pastille-local' if a.local_pill else 'browser-essai-onboarding-annotation')
     run, agents, site, files = home / 'app', home / 'agents', home / 'site', home / 'fichier-local'
     keep = a.keep or a.private
     fresh = not keep or not (run / 'browser.exe').is_file()
@@ -229,7 +255,7 @@ def main() -> int:
     server_dir = home / 'serveur'
     server_dir.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(HERE / 'serve.py', server_dir / 'serve.py')
-    server = subprocess.Popen([sys.executable, '-I', str(server_dir / 'serve.py'), '--site', str(site), '--no-cross'], cwd=str(site),
+    server = subprocess.Popen([sys.executable, '-I', str(server_dir / 'serve.py'), '--site', str(site), '--no-cross', '--parent', str(os.getpid())], cwd=str(site),
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     try:
         if not wait_port('127.0.0.1', 5173) or server.poll() is not None:

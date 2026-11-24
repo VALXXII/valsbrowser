@@ -57,6 +57,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--site', type=pathlib.Path, default=HERE / 'site', help='the folder served on 127.0.0.1:5173 (default: site/ next to this script)')
     ap.add_argument('--no-cross', action='store_true', help='without the cross-origin iframe (127.0.0.2:5174)')
+    ap.add_argument('--parent', type=int, default=0, help='stop when this process ends (the trial launcher: its window closed with the cross)')
     a = ap.parse_args()
     site = a.site.resolve()
     if not (site / 'index.html').is_file():
@@ -74,10 +75,22 @@ def main() -> int:
         return 2
     for s in servers:
         threading.Thread(target=s.serve_forever, daemon=True).start()
+    stop = threading.Event()
+    if a.parent and sys.platform == 'win32':
+        def watch(pid: int) -> None:   # the launcher gone (its console closed): no server left holding the port
+            import ctypes
+            k32 = ctypes.WinDLL('kernel32')
+            h = k32.OpenProcess(0x00100000, False, pid)   # SYNCHRONIZE
+            if not h:
+                stop.set(); return
+            k32.WaitForSingleObject(ctypes.c_void_p(h), 0xFFFFFFFF)
+            k32.CloseHandle(ctypes.c_void_p(h)); stop.set()
+        threading.Thread(target=watch, args=(a.parent,), daemon=True).start()
     print(f'Sandbox: http://{MAIN[0]}:{MAIN[1]}/ ({site})' + ('' if a.no_cross else f'  (iframe croisée http://{CROSS[0]}:{CROSS[1]}/cross.html)')
           + ' — Ctrl+C pour arrêter', flush=True)
     try:
-        threading.Event().wait()
+        while not stop.wait(0.5):
+            pass
     except KeyboardInterrupt:
         pass
     finally:
