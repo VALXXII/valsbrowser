@@ -214,6 +214,19 @@ int wmain(int argc, wchar_t** argv) {
             for (float y = t.top; y < t.bottom; ++y) for (float x = t.left; x < t.right; ++x) fold = std::max(fold, (int)((c.SurfacePixel(x, y) >> 8) & 255));
             std::snprintf(msg, sizeof msg, "fold button glyph at 50 %% (brightest %d, ~139)", fold); Check(fold > 110 && fold < 160, msg);
         }
+        // Val #5, both cases in the three layouts: after a click white 5 % (#FFFFFF0D), from the keyboard the 50 % ring.
+        for (int layout = 0; layout < 3; ++layout) {
+            const char* name = layout == 0 ? "top bar" : layout == 1 ? "column" : "compact bar";
+            Chrome c; Check(SUCCEEDED(c.InitOffscreen(root, 96, 1178, 738)), "offscreen chrome (rings)");
+            c.sidebar = layout != 0; if (layout == 2) { c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.sidebarTitles = 0; }
+            c.addressEditing = true; c.address = AddressBar::Describe(L"", false);
+            auto sample = [&](bool keyboard) { c.keyboardModality = keyboard; c.Paint(titles, 0, L"", true, 0, 'L');
+                const D2D1_RECT_F a = c.sidebar ? D2D1_RECT_F{c.side.address.left, c.side.address.top, c.side.address.right, c.side.address.bottom} : c.bar;
+                const float x = a.left + 40; return std::make_pair((int)((c.SurfacePixel(x, a.top + 6) >> 8) & 255), (int)((c.SurfacePixel(x, a.top + .5f) >> 8) & 255)); };
+            const auto click = sample(false), keys = sample(true); char msg[200];
+            std::snprintf(msg, sizeof msg, "%s: outline after a click %d over %d (white 5 %%), from the keyboard %d (50 %%)", name, click.second, click.first, keys.second);
+            Check(click.second > click.first && click.second - click.first <= 15 && keys.second - keys.first > 60, msg);
+        }
         const auto col = field(true, false, "column");
         Check(Near(col.right, 248 - 8 - 8), "column: the EDIT spans the field while typing (to its padding)");
         field(true, true, "compact bar");
