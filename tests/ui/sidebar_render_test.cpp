@@ -285,7 +285,7 @@ int wmain(int argc, wchar_t** argv) {
             c.SetFavicons(f); c.sideHome.assign(5, false); c.sideDetails.assign(5, L"youtube.com");
             if (compact) { c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.sidebarTitles = 0; }
             if (hovered) { c.menuTargets = {1}; c.menuSource = 3; } else { c.tabGroups = {0, 7, 7, 0, 0}; c.visibleTabGroup = 7; }
-            c.Paint(t, 1, L"https://youtube.com/", false, 0, 0);
+            { const auto t0 = Motion::Now(); c.Paint(t, 1, L"https://youtube.com/", false, 0, 0, nullptr, t0); c.Paint(t, 1, L"https://youtube.com/", false, 0, 0, nullptr, t0 + Motion::Milliseconds(200)); }   // §4: past the menu outline's 100 ms fade
             Check(SUCCEEDED(c.SavePng((out + L"\\" + name + L".png").c_str())), "snapshot (split)");
             const auto& L = c.side; char line[200];
             std::snprintf(line, sizeof line, "%ls %.1f %.1f %.1f %.1f\n", name, L.tabs[0].left, L.tabs[0].top, L.tabs[4].right, L.tabs[4].bottom); splitBoxes << line;
