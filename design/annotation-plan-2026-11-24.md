@@ -323,19 +323,21 @@ entrée, la liste complète, et l'interdiction des raccourcis. À écrire au lot
 python tests/annotation-general/run.py --day
 ```
 
-Durée estimée : **≈ 15 min**. Mesuré aujourd'hui sur un poste chargé : traductions 3 s, unités 37 s, page 213 s,
-instantanés 36 s. Le 22/11 : magasin et pont 230 s, client ACP 62 s.
+Durée mesurée le 24/11 : **13 min 10 s** (11 suites). Aucune fenêtre à l'écran.
 
-| Suite | Commande actuelle | Couvre |
+| Suite (id du manifeste) | Commande | Couvre |
 |---|---|---|
-| Barrière de traduction | `python tools/i18n/check_strings.py` | Textes |
-| Unités du chat + 110 contrats | `python -I tests/chat/run_tests.py` | Placement de la bulle, sites locaux, dossier, consigne, magasin |
-| Page du chat, navigateur sans tête | `python -I tests/chat-panel/run.py` | 802 vérifications : états Paper, clavier, accessibilité, menus, autorisations, brouillons |
-| Instantanés des fichiers | `python -I tests/snapshots/run_tests.py` | « Tout annuler », compteur |
-| Magasin et pont MCP | `python -I tests/annotations/run_tests.py` | Annotation gardée, lue, prise, terminée ; connexion Claude / Codex sur dossiers redirigés |
-| Rendu natif hors écran | `python tests/annotations-ui/run.py --no-window` | Bandeau, lanceur, historique, cadre, étiquettes |
-| Client ACP | `python -I tests/acp/run_tests.py --quick` | **Pas en journée aujourd'hui** : un de ses tests ouvre une console visible (`src/agent-runtime.cpp:1243`). À ajouter au lot 0 : une option qui saute ce seul test, lui-même rejoué la nuit |
-| À écrire | scénarios de page « profil neuf » (O2, O8) ; test de propriété « la bulle reste dans la zone » (O1, O5) ; vérification de la table de couverture | |
+| `i18n` | `python tools/i18n/check_strings.py` | Textes |
+| `chat-units` | `python -I tests/chat/run_tests.py` | Placement de la bulle (#130 C), sites locaux, dossier, consigne, magasin ; contrats de l'hôte |
+| `model-switch-128` | `python -I tests/chat/model_switch_128_test.py` | Changement de modèle et de fournisseur (#128) |
+| `annotation-units` | `python -I tests/annotation-general/units.py` | Où Annoter est allumé (#125), notes d'une fenêtre privée, tutoriel dessiné hors écran. Avant le lot 0, seul le lanceur de l'installateur les compilait |
+| `chat-panel` | `python -I tests/chat-panel/run.py` | Page du chat : états Paper, clavier, accessibilité, menus, autorisations, brouillons |
+| `page-v4` | `python tests/annotations-ui/page_v4.py` | Script de la page : cadres, étiquettes, inspecteur, Ctrl maintenu. N'était dans aucun ancien lanceur |
+| `fake-agent` | `python -I tests/chat/final/fake_agent_scenarios.py` | Le faux agent se comporte comme un vrai (annonces, autorisation, erreurs) |
+| `snapshots` | `python -I tests/snapshots/run_tests.py` | « Tout annuler », compteur de fichiers |
+| `annotations` | `python -I tests/annotations/run_tests.py` | Magasin et pont MCP : annotation gardée, lue, prise, terminée ; connexion Claude / Codex sur dossiers redirigés |
+| `annotations-ui` | `python tests/annotations-ui/run.py --no-window` | Bandeau, lanceur, historique, note. La nuit : avec ses fenêtres |
+| `acp` | `python -I tests/acp/run_tests.py --quick --no-console` | Client ACP, runtime des agents. La nuit : avec la connexion en console et les vrais téléchargements |
 
 ### 4.3 Partie en vraie fenêtre (nuit)
 
@@ -343,21 +345,28 @@ instantanés 36 s. Le 22/11 : magasin et pont 230 s, client ACP 62 s.
 python tests/annotation-general/run.py --night --build
 ```
 
-Durée estimée : **1 h 45, à prévoir 2 h 15**. Base : durées du 22/11 (suites du dépôt 36 min, 11 suites en vraie fenêtre
-11 min, parcours 21 min, monkey 3 graines 25 min) plus un build neuf d'environ 15 min. Session Windows ouverte, écran non
-verrouillé, personne au clavier. Tant que le lanceur n'est pas écrit, la commande équivalente est
-`python tests/chat/final/run_final.py --build --seeds 1,2,3` (même contenu, sans les garde-fous du §4.1).
+À lancer depuis un dossier de travail préparé (`setup.ps1`), sur le commit exact à valider, arbre propre. Session Windows
+ouverte, écran non verrouillé (le lanceur refuse de démarrer sinon), personne au clavier, aucune autre suite en vraie
+fenêtre en même temps.
 
-Ordre :
+Durée estimée : **1 h 45, à prévoir 2 h 15**. Base : build neuf ≈ 15 min ; la partie sans fenêtre rejouée en entier
+≈ 17 min (13 min mesurées, plus les téléchargements et la console du test ACP) ; suites du dépôt ≈ 13 min ; 12 suites du
+chat en vraie fenêtre ≈ 14 min ; parcours ≈ 21 min ; monkey 3 graines ≈ 25 min (durées du 22/11).
 
-1. Build neuf du commit exact (`tools/release/build.py --out build/annotation-general --channel dev --preview`), 0 avertissement.
-2. Toute la partie sans fenêtre, plus le test ACP à console.
-3. Suites du dépôt qui touchent le mode : `test.ps1`, `test-shortcuts.ps1`, `test-annotation-settings.ps1`,
-   `test-accessibility.ps1`, `tests/annotations-ui/run.py` avec fenêtres.
-4. Les 11 suites du chat en vraie fenêtre (`chat_qa.py run`, `comment`, `comment-switch`, `v12`, `comment-v2` à `v5b`, `r43`).
-5. Les 39 parcours, plus les nouveaux : O1, O2, O3 (×4), O5 (×2), O8 (×4), O10, local / en ligne, parcours MCP complet.
-6. Monkey : 3 graines × 320 actions, invariants après chaque action.
-7. Rapport : `build/annotation-general/report.md`, une capture et la fin du journal pour chaque échec, la commande pour rejouer.
+Ordre (celui de `manifest.json`, 32 suites) :
+
+1. Build neuf du commit exact dans `build/annotation-general-app` (`tools/release/build.py … --channel dev --preview`).
+   Si le build n'est pas celui du commit testé, les suites en vraie fenêtre ne sont pas lancées et le passage est rouge.
+2. Les 11 suites de la partie sans fenêtre, dans leur version complète.
+3. `smoke` (`test.ps1`), `shortcuts`, `annotation-settings`, `accessibility`, `uia-offscreen`.
+4. Chat en vraie fenêtre : `chat-v1`, `v12`, `comment`, `comment-switch`, `comment-v2`, `v3`, `v4`, `v4b`, `v5`, `v5b`,
+   `r43`, `comment-129-130`.
+5. `journeys` : les 39 parcours (R1 à R48 et la revue).
+6. `monkey-1`, `monkey-2`, `monkey-3` : 320 actions chacun, invariants après chaque action.
+7. Rapport : `build/annotation-general/night/report.md` ; pour chaque échec, la suite, son journal, ses lignes en échec.
+
+Les nouveaux parcours des lots 1 à 5 (O3, O5, O8, O10, `local_en_ligne`, règle 5) s'ajoutent à ces suites ; tant qu'ils
+ne sont pas écrits, `coverage.json` garde un trou pour chacun, avec son lot.
 
 Ne sont **pas** dans ce test : `tests/update-integration/run_all.py` (installateur, fenêtres réelles, tournée de nuit à
 part), `test-password-vault.ps1`, `tests/landing/`.
@@ -421,14 +430,14 @@ référence « décision 1 du 24/11 » :
 
 | Test | Attente actuelle (R29) | Devient |
 |---|---|---|
-| `tests/chat/chat_units_test.cpp:579` | « never moved to fit the window (the user scrolls) » : le bas peut dépasser la zone | La surface ne dépasse jamais la zone |
-| `tests/chat/chat_units_test.cpp:587` | Une seule exception, en fin de document, un seul décalage | Règle générale, à chaque nouvelle hauteur |
-| `tests/chat/host_contract_test.py:286` | La hauteur n'est jamais limitée par la place sous le bord fixe | Inversé : hauteur limitée à la page affichée − 16 px (règle 4) |
-| `tests/chat/final/journeys.py:128` (`r44_…`) | Hauteur naturelle, jamais réduite pour tenir ; dans l'élément, au coin le plus proche du clic | Entière dans la zone ; dessous, sinon dessus, à 12 px ; sinon coin bas-droit de l'élément à 8 px (règle 9) |
-| `tests/chat/final/journeys.py:150` (`r47_…`) | La page du site défile pour montrer la carte | La page ne défile jamais toute seule (règle 7) ; boutons dans le pied toujours visible (règle 8) |
-| `tests/chat/final/journeys.py:383` | Pendant le tour, la bulle ne bouge jamais | Elle peut se replacer pour rester entière ; sans saut |
-| `tests/chat/chat_qa_comment_v4.py:173` | La surface garde son coin au pixel pendant le tour et le diff | Idem tant qu'elle tient ; sinon replacée, entière |
-| `tests/chat/chat_qa_comment_v4b.py:280` (T4) | Fin de document : un décalage au plus | Entière partout, pas seulement en fin de document |
+| `tests/chat/chat_units_test.cpp:579` | « never moved to fit the window (the user scrolls) » : le bas peut dépasser la zone | **Fait** (branche du correctif) : « #130 wins over R29 », la bulle glisse vers le haut |
+| `tests/chat/chat_units_test.cpp:587` | Une seule exception, en fin de document, un seul décalage | **Gardé** : la fonction de fin de document existe encore dans le produit ; son test reste vrai |
+| `tests/chat/host_contract_test.py:286` | La hauteur n'est jamais limitée par la place sous le bord fixe | **Fait** : hauteur limitée à la page affichée − 16 px (règle 4) |
+| `tests/chat/final/journeys.py:128` (`r44_…`) | Hauteur naturelle, jamais réduite pour tenir ; dans l'élément, au coin le plus proche du clic | **Fait** pour la hauteur (naturelle, ou page − 16 px) et « bulle entière ». La règle 9 (dessous, dessus, coin bas-droit à 8 px) attend son code : lot 1 |
+| `tests/chat/final/journeys.py:150` (`r47_…`) | La page du site défile pour montrer la carte | **Écrit, éteint** (`C130_LOT1_RULES`) : la page ne défile jamais toute seule (règle 7). Le défilement automatique est encore dans le produit : lot 1 |
+| `tests/chat/final/journeys.py:383` | Pendant le tour, la bulle ne bouge jamais | **Fait** : même côté (bord gauche fixe) et entière dans la zone |
+| `tests/chat/chat_qa_comment_v4.py:173` | La surface garde son coin au pixel pendant le tour et le diff | **Fait** : coin gardé, sauf glissement vers le haut annoncé par le journal |
+| `tests/chat/chat_qa_comment_v4b.py:280` (T4) | Fin de document : un décalage au plus | **Fait** : entière, et ne fait que monter |
 
 Restent tels quels : « jamais sur les barres du navigateur » (`chat_units_test.cpp:589`), l'arrivée douce d'une nouvelle
 carte (`tests/chat-panel/run.py:875-879`), la poignée et ses bornes (R40).
@@ -468,7 +477,7 @@ Les 6 questions posées le 24/11 ont leur réponse sur la planche « C règles (
 | 5. Bulle sous ou sur l'élément | Jamais par-dessus : elle bascule de l'autre côté, sinon hauteur limitée et défilement intérieur (règle 10) |
 | 6. Mouvement | Placement direct avec « Réduire les animations » ; en défilement continu elle colle à l'élément et ne glisse qu'au changement de côté (règle 11) |
 
-## 6. Suites passées aujourd'hui (sans fenêtre, main `86697e0`)
+## 6. Suites passées le 24/11 à 2 h, avant le lot 0 (sans fenêtre, main `86697e0`)
 
 | Suite | Résultat |
 |---|---|
@@ -482,3 +491,61 @@ Les 6 questions posées le 24/11 ont leur réponse sur la planche « C règles (
 
 Ces résultats disent que le code de main est cohérent avec ses tests sans fenêtre. Ils ne disent rien des 12 sujets
 ouverts : aucun n'est visible sans vraie fenêtre.
+
+## 7. Lot 0 — ce qui est fait (24/11)
+
+Aucun comportement du produit n'a changé. Une seule ligne du produit est touchée : un message de journal
+(`src/chat-host-ui.h`, diagnostic `c419d92`).
+
+| Élément | Où |
+|---|---|
+| Documents de retours commités (R1–R48, V2, plan final, QA du 22/11, deux briefs) | `design/annotation-feedback/` |
+| Deux commits de diagnostic de `VALXXII/annotations-chat` fusionnés | `c419d92` (raison d'un clic refusé), `49af0f5` (test R7) |
+| Test général | `tests/annotation-general/` : `run.py` (`--day`, `--night --build`, `--list`, `--check`, `--only`), `manifest.json` (32 suites), `coverage.json` (101 lignes), `units.py`, `README.md` |
+| Job Object | Chaque suite dans le sien (`KILL_ON_JOB_CLOSE`), créée suspendue ; un processus resté ouvert = échec |
+| Test ACP sans console | `tests/acp/run_tests.py --no-console` saute la seule connexion en console visible ; la nuit la rejoue |
+| 150 ms et ± 2 px en objectifs | `chat_qa.objective()` dans `qa_final.py`, `monkey.py`, `chat_qa_comment_v3.py`, `v4b.py`, `v5.py` |
+| Tests de R29 alignés sur #130 C | Tableau du §4.4 ; règles pas encore codées : assertions écrites, éteintes par `C130_LOT1_RULES` et `C130_SCROLL_RULES` (`tests/chat/final/qa_final.py`) |
+| main fusionné | jusqu'à `b3480ba` (PR #133 et #134) |
+
+### Premier passage de la partie sans fenêtre (24/11, 7 h 40, commit `3d95bb8`, arbre propre)
+
+**Verdict : ROUGE.** 10 suites sur 11 réussies, 13 min 10 s. Aucune relance, comme le veut la règle 3.
+
+| Suite | Résultat | Durée |
+|---|---|---|
+| `i18n` | réussi | 3 s |
+| `chat-units` | réussi | 22 s |
+| `model-switch-128` | réussi | < 1 s |
+| `annotation-units` | réussi | 37 s |
+| `chat-panel` | **échec : 1 vérification sur 873** | 215 s |
+| `page-v4` | réussi | 45 s |
+| `fake-agent` | réussi | 31 s |
+| `snapshots` | réussi | 56 s |
+| `annotations` | réussi | 270 s |
+| `annotations-ui` (hors écran) | réussi | 35 s |
+| `acp` (sans console, sans téléchargement) | réussi | 76 s |
+
+La vérification en échec : « keyboard: Entrée = Autoriser (toujours, case cochée) » (`tests/chat-panel/run.py:1212`).
+Les fichiers de `assets/chat-panel/` et de `tests/chat-panel/` sont identiques à main : l'échec n'est pas dû à cette branche.
+
+Cause très probable, lue dans le code et pas encore prouvée par un essai : **le test dépend de la vitesse de la machine.**
+Depuis le correctif de sécurité du 23/11 (`c9e91cf`), la carte d'autorisation n'accepte Entrée que 600 ms après son
+apparition. Le test met l'heure d'apparition à 0, ce qui ne suffit que si la page est chargée depuis plus de 600 ms. Sur
+une machine occupée c'est le cas (802 / 802 à 2 h du matin) ; sur une machine libre le test arrive avant et rien n'est
+envoyé. Ce n'est donc pas un défaut du produit, mais c'est un test qui passe ou échoue selon la charge : exactement le
+genre de preuve fragile que ce plan veut retirer. Correctif proposé, une ligne du test (`__shownAt = -1e6` au lieu de `0`),
+**non appliqué** : `tests/chat-panel/` est réservé pendant le travail de Builder sur #128. Lié à O10.
+
+Conséquence : 16 lignes de l'inventaire n'ont pas de preuve dans ce passage (celles que seule cette suite couvre : M2, F1,
+F2, F10, R3, R4, R5, R7, R8, R11, R12, R13, R17, R21, R23, R30). 48 lignes sont prouvées, 27 ne se vérifient que la nuit.
+
+Sécurité du passage : configurations réelles de Claude et de Codex inchangées, aucun processus resté ouvert, aucune fenêtre.
+
+### Ce que le lot 0 n'a pas pu vérifier
+
+- Les scripts en vraie fenêtre modifiés (`qa_final.py`, `journeys.py`, `monkey.py`, `chat_qa_comment_v3.py`, `v4.py`,
+  `v4b.py`, `v5.py`) n'ont été que relus et analysés pour leur syntaxe. Leur premier vrai passage est la prochaine nuit.
+- Le lanceur n'a jamais tourné en mode `--night`.
+- Le garde-fou « processus resté ouvert = échec » peut se montrer trop strict avec les vraies fenêtres ; s'il l'est, la
+  nuit le dira avec le nom du processus.

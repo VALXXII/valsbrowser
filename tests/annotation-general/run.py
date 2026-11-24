@@ -296,6 +296,9 @@ def run_suite(suite, part, env, logs):
         status = 'fail'; result['why'] = 'the suite says it skipped a test: ' + marker
     if part == 'day' and suite.get('daySkips'):
         result['daySkips'] = suite['daySkips']
+    if status == 'fail' and not result.get('why'):   # what failed, in the report itself (the suites' own FAIL lines)
+        lines = [l.strip()[:160] for l in text.splitlines() if re.match(r'(FAIL|FAILED|!!) ', l.strip())][:3]
+        result['why'] = f"code de sortie {result.get('exit')}" + (' — ' + ' · '.join(lines) if lines else '')
     result['status'] = status; result['seconds'] = round(time.time() - started)
     result['tail'] = [l for l in text.splitlines() if l.strip()][-3:]
     return result
