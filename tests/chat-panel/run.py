@@ -1291,6 +1291,13 @@ try:
                     "return [k.textContent,Math.round(k.getBoundingClientRect().height),s.borderRadius,s.backgroundColor,s.color,s.fontSize,s.lineHeight,s.paddingLeft,s.paddingRight,b.columnGap,b.height,b.paddingLeft,document.querySelectorAll('.perm .kbd').length]})()")
         check(kb == ["↵", 16, "3px", "rgba(255, 255, 255, 0.16)", "rgb(255, 255, 255)", "11px", "14px", "4px", "4px", "6px", "28px", "8px", 1] and k1.get("refuse") == "Refuser",
               "permission (Paper): the « ↵ » key on « Autoriser » — 16 high, radius 3, white 16 % on the accent, 11 / 14 white, padding 4, 6 from the label; « Refuser » draws no key", f"{kb} {k1.get('refuse')!r}")
+        load("6.1-autorisation")
+        if cdp.js("document.querySelector('.perm .always').getAttribute('aria-checked')") == "true": click(".perm .always")   # the scenario draws it on
+        time.sleep(.3)
+        sw_ = cdp.js("(()=>{const s=document.querySelector('.perm .always .sw');if(!s)return null;const c=getComputedStyle(s),k=getComputedStyle(s.querySelector('i')),p=getComputedStyle(document.querySelector('.perm'));"
+                     "return [c.backgroundColor,c.width,c.height,c.borderRadius,k.backgroundColor,k.width,p.backgroundColor]})()")
+        check(sw_ == ["rgba(255, 255, 255, 0.12)", "28px", "16px", "8px", "rgb(255, 255, 255)", "12px", "rgb(31, 31, 31)"],
+              "permission (Paper): the « Toujours autoriser » switch, off — white 12 % on the card (#3A3A3A on #1F1F1F), 28 x 16, white 12 px knob", str(sw_))
         load("6.10-travaille"); cdp.js("document.getElementById('composer-input').focus()")
         cdp.js("window.devHost.send(" + perm_msg % "k2" + ")"); time.sleep(.25)
         k2 = cdp.js(keys_js) or {}
