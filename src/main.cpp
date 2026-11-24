@@ -274,7 +274,7 @@ void OpenSandbox(std::shared_ptr<Tab> in=nullptr); void OpenFindBar(); bool InFu
 void AskClearBrowsingData(bool demo=false,std::function<void(bool)> result=nullptr); bool CloseWindowAllowed(bool demo=false,std::function<void(bool)> result=nullptr);
 void ShowAboutDialog(); void ShowPrivateDialog(bool future=false); bool ElementSurfaceKey(UINT key,bool ctrl,bool alt,bool shift,int& cmd);
 void ElementsFrame(NativeChrome::Motion::Time now); NativeChrome::Motion::Wake ElementsNextWake(NativeChrome::Motion::Time now);
-void ElementsReducedMotion(bool reduced); void RepositionElementSurfaces(); void ChromeTipHover(int x,int y); void ChromeTipHide(); bool sandboxNextTab=false,debugSandboxAtStart=false;
+void ElementsReducedMotion(bool reduced); void RepositionElementSurfaces(); void ChromeTipHover(int x,int y); void ChromeTipHide(); void ChromeTipFocus(int id); bool sandboxNextTab=false,debugSandboxAtStart=false;
 constexpr int FindNextCommand=3050,FindPreviousCommand=3051,FullscreenCommand=3052,SandboxCommandId=3053,ShortcutsCommand=3054,ExitFullscreenCommand=3055; bool PageFullscreenActive(); void ExitPageFullscreen(); void OpenShortcutsPanel();
 // Bookmarks (section "Bookmarks" below).
 constexpr int BookmarkBarCommand=3030,BookmarksDrawerCommand=3031,BookmarkUndoCommand=3032;
@@ -4859,11 +4859,13 @@ void SidebarHoles(){
         else if(t->holed){SetWindowRgn(h,nullptr,TRUE);t->holed=false;}}
 }
 // Pointer on the compact column: 400 ms of rest opens the complete column over the page (03); leaving it closes it.
+// Val (24 nov.): the compact column ALWAYS stays icons: resting the pointer on it no longer opens the complete column over
+// the page (the titles are the icons' tooltips, on hover and on keyboard focus). The column over the page remains only
+// for the fold button in a window too narrow for the complete one; it closes when the pointer leaves it. The 400 ms
+// hover-to-open (SBar::Hover, SidebarHoverDue) stays as the hook for Focus mode's hidden panel (plan § 4).
 void SidebarPointer(float x,float y){(void)y;
-    if(!chrome.sidebar||sidebarFold.target!=SBar::Mode::Compact||sidebarFold.Moving(SidebarNowMs())||tabDrag.tab)return;
-    if(sidebarHover.open){if(x>=chrome.sideOver.column+SBar::Overlay::border){sidebarHover.Leave();Layout();}return;}
-    if(x<chrome.side.column){if(sidebarHover.enteredMs<0){sidebarHover.Enter(SidebarNowMs());SetTimer(window,SidebarHoverTimerId,(UINT)SBar::Timing::hoverMs,nullptr);}}
-    else{sidebarHover.Leave();KillTimer(window,SidebarHoverTimerId);}
+    if(!chrome.sidebar||!sidebarHover.open||tabDrag.tab)return;
+    if(x>=chrome.sideOver.column+SBar::Overlay::border){sidebarHover.Leave();Layout();}
 }
 void SidebarPointerLeft(){if(!chrome.sidebar||tabDrag.tab)return;KillTimer(window,SidebarHoverTimerId);const bool was=sidebarHover.open;sidebarHover.Leave();if(was&&!sidebarHover.open)Layout();}
 void SidebarHoverDue(){KillTimer(window,SidebarHoverTimerId);if(!sidebarHover.Due(SidebarNowMs()))return;POINT p;GetCursorPos(&p);ScreenToClient(window,&p);const float d=GetDpiForWindow(window)/96.f;
@@ -5021,17 +5023,17 @@ case WM_MOUSEWHEEL:{POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(h,&p
 case WM_KEYDOWN:if(w==VK_ESCAPE&&chrome.sidebarPopover){SidebarPopover(false);return 0;}if(w==VK_ESCAPE&&chrome.sidebar&&sidebarHover.open&&!tabDrag.tab){sidebarHover.Close();Layout();return 0;} /* #127: Échap closes the column opened over the page */if(w==VK_ESCAPE&&sepDrag.active){CancelSeparator();return 0;}if(splitResize>=0&&SplitResizeKey(w))return 0;if(w==VK_ESCAPE&&tabDrag.tab){CancelTabDrag(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;}
     if(w==VK_ESCAPE&&outerDrag.active){OuterDragEnd(true);return 0;}
     if(w==VK_ESCAPE&&bandDrag.index>=0){BandDragEnd(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;}
-    if(GetFocus()==h&&BandKey(w)){SyncAccessibility();return 0;}if(w==VK_TAB||((w==VK_RETURN||w==VK_SPACE)&&keyboardFocus)||((w==VK_LEFT||w==VK_RIGHT||(chrome.sidebar&&(w==VK_UP||w==VK_DOWN)))&&NativeChrome::IsTab(keyboardFocus)))keyboardModality=true;if(w==VK_TAB){auto order=chrome.FocusOrder();if(order.empty())return 0;auto it=std::find(order.begin(),order.end(),keyboardFocus);int index=it==order.end()?-1:(int)(it-order.begin());index=it==order.end()?(GetKeyState(VK_SHIFT)<0?(int)order.size()-1:0):(index+(GetKeyState(VK_SHIFT)<0?-1:1)+(int)order.size())%(int)order.size();keyboardFocus=order[index];InvalidateRect(h,nullptr,FALSE);return 0;}if((w==VK_RETURN||w==VK_SPACE)&&keyboardFocus){if(NativeChrome::IsClose(keyboardFocus))CloseAt(NativeChrome::TabIndex(keyboardFocus));else if(NativeChrome::IsTab(keyboardFocus)){Select(NativeChrome::TabIndex(keyboardFocus));SetFocus(h);}else Command(keyboardFocus);return 0;}
+    if(GetFocus()==h&&BandKey(w)){SyncAccessibility();return 0;}if(w==VK_TAB||((w==VK_RETURN||w==VK_SPACE)&&keyboardFocus)||((w==VK_LEFT||w==VK_RIGHT||(chrome.sidebar&&(w==VK_UP||w==VK_DOWN)))&&NativeChrome::IsTab(keyboardFocus)))keyboardModality=true;if(w==VK_TAB){auto order=chrome.FocusOrder();if(order.empty())return 0;auto it=std::find(order.begin(),order.end(),keyboardFocus);int index=it==order.end()?-1:(int)(it-order.begin());index=it==order.end()?(GetKeyState(VK_SHIFT)<0?(int)order.size()-1:0):(index+(GetKeyState(VK_SHIFT)<0?-1:1)+(int)order.size())%(int)order.size();keyboardFocus=order[index];InvalidateRect(h,nullptr,FALSE);ChromeTipFocus(keyboardFocus);return 0;}if((w==VK_RETURN||w==VK_SPACE)&&keyboardFocus){if(NativeChrome::IsClose(keyboardFocus))CloseAt(NativeChrome::TabIndex(keyboardFocus));else if(NativeChrome::IsTab(keyboardFocus)){Select(NativeChrome::TabIndex(keyboardFocus));SetFocus(h);}else Command(keyboardFocus);return 0;}
     if(keyboardFocus==NativeChrome::Chrome::SidebarEdgeId&&SidebarEdgeKey(w))return 0;
     if(chrome.sidebar&&(w==VK_UP||w==VK_DOWN)&&NativeChrome::IsTab(keyboardFocus))w=w==VK_UP?VK_LEFT:VK_RIGHT; /* #127: the column's list is vertical */
-    if((w==VK_LEFT||w==VK_RIGHT)&&NativeChrome::IsTab(keyboardFocus)&&!pages.empty()){int next=(NativeChrome::TabIndex(keyboardFocus)+(w==VK_LEFT?-1:1)+(int)pages.size())%(int)pages.size();keyboardFocus=NativeChrome::TabBase+next;Select(next);SetFocus(h);return 0;}break;
+    if((w==VK_LEFT||w==VK_RIGHT)&&NativeChrome::IsTab(keyboardFocus)&&!pages.empty()){int next=(NativeChrome::TabIndex(keyboardFocus)+(w==VK_LEFT?-1:1)+(int)pages.size())%(int)pages.size();keyboardFocus=NativeChrome::TabBase+next;Select(next);SetFocus(h);ChromeTipFocus(keyboardFocus);return 0;}break;
 case WM_CTLCOLOREDIT:{
     if(folderRename.Owns((HWND)l))return folderRename.Color((HDC)w);
     using namespace NativeChrome::Design;
     static NativeUI::AddressBackground background;
     HDC dc=(HDC)w;RECT rect;GetClientRect(address,&rect);
     POINT origin{};MapWindowPoints(address,window,&origin,1);
-    const float surface=Surface::raised;
+    const float surface=chrome.EditSurface();   /* #127: the field's own colour in every layout (no lighter box in the column / compact bar) */
     const float alpha=AddressLoading::opacity*chrome.loading.opacity;
     const int edge=S(chrome.bar.left+(chrome.bar.right-chrome.bar.left)*chrome.loading.fraction)-origin.x;
     SetBkMode(dc,TRANSPARENT);SetBkColor(dc,NativeGray(surface));

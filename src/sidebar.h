@@ -33,9 +33,9 @@ inline constexpr float inset = 4, bar = 40, compactBar = 32, buttonW = 32, butto
 inline constexpr float glyph = 12, glyphStroke = 1.8f * glyph / 24, glyphAlpha = 0xB3 / 255.f, pageRadius = 8;
 // The top bar's page card (Designer, 24 nov.: 4 DIP inset, its four corners 6; the side panel's are 8).
 inline constexpr float topBarPageRadius = 6;
-// Docked drawers start at the window bar's bottom in the complete layout (07 « Tiroir » 1TNA-0: top 40) and at 25 in
-// the compact one (11 « Tiroir — Historique » 1TSJ-0: top 25, over the bar's last 7 DIP).
-inline constexpr float drawerTop = 40, compactDrawerTop = 25;
+// Docked drawers start at the page's level, right under the window bar: 40 in the complete layout (07 « Tiroir » 1TNA-0),
+// 32 in the compact one (Val, 24 nov.: Paper 11's 25 put « Historique » against the bar; the drawer keeps its own padding).
+inline constexpr float drawerTop = 40, compactDrawerTop = compactBar;
 }
 // Complete column (01 « Panneau » 1Q0A-0): 248, padding 8, gap 10.
 namespace Complete {

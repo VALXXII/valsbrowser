@@ -93,7 +93,7 @@ int main() {
         Check(!L.navPlates && Same(L.back, 44, 0, 76, 32) && Same(L.hairline, 79, 11, 80, 21) && Same(L.forward, 83, 0, 115, 32) && Same(L.reload, 121, 0, 153, 32), "window bar: the pair and Reload, 6 apart, no plates (1WBR-0)");
         Check(!L.addressInColumn && !L.addressPlate && Same(L.address, 159, 0, 519, 32) && Same(L.lock, 169, 10, 181, 22) && Near(L.text.left, 187) && L.copy.Empty(), "address 360 x 32 without background (1WOG-0)");
         Check(Same(L.page, 40, 32, 1174, 734) && Same(L.close, 1140, 2, 1172, 30), "compact page under the 32 DIP bar, 4 in (1WBA-0)");
-        Check(Near(L.drawerTop, 25), "compact drawers from 25 (11 1TSJ-0)");
+        Check(Near(L.drawerTop, 32) && Near(L.drawerTop, L.page.top), "compact drawers at the page's level, under the 32 DIP bar (Val; Paper 11 had 25)");
         Check(Near(S::FaviconIn(L.tabs[0], S::Mode::Compact).left, 12), "favicon centred");
     }
     {   // More than five: four, then « » » (« compact, 40 »), and its popover with all of them.

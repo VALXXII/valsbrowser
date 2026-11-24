@@ -130,6 +130,24 @@ int wmain(int argc, wchar_t** argv) {
         c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.Paint(titles, 0, L"", false, 0, 0);
         Check(c.side.tools.size() == 4 && c.Hit(20, (c.side.tools[0].top + c.side.tools[0].bottom) / 2) == 'N', "compact: Annoter first of four tools");
     }
+    {   // Val (24 nov.): the address field is ONE colour while typing: the native EDIT's colour (WM_CTLCOLOREDIT uses
+        // Chrome::EditSurface) is the colour painted under it, in the column, the compact bar and the top bar; the EDIT spans
+        // the field while typing (Copy / the star are hidden), the address drawn at rest stops before them.
+        auto field = [&](bool sidebar, bool compact, const char* what) {
+            Chrome c; Check(SUCCEEDED(c.InitOffscreen(root, 96, 1178, 738)), "offscreen chrome (edit)");
+            c.sidebar = sidebar; if (compact) { c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.sidebarTitles = 0; }
+            c.addressEditing = true; c.address = AddressBar::Describe(L"", false); c.Paint(titles, 0, L"", true, 0, 0);
+            const float x = (c.edit.left + c.edit.right) / 2, y = (c.edit.top + c.edit.bottom) / 2;
+            const int painted = (c.SurfacePixel(x, y) >> 8) & 255, edit = (int)std::lround(c.EditSurface() * 255);
+            char msg[160]; std::snprintf(msg, sizeof msg, "%s: field under the EDIT %d = EDIT colour %d", what, painted, edit);
+            Check(std::abs(painted - edit) <= 1, msg);
+            return c.edit;
+        };
+        const auto col = field(true, false, "column");
+        Check(Near(col.right, 248 - 8 - 8), "column: the EDIT spans the field while typing (to its padding)");
+        field(true, true, "compact bar");
+        field(false, false, "top bar");
+    }
     std::printf("sidebar_render_test: %d checks passed\n", checks);
     return 0;
 }

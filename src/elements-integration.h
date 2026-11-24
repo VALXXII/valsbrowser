@@ -1881,5 +1881,15 @@ void ChromeTipHover(int x,int y){
     chromeTip.Hide();
 }
 void ChromeTipHide(){if(chromeTip.Window())chromeTip.Hide();}
+// #127 compact column (Val, 24 nov.): the icons carry their names as tooltips, so the keyboard focus shows the focused
+// control's tooltip too (a tab's title, a bookmark's, a tool's); anywhere else it just hides the pointer's.
+void ChromeTipFocus(int id){
+    if(!chromeTip.Window())return;
+    if(id&&chrome.sidebar&&!chrome.sidebarOverlay&&chrome.side.mode==NativeChrome::Sidebar::Mode::Compact)
+        for(auto& r:chrome.regions){if(r.id!=id||!r.tip||!*r.tip)continue;
+            RECT target{S(r.rect.left),S(r.rect.top),S(r.rect.right),S(r.rect.bottom)};MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&target),2);
+            RECT bounds=NativeChrome::TooltipPlacement::VisibleRect(window);chromeTip.Show(TipContent(r.tip),target,&bounds);return;}
+    chromeTip.Hide();
+}
 // #125 E1b: while the live-site card hangs under the Annoter button, no toolbar tip shows (the one there goes at once).
 void ChromeTipBlock(bool on){chromeTip.Block(on);}

@@ -954,7 +954,7 @@ public:
     void FillBox(D2D1_RECT_F r,float radius,D2D1_COLOR_F c){brush->SetColor(c);target->FillRoundedRectangle(D2D1::RoundedRect(r,radius,radius),brush);}
     void DrawAddress(bool editing,bool indicatorHover){
         namespace A=Design::Address;using AddressBar::Security;using AddressBar::Tone;
-        const auto slot=AddressSlot();const float right=edit.right,cy=AddressCenter();
+        const auto slot=AddressSlot();const float right=std::min(edit.right,addressTextRight),cy=AddressCenter();
         const D2D1_RECT_F line{0,bar.top,0,bar.bottom};
         if(editing){if(!DrawSiteImage(editFavicon,slot))Icon(editIcon?editIcon:address.icon(),slot,addressGlyph,addressGlyphOpacity);return;}
         if(address.security==Security::Empty){Icon(L"search",slot,addressGlyph,addressGlyphOpacity);
@@ -1105,10 +1105,15 @@ public:
         const float pad=A.addressInColumn?Sidebar::Complete::addressPad:Sidebar::Compact::addressPad;
         // In the column the text stops before Copy / the star (and the vault key): a long address or a « Non sécurisé » pill
         // fades out there (24 DIP), never under them; while typing the field has its whole width (no actions).
-        const float right=A.addressInColumn&&!addressEditing?A.text.right-(vaultKey?20.f:0.f):A.address.right-pad;edit={A.text.left,A.address.top,std::max(A.text.left,right),A.address.bottom};
+        edit={A.text.left,A.address.top,std::max(A.text.left,A.address.right-pad),A.address.bottom};   // the native EDIT (typing: no actions)
+        addressTextRight=A.addressInColumn?std::max(A.text.left,A.text.right-(vaultKey?20.f:0.f)):1e9f;
         sideChip=true;sideChipInset=A.addressInColumn?SideChip::columnInset:A.lock.left-A.address.left;
         const float fade=A.addressInColumn||A.addressPlate?Design::Surface::raised:Design::Surface::canvas;if(fade!=addressFadeSurface){addressFadeSurface=fade;DropAddressFade();}}   // the compact bar's field has no plate: the canvas
-    bool addressHostOnly=false;float addressFadeSurface=Design::Surface::raised;   // the fade's colour: the field's (the compact bar's: the canvas)
+    bool addressHostOnly=false;float addressFadeSurface=Design::Surface::raised;float addressTextRight=1e9f;   // the drawn address at rest stops here (the column: before Copy)
+    // The field's colour under the native EDIT while typing (WM_CTLCOLOREDIT): the top bar's #292929; the column's and the
+    // compact bar's typing field, white 4 % over the canvas (Paper 06 1QH8-0) — one colour across the field (Val, 24 nov.).
+    float EditSurface()const{if(!sidebar||contentOnly)return Design::Surface::raised;const float c=Design::Surface::canvas;return c+(1-c)*Sidebar::Look::fieldEditing;}
+   // the fade's colour: the field's (the compact bar's: the canvas)
     // Address metrics (the toolbar's by default; the column sets Paper's: 14 / 12 DIP glyphs, text 28 in).
     float AddressTracking()const{return Design::Type::address.tracking*addressFont/Design::Type::address.size;}   // -0.01 em
     float addressGlyphOpacity=Design::Address::secondary;   // the column's glyphs are Paper's #FFFFFF80 (the 50 % bitmap at 1)
@@ -1285,11 +1290,11 @@ public:
         if(L.addressPlate||editing){White(box,Design::Radius::control,editing?K::fieldEditing:K::field);}DrawLoading(box);   // the compact bar's field has no background (Val's retouch 1WOG-0)
         if(editing){Color(1,K::fieldRing);target->DrawRoundedRectangle(D2D1::RoundedRect({box.left+.5f,box.top+.5f,box.right-.5f,box.bottom-.5f},5.5f,5.5f),brush,1);}
         else if(focus=='L')FocusRing(box,Design::Radius::control);
-        const auto keepBar=bar,keepEdit=edit;const float k1=addressFont,k2=addressGlyph,k3=addressTextInset,k4=addressSlotInset,k5=addressSlotSize,k7=addressFadeSurface,k9=sideChipInset;const bool k6=addressHostOnly,k8=sideChip;
+        const auto keepBar=bar,keepEdit=edit;const float k1=addressFont,k2=addressGlyph,k3=addressTextInset,k4=addressSlotInset,k5=addressSlotSize,k7=addressFadeSurface,k9=sideChipInset,k10=addressTextRight;const bool k6=addressHostOnly,k8=sideChip;
         const bool own=std::fabs(bar.left-L.address.left)<.01f&&std::fabs(bar.top-L.address.top)<.01f;if(!own)UseAddress(L);
         const auto keepRequest=request;if(!own)request=D2D1_RECT_F{};
         DrawAddress(editing,own&&hover=='I');
-        if(!own){bar=keepBar;edit=keepEdit;addressFont=k1;addressGlyph=k2;addressTextInset=k3;addressSlotInset=k4;addressSlotSize=k5;addressHostOnly=k6;request=keepRequest;sideChip=k8;sideChipInset=k9;if(addressFadeSurface!=k7){addressFadeSurface=k7;DropAddressFade();}}
+        if(!own){bar=keepBar;edit=keepEdit;addressFont=k1;addressGlyph=k2;addressTextInset=k3;addressSlotInset=k4;addressSlotSize=k5;addressHostOnly=k6;request=keepRequest;sideChip=k8;sideChipInset=k9;addressTextRight=k10;if(addressFadeSurface!=k7){addressFadeSurface=k7;DropAddressFade();}}
         if(L.addressInColumn&&!editing){
             for(int id:{'C','K'}){const auto it=std::find_if(regions.begin(),regions.end(),[id](const Region& r){return r.id==id;});if(it==regions.end())continue;PaintSideButton(id,it->rect,hover,focus,now,labels);}
             if(vaultKey){const auto it=std::find_if(regions.begin(),regions.end(),[](const Region& r){return r.id==VaultKeyId;});if(it!=regions.end())DrawVaultKey(it->rect,Hovered(VaultKeyId,hover,now),focus==VaultKeyId);}}
@@ -1358,7 +1363,7 @@ public:
             if(d!=regions.end())DrawDownloadRipple(ripple,d->rect,Design::Size::icon);}
     }
     void Build(int count,int selected,const std::vector<std::wstring>* titles=nullptr,Motion::Time now=Motion::Now()){regions.clear();tips.clear();if(contentOnly)return;
-        if(!sidebar)sideChip=false;
+        if(!sidebar){sideChip=false;addressTextRight=1e9f;}
         if(!sidebar&&addressFadeSurface!=Design::Surface::raised){addressFadeSurface=Design::Surface::raised;DropAddressFade();}   // the top bar's field
         if(sidebar){BuildSidebar(count,selected,titles);return;}
         addressHostOnly=false;addressGlyphOpacity=Design::Address::secondary;addressFont=Design::Type::address.size;addressGlyph=Design::Size::icon;addressTextInset=Design::Address::textInset;addressSlotInset=Design::Address::slotInset;addressSlotSize=Design::Address::slot;
