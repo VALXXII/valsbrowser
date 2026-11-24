@@ -61,7 +61,7 @@ void AfterTurnPage(const std::vector<std::string>& paths) {   // R36: the files 
     const bool changed = !paths.empty();
     auto t = ChatTab(); if (!t || t->closed || !t->view.p) return;
     if (!changed) { ApplyMark("clear", ""); return; }
-    if (ChatLocal::Classify(U8(t->uri)).origin != site.origin) return;   // the tab went elsewhere: nothing to reload
+    if (ChatLocal::SiteOf(U8(t->uri)).origin != site.origin) return;   // the tab went elsewhere: nothing to reload
     if (t->navStamp != turnNavStamp || rearmOwed) { Diag(L"page already reloaded during the turn (dev server): no reload"); if (!rearmOwed && !doneMarkSelector.empty()) ApplyMark("done", doneMarkSelector); return; }
     std::weak_ptr<Tab> weak = t;
     auto cb = Callback<ICoreWebView2ExecuteScriptCompletedHandler, HRESULT, LPCWSTR>([weak, paths](HRESULT hr, LPCWSTR result) -> HRESULT {
@@ -89,7 +89,7 @@ void DoRearm() {
     if (post) KillTimer(post, RearmTimer);
     if (!rearmOwed) return; rearmOwed = false; rearmTries = 0;
     auto t = ChatTab(); if (!t || t != Ann::ModeTab() || !Ann::s.active) return;
-    if (ChatLocal::Classify(U8(t->uri)).origin != site.origin) { Ann::Exit(L"navigation"); return; }   // another site: the mode (and the panel) end, as before
+    if (ChatLocal::SiteOf(U8(t->uri)).origin != site.origin) { Ann::Exit(L"navigation"); return; }   // another site: the mode (and the panel) end, as before
     Ann::Rearm(t, [](bool ok) {
         if (!ok) return;
         if (CommentLayout()) { ScriptReady(); return; }   // D1: the marks, and the open bubble's element WITH its frame + labels (a bare follow lost them)
@@ -146,7 +146,9 @@ bool OnCaptured(std::uint64_t serial, const AnnotationCapture::Result& r) {
     if (r.ok && !r.png.empty()) TakeImage(serial, r.png, r.scale, r.crop); else { it->second.captureDone = true; MaybeAttach(serial); }
     return true;
 }
-bool AskAvailable(const std::shared_ptr<Tab>& t) { return t && !privateWindow && ChatLocal::IsLocal(U8(t->uri)) && !ChatLocal::Classify(U8(t->uri)).file; }
+// Lot R (decision A, 2026-11-24): the chat is on wherever the mode is — a local project, a local file (its folder is
+// its site: ChatLocal::SiteOf) and a private window too (what it keeps there is erased with the window: ChatRoot).
+bool AskAvailable(const std::shared_ptr<Tab>& t) { return t && ChatLocal::SiteOf(U8(t->uri)).local && (!privateWindow || !ChatRoot().empty()); }
 // In the annotation mode a click on an element ALWAYS goes to the chat (lot R: the note panel is gone) — in « Panneau »
 // the panel opens if it is closed, the element becomes a chip, the caret goes to the composer (once the chip is there);
 // in « Commentaire » a bubble opens on the element. False (nothing opens, the mode says why in the log): the chat
@@ -166,7 +168,13 @@ bool TakeSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool cap
     return true;
 }
 // ---------------------------------------------------------------- site -> folder
-void LoadProjects() { if (!projectsLoaded) { projects = ChatStore::Projects::Load(ProjectsFile()); projectsLoaded = true; } }
+void LoadProjects() {
+    if (projectsLoaded) return;
+    projects = ChatStore::Projects::Load(ProjectsFile()); projectsLoaded = true;
+    // a private window starts from the layout chosen last in the normal windows (a preference, not a trace of the
+    // browsing); what it then remembers stays in its own folder
+    if (privateWindow && projects.layout.empty()) projects.layout = ChatStore::Projects::Load(Ann::DataRoot() + L"\\annotations-chat\\projects.json").layout;
+}
 void SaveProjects() {
     auto copy = std::make_shared<ChatStore::Projects>(projects); const std::wstring file = ProjectsFile();
     Ann::Run([copy, file] { ChatStore::EnsureDir(file.substr(0, file.find_last_of(L'\\'))); copy->Save(file); }, nullptr);
@@ -362,7 +370,7 @@ void AskPageMarks(const std::string& origin, int tries) {
 }
 // After a turn, or a folder picked by hand: the page's files must be in the folder, else the card says it.
 void CheckFolderMatchesPage() {
-    if (folder.empty() || !site.local || site.file || !Ann::s.injected) return;
+    if (folder.empty() || !site.local || site.file || !Ann::s.injected) return;   // a file is not « served »: nothing to compare
     const std::string origin = site.origin; const std::wstring dir = folder;
     JudgeFolders({dir}, [origin, dir](const std::vector<FolderVerdict>& v) {
         if (origin != site.origin || dir != folder || v.empty()) return;
@@ -377,7 +385,21 @@ void ChooseFolder() {
     if (Open()) view.Focus();
 }
 void DetectFolder() {
-    if (suggestionAsked || !site.local || site.file) return;
+    if (suggestionAsked || !site.local) return;
+    if (site.file) {
+        // Lot R (decision A): the code of a local file is where the file is — its own folder, never one above it. A wide
+        // folder (Desktop, Documents, Downloads…) is only proposed, a refused one (a drive root, the profile, a system
+        // folder) not even: the user decides on the « Où est le code de ce site ? » screen, as for a detected folder.
+        suggestionAsked = true; suggestion = {};
+        const std::wstring dir = ChatFolder::detail::Trim(fileFolder);
+        const bool refused = dir.empty() || !ChatFolder::detail::IsDir(dir) || ChatFolder::detail::Refused(dir), wide = !refused && ChatFolder::detail::TooWide(dir);
+        if (!refused) { suggestion.folder = dir; suggestion.cwd = dir; }
+        suggestion.sure = !refused && !wide;
+        suggestion.doubt = refused ? L"the file's folder is refused" : wide ? L"the file's folder is a wide folder" : L"";   // i18n-exempt: log detail
+        Diag(suggestion.folder.empty() ? L"local file: no folder proposed (" + suggestion.doubt + L")" : L"local file: its folder " + suggestion.folder + (suggestion.sure ? L"" : L" (to confirm: " + suggestion.doubt + L")"));
+        FolderDecided(suggestion.sure, suggestion.doubt);
+        return;
+    }
     suggestionAsked = true; auto out = std::make_shared<ChatFolder::Guess>(); const int port = site.port; const std::string origin = site.origin;
     Ann::Run([out, port] { *out = ChatFolder::Detect(port); },
              [out, origin] {
@@ -625,12 +647,13 @@ std::string preparedNonce;        // the mode's page the chat was last prepared 
 // `force` (the panel's opening): every opening looks again (folder detection: a port is reused by other projects).
 void PrepareChat(const std::shared_ptr<Tab>& t, bool force = false) {
     EnsureInit();
-    const auto now = ChatLocal::Classify(U8(t->uri));
+    const auto now = ChatLocal::SiteOf(U8(t->uri));
+    fileFolder = now.file ? W(ChatLocal::FolderOfFile(U8(t->uri)).folder) : std::wstring();
     if (!force && ChatTab() == t && now.origin == site.origin && preparedNonce == Ann::s.nonce) return;
     chatTab = t; preparedNonce = Ann::s.nonce;
     suggestion = {}; suggestionAsked = false;   // every opening looks again: a port is reused by other projects from one day to the next
     site = now; LoadProjects(); folder.clear(); folderAsk = false; folderChosen = false; folderInstead.clear();
-    if (site.local && !site.file) if (auto it = projects.sites.find(site.origin); it != projects.sites.end()) {
+    if (site.local) if (auto it = projects.sites.find(site.origin); it != projects.sites.end()) {
         if (ChatFolder::detail::IsDir(it->second.folder)) { folder = it->second.folder; folderChosen = it->second.chosen; folderInstead = it->second.instead; }
         if (!turn.active && convo.data.items.empty() && AgentOf(it->second.agentId)) { agentId = it->second.agentId; agentChosen = true; }
         pendingMode.clear();
@@ -643,7 +666,7 @@ void PrepareChat(const std::shared_ptr<Tab>& t, bool force = false) {
     DetectAgents([] { MaybeStartSession(); }); DetectFolder(); RefreshAnchored();
 }
 void OpenPanel() {
-    auto t = Active(); if (!t || !Ann::s.active || Ann::ModeTab() != t || halted || privateWindow) return;
+    auto t = Active(); if (!t || !Ann::s.active || Ann::ModeTab() != t || halted || !AskAvailable(t)) return;
     if (Open()) return;
     if (BubbleOpen()) CloseBubble(false);
     stats = OpenStats{}; stats.requestedAt = Ann::NowMs();
@@ -655,11 +678,15 @@ void OpenPanel() {
     else view.Reparent(window, PanelRect(slide.Value(at)));   // Mode Commentaire: it may come back from the bubble
     view.Show(true);
     ::Layout();   // the page shrinks at once (one layout); the panel then slides over the canvas
-    picking = site.local && !site.file;
+    picking = site.local;
     SyncChromeBits();
     if (reduced) panelState = PanelState::Open; else AUI::Animator::Get().Request(&slideClient);
-    if (panelReady) { SendLayout(false); SendThread(); SendState(); SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && !Ann::s.paused)); Send("pick.state", std::move(p)); SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus(); }
-    Ann::Announce(site.local && !site.file ? std::wstring(TR(chat_announce_open)) : TRF(chat_announce_unavailable, site.file ? TR(chat_disabled_file) : TR(chat_disabled_not_local)));
+    if (panelReady) {
+        SendLayout(false); SendThread(); SendState(); SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && !Ann::s.paused)); Send("pick.state", std::move(p));
+        if (quietOpening) quietOpening = false;   // opened by the mode's start: the keyboard stays where it is
+        else { SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus(); }
+    }
+    Ann::Announce(site.local ? std::wstring(TR(chat_announce_open)) : TRF(chat_announce_unavailable, TR(chat_disabled_not_local)));
     Diag(L"panel opened on " + W(site.origin) + (site.local ? L"" : L" (not local: disabled)") + (folder.empty() ? L", no folder yet" : L", folder " + folder));
 }
 void WarmBubble();
@@ -674,6 +701,7 @@ void ClosePanel() {
     if (!Open()) return;
     const bool reduced = Ann::Reduced(); picking = false; aiming.clear(); ReleaseHeld(); if (post) KillTimer(post, HoverTimer);
     panelState = PanelState::Closing; slide.Set(0.f, NativeChrome::Motion::Now(), reduced ? 0 : SlideOutMs, AUI::Curves::band);
+    openedByMode = quietOpening = false;
     if (reduced || !view.Exists()) FinishClose(); else AUI::Animator::Get().Request(&slideClient);
     Ann::Announce(TR(chat_announce_closed)); Diag(L"panel closed");
     if (Ann::s.active && Ann::s.paused) { Ann::Exit(L"chat closed while the selection was off"); return; }   // i18n-exempt: log reason — V1.4: nothing of the mode is left
@@ -683,14 +711,16 @@ void Toggle(bool keyboard) {
     (void)keyboard;
     if (Open()) { ClosePanel(); return; }
     if (!Ann::s.active) { AnnotationCommand(AnnotateCommand); if (!Ann::s.active) return; }
+    openedByMode = false;   // asked for by the user (even when the mode's start already opened it)
     if (CommentLayout() && Ann::ModeTab() == Active()) { SwitchLayout(false); return; }   // Ctrl+Maj+D: the chat panel (the band's « Panneau »)
     else if (Ann::ModeTab() != Active()) return;
+    if (Open()) { SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus(); return; }   // the mode's start opened it: Ctrl+Maj+D puts the caret in it
     OpenPanel();
 }
 // O1 (R28 for the panel): in « Chat à droite », the panel's page is created and loaded (hidden) as soon as the mode is on,
 // so its first image already shows the agent, its logo, the model · effort and the mode (never « ☆ Agent »).
 void WarmPanel() {
-    auto t = Active(); if (!t || !Ann::s.active || Ann::ModeTab() != t || halted || privateWindow || CommentLayout() || Shown() || !AskAvailable(t)) return;
+    auto t = Active(); if (!t || !Ann::s.active || Ann::ModeTab() != t || halted || CommentLayout() || Shown() || !AskAvailable(t)) return;
     if (WarmHeldBack()) return;   // QA only
     EnsureInit(); PrepareChat(t);
     if (view.Usable(environment.p) || view.Creating()) return;
@@ -698,9 +728,21 @@ void WarmPanel() {
     if (view.Create(environment.p, window, PanelRect(0.f))) { view.Show(false); panelWarm = true; Diag(L"panel WebView created in advance (Chat a droite)"); }   // i18n-exempt: log detail
     DetectAgents([] { MaybeStartSession(); });   // O1: its agent too: the model and effort are known before the panel shows
 }
-void ModeEntered() { SyncChromeBits(); if (CommentLayout()) { if (auto t = Active()) PrepareChat(t); SyncMarks(); } else WarmPanel(); }   // M16: the chat's tab is set at once (a reload before the first click kept the mode off)
+// Lot R (owner's request, 2026-11-24): in « Panneau » the chat is there as soon as the mode starts — its empty view with
+// its suggestions — so the page keeps its box when the first element is picked (it used to shrink at that click).
+// Opened by the mode, not asked for by the user: the keyboard stays where it is (the page, the « Connecter un agent »
+// modal or the tutorial that may follow) and the mode's launch rules still see « no chat asked » (AskedFor).
+// « Commentaire »: unchanged, no panel (the bubble).
+void OpenAtModeStart() {
+    if (Open() || CommentLayout()) return;
+    quietOpening = true; OpenPanel();
+    if (Open()) { openedByMode = true; Diag(L"panel opened with the mode (Panneau): the page keeps its box at the first element"); }
+    else quietOpening = false;
+}
+bool AskedFor() { return Open() && !openedByMode; }
+void ModeEntered() { SyncChromeBits(); if (CommentLayout()) { if (auto t = Active(); t && AskAvailable(t)) PrepareChat(t); SyncMarks(); } else OpenAtModeStart(); }   // M16: the chat's tab is set at once (a reload before the first click kept the mode off)
 void CoolBubble();
-void ModeExited() { rearmOwed = false; if (post) { KillTimer(post, RearmTimer); KillTimer(post, MarkTimer); } CloseBubble(false); CoolBubble(); ForgetPage(); if (Open()) ClosePanel(); if (Ann::uiReady) Ann::banner.SetChat(false, false); }
+void ModeExited() { openedByMode = quietOpening = false; rearmOwed = false; if (post) { KillTimer(post, RearmTimer); KillTimer(post, MarkTimer); } CloseBubble(false); CoolBubble(); ForgetPage(); if (Open()) ClosePanel(); if (Ann::uiReady) Ann::banner.SetChat(false, false); }
 bool KeepsMode(const std::shared_ptr<Tab>& t) { return (Open() || CommentLayout()) && t && ChatTab() == t; }   // Mode Commentaire: the frames of the page's conversations come back after a reload
 void PageNavigating(const std::shared_ptr<Tab>&) { rearmOwed = true; rearmTries = 0; aiming.clear(); ReleaseHeld(); if (EnsurePost()) SetTimer(post, RearmTimer, 250, nullptr); }
 
@@ -807,7 +849,8 @@ void OnPanelMessage(const std::string& json) {
         for (const auto& s : activeStrips) Send("strip", s.second);
         // the cards still waiting were sent again by SendThread (after its thread.reset)
         {   SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && !Ann::s.paused)); Send("pick.state", std::move(p)); }
-        if (Open() || BubbleOpen()) { SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus(); }
+        if (quietOpening && !BubbleOpen()) quietOpening = false;   // the panel opened by the mode's start: no focus taken (the page, a modal or the tutorial has it)
+        else if (Open() || BubbleOpen()) { SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus(); }
         return;
     }
     if (!panelReady) return;
@@ -883,7 +926,7 @@ void OnPanelMessage(const std::string& json) {
     if (type == "attachImage") { if (m.Text("source", 16) == "picker") { struct Modal { Modal() { extern void BubbleModal(bool); BubbleModal(true); } ~Modal() { extern void BubbleModal(bool); BubbleModal(false); } } modal; PickImage(); } else AddAttachment(m.Text("name", 300), m.Text("mime", 40), m.Text("data", 13u << 20)); return; }
     if (type == "attachment.remove") { composerAttachments.erase(m.Id("id")); return; }
     if (type == "mention.query") { Mentions(m.Text("query", 200)); return; }
-    if ((type == "folder.use" || type == "folder.choose") && !(site.local && !site.file)) return;   // no folder for a site that is not local
+    if ((type == "folder.use" || type == "folder.choose") && !site.local) return;   // no folder for a site that is not local
     if ((type == "folder.use" || type == "folder.choose") && turn.active) { Diag(L"folder change asked during a turn: ignored"); return; }
     if (type == "folder.use") { const std::wstring path = W(m.Text("path", 2048)); if (!suggestion.folder.empty() && path == suggestion.folder) SetFolder(path); else Diag(L"folder.use with a path that was not proposed: ignored"); return; }
     if (type == "folder.choose") { ChooseFolder(); return; }

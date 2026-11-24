@@ -92,4 +92,66 @@ inline Site Classify(std::string_view url) {
 }
 inline bool IsLocal(std::string_view url) { return Classify(url).local; }
 
+// Lot R (decision A, 2026-11-24): the chat also works on a local FILE. Its « site » is then the FOLDER that holds the
+// file — its conversations, its remembered choices and its project folder are that folder's, never « every file of the
+// disk ». Pure: the folder as the engine's URL names it (file:///C:/dir/page.html -> C:\dir). Refused (ok = false): a
+// path that is not on a drive letter, a « . » / « .. » step, a backslash or a control character left after decoding.
+struct FileFolder {
+    bool ok = false;
+    std::string folder;   // UTF-8 Windows path, no trailing backslash except a drive root: "C:\dir", "C:\"
+    std::string origin;   // the site's key: "file:///c:/dir" (ASCII lower case: Windows paths ignore case)
+    std::string label;    // the folder's own name ("dir"; "C:" for a drive root)
+};
+inline FileFolder FolderOfFile(std::string_view url) {
+    FileFolder f;
+    if (!Classify(url).file) return f;
+    std::string_view rest = url.substr(url.find("://") + 3);
+    const auto slash = rest.find('/'); if (slash == std::string_view::npos) return f;
+    rest = rest.substr(slash);                                             // "/C:/dir/page.html?x#y"
+    if (const auto cut = rest.find_first_of("?#"); cut != std::string_view::npos) rest = rest.substr(0, cut);
+    std::string path;
+    for (std::size_t i = 0; i < rest.size(); ++i) {
+        char c = rest[i];
+        if (c == '%') {
+            auto hex = [](char h) { return h >= '0' && h <= '9' ? h - '0' : h >= 'a' && h <= 'f' ? h - 'a' + 10 : h >= 'A' && h <= 'F' ? h - 'A' + 10 : -1; };
+            if (i + 2 >= rest.size() || hex(rest[i + 1]) < 0 || hex(rest[i + 2]) < 0) return f;
+            c = char(hex(rest[i + 1]) * 16 + hex(rest[i + 2])); i += 2;
+        }
+        if (static_cast<unsigned char>(c) < 0x20 || c == '\\' || c == '"' || c == '<' || c == '>' || c == '|' || c == '*' || c == '?') return f;
+        path += c;
+    }
+    // "/C:/…": a drive letter, then the folders, then the file's own name
+    if (path.size() < 4 || path[0] != '/' || path[2] != ':' || path[3] != '/') return f;
+    const char drive = path[1] >= 'a' && path[1] <= 'z' ? char(path[1] - 'a' + 'A') : path[1];
+    if (drive < 'A' || drive > 'Z') return f;
+    std::string dir = std::string(1, drive) + ":"; std::string last = dir;
+    std::size_t at = 4;
+    while (at <= path.size()) {
+        const auto next = path.find('/', at);
+        if (next == std::string::npos) break;                               // what is left is the file's name
+        const std::string step = path.substr(at, next - at); at = next + 1;
+        if (step.empty() || step == "." || step == ".." || step.find(':') != std::string::npos || step.back() == ' ' || step.back() == '.') return f;
+        dir += "\\" + step; last = step;
+    }
+    f.folder = dir.size() == 2 ? dir + "\\" : dir; f.label = last;
+    std::string key = dir; for (auto& c : key) { if (c == '\\') c = '/'; else c = detail::Lower(c); }
+    if (key.size() > 200) {   // a very deep folder: a short stable key (FNV-1a 64) — an origin is stored in 300 bytes at most
+        std::uint64_t h = 1469598103934665603ull; for (unsigned char c : key) { h ^= c; h *= 1099511628211ull; }
+        static const char* digits = "0123456789abcdef"; std::string hex; for (int i = 15; i >= 0; --i) hex += digits[(h >> (i * 4)) & 15];
+        key = "~" + hex;
+    }
+    f.origin = "file:///" + key; f.ok = true;
+    return f;
+}
+// The chat's site for a page: a local project as Classify says it, or a local file's folder. A file whose folder
+// cannot be read from its URL is not a site the chat works on (local = false).
+inline Site SiteOf(std::string_view url) {
+    Site s = Classify(url);
+    if (!s.file) return s;
+    const FileFolder f = FolderOfFile(url);
+    if (!f.ok) { s.local = false; return s; }
+    s.origin = f.origin; s.label = f.label;
+    return s;
+}
+
 } // namespace ChatLocal

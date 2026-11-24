@@ -117,7 +117,7 @@ std::string ShownSelector(const std::string& id) {
     if (const auto it = parked.find(id); it != parked.end()) return it->second.data.head.anchorSelector;
     return "";
 }
-std::string ModeOrigin() { auto t = Ann::ModeTab(); return t ? ChatLocal::Classify(U8(t->uri)).origin : std::string(); }
+std::string ModeOrigin() { auto t = Ann::ModeTab(); return t ? ChatLocal::SiteOf(U8(t->uri)).origin : std::string(); }
 std::string anchoredOrigin;   // the site `anchored` was read for
 void RefreshAnchored() {
     const std::string origin = ModeOrigin();
@@ -575,7 +575,7 @@ bool EnsureBubbleWindow() {
 // in advance, in the bubble's window, shown with an EMPTY region (nothing on screen, nothing clickable, the page renders).
 // A click then only places the window, sends the opening layout and reveals the surface on the page's acknowledgement.
 void WarmBubble() {
-    auto t = Active(); if (!t || !Ann::s.active || Ann::ModeTab() != t || halted || privateWindow || !CommentLayout() || Shown() || bubble.open) return;   // R34: not while the panel slides out
+    auto t = Active(); if (!t || !Ann::s.active || Ann::ModeTab() != t || halted || !AskAvailable(t) || !CommentLayout() || Shown() || bubble.open) return;   // R34: not while the panel slides out
     if (WarmHeldBack()) return;   // QA only
     EnsureInit(); if (!EnsureBubbleWindow()) return;
     if (post) KillTimer(post, DestroyTimer);
@@ -610,7 +610,7 @@ void EnsureOnScreen(const wchar_t* why) {
     SetForegroundWindow(bubble.hwnd); PostMessageW(bubble.hwnd, WM_APP + 2, 0, 0);
 }
 void OpenBubble(const std::string& conv, const RECT* element, const std::string& selector, bool followCurrent, const std::string& label) {
-    auto t = Active(); if (!t || !Ann::s.active || Ann::ModeTab() != t || halted || privateWindow) return;
+    auto t = Active(); if (!t || !Ann::s.active || Ann::ModeTab() != t || halted || !AskAvailable(t)) return;
     UiSlow slowStart("opening: the panel's close and the window");   // monkey 0.3.561: host -> opened 40-50 ms right after a switch
     if (Open()) ClosePanel();
     if (panelState == PanelState::Closing) FinishClose();   // M5 (review R): the panel's slide ends now — it would move and hide the view the bubble takes
@@ -725,7 +725,7 @@ void CloseBubble(bool focusPage) {
     ForgetUnsent(bubble.conv);   // M6 / F5
     const bool wasAway = bubble.away;
     bubble.open = false; bubble.away = false; bubble.closedAt = Ann::NowMs(); uiWatch.to = nullptr; bubble.waitingAck = false; if (bubble.hwnd) KillTimer(bubble.hwnd, 0xB2);
-    const bool keepWarm = CommentLayout() && Ann::s.active && !privateWindow;   // R18: ready for the next click
+    const bool keepWarm = CommentLayout() && Ann::s.active;   // R18: ready for the next click
     if (bubble.hwnd) { if (keepWarm) { SetWindowRgn(bubble.hwnd, CreateRectRgn(0, 0, 0, 0), TRUE); if (wasAway) ShowWindow(bubble.hwnd, SW_SHOWNA); bubble.win = RECT{}; bubble.region = RECT{}; bubble.warm = true; } else ShowWindow(bubble.hwnd, SW_HIDE); }   // warm: shown, empty region
     if (!keepWarm) { view.Show(false); bubble.warm = false; if (post) SetTimer(post, DestroyTimer, PanelIdleMs(), nullptr); }
     if (auto t = ChatTab()) Query(t, L"follow", L"null", nullptr);
@@ -981,8 +981,8 @@ std::string MarkState(const std::string& id) {
 void SyncMarks() {
     auto t = Ann::ModeTab(); if (!t || !Ann::s.active || !Ann::s.injected) return;
     SJ::Value list = SJ::Value::Arr(); std::set<std::string> found0;   // found0: on the page, drawn by the bubble's frame
-    const auto here = ChatLocal::Classify(U8(t->uri));
-    if (CommentLayout() && here.local && !here.file) {
+    const auto here = ChatLocal::SiteOf(U8(t->uri));
+    if (CommentLayout() && here.local) {
         if (anchoredOrigin != here.origin) { RefreshAnchored(); return; }   // read first, then drawn
         const std::string page = ChatBubble::PageKey(U8(t->uri));
         std::vector<const ChatStore::Header*> all; for (const auto& h : anchored) all.push_back(&h);

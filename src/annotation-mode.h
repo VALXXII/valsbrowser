@@ -95,6 +95,7 @@ bool Reduced() { return motion.ReducedMotion(); }
 // Chat intégré (src/chat-host.h, included at the end of this file): what the mode asks it.
 namespace Chat {
 bool Open();                                             // the panel is open (or opening)
+bool AskedFor();                                         // … because the user asked for it (not only opened by the mode's start in « Panneau »)
 bool Shown();                                            // … or still sliding out
 bool TakeSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible);   // the selection goes to the chat (a bubble, or a chip in the panel opened if needed); false: it could not take it
 void OnSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible);
@@ -153,6 +154,11 @@ void LogOnce(const std::wstring& what) { if (loggedOnce.find(what) != std::wstri
 // never `dataDir`, which follows the profile shown in this window. Before profiles, both were the same folder.
 std::wstring DataRoot() { return profileRoot.empty() ? dataDir : profileRoot; }
 std::wstring PrivateDir() { return DataRoot() + L"\\annotations-private"; }   // the private windows' ledgers (beside the store, never in it)
+// Lot R (decision A): what the chat keeps in a private window (conversations, site -> folder memory, the copies of the
+// project's files taken before a turn) goes into this window's own folder beside its ledger, erased with it when the
+// window closes, and at the next start after a crash (src/annotation-private.h). Empty: not a private window, or the
+// ledger could not be opened — the chat then stays off in this window (Chat::AskAvailable).
+std::wstring PrivateData() { if (!privateWindow) return L""; if (!privateLedger.Opened() && !privateLedger.Open(PrivateDir())) return L""; return privateLedger.DataDir(); }
 // Created on the UI thread before any job uses it (every caller of Run touches it first).
 BA::Store& Store() { if (!store) store = std::make_unique<BA::Store>(BA::GlobalStoreRoot(DataRoot())); return *store; }
 // Older builds kept one store per profile (<data root>\profiles\<id>\annotations): merged once into the global
@@ -692,7 +698,8 @@ void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {
     if (!commentFirst && !Chat::TakeSelection(t, s.serial, offScreen)) Log(L"ANNOTATE selection not taken by the chat: nothing opens");
     Resume(!commentFirst);
 }
-// #125: a private window's note is listed in its ledger BEFORE it is written (same site folder as Store::WriteAnnotation).
+// #125: what a private window stores (lot R: an element sent in the chat) is listed in its ledger BEFORE it is written
+// (same site folder as Store::WriteAnnotation).
 bool RecordPrivate(const BA::Annotation& a) {
     if (!privateLedger.Opened() && !privateLedger.Open(PrivateDir())) return false;
     const std::string siteKey = BA::SiteKey(BA::SiteOrigin(a.site.empty() ? BA::RedactUrl(a.source.url) : a.site));
@@ -747,7 +754,7 @@ void ConnectClosed(AUI::ConnectEnd end) {
         Log(L"ANNOTATE connect: « Plus tard » (" + std::to_wstring(Prefs::Declines(settings)) + L"/" + std::to_wstring(Prefs::MaxDeclines) + (Prefs::HasDeclines<BrowserSettings::State>::value ? L")" : L", not persisted: no setting key yet)"));
     }
     connectLaunch = false;
-    if (s.active) { banner.SetReminder(!agents.any()); FocusPage(); }
+    if (s.active) { banner.SetReminder(!agents.any() && !Chat::Open()); FocusPage(); }
     SyncWatch();
 }
 void EnsureUi() {
@@ -822,15 +829,15 @@ void Activate(const Start& st) {
     const bool direct = st.kind != 0;   // started on an element from the page menu: its bubble or its chip comes first
     RefreshAgents([started, direct, nonce] {
         if (!s.active || s.nonce != nonce) return;
-        AnnotationOnboarding::Launch first; first.onboarded = Prefs::Onboarded(settings); first.forced = OnboardingForced(); first.direct = direct; first.chatOpen = Chat::Open();
+        AnnotationOnboarding::Launch first; first.onboarded = Prefs::Onboarded(settings); first.forced = OnboardingForced(); first.direct = direct; first.chatOpen = Chat::AskedFor();
         first.busy = connect.Visible() || OnboardingOpen();
         if (AnnotationOnboarding::ShouldShow(first) && OpenOnboarding()) return;   // #125: the first time, the onboarding (agents connected or not)
         if (agents.any()) { banner.SetReminder(false); return; }
-        if (Chat::Open()) { banner.SetReminder(false); return; }   // the chat was asked for: no « Connecter un agent » modal, no reminder (its agent is the chat's)
+        if (Chat::AskedFor()) { banner.SetReminder(false); return; }   // the chat was asked for: no « Connecter un agent » modal, no reminder (its agent is the chat's)
         if (!direct && !laterThisSession && Prefs::Prompt(settings) && Prefs::Declines(settings) < Prefs::MaxDeclines && !connect.Visible()) {
             const int elapsed = int(GetTickCount64() - started);
             OpenConnect(true); (void)elapsed;
-        } else banner.SetReminder(true);
+        } else banner.SetReminder(!Chat::Open());   // the reminder steps back while the chat is open (« Panneau »: from the start)
     });
     SyncWatch();
     Log(L"ANNOTATE mode on (" + std::to_wstring(GetTickCount64() - started) + L" ms to inject request, accent " + AH::Wide(AccentInts(s.pageAccent)) + L") " + t->uri);

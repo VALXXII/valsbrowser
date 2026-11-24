@@ -192,13 +192,21 @@ bool rearmOwed = false; std::string doneMarkSelector; int elementSeq = 0;
 struct OpenStats { double requestedAt = 0, createdAt = 0, readyAt = 0, firstTextAt = 0, sendAt = 0, sessionAt = 0; } stats;
 void FinishTurn(const std::string& stopReason);
 
-std::wstring ProjectsFile() { return Ann::DataRoot() + L"\\annotations-chat\\projects.json"; }
+// Lot R (decision A): where the chat keeps its conversations, its site -> folder memory and its snapshots. A private
+// window has its own folder, erased when it closes (Ann::PrivateData); nothing of it reaches the normal windows' files.
+std::wstring ChatRoot() { return privateWindow ? Ann::PrivateData() : Ann::DataRoot(); }
+// Never an empty root for a file path: a private window whose folder could not be made has no chat (AskAvailable), and
+// what still asks for a path gets one that holds nothing and is never written (the folder is not created).
+std::wstring ChatFilesRoot() { const std::wstring r = ChatRoot(); return r.empty() ? Ann::PrivateDir() + L"\\unavailable" : r; }
+bool openedByMode = false, quietOpening = false;   // lot R: the panel opened by the mode's start in « Panneau » (chat-host-ui.h, OpenAtModeStart)
+std::wstring fileFolder;   // the folder of the local FILE the chat is on (ChatLocal::FolderOfFile); empty on a local project
+std::wstring ProjectsFile() { return ChatFilesRoot() + L"\\annotations-chat\\projects.json"; }
 std::wstring OptionsCacheFile() { return Ann::DataRoot() + L"\\annotations-chat\\agent-options.json"; }   // R13
-ChatStore::History& History() { static ChatStore::History h(Ann::DataRoot()); return h; }
+ChatStore::History& History() { static ChatStore::History h(ChatFilesRoot()); return h; }
 std::shared_ptr<Tab> ChatTab() { return chatTab.lock(); }
 bool Open() { return panelState == PanelState::Opening || panelState == PanelState::Open; }
 bool Shown() { return panelState != PanelState::Closed; }
-bool Usable() { return site.local && !site.file && !folder.empty(); }
+bool Usable() { return site.local && !folder.empty(); }
 const AgentDef& Agent() { const auto* a = AgentOf(agentId); return a ? *a : Agents[0]; }
 float PanelDip() { return std::min(PanelWidthDip, std::max(PanelMinDip, chrome.width - PageMinDip)); }
 float InsetDip() { return Shown() && !InFullscreen() && !PageFullscreenActive() ? PanelDip() : 0.f; }
@@ -306,7 +314,7 @@ void SendState() {
     SJ::Value st = SJ::Value::Obj();
     {   SJ::Value s = SJ::Value::Obj(); s.Set("origin", Str(site.origin)); s.Set("label", Str(site.file ? T8(I18n::Id::chat_site_file) : site.label)); s.Set("local", SJ::Value::Bool(site.local)); st.Set("site", std::move(s)); }
     auto folderObj = [](const std::wstring& path) { SJ::Value f = SJ::Value::Obj(); f.Set("path", Str(path)); f.Set("display", Str(ChatFolder::Display(path))); f.Set("name", Str(ChatFolder::Name(path))); return f; };
-    const bool usableSite = site.local && !site.file;
+    const bool usableSite = site.local;   // a local project, or a local file (lot R: its folder is its site)
     // not a local site: no « where is the code » step (null would show it) — an empty folder, and disabledReason says why
     st.Set("folder", !usableSite ? folderObj(L"") : folder.empty() ? SJ::Value::Null() : folderObj(folder));
     if (usableSite && folder.empty() && !suggestion.folder.empty()) { SJ::Value f = folderObj(suggestion.folder); f.Set("reason", Str(std::string("auto"))); st.Set("folderSuggestion", std::move(f)); }
@@ -362,7 +370,7 @@ void SendState() {
         }
         st.Set("suggestions", std::move(sg)); }
     {   SJ::Value c = SJ::Value::Obj(); c.Set("image", SJ::Value::Bool(info.caps.image || !sessionReady)); c.Set("steering", SJ::Value::Bool(false)); c.Set("commands", SJ::Value::Bool(!info.commands.empty())); st.Set("capabilities", std::move(c)); }
-    st.Set("disabledReason", site.local && !site.file ? SJ::Value::Null() : Str(T8(site.file ? I18n::Id::chat_disabled_file : I18n::Id::chat_disabled_not_local)));
+    st.Set("disabledReason", site.local ? SJ::Value::Null() : Str(T8(I18n::Id::chat_disabled_not_local)));
     Send("state", std::move(st));
 }
 void SendCommands() {

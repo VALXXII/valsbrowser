@@ -267,7 +267,10 @@ void StartSession() {
 #ifdef BROWSER_VERSION_TEXT
     o.clientVersion = BROWSER_VERSION_TEXT;
 #endif
-    {   // our MCP bridge over the annotation store, restricted to this site: the agent can list / claim / resolve annotations
+    // our MCP bridge over the annotation store, restricted to this site: the agent can list / claim / resolve annotations.
+    // Never for a local FILE (lot R): the store has no site for it, the bridge would not be restricted (« --site » with
+    // no origin = every site).
+    if (!site.file) {
         const auto target2 = Ann::ConnectTarget();
         if (GetFileAttributesW(target2.bridgeExe.c_str()) != INVALID_FILE_ATTRIBUTES) {
             Acp::McpServer m; m.name = Ann::ServerName(); m.command = U8(target2.bridgeExe); m.args = {"--store", U8(target2.storeRoot), "--site", site.origin}; o.mcpServers.push_back(std::move(m));
@@ -609,6 +612,8 @@ void WriteAnnotations(std::vector<Element>& elements, const std::string& note) {
     for (auto& e : elements) {
         BA::Annotation a = e.pending; a.note = ClipUtf8(note, 3900); a.id = BA::NewAnnotationId(); a.site = origin;
         a.source.profileId = U8(pid); a.source.profileName = U8(pname); BA::Sanitize(a);
+        // a private window: listed in its ledger first (erased when the window closes); no line, no annotation
+        if (privateWindow && !Ann::RecordPrivate(a)) { Diag(L"private window: the ledger could not be written, the element is not stored"); continue; }
         auto png = e.png.empty() ? nullptr : std::make_shared<std::string>(e.png);
         if (png) { a.screenshot.scale = e.shotScale; a.screenshot.crop = e.shotCrop; }
         e.annId = a.id;
@@ -648,7 +653,7 @@ std::string LastParagraph(const std::string& text) {
 }
 
 // ---------------------------------------------------------------- one turn
-std::shared_ptr<CS::Store> Snapshots() { if (!snapshots) snapshots = std::make_shared<CS::Store>(Ann::DataRoot() + L"\\" + CS::StoreFolderName); return snapshots; }
+std::shared_ptr<CS::Store> Snapshots() { if (!snapshots) snapshots = std::make_shared<CS::Store>(ChatFilesRoot() + L"\\" + CS::StoreFolderName); return snapshots; }
 // SEC-13: the prompt goes only in the mode the browser asked (« Demander » unless the user chose another one). false: held
 // (the mode's confirmation sends it: ModeSettled) or the turn ended in error.
 bool PromptModeReady() {
