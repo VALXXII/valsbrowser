@@ -85,6 +85,7 @@ static void BridgeTests() {
         Require(Has(page, std::string("id=\"") + id + "\""), "every Paper artboard has its card");
     Require(DebugSandbox::Catalogue().size() == 28, "28 artboards");
     for (const char* label : {"Intégré", "Démonstration", "Natif conservé", "Sélecteur de fichiers", "Windows Hello", "Impression"}) Require(Has(page, label), "statuses and native-kept windows listed");
+    Require(!Has(page, "Ctrl+S ouvre") && !Has(page, "la page (Ctrl+S)"), "no page-save shortcut promised (Ctrl+S dropped, #121)");
     Require(Has(page, "browser://debug") && Has(page, "Ctrl+Maj+F12") && Has(page, "--debug-sandbox"), "access documented in the page");
     Require(Has(page, "window.alert(") && Has(page, "window.confirm(") && Has(page, "window.prompt(") && Has(page, "beforeunload") && Has(page, "getUserMedia") && Has(page, "requestFullscreen") && Has(page, "keyboard.lock") && Has(page, "mailto:camille.demo@exemple.test") && Has(page, ".invalid"), "real web paths present");
     Require(Has(page, "oxyde de zinc") && Has(page, "ÉTÉ"), "find test content (accents, case)");
