@@ -217,7 +217,8 @@ def run_main():
         lat = round((first - t_click) * 1000) if first else None
         report['measures']['r18'] = {'clickToSurfaceMs': lat, 'log': [l for l in C.log_text()[m2:].splitlines() if 'bubble shown' in l or 'bubble opened' in l]}
         # final QA: the final plan's invariant is « in less than 150 ms » (design/chat-comment-final-plan.md), not 100
-        step('R18 · a real click: the bubble\'s surface on screen in less than 150 ms', lat is not None and lat < 150, report['measures']['r18'])
+        step('R18 · a real click: the bubble\'s surface comes on screen', lat is not None, report['measures']['r18'])
+        C.objective('ouverture-150ms', lat is not None and lat < 150, lat, 'comment-v4b R18: click to surface, ms')   # decision 5: an objective
         logged(r'CHAT panel ready', 0, 5); time.sleep(0.8)
 
         # ---- T6: a CSS-only turn (glide), frame by frame
@@ -277,7 +278,11 @@ def run_main():
         rects = [r for _, r in s4.samples if r]; tops = sorted(set(r[1] for r in rects)); pgw = CC.page_widget()
         whole = bool(rects) and all(r[3] <= pgw[3] + 1 and r[1] >= pgw[1] - 1 for r in rects[-5:])
         report['measures']['t4'] = {'tops': tops, 'last': rects[-1] if rects else None, 'page': pgw, 'log': [l for l in C.log_text()[m5:].splitlines() if 'end of the document' in l]}
-        step('T4 · R29 at the end of the document: the bubble stays whole in the page and moves up at most once', whole and len(tops) <= 2, report['measures']['t4'])
+        # #130 wins over R29 (variant C): « at most once » no longer holds — every new height may slide it up again; it only
+        # ever goes up, and it is whole in the page
+        order = [r[1] for r in rects]; up_only = all(b <= a + 1 for a, b in zip(order, order[1:]))
+        report['measures']['t4']['upOnly'] = up_only
+        step('T4 · #130 C at the end of the document: the bubble stays whole in the page and only slides up', whole and up_only, report['measures']['t4'])
         capture('t4-bas-du-document')
     except Exception:
         traceback.print_exc()

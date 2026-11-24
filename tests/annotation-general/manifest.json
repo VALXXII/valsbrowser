@@ -1,0 +1,400 @@
+{
+  "about": "The annotation mode's general test: every suite, in this order (design/annotation-plan-2026-11-24.md §4). part « day » = no window on the screen; « night » = real windows. {python}, {powershell} and {build} are filled by run.py.",
+  "lotsDone": [
+    0
+  ],
+  "thresholds": [
+    {
+      "id": "clic-bulle",
+      "kind": "bloquant",
+      "value": "un clic en Commentaire montre une bulle en moins de 3 s",
+      "decision": "plan final du 21/11 (design/annotation-feedback/chat-comment-final-plan.md)",
+      "where": "tests/chat/final/qa_final.py, Invariants.click"
+    },
+    {
+      "id": "bulle-entiere",
+      "kind": "bloquant",
+      "value": "toute la surface de la bulle dans la zone de page",
+      "decision": "décision 1 du 24/11 (#130 remplace R29, variante C)",
+      "where": "tests/chat/final/qa_final.py, Invariants"
+    },
+    {
+      "id": "boutons-atteignables",
+      "kind": "bloquant",
+      "value": "Refuser / Autoriser, la saisie et son pied visibles et cliquables",
+      "decision": "décision 1 du 24/11 (#130, variante C, règles 4 et 8)",
+      "where": "tests/chat/final/qa_final.py, Invariants (permission buttons)"
+    },
+    {
+      "id": "ouverture-150ms",
+      "kind": "objectif",
+      "value": "bulle à l'écran en moins de 150 ms après le clic",
+      "decision": "décision 5 du 24/11 : objectif, pas condition de sortie",
+      "where": "chat_qa.objective() dans qa_final.py, chat_qa_comment_v3.py, chat_qa_comment_v4b.py"
+    },
+    {
+      "id": "suivi-2px",
+      "kind": "objectif",
+      "value": "la bulle suit son élément à ± 2 px pendant un défilement",
+      "decision": "décision 5 du 24/11 : objectif, pas condition de sortie",
+      "where": "chat_qa.objective() dans chat_qa_comment_v5.py et monkey.py"
+    }
+  ],
+  "suites": [
+    {
+      "id": "i18n",
+      "title": "Barrière de traduction",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "tools/i18n/check_strings.py"
+      ],
+      "timeout": 300
+    },
+    {
+      "id": "chat-units",
+      "title": "Unités du chat et contrats de l'hôte",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/run_tests.py"
+      ],
+      "timeout": 900
+    },
+    {
+      "id": "model-switch-128",
+      "title": "Changement de modèle et de fournisseur (#128), contrats de l'hôte",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/model_switch_128_test.py"
+      ],
+      "timeout": 300
+    },
+    {
+      "id": "annotation-units",
+      "title": "Unités du mode : où Annoter est allumé (#125), notes d'une fenêtre privée, tutoriel hors écran",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/annotation-general/units.py"
+      ],
+      "timeout": 1800
+    },
+    {
+      "id": "chat-panel",
+      "title": "Page du chat, navigateur sans tête",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat-panel/run.py"
+      ],
+      "timeout": 1800
+    },
+    {
+      "id": "page-v4",
+      "title": "Script de la page (cadres, étiquettes, inspecteur), sans tête",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "tests/annotations-ui/page_v4.py"
+      ],
+      "timeout": 1800
+    },
+    {
+      "id": "fake-agent",
+      "title": "Scénarios du faux agent",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/final/fake_agent_scenarios.py"
+      ],
+      "timeout": 900
+    },
+    {
+      "id": "snapshots",
+      "title": "Instantanés des fichiers (« Tout annuler »)",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/snapshots/run_tests.py"
+      ],
+      "timeout": 1800
+    },
+    {
+      "id": "annotations",
+      "title": "Magasin d'annotations et pont MCP",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/annotations/run_tests.py"
+      ],
+      "timeout": 3600
+    },
+    {
+      "id": "annotations-ui",
+      "title": "Rendu natif du mode (bandeau, lanceur, historique, note)",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "tests/annotations-ui/run.py",
+        "--no-window"
+      ],
+      "timeout": 1800,
+      "nightCmd": [
+        "{python}",
+        "tests/annotations-ui/run.py"
+      ],
+      "daySkips": [
+        "les contrôles en fenêtre réelle du harnais natif"
+      ]
+    },
+    {
+      "id": "acp",
+      "title": "Client ACP et runtime des agents",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/acp/run_tests.py",
+        "--quick",
+        "--no-console"
+      ],
+      "timeout": 1800,
+      "nightCmd": [
+        "{python}",
+        "-I",
+        "tests/acp/run_tests.py"
+      ],
+      "skipMarker": "acp: 1 test skipped",
+      "daySkips": [
+        "la connexion en console (fenêtre visible)",
+        "les vrais téléchargements de Node.js et des adaptateurs"
+      ]
+    },
+    {
+      "id": "smoke",
+      "title": "Test de fumée du navigateur (test.ps1)",
+      "part": "night",
+      "cmd": [
+        "{powershell}",
+        "test.ps1"
+      ],
+      "timeout": 1800
+    },
+    {
+      "id": "shortcuts",
+      "title": "Raccourcis clavier",
+      "part": "night",
+      "cmd": [
+        "{powershell}",
+        "test-shortcuts.ps1"
+      ],
+      "timeout": 1200
+    },
+    {
+      "id": "annotation-settings",
+      "title": "Réglages « Annotations et agents »",
+      "part": "night",
+      "cmd": [
+        "{powershell}",
+        "test-annotation-settings.ps1"
+      ],
+      "timeout": 1200
+    },
+    {
+      "id": "accessibility",
+      "title": "Accessibilité de la fenêtre principale",
+      "part": "night",
+      "cmd": [
+        "{powershell}",
+        "test-accessibility.ps1"
+      ],
+      "timeout": 1800
+    },
+    {
+      "id": "uia-offscreen",
+      "title": "Arbre d'accessibilité avec le chat (hors écran, prend le clavier)",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/chat_qa_uia_offscreen.py"
+      ],
+      "timeout": 1800
+    },
+    {
+      "id": "chat-v1",
+      "title": "Chat à droite, parcours V1",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/chat_qa.py",
+        "run"
+      ],
+      "timeout": 2400
+    },
+    {
+      "id": "v12",
+      "title": "Chat V1.2",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/chat_qa_v12.py"
+      ],
+      "timeout": 1800
+    },
+    {
+      "id": "comment",
+      "title": "Mode Commentaire, v1",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/chat_qa_comment.py"
+      ],
+      "timeout": 1800
+    },
+    {
+      "id": "comment-switch",
+      "title": "Bascule Commentaire / Chat",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/chat_qa_comment_switch.py"
+      ],
+      "timeout": 1800
+    },
+    {
+      "id": "comment-v2",
+      "title": "Mode Commentaire, v2",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/chat_qa_comment_v2.py"
+      ],
+      "timeout": 1800
+    },
+    {
+      "id": "comment-v3",
+      "title": "Mode Commentaire, v3",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/chat_qa_comment_v3.py"
+      ],
+      "timeout": 1800
+    },
+    {
+      "id": "comment-v4",
+      "title": "Mode Commentaire, v4",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/chat_qa_comment_v4.py"
+      ],
+      "timeout": 1800
+    },
+    {
+      "id": "comment-v4b",
+      "title": "Mode Commentaire, v4b",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/chat_qa_comment_v4b.py"
+      ],
+      "timeout": 1800
+    },
+    {
+      "id": "comment-v5",
+      "title": "Mode Commentaire, v5 (défilement, poignée, menus)",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/chat_qa_comment_v5.py"
+      ],
+      "timeout": 1800
+    },
+    {
+      "id": "comment-v5b",
+      "title": "Mode Commentaire, v5b",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/chat_qa_comment_v5b.py"
+      ],
+      "timeout": 1800
+    },
+    {
+      "id": "r43",
+      "title": "Lignes de suivi (R43)",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/chat_qa_r43.py"
+      ],
+      "timeout": 900
+    },
+    {
+      "id": "comment-129-130",
+      "title": "Bulle : menu des modèles (#129) et bas de fenêtre (#130)",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/chat_qa_comment_129_130.py"
+      ],
+      "timeout": 1800
+    },
+    {
+      "id": "journeys",
+      "title": "Parcours de l'utilisateur (R1–R48 et revue)",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/final/journeys.py"
+      ],
+      "timeout": 10800
+    },
+    {
+      "id": "monkey-1",
+      "title": "Test de désordre, graine 1 (320 actions)",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/final/monkey.py",
+        "--seed",
+        "1"
+      ],
+      "timeout": 10800
+    },
+    {
+      "id": "monkey-2",
+      "title": "Test de désordre, graine 2 (320 actions)",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/final/monkey.py",
+        "--seed",
+        "2"
+      ],
+      "timeout": 10800
+    },
+    {
+      "id": "monkey-3",
+      "title": "Test de désordre, graine 3 (320 actions)",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/final/monkey.py",
+        "--seed",
+        "3"
+      ],
+      "timeout": 10800
+    }
+  ]
+}

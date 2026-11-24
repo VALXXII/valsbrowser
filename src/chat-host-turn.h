@@ -523,7 +523,6 @@ void OnPermission(const Acp::PermissionRequest& p) {
     waitingPermissions[p.requestId] = m;   // shown again if the panel's WebView is created (or re-created) while it waits
     Send("permission.request", std::move(m));
     Diag(L"permission asked: " + W(p.toolCall.kind) + (mcp.mcp ? L" " + W(ClipUtf8(p.toolCall.title, 120)) : std::wstring()));   // SEC-14: an MCP tool's name, never a command line or a file's text
-    RevealCardSoon();   // R47: its card and its buttons on screen (the site's page scrolls softly if needed)
 }
 void OnEvent(const Acp::Event& e) {
     using T = Acp::Event::Type; auto& info = agentInfo[agentId];

@@ -153,7 +153,12 @@ bool AskAvailable(const std::shared_ptr<Tab>& t) { return t && !privateWindow &&
 // chip is there). The note panel never shows then; an annotation without the agent is Ctrl+Entrée in the composer
 // (KeepAnnotation). False (the note panel, as before): not a local site, a private window, the chat cannot open,
 // or 10 elements already in the composer.
-bool CommentFirst(const std::shared_ptr<Tab>& t) { return AskAvailable(t) && !halted && !Ann::s.paused && CommentLayout(); }
+bool CommentFirst(const std::shared_ptr<Tab>& t) {
+    const bool ok = AskAvailable(t) && !halted && !Ann::s.paused && CommentLayout();
+    // monkey 0.3.611 #116 (the note opened instead of a bubble, nothing said): in Commentaire, why a click is not the chat's
+    if (!ok && CommentLayout()) Diag(std::wstring(L"a click in Commentaire is not the chat's (") + (!AskAvailable(t) ? L"not a local page" : halted ? L"halted" : L"selection paused") + L")");   // i18n-exempt: log detail
+    return ok;
+}
 bool TakeSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible) {
     if (!AskAvailable(t) || halted || Ann::s.paused) return false;
     if (CommentLayout()) return TakeCommentSelection(t, serial, captureImpossible);   // Mode Commentaire: a bubble on the element
@@ -926,7 +931,7 @@ void OnPanelMessage(const std::string& json) {
     if (type == "permission.respond") {
         const std::string request = m.Id("requestId"), option = m.Id("optionId"); if (request.empty() || !session) return;
         if (In(ModesOf(agentId, agentInfo[agentId]).map.never, option)) { Diag(L"permission answer refused: a mode that asks for nothing"); return; }   // SEC-02 (review): never forwarded, whatever the page sends
-        session->RespondPermission(request, option); waitingPermissions.erase(request); void RevealCardDone(); RevealCardDone(); Diag(L"permission answered: " + W(option));
+        session->RespondPermission(request, option); waitingPermissions.erase(request); Diag(L"permission answered: " + W(option));
         if (const std::string text = m.Text("message", 400000); text.find_first_not_of(" \t\r\n") != std::string::npos) { queue.push_front({NewId("q_"), text, {}, {}}); SendQueue(); }
         return;
     }

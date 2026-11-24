@@ -12,7 +12,8 @@ struct Rect { int left = 0, top = 0, right = 0, bottom = 0; int W() const { retu
 enum class Side { Right, Left, Below, Above, Inside };
 // fromRight / fromBottom: the edge that stays when the bubble changes size (Left: its right edge; Above: its bottom;
 // Inside: the corner it was put in, R44). why: one line for the log (R44: the side chosen and why).
-struct Placement { Rect rect; Side side = Side::Right; bool fromRight = false, fromBottom = false; const char* why = ""; int slid = 0; };   // slid: px along its side (decision 1)
+struct Placement { Rect rect; Side side = Side::Right; bool fromRight = false, fromBottom = false; const char* why = ""; int slid = 0;
+                   int limit = 0; };   // limit (#130 C rule 10): the height its side can hold, when that is less than planned (its thread scrolls); 0: none   // slid: px along its side (decision 1)
 struct Point { int x = 0, y = 0; bool set = false; };
 
 inline int Clamp(int v, int lo, int hi) { return hi < lo ? lo : std::max(lo, std::min(v, hi)); }
@@ -31,9 +32,12 @@ inline void Fit(int& w, int& h, const Rect& area, int margin, int maxW, int maxH
 // left, below, above; else inside the element, its visible corner nearest to the click. Then (R29) it grows from its fixed
 // edge; past the visible area the user scrolls. `prefer`: the side of the open bubble, kept while it still fits.
 // #130 C: a side with no room under the bubble — slid up along that side (`margin` from the page area's edges), before
-// below / above (no flip above the element).
+// below / above (no flip above the element). No free side at all (rules 9, 10): below, else above, never over the element
+// (its height limited to its side's room), and inside it (bottom right corner) only when it fills the page area.
+// `minH`: the least height worth a side (the composer's); `click` and `corner` are no longer used.
 inline Placement Place(const Rect& element, int w, int h, const Rect& area, int gap, int margin, Side prefer = Side::Right, int lead = 0,
-                       int hPlan = 0, Point click = {}, int corner = 0) {
+                       int hPlan = 0, Point click = {}, int corner = 0, int minH = 0) {
+    (void)click; (void)corner;   // rule 9: inside the element the corner is the bottom right one, `margin` from its edges (no longer the click's)
     // the height planned for: the one the bubble WILL have (hPlan: its conversation's last height, or 520), at least its current one
     const int H = std::min(std::max(h, hPlan), area.H());
     auto exact = [&](Side s) -> Placement {   // Paper's exact positions; the rect has the current height, on the edge that stays
@@ -56,55 +60,68 @@ inline Placement Place(const Rect& element, int w, int h, const Rect& area, int 
     // `margin` under the banner (the page area's top); never above the element (no flip). Right first, then left.
     for (Side s : {Side::Right, Side::Left}) {
         auto p = exact(s);
-        if (p.rect.left < area.left || p.rect.right > area.right || H > area.H() - 2 * margin) continue;
-        const int top0 = p.rect.top, top1 = Clamp(top0, area.top + margin, area.bottom - margin - H);
-        p.rect.top = top1; p.rect.bottom = top1 + h; p.slid = std::abs(top1 - top0);
+        if (p.rect.left < area.left || p.rect.right > area.right) continue;
+        const int Hc = std::max(1, std::min(H, area.H() - 2 * margin));   // rule 4: at most the page area - 2 x margin (its thread scrolls)
+        const int top0 = p.rect.top, top1 = Clamp(top0, area.top + margin, area.bottom - margin - Hc);
+        p.rect.top = top1; p.rect.bottom = top1 + std::min(h, Hc); p.slid = std::abs(top1 - top0); if (Hc < H) p.limit = Hc;
         p.why = s == Side::Right ? "right of the element, slid along it to be whole (#130 C: +12, 8 px from the page area's edges)"
                                  : "left of the element, slid along it to be whole (#130 C: -12, 8 px from the page area's edges)";
         return p;
     }
-    for (Side s : {Side::Below, Side::Above}) { const auto p = exact(s); if (whole(planned(p))) return p; }
-    // Decision (R44 first: the bubble is WHOLE at its opening). 1) a side at Paper's exact place (above); 2) slid along a
-    // side — the side with the most room where its width (right / left) or its height (below / above) fits, slid just enough
-    // to be whole, the 12 px gap exact (only Paper's -4 alignment gives way); 3) else over the element (below)
-    {   Placement best; int bestRoom = -1;
-        for (Side s : {Side::Right, Side::Left, Side::Below, Side::Above}) {
-            auto p = exact(s); int room = 0; bool fits = false;
-            switch (s) {
-            case Side::Right: room = area.right - (element.right + gap); fits = room >= w && H <= area.H(); break;
-            case Side::Left: room = (element.left - gap) - area.left; fits = room >= w && H <= area.H(); break;
-            case Side::Below: room = area.bottom - (element.bottom + gap); fits = room >= H && w <= area.W(); break;
-            default: room = (element.top - gap) - area.top; fits = room >= H && w <= area.W(); break;
-            }
-            if (!fits || room <= bestRoom) continue;
-            if (s == Side::Right || s == Side::Left) {
-                const int top0 = p.rect.top, top1 = Clamp(top0, area.top, area.bottom - H); p.rect.top = top1; p.rect.bottom = top1 + h; p.slid = std::abs(top1 - top0);
-            } else {
-                const int l0 = p.rect.left, l1 = Clamp(l0, area.left, area.right - w); p.rect.left = l1; p.rect.right = l1 + w; p.slid = std::abs(l1 - l0);
-            }
-            best = p; bestRoom = room;
+    // #130 C, rules 9 and 10 (Paper « #130 Bulle sans place dessous · C règles (validées) »): an element with NO FREE SIDE (as
+    // wide as the page: section.hero, a title) — the bubble goes below it, else above it, 12 px from it (its left at Paper's
+    // -4, slid to stay `margin` from the page area's edges), `margin` (8 px) from the page area's bottom / from the banner.
+    // It never goes over the element: when neither side holds its height, it takes the side with the most room and its
+    // height is limited to that room (its thread scrolls, rule 4). Only when no side has even `minH` — the element fills the
+    // page area — it sits inside the element, at the bottom right corner of what is visible of it, `margin` from its edges.
+    {   const int roomBelow = (area.bottom - margin) - (element.bottom + gap), roomAbove = (element.top - gap) - (area.top + margin);
+        const int least = std::max(1, minH > 0 ? std::min(minH, H) : std::min(h, H));
+        const int x = Clamp(element.left - lead, area.left + margin, area.right - margin - w);
+        auto side = [&](Side s, int room) {
+            Placement p; p.side = s; p.slid = std::abs(x - (element.left - lead));
+            const int hh = std::min(h, room);
+            if (s == Side::Below) { p.rect = {x, element.bottom + gap, x + w, element.bottom + gap + hh}; }
+            else { p.rect = {x, element.top - gap - hh, x + w, element.top - gap}; p.fromBottom = true; }
+            if (room < H) p.limit = room;
+            p.why = s == Side::Below ? (room < H ? "below the element (#130 C rule 10: +12, never over it), its height limited to the room there"
+                                                 : "below the element (#130 C rule 9: +12, left -4): no free side")
+                                     : (room < H ? "above the element (#130 C rule 10: -12, never over it), its height limited to the room there"
+                                                 : "above the element (#130 C rule 9: -12, left -4, growing up): no free side, no room below");
+            return p;
+        };
+        if (w <= area.W()) {
+            if (prefer == Side::Above && roomAbove >= H) return side(Side::Above, roomAbove);   // the side it flipped to (rule 10) is kept while it holds
+            if (roomBelow >= H) return side(Side::Below, roomBelow);
+            if (roomAbove >= H) return side(Side::Above, roomAbove);
+            if (std::max(roomBelow, roomAbove) >= least) return roomBelow >= roomAbove ? side(Side::Below, roomBelow) : side(Side::Above, roomAbove);
         }
-        if (bestRoom >= 0) return best;
     }
-    // 3) over the element (R44): its visible part, the corner nearest to the click (else its top right corner), 12 px from both
-    // edges; the other (top / bottom) corner when the planned height fits there and not at the nearest. An element smaller
-    // than the bubble: the bubble stays WHOLE in the visible area — it may go past the element, never past the area (slid)
+    // inside the element (rule 9, last): the bottom right corner of its visible part, `margin` from both edges, growing up;
+    // whole in the page area (`margin` from its edges), at most the page area − 2 × margin high
     const Rect vis{std::max(element.left, area.left), std::max(element.top, area.top), std::min(element.right, area.right), std::min(element.bottom, area.bottom)};
-    const bool right = click.set ? click.x > (vis.left + vis.right) / 2 : true;
-    bool bottom = click.set ? click.y > (vis.top + vis.bottom) / 2 : false;
-    auto fitsAt = [&](bool atBottom) { const int y0 = atBottom ? vis.bottom - corner - H : vis.top + corner; return y0 >= area.top && y0 + H <= area.bottom; };
-    if (!fitsAt(bottom) && fitsAt(!bottom)) bottom = !bottom;
-    int x = right ? vis.right - corner - w : vis.left + corner, y = bottom ? vis.bottom - corner - H : vis.top + corner;   // y: the planned box's top
-    const int x0 = x, y0 = y;
-    x = Clamp(x, area.left, area.right - w); y = Clamp(y, area.top, area.bottom - H);   // never out of the visible area
-    Placement p; p.side = Side::Inside; p.fromRight = right; p.fromBottom = bottom; p.slid = std::abs(x - x0) + std::abs(y - y0);
-    p.rect = bottom ? Rect{x, y + H - h, x + w, y + H} : Rect{x, y, x + w, y + h};
-    p.why = right ? (bottom ? "inside the element, bottom right corner (nearest to the click, 12 px): no side has room for the whole bubble"
-                            : "inside the element, top right corner (nearest to the click, 12 px): no side has room for the whole bubble")
-                  : (bottom ? "inside the element, bottom left corner (nearest to the click, 12 px): no side has room for the whole bubble"
-                            : "inside the element, top left corner (nearest to the click, 12 px): no side has room for the whole bubble");
+    const int room = area.H() - 2 * margin, hh = std::max(1, std::min(h, room));
+    int right = vis.right - margin, bottom = vis.bottom - margin;
+    const int r0 = right, b0 = bottom;
+    right = Clamp(right, area.left + margin + w, area.right - margin); bottom = Clamp(bottom, area.top + margin + hh, area.bottom - margin);
+    Placement p; p.side = Side::Inside; p.fromRight = true; p.fromBottom = true; p.slid = std::abs(right - r0) + std::abs(bottom - b0);
+    p.rect = {right - w, bottom - hh, right, bottom};
+    if (bottom - (area.top + margin) < H) p.limit = bottom - (area.top + margin);
+    p.why = "inside the element, bottom right corner (#130 C rule 9: 8 px from its edges): the element fills the page area, no side has room";
     return p;
 }
+// #130 C rule 10 (never over the element: the bubble switches side, above <-> below): a bubble below (above) its element that
+// is as high as its side allows — `h` reached `cap`, what was offered — goes to the other side when that one holds more.
+// Returns the side to be on (the same one: nothing to do). No way back and forth: it only ever goes to the roomier side.
+inline Side FlipSide(Side side, int h, int cap, int roomBelow, int roomAbove) {
+    if (side != Side::Below && side != Side::Above) return side;
+    if (cap <= 0 || h < cap - 1) return side;   // not limited by its side
+    const int mine = side == Side::Below ? roomBelow : roomAbove, other = side == Side::Below ? roomAbove : roomBelow;
+    if (mine - cap > 2) return side;   // what was offered is the bubble's own maximum (520, the page area - 16), not its side's room
+    return other > mine + 1 && other > h + 1 ? (side == Side::Below ? Side::Above : Side::Below) : side;
+}
+// The room of an element's sides, as Place() counts it (rule 9): from 12 px (`gap`) off the element to `margin` off the page area.
+inline int RoomBelow(const Rect& element, const Rect& area, int gap, int margin) { return (area.bottom - margin) - (element.bottom + gap); }
+inline int RoomAbove(const Rect& element, const Rect& area, int gap, int margin) { return (element.top - gap) - (area.top + margin); }
 // R2: an element carries its frame + icon (Paper 18IJ-0) only once a message left its bubble — sent, waiting in the
 // queue, or kept as an annotation (Ctrl+Entrée). A click on an element then closing its bubble leaves nothing on it.
 inline bool SentItem(const std::string& type) { return type == "message.user" || type == "annotation.kept"; }
@@ -300,14 +317,9 @@ inline int OfferedRoomCss(bool placedNow, int kept, const Rect& surface, bool bo
     if (placedNow || kept <= 0) return RoomCss(surface, bottomFixed, area, margin, k, maxCss);
     return kept;
 }
-// R47 (coordinator's decision): an authorization or an error waiting for an action arrived and the bubble's bottom (its card,
-// its buttons) is past the visible area: the site's page scrolls by what is missing (CSS px, rounded up), once; 0 when it is
-// on screen or while the user scrolls.
-inline int RevealScrollCss(int surfaceBottom, int areaBottom, int margin, float k, bool userScrolling) {
-    const int over = surfaceBottom - (areaBottom - margin);
-    if (userScrolling || over <= 0 || k <= 0) return 0;
-    return int(std::ceil(float(over) / k));
-}
+// #130 C rule 7 (Paper « C règles (validées) »): the browser never scrolls the user's page to show a card — the old R47 fix
+// (RevealScrollCss) is removed. A card's buttons are in the bubble's foot, always shown (rule 8), and the bubble is whole in
+// the page area (rules 2 to 4, 9, 10).
 // R29: what of the window may show — never over the browser's own bars (the page area, in window pixels).
 inline Rect Clip(const Rect& a, const Rect& b) { return {std::max(a.left, b.left), std::max(a.top, b.top), std::max(std::max(a.left, b.left), std::min(a.right, b.right)), std::max(std::max(a.top, b.top), std::min(a.bottom, b.bottom))}; }
 // R34: the one rule for the layout the chat page gets. « bubble » only when the layout is Commentaire, the panel is
@@ -372,7 +384,4 @@ inline bool EarlyOpenAllowed(bool open, const std::string& openSelector, const s
     if (clicked.empty()) return false;
     return !open || (!openSelector.empty() && openSelector != clicked);
 }
-// R35 / monkey 0.3.561: a click opens its element's bubble unless 10 of the panel's chips are being aimed (the bubbles'
-// own elements never count: one whose image never came blocked every later click)
-inline bool BubbleClickAllowed(std::size_t chipsAimed) { return chipsAimed < 10; }
 } // namespace ChatBubble

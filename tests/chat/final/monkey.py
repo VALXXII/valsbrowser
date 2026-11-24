@@ -331,7 +331,14 @@ class Monkey:
             comp = F.chat("(function(){var c=document.querySelector('[contenteditable=true]');if(!c)return null;var r=c.getBoundingClientRect();return r.bottom})()")
             st = F.chat_state('bubble')
             if sf and comp and st.get('app') and comp > st['app'][3] + 1:
-                self.R.step(f'#{a["i"]} invariant: after a resize the composer stays inside the bubble (M15)', False, {'composer': comp, 'app': st['app']})
+                # O5 (monkey 0.3.611 #110): what the page looks like when its input is out of the surface — the height it was told, the
+                # one it draws, and which part does not shrink
+                why = F.chat("(function(){var q=function(s){var e=document.querySelector(s);if(!e)return null;var r=e.getBoundingClientRect();return [Math.round(r.top),Math.round(r.bottom),e.scrollHeight,e.clientHeight]};"
+                             "var cs=getComputedStyle(document.documentElement);return {bh:cs.getPropertyValue('--bh'),it:cs.getPropertyValue('--it'),appClass:document.getElementById('app').className,"
+                             "main:q('.main'),body:q('.body'),scroller:q('.scroller'),dock:q('.dock'),composer:q('.composer'),perm:q('.bperm'),view:q('#bview'),"
+                             "dockKids:Array.prototype.map.call(document.querySelectorAll('.dock > *'),function(e){return e.className+':'+Math.round(e.getBoundingClientRect().height)})}})()")
+                host = [l for l in F.C.log_text()[-4000:].splitlines() if 'height offered' in l or 'bubble frame' in l or 'page area changed' in l][-4:]
+                self.R.step(f'#{a["i"]} invariant: after a resize the composer stays inside the bubble (M15)', False, {'composer': comp, 'app': st['app'], 'page': why, 'host': host, 'pageArea': got})
         return f'scroll then page area {got}', 0.3
 
     def switch_then_click(self, a):
@@ -380,8 +387,8 @@ class Monkey:
         finally:
             time.sleep(0.6); s.stop = True; s.join(2)
         v = s.verdict()
-        if v and v['over16']:
-            self.R.step(f'#{a["i"]} invariant: the bubble follows its element WHILE the page scrolls (R39, gap change <= 16 px CSS)', False, v)
+        if v:   # decision 5 (24 Nov 2026): the tracking while the page scrolls is an objective — reported, never a failure
+            C.objective('suivi-2px', not v['over16'], v, f'monkey #{a["i"]}: gap change while scrolling (<= 16 px CSS between two reads)')
         return out
 
     def run(self, actions):
