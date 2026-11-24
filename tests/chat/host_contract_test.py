@@ -337,6 +337,23 @@ check('aiming.size() >= 10' not in tcs and 'BubbleClickAllowed(chips)' in tcs an
 fa = block_after(comment, 'const ChatStore::Header* FindAnchored(')
 check('parked' in fa and 'SentConvo(' in fa and 'FindAnchored(page, env.selector' in block_after(comment, 'bool OpenEarly(') and 'FindAnchored(page, sel' in block_after(comment, 'bool TakeCommentSelection('), 'F6: a click finds its element conversation in memory too (not saved yet)')
 
+# #129: the model menu of the bubble is the panel's (same page, same host): a provider, a model or an effort chosen in the
+# bubble goes to the conversation it shows — no layout makes the host ignore it, and a provider chosen is kept on the
+# conversation's header (its next message, this comment, goes to that agent)
+for t in ('setAgent', 'setModel', 'setEffort'):
+    h = block_after(ui, 'if (type == "' + t + '")') or ui[ui.find('if (type == "' + t + '")'):][:200]
+    check(h and not any(x in h for x in ('CommentLayout()', 'BubbleOpen()', 'bubble.open')), '#129: « ' + t + ' » from the bubble is handled as from the panel (no layout check)', h[:160])
+sw = block_after(ui, 'void SwitchAgent(')
+check('convo.data.head.agentId = id;' in sw and 'pendingModel = model;' in sw, '#129: a provider chosen is kept on the conversation (its header) for its next message')
+
+# #130: a new size that takes the bubble past the bottom of the page area (its element on screen) places it again, whole —
+# never at a scroll step (R39), never for a size chosen with the handle (R40)
+place = block_after(comment, 'void PlaceBubble(bool scrolling) {')
+grew = place[place.find('ChatBubble::PastBottom('):]
+check(0 <= place.find('ChatBubble::PastBottom(') < place.find('if (!bubble.anchor.set) {') and all(x in place[max(0, place.find('ChatBubble::PastBottom(') - 200):place.find('ChatBubble::PastBottom(')] for x in ('!scrolling', '!bubble.resized'))
+      and 'bubble.anchor = ChatBubble::Anchor{};' in grew[:400],
+      '#130: PlaceBubble places a bubble grown past the bottom again (R44 rules) before choosing its anchor — not while scrolling, not resized by hand')
+
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

@@ -899,13 +899,17 @@
       return items;
     }
     let firstGroup = true;
+    // #129: before any provider said its models here (new profile, agent not started yet: the button shows its fallback
+    // « Opus 5.5 · Moyen »), the bubble's menu was empty — a 14 px box, nothing to choose. It then lists the providers, as
+    // the panel does; R13 (a model, never « Claude Code » / « Codex ») holds as soon as one provider's models are known.
+    const namedOnly = BUB() && !groups.some((a) => (a.models || []).length);
     groups.forEach((a) => {
-      if (BUB() && !(a.models || []).length) return;
+      if (BUB() && !namedOnly && !(a.models || []).length) return;
       if (!firstGroup) items.push({ sep: true });
       firstGroup = false;
       const ms = a.models || [];
       if (ms.length) ms.slice(0, PER_GROUP).forEach((m) => items.push(pickModel(a, m)));
-      else if (!BUB()) items.push(pickAgent(a));   // R13: in the bubble one picks a model, never « Claude Code » / « Codex »
+      else if (!BUB() || namedOnly) items.push(pickAgent(a));   // R13: in the bubble one picks a model, never « Claude Code » / « Codex » (#129: unless no model is known)
     });
     const more = groups.some((a) => (a.models || []).length > PER_GROUP);
     if (more || efforts.length) items.push({ sep: true });

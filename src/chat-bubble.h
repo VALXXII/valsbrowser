@@ -214,8 +214,9 @@ inline bool TransparentBackground(bool visual, bool inBubble) { return visual ||
 // R29 / R38: once placed, the bubble keeps its anchor for the whole conversation — the same offset from its element,
 // the same fixed edge (its top; its bottom when it is above the element). A new card, an open diff, an expanded
 // permission or error only make it grow away from that edge; it is never moved to fit the window (the user scrolls).
-// Only exception: at the end of the document, where the page cannot scroll further and the bubble would be cut, it
-// moves up once by what is missing (`BottomShift`).
+// Exceptions: at the end of the document, where the page cannot scroll further and the bubble would be cut, it moves up
+// once by what is missing (`BottomShift`); #130: a new size that takes it past the bottom of the page area while its
+// element is on screen places it again, whole (`PastBottom`).
 struct Anchor { bool set = false; Side side = Side::Right; bool fromRight = false, fromBottom = false; int dx = 0, dy = 0; };   // dy: from the element's top to the fixed edge
 inline Anchor AnchorOf(const Placement& p, const Rect& element) {
     Anchor a; a.set = true; a.side = p.side; a.fromRight = p.fromRight || p.side == Side::Left; a.fromBottom = p.fromBottom || p.side == Side::Above;
@@ -227,6 +228,13 @@ inline Rect Anchored(const Anchor& a, const Rect& element, int w, int h) {
     if (a.fromRight) { r.right = element.left + a.dx; r.left = r.right - w; } else { r.left = element.left + a.dx; r.right = r.left + w; }
     if (a.fromBottom) { r.bottom = element.top + a.dy; r.top = r.bottom - h; } else { r.top = element.top + a.dy; r.bottom = r.top + h; }
     return r;
+}
+// #130 (the user: « la bulle reste toujours entièrement dans la fenêtre », Refuser / Autoriser always reachable): a new size
+// that takes the bubble past the bottom of the page area while its element is on screen (not a scroll: the user's own) —
+// the bubble is then placed again by the opening's rules (`Place`, R44): whole, above its element when there is no room
+// under it, else slid along its side, else over the element. Past its maximum the thread scrolls inside (Paper 1ANU-0).
+inline bool PastBottom(const Rect& surface, const Rect& element, const Rect& area) {
+    return surface.H() > 0 && surface.bottom > area.bottom && element.bottom > area.top && element.top < area.bottom;
 }
 inline int BottomShift(const Rect& surface, const Rect& area, int margin, bool atDocumentEnd) {
     const int over = surface.bottom - (area.bottom - margin);

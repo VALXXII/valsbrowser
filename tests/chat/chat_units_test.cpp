@@ -587,6 +587,22 @@ static void TestBubble() {
               "R29: the one exception — at the end of the document it moves up by what is missing, once; elsewhere never");
         const auto c = Clip({0, 0, 400, 300}, {0, 50, 1000, 1000});
         Check(c.top == 50 && c.bottom == 300 && c.left == 0, "R29: never drawn over the browser's bars (clipped to the page area)"); }
+    // #130 (the user: the bubble of « Payer 48,00 € », low in the page, grew past the window's bottom — Refuser / Autoriser cut,
+    // the page could not scroll to them): a new size past the bottom, its element on screen, places it again (R44 rules), whole
+    {   const Rect area{0, 100, 1200, 900}; const Rect pay{64, 760, 342, 804};
+        const auto p = Place(pay, 305, 104, area, 12, 12, Side::Right, 4); const auto a = AnchorOf(p, pay);
+        Check(p.side == Side::Right && p.rect.top == pay.top - 4 && !PastBottom(p.rect, pay, area), "#130: a new comment low in the page opens at Paper's place (right, top -4), whole");
+        const auto grown = Anchored(a, pay, 305, 334);
+        Check(PastBottom(grown, pay, area), "#130: its authorization (334 px) would take it past the bottom of the page area");
+        const auto q = Place(pay, 305, 334, area, 12, 12, Side::Right, 4, 334); const auto qa = AnchorOf(q, pay);
+        Check(q.side == Side::Above && q.rect.bottom == pay.top - 12 && FullyVisible(q.rect, area), "#130: placed again, whole — above its element (Paper's place: 12 px above it), its buttons on screen");
+        const auto more = Anchored(qa, pay, 305, 520);
+        Check(more.bottom == q.rect.bottom && FullyVisible(more, area) && !PastBottom(more, pay, area), "#130: then it grows up, its bottom fixed — never past the bottom again");
+        const Rect low{0, 100, 1200, 500}; const Rect pay2{64, 420, 342, 464};
+        const auto s = Place(pay2, 305, 334, low, 12, 12, Side::Right, 4, 334);
+        Check(s.side == Side::Right && s.rect.left == pay2.right + 12 && FullyVisible(s.rect, low) && s.slid > 0, "#130: no room above it either: slid along its side (12 px gap kept), whole");
+        Check(!PastBottom(Anchored(a, {64, 950, 342, 994}, 305, 334), {64, 950, 342, 994}, area) && !PastBottom(Anchored(a, {64, 20, 342, 64}, 305, 334), {64, 20, 342, 64}, area),
+              "#130: its element out of the visible area (the user scrolled it away): the bubble follows it, nothing is placed again"); }
     // R38: the diff (or an expanded card) opens in place: the bubble may only take the room below its fixed edge
     {   const Rect area{0, 100, 1200, 900};
         Check(RoomCss({100, 500, 420, 600}, false, area, 12, 1.f, 520) == 388 && RoomCss({100, 300, 420, 400}, false, area, 12, 1.f, 520) == 520 &&

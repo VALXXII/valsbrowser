@@ -241,6 +241,15 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
         }
         bubble.anchorArea = a;
     }
+    // #130 (the user: « la bulle reste toujours entièrement dans la fenêtre »): R29's anchor held while the bubble grew, so an
+    // element low in the page had its bubble (an authorization's Refuser / Autoriser) past the bottom of the window, where the
+    // page cannot always scroll. A new size (never a scroll step, R39; never a size chosen with the handle, R40) that takes it
+    // past the bottom while its element is on screen places it again by the opening's rules (R44, as M15 does): whole.
+    if (!scrolling && bubble.anchor.set && bubble.known && !bubble.resized && !bubble.lost &&
+        ChatBubble::PastBottom(ChatBubble::Anchored(bubble.anchor, er, w, h), er, area)) {
+        Diag(L"the bubble grew past the bottom of the page area: placed again, whole (#130)");   // i18n-exempt: log detail
+        bubble.anchor = ChatBubble::Anchor{}; bubble.side = ChatBubble::Side::Right;
+    }
     if (!bubble.anchor.set) {   // R29: the first placement chooses the side and the anchor; then they never change
         // R44: the side is chosen for the height the bubble may take (520), so that it is whole in the visible area
         p = ChatBubble::Place(er, w, h, area, gap, margin, bubble.side, int(std::lround(BubbleLeadCss * k)),
