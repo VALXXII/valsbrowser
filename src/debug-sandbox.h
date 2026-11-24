@@ -56,7 +56,7 @@ inline const std::vector<CommandSpec>& Commands() {
         {L"prompt.screenShare", {L"default", L"empty"}, L"B08 : partage d'écran avec aperçus fictifs (démo)"},
         {L"prompt.keepFile", {L"default"}, L"B08 : conserver le fichier (concept)"},
         {L"find.open", {L"default", L"seed"}, L"C1/C2 : ouvre la vraie barre Ctrl+F ; seed = pré-remplie « oxyde »"},
-        {L"error.page", {L"nameNotResolved", L"refused", L"timedOut", L"reset", L"unreachable", L"generic"}, L"C4 : page d'erreur native dans un nouvel onglet (adresse *.invalid)"},
+        {L"error.page", {L"nameNotResolved", L"refused", L"timedOut", L"reset", L"unreachable", L"generic", L"certInvalid", L"certExpired", L"certWrongName", L"certRevoked", L"certClient"}, L"C4 / #121 : page d'erreur native dans un nouvel onglet (adresse *.invalid), 5 cas de certificat refusé"},
         {L"error.offline", {L"offline", L"retrying", L"restored"}, L"C3 : simule hors ligne (nouvel onglet), reprise en cours, connexion rétablie"},
         {L"tooltip.show", {L"label", L"shortcut", L"detail", L"tab", L"disabled"}, L"C5 : vraie info-bulle native sous le bouton de la sandbox"},
         {L"fullscreen.hint", {L"page", L"browser", L"locked"}, L"C6/C7 : indication plein écran native (sans changer de mode)"},
@@ -162,7 +162,9 @@ inline const std::vector<Entry>& Catalogue() {
             {L"Simuler hors ligne", L"error.offline", L"offline", nullptr}, {L"Rechargement en cours", L"error.offline", L"retrying", nullptr}, {L"Connexion rétablie", L"error.offline", L"restored", nullptr}}},
         {L"C4", L"Erreurs réseau — variantes et reprise", Status::Integrated, L"Les liens *.invalid échouent réellement (DNS) ; les autres variantes sont rendues par main.", {
             {L"Lien vers un hôte inexistant", nullptr, nullptr, L"invalidHost"}, {L"Introuvable (DNS)", L"error.page", L"nameNotResolved", nullptr}, {L"Connexion refusée", L"error.page", L"refused", nullptr},
-            {L"Délai dépassé", L"error.page", L"timedOut", nullptr}, {L"Réinitialisée", L"error.page", L"reset", nullptr}, {L"Injoignable", L"error.page", L"unreachable", nullptr}, {L"Générique", L"error.page", L"generic", nullptr}}},
+            {L"Délai dépassé", L"error.page", L"timedOut", nullptr}, {L"Réinitialisée", L"error.page", L"reset", nullptr}, {L"Injoignable", L"error.page", L"unreachable", nullptr}, {L"Générique", L"error.page", L"generic", nullptr},
+            {L"Certificat non valide", L"error.page", L"certInvalid", nullptr}, {L"Certificat expiré", L"error.page", L"certExpired", nullptr}, {L"Certificat d'un autre site", L"error.page", L"certWrongName", nullptr},
+            {L"Certificat révoqué", L"error.page", L"certRevoked", nullptr}, {L"Certificat présenté en erreur", L"error.page", L"certClient", nullptr}}},
         {L"C5", L"Info-bulles et raccourcis clavier", Status::Demo, L"La vraie info-bulle native (variantes de démonstration) ; le panneau Raccourcis clavier s'ouvre aussi avec Ctrl+/.", {
             {L"Panneau Raccourcis clavier", L"shortcuts.open", L"default", nullptr, Tag::Integrated},
             {L"Libellé seul", L"tooltip.show", L"label", nullptr}, {L"Libellé + raccourci", L"tooltip.show", L"shortcut", nullptr}, {L"Avec détail", L"tooltip.show", L"detail", nullptr},

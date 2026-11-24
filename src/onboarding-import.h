@@ -7,8 +7,9 @@
 //  * List(): the catalog's rows grouped the way board 3 shows them — one entry per browser under the name people
 //    know (« Google Chrome »), its profiles under it (« Profil principal », « Profil 1 »), the browsers that
 //    cannot be imported greyed with the reason, the HTML file last.
-//  * Commit(): what was read becomes the profile's bookmarks and history, one transaction per category, and an
-//    outcome the window can show (what was saved, and the sentence of board 5.1 for the first thing that failed).
+//  * Commit(): what was read becomes the profile's bookmarks (with their sites' icons from the source, as Réglages'
+//    import) and history, one transaction per category, and an outcome the window can show (what was saved, and the
+//    sentence of board 5.1 for the first thing that failed).
 // The read itself (BrowserImport::Read) runs on the host's worker thread, between the two.
 #include <cwctype>
 #include <functional>
@@ -17,6 +18,7 @@
 #include <vector>
 #include "browser-import.h"
 #include "browser-catalog.h"
+#include "import-icons.h"
 #include "onboarding-model.h"
 
 namespace OnboardingImport {
@@ -109,7 +111,13 @@ inline UI::ImportOutcome Commit(const Files& files, const BI::Source& s, const s
             Bookmarks::Store mine; { ProfileStore::Lock lock(files.dataDir); std::string bytes; ProfileStore::ReadAll(files.bookmarks, bytes); std::istringstream in(bytes); bool damaged = false; mine = Bookmarks::Store::Read(in, &damaged); }
             Bookmarks::Store was = mine;
             const auto c = BI::CommitBookmarks(files.dataDir, files.bookmarks, files.map, was, mine, s, r.roots, now, nullptr, nullptr);
-            if (c.Saved()) { outcome.bookmarksSaved = true; outcome.bar = BarItems(r.roots); say(L"ONBOARDING bookmarks saved " + CountsLog(c.counts) + L" ignored=" + std::to_wstring(r.ignored)); }   // i18n-exempt: log line (counts only)
+            if (c.Saved()) {
+                outcome.bookmarksSaved = true; outcome.bar = BarItems(r.roots);
+                // The source's own icons of these sites, so the bar shows them from the first start (src/import-icons.h);
+                // the host fetches the missing ones afterwards.
+                const std::size_t icons = ImportIcons::Save(files.dataDir, r.icons).size();
+                say(L"ONBOARDING bookmarks saved " + CountsLog(c.counts) + L" ignored=" + std::to_wstring(r.ignored) + L" icons=" + std::to_wstring(icons));   // i18n-exempt: log line (counts only)
+            }
             else { failed(Sentence(c.identity == BI::Identity::Newer ? TR(import_map_newer) : c.identity == BI::Identity::Damaged ? TR(import_map_damaged) : c.identity == BI::Identity::Full ? TR(import_map_full) : TR(import_save_failed))); say(L"ONBOARDING bookmarks save failed result=" + std::to_wstring(static_cast<int>(c.result))); }   // i18n-exempt: log line (counts only)
         }
     }

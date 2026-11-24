@@ -91,6 +91,24 @@ Per category: imported · already present · unsupported · not imported (full /
 "Importation terminée" only when every selected category committed; otherwise "Importation partielle"
 or "Importation impossible" with the reason. No personal URL/title is logged: log lines carry counts only.
 
+## Site icons of the imported bookmarks
+
+The bar, its menus and the drawer show the icon remembered per site in `<data>\favicons` (main.cpp `SiteIcon`),
+which only a visit used to write: imported bookmarks showed the generic glyph until each site was opened. With the
+bookmarks (Réglages and the onboarding alike) an import now brings their sites' icons:
+
+* from the source, read like its history (pinned folder, private copy, one read transaction): Chromium `Favicons`
+  (`icon_mapping` → `favicons` → `favicon_bitmaps`, the favicon type and the width closest to 32 px first), Firefox
+  `favicons.sqlite` (`moz_pages_w_icons` → `moz_icons_to_pages` → `moz_icons`, then the site's root icon), an HTML
+  export's `ICON="data:image/…;base64,…"`. Raster images only (PNG, ICO, GIF, JPEG, BMP), 256 KiB each, 32 MiB per
+  read. A missing, busy (browser running), damaged or unknown database is never a failure of the import: no icon
+  from it, that is all;
+* otherwise from the site itself, in the background (src/import-icons.h): `/favicon.ico`, else the first raster icon
+  its home page declares. Plain GET without cookies or credentials, no certificate exception, never https → http,
+  bounded sizes and times; the bar redraws as icons arrive. A site that gives none keeps the glyph.
+
+An icon already in `<data>\favicons` (a visit's) is never replaced. Logs carry counts only.
+
 ## Cookies (unavailable in this delivery)
 
 Shown as a disabled check with "Non disponible : vos connexions ne sont pas transférées. Reconnectez-vous
@@ -104,6 +122,9 @@ design/browser-data-import-report.md.
   depth/capacity; timestamps; WAL database and an exclusively locked database (another connection holds
   `locking_mode=EXCLUSIVE`) → busy, source bytes unchanged; source read failure; destination save failure
   (unknown format / locked) → nothing written; history merge idempotence.
+* tests/browser-import/import_icons_test.cpp: the source icons of synthetic Chromium / Firefox / HTML sources
+  (choice rules, busy / damaged / unknown databases, source unchanged, no copy left), their saving (never over an
+  existing icon) and the fetch against loopback servers only (redirects, soft 404, oversized, no cookie or credentials).
 * Modal: `Select::checks` updates availability per source (modal test).
 * End-to-end: real browser.exe with an isolated data root and `--import-root` synthetic sources, driven
   by UIA in FR and EN; PrintWindow captures of its own window only.

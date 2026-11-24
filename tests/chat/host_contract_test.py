@@ -337,6 +337,27 @@ check('aiming.size() >= 10' not in tcs and 'BubbleClickAllowed(chips)' in tcs an
 fa = block_after(comment, 'const ChatStore::Header* FindAnchored(')
 check('parked' in fa and 'SentConvo(' in fa and 'FindAnchored(page, env.selector' in block_after(comment, 'bool OpenEarly(') and 'FindAnchored(page, sel' in block_after(comment, 'bool TakeCommentSelection('), 'F6: a click finds its element conversation in memory too (not saved yet)')
 
+# #129: the model menu of the bubble is the panel's (same page, same host): a provider, a model or an effort chosen in the
+# bubble goes to the conversation it shows — no layout makes the host ignore it, and a provider chosen is kept on the
+# conversation's header (its next message, this comment, goes to that agent)
+for t in ('setAgent', 'setModel', 'setEffort'):
+    h = block_after(ui, 'if (type == "' + t + '")') or ui[ui.find('if (type == "' + t + '")'):][:200]
+    check(h and not any(x in h for x in ('CommentLayout()', 'BubbleOpen()', 'bubble.open')), '#129: « ' + t + ' » from the bubble is handled as from the panel (no layout check)', h[:160])
+sw = block_after(ui, 'void SwitchAgent(')
+check('convo.data.head.agentId = id;' in sw and 'pendingModel = model;' in sw, '#129: a provider chosen is kept on the conversation (its header) for its next message')
+
+# #130 (wins over R29), variant C: a new size that takes the bubble closer than 8 px to the bottom of the page area (its
+# element on screen) slides it up along its element (SlideUp, 8 px from the page area's edges) — never at a scroll step
+# (R39), never for a size chosen with the handle (R40); the page area's edges are 8 px (height at most page area - 16)
+place = block_after(comment, 'void PlaceBubble(bool scrolling) {')
+at = place.find('ChatBubble::PastBottom(')
+grew = place[at:]
+check(0 <= at < place.find('if (!bubble.anchor.set) {') and all(x in place[max(0, at - 300):at] for x in ('!scrolling', '!bubble.resized'))
+      and 'ChatBubble::SlideUp(where, area, margin)' in grew[:900] and 'bubble.anchor.dy -= up;' in grew[:900] and 'PastBottom(where, er, area, margin)' in grew[:120],
+      '#130 C: PlaceBubble slides a bubble grown past the bottom up along its element before choosing its anchor — not while scrolling, not resized by hand')
+check('BubbleMarginCss = 8' in consts and '2 * BubbleMarginCss' in block_after(comment, 'void PlaceBubble(bool scrolling) {'),
+      '#130 C: 8 px from the page area\'s edges; the height offered is at most the page area - 16 px')
+
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

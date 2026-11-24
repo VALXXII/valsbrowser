@@ -1,15 +1,38 @@
 """Synthetic browser profiles for the import E2E (tests/e2e/browser_import_e2e.ps1). Test-only: the browser
 itself never uses Python. Writes, under <root>:
   Local/Google/Chrome/User Data/Default/{Bookmarks,History}   nested Unicode folders, duplicates, javascript:
+  Local/Google/Chrome/User Data/Default/Favicons              icons of home.example and docs.example (real PNGs)
   Local/Microsoft/Edge/User Data/Profile 1/Bookmarks          a second Chromium browser (bookmarks only)
   Roaming/Mozilla/Firefox/profiles.ini + Profiles/e2e.default-release/places.sqlite (WAL, closed cleanly)
   export é#.html                                              Netscape bookmark export
 Every URL is under *.example (RFC 2606) or localhost: no personal data, nothing reachable.
-Usage: python -I tests/browser-import/make_sources.py <root>
+Usage: python -I tests/browser-import/make_sources.py <root> [--local-port N]   (N: the « Local » bookmark's port, 8080 by default)
 """
-import json, os, sqlite3, sys
+import json, os, sqlite3, struct, sys, zlib
 
 EPOCH_DELTA_MS = 11644473600000
+
+
+def png(rgb, size=16):
+    """A real size x size PNG of one colour (the browser decodes and draws it)."""
+    def chunk(kind, data):
+        return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data) & 0xffffffff)
+    rows = b''.join(b'\x00' + bytes(rgb) * size for _ in range(size))
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', size, size, 8, 2, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b''))
+
+
+def chromium_favicons(path, icons):
+    """Chromium's « Favicons » database: icons = [(page_url, icon_url, png_bytes, width)]."""
+    db = sqlite3.connect(path)
+    db.execute('CREATE TABLE favicons(id INTEGER PRIMARY KEY, url LONGVARCHAR NOT NULL, icon_type INTEGER DEFAULT 1)')
+    db.execute('CREATE TABLE favicon_bitmaps(id INTEGER PRIMARY KEY, icon_id INTEGER NOT NULL, last_updated INTEGER DEFAULT 0, image_data BLOB, width INTEGER DEFAULT 0, height INTEGER DEFAULT 0, last_requested INTEGER DEFAULT 0)')
+    db.execute('CREATE TABLE icon_mapping(id INTEGER PRIMARY KEY, page_url LONGVARCHAR NOT NULL, icon_id INTEGER)')
+    for i, (page, icon, data, width) in enumerate(icons, 1):
+        db.execute('INSERT INTO favicons(id, url, icon_type) VALUES(?,?,1)', (i, icon))
+        db.execute('INSERT INTO favicon_bitmaps(icon_id, image_data, width, height) VALUES(?,?,?,?)', (i, data, width, width))
+        db.execute('INSERT INTO icon_mapping(page_url, icon_id) VALUES(?,?)', (page, i))
+    db.commit(); db.close()
 
 
 def chrome_time(unix_ms):
@@ -24,14 +47,14 @@ def folder(name, children):
     return {'type': 'folder', 'name': name, 'children': children, 'date_added': chrome_time(1690000000000), 'id': '2'}
 
 
-def main(root):
+def main(root, local_port=8080):
     chrome = os.path.join(root, 'Local', 'Google', 'Chrome', 'User Data', 'Default')
     os.makedirs(chrome, exist_ok=True)
     bar = folder('Bookmarks bar', [
         link('Accueil — été ☀', 'https://home.example/'),
         folder('Travail 🛠 日本', [link('Docs', 'https://docs.example/a'), link('Docs (copie)', 'https://docs.example/a'), link('JS', 'javascript:void(0)')]),
         folder('Perso', [link('Docs', 'https://docs.example/a')]),
-        link('Local', 'http://localhost:8080/page'),
+        link('Local', 'http://localhost:%d/page' % local_port),
     ])
     other = folder('Other bookmarks', [link('Trois', 'https://three.example/', 1600000000000)])
     doc = {'checksum': '0', 'roots': {'bookmark_bar': bar, 'other': other, 'synced': folder('Mobile bookmarks', [])}, 'version': 1}
@@ -49,6 +72,11 @@ def main(root):
     for i, url, title, visits, ms, hidden in rows:
         db.execute('INSERT INTO urls(id, url, title, visit_count, last_visit_time, hidden) VALUES(?,?,?,?,?,?)', (i, url, title, visits, int(chrome_time(ms)), hidden))
     db.commit(); db.close()
+    # The bookmarks' icons as Chrome keeps them (home and docs have one; three.example has none: the browser fetches it).
+    chromium_favicons(os.path.join(chrome, 'Favicons'), [
+        ('https://home.example/', 'https://home.example/favicon.ico', png((0xE5, 0x48, 0x2B)), 16),
+        ('https://docs.example/a', 'https://docs.example/favicon.ico', png((0x1A, 0x73, 0xE8), 32), 32),
+    ])
 
     edge = os.path.join(root, 'Local', 'Microsoft', 'Edge', 'User Data', 'Profile 1')
     os.makedirs(edge, exist_ok=True)
@@ -108,5 +136,7 @@ def big(root, links=180000):
 if __name__ == '__main__':
     if len(sys.argv) > 2 and sys.argv[2] == '--big':
         big(sys.argv[1])
+    elif len(sys.argv) > 3 and sys.argv[2] == '--local-port':   # the E2E's own fixture server (the « Local » bookmark's icon)
+        main(sys.argv[1], int(sys.argv[3]))
     else:
         main(sys.argv[1])

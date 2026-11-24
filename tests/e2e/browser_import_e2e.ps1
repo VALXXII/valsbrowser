@@ -11,6 +11,7 @@
 # « visual unavailable », never under the evidence name. -RequireVisual makes a blank capture fail the run; the
 # functional UIA checks are counted on their own either way.
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'job_guard.ps1')   # the browser, its engine and the icon fixture server die with this script
 Set-Location (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
 $repo = (Get-Location).Path
 $fix = (Resolve-Path $Fixture).Path
@@ -90,6 +91,28 @@ function TreeHash([string]$dir) { (Get-ChildItem -LiteralPath $dir -Recurse -For
 $enc = New-Object System.Text.UTF8Encoding($false)
 function W([string]$path, [string]$text) { New-Item -ItemType Directory -Force (Split-Path -Parent $path) | Out-Null; [IO.File]::WriteAllText($path, $text, $enc) }
 function ReadText([string]$path) { [IO.File]::ReadAllText($path, $enc) }
+function IsPng([string]$path) { if (!(Test-Path -LiteralPath $path)) { return $false }; $b = [IO.File]::ReadAllBytes($path); return $b.Length -gt 8 -and $b[0] -eq 0x89 -and $b[1] -eq 0x50 -and $b[2] -eq 0x4E -and $b[3] -eq 0x47 }
+# Imported bookmarks' icons on the bar: pixels of colour `rgb` (±40 per channel) in the left part of the band item titled
+# `title` (its 16 DIP icon slot) in a capture of the window, saved as evidence `name`. -1: blank capture (no composition,
+# « visual unavailable »); -2: no such band item.
+function BarIconPixels([IntPtr]$main, [int]$procId, [string]$title, [int[]]$rgb, [string]$name) {
+  $item = $null
+  for ($i = 0; $i -lt 20 -and !$item; $i++) { $item = $AE::FromHandle($main).FindFirst($TS::Descendants, (Cond $AE::NameProperty $title)); if (!$item) { Start-Sleep -Milliseconds 250 } }
+  if (!$item) { return -2 }
+  $b = $item.Current.BoundingRectangle
+  $w = New-Object Impqa+RECT; [void][Impqa]::GetWindowRect($main, [ref]$w)
+  $path = Join-Path $Evidence "$name.png"
+  $q = [Impqa]::Shot($main, [uint32]$procId, $path)
+  if ([int]([regex]::Match($q, 'lit=(\d+)').Groups[1].Value) -le 2000) { return -1 }
+  $bmp = New-Object System.Drawing.Bitmap $path
+  try {
+    $n = 0
+    $x0 = [Math]::Max(0, [int]($b.Left - $w.L)); $x1 = [Math]::Min($bmp.Width, [int]($b.Left - $w.L + [Math]::Min($b.Width, $b.Height * 1.5)))
+    $y0 = [Math]::Max(0, [int]($b.Top - $w.T)); $y1 = [Math]::Min($bmp.Height, [int]($b.Bottom - $w.T))
+    for ($y = $y0; $y -lt $y1; $y++) { for ($x = $x0; $x -lt $x1; $x++) { $c = $bmp.GetPixel($x, $y); if ([Math]::Abs($c.R - $rgb[0]) -le 40 -and [Math]::Abs($c.G - $rgb[1]) -le 40 -and [Math]::Abs($c.B - $rgb[2]) -le 40) { $n++ } } }
+    return $n
+  } finally { $bmp.Dispose() }
+}
 
 # Settings › Confidentialité › Importer… : the dialog element.
 function OpenImport([int]$procId, [IntPtr]$main, [string]$privacy) {
@@ -153,7 +176,16 @@ New-Item -ItemType Directory -Force $app | Out-Null
 robocopy $fix $app /E /NFL /NDL /NJH /NJS /NP /XD profile sessions profiles adblock favicons windows /XF profiles.txt session settings history downloads bookmarks prototype.log engine-args ui-language | Out-Null
 $python = (Get-Command python -ErrorAction SilentlyContinue).Source
 if (!$python) { $python = Join-Path $env:LOCALAPPDATA 'Programs/Python/Python312/python.exe' }
-& $python -I "$repo\tests\browser-import\make_sources.py" $sources
+# The « Local » bookmark's site: a fixture server on the loopback (free port) whose /favicon.ico is a green square. Chrome's
+# synthetic profile has no icon for it: the browser must fetch it there after the import (no visit).
+$listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0); $listener.Start(); $iconPort = $listener.LocalEndpoint.Port; $listener.Stop()
+$iconSite = Join-Path $run 'icon-site'; New-Item -ItemType Directory -Force $iconSite | Out-Null
+$green = New-Object System.Drawing.Bitmap 16, 16; $gfx = [System.Drawing.Graphics]::FromImage($green); $gfx.Clear([System.Drawing.Color]::FromArgb(255, 0x2E, 0x9E, 0x44)); $gfx.Dispose()
+$green.Save((Join-Path $iconSite 'favicon.ico'), [System.Drawing.Imaging.ImageFormat]::Png); $green.Dispose()   # PNG bytes: the browser reads icons by content
+$iconServer = Start-Process $python -ArgumentList '-I', '-m', 'http.server', "$iconPort", '--bind', '127.0.0.1', '--directory', "`"$iconSite`"" -PassThru -WindowStyle Hidden
+$serving = $false; for ($i = 0; $i -lt 40 -and !$serving; $i++) { try { $t = New-Object System.Net.Sockets.TcpClient; $t.Connect('127.0.0.1', $iconPort); $t.Close(); $serving = $true } catch { Start-Sleep -Milliseconds 250 } }
+if (!$serving) { throw 'icon fixture server not listening' }
+& $python -I "$repo\tests\browser-import\make_sources.py" $sources --local-port $iconPort
 if ($LASTEXITCODE -ne 0) { throw 'synthetic sources not created' }
 W "$app\profiles.txt" "browser-profiles 1`nlast=default`np=default|house|0|0|1|Personnel`n"
 W "$app\settings" "browser-settings 1`nrestore-tabs=0`nask-where-to-save=0`n"
@@ -216,6 +248,19 @@ try {
   Check ($bm -notlike '*javascript:*') 'FR javascript: bookmark not imported'
   Check ($hs -like '*https://mine.example/*' -and $hs -like '*https://news.example/today*' -and $hs -notlike '*chrome://*' -and $hs -notlike '*hidden.example*' -and $hs -notlike '*google.com/search*') 'FR history on disk: existing kept, imported added, internal/hidden/search excluded'
   Check ($hs -like "*`t1763100000000`thttps://news.example/today`t*") 'FR history visit time converted from the Chromium epoch'
+  # Site icons (bug: imported bookmarks showed no icon until each site was visited). Chrome's own icons are saved for the
+  # bar at once; the one Chrome lacks (« Local ») is fetched from its site (the fixture server) and the bar redraws with it.
+  Check ((IsPng "$app\favicons\home.example.png") -and (IsPng "$app\favicons\docs.example.png")) 'FR import: Chrome''s icons of the imported sites saved in the profile (home, docs)'
+  $fetched = $false; for ($i = 0; $i -lt 60 -and !$fetched; $i++) { $fetched = IsPng "$app\favicons\localhost.png"; if (!$fetched) { Start-Sleep -Milliseconds 250 } }
+  Check $fetched 'FR import: the icon Chrome lacked fetched from the site itself (fixture server) and saved, no visit'
+  $iconLog = ReadText "$app\prototype.log"
+  Check ($iconLog -like '*IMPORT bookmarks saved imported=6*icons=2*' -and $iconLog -like '*IMPORT icons to fetch: 2*') 'FR import log: 2 icons from Chrome, 2 sites asked for theirs (counts only)'
+  Start-Sleep 1
+  foreach ($icon in @(@('Accueil — été ☀', @(0xE5, 0x48, 0x2B), 'fr-2b-bar-icon-from-chrome'), @('Local', @(0x2E, 0x9E, 0x44), 'fr-2c-bar-icon-fetched'))) {
+    $px = BarIconPixels $main $procId $icon[0] $icon[1] $icon[2]
+    if ($px -eq -1) { $script:visualBlank += $icon[2]; $line = "visual UNAVAILABLE $($icon[2]): blank capture"; $line; $script:log += $line }
+    else { Check ($px -ge 64) "FR bar: « $($icon[0]) » drawn with its imported icon ($px matching pixels)" }
+  }
 
   # Repeat: nothing added, files byte-identical.
   $bm1 = Hash $bmFile; $h1 = Hash $hFile
@@ -459,6 +504,7 @@ try {
   Check ($tmpLeft.Count -eq 0) 'no private snapshot left in the temporary folder'
 } finally {
   Get-CimInstance Win32_Process -Filter "Name='browser.exe'" | Where-Object { $_.ExecutablePath -like "$run\*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  if ($iconServer) { Stop-Process -Id $iconServer.Id -Force -ErrorAction SilentlyContinue }
 }
 $visualLine = "visual: $($script:visualOk) capture(s) verified non-blank, $($script:visualBlank.Count) blank (real-app capture unavailable: $($script:visualBlank -join ', '))"
 $visualLine; $script:log += $visualLine
