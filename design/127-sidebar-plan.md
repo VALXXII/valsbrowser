@@ -153,6 +153,12 @@ glisser, survol par-dessus la page, tiroirs) : liste pour la tournée de nuit de
 - Échap referme la colonne ouverte par-dessus la page quand la fenêtre a le focus clavier (pas quand il est dans la page) ; sinon elle se referme quand la souris la quitte, ou par
   Ctrl+Maj+, en fenêtre étroite).
 - Coffre de mots de passe : la clé du champ reste à gauche de Copier, sans autre changement (hors périmètre).
+- Annoter (premier outil du bas) : toujours affiché dans les versions avec le mode Annotation, dessiné comme Paper
+  (marque 15 DIP blanc 70 %), grisé (`Design::Text::disabled`) là où le mode ne peut pas démarrer — page Nouvel onglet,
+  page interne, fenêtre privée et, avec #125, les sites en ligne — avec l'info-bulle qui dit pourquoi ; actif : l'aspect
+  de l'app. L'état vient de `AnnotationButtonDimmed()` (même règle `Ann::Available` que la barre), sans dépendre de #125.
+- Rendus hors écran (`design/127-sidebar-evidence`) : les tiroirs, les info-bulles, la liste des suggestions et le texte
+  tapé sont des fenêtres à part (les mêmes qu'aujourd'hui) : ils n'apparaissent pas dans les rendus du peintre de la colonne.
 
 ## 8. Vérifications en fenêtre réelle (tournée de nuit de Fix)
 

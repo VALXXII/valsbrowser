@@ -701,6 +701,7 @@ public:
     // Annotation mode (T3, src/annotation-mode.h): the "Annoter" button ('N') left of the tool cluster, and
     // the 32 DIP "Mode Annotation" band under the toolbar while the mode is on (the page moves down).
     bool annotateShown=false,annotateActive=false; float annotationBand=0; std::wstring annotateTip;   // empty until Ann::SyncChrome: AnnotateTip() falls back to the catalog at use
+    bool annotateDimmed=false;   // #127 column: the mode cannot start on this page (greyed, still shown, its tooltip says why; #125: live sites)
     const wchar_t* AnnotateTip() const { return annotateTip.empty() ? TR(chrome_tip_annotate) : annotateTip.c_str(); }
     std::function<void(ID2D1RenderTarget*,ID2D1Factory*,ID2D1SolidColorBrush*,D2D1_RECT_F,Motion::InteractionVisual,bool focus)> paintAnnotate;
     float AnnotateRight()const{return (audioShown?AudioLeft:97.f)+6;}   // from the right edge: 6 DIP left of Audio/History
@@ -1073,7 +1074,7 @@ public:
     // One footer tool: hover white 4 %, its drawer open white 10 % (07 1QMH-0); glyph 16 white 70 % (settings 50 %).
     void DrawSideTool(int id,D2D1_RECT_F box,int hover,int focus,Motion::Time now){
         namespace K=Sidebar::Look;auto v=motion?motion->Visual(id,now):Motion::InteractionVisual{hover==id?1.f:0.f,0};
-        if(id=='N'){if(paintAnnotate)paintAnnotate(target,factory,brush,box,v,focus==id);return;}
+        if(id=='N'){DrawSideAnnotate(box,v,focus==id);return;}
         if(id=='V'){DrawAudioButton(box,{v.hover,v.press,false,focus==id},now);return;}
         const float fill=id==latched?K::toolOpen:K::toolHover*std::clamp(v.hover+v.press,0.f,1.f);
         if(fill>0)White(box,Design::Radius::control,fill);
@@ -1081,6 +1082,21 @@ public:
         const float size=Design::Size::icon*Motion::PressScale(v.press,motion&&motion->ReducedMotion());
         if(id=='D'){const auto pose=downloadIcon.At(now);if(!pose.idle&&DrawDownloadIcon(pose,box,size,1))return;}
         SideGlyph(id=='Y'?Sidebar::Glyph::history:id=='D'?Sidebar::Glyph::downloads:Sidebar::Glyph::settings,box,size,id=='S'?K::settingsGlyph:K::glyph);}
+    // Annoter in the tools (01 1TLQ-0 / compact 1TMQ-0): Paper's mark 15 DIP white 70 %; greyed (Design::Text::disabled,
+    // like the toolbar's #125 « off » state) when the mode cannot start here, never hidden; while the mode is on, the
+    // app's active look (accent 16 % plate, accent mark, 10 x 2 accent bar under it; Designer, answer 6).
+    void DrawSideAnnotate(D2D1_RECT_F box,Motion::InteractionVisual v,bool focused){
+        namespace G=Sidebar::Glyph;const auto a=Design::Accent::Get();const bool reduced=motion&&motion->ReducedMotion();
+        if(annotateActive)FillBox(box,Design::Radius::control,D2D1::ColorF(a.r,a.g,a.b,.16f));
+        else{const float fill=Sidebar::Look::toolHover*std::clamp(v.hover+v.press,0.f,1.f)*(Enabled('N')?1.f:0.f);if(fill>0)White(box,Design::Radius::control,fill);}
+        if(focused)FocusRing(box,Design::Radius::control);
+        auto& g=pathGlyphs[G::annotate];if(!g&&factory)g=DialogKit::SvgGeometry(factory,G::annotate);
+        if(g){const float k=std::min(G::annotateBox/G::annotateW,G::annotateBox/G::annotateH)*Motion::PressScale(v.press,reduced),w=G::annotateW*k,h=G::annotateH*k;
+            const float x=(box.left+box.right-w)/2,y=(box.top+box.bottom-h)/2;D2D1_MATRIX_3X2_F old;target->GetTransform(&old);
+            target->SetTransform(D2D1::Matrix3x2F::Translation(-G::annotateX,-G::annotateY)*D2D1::Matrix3x2F::Scale(k,k)*D2D1::Matrix3x2F::Translation(x,y)*old);
+            brush->SetColor(annotateActive?D2D1::ColorF(a.r,a.g,a.b,1):D2D1::ColorF(1,1,1,annotateDimmed||!Enabled('N')?Design::Text::disabled:Sidebar::Look::glyph));target->FillGeometry(g,brush);target->SetTransform(old);}
+        if(annotateActive){const float cx=(box.left+box.right)/2;FillBox({cx-5,box.bottom+2,cx+5,box.bottom+4},1,D2D1::ColorF(a.r,a.g,a.b,1));}
+    }
     // Tab rows (01 1Q1K-0 / 1Q1C-0 / 1Q17-0; compact 1Q4Z-0): active #3E3E3E, hover white 4 %, rest none.
     void DrawSideTab(const Sidebar::Layout& L,int i,const std::wstring& title,int selected,int hover,int focus,Motion::Time now,D2D1_RECT_F row,float alpha,float labels){
         namespace K=Sidebar::Look;const bool full=L.mode==Sidebar::Mode::Complete;const bool active=i==selected;

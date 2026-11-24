@@ -1408,6 +1408,8 @@ void AnnotationClearAll(std::function<void(bool, std::size_t)> done) {
         });
 }
 bool AnnotationsCompiled() { return true; }
+// #127 column: Annoter greyed (still shown) where the mode cannot start — same rule as the toolbar button's state.
+bool AnnotationButtonDimmed() { if (Ann::s.active) return false; std::wstring why; return !Ann::Available(Active(), &why); }
 void AnnotationSettingsChanged() { Ann::LauncherSync(); }
 // Page menu (PageContextMenu / ShowPageMenu): « Annoter l'élément », « Annoter la sélection », Markdown.
 constexpr int AnnotateElementItem = 0x10010, AnnotateSelectionItem = 0x10011, AnnotateMarkdownItem = 0x10012;
@@ -1460,6 +1462,7 @@ bool AnnotationPageMessage(const std::shared_ptr<Tab>&, ICoreWebView2WebMessageR
 bool AnnotationCommand(int) { return false; }
 bool AnnotationHistoryAvailable() { return false; }
 bool AnnotationsCompiled() { return false; }
+bool AnnotationButtonDimmed() { return false; }
 std::wstring AnnotationStoreRoot() { return L""; }
 void AnnotationOpenConnect(bool) {}
 void AnnotationConnectAgent(AnnotationApp, bool, std::function<void(bool, const std::wstring&)> done) { if (done) done(false, TR(annotation_mode_absent)); }

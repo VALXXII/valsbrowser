@@ -44,19 +44,21 @@ int wmain(int argc, wchar_t** argv) {
     const std::vector<std::wstring> titles{L"Planète — Le Monde", L"VALXXII/browser · GitHub", L"Boîte de réception (3)", L"Météo Paris — 12°, nuageux", L"Browser Design — Paper"};
     const std::vector<std::shared_ptr<const FaviconImage>> icons{Tile(0xFFFFFF), Tile(0xF0F0F0, true), Tile(0xE24B3B), Tile(0xFFCC33), Tile(0x111111)};
     std::ofstream boxes(std::filesystem::path(out + L"\\boxes.txt"));
+    int selected = 0;   // the active row
     auto shot = [&](const wchar_t* name, auto setup, int hover = 0, int focus = 0, int count = 5, bool editing = false) {
         Chrome c; Check(SUCCEEDED(c.InitOffscreen(root, 96, 1178, 738)), "offscreen chrome");
         c.sidebar = true; c.keyboardModality = true;
         c.SetProfileButton(L"Travail", ProfileIcons::Fill(L"briefcase"), D2D1::ColorF(0x6F / 255.f, 0xD0 / 255.f, 0x87 / 255.f), false);
         c.address = AddressBar::Describe(L"https://lemonde.fr/planete", false);
         c.bandShown = true;
+        c.annotateShown = true;   // the annotation mode is in every build Val tries (dev / preview): Annoter is the first tool
         for (int i = 0; i < 5; ++i) { Chrome::BandItem b; b.id = 100 + i; b.title = titles[i]; b.tip = titles[i]; b.image = icons[i]; c.bandItems.push_back(b); }
         std::vector<std::wstring> t(titles); std::vector<std::shared_ptr<const FaviconImage>> f(icons);
-        while ((int)t.size() < count) { t.push_back(L"Onglet " + std::to_wstring(t.size() + 1)); f.push_back(icons[t.size() % 5]); }
+        while ((int)t.size() < count) { t.push_back(editing ? std::wstring() : L"Onglet " + std::to_wstring(t.size() + 1)); f.push_back(editing ? nullptr : icons[t.size() % 5]); }   // 06: a new tab page (no title, globe)
         t.resize(count); f.resize(count);
         c.SetFavicons(f); c.sideHome.assign(count, false); c.sideDetails.assign(count, L"github.com");
         setup(c);
-        c.Paint(t, 0, L"https://lemonde.fr/planete", editing, hover, focus);
+        c.Paint(t, selected, L"https://lemonde.fr/planete", editing, hover, focus);
         Check(SUCCEEDED(c.SavePng((out + L"\\" + name + L".png").c_str())), "snapshot");
         const auto& L = c.side;
         char line[256]; std::snprintf(line, sizeof line, "%ls page %.1f %.1f %.1f %.1f overlay %d column %.1f\n", name, L.page.left, L.page.top, L.page.right, L.page.bottom, c.sidebarOverlay ? 1 : 0, c.sidebarOverlay ? c.sideOver.column : c.sidebarColumn);
@@ -86,7 +88,9 @@ int wmain(int argc, wchar_t** argv) {
     // 05 Glisser: row 4 dragged up, landing after row 1.
     shot(L"05-glisser", [](Chrome& c) { c.sidebarDrag = 3; c.sidebarDragY = 186; c.sidebarInsert = 1; });
     // 06 Nouvel onglet: the field in editing.
-    shot(L"06-nouvel-onglet", [](Chrome& c) { c.addressEditing = true; c.sideHome.back() = true; }, 0, 'L', 5, true);
+    selected = 5;   // 06 (corrected): the new tab is a real row (globe, « Nouvel onglet ») after the others, active
+    shot(L"06-nouvel-onglet", [](Chrome& c) { c.addressEditing = true; c.sideHome.back() = true; }, 0, 'L', 6, true);
+    selected = 0;
     // 07 Téléchargements: the tool latched while its drawer is open.
     shot(L"07-telechargements", [](Chrome& c) { c.latched = 'D'; });
     shot(L"10-compact-telechargements", [](Chrome& c) { c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.sidebarTitles = 0; c.latched = 'D'; });
@@ -94,6 +98,20 @@ int wmain(int argc, wchar_t** argv) {
     shot(L"x-grille-2-rangees", [&](Chrome& c) { for (int i = 5; i < 14; ++i) { Chrome::BandItem b; b.id = 100 + i; b.title = L"Favori"; b.tip = L"Favori"; b.image = icons[i % 5]; c.bandItems.push_back(b); } });
     shot(L"x-liste-longue", [](Chrome& c) { c.sidebarScroll = 200; }, 0, 0, 30);
     shot(L"x-toujours-vide", [](Chrome& c) { c.bandItems.clear(); });
+    // Annoter where the mode cannot start (a live site with #125, the new tab page…): greyed, still there; and the mode on.
+    shot(L"x-annoter-grise", [](Chrome& c) { c.annotateDimmed = true; });
+    shot(L"x-annoter-actif", [](Chrome& c) { c.annotateActive = true; });
+    {   // Four tools in both modes, Annoter first (Paper 01 1Q0B-0 / 02 1Q3U-0), at 70 % / greyed.
+        Chrome c; Check(SUCCEEDED(c.InitOffscreen(root, 96, 1178, 738)), "offscreen chrome (tools)");
+        c.sidebar = true; c.annotateShown = true; c.Paint(titles, 0, L"", false, 0, 0);
+        Check(c.sideTools.size() == 4 && c.sideTools[0] == 'N' && c.Hit(36, 714) == 'N', "complete: Annoter is the first of four tools");
+        int lit = 0; for (int y = 706; y < 722; ++y) for (int x = 28; x < 44; ++x) lit = std::max(lit, Gray(c.SurfacePixel((float)x, (float)y)));
+        Check(lit > 0x17 + (int)((255 - 0x17) * .6f), "Annoter's mark at about 70 % white");
+        c.annotateDimmed = true; c.Paint(titles, 0, L"", false, 0, 0); int dim = 0; for (int y = 706; y < 722; ++y) for (int x = 28; x < 44; ++x) dim = std::max(dim, Gray(c.SurfacePixel((float)x, (float)y)));
+        Check(dim > 0x17 + 30 && dim < lit - 40, "greyed Annoter stays visible, dimmer");
+        c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.annotateDimmed = false; c.Paint(titles, 0, L"", false, 0, 0);
+        Check(c.side.tools.size() == 4 && c.Hit(28, (c.side.tools[0].top + c.side.tools[0].bottom) / 2) == 'N', "compact: Annoter first of four tools");
+    }
     std::printf("sidebar_render_test: %d checks passed\n", checks);
     return 0;
 }

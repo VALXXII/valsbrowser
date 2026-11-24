@@ -277,7 +277,7 @@ constexpr long long AccessibleToolbarKey=0x10001; // = AccessibleToolbar (declar
 extern Accessibility::Bridge accessibility;
 NativeChrome::BookmarkPopover::Popover bookmarkPopover; NativeChrome::BookmarkToast::Toast bookmarkToast; NativeChrome::BookmarksUI::Drawer bookmarksDrawer;
 // Panneau latéral (#127): section « Panneau latéral » below (src/sidebar.h, Chrome::BuildSidebar / PaintSidebar).
-constexpr int SidebarToggleCommand=NativeChrome::Chrome::SidebarToggleId;RECT RegionScreen(int id);void UpdateFont();void SidebarPrepare();void ToggleSidebar();void SidebarHoles();bool SidebarDragMove(POINT point);void SidebarDragEnd(bool commit);
+constexpr int SidebarToggleCommand=NativeChrome::Chrome::SidebarToggleId;bool AnnotationButtonDimmed();RECT RegionScreen(int id);void UpdateFont();void SidebarPrepare();void ToggleSidebar();void SidebarHoles();bool SidebarDragMove(POINT point);void SidebarDragEnd(bool commit);
 bool SyncBookmarkChrome();void BookmarksChanged();void ToggleBookmarksDrawer(bool keyboard);bool BookmarkedSite(const std::wstring& site);long long AccessibleBandItemKey(int region);
 // Self-update host hooks (no-ops in unstamped builds).
 std::wstring AboutTitle(){
@@ -4631,6 +4631,7 @@ void SidebarPrepare(){
     if(sidebarFold.target!=SBar::Mode::Compact||moving)sidebarHover.Close();
     chrome.sidebarMode=moving?SBar::Mode::Complete:sidebarFold.target;
     chrome.sidebarColumn=sidebarFold.ColumnWidth(now);chrome.sidebarTitles=sidebarFold.Titles(now);chrome.sidebarOverlay=sidebarHover.open;
+    chrome.annotateDimmed=chrome.annotateShown&&AnnotationButtonDimmed();
     chrome.sideHome.clear();chrome.sideDetails.clear();for(auto& t:pages){chrome.sideHome.push_back(t->home);chrome.sideDetails.push_back(t->home?std::wstring():BareDomain(t->uri));}
     // The selected tab's row is brought into the list's view (a new tab, Ctrl+Tab, Ctrl+1…9).
     if(current!=sidebarShownTab&&current>=0&&current<(int)pages.size()){sidebarShownTab=current;const auto L=SBar::Compute(chrome.SideInput(chrome.sidebarOverlay?SBar::Mode::Complete:chrome.sidebarMode,(int)pages.size()));chrome.sidebarScroll=SBar::ScrollToShow(L,current);}
