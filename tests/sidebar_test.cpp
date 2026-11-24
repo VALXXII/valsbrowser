@@ -1,0 +1,346 @@
+// Panneau latéral (#127): geometry, fold and hover timers of src/sidebar.h against the Paper values (page « #127 — Panneau
+// latéral (A finale validée) »: A finale 01-07, Val's compact retouch « Favoris · fenêtre étroite », the bookmarks grid
+// B « Favoris · 10 / 20 / 40 replié / déplié / panneau 300 / 360 / compact, 40 ») and Val's 4 DIP page inset. The client
+// is the artboard's inside (1180 x 740 with its 1 DIP border: 1178 x 738).
+#include "../src/sidebar.h"
+#include "../src/tab-motion.h"   // #127 parity 3: the strip's open / close model on the rows
+#include <cstdio>
+#include <cmath>
+
+namespace S = NativeChrome::Sidebar;
+static int failures = 0;
+static void Check(bool ok, const char* what) { if (!ok) { std::printf("FAIL %s\n", what); ++failures; } }
+static bool Near(float a, float b, float e = .01f) { return std::fabs(a - b) <= e; }
+static bool Same(const S::Box& b, float l, float t, float r, float bo) { return Near(b.left, l) && Near(b.top, t) && Near(b.right, r) && Near(b.bottom, bo); }
+static S::Input Complete(int bookmarks, int tabs = 5) { S::Input in; in.mode = S::Mode::Complete; in.width = 1178; in.height = 738; in.grid = bookmarks >= 0; in.bookmarks = bookmarks < 0 ? 0 : bookmarks; in.tabs = tabs; in.tools = 4; return in; }
+static S::Input Compact(int bookmarks, int tabs = 5) { S::Input in = Complete(bookmarks, tabs); in.mode = S::Mode::Compact; return in; }
+
+int main() {
+    // ---- 01 Complet: 5 bookmarks, 5 tabs, 4 tools; the page 4 from the right and bottom (Val).
+    {
+        const auto L = S::Compute(Complete(5));
+        Check(Near(L.column, 248) && Near(L.bar, 40), "complete column 248, window bar 40 (1Q0A-0, 1Q00-0)");
+        Check(Same(L.profile, 8, 8, 40, 40) && L.profilePlate, "profile 32 at 8,8 with its plate (1V1O-0)");
+        Check(Same(L.back, 46, 8, 78, 40) && Same(L.forward, 85, 8, 117, 40) && Same(L.hairline, 81, 19, 82, 29), "Back / Forward pair (1VCX-0)");
+        Check(Same(L.reload, 123, 8, 155, 40) && Same(L.toggle, 212, 10, 240, 38), "Reload and the fold button (1VD5-0, 1Q2D-0)");
+        Check(L.addressInColumn && Same(L.address, 8, 50, 240, 82) && Same(L.lock, 16, 59, 30, 73) && Same(L.copy, 198, 59, 212, 73) && Same(L.star, 218, 59, 232, 73), "address in the column (1Q26-0)");
+        Check(L.grid.tiles.size() == 5 && Same(L.grid.tiles[0], 8, 92, 49.6f, 132) && Near(L.grid.tiles[4].right, 240) && L.gridToggle.Empty() && Same(L.gridBlock, 8, 92, 240, 132), "5 bookmarks: one row, nothing to fold (1Q1Q-0)");
+        Check(Same(L.line, 12, 142, 236, 143) && Same(L.tabs[0], 8, 153, 240, 185) && Near(L.tabs[1].top, 187) && Same(L.newTab, 8, 323, 240, 355), "tabs under the grid (1Q0R-0)");
+        Check(Same(L.footerLine, 8, 689, 240, 690) && L.tools.size() == 4 && Same(L.tools[0], 8, 698, 64.5f, 730), "tools (1Q0B-0)");
+        Check(Same(L.page, 248, 40, 1174, 734), "page 4 from the right and bottom (Val's inset)");
+        Check(Same(L.close, 1140, 6, 1172, 34) && Same(L.maximize, 1104, 6, 1136, 34) && Same(L.minimize, 1068, 6, 1100, 34), "window buttons 2 inside the zone's 4");
+        Check(Near(L.drawerTop, 40), "drawers from y 40 (07 1TNA-0)");
+        Check(Same(S::CloseIn(L.tabs[1]), 212, 191, 236, 215) && Same(S::FaviconIn(L.tabs[0], S::Mode::Complete), 16, 161, 32, 177), "row close and favicon");
+        Check(S::RowAt(L, 20, 160) == 0 && S::RowAt(L, 20, 330) == 5 && S::RowAt(L, 20, 186) == -1, "rows hit-test");
+    }
+    // An open drawer (Val, B): the page stops 4 before the drawer's column.
+    {
+        auto in = Complete(5); in.reserve = 268; const auto L = S::Compute(in);
+        Check(Same(L.page, 248, 40, 906, 734), "drawer open: the page ends 4 before it (07 1QLM-0)");
+    }
+    // ---- Grid B.
+    {   // 10: two rows of 5, nothing hidden, no toggle row (« Favoris · 10 »).
+        const auto L = S::Compute(Complete(10));
+        Check(L.grid.tiles.size() == 10 && Same(L.grid.tiles[5], 8, 138, 49.6f, 178) && L.gridToggle.Empty() && Near(L.line.top, 188), "10: two rows, no toggle (1VIT-0)");
+    }
+    {   // 20 folded: two rows + « Tous les favoris (20) » (24 high, 6 under the rows).
+        const auto L = S::Compute(Complete(20));
+        Check(L.grid.tiles.size() == 10 && !L.gridOpen && Same(L.gridToggle, 8, 184, 240, 208) && Same(L.gridBlock, 8, 92, 240, 208) && Near(L.line.top, 218), "20 folded: 10 tiles + the toggle row (1WG3-0, 1WKW-0)");
+        Check(!L.grid.Scrolls() && L.grid.bar.Empty(), "folded: no scroll");
+    }
+    {   // 40 folded: the same as 20.
+        const auto L = S::Compute(Complete(40));
+        Check(L.grid.tiles.size() == 10 && Same(L.gridToggle, 8, 184, 240, 208), "40 folded like 20 (1VVH-0)");
+    }
+    {   // 40 unfolded: 5 rows (224) then scrolling, the « Réduire » row 6 under, the tabs follow.
+        auto in = Complete(40); in.gridOpen = true; const auto L = S::Compute(in);
+        Check(L.gridOpen && L.grid.tiles.size() == 40 && Same(L.grid.view, 8, 92, 240, 316) && Same(L.gridToggle, 8, 322, 240, 346) && Same(L.manage, 8, 352, 240, 380) && Near(L.gridBlock.Height(), 288), "40 unfolded: 224 viewport + Réduire + « Gérer les favoris » (6 under, 28), 288 (1Z5A-0)");
+        Check(Near(L.grid.content, 8 * 40 + 7 * 6) && Near(L.grid.maxScroll, 362 - 224) && L.grid.Scrolls(), "8 rows scroll under the viewport");
+        Check(Same(L.grid.bar, 237, 96, 240, 96 + 216 * 224 / 362.f) , "scroll bar 3 wide, 4 from the top, proportional (1WRC-0)");
+        Check(Near(L.line.top, 390), "tabs under the unfolded grid");
+        Check(S::Compute(Complete(40)).manage.Empty() && S::Compute(Complete(20)).manage.Empty(), "folded: no « Gérer les favoris »");
+        in.gridScroll = 1e6f; const auto E = S::Compute(in);
+        Check(Near(E.grid.scroll, E.grid.maxScroll) && Near(E.grid.tiles.back().bottom, E.grid.view.bottom) && Near(E.grid.bar.bottom, E.grid.view.bottom - 4), "scrolled to the end");
+        Check(S::TileAt(L.grid, 20, 100) == 0 && S::TileAt(L.grid, 20, 320) == -1 && S::TileAt(E.grid, 20, 100) == 15, "tiles hit-test inside the viewport only, scrolled");
+    }
+    {   // A short window: the tabs keep at least half of the shared height.
+        auto in = Complete(40); in.gridOpen = true; in.height = 500; const auto L = S::Compute(in);
+        const float shared = (L.footerLine.top - 10) - 92;
+        Check(L.grid.view.Height() <= shared / 2 - 30 + .01f && L.grid.view.Height() < 224 && L.grid.Scrolls(), "short window: the grid gives way to the tabs (1VYN-0 note)");
+    }
+    {   // 300 and 360 wide columns: 6 then 7 per row (« panneau 300 / 360 »).
+        Check(S::Columns(232) == 5 && S::Columns(284) == 6 && S::Columns(344) == 7, "about 42 DIP tiles: 5 / 6 / 7 per row (1W1T-0, 1W4Z-0)");
+    }
+    {   // « Toujours » with no bookmark: one full row tile.
+        const auto L = S::Compute(Complete(0));
+        Check(L.emptyGrid && L.tiles.size() == 1 && Same(L.tiles[0], 8, 92, 240, 132), "empty grid: one full-width tile");
+        const auto N = S::Compute(Complete(-1, 1));
+        Check(N.gridBlock.Empty() && Near(N.line.top, 92), "no grid: the tabs come up");
+    }
+    {   // Many tabs scroll inside the view (answer 4).
+        auto in = Complete(5, 40); in.scroll = 1e6f; const auto L = S::Compute(in);
+        Check(L.maxScroll > 0 && Near(L.scroll, L.maxScroll) && Near(L.newTab.bottom, L.tabsView.bottom), "tabs scroll, clamped");
+        in.scroll = 0; const auto T = S::Compute(in);
+        Check(Near(S::ScrollToShow(T, 0), 0) && S::ScrollToShow(T, 39) > 0, "scroll to a tab");
+    }
+    // ---- Compact (Val's retouch, reference « Favoris · fenêtre étroite » 1WC7-0).
+    {
+        const auto L = S::Compute(Compact(5));
+        Check(Near(L.column, 40) && Near(L.bar, 32), "compact column 40, window bar 32 (1WC7-0, 1WBH-0)");
+        Check(Same(L.profile, 4, 4, 36, 30) && !L.profilePlate && Same(L.toggle, 6, 36, 34, 64), "profile 32 x 26 without its plate, the fold button 28 (1WDY-0)");
+        Check(L.tiles.size() == 5 && !L.more && Same(L.tiles[0], 0, 76, 40, 112) && Near(L.tiles[4].bottom, 272), "five 40 x 36 tiles, gap 4 (1WDI-0)");
+        Check(Same(L.line, 0, 284, 40, 285) && Same(L.tabs[0], 0, 293, 40, 329) && Near(L.tabs[1].top, 331), "tabs 12 under the grid (1WCO-0)");
+        Check(L.tools.size() == 4 && Same(L.footerLine, 0, 585, 40, 586) && Same(L.tools[0], 0, 594, 40, 626) && Same(L.tools[3], 0, 702, 40, 734), "tools 40 x 32, gap 4 (1WC8-0)");
+        Check(!L.navPlates && Same(L.back, 44, 0, 76, 32) && Same(L.hairline, 79, 11, 80, 21) && Same(L.forward, 83, 0, 115, 32) && Same(L.reload, 121, 0, 153, 32), "window bar: the pair and Reload, 6 apart, no plates (1WBR-0)");
+        Check(!L.addressInColumn && !L.addressPlate && Same(L.address, 159, 0, 519, 32) && Same(L.lock, 169, 10, 181, 22) && Near(L.text.left, 187) && L.copy.Empty(), "address 360 x 32 without background (1WOG-0)");
+        Check(Same(L.page, 40, 32, 1174, 734) && Same(L.close, 1140, 2, 1172, 30), "compact page under the 32 DIP bar, 4 in (1WBA-0)");
+        Check(Near(L.drawerTop, 32) && Near(L.drawerTop, L.page.top), "compact drawers at the page's level, under the 32 DIP bar (Val; Paper 11 had 25)");
+        Check(Near(S::FaviconIn(L.tabs[0], S::Mode::Compact).left, 12), "favicon centred");
+    }
+    {   // More than five: four, then « » » (« compact, 40 »), and its popover with all of them.
+        const auto L = S::Compute(Compact(40));
+        Check(L.tiles.size() == 5 && L.more, "compact 40: 4 tiles + « » » (1WAI-0)");
+        const auto P = S::ComputePopover(L.column, L.tiles[4], 40, 0, 738);
+        Check(Same(P.box, 44, 236, 292, 236 + 2 + 16 + 224 + 43) && Same(P.divider, 53, 477, 283, 478) && Same(P.manage, 53, 484, 283, 512) && P.grid.tiles.size() == 40 && P.grid.columns == 5 && Near(P.grid.tiles[0].Width(), (230 - 4 * 6) / 5.f) && Near(P.grid.view.Width(), 230) && Near(P.grid.view.Height(), 224) && P.grid.Scrolls(), "popover 248, 4 right of the column, top on « » », 5 rows then scroll (1WSC-0)");
+        const auto low = S::ComputePopover(L.column, S::Box{0, 700, 40, 736}, 40, 0, 738);
+        Check(Near(low.box.bottom, 734), "popover kept inside the window");
+        Check(S::Compute(Compact(6)).more && !S::Compute(Compact(5)).more && S::Compute(Compact(3)).tiles.size() == 3, "« » » only beyond five");
+    }
+    {   // Narrow compact address stops before the window buttons.
+        auto in = Compact(5); in.width = 560; in.height = 400; const auto L = S::Compute(in);
+        Check(Near(L.address.right, L.minimize.left - 4) && L.address.Width() < 360, "narrow window: the address shrinks");
+    }
+    // ---- 03: the complete column over the compact page: the zone keeps its compact bar and left.
+    {
+        auto in = Complete(5, 3); in.zoneLeft = 40; in.zoneSet = true; in.zoneMode = S::Mode::Compact; const auto L = S::Compute(in);
+        Check(Near(L.column, 248) && Same(L.page, 40, 32, 1174, 734) && Near(L.bar, 32), "over the page: the page does not move (1QHV-0)");
+    }
+    // Annotation band (answer 6): at the top of the page zone, the page 32 lower.
+    {
+        auto in = Complete(5, 1); in.band = 32; const auto L = S::Compute(in);
+        Check(Same(L.band, 248, 40, 1174, 72) && Near(L.page.top, 72), "annotation band over the page's width");
+    }
+    // Five tools with « Son des sites » (answer 7).
+    {
+        auto in = Complete(5); in.tools = 5; const auto L = S::Compute(in);
+        Check(L.tools.size() == 5 && Near(L.tools[4].right, 240) && Near(L.tools[0].Width(), (232 - 8) / 5.f), "five tools share the width");
+    }
+    // Drag: drop slot follows row middles.
+    {
+        const auto L = S::Compute(Complete(5));
+        Check(S::DropSlot(L, 150) == 0 && S::DropSlot(L, 170) == 0 && S::DropSlot(L, 205) == 1 && S::DropSlot(L, 900) == 4, "drop slot by row middles");
+    }
+    // ---- Auto compact (answer 11): the complete column (248) still leaves the page about 560 at 800; the compact
+    // column's new width (40) does not move the threshold.
+    Check(S::Effective(S::Mode::Complete, 799) == S::Mode::Compact && S::Effective(S::Mode::Complete, 800) == S::Mode::Complete && S::Effective(S::Mode::Compact, 1600) == S::Mode::Compact, "compact under 800, the user's choice above");
+    // ---- Fold (motion spec §2): a spring of .35 s for the width; titles out in 80 ms, in over 120 ms past 70 %.
+    {
+        S::Fold f; f.Set(S::Mode::Compact, 1000, true);
+        Check(f.Moving(1000) && Near(f.ColumnWidth(1000), 248), "fold starts at 248");
+        Check(Near(f.Titles(1040), .5f) && Near(f.Titles(1080), 0), "titles fade out in 80 ms");
+        Check(f.CompleteLayout(1050) && !f.CompleteLayout(1090), "the complete layout for the titles' 80 ms, then the compact one");
+        const float w100 = f.ColumnWidth(1100), w200 = f.ColumnWidth(1200);
+        Check(w100 < 248 && w200 < w100 && w200 > 40, "the width follows the spring (no fixed duration)");
+        float low = 999; for (int t = 1000; t <= 2000; t += 5) low = std::min(low, f.ColumnWidth(t));
+        Check(Near(low, 40, .01f) && !f.Moving(1900) && Near(f.ColumnWidth(1900), 40), "critically damped: never under 40, settled within a second");
+        // Interrupted: unfolding mid-way starts from the presented width and velocity (no jump).
+        S::Fold r; r.Set(S::Mode::Compact, 0, true); const float at = r.ColumnWidth(120); r.Set(S::Mode::Complete, 120, true);
+        Check(Near(r.ColumnWidth(120), at, .01f) && r.CompleteLayout(121), "reversed mid-way: from where it is");
+        for (int t = 120; t <= 1500; t += 10) r.Update(t);
+        S::Fold u; u.Set(S::Mode::Compact, 0, false); u.Set(S::Mode::Complete, 2000, true);
+        float firstTitle = -1; for (int t = 2000; t <= 3000; t += 5) { u.Update(t); if (firstTitle < 0 && u.Titles(t) > 0) firstTitle = (u.ColumnWidth(t) - 40) / (248 - 40.f); }
+        Check(firstTitle >= .69f && firstTitle < .9f, "unfolding: titles start fading in once the width passes 70 %");
+        S::Fold g; g.Set(S::Mode::Compact, 0, false);
+        Check(!g.Moving(0) && Near(g.ColumnWidth(0), 40) && Near(g.Titles(0), 0), "reduced motion: at once");
+        // Thrown (the edge released under 160 with momentum): damping .85 carries the pointer's speed.
+        S::Fold th; th.Set(S::Mode::Compact, 0, true, -6.f, .85f); Check(th.ColumnWidth(30) < S::Fold{}.ColumnWidth(30) - 1 || th.ColumnWidth(30) < 240, "a thrown fold moves at the gesture's speed");
+    }
+    // ---- Hover (400 ms).
+    {
+        S::Hover v; v.Enter(0);
+        Check(!v.Due(399) && v.Due(400), "opens after 400 ms of rest");
+        v.Open(); v.Leave(); Check(!v.open, "closes when the pointer leaves");
+        S::Hover x; x.Open(); x.holds = 1; x.Leave(); Check(x.open, "a held column stays open");
+    }
+    // ---- Resize (Paper « Redimensionner · 1 à 4 »): 220 .. 360, compact under 160, back at 220; the handle; the re-flow.
+    {
+        namespace R = S::Resize;
+        Check(R::At(100).mode == S::Mode::Compact && R::At(159.9f).mode == S::Mode::Compact, "under 160: compact");
+        Check(R::At(160).mode == S::Mode::Complete && Near(R::At(160).width, 220) && Near(R::At(200).width, 220), "back past 160: opens at 220 (minimum)");
+        Check(Near(R::At(250).width, 250) && Near(R::At(359).width, 359) && Near(R::At(600).width, 360), "220 .. 360, a hard stop at 360");
+        // Motion spec §5: 1:1 inside the bounds, a rubber band past them (progressive: it follows less and less).
+        Check(Near(R::Shown(300), 300) && R::Shown(380) > 360 && R::Shown(380) < 380 && (R::Shown(440) - R::Shown(400)) < (R::Shown(400) - R::Shown(360)) && R::Shown(200) < 220 && R::Shown(200) > 200 && R::Shown(100) > R::Shown(50), "rubber band past 360 and under 220");
+        Check(R::Shown(500) - 360 < 140 * .55f && R::Shown(5000) < 360 + 120, "the resistance grows with the distance (bounded by 120)");
+        // The release: the projected width decides (position + momentum, deceleration .99).
+        Check(Near(R::Project(1000), 99, .5f) && Near(R::Project(-500), -49.5f, .5f), "projection = (v / 1000) x .99 / .01");
+        Check(R::Released(230, -1000).mode == S::Mode::Compact, "a quick flick left folds it even released at 230");
+        Check(R::Released(230, 0).mode == S::Mode::Complete && Near(R::Released(230, 0).width, 230) && !R::Released(230, 0).springBack, "released at 230 without momentum: it stays");
+        Check(R::Released(150, 0).mode == S::Mode::Compact && R::Released(400, 0).springBack && Near(R::Released(400, 0).width, 360) && R::Released(200, 0).springBack && Near(R::Released(200, 0).width, 220), "under 160: compact; past a bound: springs back to it");
+        Check(R::Dragging(100, true).mode == S::Mode::Compact && R::Dragging(170, true).mode == S::Mode::Complete && R::Dragging(100, false).mode == S::Mode::Complete, "dragging: a compact one opens past 160; a complete one stays until the release");
+        S::Input in; in.grid = true; in.bookmarks = 40; in.tabs = 5;
+        const float widths[] = {220, 248, 296, 300, 360}; const int cols[] = {4, 5, 6, 6, 7};
+        for (int i = 0; i < 5; ++i) { in.panel = widths[i]; const auto L = S::Compute(in);
+            Check(Near(L.column, widths[i]) && L.grid.columns == cols[i], "grid re-flow: 4 / 5 / 6 / 7 per row at 220 / 248 / 296 / 360");
+            Check(Near(L.page.left, widths[i]) && Near(L.address.right, widths[i] - 8) && Near(L.tools.back().right, widths[i] - 8), "the column and the page follow the width"); }
+        in.panel = 300; { const auto L = S::Compute(in); Check(Near(L.grid.tiles[0].Width(), (284 - 5 * 6) / 6.f, .01f) && Near(L.grid.tiles[0].Height(), 40), "300: six tiles of 42.3 x 40 (Paper 1W1T-0: 42 x 40)"); }
+        in.panel = 100; Check(Near(S::Compute(in).column, 220), "a stored width is clamped");
+        in.panel = 248; const auto L = S::Compute(in);
+        Check(Same(R::Handle(L.column, L.page), 242, 40, 248, 736), "handle: 6 DIP inside the edge, along the page");
+        in.mode = S::Mode::Compact; const auto K = S::Compute(in);
+        Check(Same(R::Handle(K.column, K.page), 34, 32, 40, 736), "compact handle along its page");
+        S::Fold f; f.panel = 300; f.Set(S::Mode::Complete, 0, false); Check(Near(f.ColumnWidth(0), 300), "the fold opens to the chosen width");
+        f.Set(S::Mode::Compact, 1000, true); Check(Near(f.ColumnWidth(1000), 300) && Near(f.ColumnWidth(2500), 40), "and folds from it");
+    }
+    // ---- Row motion (#127 parity 3): the strip's TabStripMotion on the vertical axis (Sidebar::ShownRow).
+    {
+        namespace M = NativeChrome::Motion;
+        const auto L = S::Compute(Complete(-1, 30)); const auto m = S::Rows(L.mode); const float pitch = m.row + m.gap;
+        Check(Near(m.lead, 2) && Near(m.row, 32) && Near(m.gap, 2) && Near(S::Rows(S::Mode::Compact).row, 36) && Near(S::Rows(S::Mode::Compact).gap, 2), "rows: 32 + 2 (complete), 36 + 2 (compact)");
+        for (int i : {0, 3, 29}) Check(Same(S::ShownRow(L, i * pitch, 1, L.scroll), L.tabs[i].left, L.tabs[i].top, L.tabs[i].right, L.tabs[i].bottom), "at rest the presented rows are the layout's");
+        Check(Same(S::ShownRow(L, 30 * pitch, 1, L.scroll), L.newTab.left, L.newTab.top, L.newTab.right, L.newTab.bottom), "« + Nouvel onglet » after the last slot");
+        // The model's scroll range equals the column's (its view leaves out the lead and the « + » row).
+        auto deep = Complete(-1, 30); deep.scroll = 1e6f; const auto D = S::Compute(deep);
+        M::TabStripMotion sm; std::vector<unsigned> keys; for (unsigned k = 1; k <= 30; ++k) keys.push_back(k);
+        const M::Time t0 = M::Now(); const float view = D.tabsView.Height() - m.lead - m.row;
+        sm.Sync(keys, {m.row, D.scroll, view, true}, m.gap, t0);
+        Check(Near(sm.Sample(t0).scroll, D.scroll, .05f) && Near(D.scroll, D.maxScroll), "presented scroll = the column's, even at the end of the list");
+        // Opening: the new row grows from nothing and pushes the rows under it; settled after the spring.
+        M::TabStripMotion om; std::vector<unsigned> five{1, 2, 3, 4, 5}; om.Sync(five, {m.row, 0, 600, false}, m.gap, t0);
+        std::vector<unsigned> six{1, 2, 9, 3, 4, 5};
+        Check(om.Sync(six, {m.row, 0, 600, false}, m.gap, t0), "opening a tab starts motion");
+        auto f = om.Sample(t0); Check(f.items.size() == 6 && f.items[2].key == 9 && Near(f.items[2].presence, 0) && Near(f.items[3].slot, 2 * pitch) && Near(f.items[2].opacity, 0), "opening row: no height, no content, the next row still in place");
+        f = om.Sample(t0 + M::Milliseconds(120)); Check(f.items[2].presence > .2f && f.items[2].presence < 1 && f.items[3].slot > 2 * pitch && f.items[3].slot < 3 * pitch, "mid-open: it grows and pushes the rows under it");
+        f = om.Sample(t0 + M::Milliseconds(1500)); Check(Near(f.items[2].presence, 1) && Near(f.items[3].slot, 3 * pitch) && !f.moving, "settled: full height, rows one pitch apart");
+        // Closing: a ghost stays in its old place (index -1), blurs out in 150 ms while its slot collapses.
+        const M::Time t1 = t0 + M::Milliseconds(2000); std::vector<unsigned> back{1, 2, 3, 4, 5};
+        Check(om.Sync(back, {m.row, 0, 600, false}, m.gap, t1), "closing a tab starts motion");
+        f = om.Sample(t1 + M::Milliseconds(60)); bool ghost = false; for (auto& it : f.items) if (it.key == 9) ghost = it.index < 0 && it.exit > 0 && it.exit < 1 && it.presence < 1 && Near(it.slot, 2 * pitch);
+        Check(ghost && f.items.back().index == 4, "closing row: a ghost in its old place, blurring out, the live rows renumbered");
+        f = om.Sample(t1 + M::Milliseconds(1500)); Check(f.items.size() == 5 && Near(f.items[2].slot, 2 * pitch) && !f.moving, "after the close: the ghost is gone, the rows glided up");
+        // Reduced motion: geometry snaps; an opening row cross-fades (150 ms), a closing one goes at once.
+        M::TabStripMotion rm; rm.SetReducedMotion(true); rm.Sync(five, {m.row, 0, 600, false}, m.gap, t0); rm.Sync(six, {m.row, 0, 600, false}, m.gap, t0);
+        f = rm.Sample(t0); Check(Near(f.items[2].presence, 1) && Near(f.items[2].fill, 0) && Near(f.items[3].slot, 3 * pitch), "reduced motion: the row is there at once, fading in");
+        f = rm.Sample(t0 + M::Milliseconds(200)); Check(Near(f.items[2].fill, 1), "reduced motion: faded in after 150 ms");
+        rm.Sync(back, {m.row, 0, 600, false}, m.gap, t0 + M::Milliseconds(300)); Check(rm.Sample(t0 + M::Milliseconds(300)).items.size() == 5, "reduced motion: a closed row leaves at once (no ghost)");
+        // A presented row is clipped to its presence (an opening row is a sliver first).
+        Check(Near(S::ShownRow(L, 0, .25f, 0).Height(), 8) && Near(S::ShownRow(L, 0, 2, 0).Height(), 32), "presence scales the row's height (clamped to 1)");
+        // The motion spec's timings (Designer, §1): open .25 s with the content fading in over 120 ms from 40 ms; the column
+        // closes in two beats (content out in 80 ms, then the row folds at .22 s).
+        M::TabMotionParams spec; spec.openResponse = .25f; spec.contentDelay = M::Milliseconds(40); spec.contentFade = M::Milliseconds(120); spec.exit = M::Milliseconds(80); spec.exitThenCollapse = true;
+        M::TabStripMotion cm; cm.SetParams(spec); cm.Sync(five, {m.row, 0, 600, false}, m.gap, t0); cm.Sync(six, {m.row, 0, 600, false}, m.gap, t0);
+        Check(Near(cm.Sample(t0 + M::Milliseconds(30)).items[2].opacity, 0) && cm.Sample(t0 + M::Milliseconds(100)).items[2].opacity > .2f && cm.Sample(t0 + M::Milliseconds(100)).items[2].opacity < 1 && Near(cm.Sample(t0 + M::Milliseconds(170)).items[2].opacity, 1, .02f), "content: hidden 40 ms, then 120 ms of fade");
+        Check(cm.Sample(t0 + M::Milliseconds(100)).items[2].presence > cm.Sample(t0 + M::Milliseconds(60)).items[2].presence && cm.Sample(t0 + M::Milliseconds(60)).items[2].presence > .1f, "the row opens on its spring meanwhile");
+        const M::Time tc = t0 + M::Milliseconds(2000); cm.Sync(back, {m.row, 0, 600, false}, m.gap, tc);
+        auto ghostOf = [&](M::Time at) { for (auto& it : cm.Sample(at).items) if (it.key == 9) return it; return M::TabItem{}; };
+        Check(Near(ghostOf(tc + M::Milliseconds(60)).presence, 1) && ghostOf(tc + M::Milliseconds(60)).exit > .5f, "close: the content fades first (80 ms), the slot holds");
+        Check(ghostOf(tc + M::Milliseconds(160)).presence < .9f && cm.Sample(tc + M::Milliseconds(1500)).items.size() == 5, "then the row folds and leaves");
+        // Apple's spring parameters: damping 1 never overshoots; .85 with a thrown velocity overshoots a little, then settles.
+        M::Spring crit, bouncy; crit.Snap(0); bouncy.Snap(0); crit.Set(100, t0, .3f); bouncy.Throw(100, t0, .3f, .85f, 600);
+        float peakC = 0, peakB = 0; for (int ms = 0; ms <= 1200; ms += 5) { peakC = std::max(peakC, crit.Value(t0 + M::Milliseconds(ms))); peakB = std::max(peakB, bouncy.Value(t0 + M::Milliseconds(ms))); }
+        Check(peakC <= 100.01f && peakB > 100.5f && peakB < 115 && Near(bouncy.Value(t0 + M::Milliseconds(2000)), 100) && !bouncy.Moving(t0 + M::Milliseconds(2000)), "damping 1: no overshoot; .85 thrown: a slight one, then rest");
+        M::Spring held; held.Snap(10); held.Throw(10, t0, .3f, 1, 400); Check(held.Value(t0 + M::Milliseconds(50)) > 10 && Near(held.Value(t0 + M::Milliseconds(1500)), 10), "a thrown velocity carries even with the target where it is (no seam)");
+    }
+    // ---- Vue partagée dans la colonne (Paper « Proposition — Vue partagée dans la colonne (panneau + compact) » 2473-0).
+    // Membership: the top bar's groups (Chrome::tabGroups; tab n joins n + 1 when both share a non-zero group).
+    {
+        using P = S::SplitPos;
+        const auto pos = [](const std::vector<int>& g, int n) { std::vector<P> p; for (const auto& r : S::SplitRows(g, n)) p.push_back(r.pos); return p; };
+        // Two groups and more: a pair (1-2) and three (4-5-6), tabs 0 and 3 outside.
+        const std::vector<int> two{0, 7, 7, 0, 9, 9, 9};
+        Check(pos(two, 7) == std::vector<P>{P::None, P::First, P::Last, P::None, P::First, P::Middle, P::Last}, "two groups: first / last and first / middle / last");
+        const auto rows = S::SplitRows(two, 7);
+        Check(rows[1].group == 7 && rows[2].group == 7 && rows[5].group == 9 && !rows[0].Member() && !rows[3].Member(), "each row knows its group");
+        Check(rows[1].JoinsNext() && !rows[1].JoinsPrevious() && rows[5].JoinsPrevious() && rows[5].JoinsNext() && !rows[6].JoinsNext(), "joins");
+        Check(S::BlockOf(rows, 2).first == 1 && S::BlockOf(rows, 2).count == 2 && S::BlockOf(rows, 4).first == 4 && S::BlockOf(rows, 6).count == 3 && S::BlockOf(rows, 3).first == 3 && S::BlockOf(rows, 3).count == 1, "blocks");
+        Check(pos({3, 3, 4, 4}, 4) == std::vector<P>{P::First, P::Last, P::First, P::Last}, "two groups side by side: two blocks");
+        Check(pos({0, 7, 7, 0, 9, 9, 9}, 7) == pos(two, 7) && pos({7, 7}, 3) == std::vector<P>{P::First, P::Last, P::None} && pos({}, 2) == std::vector<P>{P::None, P::None}, "groups shorter than the tabs (a tab just opened): outside");
+        // Reordering: the tabs move, their groups with them.
+        std::vector<int> g = two; S::MoveRange(g, 4, 3, 0);
+        Check(g == std::vector<int>{9, 9, 9, 0, 7, 7, 0} && pos(g, 7) == std::vector<P>{P::First, P::Middle, P::Last, P::None, P::First, P::Last, P::None}, "reordering: a block moved to the top");
+        g = {7, 7, 0}; S::MoveRange(g, 2, 1, 1);
+        Check(g == std::vector<int>{7, 0, 7} && pos(g, 3) == std::vector<P>{P::Single, P::None, P::Single}, "a tab dropped between two members (top bar): two blocks of one");
+        // Closing a member: three keep two, joined again; a pair dissolves (the host's DissolveSmallGroups: its tabGroups go to 0).
+        g = {0, 9, 9, 9}; g.erase(g.begin() + 2);
+        Check(pos(g, 3) == std::vector<P>{P::None, P::First, P::Last}, "closing the middle one of three: the other two stay joined");
+        Check(pos({0, 0, 0}, 3) == std::vector<P>{P::None, P::None, P::None}, "closing a member of a pair: no block left");
+        // Leaving the split view (Quitter / the last member away): back to no group.
+        Check(pos({0, 0, 0, 9, 9}, 5) == std::vector<P>{P::None, P::None, P::None, P::First, P::Last}, "leaving one split view keeps the other");
+    }
+    // The block's geometry: panel (247H-0) and compact (248B-0).
+    {
+        auto in = Complete(5); const auto plain = S::Compute(in); in.groups = {0, 7, 7, 0, 0}; const auto L = S::Compute(in);
+        Check(plain.blocks.empty() && plain.joints.empty() && L.split.size() == 5, "no group, no block");
+        Check(Same(L.tabs[0], 8, 153, 240, 185), "the row above the block is where it was");
+        Check(L.blocks.size() == 1 && Same(L.blocks[0], 8, 187, 240, 256), "panel: one background #262626, the rows + 2 (69 high)");
+        Check(Same(L.tabs[1], 10, 189, 238, 221) && Same(L.tabs[2], 10, 222, 238, 254), "its rows 2 inside, 32 high, 1 apart (no gap)");
+        Check(L.joints.size() == 1 && Same(L.joints[0], 21, 221, 31, 222), "the 10 x 1 line 13 from the background's left, centred on the favicons (247N-0)");
+        const auto f = S::FaviconIn(L.tabs[2], S::Mode::Complete); Check(Near((f.left + f.right) / 2, 26) && Near(f.left, 18), "favicons 8 into the row, 10 into the background");
+        Check(Near(L.tabs[3].top, 258) && Near(L.newTab.top, plain.newTab.top + 3) && Near(L.content, plain.content + 3), "after the block: 2, the list 3 taller");
+        Check(S::RowAt(L, 30, 200) == 1 && S::RowAt(L, 30, 230) == 2 && S::RowAt(L, 30, 221.5f) == -1, "rows hit-test inside the block (the line is no row)");
+        in.groups = {5, 5, 5, 0, 0}; const auto T = S::Compute(in);
+        Check(Same(T.blocks[0], 8, 153, 240, 255) && Near(T.tabs[0].top, 155) && Near(T.tabs[1].top, 188) && Near(T.tabs[2].top, 221) && T.joints.size() == 2, "three at the top: one background from the list's first row");
+        in.groups = {0, 7, 7, 0, 0}; in.mode = S::Mode::Compact; const auto K0 = S::Compute(Compact(5)); const auto K = S::Compute(in);
+        const float t0 = K0.tabs[0].top;
+        Check(Same(K.tabs[0], 0, t0, 40, t0 + 36) && K.blocks.size() == 1 && Same(K.blocks[0], 0, t0 + 38, 40, t0 + 38 + 73), "compact: the background across the column's 40, around its 34-high rows + 2 (Designer)");
+        Check(Same(K.tabs[1], 2, t0 + 40, 38, t0 + 74) && Same(K.tabs[2], 2, t0 + 75, 38, t0 + 109), "compact: members 36 x 34, 2 inside, 1 apart (Designer)");
+        Check(K.joints.size() == 1 && Same(K.joints[0], 15, t0 + 74, 25, t0 + 75), "compact: the line centred (248F-0)");
+        Check(Near(K.tabs[3].top, K0.tabs[3].top - 1), "compact: after the block, 2 (members 2 shorter each)");
+    }
+    // Reorder (« la paire se déplace d'un bloc »): a member drags its block; nothing lands inside a block.
+    {
+        const auto rows = S::SplitRows({0, 7, 7, 0, 9, 9, 9}, 7);
+        const auto mv = [&](int from, int slot) { return S::BlockMove(rows, from, slot); };
+        Check(mv(0, 3).Moves() && mv(0, 3).first == 0 && mv(0, 3).count == 1 && mv(0, 3).dest == 3 && mv(0, 3).insert == 3, "a free tab moves as before");
+        Check(mv(0, 4).dest == 3 && mv(0, 5).dest == 6 && mv(0, 6).dest == 6, "a free tab never lands inside the block of three: it snaps to its nearer edge");
+        Check(mv(2, 0).first == 1 && mv(2, 0).count == 2 && mv(2, 0).dest == 0 && mv(2, 0).insert == 0, "a member drags its pair up");
+        Check(mv(1, 3).dest == 2 && mv(1, 3).insert == 3, "and down");
+        Check(mv(5, 2).first == 4 && mv(5, 2).count == 3 && mv(5, 2).dest == 3 && mv(5, 2).insert == 3, "halfway into the pair from below: it stays below it");
+        Check(mv(5, 1).dest == 1 && mv(5, 1).insert == 1, "past the pair's top: above it");
+        Check(!mv(4, 6).Moves() && mv(4, 6).insert == 4 && !mv(1, 2).Moves(), "inside its own block: nothing moves, no drop line");
+        bool again = true;
+        for (int from = 0; from < 7; ++from) for (int slot = 0; slot < 7; ++slot) { const auto m = mv(from, slot), r = mv(from, m.insert); again = again && r.dest == m.dest && r.first == m.first && r.insert == m.insert; }
+        Check(again, "the drop line's row gives the same move at the release");
+        std::vector<int> tabs{10, 11, 12, 13, 14, 15, 16}; const auto m = mv(5, 1); S::MoveRange(tabs, m.first, m.count, m.dest);
+        Check(tabs == std::vector<int>{10, 14, 15, 16, 11, 12, 13}, "the block's tabs move together, in order");
+        const auto free = S::SplitRows({}, 5); bool plainMoves = true;
+        for (int from = 0; from < 5; ++from) for (int slot = 0; slot < 5; ++slot) if (slot != from) { const auto p = S::BlockMove(free, from, slot); plainMoves = plainMoves && p.dest == slot && p.count == 1; }
+        Check(plainMoves, "without split view: MoveTab(from, slot) as before");
+    }
+    // « 2 · Survol du menu »: the designated tabs and the right-clicked one.
+    {
+        Check(S::Designated({}, 2, 5).empty(), "no designation: no outline (the source alone is not outlined)");
+        Check(S::Designated({1}, 3, 5) == std::vector<int>{1, 3}, "the target and the right-clicked tab (2492-0, 249C-0)");
+        Check(S::Designated({3, 4}, 0, 5) == std::vector<int>{0, 3, 4} && S::Designated({3}, 3, 5) == std::vector<int>{3} && S::Designated({1}, -1, 5) == std::vector<int>{1}, "a group's members, once each");
+        Check(S::Designated({7}, 1, 5).empty() && S::Designated({2, 9}, 8, 5) == std::vector<int>{2}, "out of range: dropped");
+    }
+    // Mode Focus in the side layouts (Designer 24 nov.; Paper 2091-0 / 20EJ-0): the column hides, the page takes the window
+    // minus 4 (no window bar, no window buttons), the column comes back from `top` (under the banner) over the page.
+    {
+        S::Input in; in.width = 1180; in.height = 740; in.tabs = 5; in.hidden = true;
+        auto L = S::Compute(in);
+        Check(L.hidden && Same(L.page, 4, 4, 1176, 736) && Near(L.bar, 4) && L.band.Empty() && Near(L.drawerTop, 4), "Focus: the page 4 from every edge, drawers from 4");
+        Check(L.close.Empty() && L.maximize.Empty() && L.minimize.Empty(), "Focus: no window buttons");
+        Check(Near(L.column, 248) && Same(L.profile, 8, 8, 40, 40) && Same(L.tabs[0], 8, 103, 240, 135) && Same(L.tools[0], 8, 700, 64.5f, 732), "Focus: the column (when it comes back) as docked, from 0");
+        in.band = 32; in.top = 32; L = S::Compute(in);
+        Check(Same(L.band, 4, 0, 1176, 32) && Same(L.page, 4, 32, 1176, 736) && Near(L.bar, 0) && Near(L.drawerTop, 32), "Focus + annotation: the banner across the top, the page under it (2091-0)");
+        Check(Near(L.top, 32) && Same(L.profile, 8, 40, 40, 72) && Same(L.address, 8, 82, 240, 114) && Same(L.tabs[0], 8, 135, 240, 167) && Near(L.tools[0].bottom, 732) && Near(L.footerLine.top, 691), "Focus + annotation: the column under the banner, its foot at the bottom");
+        in.reserve = 320; L = S::Compute(in);
+        Check(Same(L.page, 4, 32, 856, 736), "Focus: a drawer open, the page stops 4 before it");
+        in.reserve = 0; in.mode = S::Mode::Compact; L = S::Compute(in);
+        { S::Input d = in; d.hidden = false; d.top = 0; d.band = 0; const auto D = S::Compute(d);
+          Check(Near(L.column, 40) && Same(L.page, 4, 32, 1176, 736) && Near(L.profile.top, D.profile.top + 32) && Near(L.tabs[0].top, D.tabs[0].top + 32), "Focus compact: the 40 column under the banner (20EJ-0)"); }
+        S::FocusReveal r;
+        Check(!r.Pointer(0, true, false, false) && !r.Pointer(399, true, false, false) && r.Pointer(400, true, false, false) && r.open && !r.pinned, "left band 400 ms: the column comes");
+        Check(!r.Pointer(410, false, true, false) && r.open, "over the column: it stays");
+        Check(!r.Pointer(420, false, false, true) && r.open, "held (a drawer opened from it, a menu): it stays");
+        Check(r.Pointer(430, false, false, false) && !r.open, "the pointer leaves it: it goes");
+        Check(!r.Pointer(500, true, false, false) && !r.Pointer(600, false, false, false) && !r.Pointer(1000, true, false, false) && r.Remaining(1200) > 0 && !r.open, "leaving the band restarts the 400 ms");
+        r.Toggle(); Check(r.open && r.pinned && !r.Pointer(1300, false, false, false) && r.open, "Ctrl+Maj+,: in, and the pointer leaving keeps it");
+        r.Toggle(); Check(!r.open && !r.pinned, "Ctrl+Maj+, again: out");
+        r.ForAddress(true); Check(r.open && r.pinned && r.wide, "the address in compact: the complete column, pinned");
+        r.Close(); Check(!r.open && !r.wide, "Échap: out");
+    }
+    if (failures) { std::printf("%d failure(s)\n", failures); return 1; }
+    std::printf("sidebar_test: ok\n");
+    return 0;
+}

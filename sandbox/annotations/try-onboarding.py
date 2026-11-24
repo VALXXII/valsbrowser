@@ -203,6 +203,8 @@ def main() -> int:
     ap.add_argument('--install-delay-ms', type=int, default=4000, help="--agents factice : durée du faux installateur (pour voir l'animation)")
     ap.add_argument('--local-pill', action='store_true', help="essai de la pastille « Local » de l'adresse (#127) : 127.0.0.1, localhost, un fichier, un site en http et en https")
     ap.add_argument('--dry-run', action='store_true', help='tout préparer (copie, pages) sans ouvrir le navigateur (vérification sans écran)')
+    ap.add_argument('--layout', choices=('top', 'side', 'compact'), help="#127 : disposition des onglets pour ce lancement (--tab-layout, rien n'est enregistré)")
+    ap.add_argument('--name', default='browser-essai-onboarding-annotation', help="dossier de l'essai dans %%TEMP%% (un essai par nom)")
     a = ap.parse_args()
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -213,7 +215,7 @@ def main() -> int:
     if not (app / 'browser.exe').is_file():
         print(f'Build introuvable : {app}\\browser.exe', file=sys.stderr)
         return 1
-    home = pathlib.Path(tempfile.gettempdir()) / ('browser-essai-pastille-local' if a.local_pill else 'browser-essai-onboarding-annotation')
+    home = pathlib.Path(tempfile.gettempdir()) / ('browser-essai-pastille-local' if a.local_pill else a.name)
     if port_open('127.0.0.1', 5173) and stop_orphan_server(home / 'serveur' / 'serve.py'):
         print("Le serveur d'un essai précédent (sa fenêtre fermée) tenait encore la page de démonstration : arrêté.")
     if port_open('127.0.0.1', 5173):
@@ -275,7 +277,7 @@ def main() -> int:
         print(f'Site en ligne  : {ONLINE}   (Annoter éteint)')
         if a.local_pill:
             print(f'Pastille « Local » : {URL} et {LOCALHOST} ; « Fichier » : le fichier ; « Non sécurisé » : {ONLINE_HTTP} ; cadenas : {ONLINE}')
-        command = [str(run / 'browser.exe')] + (['--private', URL] if a.private else ['--onboarding'] if a.welcome else [])
+        command = [str(run / 'browser.exe')] + (['--private', URL] if a.private else ['--onboarding'] if a.welcome else []) + ([f'--tab-layout={a.layout}'] if a.layout else [])
         if a.dry_run:
             import urllib.request
             with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(URL, timeout=5) as r:

@@ -42,7 +42,7 @@ class Toast {
     int HitAt(float x, float y) { auto in = [&](D2D1_RECT_F r) { return x >= r.left && x < r.right && y >= r.top && y < r.bottom; }; return in(UndoBox()) ? UndoHit : in(CloseBox()) ? CloseHit : None; }
     POINT Rest() {
         RECT client{}; GetClientRect(owner_, &client); MapWindowPoints(owner_, nullptr, reinterpret_cast<POINT*>(&client), 2);
-        return {client.left + Px(Layout::inset), client.bottom - Px(Layout::inset + bottomReserve_) - Px(Layout::height)};
+        return {client.left + pageLeftPx + Px(Layout::inset), client.bottom - pageBottomPx - Px(Layout::inset + bottomReserve_) - Px(Layout::height)};
     }
     void Place(float progress, bool entering) {
         const POINT rest = Rest(); const int w = Px(Width()), h = Px(Layout::height);
@@ -179,6 +179,8 @@ public:
     bool HasFocus() const { return hwnd_ && GetFocus() == hwnd_; }
     void SetClosed(std::function<void()> closed) { closed_ = std::move(closed); }
     void PaintForTest() { Paint(); }
+    // #127: the page starts right of the column and 8 above the bottom; the toast keeps its 14 DIP from the page's corner.
+    int pageLeftPx = 0, pageBottomPx = 0;
 };
 } // namespace BookmarkToast
 } // namespace NativeChrome

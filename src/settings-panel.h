@@ -41,6 +41,7 @@
 #include "svg-path.h"
 #include "annotation-settings.h"
 #include "profile-editor.h"
+#include "tabs-position-icon.h"
 #include "i18n.h"
 #include "ui-language.h"
 #include "onboarding-flow.h"   // the halftone loop (LoopPhase, HalftoneLoopSeconds, ShaderLoops)
@@ -73,6 +74,9 @@ enum Hit : int {
     // « Agents » (« Ton agent », Paper « Réglages › Agents »): the root row, one button per chat agent, the advanced
     // « Connecter un agent externe » (the MCP « Connecter un agent » window), the failed install's « Installer moi-même ↗ ».
     AgentBase = 90, ExternalAgents = 92, CatAgents = 93, ManualBase = 94,
+    // « Position des onglets » (#127): one hit per segment (En haut, Panneau latéral, Panneau compact): 96..98 — 93..95
+    // are « Ton agent »'s CatAgents and ManualBase (+ 2 agents); 58, 59, 67 stay free (lot R removed those rows).
+    TabsLayoutBase = 96,
     SiteBase = 100, PermissionBase = 400, ResultBase = 600,
 };
 inline constexpr int AgentHit(AnnotationSettings::ChatApp a) { return AgentBase + static_cast<int>(a); }
@@ -109,6 +113,11 @@ inline constexpr float folderRow = 54, twoLinePad = 8, descriptionLine = 18, sit
 // Address field: a 32 DIP field, 6 DIP, one 18 DIP hint line.
 inline constexpr float field = 32, fieldHint = 6, fieldRow = field + fieldHint + descriptionLine;
 inline constexpr float TwoLine(size_t lines) { return 2 * twoLinePad + 20 + 2 + lines * descriptionLine; }
+// « Position des onglets » (Paper « Réglages › Onglets · 3 icônes (validée) » 1XOS-0): padding 6, label 16/20, 2, the
+// description 14/18, 10, then the segmented control (1XOW-0): white 4 %, radius 8, padding 2, gap 2, segments 60 high,
+// radius 6 (active white 12 %), icon 20 over its short name 13/16 (gap 6; active Medium white, else Regular 70 %).
+inline constexpr float segPad = 2, segGap = 2, segHeight = 60, segRadius = 8, segInner = 6, segIcon = 20, segIconGap = 6, segLabel = 16, segFont = 13;
+inline constexpr float SegmentedRow(size_t lines) { return 6 + 20 + 2 + lines * descriptionLine + 10 + 2 * segPad + segHeight + 6; }
 // Footer of every settings view: hairline, 12, version (24), 16.
 inline constexpr float footer = 1 + 12 + slot + padBottom;                                        // 53
 // « Navigateur par défaut » card (Paper 1DQM-0, above the version, under the footer's hairline and its 12 DIP): the
@@ -192,7 +201,7 @@ inline int Opener(View v) {
     }
 }
 // One laid-out element of a view's scrolling list (content coordinates).
-enum class Kind { Label, Engine, Switch, Folder, Value, Nav, SiteRow, Note, Field, Search, Danger, ProfileRow, Editor, Agent };
+enum class Kind { Label, Engine, Switch, Folder, Value, Nav, SiteRow, Note, Field, Search, Danger, ProfileRow, Editor, Agent, Segmented };
 struct Slot {
     Kind kind = Kind::Label; int hit = 0, index = -1;
     float top = 0, height = Layout::row, opacity = 1;
@@ -309,6 +318,10 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
         twoLine(Suggestions, TR(settings_suggestions));
         y -= rowGap;
     } else if (view == View::Tabs) {
+        // « Disposition » first (#127): « Position des onglets » as three segments.
+        labelAt(TR(settings_group_layout));
+        { auto lines = described(TabsLayoutBase); auto* s = add(Kind::Segmented, TabsLayoutBase, SegmentedRow(lines.size()), TR(settings_tabs_position)); s->lines = std::move(lines); s->index = st ? static_cast<int>(st->tabsPosition) : 0; }
+        endGroup();
         labelAt(TR(settings_group_opening));
         twoLine(RestoreTabs, TR(settings_restore_tabs));
         add(Kind::Value, TabPositionHit, row, TR(settings_new_tabs), st ? BrowserSettings::Info(st->tabPosition).label : L"");
@@ -469,6 +482,7 @@ inline const Searchable SearchIndex[] = {
     {LanguageHit, {I::language_label}, {I::settings_title}, View::Main, {I::language_keywords}},
     {RestoreTabs, {I::settings_restore_tabs}, {I::settings_path_tabs_opening}, View::Tabs, {I::search_kw_restore_tabs}},
     {TabPositionHit, {I::settings_new_tabs}, {I::settings_path_tabs_opening}, View::Tabs, {I::search_kw_new_tabs}},
+    {TabsLayoutBase, {I::settings_tabs_position}, {I::settings_path_tabs_layout}, View::Tabs, {I::search_kw_tabs_position}},
     {ConfirmClose, {I::settings_confirm_close}, {I::settings_path_tabs_closing}, View::Tabs, {I::search_kw_confirm_close}},
     {CloseWithLastTab, {I::settings_close_with_last_tab}, {I::settings_path_tabs_closing}, View::Tabs, {I::search_kw_close_with_last_tab}},
     {Sleep, {I::settings_sleeping_tabs}, {I::settings_path_tabs_sleep}, View::Tabs, {I::search_kw_sleep}},
@@ -810,6 +824,7 @@ private:
         lines_[ShortcutsNoteKey] = Wrap(AnnotationSettings::ShortcutsNote(), Layout::rowRight - Layout::textLeft);
         paidLines_ = Greedy(TR(agents_settings_paid_note), Layout::agentNoteWidth, 13);   // the board breaks it greedily (« … payant / (Pro, … »)
         externalLines_ = Wrap(TR(agents_settings_external_note), Layout::Chevron(0).left - 8 - Layout::textLeft);
+        lines_[TabsLayoutBase] = Wrap(TR(settings_tabs_position_note), Layout::slotRight - Layout::textLeft);
         MeasureChat();
     }
     // « Agents »: the state (after its icon) and the note wrap in the text column, 10 DIP before the row's button.
@@ -996,6 +1011,30 @@ private:
         t.valueRight = right - 8; t.valueLeft = t.valueRight - w; t.labelRight = right - w - (s.valueGlyph ? 16 + 6 : 0) - 16; return t;
     }
     // Label + current value + chevron: opens its list of choices (native menu).
+    // « Position des onglets » (1XOS-0): label, description, then the three segments (src/tabs-position-icon.h icons).
+    D2D1_RECT_F SegmentBox(const Slot& s, int k) const {
+        const float top = s.top + 6 + 20 + 2 + s.lines.size() * Layout::descriptionLine + 10 + Layout::segPad, left = Layout::textLeft + Layout::segPad, right = Layout::slotRight - Layout::segPad;
+        const float w = (right - left - Layout::segGap * (BrowserSettings::TabsPositionCount - 1)) / BrowserSettings::TabsPositionCount, x = left + k * (w + Layout::segGap);
+        return {x, top, x + w, top + Layout::segHeight};
+    }
+    void SegmentedRow(const Slot& s, Motion::Time now) {
+        Label16(s.text, Layout::textLeft, s.top + 6, Layout::slotRight, 1);
+        for (size_t k = 0; k < s.lines.size(); ++k) Label14(s.lines[k], Layout::textLeft, s.top + 6 + 22 + k * Layout::descriptionLine, Layout::slotRight, .5f);
+        const auto first = SegmentBox(s, 0);
+        const D2D1_RECT_F control{Layout::textLeft, first.top - Layout::segPad, Layout::slotRight, first.bottom + Layout::segPad};
+        pc_->FillBox(control, Layout::segRadius, D2D1::ColorF(1, 1, 1, 0x0A / 255.f));
+        static const I18n::Id shorts[] = {I18n::Id::tabs_position_top, I18n::Id::tabs_position_short_side, I18n::Id::tabs_position_short_compact};
+        for (int k = 0; k < BrowserSettings::TabsPositionCount; ++k) {
+            const auto b = SegmentBox(s, k); const int hit = TabsLayoutBase + k; const bool active = k == s.index; const float hv = Interaction(hit, now).hover;
+            if (active || hv > 0) pc_->FillBox(b, Layout::segInner, D2D1::ColorF(1, 1, 1, active ? 0x1F / 255.f : 0x0A / 255.f * hv));
+            if (focus_ == hit && keyboard_) pc_->FocusRing(b, Layout::segInner);
+            const float content = Layout::segIcon + Layout::segIconGap + Layout::segLabel, top = b.top + (Layout::segHeight - content) / 2, cx = (b.left + b.right) / 2;
+            TabsPositionIcon::Paint(pc_->RenderTarget(), pc_->Factory(), pc_->SolidBrush(), {cx - Layout::segIcon / 2, top, cx + Layout::segIcon / 2, top + Layout::segIcon}, Layout::segIcon, k,
+                active ? TabsPositionIcon::State::Active : hv > .5f ? TabsPositionIcon::State::Hover : TabsPositionIcon::State::Rest);
+            const std::wstring name = I18n::T(shorts[k]); const float tw = pc_->TextWidth(name, Layout::segFont, active), ty = top + Layout::segIcon + Layout::segIconGap;
+            pc_->Text(name, {cx - tw / 2 - 1, ty, cx + tw / 2 + 1, ty + Layout::segLabel}, Layout::segFont, active ? 1.f : .7f, false, active, 0);
+        }
+    }
     void ValueRow(const Slot& s, Motion::Time now) {
         RowFocus(Layout::Row(s.top, s.height), s.hit);
         const auto v = Interaction(s.hit, now); const auto chevron = Layout::Chevron(s.top);
@@ -1400,6 +1439,7 @@ private:
             case Kind::Search: SearchRow(s, now); break;
             case Kind::Danger: DangerContent(s, now); break;
             case Kind::Switch: SwitchRow(s, now); break;
+            case Kind::Segmented: SegmentedRow(s, now); break;
             case Kind::Folder: FolderRow(s, now); break;
             case Kind::Value: ValueRow(s, now); break;
             case Kind::Nav: NavRow(s, now); break;
@@ -1496,6 +1536,7 @@ private:
             if (s.kind == Kind::Agent && s.manual && s.opacity >= .5f && in(ManualLink(s))) return ManualHit(AnnotationSettings::ChatAppAt(s.index));   // the link, whatever its button does
             if (!s.hit || s.opacity < .5f || s.disabled) continue;
             if (s.kind == Kind::Agent) { if (in(AgentAction(s))) return s.hit; continue; }   // only the button answers
+            if (s.kind == Kind::Segmented) { for (int k = 0; k < BrowserSettings::TabsPositionCount; ++k) { const auto b = SegmentBox(s, k); if (x >= b.left && x < b.right && y >= b.top && y < b.bottom && y >= s.clipTop && y < s.clipBottom) return TabsLayoutBase + k; } continue; }
             if (in(Layout::Row(s.top, s.height)) && y >= s.clipTop && y < s.clipBottom) return s.hit;
         }
         return None;
@@ -1506,6 +1547,7 @@ private:
         order.push_back(Close);
         if (view == View::Main && Searching()) { order.push_back(SearchField); for (size_t i = 0; i < results_.size(); ++i) order.push_back(ResultBase + static_cast<int>(i)); return order; }
         for (const auto& s : Slots(view, Motion::Now())) {
+            if (s.kind == Kind::Segmented) { for (int k = 0; k < BrowserSettings::TabsPositionCount; ++k) order.push_back(TabsLayoutBase + k); continue; }   // #127: each segment
             if (s.hit && s.opacity > .5f && (!s.disabled || s.kind == Kind::Agent)) order.push_back(s.hit);   // a busy agent button keeps the focus
             if (s.kind == Kind::Agent && s.manual && s.opacity > .5f) order.push_back(ManualHit(AnnotationSettings::ChatAppAt(s.index)));   // then its link
         }
@@ -1730,6 +1772,7 @@ private:
             case Kind::Field: n = &add(s.hit, Role::Edit, s.hit == CustomSearchField ? TR(settings_custom_search_name) : TR(settings_homepage_name), box); n->value = FieldValue(s.hit); n->help = FieldTexts(s.hit).hint; break;
             case Kind::Engine: n = &add(s.hit, Role::Button, BrowserSettings::Info(static_cast<Engine>(s.index)).name, box); n->selected = s.index == SelectedIndex(); break;
             case Kind::Switch: n = &add(s.hit, Role::Button, s.text, box); n->toggle = SwitchValue(s.hit) ? 2 : 1; n->help = join(s.lines); break;
+            case Kind::Segmented: for (int k = 0; k < BrowserSettings::TabsPositionCount; ++k) { const auto b = SegmentBox(s, k); auto* seg = &add(TabsLayoutBase + k, Role::Button, BrowserSettings::Info(static_cast<BrowserSettings::TabsPosition>(k)).label, Layout::Box{b.left, b.top, b.right, b.bottom}); seg->selected = k == s.index; seg->help = s.text; } break;
             case Kind::Value: n = &add(s.hit, Role::Button, s.text, box); n->status = s.value; n->expand = 1; n->help = join(s.lines); break;
             case Kind::Nav: if (s.hit == CatProfiles) { n = &add(s.hit, Role::Button, TRF(settings_profiles_name, s.value), box); n->automationId = L"SettingsProfiles"; n->help = TR(settings_profiles_help); }
                 else if (!s.hit) { n = &add(textKey++, Role::Text, s.text + (s.lines.empty() ? L"" : L" : " + join(s.lines)), box); n->focusable = false; }
@@ -1888,6 +1931,9 @@ private:
                 if (page == NewTabPage::Custom && HomepageUrl(state_->homepage).empty()) { homePending_ = true; SyncReveals(Motion::Now()); StartEdit(HomepageField); }
                 else { homePending_ = false; if (page != state_->newTabPage) { state_->newTabPage = page; if (hooks_.changed) hooks_.changed(Change::NewTabPage); } SyncReveals(Motion::Now()); }
             }
+        } else if (hit >= TabsLayoutBase && hit < TabsLayoutBase + BrowserSettings::TabsPositionCount) {
+            const auto p = static_cast<BrowserSettings::TabsPosition>(hit - TabsLayoutBase);
+            if (p != state_->tabsPosition) { state_->tabsPosition = p; if (hooks_.changed) hooks_.changed(Change::TabsPosition); Invalidate(); }
         } else if (hit == TabPositionHit) {
             std::vector<ContextMenu::Item> items;
             for (int i = 0; i < TabPositionCount; ++i) { const auto p = static_cast<TabPosition>(i); auto item = ContextMenu::Command(i + 1, Info(p).label, L"", true, state_->tabPosition == p); item.description = Info(p).description; items.push_back(item); }
@@ -2247,6 +2293,8 @@ private:
                 if (focus_ == ProfileEditorHit) editor_.SetFocusStop(back ? ProfileEditor::Hex : ProfileEditor::Name, true);
                 Interact(hover_, pressed_); return 0;
             }
+            if ((w == VK_LEFT || w == VK_RIGHT) && focus_ >= TabsLayoutBase && focus_ < TabsLayoutBase + BrowserSettings::TabsPositionCount) {
+                keyboard_ = true; focus_ = std::clamp(focus_ + (w == VK_RIGHT ? 1 : -1), static_cast<int>(TabsLayoutBase), static_cast<int>(TabsLayoutBase) + BrowserSettings::TabsPositionCount - 1); RaiseFocus(); Interact(hover_, pressed_); return 0; }
             if ((w == VK_RETURN || w == VK_SPACE) && focus_) { keyboard_ = true; Activate(focus_, true); return 0; }
             // Typing on the root starts a search (as Ctrl+F / F3 would).
             if (depth_ == 0 && ((w == 'F' && GetKeyState(VK_CONTROL) < 0) || w == VK_F3)) { keyboard_ = true; StartEdit(SearchField); return 0; }

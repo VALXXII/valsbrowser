@@ -826,6 +826,7 @@ public:
 class Popover final : public Host {
     Motion::Tween entrance_;
     float anchorRight_ = 0, anchorTop_ = 0;
+    float anchorLeft_ = -1, anchorBottom_ = 0;   // #127: opened from the column, left / bottom edges (screen px)
     int Rows() const { return items_ ? std::min<int>(Panel::popoverRows, static_cast<int>(items_->size())) : 0; }
     float CardHeight() const { return const_cast<View&>(view_).CardHeight(); }
     float Height() const { if (!items_ || items_->empty()) return Panel::Height(Rows(), false); return PopoverHeight(Slots(Motion::Time{})); }
@@ -846,7 +847,9 @@ class Popover final : public Host {
     void Place() {
         if (!hwnd_) return;
         const int w = Px(Panel::width), h = Px(Height());
-        SetWindowPos(hwnd_, HWND_TOP, static_cast<int>(std::lround(anchorRight_)) - w, static_cast<int>(std::lround(anchorTop_)), w, h, SWP_NOACTIVATE);
+        const int x = anchorLeft_ >= 0 ? static_cast<int>(std::lround(anchorLeft_)) : static_cast<int>(std::lround(anchorRight_)) - w;
+        const int y = anchorLeft_ >= 0 ? static_cast<int>(std::lround(anchorBottom_)) - h : static_cast<int>(std::lround(anchorTop_));
+        SetWindowPos(hwnd_, HWND_TOP, x, y, w, h, SWP_NOACTIVATE);
         RefreshTips();
     }
     LRESULT Handle(HWND h, UINT msg, WPARAM w, LPARAM l) override { if (msg == WM_DPICHANGED) { Place(); return 0; } return Host::Handle(h, msg, w, l); }
@@ -858,7 +861,17 @@ public:
     void Show(RECT anchor) {
         if (!hwnd_) return;
         motion_.SetReducedMotion(Motion::PreferredReducedMotion());
-        anchorRight_ = static_cast<float>(anchor.right); anchorTop_ = anchor.bottom + Px(Panel::anchorGap);
+        anchorRight_ = static_cast<float>(anchor.right); anchorTop_ = anchor.bottom + Px(Panel::anchorGap); anchorLeft_ = -1;
+        Open();
+    }
+    // From the column (#127): left edge and bottom edge in screen pixels (above the button, or right of the column).
+    void ShowFrom(float left, float bottom) {
+        if (!hwnd_) return;
+        anchorLeft_ = left; anchorBottom_ = bottom;
+        Open();
+    }
+    void Open() {
+        motion_.SetReducedMotion(Motion::PreferredReducedMotion());
         focus_ = 0; keyboard_ = false; ClearPointer();
         auto now = Motion::Now();
         entrance_.Snap(0); entrance_.Set(1, now, Entrance::duration, motion_.ReducedMotion(), Motion::Curve::Icon);
