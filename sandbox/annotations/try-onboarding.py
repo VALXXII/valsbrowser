@@ -6,9 +6,11 @@
 1. copie le build dans un dossier temporaire neuf (%TEMP%\\browser-essai-onboarding-annotation\\app) : profil, réglages et
    session vides, donc un nouvel utilisateur. --keep garde la copie de l'essai précédent : l'onboarding, déjà vu ou passé,
    ne revient pas (c'est la règle « une seule fois »).
-2. sert une COPIE de la page de démonstration de la sandbox (la « Boutique ») sur http://127.0.0.1:5173/ depuis ce
-   processus : un agent connecté qui modifie la page modifie la copie, jamais le dépôt. Écrit aussi une page en fichier
-   local (…\\fichier-local\\index.html).
+2. sert une COPIE de la page de démonstration de la sandbox (la « Boutique ») sur http://127.0.0.1:5173/, par un
+   serveur à part (serve.py copié à côté) dont le dossier de travail est la copie : le navigateur, qui reconnaît le
+   dossier du projet au processus qui sert la page, ne voit que la copie. Un agent connecté qui modifie la page modifie
+   la copie, jamais le dépôt. Si le port 5173 est déjà pris (un autre essai, un autre serveur), l'essai refuse de
+   démarrer. Écrit aussi une page en fichier local (…\\fichier-local\\index.html).
 3. ouvre le navigateur avec trois onglets : la page locale (Annoter allumé), le fichier local (allumé) et
    https://example.com/ (site en ligne : Annoter éteint, grisé, avec son info-bulle). --private ouvre une fenêtre privée
    sur la page locale (même règle). --welcome commence par la fenêtre d'accueil d'une nouvelle installation (« --onboarding ») :
@@ -29,7 +31,6 @@ import socket
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -188,6 +189,11 @@ def main() -> int:
     if not (app / 'browser.exe').is_file():
         print(f'Build introuvable : {app}\\browser.exe', file=sys.stderr)
         return 1
+    if port_open('127.0.0.1', 5173):
+        # Never reuse a server already there: it may serve the repository's own files, which the agent would then edit.
+        print("Le port 5173 est déjà pris (un autre essai ou un autre serveur est ouvert) : fermez-le, puis relancez.\n"
+              "L'essai ne démarre pas, pour que l'agent ne modifie jamais d'autres fichiers que la copie de la page.", file=sys.stderr)
+        return 1
     home = pathlib.Path(tempfile.gettempdir()) / ('browser-essai-pastille-local' if a.local_pill else 'browser-essai-onboarding-annotation')
     run, agents, site, files = home / 'app', home / 'agents', home / 'site', home / 'fichier-local'
     keep = a.keep or a.private
@@ -217,23 +223,17 @@ def main() -> int:
     if a.english:
         (run / 'ui-language').write_text('browser-ui-language 1\nlanguage=en\n', encoding='utf-8', newline='\n')   # src/ui-language.h
     prepare_agents(agents)
-    # The demo page is served from this process (serve.py's handlers) unless another trial already serves it; the page's
-    # cross-origin iframe (127.0.0.2:5174) only when that address can be bound — it is not needed here.
-    servers = []
-    if not port_open('127.0.0.1', 5173):
-        sys.path.insert(0, str(HERE))
-        import serve
-        servers.append(serve.make(serve.MAIN, site, serve.SpaHandler))
-        threading.Thread(target=servers[0].serve_forever, daemon=True).start()
-        def cross() -> None:
-            try:
-                srv = serve.make(serve.CROSS, HERE / 'cross', serve.Handler); servers.append(srv); srv.serve_forever()
-            except OSError:
-                pass
-        threading.Thread(target=cross, daemon=True).start()
+    # The demo page: a server of its own, started from a copy of serve.py beside the trial with the served copy as its
+    # working folder — its command line and folder name only the copy, so the browser picks the copy as the project's
+    # folder (never this repository, where try-onboarding.py runs). No cross-origin iframe: it is not needed here.
+    server_dir = home / 'serveur'
+    server_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(HERE / 'serve.py', server_dir / 'serve.py')
+    server = subprocess.Popen([sys.executable, '-I', str(server_dir / 'serve.py'), '--site', str(site), '--no-cross'], cwd=str(site),
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     try:
-        if not wait_port('127.0.0.1', 5173):
-            print('La page de démonstration ne démarre pas.', file=sys.stderr)
+        if not wait_port('127.0.0.1', 5173) or server.poll() is not None:
+            print('La page de démonstration ne démarre pas (port 5173 pris entre-temps ?).', file=sys.stderr)
             return 1
         env = dict(os.environ)
         env['BROWSER_ANNOTATIONS_CONNECT_ROOT'] = str(agents)
@@ -260,8 +260,12 @@ def main() -> int:
         proc.wait()
         return 0
     finally:
-        for srv in list(servers):
-            srv.shutdown(); srv.server_close()
+        if server.poll() is None:   # our own server, by its handle (never by its command line)
+            server.terminate()
+            try:
+                server.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                server.kill()
 
 
 if __name__ == '__main__':

@@ -2,13 +2,16 @@
 """Annotation sandbox server — standard library only.
 
     python sandbox/annotations/serve.py            # until Ctrl+C
+    python serve.py --site <dossier> --no-cross    # another folder on 5173 only (try-onboarding.py: its served COPY)
 
   http://127.0.0.1:5173/   the « Boutique » checkout page (site/), SPA fallback to index.html
   http://127.0.0.2:5174/   the cross-origin iframe (cross/), a second loopback address = another origin
 
-Loopback only, nothing else is reachable. No cache (every reload shows the files on disk).
+Loopback only, nothing else is reachable. No cache (every reload shows the files on disk). A port already taken is an
+error (exit 2), never shared: on Windows the server does not ask for SO_REUSEADDR, which would let two servers bind it.
 """
 from __future__ import annotations
+import argparse
 import functools
 import http.server
 import pathlib
@@ -41,17 +44,38 @@ class SpaHandler(Handler):
     spa = True
 
 
+class Server(http.server.ThreadingHTTPServer):
+    allow_reuse_address = sys.platform != 'win32'   # Windows' SO_REUSEADDR lets a second server bind a taken port
+    daemon_threads = True
+
+
 def make(address, root: pathlib.Path, handler):
-    server = http.server.ThreadingHTTPServer(address, functools.partial(handler, directory=str(root)))
-    server.daemon_threads = True
-    return server
+    return Server(address, functools.partial(handler, directory=str(root)))
 
 
 def main() -> int:
-    servers = [make(MAIN, HERE / 'site', SpaHandler), make(CROSS, HERE / 'cross', Handler)]
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--site', type=pathlib.Path, default=HERE / 'site', help='the folder served on 127.0.0.1:5173 (default: site/ next to this script)')
+    ap.add_argument('--no-cross', action='store_true', help='without the cross-origin iframe (127.0.0.2:5174)')
+    a = ap.parse_args()
+    site = a.site.resolve()
+    if not (site / 'index.html').is_file():
+        print(f'No index.html in {site}', file=sys.stderr)
+        return 1
+    servers = []
+    try:
+        servers.append(make(MAIN, site, SpaHandler))
+        if not a.no_cross:
+            servers.append(make(CROSS, HERE / 'cross', Handler))
+    except OSError as e:
+        for s in servers:
+            s.server_close()
+        print(f'Port already taken ({e}): close the other server, then start again.', file=sys.stderr)
+        return 2
     for s in servers:
         threading.Thread(target=s.serve_forever, daemon=True).start()
-    print(f'Sandbox: http://{MAIN[0]}:{MAIN[1]}/  (iframe croisée http://{CROSS[0]}:{CROSS[1]}/cross.html) — Ctrl+C pour arrêter', flush=True)
+    print(f'Sandbox: http://{MAIN[0]}:{MAIN[1]}/ ({site})' + ('' if a.no_cross else f'  (iframe croisée http://{CROSS[0]}:{CROSS[1]}/cross.html)')
+          + ' — Ctrl+C pour arrêter', flush=True)
     try:
         threading.Event().wait()
     except KeyboardInterrupt:
