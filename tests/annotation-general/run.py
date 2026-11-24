@@ -23,6 +23,11 @@ The rules (plan §4.1) — why this file exists:
      a browser.exe started from anywhere but this repository's build/ folder is a failure (never the installed browser,
      never the owner's profile); the real Claude / Codex configuration files are fingerprinted before and after.
 
+Pause (the owner needs the screen): create the file build/annotation-general/PAUSE. The suite that runs is finished, the
+next one waits until the file is removed; the wait is no one's time limit. A suite that was running when the file appeared
+may have been touched by the owner's window: it is run once more after the pause and both results are in the report (the
+first one is set aside, « à rejouer (fenêtre du propriétaire) ») — the only case where a suite runs twice.
+
 Outputs: build/annotation-general/<day|night>/report.md, report.json, logs/<suite>.log.
 Exit code: 0 green · 1 red · 2 could not start (locked session, missing tool, bad manifest) · 3 partial (--only).
 """
@@ -232,6 +237,32 @@ def session_unlocked():
         u32.CloseDesktop(W.HANDLE(h))
 
 
+# ---------------------------------------------------------------- the pause between two suites
+PAUSE = OUT / 'PAUSE'
+
+
+def pause_stamp():
+    '''When the pause was asked (the PAUSE file's time), None when there is none.'''
+    try:
+        return PAUSE.stat().st_mtime
+    except OSError:
+        return None
+
+
+def wait_pause(pauses):
+    '''Between two suites: waits while the PAUSE file is there. Returns the time the pause was asked at, or None.'''
+    asked = pause_stamp()
+    if asked is None:
+        return None
+    t0 = time.time()
+    print(f"paused   (build/annotation-general/PAUSE, asked at {time.strftime('%H:%M:%S', time.localtime(asked))}): the next suite waits", flush=True)
+    while pause_stamp() is not None:
+        time.sleep(3)
+    pauses.append({'askedAt': time.strftime('%H:%M:%S', time.localtime(asked)), 'seconds': round(time.time() - t0)})
+    print(f"resumed  after {round(time.time() - t0)} s", flush=True)
+    return asked
+
+
 # ---------------------------------------------------------------- one suite
 def command_of(suite, part):
     cmd = suite['cmd'] if part == 'day' or not suite.get('nightCmd') else suite['nightCmd']
@@ -359,6 +390,12 @@ def write_report(folder, data):
         mark = {'pass': 'réussi', 'fail': '**échec**', 'timeout': '**délai dépassé**', 'not run': '**pas lancé**', 'pending': 'en attente de fusion'}[r['status']]
         note = r.get('why', '') or ('; '.join(r.get('daySkips', [])) and 'en journée, sauté : ' + '; '.join(r.get('daySkips', [])))
         L.append(f"| {r['title']} | {mark} | {r.get('seconds', 0)} s | `{r.get('log', '')}` | {note} |")
+    if data.get('pauses') or data.get('setAside'):
+        L += ['', '## Pauses (écran rendu au propriétaire)', '']
+        for q in data.get('pauses', []):
+            L.append(f"- Pause demandée à {q['askedAt']}, {q['seconds'] // 60} min {q['seconds'] % 60} s d'attente entre deux suites (hors délais).")
+        for r in data.get('setAside', []):
+            L.append(f"- `{r['id']}` tournait quand la pause a été demandée : premier passage écarté ({r['status']}, `{r.get('log', '')}`), rejoué après la pause — c'est le second qui compte.")
     L += ['', '## Objectifs (mesurés, jamais bloquants — décision 5 du 24/11)', '']
     if not data['objectives']:
         L.append('Aucune mesure dans cette partie (les objectifs se mesurent en vraie fenêtre).')
@@ -447,9 +484,11 @@ def main():
             results.append({'id': 'build-identity', 'title': 'Le build est celui du commit testé', 'status': 'fail', 'seconds': 0,
                             'why': f"build/{BUILD_NAME} is of commit {have[:12] or '(none)'}, not {idn['commit'][:12]}: run with --build"})
     blocked = any(r['status'] != 'pass' for r in results)   # no build of this commit: the real-window suites would test something else
+    pauses = []; set_aside = []
     for s in suites:
         if only and s['id'] not in only:
             continue
+        wait_pause(pauses)
         script = next((a for a in s.get('cmd', []) if a.endswith(('.py', '.ps1'))), None)
         if s.get('pendingMerge') and script and not (ROOT / script).exists():   # its script is on a branch not merged yet
             results.append({'id': s['id'], 'title': s.get('title', s['id']), 'status': 'pending', 'seconds': 0,
@@ -457,7 +496,20 @@ def main():
             print(f"pending  {s['id']} (waits for {s['pendingMerge']})", flush=True); continue
         if blocked and s['part'] == 'night':
             results.append({'id': s['id'], 'title': s.get('title', s['id']), 'status': 'not run', 'seconds': 0, 'why': 'no build of this commit'}); continue
-        r = run_suite(s, part, env, logs); results.append(r)
+        began = time.time()
+        r = run_suite(s, part, env, logs)
+        asked = pause_stamp()
+        if asked is not None and asked >= began - 1:   # the pause was asked while this suite ran: the owner's window may have touched it
+            first = dict(r); first['setAside'] = 'à rejouer (fenêtre du propriétaire)'; set_aside.append(first)
+            keep = logs / (s['id'] + '.premier-passage.log')
+            try:
+                keep.write_bytes((logs / (s['id'] + '.log')).read_bytes()); first['log'] = str(keep.relative_to(ROOT)).replace(os.sep, '/')
+            except OSError:
+                pass
+            print(f"set aside {r['id']} ({r['status']}): the pause was asked while it ran — run again after it", flush=True)
+            wait_pause(pauses)
+            r = run_suite(s, part, env, logs); r['rerunAfterPause'] = True
+        results.append(r)
         print(f"{r['status']:8} {r['id']} ({r['seconds']} s)" + (' — ' + r['why'] if r.get('why') else ''), flush=True)
     ran = {r['id'] for r in results}
     if not only:
@@ -502,7 +554,7 @@ def main():
     release = part == 'night' and green and not only and not idn['dirty']
     data = {'part': part, 'verdict': verdict, 'verdictWhy': why, 'releaseValid': release, 'identity': idn, 'only': only,
             'started': time.strftime('%d/%m/%Y %H:%M', time.localtime(started)), 'seconds': round(time.time() - started),
-            'suites': results, 'objectives': objectives, 'coverage': cv, 'fingerprintsSame': same,
+            'suites': results, 'objectives': objectives, 'coverage': cv, 'fingerprintsSame': same, 'pauses': pauses, 'setAside': set_aside,
             'changedTests': changed_tests(folder, idn),
             'command': 'python tests/annotation-general/run.py --' + part + (' --build' if args.build else '') + (' --only ' + ','.join(only) if only else '')}
     write_report(folder, data)
