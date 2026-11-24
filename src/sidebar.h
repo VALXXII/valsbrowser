@@ -112,7 +112,29 @@ namespace Timing { inline constexpr double widthMs = 180, titlesMs = 80, hoverMs
 // user's choice is never overwritten; above it, the column comes back to that choice.
 inline constexpr float autoCompactBelow = 800;
 inline Mode Effective(Mode chosen, float windowWidth) { return windowWidth < autoCompactBelow ? Mode::Compact : chosen; }
-inline float Width(Mode m) { return m == Mode::Complete ? Complete::width : Compact::width; }
+// `panel`: the complete column's width, chosen by dragging its edge (Resize below; 248 by default).
+inline float Width(Mode m, float panel = Complete::width) { return m == Mode::Complete ? panel : Compact::width; }
+
+// ---- Resize (Paper « Redimensionner · 1 bord survolé / 2 pendant le glisser / 3 largeur max 360 / 4 sous le
+// minimum (validées) » 1XTL-0 / 1XWR-0 / 1Y0R-0 / 1Y4X-0) --------------------------------------------------------
+// The column's right edge is a handle (6 DIP inside the column, along the page): ↔ cursor; a 2 DIP line hugging the
+// page's left edge just outside it and following its rounded corners (an arc concentric with the page corner,
+// radius 8 + 1 = 9, 1Y92-0 « M10 1A9 9 0 0 0 1 10V688A9 9 0 0 0 10 697 »), round caps, faded out at both ends
+// (opacity 0 at each end, 100 % 12 DIP from it, measured vertically); #6B6B6B when hovered, the accent #3E67FF while
+// dragging. Width 220 .. 360 (a hard stop, the pointer may go on); under 160 the column snaps to compact (40) and a
+// release keeps it (the setting becomes « Panneau compact »); back past 160 it opens again at 220. Double-click: 248
+// (from compact too). The width is remembered per profile (« side-width » in the profile's settings file).
+namespace Resize {
+inline constexpr float minimum = 220, maximum = 360, snap = 160, handle = 6, line = 2, arc = 9, fade = 12;
+inline constexpr unsigned hover = 0x6B6B6B, drag = 0x3E67FF;
+inline float Clamp(float w) { return std::clamp(w, minimum, maximum); }
+struct State { Mode mode; float width; };
+// The column under a pointer whose edge would be at `edge` (DIP from the window's left): compact under 160, else the
+// width held between 220 and 360. Stateless: going back past 160 opens it at 220 again.
+inline State At(float edge) { return edge < snap ? State{Mode::Compact, Clamp(edge)} : State{Mode::Complete, Clamp(edge)}; }
+// The handle: `handle` DIP inside the column's right edge, along the page.
+inline Box Handle(float column, const Box& page) { return {column - handle, page.top, column, page.bottom}; }
+}
 
 // Glyphs exported by Paper (viewBox 256, Phosphor Bold) where the column needs a size or an opacity the 16 DIP
 // 50 % icon bitmaps do not have: the fold button 1Q2E-0, the tools 1Q0M-0 / 1Q0P-0 / 1Q0D-0, the tab close 1Q1E-0,
@@ -153,6 +175,7 @@ struct Input {
     float scroll = 0;             // tab list scroll (clamped)
     float band = 0;               // annotation band at the top of the page zone (answer 6)
     float reserve = 0;            // an open drawer's column: the page stops `inset` before it
+    float panel = Complete::width; // the complete column's width (Resize: 220 .. 360)
 };
 // A grid of tiles in a scrolling viewport (the complete column's, the compact popover's).
 struct Grid {
@@ -228,7 +251,7 @@ inline Layout Compute(const Input& in) {
     Layout L; L.mode = in.mode; const bool full = in.mode == Mode::Complete;
     const Mode zoneMode = in.zoneSet ? in.zoneMode : in.mode;
     const float W = std::max(in.width, 1.f), H = std::max(in.height, 1.f);
-    L.column = Width(in.mode);
+    L.column = Width(in.mode, Resize::Clamp(in.panel));
     const float zoneLeft = in.zoneLeft >= 0 ? in.zoneLeft : L.column;
     L.bar = zoneMode == Mode::Complete ? Zone::bar : Zone::compactBar;
     // Page zone: window buttons right-aligned in the bar, the page under it (and under the annotation band).
@@ -254,7 +277,7 @@ inline Layout Compute(const Input& in) {
     };
     if (full) {
         namespace C = Complete;
-        const float l = C::pad, r = C::width - C::pad; float y = C::pad;
+        const float l = C::pad, r = L.column - C::pad; float y = C::pad;
         L.profile = {l, y, l + C::row, y + C::row};
         pairAt(L.profile.right + C::rowGap, y);
         L.reload = {L.forward.right + C::rowGap, y, L.forward.right + C::rowGap + Nav::button, y + Nav::button};
@@ -397,7 +420,7 @@ inline float ScrollToShow(const Layout& L, int i) {
 // unfolding, the width eases over 180 ms and the titles come back over the last 80 ms. Reduced motion: at once.
 inline double EaseOut(double x) { x = std::clamp(x, 0.0, 1.0); const double u = 1 - x; return 1 - u * u * u; }
 struct Fold {
-    Mode target = Mode::Complete; double startMs = -1; float from = 1;
+    Mode target = Mode::Complete; double startMs = -1; float from = 1; float panel = Complete::width;   // the complete width
     float Settled() const { return target == Mode::Complete ? 1.f : 0.f; }
     bool Moving(double now) const { return startMs >= 0 && now - startMs < Timing::widthMs; }
     // Width progress (0 compact .. 1 complete).
@@ -406,7 +429,7 @@ struct Fold {
         const float e = static_cast<float>(EaseOut((now - startMs) / Timing::widthMs));
         return from + (Settled() - from) * e;
     }
-    float ColumnWidth(double now) const { const float p = Progress(now); return Compact::width + (Complete::width - Compact::width) * p; }
+    float ColumnWidth(double now) const { const float p = Progress(now); return Compact::width + (panel - Compact::width) * p; }
     // Opacity of the complete column's titles and labels.
     float Titles(double now) const {
         if (startMs < 0 || now - startMs >= Timing::widthMs) return target == Mode::Complete ? 1.f : 0.f;

@@ -1872,6 +1872,7 @@ NativeChrome::Tooltip::Content TipContent(const wchar_t* tip){
 void ChromeTipHover(int x,int y){
     if(!chromeTip.Window())return;
     const float d=GetDpiForWindow(window)/96.f,fx=x/d,fy=y/d;
+    if(chrome.Hit(fx,fy)==NativeChrome::Chrome::SidebarEdgeId){chromeTip.Hide();return;}   // #127: the column edge shows the ↔ cursor, no tooltip (Paper)
     for(auto& r:chrome.regions){
         if(!r.tip||!*r.tip||fx<r.rect.left||fx>=r.rect.right||fy<r.rect.top||fy>=r.rect.bottom)continue;
         RECT target{S(r.rect.left),S(r.rect.top),S(r.rect.right),S(r.rect.bottom)};MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&target),2);

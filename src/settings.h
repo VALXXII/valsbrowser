@@ -109,6 +109,9 @@ inline ChoiceInfo Info(TabsPosition p) {
     const int i = static_cast<int>(p); return Resolve(positions[i >= 0 && i < TabsPositionCount ? i : 0]);
 }
 inline bool SidePanel(TabsPosition p) { return p != TabsPosition::Top; }
+// Side panel width (#127 « Redimensionner »; src/sidebar.h Resize): 248 by default, held between 220 and 360.
+inline constexpr int SideWidthDefault = 248, SideWidthMin = 220, SideWidthMax = 360;
+inline int SideWidth(int w) { return w < SideWidthMin ? SideWidthMin : w > SideWidthMax ? SideWidthMax : w; }
 // Media autoplay (engine policy: applied when the browser starts).
 enum class Autoplay { Muted, Allowed };
 constexpr int AutoplayCount = 2;
@@ -198,6 +201,9 @@ struct State {
     // Window layout (#127, Val 2026-11-24): « Position des onglets ». Applied live, no restart; a narrow window shows
     // the panel compact without touching it.
     TabsPosition tabsPosition = TabsPosition::Top;
+    // The side panel's width (#127 « Redimensionner »): dragged on its edge, 220 .. 360 DIP, 248 by default; per profile
+    // (this file is the profile's). Read back clamped; anything else keeps 248.
+    int sideWidth = SideWidthDefault;
     std::uint32_t accent = DefaultAccent; // #RRGGBB
     std::wstring customSearch;     // Engine::Custom: http(s) template with %s (SearchTemplate)
     NewTabPage newTabPage = NewTabPage::Blank;
@@ -229,7 +235,7 @@ struct State {
                confirmCloseTabs == o.confirmCloseTabs && closeWithLastTab == o.closeWithLastTab && adBlock == o.adBlock &&
                httpsOnly == o.httpsOnly && blockThirdPartyCookies == o.blockThirdPartyCookies && memorySaver == o.memorySaver &&
                muteBackground == o.muteBackground && autoplay == o.autoplay && grayscaleText == o.grayscaleText &&
-               bookmarksBar == o.bookmarksBar && tabsPosition == o.tabsPosition && accent == o.accent &&
+               bookmarksBar == o.bookmarksBar && tabsPosition == o.tabsPosition && sideWidth == o.sideWidth && accent == o.accent &&
                annotationConnectPrompt == o.annotationConnectPrompt && annotationConnectDeclines == o.annotationConnectDeclines &&
                annotationRetentionDays == o.annotationRetentionDays && annotationOnboarded == o.annotationOnboarded && defaultBrowserLaterAt == o.defaultBrowserLaterAt;
     }
@@ -287,6 +293,7 @@ inline void Write(std::ostream& out, const State& s) {
         << "grayscale-text=" << (s.grayscaleText ? 1 : 0) << '\n'
         << "bookmarks-bar=" << Info(s.bookmarksBar).key << '\n'
         << "tabs-position=" << Info(s.tabsPosition).key << '\n'
+        << "side-width=" << s.sideWidth << '\n'
         << "accent=" << AccentText(s.accent) << '\n'
         << "annotation-connect-prompt=" << (s.annotationConnectPrompt ? 1 : 0) << '\n'
         << "annotation-connect-declines=" << s.annotationConnectDeclines << '\n'
@@ -339,6 +346,7 @@ inline State Read(std::istream& in) {
         else if (key == "homepage") { std::wstring v; if (value.size() < 4096 && NativeChrome::Downloads::FromUtf8(value, v)) s.homepage = HomepageUrl(v); }
         else if (key == "bookmarks-bar") { for (int i = 0; i < BookmarksBarCount; ++i) if (value == Info(static_cast<BookmarksBar>(i)).key) s.bookmarksBar = static_cast<BookmarksBar>(i); }
         else if (key == "tabs-position") { for (int i = 0; i < TabsPositionCount; ++i) if (value == Info(static_cast<TabsPosition>(i)).key) { s.tabsPosition = static_cast<TabsPosition>(i); position = true; } }
+        else if (key == "side-width") { char* end = nullptr; const long w = value.empty() || value.size() > 4 ? 0 : std::strtol(value.c_str(), &end, 10); if (end && !*end && w > 0) s.sideWidth = SideWidth(static_cast<int>(w)); }
         else if (key == "layout") { if (value == "side-panel") legacySide = true; else if (value == "top-bar") legacySide = false; }
         else if (key == "sidebar") { if (value == "compact") legacyCompact = true; else if (value == "complete") legacyCompact = false; }
         else if (key == "accent") { std::uint32_t rgb = 0; if (ParseAccent(value, rgb)) s.accent = rgb; }

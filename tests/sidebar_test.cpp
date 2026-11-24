@@ -149,6 +149,26 @@ int main() {
         v.Open(); v.Leave(); Check(!v.open, "closes when the pointer leaves");
         S::Hover x; x.Open(); x.holds = 1; x.Leave(); Check(x.open, "a held column stays open");
     }
+    // ---- Resize (Paper « Redimensionner · 1 à 4 »): 220 .. 360, compact under 160, back at 220; the handle; the re-flow.
+    {
+        namespace R = S::Resize;
+        Check(R::At(100).mode == S::Mode::Compact && R::At(159.9f).mode == S::Mode::Compact, "under 160: compact");
+        Check(R::At(160).mode == S::Mode::Complete && Near(R::At(160).width, 220) && Near(R::At(200).width, 220), "back past 160: opens at 220 (minimum)");
+        Check(Near(R::At(250).width, 250) && Near(R::At(359).width, 359) && Near(R::At(600).width, 360), "220 .. 360, a hard stop at 360");
+        S::Input in; in.grid = true; in.bookmarks = 40; in.tabs = 5;
+        const float widths[] = {220, 248, 296, 300, 360}; const int cols[] = {4, 5, 6, 6, 7};
+        for (int i = 0; i < 5; ++i) { in.panel = widths[i]; const auto L = S::Compute(in);
+            Check(Near(L.column, widths[i]) && L.grid.columns == cols[i], "grid re-flow: 4 / 5 / 6 / 7 per row at 220 / 248 / 296 / 360");
+            Check(Near(L.page.left, widths[i]) && Near(L.address.right, widths[i] - 8) && Near(L.tools.back().right, widths[i] - 8), "the column and the page follow the width"); }
+        in.panel = 300; { const auto L = S::Compute(in); Check(Near(L.grid.tiles[0].Width(), (284 - 5 * 6) / 6.f, .01f) && Near(L.grid.tiles[0].Height(), 40), "300: six tiles of 42.3 x 40 (Paper 1W1T-0: 42 x 40)"); }
+        in.panel = 100; Check(Near(S::Compute(in).column, 220), "a stored width is clamped");
+        in.panel = 248; const auto L = S::Compute(in);
+        Check(Same(R::Handle(L.column, L.page), 242, 40, 248, 736), "handle: 6 DIP inside the edge, along the page");
+        in.mode = S::Mode::Compact; const auto K = S::Compute(in);
+        Check(Same(R::Handle(K.column, K.page), 34, 32, 40, 736), "compact handle along its page");
+        S::Fold f; f.panel = 300; f.Set(S::Mode::Complete, 0, false); Check(Near(f.ColumnWidth(0), 300), "the fold opens to the chosen width");
+        f.Set(S::Mode::Compact, 1000, true); Check(Near(f.ColumnWidth(1000), 300) && Near(f.ColumnWidth(1180), 40), "and folds from it");
+    }
     if (failures) { std::printf("%d failure(s)\n", failures); return 1; }
     std::printf("sidebar_test: ok\n");
     return 0;

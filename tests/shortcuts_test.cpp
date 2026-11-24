@@ -2,7 +2,8 @@
 #include "../src/main.cpp"
 #include <cstdio>
 #include <cstdlib>
-void Assert(bool ok){if(!ok){std::fprintf(stderr,"Shortcut assertion failed\n");std::exit(1);}}
+void AssertAt(bool ok,int line){if(!ok){std::fprintf(stderr,"Shortcut assertion failed (line %d)\n",line);std::exit(1);}}
+#define Assert(x) AssertAt((x),__LINE__)
 void Modifiers(bool ctrl=false,bool shift=false,bool alt=false){BYTE state[256]{};state[VK_CONTROL]=ctrl?128:0;state[VK_SHIFT]=shift?128:0;state[VK_MENU]=alt?128:0;Assert(SetKeyboardState(state));}
 int main(){
     const std::vector<std::wstring> titles={L"Q&A",L"Rock && Roll &",L"&",L"",L"Caf\u00e9 & th\u00e8",L"\u00c9\u00c8\u00c0 e\u0301 & a\u0300"};
@@ -34,9 +35,33 @@ int main(){
      SetTabsPosition(P::Top);Assert(!chrome.sidebar&&Key(VK_OEM_COMMA)==0);
      // The tab menu's last row: « Position des onglets » as three icon segments, the current one active, each named in its tooltip.
      {const auto row=TabsPositionMenu(40);Assert(row.kind==NativeChrome::ContextMenu::Kind::Segmented&&row.label==TR(settings_tabs_position)&&row.segments.size()==3&&row.segments[0].active&&!row.segments[1].active&&row.segments[2].id==42&&row.segments[1].tip==BrowserSettings::Info(P::Side).label&&row.paintSegment);}
-     // A trial run forced with --side-panel shows the panel without saving; its fold stays in the run.
-     sidePanelForced=true;ApplyLayout();Assert(chrome.sidebar&&settings.tabsPosition==P::Top);ToggleSidebar();Assert(settings.tabsPosition==P::Top&&SidebarEffective()==SBar::Mode::Compact);
-     SetTabsPosition(P::Side);Assert(!sidePanelForced&&settings.tabsPosition==P::Side);SetTabsPosition(P::Top);forcedCompact=false;Assert(!chrome.sidebar);
+     // Fix's tests: --tab-layout=top|side|compact (--side-panel = side) forces the run's layout without saving it; the fold
+     // stays in the run; Réglages / the menu take over again. One log line names the active layout (LayoutLine).
+     Assert(TabLayoutArg(L"--tab-layout=side")==1&&TabLayoutArg(L"--x --tab-layout=compact --y")==2&&TabLayoutArg(L"--tab-layout=top")==0&&TabLayoutArg(L"--side-panel")==1);
+     Assert(TabLayoutArg(L"--tab-layout=sideways")==-1&&TabLayoutArg(L"--tab-layout=")==-1&&TabLayoutArg(L"")==-1&&TabLayoutArg(nullptr)==-1);
+     Assert(LayoutLine()==L"layout: top");
+     forcedLayout=1;ApplyLayout();Assert(chrome.sidebar&&settings.tabsPosition==P::Top&&LayoutLine()==L"layout: side 248 (this run)");
+     ToggleSidebar();Assert(settings.tabsPosition==P::Top&&SidebarEffective()==SBar::Mode::Compact&&LayoutLine()==L"layout: compact (this run)");
+     forcedLayout=0;ApplyLayout();Assert(!chrome.sidebar&&Key(VK_OEM_COMMA)==0&&LayoutLine()==L"layout: top (this run)");
+     forcedLayout=2;ApplyLayout();Assert(chrome.sidebar&&SidebarEffective()==SBar::Mode::Compact&&settings.tabsPosition==P::Top);
+     SetTabsPosition(P::Side);Assert(forcedLayout<0&&settings.tabsPosition==P::Side&&LayoutLine()==L"layout: side 248");
+     chrome.width=700;Assert(LayoutLine()==L"layout: compact (narrow window)");chrome.width=1180;
+     // « Redimensionner »: the edge drag (220 .. 360, compact under 160, back at 220), the release saving the width and the
+     // layout, double-click 248, the keyboard on the focused edge.
+     {SidebarPrepare();Assert(chrome.sidebarResizable&&chrome.sidebarWidth==248);chrome.side=SBar::Compute(chrome.SideInput(SBar::Mode::Complete,1));
+      edgeClickAt=0;Assert(SidebarEdgeDown(246)&&SidebarEdgeDragging());SidebarEdgeMove(298);Assert(chrome.sidebarWidth==300&&SidebarEffective()==SBar::Mode::Complete);
+      SidebarEdgeMove(498);Assert(chrome.sidebarWidth==360);SidebarEdgeMove(178);Assert(chrome.sidebarWidth==220&&SidebarEffective()==SBar::Mode::Complete);
+      SidebarEdgeMove(150);Assert(SidebarEffective()==SBar::Mode::Compact);SidebarEdgeMove(170);Assert(SidebarEffective()==SBar::Mode::Complete&&chrome.sidebarWidth==220);
+      SidebarEdgeMove(288);SidebarEdgeUp(true);Assert(!SidebarEdgeDragging()&&settings.sideWidth==290&&settings.tabsPosition==P::Side);SidebarPrepare();Assert(chrome.sidebarWidth==290&&LayoutLine()==L"layout: side 290");
+      chrome.side=SBar::Compute(chrome.SideInput(SBar::Mode::Complete,1));Assert(chrome.side.column==290);
+      edgeClickAt=0;SidebarEdgeDown(288);SidebarEdgeMove(100);SidebarEdgeUp(false);SidebarPrepare();Assert(settings.tabsPosition==P::Side&&chrome.sidebarWidth==290);   // Échap: undone
+      edgeClickAt=0;SidebarEdgeDown(288);SidebarEdgeMove(100);SidebarEdgeUp(true);Assert(settings.tabsPosition==P::Compact&&settings.sideWidth==290);   // released compact
+      SidebarEdgeReset();Assert(settings.tabsPosition==P::Side&&settings.sideWidth==248);SidebarPrepare();Assert(chrome.sidebarWidth==248);   // double-click
+      Modifiers();Assert(SidebarEdgeKey(VK_RIGHT)&&settings.sideWidth==264&&chrome.sidebarWidth==264);Assert(SidebarEdgeKey(VK_END)&&settings.sideWidth==360);Assert(SidebarEdgeKey(VK_HOME)&&settings.sideWidth==220);
+      SidebarPrepare();Assert(SidebarEdgeKey(VK_LEFT)&&settings.tabsPosition==P::Compact);Assert(SidebarEdgeKey(VK_RIGHT)&&settings.tabsPosition==P::Side&&settings.sideWidth==220);
+      Assert(SidebarEdgeKey(VK_RETURN)&&settings.sideWidth==248);Assert(!SidebarEdgeKey('A'));
+      chrome.width=700;SidebarPrepare();Assert(!chrome.sidebarResizable&&!SidebarEdgeDown(246));chrome.width=1180;SidebarPrepare();Modifiers(true,true);}
+     SetTabsPosition(P::Top);Assert(!chrome.sidebar&&LayoutLine()==L"layout: top");
      // Files written by the trial builds migrate (layout + sidebar keys).
      {std::istringstream older("browser-settings 1\nlayout=side-panel\nsidebar=compact\n");settings=BrowserSettings::Read(older);ApplyLayout();Assert(chrome.sidebar&&settings.tabsPosition==P::Compact);settings=BrowserSettings::State{};ApplyLayout();Assert(!chrome.sidebar);}}   // Ctrl+Maj+N: nouvelle fenêtre privée, without any toolbar button
     Modifiers(false,false,true);Assert(Key('D')=='L');

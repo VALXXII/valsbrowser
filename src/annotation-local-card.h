@@ -174,7 +174,9 @@ public:
     bool Visible() const { return open_ && !closing_; }
     HWND Window() const { return hwnd_; }
     // `button`: the toolbar button in screen pixels; `host`: the live site's name (« boutique-sable.fr »); `accent`: 0xRRGGBB.
-    bool Show(HINSTANCE instance, HWND owner, const std::wstring& root, RECT button, std::wstring host, unsigned accent, bool reduced, Hooks hooks) {
+    // `bottomLeft` (#127 side panel, provisional until Paper draws it): « Annoter » sits at the bottom of the column, so the
+    // card takes the column's popover place instead (its bottom-left corner, screen pixels), like the downloads popover.
+    bool Show(HINSTANCE instance, HWND owner, const std::wstring& root, RECT button, std::wstring host, unsigned accent, bool reduced, Hooks hooks, const POINT* bottomLeft = nullptr) {
         if (hwnd_) { if (closing_) Finish(); else return true; }
         instance_ = instance; owner_ = owner; root_ = root; host_ = std::move(host); accent_ = accent; reduced_ = reduced; hooks_ = std::move(hooks);
         hover_ = pressed_ = None; focus_ = Discover; keyboard_ = false; glow_.clear(); offscreen_ = false;
@@ -184,7 +186,8 @@ public:
         dpi_ = GetDpiForWindow(owner ? owner : hwnd_); if (!dpi_) dpi_ = 96;
         if (FAILED(chrome_.Init(hwnd_, root_))) { DestroyWindow(hwnd_); hwnd_ = nullptr; return false; }
         const int w = Px(Width), hgt = Px(Height()), centre = (button.left + button.right) / 2;
-        SetWindowPos(hwnd_, HWND_TOP, centre - Px(FromCentre) - w, button.bottom + Px(Below), w, hgt, SWP_NOACTIVATE);
+        if (bottomLeft) SetWindowPos(hwnd_, HWND_TOP, bottomLeft->x, bottomLeft->y - hgt, w, hgt, SWP_NOACTIVATE);
+        else SetWindowPos(hwnd_, HWND_TOP, centre - Px(FromCentre) - w, button.bottom + Px(Below), w, hgt, SWP_NOACTIVATE);
         NativeUI::ConfigureShadowlessPopup(hwnd_, Radius); chrome_.Resize();
         clockOk_ = clock_.Start(hwnd_, FrameMessage); AttachUia();
         open_ = true; closing_ = false; opened_ = Motion::Now(); lastStep_ = {};
