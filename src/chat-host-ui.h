@@ -597,7 +597,7 @@ void Layout() { if (Shown() && view.Exists()) view.Place(PanelRect(slide.Value(N
 void SyncChromeBits() {
     if (!Ann::uiReady) return;
     Ann::banner.SetChat(Ann::s.active && AskAvailable(Ann::ModeTab()), CommentLayout());   // Paper 1AYP-0: the layout switch
-    if (Ann::s.active && Ann::banner.Visible() && !Ann::connect.Visible()) Ann::banner.SetReminder(!Ann::agents.any() && !Open());   // the MCP reminder steps back while the chat is open
+    Ann::SyncReminder();   // « Ton agent » (worker C): the band's reminder is the chat's, and steps back while the chat is open
 }
 void OnPanelMessage(const std::string& json);
 // R13: the lists each agent announced last, saved after every session start and change, read at the chat's first use:

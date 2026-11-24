@@ -1839,3 +1839,30 @@ I18N(annotation_local_card_discover, L"Découvrir en 1 minute", L"Discover in 1 
 
 // ---- agents: status/install (« Ton agent », worker A: src/agent-status.h, src/chat-agent-status.h; design/ton-agent-interface.md)
 I18N(agents_installing, L"Installation…", L"Installing…")
+// ---- agents: settings/band (worker C, « Ton agent »: Réglages › Agents, src/annotation-settings.h + src/settings-panel.h; Paper « Réglages › Agents ») ----
+I18N(agents_settings_title, L"Agents", L"Agents")  // same: same word in both languages
+I18N(agents_settings_group_chat, L"Agents du chat", L"Chat agents")
+I18N(agents_settings_group_advanced, L"Avancé", L"Advanced")
+I18N(agents_settings_paid_note, L"Claude Code demande un compte Claude payant (Pro, Max, Team ou Enterprise).", L"Claude Code needs a paid Claude account (Pro, Max, Team or Enterprise).")
+I18N(agents_settings_external, L"Connecter un agent externe", L"Connect an external agent")
+I18N(agents_settings_external_note, L"Pour une app hors du navigateur (Claude Desktop, Codex) qui agit dans Browser.", L"For an app outside the browser (Claude Desktop, Codex) that acts in Browser.")
+I18N(agents_settings_none_ready, L"Aucun agent prêt", L"No agent ready")
+I18N(agents_brand_claude_code, L"Claude Code", L"Claude Code")  // same: product name
+I18N(agents_status_checking, L"Vérification…", L"Checking…")
+I18N(agents_status_not_installed, L"Pas installé", L"Not installed")
+I18N(agents_status_too_old, L"Version {0} · trop ancienne", L"Version {0} · too old")
+I18N(agents_status_too_old_bare, L"Version trop ancienne", L"Version too old")
+I18N(agents_status_installing, L"Installation…", L"Installing…")
+I18N(agents_status_signed_out, L"Installé · pas connecté", L"Installed · not signed in")
+I18N(agents_status_signing_in, L"Connexion en cours…", L"Signing in…")
+I18N(agents_status_version, L"Version {0}", L"Version {0}")  // same: same words in both languages
+I18N(agents_status_installed, L"Installé", L"Installed")
+I18N(agents_status_install_failed, L"L'installation n'a pas abouti", L"The installation didn't finish")
+I18N(agents_status_sign_in_failed, L"La connexion n'a pas abouti", L"Sign-in didn't finish")
+I18N(agents_ready, L"Prêt", L"Ready")
+I18N(agents_action_install, L"Installer", L"Install")
+I18N(agents_action_sign_in, L"Se connecter", L"Sign in")
+I18N(agents_action_retry, L"Réessayer", L"Retry")
+I18N(agents_announce_status, L"{0} : {1}", L"{0}: {1}")
+I18N(agents_search_kw_chat, L"claude code codex chat installer connecter agent version", L"claude code codex chat install sign in agent version")
+I18N(agents_search_kw_external, L"mcp claude desktop codex agent externe connecter configuration", L"mcp claude desktop codex external agent connect setup")
