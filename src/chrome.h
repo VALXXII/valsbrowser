@@ -1199,7 +1199,7 @@ public:
     // One bookmark tile (01 1Q23-0 / grid B 1WOO-0 / compact 1WDV-0): fill, hover, focus, favicon 18 or the folder glyph.
     void DrawBookmarkTile(int i,D2D1_RECT_F t,float rest,int hover,int focus,Motion::Time now){namespace K=Sidebar::Look;const int id=BookmarkBase+i;
         float hv=Hovered(id,hover,now);if(id==bandOpen)hv=1;White(t,Design::Radius::r8,rest+(K::tileHover-rest)*std::clamp(hv,0.f,1.f));if(focus==id)FocusRing(t,Design::Radius::r8);
-        if(i<0||i>=(int)bandItems.size())return;const auto& item=bandItems[i];const float cx=(t.left+t.right)/2,cy=(t.top+t.bottom)/2;
+        if(i<0||i>=(int)bandItems.size()){return;}const auto& item=bandItems[i];const float cx=(t.left+t.right)/2,cy=(t.top+t.bottom)/2;
         if(item.folder){SideGlyph(Sidebar::Glyph::folder,t,Design::Size::icon,K::glyph);return;}
         if(!DrawSiteImage(item.image,{cx-9,cy-9,cx+9,cy+9}))Icon(item.local?L"file":L"favicon",t,Design::Size::icon,1);}
     // A grid in its viewport: tiles clipped, the canvas fade at the bottom while more is below, the thin bar (1WRB-0, 1WRC-0).
@@ -1242,7 +1242,7 @@ public:
     // The address field (01 1Q26-0, editing 06 1QH8-0, compact 1Q3G-0).
     void PaintSideAddress(const Sidebar::Layout& L,bool editing,int hover,int focus,Motion::Time now,float labels){
         namespace K=Sidebar::Look;const auto box=R(L.address);
-        if(L.addressPlate||editing)White(box,Design::Radius::control,editing?K::fieldEditing:K::field);DrawLoading(box);   // the compact bar's field has no background (Val's retouch 1WOG-0)
+        if(L.addressPlate||editing){White(box,Design::Radius::control,editing?K::fieldEditing:K::field);}DrawLoading(box);   // the compact bar's field has no background (Val's retouch 1WOG-0)
         if(editing){Color(1,K::fieldRing);target->DrawRoundedRectangle(D2D1::RoundedRect({box.left+.5f,box.top+.5f,box.right-.5f,box.bottom-.5f},5.5f,5.5f),brush,1);}
         else if(focus=='L')FocusRing(box,Design::Radius::control);
         const auto keepBar=bar,keepEdit=edit;const float k1=addressFont,k2=addressGlyph,k3=addressTextInset,k4=addressSlotInset,k5=addressSlotSize;const bool k6=addressHostOnly;
@@ -1301,7 +1301,7 @@ public:
         ID2D1GradientStopCollection* col=nullptr;ID2D1LinearGradientBrush* gb=nullptr;ID2D1StrokeStyle* cap=nullptr;
         factory->CreateStrokeStyle(D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND,D2D1_CAP_STYLE_ROUND,D2D1_CAP_STYLE_ROUND),nullptr,0,&cap);
         if(SUCCEEDED(target->CreateGradientStopCollection(stops,4,&col))&&col&&SUCCEEDED(target->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({0,top},{0,bottom}),col,&gb))&&gb)target->DrawGeometry(g,gb,RZ::line,cap);
-        if(gb)gb->Release();if(col)col->Release();if(cap)cap->Release();g->Release();}
+        if(gb){gb->Release();}if(col){col->Release();}if(cap){cap->Release();}g->Release();}
     void PaintSidebar(const std::vector<std::wstring>& titles,int selected,bool editing,int hover,int focus,Motion::Time now){
         namespace SB=Sidebar;
         // Window bar: compact navigation + address (02 1Q3F-0), window buttons.
@@ -1369,7 +1369,7 @@ public:
     // Band order for arrows: visible items, then the » button.
     std::vector<int> BandOrder()const{std::vector<int> o;for(int i=0;i<band.visible;++i)o.push_back(BookmarkBase+i);if(band.overflow)o.push_back('O');return o;}
     int Hit(float x,float y){for(auto& r:regions)if(r.id==SidebarEdgeId&&x>=r.rect.left&&x<r.rect.right&&y>=r.rect.top&&y<r.rect.bottom)return r.id;   // #127: the edge wins over the tiles it overlaps
-        for(auto& r:regions)if(x>=r.rect.left&&x<r.rect.right&&y>=r.rect.top&&y<r.rect.bottom)return Enabled(r.id)?r.id:0;return 0;}
+        for(auto& r:regions){if(x>=r.rect.left&&x<r.rect.right&&y>=r.rect.top&&y<r.rect.bottom)return Enabled(r.id)?r.id:0;}return 0;}
     bool AssetsReady(){if(bitmaps.size()<11)return false;for(auto& b:bitmaps)if(!b.second)return false;return fonts&&fonts->GetFontFamilyCount()==1;}
     // Tabs at their presented geometry. Exactly one surface per tab (no second
     // close-button hover fill). While a tab opens its surface width follows

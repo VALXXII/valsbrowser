@@ -147,6 +147,32 @@ glisser, survol par-dessus la page, tiroirs) : liste pour la tournée de nuit de
 - Grille des favoris (+10 / +20 / +40, comportement selon la largeur) : en attente des planches du Designer ; la
   règle actuelle (2 rangées puis « » ») reste en place d'ici là.
 
+### Version complète de l'essai (24 nov., après-midi)
+
+- Réglage « Position des onglets » (`tabs-position=top|side|compact`, défaut `top`) ; les anciennes clés `layout` +
+  `sidebar` migrent. Le bouton de pliage, Ctrl+Maj+, et le bord du panneau changent ce même réglage (Latéral ↔ Compact) ;
+  rien en barre du haut. Réglages › Onglets › Disposition (3 segments icône + nom) et dernière ligne du menu clic droit
+  d'un onglet (3 icônes, info-bulle au survol et au focus clavier).
+- `--tab-layout=top|side|compact` (essais, tests de Fix) : la disposition de ce lancement, jamais enregistrée ;
+  `--side-panel` = `side`. Journal : « layout: top | side 248 | compact » au démarrage et à chaque changement (avec
+  « (narrow window) », « (this run) »).
+- Redimensionner : poignée de 6 DIP dans le bord droit de la colonne, le long de la page ; 220 … 360 (butée), sous 160
+  compact d'un coup (relâcher garde le compact : réglage « Panneau compact »), au-delà de 160 réouverture à 220,
+  double-clic (ou Entrée sur le bord) 248, Échap annule. Largeur mémorisée par profil (`side-width`, fichier de réglages
+  du profil) ; relâcher en compact garde la largeur précédente pour la prochaine ouverture. Clavier : le bord est un arrêt
+  de tabulation (← → 16, Maj 64, Début 220, Fin 360), lu « Largeur du panneau » par les lecteurs d'écran.
+- Trait du bord : 2 DIP, bouts ronds, juste à l'extérieur du bord gauche de la page, suit ses coins (arc de rayon 9),
+  fondu sur 12 DIP aux deux bouts ; #6B6B6B au survol, accent pendant le glisser. Les masques de coins de la page
+  dessinent la partie de l'arc qui passe sur la page.
+- Seuil du compact automatique : gardé à 800 (la colonne complète par défaut reste 248 ; une colonne élargie à 360
+  laisse moins de place à la page, sans changer le seuil).
+- Annotation en panneau (planches « Annotation · 1 à 7 ») : bandeau en haut de la zone page, page 32 plus bas, Annoter
+  actif dans les outils (encre du profil, sans soulignement). Le chat est une carte à 4 DIP des bords droit et bas
+  (rayon 8, filet #262626) et la page s'arrête 4 DIP avant. Propositions du Designer en constantes
+  (`src/chat-host.h`) : `DrawerOverChat = true` (un tiroir s'ouvre par-dessus le chat), `ChatOverlayBelow = 900`
+  (fenêtre plus étroite : le chat passe par-dessus la page). La carte « Découvrir en 1 minute » (site en ligne) s'ouvre
+  à la place des popovers de la colonne (au-dessus des outils, ou à droite de la colonne compacte).
+
 ## 7. Écarts connus avec la maquette (version d'essai)
 
 - Glisser (05) : la ligne suit la souris verticalement seulement (Paper la décale aussi de 14 DIP vers la droite) ;
@@ -172,6 +198,15 @@ glisser, survol par-dessus la page, tiroirs) : liste pour la tournée de nuit de
   de l'app. L'état vient de `AnnotationButtonDimmed()` (même règle `Ann::Available` que la barre), sans dépendre de #125.
 - Rendus hors écran (`design/127-sidebar-evidence`) : les tiroirs, les info-bulles, la liste des suggestions et le texte
   tapé sont des fenêtres à part (les mêmes qu'aujourd'hui) : ils n'apparaissent pas dans les rendus du peintre de la colonne.
+
+- Bas du trait du bord : Paper finit l'arc 2 DIP plus haut (sa page s'arrête à 734) ; le code suit la règle (arc
+  concentrique au coin réel de la page, à 736).
+- Chat en panneau : ses coins arrondis viennent d'une région de fenêtre (bord crénelé, pas lissé) ; dans la barre du
+  haut, le chat reste comme aujourd'hui (collé au bord droit).
+- Annoter actif : le fond reste l'accent à 16 % (Paper #22452D pour Travail : pas de règle trouvée pour les autres profils).
+- Planches Paper avec 8 DIP de marge autour de la page : la règle de Val (4 DIP) gagne.
+- Pas encore : « Gérer les favoris » sous la grille dépliée et au pied du popover compact, glisser un favori sur un
+  dossier de la grille (planches du soir, à valider par Val).
 
 ## 8. Vérifications en fenêtre réelle (tournée de nuit de Fix)
 

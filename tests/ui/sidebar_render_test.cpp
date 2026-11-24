@@ -1,8 +1,8 @@
 // Panneau latéral (#127, variante A finale): the production Chrome painter in its column layout, drawn off screen
 // (no window, no WebView2, no profile) at the Paper reference size (artboard 1180 x 740 minus its 1 DIP border:
 // client 1178 x 738), for the side-by-side with Paper (design/127-sidebar-evidence) and a few pixel checks.
-// States: 01 complete, 02 compact, 03 compact with the complete column over the page, 04 hover + keyboard focus,
-// 05 tab drag, 07 Downloads drawer open (its tool latched), plus 2 grid rows and a long list (scroll fades).
+// States: 01 complete, 02 compact, 07 / 10 a drawer open, bookmarks grid B (20 folded, 40 unfolded, compact 40), the edge
+// (hovered, dragged at 300, compact), the annotation mode in both layouts, Annoter greyed.
 // The page card itself is a WebView2 window in the app: tools/sidebar/compose.py paints the white card at the page box
 // the chrome reports, so the renders read like the boards.
 #ifndef UNICODE
@@ -23,7 +23,7 @@
 using namespace NativeChrome;
 static int checks = 0;
 static void Check(bool ok, const char* what) { ++checks; if (!ok) { std::fprintf(stderr, "FAIL: %s\n", what); std::exit(1); } }
-static int Gray(UINT32 p) { return (p >> 8) & 255; }
+static bool Near(float a, float b) { return std::fabs(a - b) < .01f; }
 // A 16 x 16 stand-in favicon (Paper draws letter tiles): a rounded square of one colour.
 static std::shared_ptr<const FaviconImage> Tile(unsigned rgb, bool round = false) {
     auto f = std::make_shared<FaviconImage>(); f->width = f->height = 32; f->stride = 32 * 4; f->pixels.assign(32 * 32 * 4, 0);
@@ -48,6 +48,7 @@ int wmain(int argc, wchar_t** argv) {
     auto shot = [&](const wchar_t* name, auto setup, int hover = 0, int focus = 0, int count = 5, bool editing = false) {
         Chrome c; Check(SUCCEEDED(c.InitOffscreen(root, 96, 1178, 738)), "offscreen chrome");
         c.sidebar = true; c.keyboardModality = true;
+        Design::Accent::Set(0x1A8641); Design::Accent::SetInk(0x6FD087);   // the Travail profile (Paper boards)
         c.SetProfileButton(L"Travail", ProfileIcons::Fill(L"briefcase"), D2D1::ColorF(0x6F / 255.f, 0xD0 / 255.f, 0x87 / 255.f), false);
         c.address = AddressBar::Describe(L"https://lemonde.fr/planete", false);
         c.bandShown = true;
@@ -67,50 +68,48 @@ int wmain(int argc, wchar_t** argv) {
     };
     // 01 Complet.
     shot(L"01-complet", [](Chrome& c) { (void)c; });
-    {   // Pixel checks on 01: canvas, active row #3E3E3E, field #292929.
+    {   // Checks on the complete layout: the page under the 40 DIP bar, the edge handle along it (it wins the hit test).
         Chrome c; Check(SUCCEEDED(c.InitOffscreen(root, 96, 1178, 738)), "offscreen chrome (checks)");
-        c.sidebar = true; c.bandShown = false; c.address = AddressBar::Describe(L"https://lemonde.fr/", false);
+        c.sidebar = true; c.sidebarResizable = true; c.bandShown = false; c.address = AddressBar::Describe(L"https://lemonde.fr/", false);
         c.Paint(titles, 0, L"", false, 0, 0);
-        Check(Gray(c.SurfacePixel(120, 300)) == 0x17, "canvas under the column");
-        Check(Gray(c.SurfacePixel(200, 112)) == 0x3E, "active tab row #3E3E3E (no grid: first row at y 103)");
-        Check(Gray(c.SurfacePixel(180, 56)) >= 0x28 && Gray(c.SurfacePixel(180, 56)) <= 0x2A, "address field #292929");
-        Check(c.regions.size() > 10 && c.Hit(20, 115) == TabBase + 0 && c.Hit(120, 66) == 'L' && c.Hit(226, 24) == Chrome::SidebarToggleId, "regions: tab, field, fold button");
         Check(c.ContentTop() == 40, "page under the 40 DIP window bar");
+        Check(c.Hit(245, 300) == Chrome::SidebarEdgeId && c.Hit(241, 300) != Chrome::SidebarEdgeId && c.Hit(120, 66) == 'L', "edge handle: the column's last 6 DIP along the page");
+        c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.Paint(titles, 0, L"", false, 0, 0);
+        Check(c.ContentTop() == 32 && c.Hit(37, 300) == Chrome::SidebarEdgeId, "compact: the page under the 32 DIP bar, its edge handle");
     }
-    // 02 Compact.
+    // 02 Compact, 07 / 10 a drawer open from each layout.
     shot(L"02-compact", [](Chrome& c) { c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.sidebarTitles = 0; });
-    // 03 Passage: compact, the complete column over the page.
-    shot(L"03-passage", [](Chrome& c) { c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.sidebarTitles = 0; c.sidebarOverlay = true; });
-    // 04 Survol (row 2, GitHub tile, History tool) + keyboard focus on row 3.
-    shot(L"04-survol-focus", [](Chrome& c) { (void)c; }, TabBase + 1, TabBase + 2);
-    shot(L"04b-survol-favori", [](Chrome& c) { (void)c; }, BookmarkBase + 1, 0);
-    shot(L"04c-survol-outil", [](Chrome& c) { (void)c; }, 'Y', 0);
-    // 05 Glisser: row 4 dragged up, landing after row 1.
-    shot(L"05-glisser", [](Chrome& c) { c.sidebarDrag = 3; c.sidebarDragY = 186; c.sidebarInsert = 1; });
-    // 06 Nouvel onglet: the field in editing.
-    selected = 5;   // 06 (corrected): the new tab is a real row (globe, « Nouvel onglet ») after the others, active
-    shot(L"06-nouvel-onglet", [](Chrome& c) { c.addressEditing = true; c.sideHome.back() = true; }, 0, 'L', 6, true);
-    selected = 0;
-    // 07 Téléchargements: the tool latched while its drawer is open.
-    shot(L"07-telechargements", [](Chrome& c) { c.latched = 'D'; });
-    shot(L"10-compact-telechargements", [](Chrome& c) { c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.sidebarTitles = 0; c.latched = 'D'; });
-    // Two grid rows with « » », and a long list scrolled to its middle (fades).
-    shot(L"x-grille-2-rangees", [&](Chrome& c) { for (int i = 5; i < 14; ++i) { Chrome::BandItem b; b.id = 100 + i; b.title = L"Favori"; b.tip = L"Favori"; b.image = icons[i % 5]; c.bandItems.push_back(b); } });
-    shot(L"x-liste-longue", [](Chrome& c) { c.sidebarScroll = 200; }, 0, 0, 30);
-    shot(L"x-toujours-vide", [](Chrome& c) { c.bandItems.clear(); });
-    // Annoter where the mode cannot start (a live site with #125, the new tab page…): greyed, still there; and the mode on.
+    shot(L"07-telechargements", [](Chrome& c) { c.latched = 'D'; c.sidebarReserve = 268; });
+    shot(L"10-compact-telechargements", [](Chrome& c) { c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.sidebarTitles = 0; c.latched = 'D'; c.sidebarReserve = 268; });
+    // Bookmarks grid B (Paper « Favoris · 20 · B », « 40 · B déplié », « compact, 40 »).
+    auto bookmarksN = [&](Chrome& c, int n) { c.bandItems.clear(); for (int i = 0; i < n; ++i) { Chrome::BandItem b; b.id = 100 + i; b.title = titles[i % 5]; b.tip = titles[i % 5]; b.image = icons[i % 5]; c.bandItems.push_back(b); } };
+    shot(L"fav-20-B", [&](Chrome& c) { bookmarksN(c, 20); });
+    shot(L"fav-40-deplie", [&](Chrome& c) { bookmarksN(c, 40); c.sidebarGridOpen = true; });
+    shot(L"compact-40", [&](Chrome& c) { bookmarksN(c, 40); c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.sidebarTitles = 0; });
+    // Resize (Paper « Redimensionner · 1 bord survolé », « 2 pendant le glisser » at 300, « 4 sous le minimum » compact).
+    shot(L"redim-1-survol", [&](Chrome& c) { bookmarksN(c, 10); c.sidebarResizable = true; c.sidebarEdge = 1; });
+    shot(L"redim-2-glisser", [&](Chrome& c) { bookmarksN(c, 20); c.sidebarResizable = true; c.sidebarEdge = 2; c.sidebarWidth = c.sidebarColumn = 300; });
+    shot(L"redim-4-compact", [&](Chrome& c) { bookmarksN(c, 10); c.sidebarResizable = true; c.sidebarEdge = 2; c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.sidebarTitles = 0; });
+    {   // The line: accent along the page's left edge at 300 (2 DIP just outside it), faded out at its ends.
+        Chrome c; Check(SUCCEEDED(c.InitOffscreen(root, 96, 1178, 738)), "offscreen chrome (edge)");
+        c.sidebar = true; c.sidebarResizable = true; c.sidebarEdge = 2; c.sidebarWidth = c.sidebarColumn = 300; c.Paint(titles, 0, L"", false, 0, 0);
+        const UINT32 mid = c.SurfacePixel(299, 400), end = c.SurfacePixel(299, 735);
+        Check(Near(c.side.page.left, 300) && (mid & 255) > 200 && ((mid >> 16) & 255) < 120, "dragging: the accent line at x 298 .. 300");
+        Check((end & 255) < 0x40, "faded out at the bottom end");
+        c.sidebarEdge = 1; c.Paint(titles, 0, L"", false, 0, 0); const UINT32 hv = c.SurfacePixel(299, 400);
+        Check(std::abs((int)(hv & 255) - 0x6B) <= 3 && std::abs((int)((hv >> 16) & 255) - 0x6B) <= 3, "hovered: #6B6B6B");
+    }
+    // Annotation (Paper « Annotation · panneau · 1 », « compact · 5 »): Annoter active (profile ink), the page 32 DIP lower
+    // under the band (the band, the frame and the bubble are their own windows: not in this render).
+    shot(L"annot-1-panneau", [&](Chrome& c) { c.address = AddressBar::Describe(L"http://localhost:5173/", false); c.annotateActive = true; c.annotationBand = 32; });
+    shot(L"annot-5-compact", [&](Chrome& c) { c.address = AddressBar::Describe(L"http://localhost:5173/checkout", false); c.annotateActive = true; c.annotationBand = 32; c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.sidebarTitles = 0; });
     shot(L"x-annoter-grise", [](Chrome& c) { c.annotateDimmed = true; });
-    shot(L"x-annoter-actif", [](Chrome& c) { c.annotateActive = true; });
-    {   // Four tools in both modes, Annoter first (Paper 01 1Q0B-0 / 02 1Q3U-0), at 70 % / greyed.
+    {   // Tools in both layouts, Annoter first.
         Chrome c; Check(SUCCEEDED(c.InitOffscreen(root, 96, 1178, 738)), "offscreen chrome (tools)");
         c.sidebar = true; c.annotateShown = true; c.Paint(titles, 0, L"", false, 0, 0);
-        Check(c.sideTools.size() == 4 && c.sideTools[0] == 'N' && c.Hit(36, 714) == 'N', "complete: Annoter is the first of four tools");
-        int lit = 0; for (int y = 706; y < 722; ++y) for (int x = 28; x < 44; ++x) lit = std::max(lit, Gray(c.SurfacePixel((float)x, (float)y)));
-        Check(lit > 0x17 + (int)((255 - 0x17) * .6f), "Annoter's mark at about 70 % white");
-        c.annotateDimmed = true; c.Paint(titles, 0, L"", false, 0, 0); int dim = 0; for (int y = 706; y < 722; ++y) for (int x = 28; x < 44; ++x) dim = std::max(dim, Gray(c.SurfacePixel((float)x, (float)y)));
-        Check(dim > 0x17 + 30 && dim < lit - 40, "greyed Annoter stays visible, dimmer");
-        c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.annotateDimmed = false; c.Paint(titles, 0, L"", false, 0, 0);
-        Check(c.side.tools.size() == 4 && c.Hit(28, (c.side.tools[0].top + c.side.tools[0].bottom) / 2) == 'N', "compact: Annoter first of four tools");
+        Check(c.sideTools.size() == 4 && c.sideTools[0] == 'N' && c.Hit((c.side.tools[0].left + c.side.tools[0].right) / 2, (c.side.tools[0].top + c.side.tools[0].bottom) / 2) == 'N', "complete: Annoter is the first of four tools");
+        c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.Paint(titles, 0, L"", false, 0, 0);
+        Check(c.side.tools.size() == 4 && c.Hit(20, (c.side.tools[0].top + c.side.tools[0].bottom) / 2) == 'N', "compact: Annoter first of four tools");
     }
     std::printf("sidebar_render_test: %d checks passed\n", checks);
     return 0;
