@@ -58,6 +58,7 @@ enum Hit : int {
     // The « navigateur par défaut » card at the bottom of the root (Paper « 01 · Réglages — racine »): « Plus tard » hides it
     // for 30 days, « Browser par défaut » opens Windows' Default apps page on Browser.
     DefaultLater = 47, DefaultMake = 48,
+    AboutVersion = 49,   // the footer's version line: opens « À propos de Browser » (Paper « À propos : point d'entrée » A)
     Tracking = 50, Sleep = 51, Zoom = 52, Permissions = 53, HomePageHit = 54, TabPositionHit = 55, AutoplayHit = 56, BookmarksBarHit = 57,
     ConfirmClose = 38, CloseWithLastTab = 39, AdBlock = 60, HttpsOnly = 61, ThirdPartyCookies = 62, MemorySaver = 63, MuteBackground = 64, GrayscaleText = 65,
     CustomSearchField = 70, HomepageField = 71, SearchField = 72, SearchDismiss = 73,
@@ -127,6 +128,15 @@ inline constexpr Box Trailing(float y, float h = row) { return {slotRight - slot
 inline constexpr Box Switch(float y, float h = row) { return {slotRight - switchWidth, y + (h - switchHeight) / 2, slotRight, y + (h + switchHeight) / 2}; }
 inline constexpr Box Icon(float y, float h = row) { return {iconLeft, y + (h - iconSize) / 2, iconLeft + iconSize, y + (h + iconSize) / 2}; }
 inline constexpr Box Chevron(float y, float h = row) { return {slotRight - 16, y + (h - 24) / 2, slotRight, y + (h + 24) / 2}; }
+// « À propos de Browser » (Paper « Browser — référence unifiée », « À propos : point d'entrée » variant A, 1V0L-0): the
+// version line of the footer is the entry. `y`: top of the version's 24 DIP slot. Plate 274 x 40 from x 8, 8 DIP above and
+// below the slot, ending 10 DIP before the update button; chevron (Phosphor caret-right) 12 DIP, 10 from the plate's right.
+inline constexpr float aboutLeft = 8, aboutPad = 8, aboutGap = 10, aboutChevron = 12, aboutChevronInset = 10;
+inline constexpr Box About(float y) { return {aboutLeft, y - aboutPad, Trailing(y, slot).left - aboutGap, y + slot + aboutPad}; }
+inline constexpr Box AboutChevron(float y) {
+    return {About(y).right - aboutChevronInset - aboutChevron, y + (slot - aboutChevron) / 2, About(y).right - aboutChevronInset, y + (slot + aboutChevron) / 2};
+}
+static_assert(About(0).right - About(0).left == 274 && About(0).bottom - About(0).top == 40, "Paper 1V0L-0: 274 x 40");
 // Two-line switch rows wrap their description up to 16 DIP before the switch.
 inline constexpr float descriptionWidth = slotRight - switchWidth - 16 - textLeft;
 // Agent rows (« Annotations »): logo in the icon slot, name on the first line, the action as a
@@ -520,6 +530,7 @@ public:
         std::function<void(bool keyboard)> importData;              // « Importer depuis un navigateur… » (src/browser-import.h); absent: no row
         std::function<void()> checkUpdates;
         std::function<Version()> version;                           // "browser 0.3.x · À jour"
+        std::function<void(bool keyboard)> about;                   // the version line opens « À propos de Browser » (A8); absent: plain text
         std::function<std::wstring()> downloadFolder;               // effective folder (default resolved)
         std::function<bool()> reducedMotion;                        // system || setting
         std::function<void(std::function<void(std::vector<BrowserSettings::Site>)>)> loadSites; // async, UI thread
@@ -657,6 +668,11 @@ private:
     int OwnerPx(float dip) const { return static_cast<int>(std::lround(dip * GetDpiForWindow(owner_) / 96.f)); }
     float Height() const { if (heightOverride_ > 0) return heightOverride_; RECT r{}; if (hwnd_) GetClientRect(hwnd_, &r); return r.bottom * 96.f / Dpi(); }
     View Current() const { return views_[depth_]; }
+    // The footer's version line (every view but Sites / Site / Profile): top of its 24 DIP slot; an entry to
+    // « À propos de Browser » when the host gives the hook and there is a version to show.
+    float VersionTop() const { return Height() - Layout::padBottom - Layout::slot; }
+    bool VersionIn(View view) const { return view != View::Profile && view != View::Sites && view != View::Site; }
+    bool AboutOn() const { return hooks_.about && hooks_.version && !hooks_.version().text.empty(); }
     int DepthOf(View v) const { for (int d = depth_; d >= 0; --d) if (views_[d] == v) return d; return -1; }
     bool Searching() const { return !BrowserSettings::TrimText(query_).empty(); }
     // Footer height per view (DIP): main = clear + version; sites = note + "Tout retirer"; site = one danger row.
@@ -1204,7 +1220,17 @@ private:
             // Version + check for updates. The glyph spins while a check runs.
             const auto version = hooks_.version ? hooks_.version() : Version{};
             const float y = h - Layout::padBottom - Layout::slot;
-            pc_->Text(version.text, {Layout::textLeft, y, Layout::Trailing(y, Layout::slot).left - 4, y + Layout::slot}, 14, .5f, true, false, -.14f);
+            // The line opens « À propos » (Paper 1V0L-0): nothing at rest; hover = white 4 % plate (radius 6) and the
+            // chevron (white 50 %), the drawer's hover / press / focus ring like its other rows (120 ms, A1).
+            const bool about = AboutOn(); float textRight = Layout::Trailing(y, Layout::slot).left - 4;
+            if (about) {
+                const auto row = Layout::About(y), chevron = Layout::AboutChevron(y);
+                RowSurface(row, AboutVersion, now); RowFocus(row, AboutVersion);
+                const float shown = focus_ == AboutVersion ? 1.f : Interaction(AboutVersion, now).hover;
+                if (shown > .001f) pc_->PathGlyph(DialogKit::Glyph::caretRight, R(chevron), Layout::aboutChevron, D2D1::ColorF(1, 1, 1, .5f * shown));
+                textRight = chevron.left - 4;
+            }
+            pc_->Text(version.text, {Layout::textLeft, y, textRight, y + Layout::slot}, 14, .5f, true, false, -.14f);
             float turn = 0;
             if (Spinning(now)) turn = -SpinDegrees(now); // counter-clockwise, the way the glyph's arrow points
             IconButton(L"reload", Layout::Trailing(y, Layout::slot), CheckUpdates, now, turn, version.canCheck && !version.checking);
@@ -1336,6 +1362,7 @@ private:
             if (in(Layout::Row(y))) return LastProfile() ? ProfileClearData : ProfilesReadOnly() ? None : ProfileDelete;
         } else if (view != View::Sites && view != View::Site) {
             if (in(Layout::Trailing(h - Layout::padBottom - Layout::slot, Layout::slot))) return CheckUpdates;
+            if (AboutOn() && in(Layout::About(h - Layout::padBottom - Layout::slot))) return AboutVersion;
             if (CardIn(view)) { const auto c = CardBoxes(footerTop + 13); if (in(c.later)) return DefaultLater; if (in(c.make)) return DefaultMake; }
         } else if (view == View::Sites) { if (!sites_.empty() && in(Layout::Row(footerTop + 13 + 40 + 8))) return ResetAll; }
         else if (in(Layout::Row(footerTop + 13))) return ResetSite;
@@ -1363,7 +1390,11 @@ private:
         if (view == View::Main && Searching()) { order.push_back(SearchField); for (size_t i = 0; i < results_.size(); ++i) order.push_back(ResultBase + static_cast<int>(i)); return order; }
         for (const auto& s : Slots(view, Motion::Now())) if (s.hit && s.opacity > .5f && (!s.disabled || s.kind == Kind::Agent)) order.push_back(s.hit);   // a busy agent button keeps the focus
         if (view == View::Profile) { if (LastProfile()) order.push_back(ProfileClearData); else if (!ProfilesReadOnly()) order.push_back(ProfileDelete); }
-        else if (view != View::Sites && view != View::Site) { if (CardIn(view)) { order.push_back(DefaultLater); order.push_back(DefaultMake); } if (hooks_.version && hooks_.version().canCheck) order.push_back(CheckUpdates); }
+        else if (view != View::Sites && view != View::Site) {
+            if (CardIn(view)) { order.push_back(DefaultLater); order.push_back(DefaultMake); }
+            if (AboutOn()) order.push_back(AboutVersion);   // the version line, then its update button (left to right)
+            if (hooks_.version && hooks_.version().canCheck) order.push_back(CheckUpdates);
+        }
         else if (view == View::Sites) { if (!sites_.empty()) order.push_back(ResetAll); }
         else order.push_back(ResetSite);
         return order;
@@ -1606,7 +1637,10 @@ private:
                 auto& make = add(DefaultMake, Role::Button, TR(settings_default_browser_make), c.make); make.automationId = L"SettingsDefaultBrowser"; make.help = TR(settings_default_browser_help);
             }
             const auto version = hooks_.version ? hooks_.version() : Version{};
-            if (!version.text.empty()) add(textKey++, Role::Text, version.text, {Layout::textLeft, h - Layout::padBottom - Layout::slot, Layout::rowRight, h - Layout::padBottom}).focusable = false;
+            if (AboutOn() && VersionIn(view)) {   // the line is a button: read as « À propos de Browser », the version and its state as help
+                auto& about = add(AboutVersion, Role::Button, TR(settings_about), Layout::About(h - Layout::padBottom - Layout::slot));
+                about.automationId = L"SettingsAbout"; about.help = version.text;
+            } else if (!version.text.empty()) add(textKey++, Role::Text, version.text, {Layout::textLeft, h - Layout::padBottom - Layout::slot, Layout::rowRight, h - Layout::padBottom}).focusable = false;
             if (version.canCheck) add(CheckUpdates, Role::Button, TR(settings_check_updates), Layout::Trailing(h - Layout::padBottom - Layout::slot, Layout::slot)).enabled = !version.checking;
         } else if (view == View::Sites) { auto& n = add(ResetAll, Role::Button, TR(settings_remove_all), Layout::Row(footerTop + 13 + 40 + 8)); n.enabled = n.focusable = !sites_.empty(); }
         else add(ResetSite, Role::Button, TR(settings_remove_permissions), Layout::Row(footerTop + 13));
@@ -1630,7 +1664,9 @@ private:
         if (key > EditorBase && key < HitBase) { focus_ = ProfileEditorHit; editor_.Accessible(EditorBase, key, kind == 1 ? 1 : 0, 0); Invalidate(); return; }
         if (key <= HitBase) return; const int hit = static_cast<int>(key - HitBase);
         if (kind == 2) { focus_ = hit; Reveal(hit); Interact(hover_, pressed_); return; }
-        focus_ = hit; Activate(hit, true); if (uia_.Listening()) uia_.ChildrenChanged(DrawerKey); RaiseFocus();
+        focus_ = hit; Activate(hit, true);
+        if (!Open()) return;   // closed by the action (Fermer, « À propos de Browser »): no focus event from a leaving drawer
+        if (uia_.Listening()) uia_.ChildrenChanged(DrawerKey); RaiseFocus();
     }
     // ---- Profiles -----------------------------------------------------------------------
     void RefreshProfiles() {
@@ -1810,12 +1846,15 @@ private:
         else if (hit == ManagePasswords) { if (hooks_.managePasswords) Modal([&] { hooks_.managePasswords(keyboard); }); }
         else if (hit == ImportData) { if (hooks_.importData) Modal([&] { hooks_.importData(keyboard); }); }
         else if (hit == DefaultMake) { if (hooks_.setDefaultBrowser) hooks_.setDefaultBrowser(); }
-        else if (hit == DefaultLater) {   // away for 30 days; the focus goes on to the version's button
+        else if (hit == DefaultLater) {   // away for 30 days; the focus goes on to the next stop: the version line, else its button
             state_->defaultBrowserLaterAt = NowSeconds(); if (hooks_.changed) hooks_.changed(Change::DefaultBrowserLater);
-            if (focus_ == DefaultLater || focus_ == DefaultMake) focus_ = keyboard && hooks_.version && hooks_.version().canCheck ? CheckUpdates : 0;
+            if (focus_ == DefaultLater || focus_ == DefaultMake) focus_ = !keyboard ? 0 : AboutOn() ? AboutVersion : hooks_.version && hooks_.version().canCheck ? CheckUpdates : 0;
             hover_ = pressed_ = 0; motion_.ClearInteractions();
         }
         else if (hit == CheckUpdates) { if (hooks_.version && hooks_.version().canCheck && hooks_.checkUpdates) hooks_.checkUpdates(); Changed(); }
+        // « À propos de Browser »: the host closes the drawer and opens the A8 window (not Modal(): the drawer must not
+        // take the keyboard back from it). `keyboard`: Entrée / Espace / UIA, for the window's focus ring.
+        else if (hit == AboutVersion) { if (AboutOn()) { hooks_.about(keyboard); return; } }
         Repoint(); RefreshTips(); Invalidate(); Schedule(Motion::Now());
     }
     // ---- Address fields -----------------------------------------------------------
@@ -1968,6 +2007,7 @@ private:
         if (view != View::Main) add(Back, Layout::BackButton(), TR(common_back));
         if (view == View::Sites || view == View::Site) return;
         add(CheckUpdates, Layout::Trailing(Height() - Layout::padBottom - Layout::slot, Layout::slot), TR(settings_check_updates));
+        if (AboutOn() && VersionIn(view)) add(AboutVersion, Layout::About(VersionTop()), TR(settings_about));   // Paper 1V0O-0 « À propos de Browser »
         for (const auto& s : Slots(view, Motion::Now())) if (s.kind == Kind::Folder && s.top >= Layout::viewTop - 1 && s.top + s.height <= ViewBottom(view)) {
             if (s.hit == Folder) add(Folder, Layout::Row(s.top, s.height), hooks_.downloadFolder ? hooks_.downloadFolder() : std::wstring(TR(settings_change_folder)));
             else add(static_cast<UINT_PTR>(s.hit), Layout::Row(s.top, s.height), hooks_.annotationFolder ? hooks_.annotationFolder() : L"");
@@ -2115,6 +2155,12 @@ public:
     void SettleForTest() { slide_.Snap(slide_.Target()); page_.Snap(page_.Target()); for (auto& l : scrolls_) l.Snap(l.Target()); for (int i = 0; i < SwitchCount; ++i) { switches_[i].Snap(switches_[i].Target()); knobPress_[i].Snap(0); } }
     void ScrollForTest(float y) { scrolls_[depth_].Snap(std::clamp(y, 0.f, MaxScroll(Current(), Motion::Now(), true))); }
     void HoverForTest(int hit) { Interact(hit, 0); }
+    void FocusForTest(int hit, bool keyboard) { focus_ = hit; keyboard_ = keyboard; Invalidate(); }
+    Design::Box AboutForTest() const { return Layout::About(VersionTop()); }
+    Design::Box AboutChevronForTest() const { return Layout::AboutChevron(VersionTop()); }
+    float HeightForTest() const { return Height(); }
+    void OpenWithoutWindowForTest() { visible_ = true; closing_ = false; }   // the UIA tree as when open; the window stays hidden (windowless tests)
+    std::pair<RECT, std::wstring> TipForTest(int hit) { RefreshTips(); const auto* t = tip_.ToolForTest(static_cast<UINT_PTR>(hit)); return t ? std::make_pair(t->rect, t->text) : std::make_pair(RECT{}, std::wstring()); }
     // Paints the drawer as it stands into a PNG (offscreen Direct2D: works on a locked desktop).
     bool RenderForTest(const std::wstring& png, UINT dpi, float height, const std::wstring& root) {
         Chrome off; if (FAILED(off.InitOffscreen(root, dpi, Layout::width, height))) return false;

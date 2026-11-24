@@ -2458,6 +2458,9 @@ void CreateSettingsPanel(){
     hooks.clearOnExitNote=[]{return ClearOnExitNote();};   // owner decision B
     hooks.checkUpdates=[](){CheckForUpdates();};
     hooks.version=SettingsVersion;
+    // The version line opens « À propos de Browser » (Paper « À propos : point d'entrée » A; the A8 window): the drawer
+    // closes first and the window gets the keyboard back when the A8 window closes (as from the old menu).
+    hooks.about=[](bool keyboard){settingsDrawer.Hide(false,true);if(window)SetFocus(window);keyboardModality=keyboard;Log(std::wstring(L"ABOUT opened from Réglages")+(keyboard?L" (keyboard)":L""));ShowAboutDialog();};
     hooks.downloadFolder=EffectiveDownloadFolder;
     hooks.reducedMotion=ReducedMotionPreferred;
     hooks.loadSites=LoadSitePermissions;
@@ -3702,7 +3705,7 @@ std::vector<std::tuple<unsigned,int,std::wstring>> FolderChoices(BM::Id exclude)
     for(BM::Id root:{BM::BarRoot,BM::OtherRoot}){std::vector<std::pair<BM::Id,int>> stack{{root,0}};
         while(!stack.empty()){auto [id,depth]=stack.back();stack.pop_back();const auto* n=bookmarks.Find(id);if(!n||n->kind!=BM::Kind::Folder)continue;
             if(exclude&&(id==exclude||bookmarks.IsAncestor(exclude,id)))continue;
-            out.emplace_back(id,depth,n->title);for(auto c=n->children.rbegin();c!=n->children.rend();++c)stack.push_back({*c,depth+1});}}
+            out.emplace_back(id,depth,n->title.empty()?std::wstring(TR(bookmarks_unnamed_folder)):n->title);for(auto c=n->children.rbegin();c!=n->children.rend();++c)stack.push_back({*c,depth+1});}}
     return out;
 }
 RECT ClientScreen(){RECT r{};GetClientRect(window,&r);MapWindowPoints(window,nullptr,(POINT*)&r,2);return r;}
@@ -3861,9 +3864,9 @@ std::vector<CM::Item> BookmarkFolderItems(BM::Id folder,int depth=0){
     if(links){auto all=CM::Command(MenuId(MenuOpenAll,folder),TRP(bookmark_open_all,links));all.icon=L"open-out";items.push_back(all);items.push_back(CM::Separator());}
     for(BM::Id id:f->children){const auto* n=bookmarks.Find(id);if(!n)continue;
         if(n->kind==BM::Kind::Folder){CM::Item sub;sub.id=MenuId(MenuOpen,id);sub.label=NativeUI::EscapeMenuText(n->title.empty()?std::wstring(TR(bookmarks_unnamed_folder)):n->title);sub.icon=L"folder-closed";sub.help=FolderSummary(id);
-            if(depth<(int)BM::Store::MaxDepth)sub.children=BookmarkFolderItems(id,depth+1);if(sub.children.empty())sub.children.push_back(CM::Command(0,L"(Vide)",L"",false));items.push_back(sub);}
+            if(depth<(int)BM::Store::MaxDepth)sub.children=BookmarkFolderItems(id,depth+1);if(sub.children.empty())sub.children.push_back(CM::Command(0,TR(bookmarks_menu_empty),L"",false));items.push_back(sub);}
         else{auto item=CM::Command(MenuId(MenuOpen,id),NativeUI::EscapeMenuText(BM::DisplayTitle(*n)));item.image=SiteIcon(AddressBar::SiteOf(n->url));item.icon=L"favicon";item.help=ReadableUrl(n->url);items.push_back(item);}}
-    if(f->children.empty()){items.push_back(CM::Command(0,L"(Vide)",L"",false));}
+    if(f->children.empty()){items.push_back(CM::Command(0,TR(bookmarks_menu_empty),L"",false));}
     auto t=Active();if(f->children.empty()&&t&&!t->home&&BM::Admissible(t->uri)){auto add=CM::Command(MenuId(MenuAddHere,folder),TR(bookmark_add_here));add.icon=L"star";items.push_back(add);}
     return items;
 }
@@ -3892,7 +3895,7 @@ void RunBookmarkMenu(const std::vector<CM::Item>& items,int region,bool keyboard
 void OverflowMenu(bool keyboard){
     std::vector<CM::Item> items;const auto& bar=bookmarks.Root(BM::BarRoot).children;
     for(size_t i=(size_t)chrome.band.visible;i<bar.size();++i){const auto* n=bookmarks.Find(bar[i]);if(!n)continue;
-        if(n->kind==BM::Kind::Folder){CM::Item sub;sub.id=MenuId(MenuOpen,n->id);sub.label=NativeUI::EscapeMenuText(n->title);sub.icon=L"folder-closed";sub.help=FolderSummary(n->id);sub.children=BookmarkFolderItems(n->id,1);items.push_back(sub);}
+        if(n->kind==BM::Kind::Folder){CM::Item sub;sub.id=MenuId(MenuOpen,n->id);sub.label=NativeUI::EscapeMenuText(n->title.empty()?std::wstring(TR(bookmarks_unnamed_folder)):n->title);sub.icon=L"folder-closed";sub.help=FolderSummary(n->id);sub.children=BookmarkFolderItems(n->id,1);items.push_back(sub);}
         else{auto item=CM::Command(MenuId(MenuOpen,n->id),NativeUI::EscapeMenuText(BM::DisplayTitle(*n)));item.image=SiteIcon(AddressBar::SiteOf(n->url));item.icon=L"favicon";item.help=ReadableUrl(n->url);items.push_back(item);}}
     if(!bookmarks.Root(BM::OtherRoot).children.empty()){if(!items.empty())items.push_back(CM::Separator());CM::Item other;other.id=MenuId(MenuOpen,BM::OtherRoot);other.label=TR(bookmarks_other_root);other.icon=L"folder-closed";other.children=BookmarkFolderItems(BM::OtherRoot,1);items.push_back(other);}
     if(!items.empty())items.push_back(CM::Separator());
