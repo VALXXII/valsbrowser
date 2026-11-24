@@ -57,6 +57,15 @@ int wmain(int argc, wchar_t** argv) {
         WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), secret.data(), DWORD(secret.size()), &put, nullptr);
         return login.empty() ? 2 : login[0] - '0';
     }
+    // « Ton agent » trials (design/ton-agent-interface.md): the sign-in (`claude auth login`, `codex login`) succeeds at once
+    // and is remembered in <exe>.login, as the real CLI would after the web page.
+    if ((first == L"auth" && second == L"login") || (first == L"login" && second != L"status")) {
+        HANDLE f = CreateFileW((exe + L".login").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+        if (f != INVALID_HANDLE_VALUE) { DWORD put = 0; WriteFile(f, "0", 1, &put, nullptr); CloseHandle(f); }
+        const std::string done = "Signed in (fake CLI).\n";
+        DWORD put = 0; WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), done.data(), DWORD(done.size()), &put, nullptr);
+        return 0;
+    }
     if (first == L"hang") Sleep(60000);
     return 0;
 }

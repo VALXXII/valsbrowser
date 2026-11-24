@@ -4,7 +4,7 @@
 //     copied into temporary folders standing for %USERPROFILE% / %LOCALAPPDATA%);
 //   - installers are fake PowerShell scripts in a temporary folder (success, failure kinds, timeout);
 //   - the user PATH is a test key under HKCU\Software\BrowserTests (never HKCU\Environment).
-// Usage: agent_status_test.exe <fake-cli.exe> <work dir>
+// Usage: agent_status_test.exe <fake-cli.exe> <work dir> <sandbox\agents\fake-install.ps1>
 #ifndef UNICODE
 #define UNICODE
 #endif
@@ -16,6 +16,7 @@
 
 #include "agent-install.h"
 #include "agent-status.h"
+#include "chat-agent-status.h"
 
 namespace AS = AgentStatus; namespace AI = AgentInstall; namespace RT = AgentRuntime;
 
@@ -48,6 +49,22 @@ static void DetectionMatrix() {
     Expect(std::string(AS::StateName(S::NeedsSignIn)) == "needsSignIn" && std::string(AS::ReasonName(R::DesktopOnly)) == "desktopOnly", "names: stable identifiers");
     Expect(std::wstring(AS::ManualInstall(RT::Agent::Claude).command) == L"irm https://claude.ai/install.ps1 | iex", "manual: Claude Code's official command");
     Expect(std::wstring(AS::ManualInstall(RT::Agent::Codex).command).find(L"https://chatgpt.com/codex/install.ps1") != std::wstring::npos, "manual: Codex's official command");
+}
+
+// The chat shows the one status (src/chat-agent-status.h): never « Installé » while the CLI is missing.
+static void ChatView() {
+    using S = AS::State; using R = AS::Reason; using T = ChatAgentStatus::Text;
+    auto v = [](S state, R reason = R::None, bool runtime = false) { AS::Status s; s.state = state; s.reason = reason; s.runtimeReady = runtime; return ChatAgentStatus::Of(s); };
+    Expect(std::string(v(S::NotInstalled).status) == "notInstalled" && !v(S::NotInstalled).cli, "chat: not installed → « Pas installé », no CLI");
+    Expect(std::string(v(S::NotInstalled, R::DesktopOnly).status) == "notInstalled", "chat: Claude Desktop only → « Pas installé »");
+    Expect(std::string(v(S::NotInstalled, R::TooOld).status) == "error" && v(S::NotInstalled, R::TooOld).text == T::TooOld, "chat: too old → « Version trop ancienne »");
+    Expect(std::string(v(S::NeedsSignIn).status) == "notConnected" && v(S::NeedsSignIn).cli, "chat: installed, signed out → « Pas connecté »");
+    Expect(std::string(v(S::Ready, R::None, true).status) == "ready" && v(S::Ready, R::None, true).text == T::Installed, "chat: ready, runtime downloaded → « Installé »");
+    Expect(v(S::Ready).text == T::FirstUse, "chat: ready, runtime still to download → « first use »");
+    Expect(std::string(v(S::Installing).status) == "preparing" && v(S::Installing).text == T::Installing && !v(S::Installing).cli, "chat: installing → « Installation… »");
+    Expect(std::string(v(S::Error, R::NotFoundAfterInstall).status) == "notInstalled" && !v(S::Error, R::NotFoundAfterInstall).cli, "chat (the « Installé » bug): an install that left no CLI is « Pas installé », never « Installé »");
+    Expect(std::string(v(S::Error, R::SignInFailed).status) == "notConnected" && v(S::Error, R::SignInFailed).cli, "chat: a failed sign-in → still to sign in");
+    Expect(!v(S::Unknown).known && std::string(v(S::Unknown).status) == "starting", "chat: before the first detection → « starting », unknown");
 }
 
 static void Classification() {
@@ -101,12 +118,142 @@ static void Hub() {
     AS::Shutdown();
 }
 
+// ---------------------------------------------------------------- the installer, on the FAKE script (sandbox/agents/fake-install.ps1)
+static std::wstring Work, FakeCli, FakeScript;
+static bool Exists(const std::wstring& p) { return GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES; }
+static void MakeDir(const std::wstring& d) { std::wstring acc; for (size_t i = 0; i <= d.size(); ++i) { if (i == d.size() || d[i] == L'\\') { if (acc.size() > 2) CreateDirectoryW(acc.c_str(), nullptr); } if (i < d.size()) acc += d[i]; } }
+static void WriteText(const std::wstring& p, const char* text) { HANDLE f = CreateFileW(p.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr); DWORD put = 0; WriteFile(f, text, DWORD(strlen(text)), &put, nullptr); CloseHandle(f); }
+static AI::PathTarget TestPath() { AI::PathTarget t; t.key = L"Software\\BrowserTests\\AgentPath-" + std::to_wstring(GetCurrentProcessId()); t.broadcast = false; return t; }
+static std::wstring PathValue(const AI::PathTarget& t) { wchar_t buf[2048] = {}; DWORD size = sizeof buf; RegGetValueW(HKEY_CURRENT_USER, t.key.c_str(), t.value.c_str(), RRF_RT_ANY | RRF_NOEXPAND, nullptr, buf, &size); return buf; }
+
+static AI::Result RunFake(const std::wstring& name, const wchar_t* mode, RT::Agent agent, unsigned timeoutMs, const std::wstring& home, const std::wstring& local,
+                          const std::wstring& userBin = L"", const std::atomic<bool>* cancel = nullptr, std::vector<AI::Stage>* stages = nullptr) {
+    AI::Options o; o.agent = agent; o.scriptFile = FakeScript; o.timeoutMs = timeoutMs; o.workDir = Work + L"\\runs\\" + name; o.userBinDir = userBin; o.path = TestPath();
+    o.environment = {{L"BROWSER_AGENT_INSTALL_AGENT", agent == RT::Agent::Claude ? L"claude" : L"codex"}, {L"BROWSER_FAKE_INSTALL_MODE", mode},
+                     {L"BROWSER_FAKE_CLI", FakeCli}, {L"FAKE_HOME", home}, {L"FAKE_LOCAL", local}, {L"BROWSER_FAKE_INSTALL_DELAY_MS", L""}};
+    return AI::Run(o, [stages](AI::Stage s) { if (stages) stages->push_back(s); }, cancel);
+}
+
+static void Installer() {
+    const std::wstring home = Work + L"\\inst\\home", local = Work + L"\\inst\\local"; MakeDir(home); MakeDir(local);
+    std::vector<AI::Stage> stages;
+    auto r = RunFake(L"claude-ok", L"ok", RT::Agent::Claude, 60000, home, local, home + L"\\.local\\bin", nullptr, &stages);
+    Expect(r.Ok() && r.exitCode == 0 && Exists(home + L"\\.local\\bin\\claude.exe"), "install: the fake Claude Code installer ran (hidden PowerShell), its CLI in .local\\bin");
+    Expect(r.pathAdded && AI::PathContains(PathValue(TestPath()), home + L"\\.local\\bin"), "install: .local\\bin added to the (test) user PATH");
+    Expect(stages.size() == 2 && stages[0] == AI::Stage::Running && stages[1] == AI::Stage::Checking, "install: a local script is not downloaded (running, checking)");
+    Expect(r.log.find(L"Installed.") != std::wstring::npos, "install: the script's output kept for the log");
+    r = RunFake(L"codex-ok", L"ok", RT::Agent::Codex, 60000, home, local);
+    Expect(r.Ok() && !r.pathAdded && Exists(local + L"\\Programs\\OpenAI\\Codex\\bin\\codex.exe"), "install: the fake Codex installer (it adds itself to the PATH: nothing for us to add)");
+    Expect(RunFake(L"policy", L"policy", RT::Agent::Claude, 60000, home, local).error == AI::Error::ExecutionPolicy, "install error: PowerShell scripts disabled → execution policy");
+    Expect(RunFake(L"inuse", L"inuse", RT::Agent::Claude, 60000, home, local).error == AI::Error::FileInUse, "install error: file used by another process → antivirus / file in use");
+    Expect(RunFake(L"network", L"network", RT::Agent::Codex, 60000, home, local).error == AI::Error::Network, "install error: unable to connect → network");
+    r = RunFake(L"fail", L"fail", RT::Agent::Codex, 60000, home, local);
+    Expect(r.error == AI::Error::ScriptFailed && r.exitCode == 7 && r.detail.find("exit 7") != std::string::npos && r.detail.find("unexpected") != std::string::npos, "install error: anything else → failed, the telling line kept");
+    const ULONGLONG t0 = GetTickCount64();
+    r = RunFake(L"hang", L"hang", RT::Agent::Claude, 1500, home, local);
+    Expect(r.error == AI::Error::Timeout && GetTickCount64() - t0 < 15000, "install error: still running after the timeout → killed (timeout)");
+    std::atomic<bool> cancel{false};
+    HANDLE th = CreateThread(nullptr, 0, [](void* p) -> DWORD { Sleep(800); static_cast<std::atomic<bool>*>(p)->store(true); return 0; }, &cancel, 0, nullptr);
+    r = RunFake(L"cancel", L"hang", RT::Agent::Claude, 60000, home, local, L"", &cancel);
+    WaitForSingleObject(th, INFINITE); CloseHandle(th);
+    Expect(r.error == AI::Error::Cancelled, "install: the browser closing kills the installer (cancelled)");
+    RegDeleteTreeW(HKEY_CURRENT_USER, TestPath().key.c_str());
+}
+
+// ---------------------------------------------------------------- the hub over fake profiles (real detection, fake CLIs)
+struct FakeProfile { std::wstring home, local, roaming; };
+static FakeProfile Profile(const std::wstring& name) { FakeProfile p{Work + L"\\profiles\\" + name + L"\\home", Work + L"\\profiles\\" + name + L"\\local", Work + L"\\profiles\\" + name + L"\\roaming"}; MakeDir(p.home); MakeDir(p.local); MakeDir(p.roaming); return p; }
+static void PutCli(const std::wstring& dir, const wchar_t* exe, const char* version, const char* login) {
+    MakeDir(dir); CopyFileW(FakeCli.c_str(), (dir + L"\\" + exe).c_str(), FALSE);
+    WriteText(dir + L"\\" + exe + L".version", version); WriteText(dir + L"\\" + exe + L".login", login);
+}
+static void UseProfile(const FakeProfile& p) {
+    AS::Host h;
+    h.dataRoot = Work + L"\\data";
+    h.environment = [p] { RT::Environment e; e.dataRoot = Work + L"\\data"; e.userProfile = p.home; e.localAppData = p.local; e.appData = p.roaming; e.path = L""; e.freshUserEnvironment = false; return e; };
+    h.signIn = [](const RT::Environment& env, RT::Agent a, unsigned, std::string*) {   // the fake CLI's own sign-in, without a console
+        const std::wstring exe = a == RT::Agent::Claude ? env.userProfile + L"\\.local\\bin\\claude.exe" : env.localAppData + L"\\Programs\\OpenAI\\Codex\\bin\\codex.exe";
+        if (Exists(exe)) WriteText(exe + L".login", "0");
+        return true;
+    };
+    AS::Init(h);   // a first detection, at once (no `run`: synchronous)
+    SetEnvironmentVariableW(L"FAKE_HOME", p.home.c_str()); SetEnvironmentVariableW(L"FAKE_LOCAL", p.local.c_str());
+}
+
+static void Profiles() {
+    // The browser's own test hooks (non-release, BROWSER_ANNOTATIONS_TEST): the fake script instead of the official one, the PATH on a test key.
+    SetEnvironmentVariableW(L"BROWSER_ANNOTATIONS_TEST", L"1");
+    SetEnvironmentVariableW(L"BROWSER_AGENT_INSTALL_SCRIPT", FakeScript.c_str());
+    SetEnvironmentVariableW(L"BROWSER_AGENT_PATH_KEY", TestPath().key.c_str());
+    SetEnvironmentVariableW(L"BROWSER_FAKE_CLI", FakeCli.c_str());
+    using S = AS::State; using R = AS::Reason; const auto C = RT::Agent::Claude, X = RT::Agent::Codex;
+    {   // Claude Code absent, nothing else
+        UseProfile(Profile(L"absent"));
+        Expect(AS::Get(C).state == S::NotInstalled && AS::Get(C).reason == R::None && AS::Get(X).state == S::NotInstalled, "profile « absent »: both not installed");
+    }
+    {   // Claude Desktop only → not installed (desktopOnly); install → installed, signed out; sign in → ready
+        const auto p = Profile(L"desktop"); MakeDir(p.local + L"\\AnthropicClaude"); UseProfile(p);
+        Expect(AS::Get(C).state == S::NotInstalled && AS::Get(C).reason == R::DesktopOnly, "profile « Claude Desktop only »: Claude Code not installed (desktopOnly)");
+        SetEnvironmentVariableW(L"BROWSER_FAKE_INSTALL_MODE", L"ok");
+        Expect(AS::Install(AS::UserClicked(C)) && AS::Get(C).state == S::NeedsSignIn && AS::Get(C).version == "2.1.325", "profile « Claude Desktop only »: the click installs Claude Code → installed, to sign in");
+        Expect(AI::PathContains(PathValue(TestPath()), p.home + L"\\.local\\bin"), "profile « Claude Desktop only »: .local\\bin on the (test) user PATH");
+        Expect(AS::SignIn(C) && AS::Get(C).Ready() && AS::FirstReady() == C, "profile « Claude Desktop only »: signed in → ready");
+    }
+    {   // Claude Code present and signed in, Codex present and signed out
+        const auto p = Profile(L"present");
+        PutCli(p.home + L"\\.local\\bin", L"claude.exe", "2.1.325 (Claude Code)", "0"); PutCli(p.local + L"\\Programs\\OpenAI\\Codex\\bin", L"codex.exe", "codex-cli 0.166.0", "1");
+        UseProfile(p);
+        Expect(AS::Get(C).Ready() && AS::Get(X).state == S::NeedsSignIn, "profile « present »: Claude Code ready, Codex to sign in");
+        Expect(!AS::Install(AS::UserClicked(C)) && !AS::Install(AS::UserClicked(X)), "profile « present »: nothing to install");
+    }
+    {   // too old → install again updates it
+        const auto p = Profile(L"old"); PutCli(p.home + L"\\.local\\bin", L"claude.exe", "2.0.1 (Claude Code)", "0"); UseProfile(p);
+        Expect(AS::Get(C).state == S::NotInstalled && AS::Get(C).reason == R::TooOld && AS::Get(C).version == "2.0.1", "profile « too old »: not installed (tooOld)");
+        SetEnvironmentVariableW(L"BROWSER_FAKE_INSTALL_MODE", L"ok");
+        Expect(AS::Install(AS::UserClicked(C)) && AS::Get(C).state == S::NeedsSignIn && AS::Get(C).version == "2.1.325", "profile « too old »: installing updates it");
+    }
+    {   // the installer « succeeds » but no CLI → error (not « Installé »: the bug)
+        UseProfile(Profile(L"nocli"));
+        SetEnvironmentVariableW(L"BROWSER_FAKE_INSTALL_MODE", L"nocli");
+        Expect(AS::Install(AS::UserClicked(X)) && AS::Get(X).state == S::Error && AS::Get(X).reason == R::NotFoundAfterInstall, "install without the CLI afterwards → error (never « installed »)");
+        SetEnvironmentVariableW(L"BROWSER_FAKE_INSTALL_MODE", L"network");
+        Expect(AS::Retry(AS::UserClicked(X)) && AS::Get(X).state == S::Error && AS::Get(X).reason == R::Network, "retry: the network fails → error (network)");
+        SetEnvironmentVariableW(L"BROWSER_FAKE_INSTALL_MODE", L"ok");
+        Expect(AS::Retry(AS::UserClicked(X)) && AS::Get(X).state == S::NeedsSignIn, "retry: then it works → installed, to sign in");
+    }
+    AS::Shutdown();
+    RegDeleteTreeW(HKEY_CURRENT_USER, TestPath().key.c_str());
+    SetEnvironmentVariableW(L"BROWSER_AGENT_INSTALL_SCRIPT", nullptr); SetEnvironmentVariableW(L"BROWSER_AGENT_PATH_KEY", nullptr);
+}
+
+// A fresh work folder every run (the fake profiles must start empty). Only ever under the folder the runner gives.
+static void RemoveTree(const std::wstring& dir) {
+    WIN32_FIND_DATAW fd; HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            const std::wstring name = fd.cFileName; if (name == L"." || name == L"..") continue;
+            const std::wstring p = dir + L"\\" + name;
+            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !(fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) RemoveTree(p);
+            else { SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL); if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) RemoveDirectoryW(p.c_str()); else DeleteFileW(p.c_str()); }
+        } while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    RemoveDirectoryW(dir.c_str());
+}
+static std::wstring RealUserPath() { wchar_t buf[32768] = {}; DWORD size = sizeof buf; RegGetValueW(HKEY_CURRENT_USER, L"Environment", L"Path", RRF_RT_ANY | RRF_NOEXPAND, nullptr, buf, &size); return buf; }
+
 int wmain(int argc, wchar_t** argv) {
-    (void)argc; (void)argv;
+    const std::wstring realPath = RealUserPath();   // the user's real PATH: must be exactly the same at the end
     DetectionMatrix();
+    ChatView();
     Classification();
     PathHelpers();
     Hub();
+    if (argc >= 4) {
+        FakeCli = argv[1]; Work = argv[2]; FakeScript = argv[3];
+        RemoveTree(Work); MakeDir(Work); Installer(); Profiles();
+    } else std::printf("(no fake CLI / work dir / fake script given: installer and profile checks skipped)\n");
+    Expect(RealUserPath() == realPath, "safety: the user's real PATH (HKCU\\Environment) untouched");
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

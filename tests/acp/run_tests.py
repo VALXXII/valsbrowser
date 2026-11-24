@@ -327,6 +327,8 @@ def main():
             compile_exe("fake-cli.exe", ["tests/acp/fake_cli.cpp"])
             compile_exe("acp_client_test.exe", ["tests/acp/acp_client_test.cpp", *CLIENT], CLIENT_LIBS)
             compile_exe("agent_runtime_test.exe", ["tests/acp/agent_runtime_test.cpp", *RUNTIME], RUNTIME_LIBS)
+            # « Ton agent » (design/ton-agent-interface.md): the one status + the official installers, on fakes only.
+            compile_exe("agent_status_test.exe", ["tests/acp/agent_status_test.cpp", "src/agent-install.cpp", *RUNTIME], RUNTIME_LIBS)
         if args.real or args.real_only:
             compile_exe("real_adapter_probe.exe", ["tests/acp/real_adapter_probe.cpp", *RUNTIME], RUNTIME_LIBS)
         if failures:
@@ -336,6 +338,7 @@ def main():
             run([OUT / "acp_client_test.exe", OUT / "fake-acp-agent.exe", TMP / "client"], "acp_client_test", env=env)
             cmd = [OUT / "agent_runtime_test.exe", OUT / "fake-acp-agent.exe", OUT / "fake-cli.exe", TMP / "runtime", TMP / "fixtures"]
             run(cmd + ([] if args.quick else ["--network"]), "agent_runtime_test" + (" (no network)" if args.quick else " (with real downloads)"), env=env)
+            run([OUT / "agent_status_test.exe", OUT / "fake-cli.exe", TMP / "status", ROOT / "sandbox" / "agents" / "fake-install.ps1"], "agent_status_test", env=env)
         if args.real or args.real_only:
             real_probe(env)
     finally:

@@ -83,6 +83,66 @@ def prepare_agents(root: pathlib.Path) -> None:
         toml.write_text('# config.toml de TEST (essai de l\'onboarding) : vos vrais réglages Codex ne sont pas ici\n', encoding='utf-8', newline='\n')
 
 
+# « Ton agent » (design/ton-agent-interface.md): a FAKE agents profile for the browser — the folders it looks in for
+# claude.exe / codex.exe (USERPROFILE, LOCALAPPDATA, APPDATA, PATH) point at temporary ones, the official installer is
+# replaced by sandbox/agents/fake-install.ps1 and the user PATH by a test key: nothing of the real Windows account is used.
+#   present  Claude Code installed and signed in, Codex installed and signed out
+#   absent   neither installed (the installs run the fake installer)
+#   desktop  Claude Desktop only (its folders, no claude.exe): Claude Code « not installed »
+#   real     the REAL detection and the REAL official installers (only with Val's consent: the click « Installer … »)
+REPO = HERE.parents[1]
+FAKE_PATH_KEY = r'Software\BrowserTests\TonAgentTrial'
+
+
+def fake_cli() -> pathlib.Path:
+    exe = REPO / 'build' / 'acp-test' / 'fake-cli.exe'
+    if not exe.is_file():   # the tests' fake CLI (tests/acp/fake_cli.cpp): --version, auth/login status, auth login / login
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        gxx = REPO / 'tools' / 'w64devkit' / 'bin' / 'g++.exe'
+        subprocess.run([str(gxx), '-std=c++17', '-O2', '-static', '-municode', str(REPO / 'tests' / 'acp' / 'fake_cli.cpp'), '-o', str(exe)], check=True)
+    return exe
+
+
+def put_cli(folder: pathlib.Path, name: str, version: str, login: str, cli: pathlib.Path) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(cli, folder / name)
+    (folder / (name + '.version')).write_text(version, encoding='ascii')
+    (folder / (name + '.login')).write_text(login, encoding='ascii')
+
+
+def agents_environment(root: pathlib.Path, profile: str, fresh: bool, mode: str, delay_ms: int) -> dict[str, str]:
+    if profile == 'real':
+        return {}
+    home, local, roaming = root / 'home', root / 'local', root / 'roaming'
+    if fresh and root.exists():
+        shutil.rmtree(root)
+    for d in (home, local, roaming):
+        d.mkdir(parents=True, exist_ok=True)
+    cli = fake_cli()
+    if fresh:
+        if profile == 'present':
+            put_cli(home / '.local' / 'bin', 'claude.exe', '2.1.325 (Claude Code)', '0', cli)
+            put_cli(local / 'Programs' / 'OpenAI' / 'Codex' / 'bin', 'codex.exe', 'codex-cli 0.166.0', '1', cli)
+        elif profile == 'desktop':
+            (local / 'AnthropicClaude').mkdir(parents=True, exist_ok=True)
+            (roaming / 'Claude').mkdir(parents=True, exist_ok=True)
+        import winreg
+        try:
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, FAKE_PATH_KEY)
+        except OSError:
+            pass
+    system = os.environ.get('SystemRoot', r'C:\Windows')
+    return {
+        'USERPROFILE': str(home), 'LOCALAPPDATA': str(local), 'APPDATA': str(roaming),
+        'PATH': ';'.join([system + r'\System32', system, system + r'\System32\WindowsPowerShell\v1.0']),
+        'BROWSER_AGENT_INSTALL_SCRIPT': str(REPO / 'sandbox' / 'agents' / 'fake-install.ps1'),
+        'BROWSER_AGENT_PATH_KEY': FAKE_PATH_KEY,
+        'BROWSER_FAKE_CLI': str(cli),
+        'BROWSER_FAKE_INSTALL_MODE': mode,
+        'BROWSER_FAKE_INSTALL_DELAY_MS': str(delay_ms),
+    }
+
+
 def write_session(run: pathlib.Path, urls: list[str]) -> None:
     """The first window's tabs (src/session.h, format 2): the local page first and active."""
     lines = ['browser-session-2', '0', str(len(urls))] + [json.dumps(u) for u in urls] + ['0']
@@ -96,6 +156,11 @@ def main() -> int:
     ap.add_argument('--private', action='store_true', help="une fenêtre privée sur la page locale (reprend l'essai précédent s'il existe)")
     ap.add_argument('--welcome', action='store_true', help="comme une nouvelle installation : la fenêtre d'accueil d'abord (son étape « Mode Annotation » propose le tutoriel)")
     ap.add_argument('--english', action='store_true', help='interface en anglais')
+    ap.add_argument('--agents', choices=('present', 'absent', 'desktop', 'real'),
+                    help="« Ton agent » : un profil d'agents factice (present, absent, desktop) ou la détection et les installateurs RÉELS (real)")
+    ap.add_argument('--install-mode', default='ok', choices=('ok', 'nocli', 'policy', 'inuse', 'network', 'fail', 'hang'),
+                    help="--agents factice : ce que fait le faux installateur (ok par défaut ; les autres : les erreurs)")
+    ap.add_argument('--install-delay-ms', type=int, default=4000, help="--agents factice : durée du faux installateur (pour voir l'animation)")
     ap.add_argument('--dry-run', action='store_true', help='tout préparer (copie, pages) sans ouvrir le navigateur (vérification sans écran)')
     a = ap.parse_args()
     for stream in (sys.stdout, sys.stderr):
@@ -157,6 +222,10 @@ def main() -> int:
         env['BROWSER_ANNOTATIONS_CONNECT_ROOT'] = str(agents)
         env['BROWSER_ANNOTATIONS_TEST'] = '1'   # garde-fou : aucune écriture dans les vrais dossiers, même si la redirection échouait
         env.pop('BROWSER_ANNOTATIONS_CONNECT_PATH', None)
+        if a.agents:
+            env.update(agents_environment(home / 'agents-profile', a.agents, fresh, a.install_mode, a.install_delay_ms))
+            print(f'Agents        : profil « {a.agents} »' + (' — DÉTECTION ET INSTALLATEURS RÉELS (votre compte Windows)' if a.agents == 'real'
+                  else f' (factice : dossiers sous {home / "agents-profile"}, faux installateur « {a.install_mode} »)'))
         print(f'Navigateur     : {run}\\browser.exe' + (' (fenêtre privée)' if a.private else ''))
         print(f'Page locale    : {URL}   (Annoter allumé)')
         print(f'Fichier local  : {file_url}   (Annoter allumé)')

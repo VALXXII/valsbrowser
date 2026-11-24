@@ -68,6 +68,8 @@ struct Status {
     std::string version;        // "2.1.325" when a CLI was found (also TooOld)
     std::wstring path;          // the CLI used
     bool desktop = false;       // Claude Desktop is installed (Claude only; informative)
+    bool runtimeReady = false;  // the chat's own runtime for this agent (private Node + adapter) is downloaded: the
+                                // chat's first message prepares it otherwise (« Préparation… »); not part of « installed »
     unsigned generation = 0;    // +1 on every change of this agent (cheap « did it change »)
     std::string detail;         // developer detail for the logs (never shown)
 
@@ -122,5 +124,6 @@ bool SignIn(Agent agent);                    // NeedsSignIn / Error(sign-in) →
 bool Retry(const Consent& consent);          // Error: the failed step again (install with the consent, or sign-in)
 void Refresh();                              // detect both again (window focus, settings opened, chat opened)
 void Refresh(Agent agent);
+void Refresh(std::function<void()> done);    // both again, then `done` on the UI thread (after the listeners)
 
 }  // namespace AgentStatus
