@@ -334,6 +334,7 @@ Durée mesurée le 24/11 : **13 min 10 s** (11 suites). Aucune fenêtre à l'éc
 | `chat-panel` | `python -I tests/chat-panel/run.py` | Page du chat : états Paper, clavier, accessibilité, menus, autorisations, brouillons |
 | `page-v4` | `python tests/annotations-ui/page_v4.py` | Script de la page : cadres, étiquettes, inspecteur, Ctrl maintenu. N'était dans aucun ancien lanceur |
 | `fake-agent` | `python -I tests/chat/final/fake_agent_scenarios.py` | Le faux agent se comporte comme un vrai (annonces, autorisation, erreurs) |
+| `replay-opening` | `python -I tests/chat/final/replay_opening.py` | Ouverture d'une bulle rejouée sans fenêtre : la page n'annonce qu'une hauteur, la sienne ; saisie et boutons dans la surface (lot 1b) |
 | `snapshots` | `python -I tests/snapshots/run_tests.py` | « Tout annuler », compteur de fichiers |
 | `annotations` | `python -I tests/annotations/run_tests.py` | Magasin et pont MCP : annotation gardée, lue, prise, terminée ; connexion Claude / Codex sur dossiers redirigés |
 | `annotations-ui` | `python tests/annotations-ui/run.py --no-window` | Bandeau, lanceur, historique, note. La nuit : avec ses fenêtres |
@@ -608,6 +609,46 @@ test (deux éléments qui partagent une conversation) ou un vrai mélange de con
 2. Points 1 à 3 ci-dessus et les 8 ouvertures à trier.
 3. Les suites écrites pour l'ancienne place de la bulle sur les éléments larges peuvent demander une mise à jour
    d'attente (règles 9 et 10) : chacune sera listée dans le rapport.
+
+## 8 bis. Lot 1b — tri des deux points laissés par le monkey (24/11, branche `VALXXII/annotation-lot1b`)
+
+Fait sans fenêtre, à partir du journal du monkey (graine 1) et d'un rejeu de la page dans un navigateur invisible
+(`tests/chat/final/replay_opening.py`, ajouté à la partie sans fenêtre du test général).
+
+### a) Les 8 ouvertures « message d'une autre conversation » : erreur du test
+
+Le monkey numérote ses messages (`jt1x1`, `jt1x2`…) et cherchait ces jetons comme de simples morceaux de texte : à partir du
+10ᵉ message, `jt1x1` se retrouve dans `jt1x13`, `jt1x14`… Les 8 échecs portent tous sur des messages 11 à 17, et la capture
+montre bien les seuls messages de l'élément cliqué. **Aucun mélange de conversations dans le produit**, donc rien à chercher
+dans 0.3.833. Corrigé dans le harnais (`qa_final.holds()` : jeton entier).
+
+### b) Le clic qui traverse la bulle (#185, #219) : même cause que la saisie qui sort (#110)
+
+Le rejeu reproduit le journal au pixel près. Deux défauts distincts, tous deux **déjà présents dans 0.3.833** :
+
+1. **Le pied de la bulle est dessiné hors de la bulle quand des messages attendent.** Les messages en attente s'empilent
+   au-dessus de la saisie sans limite de hauteur : avec 4 messages, la saisie et les boutons du mode et du modèle sont
+   dessinés 340 à 370 px sous la surface, donc invisibles et hors de la zone cliquable. Le test cliquait à l'endroit où la
+   page situe le bouton : le clic arrivait sur le site et ouvrait la bulle d'un autre élément. Pour l'utilisateur : une
+   bulle sans saisie. **Pas corrigé ici** — c'est dans `assets/chat-panel/` (lot R) et il faut la décision de design
+   (combien de messages en attente montrer). Le rejeu le signale « DÉFAUT CONNU » ; il deviendra un contrôle bloquant.
+2. **La bulle s'ouvre à une mauvaise hauteur, puis se corrige** (vu : 460 → 250 → 460 px en un instant). Quand un autre
+   élément travaille ou attend une autorisation, l'hôte envoyait la conversation à la page *avant* le message d'ouverture,
+   puis les nouvelles limites, puis l'ouverture. La page répondait aussitôt avec une hauteur calculée pour la bulle
+   d'avant ; l'hôte la prenait pour la réponse à l'ouverture, choisissait le côté avec (dessus au lieu de dessous) et
+   affichait la bulle, corrigée deux fois ensuite. **Corrigé** dans `src/chat-comment.h` : l'ouverture est le seul message
+   envoyé, la conversation part avec elle (`ShowAside(…, forBubble)`, `AsideForBubbleShown`, `bubble.opening`). Trois
+   contrats ; le rejeu montre une seule hauteur annoncée et une bulle affichée une fois.
+
+### À vérifier en vraie fenêtre
+
+- Ouvrir une bulle sur un élément pendant qu'un autre attend une autorisation : elle apparaît une fois, à sa hauteur, sans
+  rétrécir ni regrandir (journal : plus de lignes « bubble frame … (carried) » juste après « shown at its place »).
+- Le délai d'ouverture (objectif 150 ms) ne s'allonge pas : la bulle attend maintenant la vraie réponse de la page.
+- La bande « Commencera après le travail en cours sur … » s'affiche toujours dans une bulle ouverte pendant qu'un autre
+  élément travaille.
+- Monkey graine 1 : les 8 échecs « autre conversation » ont disparu ; #185 / #219 restent tant que le point 1 est ouvert.
+- Le correctif du lot 1 pour la bulle qui saute après la bascule (#82) n'a toujours pas été revu en vraie fenêtre.
 
 ## 9. À prévoir — les trois dispositions des onglets (#127)
 

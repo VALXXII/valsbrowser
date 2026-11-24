@@ -372,6 +372,21 @@ check('BubbleMarginCss = 8' in consts and '2 * BubbleMarginCss' in block_after(c
       '#130 C: 8 px from the page area\'s edges; the height offered is at most the page area - 16 px')
 
 ok = all(checks)
+# Lot 1b (real-window monkey, 24 Nov 2026, seed 1 #185 / #219, replayed without a window): the opening's acknowledgement is the
+# page's answer to the OPENING layout — nothing sent before it makes the page publish a size for the layout of before
+ob = block_after(comment, 'void OpenBubble('); pb = block_after(comment, 'void PlaceBubble(bool scrolling) {')
+check('bubble.opening = panelReady; PlaceBubble(); bubble.opening = false;' in ob and pb.count('!bubble.opening) SendLayout(false)') == 2
+      and pb.count('SendLayout(false)') == 2 and ob.index('bubble.opening = panelReady') < ob.index('SendLayout(true)'),
+      'lot 1b: placing a bubble that opens sends no layout {open: false} before its opening layout (the page answered it with the height of the conversation of before)')
+sa = block_after(comment, 'void ShowAside('); afb = block_after(comment, 'void AsideForBubbleShown('); sc = block_after(comment, 'void ShowConversation(')
+check('if (forBubble) return;' in sa and sa.index('if (forBubble) return;') < sa.index('SendState()') and 'RefreshWaitStrip();' in afb
+      and 'if (!(bubble.open && bubble.conv == id)) { SendState(); SendThread(); SendQueue(); }' in afb
+      and sc.count('ShowAside(std::move(c), forBubble); if (then) then(); if (forBubble) AsideForBubbleShown(') == 2 and 'ShowAside(std::move(c));' not in comment,
+      'lot 1b: a conversation shown aside for a bubble opening (a turn runs elsewhere) is sent once, with the opening layout — never first, in the layout of before')
+oe2 = block_after(comment, 'bool OpenEarly(')
+check('NewAnchoredConversation(env.selector, label, page, "", "", true)' in oe2 and oe2.index('AsideForBubbleShown(id)') > oe2.index('OpenBubble(id, &element, env.selector, false, label)')
+      and 'NewAnchoredConversation(sel, label, page, "", key, true)' in comment and comment.count('AsideForBubbleShown(id);') == 3,
+      'lot 1b: a new conversation for a clicked element is sent once too (it was first drawn with the draft of the element of before)')
 # M5 (real-window monkey, 24 Nov 2026, seed 1 #81 / #101): a click while the chat panel is still on screen (sliding out) — its
 # rectangle is of a page about to widen: the bubble waits for the page's first measure instead of being shown, then moved
 oe5 = block_after(comment, 'bool OpenEarly(')

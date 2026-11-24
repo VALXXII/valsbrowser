@@ -1033,8 +1033,8 @@
     },
     "O5": {
       "gap": {
-        "lot": 1,
-        "why": "#82 : le clic du test est passé à travers la bulle (journal : « selecting #prix ») — à rejouer ; #110 : la saisie sort de la surface après une zone réduite à 444 px — l'échec enregistre maintenant l'état de la page et de l'hôte ; cause non prouvée sans vraie fenêtre"
+        "lot": "R",
+        "why": "cause prouvée sans fenêtre le 24/11 (tests/chat/final/replay_opening.py, « DÉFAUT CONNU ») : les messages en attente dans la bulle n'ont pas de hauteur limite, la saisie et les boutons du mode / du modèle sont dessinés sous la surface, hors de la zone cliquable — c'est aussi le « clic qui traverse la bulle » (#185, #219) et #110. À corriger dans assets/chat-panel (lot R) après la décision de design (combien de messages en attente montrer) ; le contrôle devient bloquant en le retirant de KNOWN. #82 (bulle qui saute après la bascule) : corrigé au lot 1 (areaMoving), à revoir en vraie fenêtre"
       }
     },
     "O6": {
@@ -1136,6 +1136,22 @@
         {
           "suite": "focus-annotation",
           "what": "tests/focus/annotation_focus_journey.py — Mode Focus et mode Annotation ensemble : bandeau et chat gardés, rien ne saute (propriétaire : Mode Focus)"
+        }
+      ]
+    },
+    "lot1b-ouverture-un-seul-accuse": {
+      "tests": [
+        {
+          "suite": "replay-opening",
+          "what": "tests/chat/final/replay_opening.py — l'ouverture seule reçoit une taille, la sienne ; affichée une fois, rien de corrigé ; pied dans la surface (fil long)"
+        },
+        {
+          "suite": "chat-units",
+          "what": "tests/chat/host_contract_test.py « lot 1b » (3 contrats) : aucun layout {open: false} avant le layout d'ouverture ; conversation « à part » envoyée une fois, avec l'ouverture"
+        },
+        {
+          "suite": "monkey-1",
+          "what": "monkey.py — après « shown at its place », plus de « bubble frame … (carried) » qui rétrécit puis regrandit (à relire dans le journal, vraie fenêtre)"
         }
       ]
     }

@@ -117,6 +117,17 @@
       "timeout": 900
     },
     {
+      "id": "replay-opening",
+      "title": "Ouverture d'une bulle rejouée sans fenêtre : un seul accusé, pied dans la surface",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/final/replay_opening.py"
+      ],
+      "timeout": 600
+    },
+    {
       "id": "snapshots",
       "title": "Instantanés des fichiers (« Tout annuler »)",
       "part": "day",

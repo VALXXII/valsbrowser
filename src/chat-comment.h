@@ -42,6 +42,7 @@ struct BubbleState {
     bool hadKeyboard = false;                                        // M4 (a): the bubble had the keyboard when another application came in front
     int roomAreaH = 0;                                               // M15: the page area's height the offered room was measured with
     bool frameKept = false; ChatBubble::Rect frameRel;              // E4: the window of this opening, relative to the surface's fixed corner
+    bool opening = false;                                            // lot 1b: OpenBubble is placing it — its opening layout follows, no layout {open: false} before it
     bool holdForMeasure = false;                                     // H2 6e60162: the click's rectangle was measured in another viewport — shown at the page's first measure
     bool noFollow = false;                                           // C3: opened from the history (its element is gone): no selector followed
     bool lost = false;                                               // C3: its element is not found while its conversation works: kept at its last place
@@ -290,7 +291,7 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
         const auto rm = ChatBubble::ResizeRoom(p.rect, p.fromRight, p.fromBottom, area, margin, k);
         if (room != bubble.roomCss || rm.width != bubble.resizeMax.width || rm.height != bubble.resizeMax.height) {
             if (room != bubble.roomCss) Diag(L"bubble: height offered " + std::to_wstring(room) + L" CSS px (page area " + std::to_wstring(area.H()) + L" px" + (areaResized ? L", resized" : L"") + L")");   // M15 diagnostics   // i18n-exempt: log detail
-            bubble.roomCss = room; bubble.resizeMax = rm; if (panelReady && bubble.open && !bubble.waitingAck) SendLayout(false);
+            bubble.roomCss = room; bubble.resizeMax = rm; if (panelReady && bubble.open && !bubble.waitingAck && !bubble.opening) SendLayout(false);
         }
     }
     if (!scrolling && bubble.anchor.set && !bubble.endAsked && p.rect.bottom > area.bottom - margin && !p.fromBottom) AskDocumentEnd();   // R29: the one exception
@@ -339,7 +340,7 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
     }
     if (bubble.waitingAck) bubble.region = rg;   // R18: kept for the reveal; the window shows nothing until then
     else if (regionChanges) { bubble.region = rg; if (!bubble.away) SetWindowRgn(bubble.hwnd, CreateRectRgn(rg.left, rg.top, rg.right, rg.bottom), FALSE); }   // R41: no repaint for a region (no flash); the system owns it now
-    if (!scrolling && (sideChanged || insetChanged) && panelReady) SendLayout(false);
+    if (!scrolling && (sideChanged || insetChanged) && panelReady && !bubble.opening) SendLayout(false);   // lot 1b: an opening sends its own layout (OpenBubble)
 }
 // R39 (measured frame by frame): the page posts « anchor » from its scroll listener, before the compositor's image of
 // that scroll reaches the screen; a window moved at once lands one screen image AHEAD of the content. The move waits
@@ -649,7 +650,12 @@ void OpenBubble(const std::string& conv, const RECT* element, const std::string&
     if (!view.Usable(environment.p)) { view.Destroy(); panelReady = false; if (!view.Create(environment.p, bubble.hwnd, {0, 0, 10, 10})) { bubble.open = false; Diag(L"bubble WebView creation refused"); return; } }
     else view.Reparent(bubble.hwnd, {0, 0, 10, 10});
     if (!again) { bubble.win = RECT{}; bubble.region = RECT{}; }
-    PlaceBubble();
+    // Lot 1b (real-window monkey of 24 Nov 2026, seed 1 #185 / #219; replayed without a window): placing the bubble told the
+    // page its new bounds (layout {open: false}) BEFORE the opening layout. The page answers such a layout at once, with the
+    // height of what it still shows — the conversation of before — and the host took that size for the opening's
+    // acknowledgement: the bubble was shown at once at a height that was not its own, then corrected (460 -> 250 -> 460 px
+    // seen). The opening layout carries the same bounds: it is the only one sent, and the page answers it with its thread drawn.
+    bubble.opening = panelReady; PlaceBubble(); bubble.opening = false;
     bubble.openedAt = Ann::NowMs();
     view.Show(true);   // the page renders and measures while the window shows nothing
     if (again && IsWindowVisible(bubble.hwnd) && !bubble.waitingAck) { EnsureOnScreen(L"a click on its element"); }   // i18n-exempt: log detail
@@ -839,9 +845,21 @@ void ParkAside() {
     if (HasQueued(id) || aside.c.data.items.empty()) parked[id] = std::move(aside.c);
     aside = Aside{};
 }
-void ShowAside(Convo c) {
+// Lot 1b (same monkey, #185 / #219: a turn of another element was waiting for its authorization): for a bubble opening
+// (`forBubble`) the conversation is NOT sent here — the page still has the layout of the bubble of before, and published the
+// new thread's height for THAT layout (up to 520); the host, already waiting for the opening's acknowledgement, took it: the
+// side was chosen for a height the bubble does not have (above its element, « limited »), shown, then shrunk and grown
+// again. OpenBubble sends it with its opening layout (one sending, as the engine's: switchForBubble); AsideForBubbleShown
+// ends it (the strip; everything, when no bubble opened).
+void ShowAside(Convo c, bool forBubble = false) {
     ParkAside(); aside.c = std::move(c); aside.on = true;
+    if (forBubble) return;
     SendState(); SendThread(); SendQueue(); RefreshWaitStrip();
+}
+void AsideForBubbleShown(const std::string& id) {
+    if (!aside.on || aside.c.data.head.id != id) return;
+    if (!(bubble.open && bubble.conv == id)) { SendState(); SendThread(); SendQueue(); }   // no bubble opened on it: the page shows it now
+    RefreshWaitStrip();
 }
 // Shows a conversation (the bubble's): the engine's (A) when it is that one; else, while A works, B « aside »; when nothing
 // runs, B becomes the engine's (the agent starts for it). `then` runs once it is in place.
@@ -879,7 +897,7 @@ void ShowConversation(const std::string& id, std::function<void()> then, std::fu
     if (aside.on && aside.c.data.head.id == id) { if (then) then(); return; }
     if (auto it = parked.find(id); it != parked.end()) {
         Convo c = std::move(it->second); parked.erase(it);
-        if (turn.active) { ShowAside(std::move(c)); if (then) then(); return; }
+        if (turn.active) { const std::string shown = id; ShowAside(std::move(c), forBubble); if (then) then(); if (forBubble) AsideForBubbleShown(shown); return; }
         UiSlow slow("conversation switch");
         ParkAside(); DisposeSession(L"another element");   // i18n-exempt: log reason
         KeepInMemory(std::move(convo)); convo = std::move(c); RebuildTurnMaps();
@@ -901,7 +919,7 @@ void ShowConversation(const std::string& id, std::function<void()> then, std::fu
                      SyncMarks(); if (missing) missing(); return;
                  }
                  Convo c; c.data = std::move(*out); c.preambleSent = c.data.head.promptVersion == ChatPrompt::Version;
-                 if (turn.active) { ShowAside(std::move(c)); if (then) then(); return; }
+                 if (turn.active) { const bool forBubble = switchForBubble; switchForBubble = false; ShowAside(std::move(c), forBubble); if (then) then(); if (forBubble) AsideForBubbleShown(id); return; }
                  UiSlow slow("conversation switch");
                  ParkAside(); DisposeSession(L"another element"); KeepInMemory(std::move(convo)); convo = std::move(c);   // i18n-exempt: log reason
                  if (AgentOf(convo.data.head.agentId)) agentId = convo.data.head.agentId;
@@ -912,13 +930,13 @@ void ShowConversation(const std::string& id, std::function<void()> then, std::fu
              });
 }
 // A new conversation for an element (the engine's when nothing runs, else aside: its first message will wait).
-std::string NewAnchoredConversation(const std::string& selector, const std::string& label, const std::string& page, const std::string& source, const std::string& key = "") {
+std::string NewAnchoredConversation(const std::string& selector, const std::string& label, const std::string& page, const std::string& source, const std::string& key = "", bool forBubble = false) {
     auto setAnchor = [&](ChatStore::Header& h) { h.anchorSelector = selector; h.anchorKey = selector.empty() ? key : std::string(); h.anchorLabel = label; h.anchorPage = page; h.anchorSource = source; if (!label.empty() && h.title.empty()) h.title = ChatPrompt::OneLine(label, 44); };
     if (!turn.active) {
         ParkAside(); NewConversation(); setAnchor(convo.data.head); SendState(); return convo.data.head.id;
     }
     Convo c; auto& h = c.data.head; h.id = NewId("c_"); h.origin = site.origin; h.siteLabel = site.label; h.agentId = agentId; h.folder = folder; h.createdAt = h.updatedAt = BA::SystemNow();
-    setAnchor(h); const std::string id = h.id; ShowAside(std::move(c));
+    setAnchor(h); const std::string id = h.id; ShowAside(std::move(c), forBubble);   // forBubble: the caller opens its bubble, then AsideForBubbleShown
     return id;
 }
 // #128: another provider's model in a chat that has messages = a new chat (SwitchAgent, after any turn running). The
@@ -1088,8 +1106,9 @@ bool OpenEarly(const std::shared_ptr<Tab>& t, const AnnotationHost::Envelope& en
         Diag(L"bubble opened on the click (selecting " + std::to_wstring(env.serial) + L"), the element's conversation");
         return true;
     }
-    std::string id; { UiSlow slowNew("new conversation"); id = NewAnchoredConversation(env.selector, label, page, ""); } early.conv = id;
+    std::string id; { UiSlow slowNew("new conversation"); id = NewAnchoredConversation(env.selector, label, page, "", "", true); } early.conv = id;
     OpenBubble(id, &element, env.selector, false, label); if (bubble.open && bubble.conv == id) bubble.holdForMeasure = stale || areaMoving;
+    AsideForBubbleShown(id);   // lot 1b: one sending, with the opening
     Diag(L"bubble opened on the click (selecting " + std::to_wstring(env.serial) + L")");
     return true;
 }
@@ -1152,9 +1171,10 @@ bool TakeCommentSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, b
     // element of a local page is ALWAYS the chat's. The panel's limit of 10 chips being aimed (R35) is not this layout's: a
     // bubble's element is not a chip. Declining here sent the click to the note panel — nothing declines any more.
     if (bubble.open) { Diag(L"a click on another element: its bubble opens"); ForgetUnsent(bubble.conv); }   // i18n-exempt: log detail
-    const std::string id = NewAnchoredConversation(sel, label, page, "", key);
+    const std::string id = NewAnchoredConversation(sel, label, page, "", key, true);
     Element e = ElementFromMode(serial); e.captureDone = captureImpossible; e.anchorFor = id; aiming[serial] = std::move(e); QuerySource(t, serial);
     OpenBubble(id, &element, sel, sel.empty(), label);
+    AsideForBubbleShown(id);   // lot 1b: one sending, with the opening
     return true;
 }
 // MaybeAttach: the bubble's own element (image, source) is kept for its messages, never a chip of the composer.
