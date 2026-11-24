@@ -14,6 +14,31 @@ using namespace NativeChrome::Downloads;
 static int failures = 0;
 static void Expect(bool ok, const char* what) { if (!ok) { std::fprintf(stderr, "FAIL %s\n", what); ++failures; } }
 
+// Engine state → row (the bug: a download the engine holds after its last byte stayed « 100 % » forever).
+static void HeldChecks() {
+    using namespace Engine;
+    Expect(MapEngineState(Completed, 0, false) == State::Completed && MapEngineState(InProgress, 0, false) == State::InProgress && MapEngineState(InProgress, 0, true) == State::Paused, "engine states: completed, in progress, paused by the user");
+    Expect(MapEngineState(Interrupted, ReasonUserPaused, false) == State::Paused && MapEngineState(Interrupted, ReasonUserCanceled, false) == State::Cancelled, "engine interrupts: paused, cancelled");
+    Expect(MapEngineState(Interrupted, 10, false) == State::Failed && MapEngineState(Interrupted, 1, false) == State::Failed, "engine interrupts: anything else fails (blocked reasons keep the B07 path)");
+    const std::int64_t mb = 57430695;
+    Expect(!HeldForDecision(InProgress, mb, mb, false, -1) && !HeldForDecision(InProgress, mb, mb, false, HoldGraceMs - 1), "every byte in: not held before the grace");
+    Expect(HeldForDecision(InProgress, mb, mb, false, HoldGraceMs) && HeldForDecision(InProgress, mb, mb, false, 240000), "every byte in, still in progress past the grace: held (measured: no event ever follows)");
+    Expect(!HeldForDecision(Completed, mb, mb, false, 240000) && !HeldForDecision(Interrupted, mb, mb, false, 240000), "a completed or interrupted download is never held");
+    Expect(!HeldForDecision(InProgress, mb - 1, mb, false, 240000) && !HeldForDecision(InProgress, 5, 0, false, 240000) && !HeldForDecision(InProgress, mb, mb, true, 240000), "missing bytes, unknown size or a user pause: never held");
+    Item held; held.state = State::InProgress; held.held = true;
+    Expect(ActionsFor(held).first == Action::Discard && ActionsFor(held).second == Action::Keep, "held actions: Supprimer, Conserver");
+    Expect(std::wcscmp(IconFor(Action::Discard), L"trash") == 0 && std::wcscmp(IconFor(Action::Keep), L"check") == 0, "held actions' drawer glyphs");
+    // Popover: the card takes its row's place, 20 from neighbouring tiles; « View all » 16 under the last element.
+    std::vector<Item> list(3); list[1].state = State::InProgress; list[1].held = true;
+    const float card = HeldCard::Height(72);
+    auto slots = DownloadsUI::PopoverSlots(list, card);
+    Expect(slots.size() == 4 && slots[0].height == 0 && slots[1].height == card && slots[1].top == 16 + 32 + 20 && slots[2].top == slots[1].top + card + 20 && slots[3].top == slots[2].top + 32 + 16, "popover: card spacing");
+    Expect(DownloadsUI::PopoverHeight(slots) == slots[3].top + 16 + 16, "popover height follows the card");
+    auto plain = DownloadsUI::PopoverSlots(list);
+    Expect(plain[1].height == 0 && plain[1].top == 64, "without a measured card the held row is a plain row");
+    Expect(HeldCard::Button(0, card, 0).right + HeldCard::buttonGap == HeldCard::Button(0, card, 1).left && HeldCard::Button(0, card, 1).right == HeldCard::right - HeldCard::inset && HeldCard::Button(0, card, 0).bottom == card - HeldCard::inset, "card buttons: two equal halves, 12 inside");
+}
+
 static void ModelChecks() {
     Expect(Bytes(52848230, 209715200) == L"50.4/200MB", "bytes in total's unit");
     Expect(Bytes(512, 2048) == L"0.5/2KB", "sub-unit received");
@@ -106,6 +131,7 @@ static void ModelChecks() {
     Expect(start[1].top == 16 && start[0].opacity == 0 && start.back().kind == DownloadsUI::SlotKind::ViewAll && start.back().opacity == 1, "morph starts as the popover");
     Expect(end[1].top == 48 && end[0].opacity == 1 && end.back().opacity == 0 && end[5].opacity == 1, "morph lands on the drawer");
     Expect(half[1].kind == DownloadsUI::SlotKind::Row && half[1].clipBottom == 12 + 24 + .5f * (12 + 4 * 48) && half[1].opacity == .5f, "folding rows are clipped and faded");
+    HeldChecks();
 }
 
 struct Fixture {
@@ -147,6 +173,22 @@ struct Fixture {
         const float height = Panel::Height(shown, !rows.empty());
         DownloadsUI::Scene scene; scene.viewBottom = height - Panel::padding / 2;
         return Paint(name, dpi, height, rows, hovered, DownloadsUI::PopoverSlots(rows), entrance, focus, scene);
+    }
+    // Popover with a held download's card (Paper B07b « A · Ambre »), height measured like the app.
+    bool Held(const wchar_t* name, UINT dpi, std::vector<Item>& rows, int focus = 0, std::map<int, int> hovered = {}) {
+        float card = 0;
+        { Chrome measure; if (FAILED(measure.InitOffscreen(root, dpi, Panel::width, 200))) return false; DownloadsUI::View v(measure); card = v.CardHeight(); v.Release(); measure.Dispose(); }
+        if (card <= 0) { std::fprintf(stderr, "held card not measured\n"); return false; }
+        auto slots = DownloadsUI::PopoverSlots(rows, card); const float height = DownloadsUI::PopoverHeight(slots);
+        DownloadsUI::Scene scene; scene.viewBottom = height - Panel::padding / 2;
+        std::printf("held card: %.0f DIP high, popover %.0f DIP\n", card, height);
+        return Paint(name, dpi, height, rows, hovered, slots, 1, focus, scene);
+    }
+    bool HeldDrawer(const wchar_t* name, UINT dpi, std::vector<Item>& rows) {
+        std::array<std::vector<int>, PeriodCount> groups; for (size_t i = 0; i < rows.size(); ++i) groups[0].push_back(static_cast<int>(i));
+        auto slots = DownloadsUI::DrawerSlots(rows, groups, {1, 1, 1, 1, 1}, 0);
+        DownloadsUI::Scene scene; scene.viewTop = DrawerLayout::viewTop; scene.viewBottom = 200; scene.edge = true;
+        return Paint(name, dpi, 200, rows, {}, slots, 1, 0, scene);
     }
     // Drawer: three periods holding the four Paper rows; `open` per period.
     bool Drawer(const wchar_t* name, UINT dpi, float height, std::array<float, PeriodCount> open, float scroll, int focus = 0) {
@@ -577,6 +619,22 @@ int wmain(int argc, wchar_t** argv) {
                 Expect(f.Drawer((L"fr-drawer-" + d + L".png").c_str(), dpi, 728, {1, 1, 1, 1, 1}, 0), "render French drawer");
             }
             I18n::SetForProcess(I18n::Locale::En);
+        }
+        // Held download (B07b): popover card and drawer row, French, 1x / 1.25x / 2x; English at 1x.
+        {
+            std::vector<Item> held(3);
+            held[0].id = 1; held[0].path = L"C:\\Users\\a\\Downloads\\browser-0.3.715-win-x64-setup.exe"; held[0].state = State::InProgress; held[0].held = true; held[0].received = held[0].total = 57430695;
+            held[1].id = 2; held[1].path = L"C:\\Users\\a\\Downloads\\Facture_EDF_octobre.pdf"; held[1].state = State::Completed; held[1].received = held[1].total = 217088;
+            held[2].id = 3; held[2].path = L"C:\\Users\\a\\Downloads\\HP_M110_Setup_v3.2.1.exe"; held[2].state = State::Failed; held[2].reason = ReasonCode(I18n::Id::download_blocked_dangerous);
+            I18n::SetForProcess(I18n::Locale::Fr);
+            for (UINT dpi : {96u, 120u, 192u}) {
+                const std::wstring d = std::to_wstring(dpi);
+                Expect(f.Held((L"held-card-fr-" + d + L".png").c_str(), dpi, held), "render held card");
+                Expect(f.HeldDrawer((L"held-drawer-fr-" + d + L".png").c_str(), dpi, held), "render held drawer row");
+            }
+            Expect(f.Held(L"held-card-fr-focus.png", 192, held, DownloadsUI::ActionHit(1, 1)), "render held card focus");
+            I18n::SetForProcess(I18n::Locale::En);
+            Expect(f.Held(L"held-card-en-96.png", 96, held), "render held card (en)");
         }
         // Real toolbar (Chrome::Paint) with the animated icon, cropped to the button.
         {

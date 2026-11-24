@@ -55,6 +55,8 @@
 #include "viewport-scrollbar.h"
 #include "content-transition.h"
 #include <shlobj.h>
+#include <atomic>
+#include <thread>
 // Self-update host integration is compiled into identity-stamped builds only
 // (tools/release/build.py defines BROWSER_HAS_BUILD_INFO). Unstamped builds and the
 // native fixtures that include this file keep the portable, update-free behaviour.
@@ -1435,7 +1437,11 @@ DL::Item* FindDownload(int id);
 // tab: the serial of the tab that started it. view: that tab's WebView once the tab closed while the download runs
 // (a tab opened only for its download closes at once): the engine stops raising the operation's events when its
 // WebView closes, so the closed tab's hidden controller lives until its last download ends (released with the entry).
-struct DownloadOperation { Com<ICoreWebView2DownloadOperation> op; bool userPaused=false; Workspace* owner=nullptr; unsigned tab=0; std::shared_ptr<Com<ICoreWebView2Controller>> view; };
+// fullAt: when every byte was in (GetTickCount64, 0 = not yet): past DL::Engine::HoldGraceMs still in progress, the
+// engine holds the file for the user's decision. keeping/keepLink: « Conserver » in progress (KeepHeldDownload).
+struct DownloadOperation { Com<ICoreWebView2DownloadOperation> op; bool userPaused=false; Workspace* owner=nullptr; unsigned tab=0; std::shared_ptr<Com<ICoreWebView2Controller>> view; ULONGLONG fullAt=0; bool keeping=false; std::wstring keepLink; };
+static_assert(DL::Engine::InProgress==COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS&&DL::Engine::Interrupted==COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED&&DL::Engine::Completed==COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED,"engine download states");
+static_assert(DL::Engine::ReasonUserCanceled==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED&&DL::Engine::ReasonUserPaused==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_PAUSED,"engine interrupt reasons");
 std::map<int,std::shared_ptr<DownloadOperation>> downloadOps;
 // Drops the operations of `owner` (the workspace in the globals by default) whose row is gone from its downloads.
 void PruneDownloadOps(Workspace* owner=WorkspaceNow()){for(auto it=downloadOps.begin();it!=downloadOps.end();)it=it->second->owner==owner&&!FindDownload(it->first)?downloadOps.erase(it):std::next(it);}
@@ -1500,6 +1506,7 @@ std::wstring InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON r){
     return DL::ReasonCode(I18n::Id::download_error_file);
 }
 void ShowDownloadDrawer();void SyncLatch();
+void DeferAfter(UINT ms,std::function<void()> job);void ShowDownloads();void FinishKeep(int id,int attempt);
 // Toolbar icon: a run lasts while any download is active; its progress counts
 // every download of the run (completed ones included) so it never goes back.
 std::set<int> downloadIconRun;
@@ -1508,7 +1515,8 @@ bool labDownloadRunning=false; // motion lab download replay (a real download ca
 void UpdateDownloadIcon(bool completedNow){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
     if(labDownloadRunning){labDownloadRunning=false;KillTimer(window,MotionLabTimerId);}
     bool active=false;
-    for(auto& item:downloads)if(item.state==DL::State::InProgress||item.state==DL::State::Paused){active=true;downloadIconRun.insert(item.id);}
+    // A held download (every byte in, waiting for « Conserver » / « Supprimer ») ends the run: never a 100 % bar that spins on.
+    for(auto& item:downloads)if((item.state==DL::State::InProgress&&!item.held)||item.state==DL::State::Paused){active=true;downloadIconRun.insert(item.id);}
     long double received=0,total=0;
     for(auto& item:downloads)if(downloadIconRun.count(item.id)&&item.total>0&&(item.state==DL::State::InProgress||item.state==DL::State::Paused||item.state==DL::State::Completed)){total+=item.total;received+=std::min(item.received,item.total);}
     const float fraction=total>0?static_cast<float>(received/total):0.f;
@@ -1560,22 +1568,30 @@ void SyncDownload(int id){
     text=nullptr;item->endTime=0;if(SUCCEEDED(op->get_EstimatedEndTime(&text))&&text){item->endTime=DL::ParseIsoTime(text);CoTaskMemFree(text);}
     BOOL resume=FALSE;op->get_CanResume(&resume);item->canResume=resume!=FALSE;
     COREWEBVIEW2_DOWNLOAD_STATE state=COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS;op->get_State(&state);
-    const auto before=item->state;
-    if(state==COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED){item->state=DL::State::Completed;item->missing=false;}
-    else if(state==COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS)item->state=entry->userPaused?DL::State::Paused:DL::State::InProgress;
-    else{
-        COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE;op->get_InterruptReason(&reason);
-        if(reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_PAUSED)item->state=DL::State::Paused;
-        else if(reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED)item->state=DL::State::Cancelled;
-        else{item->state=DL::State::Failed;item->reason=InterruptText(reason);
-            if(before!=DL::State::Failed&&(reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS||reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED||reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY))
-                ElementsDangerousDownload(id,item->path,item->uri,reason);}
-    }
+    COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE;if(state==COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED)op->get_InterruptReason(&reason);
+    // « Conserver »: the engine let go of the file (our cancel); the kept copy takes its place.
+    if(entry->keeping){if(state!=COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS)FinishKeep(id,0);return;}
+    const auto before=item->state;const bool heldBefore=item->held;
+    item->state=DL::MapEngineState(state,reason,entry->userPaused);
+    if(item->state==DL::State::Completed)item->missing=false;
+    // Every byte in but still in progress: past the grace, the engine holds it for the user's decision (no event says
+    // so). One re-check is scheduled for the end of the grace.
+    const ULONGLONG tick=GetTickCount64();
+    if(state==COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS&&total>0&&received>=total){if(!entry->fullAt){entry->fullAt=tick;DeferAfter((UINT)DL::Engine::HoldGraceMs+50,[id]{if(!halted)SyncDownload(id);});}}
+    else entry->fullAt=0;
+    item->held=DL::HeldForDecision(state,received,total,entry->userPaused,entry->fullAt?(std::int64_t)(tick-entry->fullAt):-1);
+    if(item->held&&!heldBefore)Log(L"DOWNLOAD held by the engine for the user's decision (all bytes in, still in progress): "+DL::FileName(item->path));
+    if(!item->held&&heldBefore)Log(L"DOWNLOAD no longer held: state="+std::to_wstring((int)state)+L" reason="+std::to_wstring((int)reason));
+    if(item->state==DL::State::Failed){item->reason=InterruptText(reason);
+        if(before!=DL::State::Failed&&(reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS||reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED||reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY))
+            ElementsDangerousDownload(id,item->path,item->uri,reason);}
     if(item->state!=before)Log(L"DOWNLOAD state="+std::to_wstring((int)item->state)+L" "+DL::FileName(item->path));
     // Terminal rows keep no engine reference; resumable failures keep it for Retry.
     if(item->state==DL::State::Completed||item->state==DL::State::Cancelled||(item->state==DL::State::Failed&&!item->canResume))downloadOps.erase(found);
     if(item->state!=before&&DL::Persistent(*item))SaveDownloads();
-    DownloadsChanged();
+    // Newly held: the decision lives in the downloads popover, so it is shown (as when a download starts).
+    if(item->held&&!heldBefore&&!smoke&&!downloadPanel.Visible()&&!(downloadDrawer.Visible()&&!downloadDrawer.Closing()))ShowDownloads();
+    else DownloadsChanged();
     UpdateDownloadIcon(item->state!=before&&item->state==DL::State::Completed);
     if(smoke&&item->state!=before&&testStage==7){
         if(item->state==DL::State::Completed){
@@ -1590,6 +1606,61 @@ void SyncDownload(int id){
             DeleteFileW(item->path.c_str());PostMessageW(window,WM_APP+3,0,0);
         }else if(item->state!=DL::State::InProgress){Fail(L"Smoke download did not complete",E_FAIL);return;}
     }
+}
+// ---- A download held for the user's decision (B07b « À confirmer ») --------------------------------------
+// WebView2 has no API to accept a file its SmartScreen check holds (no danger type, no « keep »): its own flyout is
+// the only way, and this browser replaces it. The held file is complete at its final path, so « Conserver » keeps a
+// second link to it, lets the engine go (Cancel: it deletes its file), puts the kept link back at the same path, and
+// then hands the file to Windows' attachment services like any finished download (Mark of the Web, antivirus
+// scan): SmartScreen still checks it when it is opened. « Supprimer » cancels: the engine deletes the file.
+std::wstring KeepLinkPath(const std::wstring& path,int id){return path+L".keep-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(id);}
+void KeepHeldDownload(int id){
+    auto* item=FindDownload(id);auto found=downloadOps.find(id);if(!item||found==downloadOps.end()||!item->held||found->second->keeping)return;
+    auto entry=found->second;auto* op=entry->op.p;if(!op)return;
+    const auto link=KeepLinkPath(item->path,id);DeleteFileW(link.c_str());
+    if(!CreateHardLinkW(link.c_str(),item->path.c_str(),nullptr)&&!CopyFileW(item->path.c_str(),link.c_str(),TRUE)){Log(L"DOWNLOAD keep: the held file could not be kept ("+std::to_wstring(GetLastError())+L")");return;}
+    SetFileAttributesW(link.c_str(),FILE_ATTRIBUTE_HIDDEN);
+    entry->keeping=true;entry->keepLink=link;
+    Log(L"DOWNLOAD keep requested: "+DL::FileName(item->path));
+    if(FAILED(op->Cancel())){entry->keeping=false;entry->keepLink.clear();DeleteFileW(link.c_str());Log(L"DOWNLOAD keep: the engine refused to let go");return;}
+    SyncDownload(id);
+}
+// Windows attachment services on a kept file (what the engine does for every finished download): zone mark and
+// antivirus scan, off the UI thread. done: 1 saved, 2 refused (the file may be gone).
+void QuarantineKeptFile(const std::wstring& path,const std::wstring& uri,std::shared_ptr<std::atomic<int>> done,std::shared_ptr<std::atomic<long>> result){
+    std::thread([path,uri,done,result]{
+        const HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);HRESULT hr=E_FAIL;IAttachmentExecute* ae=nullptr;
+        if(SUCCEEDED(CoCreateInstance(CLSID_AttachmentServices,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&ae)))&&ae){
+            static const GUID client={0x6d3f1c52,0x0b2e,0x4d0c,{0x9a,0x41,0x52,0x7e,0x2b,0x11,0x84,0x3a}};   // this browser's downloads
+            ae->SetClientGuid(client);ae->SetLocalPath(path.c_str());if(!uri.empty())ae->SetSource(uri.c_str());hr=ae->Save();ae->Release();}
+        if(SUCCEEDED(init))CoUninitialize();
+        result->store((long)hr);done->store(SUCCEEDED(hr)?1:2);
+    }).detach();
+}
+void KeptFileChecked(int id,std::shared_ptr<std::atomic<int>> done,std::shared_ptr<std::atomic<long>> result,int attempt){
+    if(halted)return;const int r=done->load();
+    if(!r&&attempt<600){DeferAfter(100,[id,done,result,attempt]{KeptFileChecked(id,done,result,attempt+1);});return;}
+    auto* item=FindDownload(id);if(!item)return;
+    const bool there=GetFileAttributesW(item->path.c_str())!=INVALID_FILE_ATTRIBUTES;
+    if(r!=1)Log(L"DOWNLOAD kept file: attachment services refused it hr="+std::to_wstring((unsigned long)result->load())+std::wstring(there?L" (file kept)":L" (file removed)"));
+    else Log(L"DOWNLOAD kept file handed to attachment services");
+    if(!there){item->state=DL::State::Failed;item->canResume=false;item->reason=DL::ReasonCode(I18n::Id::download_blocked_dangerous);SaveDownloads();DownloadsChanged();UpdateDownloadIcon(false);}
+}
+// The engine let go of the held file: the kept link goes back to its path once the engine's file is gone.
+void FinishKeep(int id,int attempt){
+    auto found=downloadOps.find(id);auto* item=FindDownload(id);if(found==downloadOps.end()||!item||!found->second->keeping)return;
+    auto entry=found->second;const auto path=item->path,link=entry->keepLink;
+    if(GetFileAttributesW(path.c_str())!=INVALID_FILE_ATTRIBUTES&&attempt<30){DeferAfter(100,[id,attempt]{if(!halted)FinishKeep(id,attempt+1);});return;}
+    bool kept=false;
+    if(GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES)kept=MoveFileExW(link.c_str(),path.c_str(),MOVEFILE_COPY_ALLOWED)!=FALSE;
+    else{kept=true;DeleteFileW(link.c_str());}   // the engine left its file: it is the same file
+    if(kept)SetFileAttributesW(path.c_str(),FILE_ATTRIBUTE_NORMAL);
+    downloadOps.erase(found);
+    item->held=false;item->endTime=0;
+    if(kept){item->state=DL::State::Completed;item->missing=false;if(item->total>0)item->received=item->total;Log(L"DOWNLOAD kept by the user: "+DL::FileName(path));}
+    else{item->state=DL::State::Failed;item->canResume=false;item->reason=DL::ReasonCode(I18n::Id::download_error_file);DeleteFileW(link.c_str());Log(L"DOWNLOAD keep failed: the kept file could not be put back ("+std::to_wstring(GetLastError())+L")");}
+    SaveDownloads();DownloadsChanged();UpdateDownloadIcon(kept);
+    if(kept){auto done=std::make_shared<std::atomic<int>>(0);auto result=std::make_shared<std::atomic<long>>(0);QuarantineKeptFile(path,item->uri,done,result);KeptFileChecked(id,done,result,0);}
 }
 void RefreshMissing(){for(auto& item:downloads)if(item.state==DL::State::Completed)item.missing=GetFileAttributesW(item.path.c_str())==INVALID_FILE_ATTRIBUTES;}
 void ShowDownloads(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
@@ -1719,6 +1790,10 @@ void DownloadAction(int id,DL::Action action){
         else if(action==DL::Action::Cancel){const HRESULT hr=op->Cancel();Log(L"DOWNLOAD cancel "+DL::FileName(item->path)+(SUCCEEDED(hr)?L"":L" failed"));}
         else if(SUCCEEDED(op->Resume()))entry->userPaused=false;
         SyncDownload(id);break;
+    case DL::Action::Keep:KeepHeldDownload(id);break;
+    // « Supprimer » on a held file: the engine cancels and deletes it; the row leaves the list (like B07's Delete).
+    case DL::Action::Discard:{if(!item->held||(entry&&entry->keeping))break;const auto path=item->path;Log(L"DOWNLOAD held file discarded by the user: "+DL::FileName(path));DownloadAction(id,DL::Action::Remove);
+        DeferAfter(1500,[path]{if(GetFileAttributesW(path.c_str())!=INVALID_FILE_ATTRIBUTES&&!DeleteFileW(path.c_str()))Log(L"DOWNLOAD discarded file could not be removed");});break;}
     case DL::Action::Remove:{if(op&&(item->state==DL::State::InProgress||item->state==DL::State::Paused))op->Cancel();downloadOps.erase(id);downloads.erase(std::find_if(downloads.begin(),downloads.end(),[id](const DL::Item& d){return d.id==id;}));SaveDownloads();DownloadsChanged();UpdateDownloadIcon(false);break;}
     case DL::Action::ShowInFolder:{const auto path=item->path;CloseDownloadSurfaces();
         PIDLIST_ABSOLUTE pidl=ILCreateFromPathW(path.c_str());HRESULT hr=pidl?SHOpenFolderAndSelectItems(pidl,0,nullptr,0):E_FAIL;if(pidl)ILFree(pidl);
