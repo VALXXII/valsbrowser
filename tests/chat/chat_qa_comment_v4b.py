@@ -278,7 +278,11 @@ def run_main():
         rects = [r for _, r in s4.samples if r]; tops = sorted(set(r[1] for r in rects)); pgw = CC.page_widget()
         whole = bool(rects) and all(r[3] <= pgw[3] + 1 and r[1] >= pgw[1] - 1 for r in rects[-5:])
         report['measures']['t4'] = {'tops': tops, 'last': rects[-1] if rects else None, 'page': pgw, 'log': [l for l in C.log_text()[m5:].splitlines() if 'end of the document' in l]}
-        step('T4 · R29 at the end of the document: the bubble stays whole in the page and moves up at most once', whole and len(tops) <= 2, report['measures']['t4'])
+        # #130 wins over R29 (variant C): « at most once » no longer holds — every new height may slide it up again; it only
+        # ever goes up, and it is whole in the page
+        order = [r[1] for r in rects]; up_only = all(b <= a + 1 for a, b in zip(order, order[1:]))
+        report['measures']['t4']['upOnly'] = up_only
+        step('T4 · #130 C at the end of the document: the bubble stays whole in the page and only slides up', whole and up_only, report['measures']['t4'])
         capture('t4-bas-du-document')
     except Exception:
         traceback.print_exc()

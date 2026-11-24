@@ -721,11 +721,19 @@
       "tests": [
         {
           "suite": "chat-units",
-          "what": "chat_units_test.cpp — la bulle reste entière (remplace R29, décision 1 du 24/11)"
+          "what": "chat_units_test.cpp — « #130 wins over R29 », « #130 C » (la bulle glisse le long de son élément et reste entière)"
         },
         {
           "suite": "journeys",
-          "what": "r44_grand_element_taille_utilisateur"
+          "what": "invariant « the bubble is whole in the page area (#130 C) » après chaque action ; r43_r48 « stays at its element's side … whole »"
+        },
+        {
+          "suite": "comment-v4",
+          "what": "R38 / #130 C : coin gardé sauf glissement vers le haut"
+        },
+        {
+          "suite": "comment-v4b",
+          "what": "T4 · #130 C en fin de document"
         }
       ]
     },
@@ -918,6 +926,10 @@
         {
           "suite": "journeys",
           "what": "r47_autorisation_defilement"
+        },
+        {
+          "suite": "comment-129-130",
+          "what": "autorisation sur un élément bas : Refuser / Autoriser à l'écran"
         }
       ]
     },
@@ -938,6 +950,10 @@
         {
           "suite": "chat-units",
           "what": "host_contract_test.py — #130"
+        },
+        {
+          "suite": "comment-129-130",
+          "what": "vraie fenêtre : menu des modèles sur profil sans modèle connu ; bulle basse, autorisation, boutons à l'écran"
         }
       ]
     },
@@ -950,6 +966,10 @@
         {
           "suite": "chat-units",
           "what": "host_contract_test.py — #129"
+        },
+        {
+          "suite": "comment-129-130",
+          "what": "vraie fenêtre : menu des modèles sur profil sans modèle connu ; bulle basse, autorisation, boutons à l'écran"
         }
       ]
     },
@@ -962,6 +982,10 @@
         {
           "suite": "chat-units",
           "what": "host_contract_test.py — #129"
+        },
+        {
+          "suite": "comment-129-130",
+          "what": "vraie fenêtre : menu des modèles sur profil sans modèle connu ; bulle basse, autorisation, boutons à l'écran"
         }
       ]
     },
@@ -974,6 +998,10 @@
         {
           "suite": "chat-units",
           "what": "host_contract_test.py — #130"
+        },
+        {
+          "suite": "comment-129-130",
+          "what": "vraie fenêtre : menu des modèles sur profil sans modèle connu ; bulle basse, autorisation, boutons à l'écran"
         }
       ]
     },
@@ -1043,6 +1071,18 @@
       "gap": {
         "lot": 3,
         "why": "après la fusion de #125 (Builder, src/annotation-sites.h) : parcours local_en_ligne — localhost, *.localhost, 127.x, [::1] et file:// local allumés, fenêtre privée même règle, site en ligne et adresse du réseau local éteints ; réécrire chat_qa_run.py:600 et chat_qa_v12.py:220 (le mode s'arrête au lieu de « site pas local »)"
+      }
+    },
+    "#130-règles-7-10": {
+      "gap": {
+        "lot": 1,
+        "why": "règles 7 à 10 de la variante C (pas de défilement automatique de la page, Refuser / Autoriser dans le pied, élément sans côté libre, jamais par-dessus l'élément) : assertions écrites mais éteintes — tests/chat/final/qa_final.py, C130_LOT1_RULES ; à allumer quand le code y est, puis pointer ici vers leurs tests"
+      }
+    },
+    "#130-règles-5-6-11": {
+      "gap": {
+        "lot": 4,
+        "why": "règles 5, 6 et 11 (recalcul pendant le défilement, glissement de 120 ms, mouvement réduit) : tests/chat/final/qa_final.py, C130_SCROLL_RULES ; parcours o1_regle5_defilement à écrire"
       }
     }
   }

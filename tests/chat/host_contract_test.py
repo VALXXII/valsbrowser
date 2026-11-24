@@ -283,7 +283,7 @@ bub = code('chat-bubble.h'); place = bub[bub.find('inline Placement Place('):bub
 check('element.top - lead' in place and 'element.right + gap' in place and 'whole(planned(p))' in place and 'slid' in place, 'Paper: the side positions are exact (+gap, top - lead), a side only if whole there; a clamp only for the inside fallback')
 consts = code('chat-comment.h')
 check('BubbleGapCss = 12' in consts and 'BubbleLeadCss = 4' in consts, 'Paper: gap 12, lead 4 (CSS px)')
-check('OfferedRoomCss(' not in block_after(comment, 'void PlaceBubble(bool scrolling) {'), 'R29 (the user): natural height, never bounded by the room under the fixed edge')
+check('OfferedRoomCss(' not in block_after(comment, 'void PlaceBubble(bool scrolling) {'), '#130 C rule 4 (replaces R29): the height offered is not the room under the fixed edge — it is the page area - 16 px (checked below)')
 
 # R47 (coordinator's decision): an authorization (or an error waiting for an action) whose buttons are out of the visible area
 # — the SITE's page scrolls softly just enough, once, when it arrives; not while the user scrolls; reduced motion respected

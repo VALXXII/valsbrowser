@@ -48,6 +48,21 @@ ELEMENTS = ['section.hero', 'div.plans', 'a.btn-primary', 'h1.hero-title', 'div.
 BIG = ['section.hero', 'div.plans']
 
 
+# #130, variant C (Paper « #130 Bulle sans place dessous · C règles (validées) », design/annotation-plan-2026-11-24.md §4.4).
+# Rules 1 to 4 are in the product (PR #133) and asserted. The others are asserted once their lot is done — the lot flips
+# its flag here (tests/annotation-general/coverage.json keeps a gap for each until then):
+C130_LOT1_RULES = False     # rules 7 to 10: no page auto-scroll, Refuser / Autoriser in the footer, no free side, never over the element
+C130_SCROLL_RULES = False   # rules 5, 6 and 11 (lot 4): the place recomputed while the page scrolls, a 120 ms slide
+
+
+def scroll_y():
+    '''The site page's vertical scroll (CSS px), None when it cannot be read.'''
+    try:
+        return float(page('window.scrollY'))
+    except Exception:
+        return None
+
+
 def fake_agent_exe() -> pathlib.Path:
     p = pathlib.Path(os.environ['FINAL_FAKE_AGENT']) if os.environ.get('FINAL_FAKE_AGENT') else C.TOOLS / 'fake-acp-agent.exe'
     return p if p.is_absolute() else C.ROOT / p
@@ -817,6 +832,7 @@ class Model:
     def __init__(self):
         self.layout = 'comment'; self.open = None; self.conv = {}; self.mode = None; self.model = None
         self.anchor = None; self.size = None; self.hidden_by_other = False; self.scroll_moved = False
+        self.scroll = None   # #130: the page's scroll when the bubble was last placed (opening, new anchor)
         self.panel_marked = set()   # elements picked in the panel then sent from it: they get a mark too
         self.unknown = False        # a bubble of an element the model does not know (a container selected by a click « elsewhere »)
 
@@ -842,7 +858,8 @@ class Invariants:
         st = chat_state('bubble'); sf = bubble_surface(st); pg = page_area()
         inside = sf is not None and sf[0] >= pg[0] - 1 and sf[1] >= pg[1] - 1 and sf[2] <= pg[2] + 1 and sf[3] <= pg[3] + 1
         sc = st.get('scroller') or {}
-        natural = bool(sc) and (sc['sh'] <= sc['ch'] + 2 or (sf and (sf[3] - sf[1]) / st['dpr'] >= 518))
+        cap = min(520, (pg[3] - pg[1]) / st['dpr'] - 16) if st.get('dpr') else 520   # #130 C rule 4: at most the page area - 16 px
+        natural = bool(sc) and (sc['sh'] <= sc['ch'] + 2 or (sf and (sf[3] - sf[1]) / st['dpr'] >= cap - 2))
         token = self.m.conv.get(sel)
         others = [t for s, t in self.m.conv.items() if s != sel and t]
         text = st.get('text', '')
@@ -853,7 +870,7 @@ class Invariants:
         d = {'ms': ms, 'surface': sf, 'page': pg, 'scroller': sc, 'token': token, 'othersShown': [t for t in others if t in text]}
         # decision 5 (24 Nov 2026): « in less than 150 ms » is an objective (reported); the bubble on screen within the wait,
         # whole, at its height, with the right conversation, is what fails
-        self.r.step(f'{where} · click on {sel}: the bubble is entirely visible (page area), natural height, the right conversation',
+        self.r.step(f'{where} · click on {sel}: the bubble is entirely visible (page area), at its height (natural, or the page area - 16 px), the right conversation',
                     ms is not None and inside and natural and right_conv, d, {'action': where})
         C.objective('ouverture-150ms', ms is not None and ms < 150, ms, f'{where} · click on {sel}')
         if mark is not None:
@@ -871,6 +888,7 @@ class Invariants:
                 mark = None
         self.m.anchor = (sf[0] - el[0], sf[1] - el[1], sf[3] - el[3]) if sf else None
         self.m.size = (sf[2] - sf[0], sf[3] - sf[1]) if sf else None
+        self.m.scroll = scroll_y()
         if sf and mark is not None:
             hit = element_at(point) if point else None   # the element the click really selects (a child of `sel` may be under the point)
             self.distance(sel, hit or el, sf, st.get('dpr', 1), mark, where)
@@ -911,6 +929,7 @@ class Invariants:
             sf = bubble_surface(); el = element_screen(self.m.open)
             self.m.anchor = (sf[0] - el[0], sf[1] - el[1], sf[3] - el[3]) if sf else None
             self.m.size = (sf[2] - sf[0], sf[3] - sf[1]) if sf else None
+            self.m.scroll = scroll_y()
 
     def sent(self, kind, token, where):
         """After a send: the user's message is in the bubble (or the panel) it was sent from."""
@@ -980,9 +999,16 @@ class Invariants:
                     if sf and el and self.m.anchor and not wheel_moved:
                         a = (sf[0] - el[0], sf[1] - el[1], sf[3] - el[3])
                         if abs(a[0] - self.m.anchor[0]) > 2 or (abs(a[1] - self.m.anchor[1]) > 2 and abs(a[2] - self.m.anchor[2]) > 2):
-                            if not re.search(r'the bubble at the end of the document moves up once', C.log_text()[self.log_at:]):
+                            # #130 wins over R29: a bubble that grew past the bottom slid up along its element (same side) — not a defect
+                            if not re.search(r'the bubble at the end of the document moves up once|slid up along its element', C.log_text()[self.log_at:]):
                                 broken['stuck to its element (±2 px)'] = {'now': a, 'at opening': self.m.anchor, 'surface': sf, 'element': el}
                             self.rebase()
+                    # #130 (blocking, « bulle-entiere »): its element whole on screen and the page not scrolled since the bubble
+                    # was placed — the bubble is whole in the page area. After a scroll: rule 5, asserted from lot 4.
+                    if sf and el and not wheel_moved and el[0] >= pg[0] - 1 and el[1] >= pg[1] - 1 and el[2] <= pg[2] + 1 and el[3] <= pg[3] + 1:
+                        sy = scroll_y(); still = sy is not None and self.m.scroll is not None and abs(sy - self.m.scroll) < 1
+                        if (still or C130_SCROLL_RULES) and (sf[0] < pg[0] - 1 or sf[1] < pg[1] - 1 or sf[2] > pg[2] + 1 or sf[3] > pg[3] + 1):
+                            broken['the bubble is whole in the page area (#130 C)'] = {'surface': sf, 'page area': pg, 'element': el, 'scrolledSincePlaced': not still}
                     self._labels(st, broken)
             elif not self.m.open and shown:
                 broken['closed -> no window'] = {'region': region}

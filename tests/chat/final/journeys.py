@@ -125,7 +125,7 @@ def j_r6(j):
     j.open_on('a.btn-primary', 'back to the first element (closed, scrolled away and back)'); j.check('first element again')
 
 
-@journey('r44_grand_element_taille_utilisateur', 'R44 R29 (section.hero, div.plans, page area ≈ 1470 × 665)')
+@journey('r44_grand_element_taille_utilisateur', 'R44 #130 (section.hero, div.plans, page area ≈ 1470 × 665)')
 def j_r44(j):
     size = F.set_page_size(*F.USER_PAGE)
     j.step('the page area is the user\'s (≈ 1470 × 665)', abs(size[0] - 1470) <= 4 and abs(size[1] - 665) <= 4, size)
@@ -147,16 +147,20 @@ def j_r44(j):
         j.open_on('section.hero', f'hero with its conversation, scrolled {y}'); j.close()
 
 
-@journey('r47_autorisation_defilement', 'R47 R9 R29 R39 (permission, then scroll up and back)')
+@journey('r47_autorisation_defilement', 'R47 R9 #130 R39 (permission, then scroll up and back)')
 def j_r47(j):
     F.scroll_into_view('div.plans', 'center')
     j.open_on('div.plans', 'plans')
+    sy0 = F.scroll_y()
     m = F.log_mark(); F.type_and_send('vrai-autorisation jetonperm', 'bubble'); j.inv.m.conv['div.plans'] = 'jetonperm'
     j.step('R9 · the permission is asked', F.wait_log(r'CHAT permission asked', m, 20))
     # a card below the visible area: the site's page scrolls once, softly (H1) — read the card after that scroll
     scrolled = F.wait_log(r'a card waits for an action below the visible area: the page scrolls (\d+) CSS px', m, 1.5)
     j.R.data['measures']['permissionScroll'] = scrolled.group(0) if scrolled else None
     time.sleep(0.6); j.inv.rebase()
+    sy1 = F.scroll_y(); j.R.data['measures']['pageScrollBeforeAfter'] = [sy0, sy1]
+    if F.C130_LOT1_RULES:   # #130 C rule 7 (lot 1): the browser never scrolls the user's page to show a card (the old R47 fix is removed)
+        j.step('#130 C rule 7 · the page is never scrolled by the browser to show the card', scrolled is None and sy0 is not None and sy1 is not None and abs(sy1 - sy0) < 1, [sy0, sy1])
     st = F.chat_state('bubble'); sf = F.bubble_surface(st)
     j.step('R47 · the whole permission card is shown, Refuser and Autoriser inside the bubble, not greyed',
            st.get('perm') and len(st['perm']['buttons']) == 2 and all(b['op'] >= 0.99 for b in st['perm']['buttons']), st.get('perm'))
@@ -380,8 +384,12 @@ def j_announce(j):
     j.step('R43 · during the turn: grey follow-up lines, no card', follow > 0, {'samples': samples, 'withFollow': follow})
     j.step('R48 · no caret block at the end of the streamed text', caret == 0, caret)
     lefts = set(p[0] for p in positions); tops = set(p[1] for p in positions); bottoms = set(p[3] for p in positions)
-    j.step('R29 · during the turn the bubble never moves (left and its anchored edge fixed)', len(lefts) <= 1 and (max(tops) - min(tops) <= 1 or max(bottoms) - min(bottoms) <= 1) if positions else False,
-           {'lefts': sorted(lefts)[:5], 'tops': (min(tops), max(tops)) if tops else None, 'bottoms': (min(bottoms), max(bottoms)) if bottoms else None})
+    # #130 wins over R29 (decision 1 of 24 Nov 2026, variant C): no longer « never moves » — it stays at its element's side
+    # (its left edge fixed) and whole in the page area; growing past the bottom, it slides up along its element
+    pg = F.page_area()
+    whole = all(p[1] >= pg[1] - 1 and p[3] <= pg[3] + 1 for p in positions)
+    j.step('#130 C (replaces R29) · during the turn the bubble stays at its element\'s side (left edge fixed) and whole in the page area', len(lefts) <= 1 and whole if positions else False,
+           {'lefts': sorted(lefts)[:5], 'tops': (min(tops), max(tops)) if tops else None, 'bottoms': (min(bottoms), max(bottoms)) if bottoms else None, 'page': pg})
     time.sleep(1.2)
     end = F.chat("(function(){var t=[...document.querySelectorAll('.turn.bt')].pop();return {follow:t.querySelectorAll('.bt-follow:not([hidden])').length,pre:t.querySelectorAll('pre').length,table:t.querySelectorAll('table').length,links:t.querySelectorAll('a').length,"
                  "hist:(document.body.innerText||'').includes('Historique'),logo:!!t.querySelector('svg')}})()")

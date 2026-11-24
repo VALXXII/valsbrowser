@@ -319,6 +319,16 @@
       "timeout": 900
     },
     {
+      "id": "comment-129-130",
+      "title": "Bulle : menu des modèles (#129) et bas de fenêtre (#130)",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/chat_qa_comment_129_130.py"
+      ],
+      "timeout": 1800
+    },
+    {
       "id": "journeys",
       "title": "Parcours de l'utilisateur (R1–R48 et revue)",
       "part": "night",
