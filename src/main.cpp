@@ -4737,7 +4737,7 @@ std::wstring LayoutLine(){std::wstring line=L"layout: ";
         line+=compact?L"compact":L"side";if(compact&&!chosenCompact)line+=L" (narrow window)" /* i18n-exempt: log line read by tests */;if(!compact)line+=L" "+std::to_wstring((int)std::lround(chrome.sidebarWidth));}
     if(forcedLayout>=0)line+=L" (this run)" /* i18n-exempt: log line read by tests */;return line;}
 bool layoutApplied=false;   // LogLayout waits for the first ApplyLayout (the settings are read): never a passing « top » at start
-void LogLayout(){static std::wstring last;if(!window||!layoutApplied)return;const auto line=LayoutLine();if(line==last)return;last=line;Log(line);}
+void LogLayout(){static std::wstring last;if(!window||!layoutApplied||SidebarEdgeDragging())return;   /* an edge drag logs its result at the release, not every pixel */const auto line=LayoutLine();if(line==last)return;last=line;Log(line);}
 // The start switches: --tab-layout=top|side|compact (a whole word), else --side-panel (side); -1 when neither.
 int TabLayoutArg(const wchar_t* args){if(!args)return -1;if(const wchar_t* tl=wcsstr(args,L"--tab-layout=")){tl+=13;
         for(int i=0;i<BrowserSettings::TabsPositionCount;++i){const char* k=BrowserSettings::Info(static_cast<BrowserSettings::TabsPosition>(i)).key;size_t n=0;while(k[n]&&tl[n]==(wchar_t)k[n])++n;if(!k[n]&&(!tl[n]||tl[n]==L' '||tl[n]==L'"'))return i;}return -1;}
