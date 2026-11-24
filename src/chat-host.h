@@ -47,6 +47,7 @@
 #include "agent-runtime.h"
 #include "agent-status.h"   // « Ton agent »: the agents' one status (design/ton-agent-interface.md)
 #include "chat-agent-status.h"
+#include "ton-agent-entry.h"   // OpenTonAgent: the chat's « Installer » / « Mettre à jour » of a missing agent open the screen
 #include "change-snapshots.h"
 
 namespace Chat {

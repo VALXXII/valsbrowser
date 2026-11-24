@@ -527,6 +527,10 @@ void Connect(const std::string& id, const std::string& methodId) {
     auto& info = agentInfo[id]; const Acp::AuthMethod* method = nullptr;
     for (const auto& m : info.auth) if (!methodId.empty() && m.id == methodId) method = &m;
     if (!method) method = AgentRuntime::PreferredSignIn(info.auth);
+    // « Ton agent »: the CLI's own sign-in goes through the agents' one status (AgentStatus::SignIn) — the same console, but
+    // every screen sees « Connexion… », « Annuler » works (CancelSignIn) and the chat's session starts again once it is
+    // over (AfterAgentChange). The agent's own non-terminal methods (an API key asked by the session) stay below.
+    if ((!method || method->terminal) && AgentStatus::SignIn(def->rt)) { Diag(L"sign-in " + W(id) + L": the CLI's own, through the agents' status"); return; }   // i18n-exempt: log detail
     if (!method) { if (id == agentId) { session.reset(); MaybeStartSession(); if (!session) StartSession(); } return; }   // no method known yet: a new start tells
     if (!method->terminal) {
         if (session && id == agentId && session->Authenticate(method->id)) { sessionStarting = true; SetAgentStatus(id, "starting", TR(chat_agent_starting)); }

@@ -42,6 +42,18 @@ void ChooseInstalledAgent() {
         for (const auto& def : Agents) if (agentInfo[def.id].cli) { agentId = def.id; convo.data.head.agentId = agentId; Diag(std::wstring(L"agent chosen by itself (the only one installed): ") + W(def.id)); break; }
 }
 void ApplyAllStatuses() { for (const auto& def : Agents) ApplyStatus(def.id, AgentStatus::Get(def.rt)); }
+void StartSession();
+// A sign-in that ended well (from the chat's « Se connecter », the « Ton agent » screen or Réglages): the chat's agent starts
+// again, as it did when its own sign-in console closed.
+std::map<AgentRuntime::Agent, AgentStatus::State> lastAgentState;
+void AfterAgentChange(const AgentStatus::Status& s, AgentStatus::State before) {
+    if (before != AgentStatus::State::SigningIn || !s.Ready()) return;
+    for (const auto& def : Agents)
+        if (def.rt == s.agent && def.id == agentId && !sessionReady) {
+            Diag(L"sign-in " + W(def.id) + L" over: the agent starts again");   // i18n-exempt: log detail
+            session.reset(); sessionStarting = false; if (Usable()) StartSession();
+        }
+}
 void EnsureAgentStatus() {
     static bool started = false; if (started) return; started = true;
     AgentStatus::Host h;
@@ -51,8 +63,11 @@ void EnsureAgentStatus() {
     h.environment = [] { return RtEnv(); };
     // Every change (an install from the tutorial, a sign-in from Réglages…) reaches the panel at once.
     AgentStatus::Subscribe([](const AgentStatus::Status& s) {
+        const auto seen = lastAgentState.find(s.agent); const auto before = seen == lastAgentState.end() ? AgentStatus::State::Unknown : seen->second;
+        lastAgentState[s.agent] = s.state;
         for (const auto& def : Agents) if (def.rt == s.agent) ApplyStatus(def.id, s);
         ChooseInstalledAgent(); SendState();
+        AfterAgentChange(s, before);
     });
     AgentStatus::Init(std::move(h));
 }
@@ -69,6 +84,20 @@ void StartSession();
 std::shared_ptr<std::atomic<bool>> prepareCancel;
 void PrepareAgent(const std::string& id, std::function<void(bool)> then) {
     const auto* def = AgentOf(id); if (!def || preparing) { if (then) then(false); return; }
+    // « Ton agent » (Val's decision via Fix, 24/11): without a usable CLI — missing, too old, Claude Desktop only, a failed
+    // install — the chat's runtime download is useless (about 60 MB). The CLI is looked for again (it may just have been
+    // installed); still none → the « Ton agent » screen, which installs only on its strong button's click. Nothing downloaded.
+    if (const auto& st = AgentStatus::Get(def->rt); st.state != AgentStatus::State::Unknown && !st.Installed()) {
+        Diag(L"prepare " + W(id) + L": no usable CLI (" + W(AgentStatus::StateName(st.state)) + L") — looked for again, nothing downloaded");   // i18n-exempt: log detail
+        const auto rt = def->rt;
+        DetectAgents([id, then, rt] {
+            if (AgentStatus::Get(rt).Installed()) { PrepareAgent(id, then); return; }
+            Diag(L"prepare " + W(id) + L": still no usable CLI — the « Ton agent » screen");   // i18n-exempt: log detail
+            OpenTonAgent(TonAgentFrom::Chat);
+            if (then) then(false);
+        });
+        return;
+    }
     preparing = true; prepareCancel = std::make_shared<std::atomic<bool>>(false);
     // no bar until something really moves: « Préparation de Claude… » alone (never an empty grey bar)
     SetAgentStatus(id, "preparing", TRF(chat_agent_prepare_start, AgentShort(id)), -1);
