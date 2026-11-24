@@ -97,7 +97,7 @@ Gap 8 between « Retour » and « Passer »; board 5: one centred « Continuer �
 | ticks, boards 5 / 5.1 | all #04D1DA / #FF7B6E with filter blur(4px), opacity 0.2 |
 | mark | 32 × 32 centred on the row: Phosphor check bold #04D1DA / warning bold #FF7B6E |
 | GemSmoke `1CCQ-0` | speed 1, size 0.8, outerDistortion 0.6, innerDistortion 0.8, outerGlow 0, innerGlow 1, offset −0.58, scale 0.65, angle 0, shape diamond, colors #333333 #E7E6DF, colorInner #FAFAF5, colorBack transparent, image `01M6Z8XPRA….svg`, CSS filter contrast(108%) |
-| board 5.1 text | title y 418 « Historique non importée » 14/20 500 #FF7B6E; gap 2; « Google Chrome est ouvert. Fermez-le, puis réessayez. » 12/16 #FF7B6E |
+| board 5.1 text | title y 418 « Historique non importé » 14/20 500 #FF7B6E; gap 2; « Google Chrome est ouvert. Fermez-le, puis réessayez. » 12/16 #FF7B6E |
 | board 5.1 note | chip after « Passer » (gap 4): canvas fill, radius 8, padding 6 / 8, gap 4, info glyph 14 at 60 %, « Vous pouvez l'importer plus tard dans les Réglages. » 12/16 #FFFFFF99 |
 | buttons | 4: « Annuler »; 5: « Continuer » (centred); 5.1: « Passer », « Réessayer » |
 
