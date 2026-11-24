@@ -720,11 +720,15 @@ def leftover_from_app():
 def holds(text, token):
     '''The token is in the text AS A WHOLE: « jt1x1 » is not in « … jt1x13 … ». The monkey numbers its messages (jt<seed>x<n>): from
     the 10th on, a plain `in` found the 1st one's token in every conversation (real-window monkey of 24 Nov 2026, seed 1: 8
-    openings said to show « another conversation's message » — the test's, not the product's).'''
-    return bool(token) and re.search(r'(?<![0-9A-Za-z])' + re.escape(token) + r'(?![0-9A-Za-z])', text or '') is not None
+    openings said to show « another conversation's message » — the test's, not the product's).
+    Only a DIGIT right after the token says it is another one: the chat's text is the page's textContent, where neighbours are
+    glued without a space (« …jeton1x435Revenir », « echo jt1x4Sonnet ») — refusing a letter before or after it rejected tokens
+    that were there (about 25 false « right conversation » in the journeys, 20:00 release's pass of 24 Nov 2026).'''
+    return bool(token) and re.search(re.escape(token) + r'(?![0-9])', text or '') is not None
 
 
 assert holds('vrai-lent jt1x13 et jt1x14', 'jt1x13') and not holds('vrai-lent jt1x13 et jt1x14', 'jt1x1') and holds('« jt1x1 »', 'jt1x1')
+assert holds('echo jeton1x435Revenir', 'jeton1x435') and holds('Envoyéjt1x4Sonnet', 'jt1x4') and not holds('Envoyéjt1x41Sonnet', 'jt1x4')
 
 
 # ---------------------------------------------------------------- the chat, through real input
