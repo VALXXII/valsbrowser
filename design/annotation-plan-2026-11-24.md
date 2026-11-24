@@ -384,7 +384,7 @@ deviennent des vérifications :
 
 | Règle | Vérification | Sort |
 |---|---|---|
-| 1. Côté : 8 px entre le cadre de sélection de l'élément et la bulle, « comme aujourd'hui » | Rien ne change : le cadre dépasse l'élément de 4 px (`FrameOutset`, `src/chat-bubble.h:198`) et la bulle est à 12 px de l'élément (`BubbleGapCss`, `src/chat-comment.h:25`), soit 8 px du cadre. Les contrôles de distance actuels restent | Déjà en place |
+| 1. Côté : 12 px entre l'élément (cadre de sélection) et la bulle, « comme dans l'app aujourd'hui » (planche corrigée par Designer le 24/11 ; elle disait 8 px) | Rien ne change : la bulle est à 12 px de l'élément (`BubbleGapCss`, `src/chat-comment.h:25`). Les contrôles de distance actuels restent. Les 8 px ne valent que pour les marges aux bords de la page affichée (règles 2, 3, 9) | Déjà en place |
 | 2. Plus de place dessous : la bulle remonte jusqu'à ce que son bas soit à 8 px du bas de la page affichée ; elle reste à côté de l'élément, sans le couvrir | Bas de la bulle ≤ bas de la zone − 8 px ; aucun pixel commun avec l'élément | Branche en cours |
 | 3. Jamais plus haut que 8 px sous le bandeau du mode Annotation | Haut de la bulle ≥ bas du bandeau + 8 px | Branche en cours |
 | 4. Même en remontant elle ne tient pas : hauteur = page affichée − 16 px, le début du fil défile dans la bulle avec le fondu du haut, le champ de saisie et le pied restent toujours visibles | Hauteur mesurée ; la saisie et le pied sont dans la zone et répondent au clic. Pour Refuser / Autoriser : question 3 du §5 | Branche en cours |
@@ -409,7 +409,7 @@ sans place dessous · C règles (validées) », à droite de la planche C, règl
 | 6. L'élément sort de l'écran au défilement : la bulle le suit et sort avec lui, elle revient avec lui | « Bulle entière » ne vaut que tant que l'élément est à l'écran. Élément sorti : aucune bulle retenue au bord, aucune bulle fermée ; au retour, même conversation, même brouillon | Lot 4 (avec la règle 5) |
 | 7. Le navigateur ne fait jamais défiler la page pour montrer une carte (ancien R47 retiré) | Pendant un tour avec autorisation, la position de défilement de la page du site ne change pas sans action de l'utilisateur | Lot 1 |
 | 8. Carte d'autorisation : Refuser / Autoriser restent dans le pied toujours visible | Les deux boutons sont dans la zone de page et répondent à un vrai clic, quelle que soit la longueur du fil | Lot 1 |
-| 9. Élément sans côté libre : dessous, sinon dessus, à 8 px ; sinon dans l'élément, coin bas-droit, à 8 px du bord | `section.hero` et `div.plans` : position mesurée pour chacun des trois cas. Remplace R44 (coin le plus proche du clic, 12 px) | Lot 1 |
+| 9. Élément sans côté libre : dessous, sinon dessus, à 12 px ; sinon dans l'élément, coin bas-droit, à 8 px du bord | `section.hero` et `div.plans` : position mesurée pour chacun des trois cas (12 px dessous ou dessus, 8 px dans l'élément). Remplace R44 (coin le plus proche du clic, 12 px) | Lot 1 |
 | 10. Jamais par-dessus l'élément : la bulle bascule de l'autre côté (dessus ↔ dessous), sinon hauteur limitée + défilement (règle 4) | Aucun pixel commun avec l'élément tant qu'un côté a la place ; sinon règle 4 | Lot 1 |
 | 11. « Réduire les animations » : placement direct. Défilement continu : la bulle colle à l'élément, elle ne glisse qu'au changement de côté | Mouvement réduit : aucune image intermédiaire. Défilement continu : le glissement de 120 ms n'apparaît qu'au changement de côté | Lot 4 |
 
@@ -424,7 +424,7 @@ référence « décision 1 du 24/11 » :
 | `tests/chat/chat_units_test.cpp:579` | « never moved to fit the window (the user scrolls) » : le bas peut dépasser la zone | La surface ne dépasse jamais la zone |
 | `tests/chat/chat_units_test.cpp:587` | Une seule exception, en fin de document, un seul décalage | Règle générale, à chaque nouvelle hauteur |
 | `tests/chat/host_contract_test.py:286` | La hauteur n'est jamais limitée par la place sous le bord fixe | Inversé : hauteur limitée à la page affichée − 16 px (règle 4) |
-| `tests/chat/final/journeys.py:128` (`r44_…`) | Hauteur naturelle, jamais réduite pour tenir ; dans l'élément, au coin le plus proche du clic | Entière dans la zone ; dessous, sinon dessus, sinon coin bas-droit de l'élément à 8 px (règle 9) |
+| `tests/chat/final/journeys.py:128` (`r44_…`) | Hauteur naturelle, jamais réduite pour tenir ; dans l'élément, au coin le plus proche du clic | Entière dans la zone ; dessous, sinon dessus, à 12 px ; sinon coin bas-droit de l'élément à 8 px (règle 9) |
 | `tests/chat/final/journeys.py:150` (`r47_…`) | La page du site défile pour montrer la carte | La page ne défile jamais toute seule (règle 7) ; boutons dans le pied toujours visible (règle 8) |
 | `tests/chat/final/journeys.py:383` | Pendant le tour, la bulle ne bouge jamais | Elle peut se replacer pour rester entière ; sans saut |
 | `tests/chat/chat_qa_comment_v4.py:173` | La surface garde son coin au pixel pendant le tour et le diff | Idem tant qu'elle tient ; sinon replacée, entière |
@@ -464,7 +464,7 @@ Les 6 questions posées le 24/11 ont leur réponse sur la planche « C règles (
 | 1. Élément sorti de l'écran | La bulle le suit et sort avec lui, elle revient avec lui (règle 6) |
 | 2. Défilement automatique de la page du site | Retiré : le navigateur ne déplace jamais la page de l'utilisateur (règle 7) |
 | 3. Carte d'autorisation | Refuser / Autoriser sont dans le pied toujours visible (règle 8) |
-| 4. Élément sans côté libre | Dessous, sinon dessus, à 8 px ; sinon dans l'élément, coin bas-droit, à 8 px (règle 9) |
+| 4. Élément sans côté libre | Dessous, sinon dessus, à 12 px ; sinon dans l'élément, coin bas-droit, à 8 px du bord (règle 9) |
 | 5. Bulle sous ou sur l'élément | Jamais par-dessus : elle bascule de l'autre côté, sinon hauteur limitée et défilement intérieur (règle 10) |
 | 6. Mouvement | Placement direct avec « Réduire les animations » ; en défilement continu elle colle à l'élément et ne glisse qu'au changement de côté (règle 11) |
 
