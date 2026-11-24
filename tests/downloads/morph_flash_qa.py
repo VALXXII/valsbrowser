@@ -151,10 +151,14 @@ def session(app_dir, label):
             at = (px(width - 55) & 0xFFFF) | (px(60) << 16)                   # the toolbar's Téléchargements button (chrome.h)
             for m in (WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP): u32.PostMessageW(main, m, 1 if m == WM_LBUTTONDOWN else 0, at)
             popover = None
-            for _ in range(40):
-                popover = windows_of(proc.pid, 'LisiereDownloads')
-                if popover and u32.IsWindowVisible(popover): break
-                time.sleep(0.025)
+            for attempt in range(2):   # night run 24/11: the very first click of a fresh profile (content blocker still installing) can be lost: click once more
+                for _ in range(40):
+                    popover = windows_of(proc.pid, 'LisiereDownloads')
+                    if popover and u32.IsWindowVisible(popover): break
+                    time.sleep(0.025)
+                if (popover and u32.IsWindowVisible(popover)) or n > 0: break
+                time.sleep(1.5); u32.SetForegroundWindow(main); time.sleep(0.3)
+                for m in (WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP): u32.PostMessageW(main, m, 1 if m == WM_LBUTTONDOWN else 0, at)
             if not popover or not u32.IsWindowVisible(popover): print(f'  round {n + 1}: the popover did not open', flush=True); valid = False; continue
             time.sleep(0.15 if n % 2 == 0 else 0.7)
             pr = rect(popover)
