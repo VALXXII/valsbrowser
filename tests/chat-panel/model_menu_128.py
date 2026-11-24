@@ -272,6 +272,12 @@ try:
     f3, m3 = rule([{"id": "a", "label": "Opus 5.5"}], [{"id": "g1", "label": "gpt-5.5"}, {"id": "g2", "label": "gpt-5.5-codex"}, {"id": "g3", "label": "gpt-5.4"}, {"id": "g4", "label": "Codex Mini"}])
     check(f3 == ["#Claude Code", "Opus 5.5", "·", "#Codex", "gpt-5.5", "gpt-5.5-codex", "·", "Plus de modèles", "Effort"] and m3[2:] == ["#Codex", "gpt-5.4", "Codex Mini"],
           "rule: the agent's own spellings (gpt-5.5, gpt-5.5-codex) — one line, its newest version first; « Plus de modèles » lists only the groups that have more", [f3, m3])
+    fx = json.load(open(os.path.join(ROOT, "tests", "chat", "fixtures", "real-adapter-models-2026-11-17.json"), encoding="utf-8"))
+    real = {k: [{"id": c["value"], "label": c["name"]} for c in next(o for o in fx[k]["options"] if o["category"] == "model")["choices"] if not c["name"].lower().startswith("default")] for k in ("claude", "codex")}
+    f5, m5 = rule(real["claude"], real["codex"])
+    check(f5 == ["#Claude Code", "Opus 5.5", "Fable 5.2", "Sonnet 5.5", "Haiku 5.5", "·", "#Codex", "6.2 Sol", "6.2 Astra", "6.1 Terra", "6 Luna", "·", "Plus de modèles", "Effort"]
+          and m5[2:] == ["#Claude Code", "Fable 5.1", "Haiku 4.5", "Sonnet 5", "Opus 5", "Fable 5", "Opus 4.8", "Opus 4.7", "Opus 4.6", "Sonnet 4.6", "·", "#Codex", "6.1 Sol", "6 Astra", "6 Sol", "5.6 Sol", "5.6 Terra", "5.6 Luna"],
+          "rule, the real adapters' lists (claude-agent-acp 0.107.3, codex-acp 2.6.0): Opus 5.5, Fable 5.2, Sonnet 5.5, Haiku 5.5; Codex's « 6.2 Sol », « 6.2 Astra », « 6.1 Terra », « 6 Luna » (version first: the line is the word after it)", [f5, m5])
     f4, _ = rule([{"id": "a", "label": "Opus 5.5"}, {"id": "b", "label": "Sonnet 5.5"}])
     check("Plus de modèles" not in f4, "rule: nothing older, no « Plus de modèles » row", f4)
 
@@ -390,6 +396,51 @@ try:
     sb = cdp.js("(()=>{const s=document.querySelector('.menu.sub-menu');if(!s)return null;const m=document.querySelector('.menu.models:not(.sub-menu)').getBoundingClientRect(),r=s.getBoundingClientRect();return {rows:Array.from(s.querySelectorAll('.mi .lb')).map(n=>n.textContent),gap:Math.round(r.left-m.right),top:Math.round(r.top-m.top),w:r.width}})()")
     check(sb and sb["rows"] == ["Faible", "Moyen", "Élevé", "X-Élevé", "Max"] and sb["gap"] == 4 and sb["top"] == 0 and sb["w"] == 214,
           "bubble: Effort › opens its sub-menu beside the menu (4 px, tops aligned, 214 px), as before", sb)
+
+    # ---------------------------------------------------------------- a new list while the menu is open: redrawn at once
+    CODEX_LIVE = [{"id": "gpt-6.2-sol", "label": "6.2 Sol"}, {"id": "gpt-6.2-astra", "label": "6.2 Astra"}, {"id": "gpt-6.1-sol", "label": "6.1 Sol"}]
+    def push_codex(models):
+        cdp.js("window.devHost.send({type:'state',agents:JSON.parse(JSON.stringify(window.__lastAgents||[])).map(a=>a.id==='codex'?Object.assign(a,{models:" + json.dumps(models) + "}):a)})"); time.sleep(.25)
+    for scen, sel in (("128-modeles-inconnus", ".menu.models"), ("c-128-modeles-inconnus", ".menu.models")):
+        load(scen)
+        cdp.js("window.__lastAgents=[{id:'claude-code',name:'Claude Code',icon:'claude',status:'ready',detail:'Installé',models:[]},{id:'codex',name:'Codex',icon:'codex',status:'ready',detail:'Installé',models:[]}]")
+        cdp.js(row_el("Opus 5.5") + ".focus()"); key("ArrowDown"); key("ArrowUp")   # the keyboard on « Opus 5.5 »
+        el0 = cdp.js("(()=>{const m=document.querySelector('.menu.models');m.__mark=1;return 1})()")
+        push_codex(CODEX_LIVE); m = menu()
+        same = cdp.js("!!(document.querySelector('.menu.models')||{}).__mark")
+        check(m and labels(m)[:5] == ["#Claude Code", "Opus 5.5", "·", "#Codex", "6.2 Sol"] and "Modèle par défaut" not in labels(m) and "Plus de modèles" in labels(m) and same and active() == "Opus 5.5",
+              f"{scen}: the menu stays open and shows Codex's list at once (« Modèle par défaut » gone), the keyboard still on « Opus 5.5 »", [m and labels(m), same, active()])
+        if scen.startswith("c-"):
+            g = geo(); lim = {k: min(400, g["inset"][k]) for k in ("top", "right", "bottom", "left")}
+            check(g["scroll"] <= 0 and g["top"] >= -lim["top"] and g["bottom"] <= g["aH"] + lim["bottom"] and (g["ask"].get("overflowTop") or 0) >= -g["top"] and all(ok for _, ok in g["rows"]),
+                  f"{scen}: the redrawn menu is whole and the host is asked the room it now takes", g)
+        # the pointer on a row: that row stays under it when the list grows
+        load(scen)
+        cdp.js("window.__lastAgents=[{id:'claude-code',name:'Claude Code',icon:'claude',status:'ready',detail:'Installé',models:[]},{id:'codex',name:'Codex',icon:'codex',status:'ready',detail:'Installé',models:[]}]")
+        c = hover("Opus 5.5")
+        t0 = cdp.js("document.querySelector('.menu.models').getBoundingClientRect().top")
+        push_codex(CODEX_LIVE)
+        under = cdp.js(f"(()=>{{const n=document.elementFromPoint({c[0]},{c[1]});const r=n&&n.closest('.mi');return r?r.querySelector('.lb').textContent:''}})()")
+        box = cdp.js("(()=>{const r=document.querySelector('.menu.models').getBoundingClientRect();return [r.top,r.bottom,r.height,innerHeight]})()")
+        if scen.startswith("c-"):   # the bubble's window has room around it: the top stays, the row stays under the pointer
+            check(under == "Opus 5.5" and abs(box[0] - t0) <= .5, f"{scen}: the pointer on « Opus 5.5 » — still on it after the redraw (the menu's top kept, it grows downward)", [under, t0, box])
+        else:   # the panel: just above the composer — the top stays as far as the menu stays whole (8 px from the bottom), no further
+            want = min(t0, box[3] - 8 - box[2])
+            check(abs(box[0] - want) <= .5 and box[1] <= box[3] - 8 + .5, f"{scen}: the pointer on « Opus 5.5 » — the menu keeps its top as far as it stays whole in the panel (it moves up only by what it lacks below)", [under, t0, box, want])
+        # the same list again: nothing touched
+        cdp.js("document.querySelector('.menu.models .mi').__mark2=1"); push_codex(CODEX_LIVE)
+        check(cdp.js("!!document.querySelector('.menu.models .mi').__mark2"), f"{scen}: the same list again — the menu is not rebuilt")
+    # the bubble's open sub-menu « Plus de modèles » follows too, the keyboard kept in it
+    load("c-128-bulle-plus")
+    cdp.js("window.__lastAgents=" + json.dumps([{"id": "claude-code", "name": "Claude Code", "icon": "claude", "status": "ready", "detail": "Installé"}, {"id": "codex", "name": "Codex", "icon": "codex", "status": "ready", "detail": "Installé"}]))
+    cdp.js("window.__lastAgents[0].models=" + json.dumps([{"id": "opus", "label": "Opus 5.5"}, {"id": "sonnet", "label": "Sonnet 5.5", "isDefault": True}, {"id": "fable", "label": "Fable 5.2"}, {"id": "haiku", "label": "Haiku 5.5"},
+        {"id": "opus-5", "label": "Opus 5"}, {"id": "sonnet-5", "label": "Sonnet 5"}, {"id": "opus-4.6", "label": "Opus 4.6"}, {"id": "sonnet-4.6", "label": "Sonnet 4.6"}, {"id": "haiku-4.5", "label": "Haiku 4.5"}]))
+    a0 = active()
+    push_codex([{"id": "gpt-5.5", "label": "GPT-5.5"}, {"id": "gpt-5.5-mini", "label": "GPT-5.5 mini"}, {"id": "gpt-5.4", "label": "GPT-5.4"}, {"id": "gpt-5.2", "label": "GPT-5.2"}])
+    s = menu(".sub-menu"); gs = geo(True)
+    check(a0 == "Opus 5" and s and labels(s)[-2:] == ["GPT-5.4", "GPT-5.2"] and active() == "Opus 5" and cdp.js("document.querySelector('.mi[data-key=more]').getAttribute('aria-expanded')") == "true"
+          and gs["scroll"] <= 0 and all(ok for _, ok in gs["rows"]),
+          "bubble: the open « Plus de modèles » sub-menu shows the new list at once, whole, the keyboard still on « Opus 5 », its row still expanded", [a0, s and labels(s), active(), gs])
 
     # ---------------------------------------------------------------- the bubble at each edge of the page area: never cut
     # The host shows what floats around the surface within the room it measured (`layout.room`: to the page area's edges),

@@ -635,7 +635,7 @@
     menuEl.style.left = left + "px";
     const side = align === "right" ? "right" : "left";
     if (!BUB()) {
-      menuEl.style.bottom = (ar.bottom - r.top + 6) + "px";
+      menuEl.style.top = ""; menuEl.style.bottom = (ar.bottom - r.top + 6) + "px";
       menuEl.style.setProperty("--origin", "bottom " + side);
       return;
     }
@@ -652,7 +652,9 @@
       const aTop = r.top - ar.top, aBot = r.bottom - ar.top;
       const top = -lim.top, bottom = H + lim.bottom;         // what the window may show around the surface (floatNeed's room)
       let y = null, origin = "bottom";
-      for (const [yy, o] of [[aTop - 6 - mh, "bottom"], [aBot + 6, "top"]]) if (yy >= top && yy + mh <= bottom) { y = yy; origin = o; break; }
+      // #128 v2: redrawn live under the pointer (refreshModelMenu) — its top stays while it still fits, the row under the pointer with it
+      const kept = Number.isFinite(menuEl._keepTop) && menuEl._keepTop >= top && menuEl._keepTop + mh <= bottom ? [[menuEl._keepTop, "top"]] : [];
+      for (const [yy, o] of kept.concat([[aTop - 6 - mh, "bottom"], [aBot + 6, "top"]])) if (yy >= top && yy + mh <= bottom) { y = yy; origin = o; break; }
       if (y == null) {
         // #128 (Val's real trial, comment bubble near the banner): neither above nor under its button holds it whole. It was
         // squeezed into the surface (max-height = the bubble's height − 12: one row and a scrollbar). It now stays a layer
@@ -783,6 +785,7 @@
       else if (S.sub) subTimer = setTimeout(() => closeSub(), 250);
     });
     reaskOnHint(S.menu.el);
+    S.menu.el.addEventListener("pointerleave", () => { if (S.menu) S.menu.el._keepTop = null; });   // #128 v2: see refreshModelMenu
   }
   // B 1.9 / #128 v2 (Paper 6.4: 17VU-0 next to 17US-0): in the bubble, « Plus de modèles » and « Effort » are true sub-menus
   // beside the model menu, 214 px — on its right, or on its left when there is no room (`overflowRight` / `overflowLeft`).
@@ -864,6 +867,51 @@
     const back = from && S.menu.el.querySelector(".mi[data-key='" + from + "']");
     (back || its.find((i) => i.getAttribute("aria-checked") === "true") || its.find((i) => !i.classList.contains("back")) || its[0] || S.menu.el).focus({ preventScroll: BUB() });
   }
+  // #128 v2 (coordinator, 24 Nov): a new list from the host — the background read of an agent's models, a session that
+  // starts, the cache — redraws an OPEN model menu at once, the same view: the keyboard focus stays on the same row (else the
+  // chosen one); while the pointer is over the menu its top stays where it is (it grows downward, over its button if need be,
+  // still whole), so the row under the pointer stays under it; the bubble's open sub-menu is redrawn too. The same list:
+  // nothing is touched.
+  const menuSig = (el) => Array.from(el.children).map((n) => n.className + "|" + n.textContent + "|" + (n.getAttribute("aria-checked") || "") + (n.getAttribute("aria-disabled") || "")).join("|");
+  function rowKey(n) {
+    if (!n || !n.classList) return "";
+    if (n.classList.contains("mm-act")) return "act:" + n.getAttribute("aria-label");
+    if (!n.classList.contains("mi")) return "";
+    if (n.classList.contains("back")) return "back";
+    if (n.dataset.key) return "key:" + n.dataset.key;
+    let g = n.previousElementSibling; while (g && !g.classList.contains("mm-head")) g = g.previousElementSibling;
+    return "row:" + (g ? g.querySelector(".mm-hl").textContent : "") + "|" + n.querySelector(".lb").textContent;
+  }
+  const findRow = (root, key) => key ? Array.from(root.querySelectorAll(".mi, .mm-act")).find((n) => rowKey(n) === key) || null : null;
+  function refreshModelMenu() {
+    const M = S.menu;
+    if (!M || M.combo || !M.view || !M.el.isConnected || M.el.classList.contains("menu-ghost")) return;
+    const fresh = h("div"); fillMenu(fresh, modelItems(M.view));
+    const sub = S.sub && S.sub.el.isConnected ? S.sub : null, freshSub = sub ? h("div") : null;
+    if (sub) fillMenu(freshSub, subItems(sub.view));
+    if (menuSig(fresh) === menuSig(M.el) && (!sub || menuSig(freshSub) === menuSig(sub.el))) return;
+    const a = document.activeElement, inSub = !!(sub && sub.el.contains(a)), inMain = M.el.contains(a);
+    const key = inMain || inSub ? rowKey(a) : "";
+    const hovered = M.el.matches(":hover") || !!(sub && sub.el.matches(":hover"));
+    const was = M.el.getBoundingClientRect();
+    clear(M.el); while (fresh.firstChild) M.el.appendChild(fresh.firstChild);
+    if (sub) {
+      const row = M.el.querySelector(".mi[data-key='" + sub.view + "']");
+      if (!row || !freshSub.querySelector(".mi")) closeSub();
+      else { clear(sub.el); while (freshSub.firstChild) sub.el.appendChild(freshSub.firstChild); sub.row = row; row.setAttribute("aria-expanded", "true"); }
+    }
+    if (BUB()) {
+      M.el._keepTop = hovered ? was.top - app.getBoundingClientRect().top : null;
+      publishSize();
+    } else if (hovered) {   // the panel: the same top, the menu whole in the page
+      const box = M.el.offsetParent ? M.el.offsetParent.getBoundingClientRect() : { top: 0, height: innerHeight };
+      M.el.style.bottom = ""; M.el.style.top = Math.max(8, Math.min(was.top - box.top, box.height - 8 - M.el.offsetHeight)) + "px";
+    } else place(M.el, M.anchor, "right", M.view === "effort" ? SUB_W : MM_W);
+    if (!key) return;
+    const root = inSub && S.sub ? S.sub.el : M.el;
+    const t = findRow(root, key) || root.querySelector(".mi[aria-checked='true']") || root.querySelector(".mi:not(.back):not([aria-disabled='true'])");
+    if (t) t.focus({ preventScroll: true });
+  }
   // R42: the model changes at any time with no confirmation. The same provider keeps the chat; another provider (#128)
   // opens a new chat when this one has messages — the host decides (`setModel` / `setAgent` with the other agent), the page
   // only tells it beforehand (the row's hint). Agents are compared by id: the state is sent again often (bubble), so the
@@ -871,8 +919,9 @@
   const chatHasMessages = () => S.users.size > 0 || S.turns.size > 0;
   // #128 v2 — which models the first level shows (Val: « seulement les derniers modèles »), from the names the agent gives,
   // the same rule for every agent (nothing written per agent or per model):
-  //   · a model's LINE is what its name says before its version number, its VERSION that number: « Opus 5.5 » → opus 5.5,
-  //     « GPT-5.5 mini » → gpt 5.5, « GPT-5.3-Codex » → gpt 5.3, « Fable 5.2 » → fable 5.2;
+  //   · a model's LINE is what its name says before its version number — after it when the name starts with the number —
+  //     and its VERSION that number: « Opus 5.5 » → opus 5.5, « GPT-5.5 mini » → gpt 5.5, « GPT-5.3-Codex » → gpt 5.3,
+  //     Codex's own names « 6.2 Sol » → sol 6.2, « 6.1 Terra » → terra 6.1;
   //   · first level: the models of each line's newest version, in the agent's order (Opus 5.5, Sonnet 5.5, Fable 5.2,
   //     Haiku 5.5; GPT-5.5, GPT-5.5 mini). A context-size variant of one of them (« (1M context) », « [1m] ») is not;
   //   · the agent's default model (« Par défaut ») is always on the first level;
@@ -884,7 +933,8 @@
     const ms = models || [];
     const info = ms.map((m) => {
       const name = String(m.label || m.id || ""), base = name.replace(CTX_VARIANT, ""), v = /\d+(?:\.\d+)*/.exec(base);
-      return { m, ctx: base !== name, v: v ? v[0].split(".").map(Number) : null, line: v ? base.slice(0, v.index).toLowerCase().replace(/[\s\-_.:/]+$/, "").trim() : null };
+      const before = v ? base.slice(0, v.index).toLowerCase().replace(/[\s\-_.:/]+$/, "").trim() : null;
+      return { m, ctx: base !== name, v: v ? v[0].split(".").map(Number) : null, line: v ? before || base.slice(v.index + v[0].length).toLowerCase().replace(/^[\s\-_.:/]+/, "").trim() : null };
     });
     const cmp = (a, b) => { for (let i = 0; i < Math.max(a.length, b.length); i++) { const d = (a[i] || 0) - (b[i] || 0); if (d) return d; } return 0; };
     let firstSet;
@@ -2938,6 +2988,7 @@
       if (!S.st.agentId && S.st.agents[0]) S.st.agentId = S.st.agents[0].id;
       renderHeader(); renderComposerBar(); updateView(); renderDock(); refreshWaiting();
       if (S.historyOpen) renderHistoryList();
+      refreshModelMenu();   // #128 v2: an open model menu shows the new list at once
     },
     // B 1.8: the page's layout — the panel on the right (default) or the comment-mode bubble. Sent at each opening and switch.
     layout(m) {

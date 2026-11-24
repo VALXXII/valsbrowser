@@ -75,9 +75,12 @@ void EnsureAgentStatus() {
     AgentStatus::Init(std::move(h));
 }
 // #128 v2 (chat-model-probe.h): the model list of an agent that never had a session here, read from the agent itself —
-// installed, prepared, signed in, models unknown, no session of it starting or running; once per launch, one at a time,
-// in a thread of its own (never the UI thread, never the annotations' pool); the answer comes back through AcpWake.
-struct ModelRead { std::set<std::string> done; std::string agent; } modelRead;   // UI thread only
+// installed and signed in, models unknown, no session of it starting or running; its adapter prepared first (downloaded as
+// at a first use) when it is not here yet (Val's option A, ChatModelProbe::PrepareForModels); one at a time, in a thread
+// of its own (never the UI thread, never the annotations' pool); the answer comes back through AcpWake. Once per launch
+// when it works; a failure is tried again at the next detection (the next opening of the chat / start of the mode), at
+// most ChatModelProbe::MaxTries times per launch. The menu meanwhile shows the built-in list (chat-known-models.h).
+struct ModelRead { std::set<std::string> done; std::map<std::string, int> failures; std::string agent; bool prepare = false; } modelRead;   // UI thread only
 // the read's answer, handed over by its thread (never freed: a read still running when the browser exits finds it)
 struct ModelReadMail { std::mutex mu; std::shared_ptr<ChatModelProbe::Result> result; };
 ModelReadMail& ModelMail() { static auto* m = new ModelReadMail; return *m; }
@@ -91,19 +94,28 @@ void MaybeReadModels() {
         f.installed = a.cli; f.prepared = a.prepared; f.signedIn = st.Ready() && st.signedIn;
         f.modelsKnown = Acp::FindModelOption(a.options) != nullptr; f.readThisLaunch = modelRead.done.count(def.id) > 0;
         f.sessionOfThisAgent = (session || sessionStarting) && agentId == def.id;
-        if (!ChatModelProbe::ShouldRead(f)) continue;
-        modelRead.done.insert(def.id); modelRead.agent = def.id;
-        Acp::StartOptions o; o.resolve = AgentRuntime::MakeResolver(RtEnv(), def.rt); o.clientName = "browser";
+        const auto action = ChatModelProbe::Decide(f);
+        if (action == ChatModelProbe::Action::None) continue;
+        modelRead.agent = def.id; modelRead.prepare = action == ChatModelProbe::Action::PrepareThenRead;
+        const auto env = RtEnv(); const auto rt = def.rt;
+        Acp::StartOptions o; o.resolve = AgentRuntime::MakeResolver(env, rt); o.clientName = "browser";
 #ifdef BROWSER_VERSION_TEXT
         o.clientVersion = BROWSER_VERSION_TEXT;
 #endif
-        const HWND target = post;
+        const HWND target = post; const bool prepare = modelRead.prepare;
+        if (prepare) Diag(L"prepare " + W(def.id) + L" in the background, for its model list (first use: the private Node and its adapter are downloaded into <data>\\agents)");   // i18n-exempt: log detail
         Diag(L"reading the models of " + W(std::string(def.name)) + L" (installed, signed in, never started here): a session opened and closed in a temporary folder, no message");   // i18n-exempt: log detail
-        std::thread([o, target]() mutable {
+        std::thread([o, target, prepare, env, rt]() mutable {
             auto r = std::make_shared<ChatModelProbe::Result>();
+            std::function<bool(std::string&)> ready;
+            if (prepare) ready = [env, rt](std::string& log) {   // as PrepareAgent does it (same pins, same folder), without its progress strip
+                const auto p = AgentRuntime::Prepare(env, rt);
+                log = std::string(AgentRuntime::PrepareErrorName(p.error)) + (p.detail.empty() ? "" : " — " + p.detail);
+                return p.Ok();
+            };
             const std::wstring dir = ChatModelProbe::MakeFolder();
             if (dir.empty()) r->why = "no temporary folder";
-            else { o.cwd = U8(dir); *r = ChatModelProbe::Read(std::move(o)); if (!ChatModelProbe::RemoveFolder(dir)) r->why += r->why.empty() ? "temporary folder left" : ", temporary folder left"; }
+            else { o.cwd = U8(dir); *r = ChatModelProbe::Read(std::move(o), 90000, ready); if (!ChatModelProbe::RemoveFolder(dir)) r->why += r->why.empty() ? "temporary folder left" : ", temporary folder left"; }
             { auto& m = ModelMail(); std::lock_guard<std::mutex> g(m.mu); m.result = r; }
             PostMessageW(target, AcpWake, 0, 0);
         }).detach();
@@ -115,11 +127,23 @@ void PumpModelRead() {
     { auto& m = ModelMail(); std::lock_guard<std::mutex> g(m.mu); r = std::move(m.result); m.result.reset(); }
     if (!r || modelRead.agent.empty()) return;
     const std::string id = modelRead.agent; modelRead.agent.clear();
-    auto& a = agentInfo[id]; const auto* mo = Acp::FindModelOption(r->options);
+    auto& a = agentInfo[id];
+    if (r->prepareTried) {   // logged as the panel's own preparation is (PrepareAgent)
+        Diag(L"prepare " + W(id) + L": " + W(r->prepareLog) + L" (in the background, for its model list)");   // i18n-exempt: log detail
+        if (r->prepared) {
+            a.prepared = true; if (a.status == "ready") a.detail = TR(chat_agent_installed);
+            if (const auto* def = AgentOf(id)) AgentStatus::Refresh(def->rt);   // « Ton agent »: the one status learns its runtime is here (else a later change would say « first use » again)
+        }
+    }
+    const auto* mo = Acp::FindModelOption(r->options);
     if (r->ok && mo && !Acp::FindModelOption(a.options)) {   // a real session of it that started meanwhile says more: kept
-        a.options = r->options; SaveOptionsCache(); SendState();
+        a.options = r->options; SaveOptionsCache();
         Diag(L"models of " + W(id) + L" read: " + std::to_wstring(mo->choices.size()) + L" (the agent stopped)");   // i18n-exempt: log detail
     } else Diag(L"models of " + W(id) + L" not read: " + (r->ok ? std::wstring(mo ? L"already known" : L"the agent gave no model list") : W(r->why)));   // i18n-exempt: log detail
+    if (!r->ok) ++modelRead.failures[id];
+    if (ChatModelProbe::Settled(r->ok, modelRead.failures[id])) modelRead.done.insert(id);
+    else Diag(L"models of " + W(id) + L": tried again at the next opening of the chat or start of the mode (" + std::to_wstring(modelRead.failures[id]) + L" / " + std::to_wstring(ChatModelProbe::MaxTries) + L")");   // i18n-exempt: log detail
+    SendState();   // the menu, open or not, shows the agent's own list now (or keeps the one it had)
     MaybeReadModels();
 }
 void DetectAgents(std::function<void()> then = nullptr) {
@@ -157,6 +181,7 @@ void PrepareAgent(const std::string& id, std::function<void(bool)> then) {
     auto shared = std::make_shared<Shared>(); const auto rt = def->rt; auto cancel = prepareCancel; const HWND target = post;
     Ann::Run([shared, rt, cancel, target] {
             const auto env = RtEnv();
+            std::lock_guard<std::mutex> once(ChatModelProbe::PrepareLock());   // #128 v2: a background preparation of the model read waits or goes first
             shared->result = AgentRuntime::Prepare(env, rt, [&](const AgentRuntime::Progress& p) {
                 // each stage its own label and its own progress (PrepareProgress): Node's download (bytes), then its
                 // unpacking (no measure: no bar), then the adapter's packages (count, and the bytes of the current one)
