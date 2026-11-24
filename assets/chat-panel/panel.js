@@ -791,8 +791,8 @@
     for (const t of ["pointerover", "pointerout", "focusin"]) S.menu.el.addEventListener(t, reask);
   }
   // B 1.9 (Paper 6.4: 17VU-0 next to 17US-0): in the bubble, Effort is a true sub-menu beside the model menu (#128: every
-  // model is in the list, no « Autres modèles » any more) — on its right, or on its left when the host cannot give the room (`overflowRight` / `overflowLeft`). Tops aligned,
-  // 4 px apart. ArrowRight or the pointer opens; ArrowLeft or Échap closes it and returns to its row. The panel, too narrow
+  // model is in the list, no « Autres modèles » any more) — on its right, or on its left when the host cannot give the
+  // room (`overflowRight` / `overflowLeft`). Tops aligned, 4 px apart. ArrowRight or the pointer opens; ArrowLeft or Échap closes it and returns to its row. The panel, too narrow
   // for two menus side by side, keeps the view inside the menu (« ‹ Effort »).
   let subTimer = 0;
   function subItems(view) { const it = modelItems(view); while (it.length && (it[0].back || it[0].sep)) it.shift(); return it; }
