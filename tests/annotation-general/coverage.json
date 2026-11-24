@@ -36,10 +36,6 @@
           "what": "c3_element_disparait_pendant_tour"
         },
         {
-          "suite": "journeys",
-          "what": "c3_historique_du_lanceur"
-        },
-        {
           "suite": "chat-units",
           "what": "host_contract_test.py — C3"
         }
@@ -1050,10 +1046,20 @@
       ]
     },
     "O7": {
-      "gap": {
-        "lot": 5,
-        "why": "retrait complet du lot (décision 3), puis contrat « plus aucune mention »"
-      }
+      "tests": [
+        {
+          "suite": "chat-units",
+          "what": "host_contract_test.py — « lot R (O7 and the removal) » : plus aucune mention du lot dans l'hôte ; fichiers chat-batch.h et chat-host-batch.h supprimés"
+        },
+        {
+          "suite": "chat-panel",
+          "what": "« lot R: no batch in the input, no batch card » : un message de lot d'un ancien hôte est ignoré"
+        },
+        {
+          "suite": "chat-v1",
+          "what": "« lot R: « Traiter les annotations » is gone — the old request poses nothing »"
+        }
+      ]
     },
     "O8": {
       "gap": {
@@ -1087,7 +1093,19 @@
         },
         {
           "suite": "annotation-units",
-          "what": "annotation_private_test — les notes d'une fenêtre privée sont effacées à sa fermeture"
+          "what": "annotation_private_test — fenêtre privée : éléments effacés à la fermeture ; lot R : le dossier du chat (conversations, instantanés) effacé à la fermeture et au démarrage suivant après un arrêt brutal, lien jamais suivi"
+        },
+        {
+          "suite": "chat-units",
+          "what": "chat_units_test.cpp — « file site » (le site d'un fichier local est son dossier), « SiteOf »"
+        },
+        {
+          "suite": "chat-units",
+          "what": "host_contract_test.py — « decision A » : chat disponible sur fichier local et en fenêtre privée, dossier privé, registre avant écriture, pas de pont pour un fichier, dossier du fichier jamais au-dessus"
+        },
+        {
+          "suite": "lot-r",
+          "what": "vraie fenêtre : fichier local (mode + chat, dossier = celui du fichier, un tour) ; fenêtre privée fermée puis tuée (conversation et élément effacés)"
         }
       ]
     },
@@ -1126,10 +1144,76 @@
       }
     },
     "#125-parcours-local-en-ligne": {
-      "gap": {
-        "lot": 3,
-        "why": "parcours en vraie fenêtre local_en_ligne à écrire (localhost, *.localhost, 127.x, [::1], file:// local allumés ; site en ligne, adresse du réseau local éteints ; fenêtre privée même règle) ; les points 6 (pointeur après la saisie dans la note) et 5 (cadre de la note au défilement) de chat_qa_v12.py passaient par la note d'un site non local : à rejouer sur une page file:// ; chat_qa_run.py et chat_qa_v12.py vérifient déjà qu'un site non local ne démarre ni le mode ni le panneau (fait le 24/11)"
-      }
+      "tests": [
+        {
+          "suite": "lot-r",
+          "what": "local_en_ligne : 127.0.0.1, localhost, *.localhost, [::1], fichier local = allumé avec le chat ; site en ligne, faux localhost (localhost.example.com), adresse du réseau local = éteint, carte d'explication, ni chat ni note"
+        },
+        {
+          "suite": "chat-units",
+          "what": "chat_units_test.cpp — « SiteOf: … an online site, a LAN address and a fake localhost stay off »"
+        },
+        {
+          "suite": "chat-v1",
+          "what": "« #125 · not a local site: the chat shortcut starts neither the mode nor the panel »"
+        }
+      ]
+    },
+    "R-retrait-ancien-système": {
+      "tests": [
+        {
+          "suite": "chat-units",
+          "what": "host_contract_test.py — « lot R » : ni lot, ni « garder en annotation », ni note, ni lanceur, ni carte, ni historique dans l'hôte et la page ; fichiers supprimés ; Ctrl+Maj+H n'est plus un raccourci ; une sélection va au chat ou nulle part"
+        },
+        {
+          "suite": "chat-panel",
+          "what": "« lot R: Ctrl+Entrée keeps no annotation », « an old annotation.kept line … is ignored », infobulle d'envoi sur une ligne"
+        },
+        {
+          "suite": "annotations-ui",
+          "what": "bandeau, « Connecter un agent », cadre natif : rien d'autre n'est créé (zéro coût avant usage)"
+        },
+        {
+          "suite": "lot-r",
+          "what": "vraie fenêtre : Ctrl+Maj+H ne fait rien ; ni lanceur, ni note, ni historique parmi les fenêtres"
+        }
+      ]
+    },
+    "R-réglages-annotations": {
+      "tests": [
+        {
+          "suite": "annotation-settings",
+          "what": "« lot R: no retention row, no folder row », « nothing names Ctrl+Maj+H », « Effacer toutes les annotations… » gardé (dernière ligne de « Mode Annotation »)"
+        },
+        {
+          "suite": "smoke",
+          "what": "settings_test : la durée de conservation reste lue et écrite (30 jours par défaut), sans ligne de réglage"
+        }
+      ]
+    },
+    "R-chat-au-lancement": {
+      "tests": [
+        {
+          "suite": "chat-units",
+          "what": "host_contract_test.py — « lot R: in « Panneau » the panel opens with the mode », « takes no keyboard focus », « launch rules still see no chat asked », « Ctrl+Maj+D … gives it the keyboard »"
+        },
+        {
+          "suite": "lot-r",
+          "what": "vraie fenêtre : chat ouvert dès le lancement en Panneau, sans prendre le clavier ; taille, défilement et contenu de la page identiques entre le lancement et le premier élément choisi"
+        }
+      ]
+    },
+    "R-10-éléments": {
+      "tests": [
+        {
+          "suite": "chat-units",
+          "what": "host_contract_test.py — « lot R: an 11th element in « Panneau » is refused with the neutral strip, for 4 s », texte FR / EN validé, ni cadre ni capture"
+        },
+        {
+          "suite": "lot-r",
+          "what": "vraie fenêtre : 11ᵉ et 12ᵉ clics, bandeau « 10 éléments au maximum… », disparition seule, rien d'ajouté"
+        }
+      ]
     }
   }
 }

@@ -351,6 +351,16 @@
       "timeout": 1800
     },
     {
+      "id": "lot-r",
+      "title": "Lot R : chat ouvert au lancement, 10 éléments, local / en ligne, fichier local, fenêtre privée",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/chat_qa_lot_r.py"
+      ],
+      "timeout": 1800
+    },
+    {
       "id": "journeys",
       "title": "Parcours de l'utilisateur (R1–R48 et revue)",
       "part": "night",
