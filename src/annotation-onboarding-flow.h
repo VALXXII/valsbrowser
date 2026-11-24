@@ -1,13 +1,19 @@
 #pragma once
 // Annotation mode tutorial (#125 v2, validated by Val) — the logic. Paper « Browser Design » › « #125 v2 — Tutoriel
 // annotation (validé) », row 1: A1 Bienvenue, A2 Essai : choisir, A3 Essai : écrire, A4 Essai : résultat, A5 Où ça marche,
-// A6 Connecter, A7 Prêt (row 2: the trial steps in another profile colour). Pure C++17, no Win32: unit-tested in
+// A6 « Ton agent » (Paper « Onboarding agents — Ton agent (maquette prête) », in the place of « Connecter »), A7 Prêt (row 2:
+// the trial steps in another profile colour). Pure C++17, no Win32: unit-tested in
 // tests/onboarding/annotation_onboarding_test.cpp. Window: src/annotation-onboarding.h; host: src/annotation-mode.h.
 //
-//   A1 ──Suivant──▶ A2 ──(click « Payer »)──▶ A3 ──(Envoyer)──▶ A4 ──Suivant──▶ A5 ──Suivant──▶ A6 ──Continuer──▶ A7 ──Terminer──▶ Finished
+//   A1 ──Suivant──▶ A2 ──(click « Payer »)──▶ A3 ──(Envoyer)──▶ A4 ──Suivant──▶ A5 ──Suivant──▶ A6 ──Plus tard──▶ A7 ──Terminer──▶ Finished
 //                    └──── Passer l'essai ────┴──────────────────────────────▶ A5          A4 « Recommencer » ▶ A2 (button back to 160)
+//   A6 « Ton agent »: its strong button acts on the agents (install, sign in, retry: src/annotation-onboarding-agent.h);
+//   once an agent is ready it is « Ouvrir le chat », which ends the tutorial (Finished) and opens the chat; its
+//   secondary is « Plus tard » (to A7) until then, « Retour » (to A5) once ready.
 //   « Retour » one step back (A5 goes back to A4 once the trial was done, to A2 otherwise); « Plus tard » (A1), the close
 //   button and Échap end it (Skipped) from any step.
+//   Alone (the chat's first message, the band's reminder: OpenTonAgent): only A6, no progress; « Plus tard », the close
+//   button and Échap close it (Skipped), « Ouvrir le chat » too (Finished).
 //  * The trial is a fake page drawn by the window (no web page, no agent): hovering an element frames it with its tag,
 //    clicking « Payer » picks it; any text sent makes the button wider (the demo does not read it).
 //  * When: the first time the person turns the mode on (in the place of « Connecter un agent »); from the card of a live
@@ -17,7 +23,7 @@
 
 namespace AnnotationOnboarding {
 
-enum class Step { What = 0, Pick = 1, Write = 2, Result = 3, Where = 4, Connect = 5, Ready = 6, Closed = 7 };
+enum class Step { What = 0, Pick = 1, Write = 2, Result = 3, Where = 4, Connect = 5, Ready = 6, Closed = 7 };   // Connect: « Ton agent »
 enum class Ending { None, Finished, Skipped };
 inline constexpr int StepCount = 7;
 inline int Index(Step s) { return s == Step::Closed ? -1 : static_cast<int>(s); }
@@ -30,31 +36,36 @@ inline const char* TagOf(Part p) {
 }
 
 class Flow {
-    Step step_ = Step::What; Ending ending_ = Ending::None; bool tried_ = false; std::wstring text_;
+    Step step_ = Step::What; Ending ending_ = Ending::None; bool tried_ = false, alone_ = false, chat_ = false; std::wstring text_;
 public:
     Flow() = default;
     explicit Flow(Step start) : step_(start) {}
+    // `alone`: the « Ton agent » screen by itself (it always starts there).
+    Flow(Step start, bool alone) : step_(alone ? Step::Connect : start), alone_(alone) {}
     Step step() const { return step_; }
     Ending ending() const { return ending_; }
     bool open() const { return step_ != Step::Closed; }
+    bool alone() const { return alone_; }
     bool tried() const { return tried_; }                 // the button was made wider (A4 reached by « Envoyer »)
+    bool chat() const { return chat_; }                   // it ended on « Ouvrir le chat »: the host opens the chat
     const std::wstring& text() const { return text_; }    // what the person typed in A3's note
     bool CanSend() const { return step_ == Step::Write && text_.find_first_not_of(L" \t\r\n") != std::wstring::npos; }
 
-    // The main button: « Suivant » (A1, A4, A5), « Continuer » (A6), « Terminer » (A7: the end). A2 and A3 have « Passer
-    // l'essai » in its place (Skip trial).
+    // The main button: « Suivant » (A1, A4, A5), « Terminer » (A7: the end). A2 and A3 have « Passer l'essai » in its
+    // place (Skip trial). A6's strong button acts on the agents (the window); A6 → A7 is Later().
     bool Next() {
         switch (step_) {
         case Step::What: step_ = Step::Pick; return true;
         case Step::Result: case Step::Pick: case Step::Write: step_ = Step::Where; return true;   // A2 / A3: « Passer l'essai »
         case Step::Where: step_ = Step::Connect; return true;
-        case Step::Connect: step_ = Step::Ready; return true;
+        case Step::Connect: return Later();
         case Step::Ready: step_ = Step::Closed; ending_ = Ending::Finished; return true;
         default: return false;
         }
     }
-    // The secondary button: « Plus tard » (A1), « Retour » (A2, A3, A5 – A7), « Recommencer » (A4).
+    // The secondary button: « Plus tard » (A1), « Retour » (A2, A3, A5, A6 once ready, A7), « Recommencer » (A4).
     bool Back() {
+        if (alone_) return Skip();
         switch (step_) {
         case Step::Pick: step_ = Step::What; return true;
         case Step::Write: step_ = Step::Pick; return true;
@@ -65,6 +76,14 @@ public:
         default: return false;
         }
     }
+    // A6 « Plus tard »: no agent now, the tutorial goes on to A7 (alone: the screen closes).
+    bool Later() {
+        if (step_ != Step::Connect) return false;
+        if (alone_) return Skip();
+        step_ = Step::Ready; return true;
+    }
+    // A6 « Ouvrir le chat » (an agent is ready): the end, and the host opens the chat.
+    bool OpenChat() { if (step_ != Step::Connect) return false; step_ = Step::Closed; ending_ = Ending::Finished; chat_ = true; return true; }
     bool Skip() { if (step_ == Step::Closed) return false; step_ = Step::Closed; ending_ = Ending::Skipped; return true; }
     // A2: a click on the fake page. Only « Payer » picks.
     bool Pick(Part p) { if (step_ != Step::Pick || p != Part::Pay) return false; step_ = Step::Write; return true; }
@@ -90,20 +109,16 @@ inline bool ShouldShow(const Launch& l) {
 }
 inline constexpr const wchar_t* Switch = L"--annotation-onboarding";
 
-// ---- what A6 and A7 show about the agents ------------------------------------------------------------------
-enum class Agent { Claude = 0, Codex = 1 };
-enum class Link { Idle, Working, Connected, Failed, Reconnect };
-// A7's status pill and its sentence: the agent that will read the notes (Claude first when both are connected),
-// none when no agent is connected yet.
+// ---- what A7 says about the agents (the agents' one status, src/agent-status.h) --------------------------------
+// A7's status pill and its sentence: the agent that will read the notes — a READY one (installed and signed in, the
+// chat's own test: never « prêt » when the chat says « Pas installé »), Claude Code first; none otherwise.
 enum class Reader { None, Claude, Codex };
-inline Reader ReaderOf(Link claude, Link codex) {
-    if (claude == Link::Connected) return Reader::Claude;
-    if (codex == Link::Connected) return Reader::Codex;
+inline Reader ReaderOf(bool claudeReady, bool codexReady) {
+    if (claudeReady) return Reader::Claude;
+    if (codexReady) return Reader::Codex;
     return Reader::None;
 }
-inline const wchar_t* ReaderName(Reader r) { return r == Reader::Codex ? L"Codex" : L"Claude"; }   // i18n-exempt: product names
-// A6's row: a click connects only from a resting state (as in the « Connecter un agent » modal).
-inline bool Connectable(Link l) { return l == Link::Idle || l == Link::Failed || l == Link::Reconnect; }
+inline const wchar_t* ReaderName(Reader r) { return r == Reader::Codex ? L"Codex" : L"Claude Code"; }   // i18n-exempt: product names
 
 // ---- A4: the button grows (160 → 260 DIP in Paper) --------------------------------------------------------
 inline constexpr float PayFrom = 160, PayTo = 260;
