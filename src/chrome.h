@@ -813,9 +813,16 @@ public:
     void DropAddressFade(){Drop(addressFadeBrush);Drop(addressFadeStops);}
     float AddressCenter()const{return (bar.top+bar.bottom)/2;}
     D2D1_RECT_F AddressSlot()const{const float c=AddressCenter(),l=bar.left+addressSlotInset;return {l,c-addressSlotSize/2,l+addressSlotSize,c+addressSlotSize/2};}
-    float ChipWidth(const wchar_t* label){namespace A=Design::Address;return A::chipPadLeft+Design::Size::icon+Design::Space::xs+TextWidth(label,Design::Type::label.size,true,false,Design::Type::label.tracking)+A::chipPadRight;}
+    float ChipWidth(const wchar_t* label){namespace A=Design::Address;if(sideChip)return 2*SideChip::pad+SideChip::icon+SideChip::gap+TextWidth(label,SideChip::font,false,false,0);return A::chipPadLeft+Design::Size::icon+Design::Space::xs+TextWidth(label,Design::Type::label.size,true,false,Design::Type::label.tracking)+A::chipPadRight;}
     // Hit/tooltip box of the indicator: the icon slot, or the whole chip. None while editing.
-    D2D1_RECT_F IndicatorBox(){if(addressEditing||address.security==AddressBar::Security::Empty)return {};auto box=AddressSlot();const wchar_t* chip=address.chip();if(*chip)box.right=box.left+ChipWidth(chip);return box;}
+    D2D1_RECT_F IndicatorBox(){if(addressEditing||address.security==AddressBar::Security::Empty)return {};auto box=AddressSlot();const wchar_t* chip=address.chip();
+        if(*chip&&sideChip){const float cy=AddressCenter(),l=bar.left+sideChipInset;return {l,cy-SideChip::height/2,l+ChipWidth(chip),cy+SideChip::height/2};}
+        if(*chip){box.right=box.left+ChipWidth(chip);}return box;}
+    // #127 side panel layouts (Paper « Annotation · 1 à 7 (validées) » 1ZTU-0 / 1ZU8-0): the « Non sécurisé » pill is 20 high,
+    // padding 5, gap 4, padlock 14 at 50 %, label 13/16 Regular white 70 %, #FFFFFF0F radius 4; 6 DIP in from the column's
+    // field (10 in the compact bar's), then 6, the 1 x 10 divider, 6, the address.
+    struct SideChip{static constexpr float height=20,pad=5,icon=14,gap=4,font=13,text=.7f,divider=6,columnInset=6;};
+    bool sideChip=false;float sideChipInset=0;
     // Pending permission request (Paper B01 « Puce permission »): set by the host while the
     // request's popover is open for the active tab, cleared with it. Glyphs are SiteRequest::Path
     // strings (the popover's own), the tip names the request for the tooltip and UI Automation.
@@ -950,17 +957,19 @@ public:
         const bool danger=address.security==Security::CertificateError;
         float x=bar.left+addressTextInset;
         if(const wchar_t* chip=address.chip();*chip){
-            D2D1_RECT_F plate{slot.left,slot.top,slot.left+ChipWidth(chip),slot.bottom};
+            D2D1_RECT_F plate{slot.left,slot.top,slot.left+ChipWidth(chip),slot.bottom};if(sideChip)plate=IndicatorBox();
             const float lift=indicatorHover?.04f:0;
             FillBox(plate,A::chipRadius,danger?DangerColor(Design::Danger::plate+lift):D2D1::ColorF(1,1,1,A::chipPlate+lift));
             D2D1_RECT_F glyph{plate.left+A::chipPadLeft,cy-Design::Size::icon/2,plate.left+A::chipPadLeft+Design::Size::icon,cy+Design::Size::icon/2};
+            if(sideChip)glyph={plate.left+SideChip::pad,cy-SideChip::icon/2,plate.left+SideChip::pad+SideChip::icon,cy+SideChip::icon/2};
             if(danger)TintedIcon(address.icon(),glyph,A::chipIcon,DangerColor());else Icon(address.icon(),glyph,A::chipIcon,A::secondary);
             if(danger)ink=DangerColor();
-            Text(chip,{glyph.right+Design::Space::xs,line.top,plate.right,line.bottom},Design::Type::label.size,danger?1.f:A::secondary,false,true,Design::Type::label.tracking);
+            if(sideChip)Text(chip,{glyph.right+SideChip::gap,line.top,plate.right,line.bottom},SideChip::font,danger?1.f:SideChip::text,false,false,0);
+            else Text(chip,{glyph.right+Design::Space::xs,line.top,plate.right,line.bottom},Design::Type::label.size,danger?1.f:A::secondary,false,true,Design::Type::label.tracking);
             ink=D2D1::ColorF(1,1,1,1);
             float edge=plate.right;if(request.right>request.left){DrawRequestChip(request);edge=request.right;}
-            const float d=edge+A::divider;Color(1,.2f);target->FillRectangle(D2D1::RectF(d,cy-5,d+1,cy+5),brush);
-            x=d+1+A::divider;
+            const float gap=sideChip?SideChip::divider:A::divider,d=edge+gap;Color(1,.2f);target->FillRectangle(D2D1::RectF(d,cy-5,d+1,cy+5),brush);
+            x=d+1+gap;
         }else{
             if(indicatorHover)FillBox(slot,A::chipRadius,D2D1::ColorF(1,1,1,A::chipPlate));
             Icon(address.icon(),slot,addressGlyph,addressGlyphOpacity);
@@ -982,7 +991,7 @@ public:
         }
         target->PopAxisAlignedClip();
         if(x>right&&start<right-A::fade){
-            if(!addressFadeBrush){const float c=Design::Surface::raised;D2D1_GRADIENT_STOP stops[]={{0,D2D1::ColorF(c,c,c,0)},{1,D2D1::ColorF(c,c,c,1)}};
+            if(!addressFadeBrush){const float c=addressFadeSurface;D2D1_GRADIENT_STOP stops[]={{0,D2D1::ColorF(c,c,c,0)},{1,D2D1::ColorF(c,c,c,1)}};
                 if(FAILED(target->CreateGradientStopCollection(stops,2,&addressFadeStops))||FAILED(target->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({0,0},{1,0}),addressFadeStops,&addressFadeBrush)))DropAddressFade();}
             if(addressFadeBrush){addressFadeBrush->SetStartPoint({right-A::fade,0});addressFadeBrush->SetEndPoint({right,0});target->FillRectangle(D2D1::RectF(right-A::fade,bar.top+1,right,bar.bottom-1),addressFadeBrush);}
         }
@@ -1088,8 +1097,13 @@ public:
     // in the window bar the whole address (02 1Q3H-0 « lemonde.fr/planete »).
     void UseAddress(const Sidebar::Layout& A){bar=R(A.address);addressGlyphOpacity=1;addressFont=A.addressFont;addressGlyph=A.addressGlyph;addressTextInset=A.text.left-A.address.left;
         addressSlotInset=A.lock.left-A.address.left;addressSlotSize=A.addressGlyph;addressHostOnly=A.addressInColumn;
-        const float pad=A.addressInColumn?Sidebar::Complete::addressPad:Sidebar::Compact::addressPad;edit={A.text.left,A.address.top,A.address.right-pad,A.address.bottom};}
-    bool addressHostOnly=false;
+        const float pad=A.addressInColumn?Sidebar::Complete::addressPad:Sidebar::Compact::addressPad;
+        // In the column the text stops before Copy / the star (and the vault key): a long address or a « Non sécurisé » pill
+        // fades out there (24 DIP), never under them; while typing the field has its whole width (no actions).
+        const float right=A.addressInColumn&&!addressEditing?A.text.right-(vaultKey?20.f:0.f):A.address.right-pad;edit={A.text.left,A.address.top,std::max(A.text.left,right),A.address.bottom};
+        sideChip=true;sideChipInset=A.addressInColumn?SideChip::columnInset:A.lock.left-A.address.left;
+        const float fade=A.addressInColumn||A.addressPlate?Design::Surface::raised:Design::Surface::canvas;if(fade!=addressFadeSurface){addressFadeSurface=fade;DropAddressFade();}}   // the compact bar's field has no plate: the canvas
+    bool addressHostOnly=false;float addressFadeSurface=Design::Surface::raised;   // the fade's colour: the field's (the compact bar's: the canvas)
     // Address metrics (the toolbar's by default; the column sets Paper's: 14 / 12 DIP glyphs, text 28 in).
     float AddressTracking()const{return Design::Type::address.tracking*addressFont/Design::Type::address.size;}   // -0.01 em
     float addressGlyphOpacity=Design::Address::secondary;   // the column's glyphs are Paper's #FFFFFF80 (the 50 % bitmap at 1)
@@ -1266,11 +1280,11 @@ public:
         if(L.addressPlate||editing){White(box,Design::Radius::control,editing?K::fieldEditing:K::field);}DrawLoading(box);   // the compact bar's field has no background (Val's retouch 1WOG-0)
         if(editing){Color(1,K::fieldRing);target->DrawRoundedRectangle(D2D1::RoundedRect({box.left+.5f,box.top+.5f,box.right-.5f,box.bottom-.5f},5.5f,5.5f),brush,1);}
         else if(focus=='L')FocusRing(box,Design::Radius::control);
-        const auto keepBar=bar,keepEdit=edit;const float k1=addressFont,k2=addressGlyph,k3=addressTextInset,k4=addressSlotInset,k5=addressSlotSize;const bool k6=addressHostOnly;
+        const auto keepBar=bar,keepEdit=edit;const float k1=addressFont,k2=addressGlyph,k3=addressTextInset,k4=addressSlotInset,k5=addressSlotSize,k7=addressFadeSurface,k9=sideChipInset;const bool k6=addressHostOnly,k8=sideChip;
         const bool own=std::fabs(bar.left-L.address.left)<.01f&&std::fabs(bar.top-L.address.top)<.01f;if(!own)UseAddress(L);
         const auto keepRequest=request;if(!own)request=D2D1_RECT_F{};
         DrawAddress(editing,own&&hover=='I');
-        if(!own){bar=keepBar;edit=keepEdit;addressFont=k1;addressGlyph=k2;addressTextInset=k3;addressSlotInset=k4;addressSlotSize=k5;addressHostOnly=k6;request=keepRequest;}
+        if(!own){bar=keepBar;edit=keepEdit;addressFont=k1;addressGlyph=k2;addressTextInset=k3;addressSlotInset=k4;addressSlotSize=k5;addressHostOnly=k6;request=keepRequest;sideChip=k8;sideChipInset=k9;if(addressFadeSurface!=k7){addressFadeSurface=k7;DropAddressFade();}}
         if(L.addressInColumn&&!editing){
             for(int id:{'C','K'}){const auto it=std::find_if(regions.begin(),regions.end(),[id](const Region& r){return r.id==id;});if(it==regions.end())continue;PaintSideButton(id,it->rect,hover,focus,now,labels);}
             if(vaultKey){const auto it=std::find_if(regions.begin(),regions.end(),[](const Region& r){return r.id==VaultKeyId;});if(it!=regions.end())DrawVaultKey(it->rect,Hovered(VaultKeyId,hover,now),focus==VaultKeyId);}}
@@ -1339,6 +1353,8 @@ public:
             if(d!=regions.end())DrawDownloadRipple(ripple,d->rect,Design::Size::icon);}
     }
     void Build(int count,int selected,const std::vector<std::wstring>* titles=nullptr,Motion::Time now=Motion::Now()){regions.clear();tips.clear();if(contentOnly)return;
+        if(!sidebar)sideChip=false;
+        if(!sidebar&&addressFadeSurface!=Design::Surface::raised){addressFadeSurface=Design::Surface::raised;DropAddressFade();}   // the top bar's field
         if(sidebar){BuildSidebar(count,selected,titles);return;}
         addressHostOnly=false;addressGlyphOpacity=Design::Address::secondary;addressFont=Design::Type::address.size;addressGlyph=Design::Size::icon;addressTextInset=Design::Address::textInset;addressSlotInset=Design::Address::slotInset;addressSlotSize=Design::Address::slot;
         namespace TS=Design::TabStrip;
