@@ -261,7 +261,7 @@ tester, pas des lignes de l'inventaire. O12 (fichiers locaux, fenêtre privée) 
 |---|---|---|---|
 | Bulle | O1 | Suivre la branche en cours. Règle décidée le 24/11 : la bulle reste toujours entière dans la fenêtre (#130 remplace R29). **Variante C choisie** (planche « #130 Bulle sans place dessous · C remonte le long du côté (validée) », page Paper « MCP - Design UI UX »). Ses règles 1 à 4 partent sur la branche en cours ; la règle 5 (recalcul pendant le défilement) est au lot 4. Refaire le calcul à chaque nouvelle hauteur, pas une fois par ouverture | Attentes du §4.4. Nouveau parcours `o1_bulle_bas_de_fenetre` : élément en bas d'une page qui ne défile pas, autorisation, clic réel sur Autoriser et sur Refuser, à 100 / 125 / 150 % et 3 tailles de fenêtre. Test de propriété sans fenêtre sur `ChatBubble` : pour toute position et toute hauteur, la surface est dans la zone |
 | Bulle | O5 | Rejouer monkey graine 1 jusqu'à #82 et #110, lire le journal, corriger le calcul de la place offerte après redimensionnement et le cadre gardé après un menu | Parcours `o5_redimensionnement_saisie` et `o5_menu_ne_bouge_pas` ; invariant « la saisie est dans la surface » après chaque action du monkey |
-| Bulle | O4 + **règle 5 de #130** | Deux choses dans le même code de suivi. (a) Suivi : mesurer d'abord, image par image, les trois réglages déjà dans le code (tout de suite, une image plus tard, prédiction) ; si aucun ne tient ± 2 px, c'est une limite de la fenêtre séparée : proposer une alternative au propriétaire, sans l'appliquer. (b) Règle 5 de la variante C : la position de la bulle est recalculée **pendant** le défilement selon les règles 1 à 4, et la bulle rejoint sa nouvelle place par un glissement animé de 120 ms au plus (rien en mouvement réduit : placement direct) | (a) `tests/chat/chat_qa_comment_v5.py` (`follow`, `edge_frames`), seuil inchangé tant que la bulle est à sa place normale. (b) Nouveau parcours `o1_regle5_defilement` : faire défiler jusqu'à ce que la place manque sous l'élément, puis revenir ; image par image : bulle entière à la fin de chaque glissement, glissement ≤ 120 ms, aucun saut, jamais sur l'élément ni à moins de 8 px du bandeau ; molette, barre et clavier |
+| Bulle | O4 + **règle 5 de #130** | Deux choses dans le même code de suivi. (a) Suivi : mesurer d'abord, image par image, les trois réglages déjà dans le code (tout de suite, une image plus tard, prédiction) ; si aucun ne tient ± 2 px, c'est une limite de la fenêtre séparée : proposer une alternative au propriétaire, sans l'appliquer. (b) Règle 5 de la variante C : la position de la bulle est recalculée **pendant** le défilement selon les règles 1 à 4, et la bulle rejoint sa nouvelle place par un glissement animé de 120 ms au plus, sans saut (mouvement réduit : question 6 du §5). Même chose quand la fenêtre change de taille | (a) `tests/chat/chat_qa_comment_v5.py` (`follow`, `edge_frames`), seuil inchangé tant que la bulle est à sa place normale. (b) Nouveau parcours `o1_regle5_defilement` : faire défiler jusqu'à ce que la place manque sous l'élément, puis revenir ; image par image : bulle entière à la fin de chaque glissement, glissement ≤ 120 ms, aucun saut, jamais sur l'élément ni à moins de 8 px du bandeau ; molette, barre et clavier |
 | Bulle | O6 | Lire les temps par phase déjà écrits dans le journal (`src/chat-comment.h:681-683`), traiter la phase la plus lente | Invariant « ouverture < 150 ms » sur chaque parcours |
 | Bulle | O11 | Ne lancer le fil de surveillance qu'en mode test | Contrat + mesure du processeur au repos, bulle ouverte |
 | Sélection | O3 | Fusionner le diagnostic `c419d92`, rejouer `monkey.py --seed 1 --until 116` (puis 144, 146, 159), lire la raison du refus, corriger. Règle visée : en Commentaire sur un projet local, un clic ouvre toujours une bulle, jamais l'ancienne note | 4 parcours `o3_…`, un par enchaînement ; invariant monkey « clic = bulle visible en 3 s » sur 3 graines |
@@ -373,16 +373,16 @@ l'utilisateur défile ») n'est plus vérifiée. Le test général vérifie à l
    bougent pas quand une nouvelle arrive, un menu ne déplace pas la surface.
 
 **Variante C, choisie le 24/11** (ticket #130 ; planche « #130 Bulle sans place dessous · C remonte le long du côté
-(validée) », page Paper « MCP - Design UI UX »). Ses cinq règles, telles qu'écrites sur le ticket, deviennent des
-vérifications :
+(validée) », page Paper « MCP - Design UI UX », lue le 24/11). Ses cinq règles, telles qu'écrites sur la planche,
+deviennent des vérifications :
 
 | Règle | Vérification | Sort |
 |---|---|---|
-| 1. 8 px entre l'élément et la bulle | Distance mesurée = 8 px. Aujourd'hui 12 (`BubbleGapCss`, `src/chat-comment.h:25`) : les contrôles de distance changent | Branche en cours |
-| 2. Sans place dessous, la bulle remonte le long de l'élément jusqu'à 8 px du bas de la page affichée, sans le couvrir | Bas de la bulle ≤ bas de la zone − 8 px ; aucun pixel commun avec l'élément | Branche en cours |
+| 1. Côté : 8 px entre le cadre de sélection de l'élément et la bulle, « comme aujourd'hui » | Rien ne change : le cadre dépasse l'élément de 4 px (`FrameOutset`, `src/chat-bubble.h:198`) et la bulle est à 12 px de l'élément (`BubbleGapCss`, `src/chat-comment.h:25`), soit 8 px du cadre. Les contrôles de distance actuels restent | Déjà en place |
+| 2. Plus de place dessous : la bulle remonte jusqu'à ce que son bas soit à 8 px du bas de la page affichée ; elle reste à côté de l'élément, sans le couvrir | Bas de la bulle ≤ bas de la zone − 8 px ; aucun pixel commun avec l'élément | Branche en cours |
 | 3. Jamais plus haut que 8 px sous le bandeau du mode Annotation | Haut de la bulle ≥ bas du bandeau + 8 px | Branche en cours |
-| 4. Si elle ne tient toujours pas : hauteur = page affichée − 16 px, le début du fil défile avec un fondu en haut, saisie et pied toujours visibles | Hauteur mesurée ; la saisie, son pied et Refuser / Autoriser sont dans la zone et répondent au clic | Branche en cours |
-| 5. Recalcul au défilement et au redimensionnement, glissement de 120 ms au plus | Parcours `o1_regle5_defilement` (§3.2) | **Lot 4** pour le défilement |
+| 4. Même en remontant elle ne tient pas : hauteur = page affichée − 16 px, le début du fil défile dans la bulle avec le fondu du haut, le champ de saisie et le pied restent toujours visibles | Hauteur mesurée ; la saisie et le pied sont dans la zone et répondent au clic. Pour Refuser / Autoriser : question 3 du §5 | Branche en cours |
+| 5. Si la page défile ou si la fenêtre change de taille, la position est recalculée, sans saut (glissement de 120 ms au plus) | Parcours `o1_regle5_defilement` (§3.2), plus le même contrôle pendant un redimensionnement | **Lot 4** |
 
 Conséquences pour la lecture des règles du test :
 
@@ -392,14 +392,12 @@ Conséquences pour la lecture des règles du test :
 - Le seuil de suivi ± 2 px (O4) ne vaut que lorsque la bulle est à sa place normale à côté de l'élément. Quand elle est
   retenue par un bord, elle ne suit plus l'élément au pixel : on mesure alors la durée du glissement et l'absence de saut.
 
-Trois points que le ticket ne dit pas, **à confirmer** :
+- La bonne place après un redimensionnement (sans animation) est déjà dans le lot 1 (O5). Le lot 4 y ajoute le
+  glissement de la règle 5.
 
-- le recalcul au **redimensionnement** (seconde moitié de la règle 5) : part-il avec les règles 1 à 4, ou au lot 4 ? Le
-  placement après redimensionnement est déjà dans le lot 1 (O5) ;
-- un élément plus grand que la zone, sans côté libre (R44, `section.hero`) : aujourd'hui la bulle se pose dans
-  l'élément ; la règle 2 dit « sans le couvrir » ;
-- le défilement automatique de la page du site pour montrer une carte (correctif de R47) : avec la règle 4 il ne sert
-  plus ; le retirer ou le garder.
+La planche montre un seul cas : un bouton en bas de page, la bulle à sa droite, un tour en cours. Ce qu'elle ne dit pas
+est listé au §5 comme **questions pour Designer** (6 questions). Tant qu'elles n'ont pas de réponse, le test général
+ne vérifie pas ces cas.
 
 Tests écrits pour R29 dont l'attente change. Chaque changement sera listé dans le rapport (règle 7 du §4.1) avec la
 référence « décision 1 du 24/11 » :
@@ -425,7 +423,7 @@ main `86697e0` et seront à relire après sa fusion.
 
 | # | Décision | Pourquoi |
 |---|---|---|
-| 1 | ~~#130 remplace-t-il R29 ?~~ **Tranchée le 24/11 : oui.** La bulle reste toujours entièrement dans la fenêtre. **Variante C choisie** : elle remonte le long du côté de l'élément | Attentes du test au §4.4 ; règles 1 à 4 sur la branche en cours, règle 5 (défilement) au lot 4 ; trois points à confirmer |
+| 1 | ~~#130 remplace-t-il R29 ?~~ **Tranchée le 24/11 : oui.** La bulle reste toujours entièrement dans la fenêtre. **Variante C choisie** : elle remonte le long du côté de l'élément | Attentes du test au §4.4 ; règles 1 à 4 sur la branche en cours, règle 5 (défilement, redimensionnement) au lot 4 ; 6 questions pour Designer ci-dessous |
 | 2 | **Fichiers locaux (`file://`) et fenêtre privée après #125 : Annoter allumé ou éteint ?** | Aujourd'hui le chat y est coupé et la vieille note s'ouvre |
 | 3 | **Le « lot » (Traiter les annotations) : on le retire en entier ?** | R24 a retiré la suggestion, le reste traîne ; le bouton « Traiter avec l'agent » de l'historique n'a jamais été dessiné |
 | 4 | **Un essai réel avec Claude Code et un avec Codex** (une petite demande chacun, dans la copie du bac à sable) | Seule façon de prouver O9 ; utilise les comptes du propriétaire |
@@ -434,11 +432,32 @@ main `86697e0` et seront à relire après sa fusion.
 
 Maquettes : je n'ai **pas ouvert Paper** pour ce document. Points à confirmer avec Designer avant de coder :
 
-- O1 : fait. Planche validée « #130 Bulle sans place dessous · C remonte le long du côté (validée) ». Reste à confirmer
-  le cas du grand élément sans côté libre (§4.4).
+- O1 : planche validée « #130 Bulle sans place dessous · C remonte le long du côté (validée) », lue le 24/11. Elle
+  laisse 6 questions (ci-dessous).
 - #125 : bouton Annoter éteint et son info-bulle (planche A2 de la v1 ; la v2 attend le choix du propriétaire).
 - O4 : si le suivi parfait est impossible, une alternative est à dessiner (R39b le prévoit : « proposer sans appliquer »).
 - C3 : bulle gardée à sa dernière place quand son élément a disparu pendant le travail : aucun état visuel connu.
+
+### Questions pour Designer — #130, variante C
+
+La planche validée ne montre qu'un bouton en bas de page avec la bulle à sa droite. Elle ne répond pas à :
+
+1. **Élément sorti de l'écran.** L'utilisateur défile et l'élément quitte la page affichée, par le haut ou par le bas.
+   Les règles 2 et 3 gardent la bulle entre le bandeau et le bas de la page : elle resterait donc à l'écran sans son
+   élément à côté. Reste-t-elle là, suit-elle l'élément hors de l'écran, ou se masque-t-elle jusqu'à son retour ?
+2. **Défilement automatique de la page du site.** Aujourd'hui, quand une carte d'autorisation arrive sous le bas de la
+   fenêtre, le navigateur fait défiler la page du site pour la montrer (correctif de R47, `src/chat-comment.h:716-727`).
+   Avec la règle 4 ce n'est plus nécessaire : on le retire, ou on le garde ?
+3. **Carte d'autorisation.** La règle 4 dit que « le champ de saisie et le pied restent toujours visibles ». La carte
+   avec Refuser / Autoriser fait-elle partie de ce pied, ou défile-t-elle avec le fil ? Le ticket #130 demande que ces
+   boutons soient toujours visibles et cliquables ; la planche ne montre pas de carte.
+4. **Élément sans côté libre.** Un élément aussi large que la page (`section.hero`, `div.plans`) n'a de place ni à
+   droite ni à gauche. Aujourd'hui la bulle se pose alors dessous, dessus, ou dans l'élément au coin le plus proche du
+   clic (R44). La règle 2 dit « sans le couvrir » : que fait-on quand c'est impossible ?
+5. **Bulle posée sous ou sur l'élément.** Quand elle est dessous et que la place manque, « remonter » la ferait passer
+   sur l'élément. Quand elle est dessus, elle grandit vers le haut : la règle 3 suffit-elle, ou passe-t-elle à côté ?
+6. **Mouvement.** Le glissement de 120 ms : placement direct en mouvement réduit ? Et pendant un défilement continu,
+   repart-il vers la nouvelle cible à chaque pas (interruptible), comme les autres suivis de la page ?
 
 ## 6. Suites passées aujourd'hui (sans fenêtre, main `86697e0`)
 
