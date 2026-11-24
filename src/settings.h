@@ -180,6 +180,9 @@ struct State {
     int sleepMinutes = 120;        // one of SleepChoices
     int zoomPercent = 100;         // one of ZoomChoices
     BookmarksBar bookmarksBar = BookmarksBar::Auto;
+    // Panneau latéral (#127): the column folded to its compact form (icons only). Changed by its button and
+    // Ctrl+Maj+, only (no Réglages line); a narrow window shows it compact without touching this choice.
+    bool sidebarCompact = false;
     std::uint32_t accent = DefaultAccent; // #RRGGBB
     std::wstring customSearch;     // Engine::Custom: http(s) template with %s (SearchTemplate)
     NewTabPage newTabPage = NewTabPage::Blank;
@@ -210,7 +213,7 @@ struct State {
                confirmCloseTabs == o.confirmCloseTabs && closeWithLastTab == o.closeWithLastTab && adBlock == o.adBlock &&
                httpsOnly == o.httpsOnly && blockThirdPartyCookies == o.blockThirdPartyCookies && memorySaver == o.memorySaver &&
                muteBackground == o.muteBackground && autoplay == o.autoplay && grayscaleText == o.grayscaleText &&
-               bookmarksBar == o.bookmarksBar && accent == o.accent &&
+               bookmarksBar == o.bookmarksBar && sidebarCompact == o.sidebarCompact && accent == o.accent &&
                annotationConnectPrompt == o.annotationConnectPrompt && annotationConnectDeclines == o.annotationConnectDeclines &&
                annotationRetentionDays == o.annotationRetentionDays && defaultBrowserLaterAt == o.defaultBrowserLaterAt;
     }
@@ -267,6 +270,7 @@ inline void Write(std::ostream& out, const State& s) {
         << "autoplay=" << Info(s.autoplay).key << '\n'
         << "grayscale-text=" << (s.grayscaleText ? 1 : 0) << '\n'
         << "bookmarks-bar=" << Info(s.bookmarksBar).key << '\n'
+        << "sidebar=" << (s.sidebarCompact ? "compact" : "complete") << '\n'
         << "accent=" << AccentText(s.accent) << '\n'
         << "annotation-connect-prompt=" << (s.annotationConnectPrompt ? 1 : 0) << '\n'
         << "annotation-connect-declines=" << s.annotationConnectDeclines << '\n'
@@ -313,6 +317,7 @@ inline State Read(std::istream& in) {
         else if (key == "custom-search") { std::wstring v; if (value.size() < 4096 && NativeChrome::Downloads::FromUtf8(value, v)) s.customSearch = SearchTemplate(v); }
         else if (key == "homepage") { std::wstring v; if (value.size() < 4096 && NativeChrome::Downloads::FromUtf8(value, v)) s.homepage = HomepageUrl(v); }
         else if (key == "bookmarks-bar") { for (int i = 0; i < BookmarksBarCount; ++i) if (value == Info(static_cast<BookmarksBar>(i)).key) s.bookmarksBar = static_cast<BookmarksBar>(i); }
+        else if (key == "sidebar") { if (value == "compact") s.sidebarCompact = true; else if (value == "complete") s.sidebarCompact = false; }
         else if (key == "accent") { std::uint32_t rgb = 0; if (ParseAccent(value, rgb)) s.accent = rgb; }
         else if (key == "download-folder") { std::wstring folder; if (value.size() < 32768 && NativeChrome::Downloads::FromUtf8(value, folder)) s.downloadFolder = folder; }
     }

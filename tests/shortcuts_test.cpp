@@ -19,7 +19,8 @@ int main(){
     Modifiers(true);for(UINT k='1';k<='9';++k)Assert(Key(k)==SelectTabBase+int(k-'1'));
     Assert(Key('L')=='L');Assert(Key(VK_TAB)==']');
     Modifiers(true,true);Assert(Key(VK_PRIOR)==MoveTabLeft);Assert(Key(VK_NEXT)==MoveTabRight);Assert(Key(VK_TAB)=='[');Assert(Key('1')==0);Assert(Key('T')=='U');
-    Assert(Key('N')=='P');Assert(chrome.Enabled('P'));   // Ctrl+Maj+N: nouvelle fenêtre privée, without any toolbar button
+    Assert(Key('N')=='P');Assert(chrome.Enabled('P'));
+    Assert(Key(VK_OEM_COMMA)==SidebarToggleCommand);   // Ctrl+Maj+, : plier / déplier le panneau (#127)   // Ctrl+Maj+N: nouvelle fenêtre privée, without any toolbar button
     Modifiers(false,false,true);Assert(Key('D')=='L');
     Modifiers();Assert(Key(VK_F6)==FocusChrome);Assert(Key('1')==0);
     for(int i=0;i<10;++i)pages.push_back(std::make_shared<Tab>());

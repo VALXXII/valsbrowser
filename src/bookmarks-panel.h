@@ -324,7 +324,7 @@ private:
     // with the owner (empty while nothing has entered). Returns true when it painted.
     bool ApplyGeometry(Motion::Time now, bool force = false) {
         if (!hwnd_) return false;
-        const RECT owner = OwnerClient(); const int column = OwnerPx(Layout::width), top = owner.top + OwnerPx(Layout::top), height = std::max(1, static_cast<int>(owner.bottom - top));
+        const RECT owner = OwnerClient(); const int column = OwnerPx(Layout::width), top = owner.top + OwnerPx(Design::Vertical::DrawerTop()), height = std::max(1, static_cast<int>(owner.bottom - top));
         const int shown = static_cast<int>(std::lround(column * Motion::Clamp(slide_.Value(now))));
         if (!force && shown == appliedVisible_ && EqualRect(&owner, &appliedOwner_)) return false;
         const bool moved = force || !EqualRect(&owner, &appliedOwner_), slid = shown != appliedVisible_;

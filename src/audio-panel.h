@@ -562,7 +562,8 @@ public:
         if (uia_.Listening()) uia_.ChildrenChanged(GroupKey);
     }
     // anchor: toolbar button, screen pixels. Right edges aligned, 8 DIP below; kept inside `bounds`.
-    void Show(RECT anchor, RECT bounds, bool keyboard) {
+    // `at` (#127, from the column): the popover's bottom-left corner in screen pixels instead of under the button.
+    void Show(RECT anchor, RECT bounds, bool keyboard, const POINT* at = nullptr) {
         if (!hwnd_) return;
         const bool reduced = Motion::PreferredReducedMotion();
         drawer_ = false; exiting_ = false; scroll_ = 0;
@@ -572,6 +573,7 @@ public:
         focus_ = keyboard ? (Count() ? SliderHit(0) : CloseHit) : 0;
         const int w = Px(Layout::width), h = Px(Layout::PopoverHeight(Count())), margin = Px(Design::Space::sm);
         int x = anchor.right - w, y = anchor.bottom + Px(Layout::anchorGap);
+        if (at) { x = at->x; y = at->y - h; }
         x = std::max<int>(bounds.left + margin, std::min<int>(x, bounds.right - margin - w));
         final_ = {x, y}; visible_ = true; opened_ = Motion::Now(); entering_ = !reduced;
         SetWindowPos(hwnd_, HWND_TOP, x, y, w, h, SWP_NOACTIVATE);

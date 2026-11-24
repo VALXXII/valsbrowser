@@ -273,7 +273,8 @@ void SyncChrome() {
         AUI::PaintToolbarButton(t, f, b, box, v);
     };
 }
-RECT BandRect() { RECT c{}; GetClientRect(window, &c); return {0, S(chrome.ContentTop() - chrome.annotationBand), c.right, S(chrome.ContentTop())}; }
+RECT BandRect() { RECT c{}; GetClientRect(window, &c); if (chrome.sidebar) return {S(chrome.SidebarZoneLeft()), S(chrome.ContentTop() - chrome.annotationBand), c.right - S(NativeChrome::Sidebar::Zone::inset), S(chrome.ContentTop())};   // #127: over the page's width (answer 6)
+    return {0, S(chrome.ContentTop() - chrome.annotationBand), c.right, S(chrome.ContentTop())}; }
 RECT PageClient(const std::shared_ptr<Tab>& t) {
     if (t && !IsRectEmpty(&t->placed)) return t->placed;
     RECT c{}; GetClientRect(window, &c); c.top = S(chrome.ContentTop()); return c;

@@ -115,3 +115,59 @@ glisser, survol par-dessus la page, tiroirs) : liste pour la tournée de nuit de
 12. **Textes de la planche 16 sans dessin** : « Effacer l'historique… » et « Ouvrir le dossier » — où apparaissent-ils ?
 13. **Anneau de focus** : la planche 16 dit « anneau accent 2 px, intérieur », l'app utilise partout 1 DIP blanc
     (10 % / 50 %). On change pour la colonne seulement ?
+
+### Réponses (24 nov.) et ce que fait la version d'essai
+
+| # | Réponse | Dans le code |
+| --- | --- | --- |
+| 1 | Défaut gardé pour l'essai (Val confirme à 9 h) | la colonne remplace la barre ; `browser.exe --top-bar` garde l'ancienne pour comparer |
+| 2 | Bouton + Ctrl+Maj+, mémorisé, pas de ligne de Réglages | clé `sidebar=complete\|compact` (`src/settings.h`) |
+| 3 | La grille remplace la barre de favoris ; Ctrl+Maj+B et Automatique / Toujours / Jamais s'y appliquent ; 2 rangées max, la 10ᵉ tuile devient « » » ; compact : 5 puis « » » ; dossier = menu natif ; Toujours + 0 favori : tuile pleine largeur étoile + « Ajouter cette page » + Ctrl D | `Chrome::Grid`, `BuildSidebar` (mêmes régions et menus que la barre) |
+| 4 | La liste défile avec un fondu, complet et compact | molette sur la liste, fondus de 24 DIP, l'onglet choisi revient dans la vue |
+| 5 | Un nouvel onglet est une vraie ligne (globe, « Nouvel onglet », active) au-dessus de « + Nouvel onglet » | `sideHome` : globe + « Nouvel onglet » |
+| 6 | Bandeau Annotation en haut de la zone page, sur la largeur de la page | `Input::band`, `annotation-mode.h BandRect` |
+| 7 | Son des sites dans les outils du bas entre Annoter et Historique ; pastille d'autorisation dans le champ | outils `N V Y D S` ; la pastille suit le champ |
+| 8 | Popover des 4 derniers téléchargements gardé | au-dessus du bouton aligné sur la colonne (complet), à droite de la colonne aligné en bas (compact) |
+| 9 | Grille = nouveau favori, hors fenêtre = nouvelle fenêtre, page = vue partagée | `SidebarDragEnd`, `SidebarTearOff`, `SplitDragMove` (bascule à la sortie de la colonne) |
+| 10 | Focus : tiroirs à droite ; Ctrl+Maj+, ouvre la colonne par-dessus | à faire avec la branche Focus (§ 4) |
+| 11 | Compact tout seul sous 800 DIP, sans toucher au choix | `Sidebar::Effective` ; Ctrl+Maj+, ouvre alors la colonne par-dessus |
+| 12 | Textes retirés de la planche 16 | rien à faire |
+| 13 | Contour de l'app partout (1 DIP blanc 10 % / 50 %) | `FocusRing` |
+
+## 7. Écarts connus avec la maquette (version d'essai)
+
+- Glisser (05) : la ligne suit la souris verticalement seulement (Paper la décale aussi de 14 DIP vers la droite) ;
+  le trait d'insertion est centré dans l'espace de 2 DIP entre deux lignes (Paper le dessine 10 DIP plus haut, dans la
+  ligne au-dessus).
+- Le passage complet ↔ compact anime la largeur et les titres ; le contenu de la colonne change de disposition à la fin
+  (pas de morphing des boutons du haut ni de la grille).
+- Info-bulles : le composant de l'app (centré sous la cible, au-dessus s'il manque de place) avec un 2ᵉ ligne
+  (domaine, « clic milieu pour fermer » en compact) ; Paper place celle d'un onglet compact à droite de la ligne et son
+  bord est à 8 % au lieu de 6 %.
+- Suggestions (06) : même composant que l'app, placé sous le champ et 430 de large ; ses couleurs restent celles de l'app.
+- Glyphe du profil : celui de l'app (Phosphor Fill) au lieu du dessin simplifié de la planche.
+- Planche 01 : l'icône Réglages est à 50 % et les autres outils à 70 % (copié tel quel de Paper).
+- Barre compacte (02) : pas de Copier ni d'étoile dans le champ du haut (comme Paper) ; Ctrl+D reste.
+- Renommer un dossier de la grille (F2) ouvre la fenêtre de modification (pas de place pour un titre dans une tuile).
+- Glisser un favori pour réordonner la grille : pas encore (Ctrl+Maj+←/→ marche).
+- Échap ne referme pas la colonne ouverte par-dessus la page (elle se referme quand la souris la quitte, ou par
+  Ctrl+Maj+, en fenêtre étroite).
+- Coffre de mots de passe : la clé du champ reste à gauche de Copier, sans autre changement (hors périmètre).
+
+## 8. Vérifications en fenêtre réelle (tournée de nuit de Fix)
+
+Lanceur : `build/127-sidebar-trial/browser.exe` (preview : profil dans ce dossier, jamais celui de Val).
+1. Ouverture : colonne complète, page en carte (4 coins arrondis), boutons de fenêtre, déplacement de la fenêtre par la
+   bande du haut et le haut de la colonne, double-clic = agrandir, Aero Snap sur Agrandir.
+2. Ctrl+Maj+, et le bouton : pliage 180 ms, la page suit, choix gardé après redémarrage ; fenêtre < 800 : compact seul.
+3. Compact : 400 ms de survol ouvrent la colonne par-dessus la page sans la déplacer ; elle se ferme en sortant ;
+   la page reste cliquable à droite ; pas de coin de page visible par-dessus la colonne.
+4. Onglets : clic, clic milieu, croix, menu clic droit, Ctrl+Tab / Ctrl+1…9 (la ligne revient dans la vue), 30 onglets
+   (défilement + fondus), glisser pour réordonner, vers la grille (favori), vers la page (vue partagée), hors fenêtre.
+5. Favoris : 0 / 5 / 12 favoris, dossier (menu), « » », Ctrl+Maj+B, réglage Jamais.
+6. Tiroirs : Téléchargements (popover puis « Tout afficher »), Historique, Réglages, Ctrl+Maj+O : ancrés à droite à
+   partir de y 40, bouton marqué.
+7. Adresse : saisie, suggestions (430 de large sous le champ), cadenas, « Non sécurisé », puce d'autorisation, Copier,
+   étoile ; en compact dans la bande du haut.
+8. Mode Annotation : bandeau au-dessus de la page, page 32 plus bas ; Son des sites dans les outils.
+9. Plein écran F11 : ni colonne ni bande.

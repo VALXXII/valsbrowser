@@ -244,7 +244,11 @@ void ShowAudio(bool keyboard){
     audioPanel.SetItems(AudioItems(AudioRows(NativeChrome::Motion::Now())));
     RECT anchor{S(r->rect.left),S(r->rect.top),S(r->rect.right),S(r->rect.bottom)};MapWindowPoints(window,nullptr,(POINT*)&anchor,2);
     RECT bounds{};GetClientRect(window,&bounds);MapWindowPoints(window,nullptr,(POINT*)&bounds,2);
-    chrome.latched='V';InvalidateChrome();audioPanel.Show(anchor,bounds,keyboard);
+    // #127 (Designer, answer 7): from the column, above the button aligned on the column (complete), right of the
+    // column aligned on the button's bottom (compact); it overflows onto the page.
+    POINT at{};const POINT* side=nullptr;if(chrome.sidebar){const auto& L=chrome.SideColumn();POINT o{0,0};ClientToScreen(window,&o);const float gap=NativeChrome::AudioPanel::Layout::anchorGap;
+        at=L.mode==NativeChrome::Sidebar::Mode::Complete?POINT{o.x+S(L.footerLine.left),anchor.top-S(gap)}:POINT{o.x+S(L.column+gap),anchor.bottom};side=&at;}
+    chrome.latched='V';InvalidateChrome();audioPanel.Show(anchor,bounds,keyboard,side);
     Log(L"AUDIO panel opened rows="+std::to_wstring(audioPanel.Items().size()));
 }
 // Docked drawers share the window's right strip: one at a time.

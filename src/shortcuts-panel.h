@@ -42,7 +42,8 @@ inline std::vector<Section> BuildSections() {
         {TR(settings_tabs), {
             {TR(tab_new), {L"Ctrl", L"T"}}, {TR(cmd_reopen_tab), {L"Ctrl", shift, L"T"}}, {TR(cmd_close_tab), {L"Ctrl", L"W"}},
             {TR(shortcut_next_tab), {L"Ctrl", L"Tab"}}, {TR(shortcut_previous_tab), {L"Ctrl", shift, L"Tab"}}, {TR(shortcut_go_to_tab), {L"Ctrl", L"1…9"}},
-            {TR(shortcut_move_tab_left), {L"Ctrl", shift, TR(key_page_up)}}, {TR(shortcut_move_tab_right), {L"Ctrl", shift, TR(key_page_down)}}}},
+            {TR(shortcut_move_tab_left), {L"Ctrl", shift, TR(key_page_up)}}, {TR(shortcut_move_tab_right), {L"Ctrl", shift, TR(key_page_down)}},
+            {TR(sidebar_shortcut_fold), {L"Ctrl", shift, L","}}}},
         {TR(a11y_toolbar), {
             {TR(shortcut_go_to_address), {L"Ctrl", L"L"}}, {TR(shortcut_go_to_address), {L"Alt", L"D"}}, {TR(shortcut_content_to_chrome), {L"F6"}},
             {TR(shortcut_reload), {L"Ctrl", L"R"}}, {TR(shortcut_reload), {L"F5"}}, {TR(a11y_back), {L"Alt", L"←"}}, {TR(a11y_forward), {L"Alt", L"→"}}}},

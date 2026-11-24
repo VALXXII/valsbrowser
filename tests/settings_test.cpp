@@ -15,6 +15,11 @@ int main(){
         State s;s.bookmarksBar=bar;s.accent=0xA054CB;std::stringstream io;Write(io,s);assert(Read(io)==s);
     }
     {std::istringstream invalid("browser-settings 1\nbookmarks-bar=invalid\naccent=#XYZXYZ\n");assert(Read(invalid)==State{});}
+    // Panneau latéral (#127): complete by default, the folded choice survives restart, unknown values are ignored.
+    {assert(!State{}.sidebarCompact);
+     for(bool compact:{false,true}){State s;s.sidebarCompact=compact;std::stringstream io;Write(io,s);assert(Read(io)==s);}
+     std::istringstream odd("browser-settings 1\r\nsidebar=compact\r\nsidebar=sideways\r\n");assert(Read(odd).sidebarCompact);
+     std::istringstream old("browser-settings 1\nengine=bing\n");assert(!Read(old).sidebarCompact);}
     // Annotations: prompt on, no « Plus tard », 30 days by default (V3: no launcher setting).
     {State d;assert(d.annotationConnectPrompt&&d.annotationConnectDeclines==0&&d.annotationRetentionDays==30&&ConnectPromptActive(d));
      // Round trip of every value.
