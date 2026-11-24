@@ -4807,10 +4807,11 @@ void SidebarPrepare(){
     if(!SidebarEdgeDragging())chrome.sidebarWidth=SBar::Resize::Clamp((float)settings.sideWidth);sidebarFold.panel=chrome.sidebarWidth;
     if(!sidebarReady){sidebarFold.Set(mode,now,false);sidebarReady=true;}
     else if(mode!=sidebarFold.target){sidebarFold.Set(mode,now,!SidebarEdgeDragging()&&!motion.ReducedMotion()&&window&&IsWindowVisible(window)&&!IsIconic(window));if(window&&sidebarFold.Moving(now))SetTimer(window,SidebarFoldTimerId,15,nullptr);}
-    sidebarFold.Settle(now);const bool moving=sidebarFold.Moving(now);
+    sidebarFold.Update(now);sidebarFold.Settle(now);const bool moving=sidebarFold.Moving(now);   /* motion spec §2: the titles' fade-in starts past 70 % */
     if(sidebarFold.target!=SBar::Mode::Compact||moving){sidebarHover.Close();chrome.sidebarPopover=false;}
-    chrome.sidebarMode=moving?SBar::Mode::Complete:sidebarFold.target;
+    chrome.sidebarMode=SidebarEdgeDragging()?chrome.sidebarMode:sidebarFold.CompleteLayout(now)?SBar::Mode::Complete:SBar::Mode::Compact;   /* folding: complete for the titles' 80 ms, then compact (its pieces glide); unfolding: complete at once */
     chrome.sidebarColumn=sidebarFold.ColumnWidth(now);chrome.sidebarTitles=sidebarFold.Titles(now);chrome.sidebarOverlay=sidebarHover.open;
+    chrome.sideMorphing=moving||chrome.MorphMoving(NativeChrome::Motion::Now());   // §2: the pieces glide while the column folds
     chrome.annotateDimmed=chrome.annotateShown&&AnnotationButtonDimmed();
     // The edge handle: docked, settled, and the window wide enough for the chosen layout (not compact by itself).
     chrome.sidebarResizable=!sidebarHover.open&&!moving&&chrome.width>=SBar::autoCompactBelow&&!InFullscreen();if(!chrome.sidebarResizable&&!SidebarEdgeDragging())chrome.sidebarEdge=0;
@@ -5090,7 +5091,7 @@ case WM_TIMER:
     if(w==UpdateTimerId){UpdateTimerFired();return 0;}
 #endif
     if(w==SleepTimerId){SleepTabs();return 0;}
-    if(w==SidebarFoldTimerId){Layout();if(!sidebarFold.Moving(SidebarNowMs())){KillTimer(h,SidebarFoldTimerId);Layout();}return 0;}
+    if(w==SidebarFoldTimerId){Layout();if(!sidebarFold.Moving(SidebarNowMs())&&!chrome.MorphMoving(NativeChrome::Motion::Now())){KillTimer(h,SidebarFoldTimerId);Layout();}return 0;}
     if(w==SidebarHoverTimerId){SidebarHoverDue();return 0;}
     if(w==AudioTimerId){KillTimer(h,AudioTimerId);RefreshAudio();return 0;}
     if(w==AudioSaveTimerId){AudioSaveDue();return 0;}

@@ -133,16 +133,27 @@ int main() {
     // ---- Auto compact (answer 11): the complete column (248) still leaves the page about 560 at 800; the compact
     // column's new width (40) does not move the threshold.
     Check(S::Effective(S::Mode::Complete, 799) == S::Mode::Compact && S::Effective(S::Mode::Complete, 800) == S::Mode::Complete && S::Effective(S::Mode::Compact, 1600) == S::Mode::Compact, "compact under 800, the user's choice above");
-    // ---- Fold timing (16): 180 ms width, titles 80 ms first.
+    // ---- Fold (motion spec §2): a spring of .35 s for the width; titles out in 80 ms, in over 120 ms past 70 %.
     {
         S::Fold f; f.Set(S::Mode::Compact, 1000, true);
         Check(f.Moving(1000) && Near(f.ColumnWidth(1000), 248), "fold starts at 248");
         Check(Near(f.Titles(1040), .5f) && Near(f.Titles(1080), 0), "titles fade out in 80 ms");
-        Check(!f.Moving(1180) && Near(f.ColumnWidth(1180), 40), "width settled at 40 after 180 ms");
-        f.Set(S::Mode::Complete, 2000, true);
-        Check(Near(f.Titles(2050), 0) && Near(f.Titles(2140), .5f) && Near(f.Titles(2180), 1), "unfolding: titles come back over the last 80 ms");
+        Check(f.CompleteLayout(1050) && !f.CompleteLayout(1090), "the complete layout for the titles' 80 ms, then the compact one");
+        const float w100 = f.ColumnWidth(1100), w200 = f.ColumnWidth(1200);
+        Check(w100 < 248 && w200 < w100 && w200 > 40, "the width follows the spring (no fixed duration)");
+        float low = 999; for (int t = 1000; t <= 2000; t += 5) low = std::min(low, f.ColumnWidth(t));
+        Check(Near(low, 40, .01f) && !f.Moving(1900) && Near(f.ColumnWidth(1900), 40), "critically damped: never under 40, settled within a second");
+        // Interrupted: unfolding mid-way starts from the presented width and velocity (no jump).
+        S::Fold r; r.Set(S::Mode::Compact, 0, true); const float at = r.ColumnWidth(120); r.Set(S::Mode::Complete, 120, true);
+        Check(Near(r.ColumnWidth(120), at, .01f) && r.CompleteLayout(121), "reversed mid-way: from where it is");
+        for (int t = 120; t <= 1500; t += 10) r.Update(t);
+        S::Fold u; u.Set(S::Mode::Compact, 0, false); u.Set(S::Mode::Complete, 2000, true);
+        float firstTitle = -1; for (int t = 2000; t <= 3000; t += 5) { u.Update(t); if (firstTitle < 0 && u.Titles(t) > 0) firstTitle = (u.ColumnWidth(t) - 40) / (248 - 40.f); }
+        Check(firstTitle >= .69f && firstTitle < .9f, "unfolding: titles start fading in once the width passes 70 %");
         S::Fold g; g.Set(S::Mode::Compact, 0, false);
         Check(!g.Moving(0) && Near(g.ColumnWidth(0), 40) && Near(g.Titles(0), 0), "reduced motion: at once");
+        // Thrown (the edge released under 160 with momentum): damping .85 carries the pointer's speed.
+        S::Fold th; th.Set(S::Mode::Compact, 0, true, -6.f, .85f); Check(th.ColumnWidth(30) < S::Fold{}.ColumnWidth(30) - 1 || th.ColumnWidth(30) < 240, "a thrown fold moves at the gesture's speed");
     }
     // ---- Hover (400 ms).
     {
@@ -169,7 +180,7 @@ int main() {
         in.mode = S::Mode::Compact; const auto K = S::Compute(in);
         Check(Same(R::Handle(K.column, K.page), 34, 32, 40, 736), "compact handle along its page");
         S::Fold f; f.panel = 300; f.Set(S::Mode::Complete, 0, false); Check(Near(f.ColumnWidth(0), 300), "the fold opens to the chosen width");
-        f.Set(S::Mode::Compact, 1000, true); Check(Near(f.ColumnWidth(1000), 300) && Near(f.ColumnWidth(1180), 40), "and folds from it");
+        f.Set(S::Mode::Compact, 1000, true); Check(Near(f.ColumnWidth(1000), 300) && Near(f.ColumnWidth(2500), 40), "and folds from it");
     }
     // ---- Row motion (#127 parity 3): the strip's TabStripMotion on the vertical axis (Sidebar::ShownRow).
     {

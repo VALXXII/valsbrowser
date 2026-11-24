@@ -117,7 +117,8 @@ inline constexpr float dragged = 0x29 / 255.f, draggedBorder = 0x26 / 255.f, ori
 }
 // Motion (16 « Valeurs »; 03 note): the width moves in 180 ms, titles fade first in 80 ms; the pointer rests 400 ms
 // on the compact column (or the Focus edge) before the complete column opens over the page.
-namespace Timing { inline constexpr double widthMs = 180, titlesMs = 80, hoverMs = 400; }
+// The fold: a spring of .35 s (a thrown one .3 s, damping .85); titles out in 80 ms, in over 120 ms (motion spec §2).
+namespace Timing { inline constexpr double foldResponse = .35, throwResponse = .30, titlesOutMs = 80, titlesInMs = 120, hoverMs = 400; }
 // Below this window width the column is compact by itself (Designer, answer 11): the page keeps about 560. The
 // user's choice is never overwritten; above it, the column comes back to that choice.
 inline constexpr float autoCompactBelow = 800;
@@ -560,34 +561,60 @@ inline Box ShownRow(const Layout& L, float slot, float presence, float scroll) {
     return {L.tabsView.left, t, L.tabsView.right, t + m.row * std::clamp(presence, 0.f, 1.f)};
 }
 
-// ---- Fold animation --------------------------------------------------------------------------------------------
-// t = 1 complete, 0 compact. Folding, the titles fade out over the first 80 ms while the width eases over 180 ms;
-// unfolding, the width eases over 180 ms and the titles come back over the last 80 ms. Reduced motion: at once.
+// ---- Fold animation (#127 motion spec §2, Designer) -----------------------------------------------------------------
+// t = 1 complete, 0 compact, on a spring (damping 1, response .35 s; Apple's model, as Motion::Spring): interruptible, a
+// new target starts from the presented value and velocity, so a reversal never jumps. The page follows on the same
+// frame (the host lays it out from ColumnWidth). Folding: the titles fade out over the first 80 ms, the column keeps the
+// complete layout for those 80 ms, then the compact one (its tiles and buttons glide to their places: Chrome's morph).
+// Unfolding: the complete layout at once, the titles fading in over 120 ms once the width passes 70 %. A gesture can
+// throw it (the edge released under 160: damping .85 with the pointer's velocity). Reduced motion: at once.
 inline double EaseOut(double x) { x = std::clamp(x, 0.0, 1.0); const double u = 1 - x; return 1 - u * u * u; }
 struct Fold {
-    Mode target = Mode::Complete; double startMs = -1; float from = 1; float panel = Complete::width;   // the complete width
+    Mode target = Mode::Complete; double startMs = -1; float from = 1, velocity = 0, damping = 1, titlesAtStart = 1;
+    double response = Timing::foldResponse, titlesFrom = -1; float panel = Complete::width;   // the complete width
     float Settled() const { return target == Mode::Complete ? 1.f : 0.f; }
-    bool Moving(double now) const { return startMs >= 0 && now - startMs < Timing::widthMs; }
-    // Width progress (0 compact .. 1 complete).
-    float Progress(double now) const {
-        if (startMs < 0 || now - startMs >= Timing::widthMs) return Settled();
-        const float e = static_cast<float>(EaseOut((now - startMs) / Timing::widthMs));
-        return from + (Settled() - from) * e;
+    void Eval(double now, float& x, float& v) const {
+        if (startMs < 0) { x = Settled(); v = 0; return; }
+        const double t = std::max(0.0, (now - startMs) / 1000), w = 6.283185307179586 / response, c1 = from - Settled();
+        double px, pv;
+        if (damping >= .9999f) { const double c2 = velocity + w * c1, e = std::exp(-w * t); px = (c1 + c2 * t) * e; pv = (c2 - w * (c1 + c2 * t)) * e; }
+        else { const double z = damping, wd = w * std::sqrt(1 - z * z), c2 = (velocity + z * w * c1) / wd, e = std::exp(-z * w * t), cs = std::cos(wd * t), sn = std::sin(wd * t);
+            px = e * (c1 * cs + c2 * sn); pv = e * ((c2 * wd - z * w * c1) * cs - (c1 * wd + z * w * c2) * sn); }
+        if (std::fabs(px) < 1e-3 && std::fabs(pv) < 1e-3 * w) { x = Settled(); v = 0; return; }
+        x = static_cast<float>(Settled() + px); v = static_cast<float>(pv);
     }
+    bool Moving(double now) const { if (startMs < 0) return false; float x, v; Eval(now, x, v); return x != Settled() || v != 0 || TitlesMoving(now); }
+    // Width progress (0 compact .. 1 complete); a thrown fold may overshoot past the complete width a little, never under
+    // the compact one.
+    float Progress(double now) const { float x, v; Eval(now, x, v); return std::clamp(x, 0.f, 1.05f); }
     float ColumnWidth(double now) const { const float p = Progress(now); return Compact::width + (panel - Compact::width) * p; }
+    // Which layout to draw: folding keeps the complete one for the titles' 80 ms, unfolding switches at once.
+    bool CompleteLayout(double now) const { return target == Mode::Complete || (startMs >= 0 && now - startMs < Timing::titlesOutMs); }
     // Opacity of the complete column's titles and labels.
+    bool TitlesMoving(double now) const {
+        if (startMs < 0) return false;
+        if (target == Mode::Compact) return now - startMs < Timing::titlesOutMs;
+        return titlesFrom < 0 || now - titlesFrom < Timing::titlesInMs;
+    }
     float Titles(double now) const {
-        if (startMs < 0 || now - startMs >= Timing::widthMs) return target == Mode::Complete ? 1.f : 0.f;
-        const double t = now - startMs;
-        if (target == Mode::Compact) return static_cast<float>(1 - std::clamp(t / Timing::titlesMs, 0.0, 1.0)) * std::min(1.f, from * 4);
-        return static_cast<float>(std::clamp((t - (Timing::widthMs - Timing::titlesMs)) / Timing::titlesMs, 0.0, 1.0));
+        if (startMs < 0) return target == Mode::Complete ? 1.f : 0.f;
+        if (target == Mode::Compact) return titlesAtStart * static_cast<float>(1 - std::clamp((now - startMs) / Timing::titlesOutMs, 0.0, 1.0));
+        if (titlesFrom < 0) return 0.f;   // under 70 % of the width: no titles yet
+        return static_cast<float>(std::clamp((now - titlesFrom) / Timing::titlesInMs, 0.0, 1.0));
     }
-    void Set(Mode m, double now, bool animate) {
+    // Every frame: the titles' fade-in starts when the width passes 70 %.
+    void Update(double now) { if (target == Mode::Complete && startMs >= 0 && titlesFrom < 0 && Progress(now) >= .7f) titlesFrom = now; }
+    // `velocity` (progress per second) and `damping`: a thrown fold (the edge released with momentum); 0 / 1 otherwise.
+    void Set(Mode m, double now, bool animate, float throwVelocity = 0, float throwDamping = 1) {
         if (m == target && startMs < 0) return;
-        from = animate ? Progress(now) : (m == Mode::Complete ? 1.f : 0.f);
-        target = m; startMs = animate ? now : -1;
+        float x, v; Eval(now, x, v);
+        titlesAtStart = Titles(now);
+        target = m;
+        if (!animate) { startMs = -1; from = Settled(); velocity = 0; titlesFrom = -1; return; }
+        from = x; velocity = throwVelocity != 0 ? throwVelocity : v; damping = throwDamping; response = throwDamping < 1 ? Timing::throwResponse : Timing::foldResponse;
+        startMs = now; titlesFrom = -1;
     }
-    void Settle(double now) { if (startMs >= 0 && now - startMs >= Timing::widthMs) startMs = -1; }
+    void Settle(double now) { if (startMs >= 0 && !Moving(now)) startMs = -1; }
 };
 
 // ---- Hover to open (compact; Focus later) -------------------------------------------------------------------------

@@ -406,6 +406,16 @@ public:
     // The selected row's background is ONE object sliding between rows (spec §1 « Sélection »: position and size,
     // spring 1.0 / .25 s), never off on one row and on at the other; the text's colour and weight fade (120 ms).
     Motion::Spring selTop{.05f},selBottom{.05f},selLeft{.05f},selRight{.05f};unsigned selPlateKey=0;
+    // Motion spec §2: while the column folds or unfolds, its pieces (bookmark tiles, « » », tools, profile, fold button,
+    // Back / Forward / Reload, the address) glide from where they are to the new layout's places: a morph of position
+    // and size on the fold's spring (.35 s), retargeted from the presented box. Outside a fold they sit on the layout
+    // (snapped); reduced motion: at once. Hit regions always follow the layout. Host: sideMorphing during the fold.
+    struct MorphBox{Motion::Spring l{.05f},t{.05f},r{.05f},b{.05f};bool known=false;};std::map<int,MorphBox> sideMorph;bool sideMorphing=false;
+    D2D1_RECT_F Morph(int key,const Sidebar::Box& to,Motion::Time now){auto& m=sideMorph[key];const bool reduced=!motion||motion->ReducedMotion();
+        if(!m.known||!sideMorphing||reduced){m.l.Snap(to.left);m.t.Snap(to.top);m.r.Snap(to.right);m.b.Snap(to.bottom);m.known=true;}
+        else{const float k=(float)Sidebar::Timing::foldResponse;m.l.Set(to.left,now,k);m.t.Set(to.top,now,k);m.r.Set(to.right,now,k);m.b.Set(to.bottom,now,k);}
+        return {m.l.Value(now),m.t.Value(now),m.r.Value(now),m.b.Value(now)};}
+    bool MorphMoving(Motion::Time now)const{for(auto& e:sideMorph){const auto& m=e.second;if(m.l.Moving(now)||m.t.Moving(now)||m.r.Moving(now)||m.b.Moving(now))return true;}return false;}
     static constexpr float selectionResponse=.25f;
     bool PlateMoving(Motion::Time now)const{return selTop.Moving(now)||selBottom.Moving(now)||selLeft.Moving(now)||selRight.Moving(now);}
     Motion::Wake TabsNextWake(Motion::Time now)const{auto w=Motion::Earlier(tabMotion.NextWake(now),sideMotion.NextWake(now));return PlateMoving(now)?Motion::Earlier(w,Motion::Frame()):w;}
@@ -1284,9 +1294,9 @@ public:
         target->PushAxisAlignedClip(D2D1::RectF(0,0,col,height),D2D1_ANTIALIAS_MODE_ALIASED);
         const float labels=overlay?1.f:sidebarTitles;
         // Top: profile, fold button (+ Back / Forward / Reload in the complete column).
-        {const auto plate=R(L.profile);profileRest=L.profilePlate?Design::ProfileButton::rest:0;DrawProfileButton(hover,focus,now,&plate);profileRest=Design::ProfileButton::rest;}
-        {const float hv=Hovered(SidebarToggleId,hover,now);if(hv>0)White(R(L.toggle),Design::Radius::control,K::toolHover*hv);if(focus==SidebarToggleId)FocusRing(R(L.toggle),Design::Radius::control);SideGlyph(SB::Glyph::fold,R(L.toggle),Design::Size::icon,K::foldGlyph);}   /* #6: 50 % like Back / Forward / Reload */
-        if(full)for(int id:{'B','F','R'})PaintSideButton(id,id=='B'?R(L.back):id=='F'?R(L.forward):R(L.reload),hover,focus,now);
+        {const auto plate=overlay?R(L.profile):Morph(900,L.profile,now);profileRest=L.profilePlate?Design::ProfileButton::rest:0;DrawProfileButton(hover,focus,now,&plate);profileRest=Design::ProfileButton::rest;}
+        {const auto tg=overlay?R(L.toggle):Morph(SidebarToggleId,L.toggle,now);const float hv=Hovered(SidebarToggleId,hover,now);if(hv>0)White(tg,Design::Radius::control,K::toolHover*hv);if(focus==SidebarToggleId)FocusRing(tg,Design::Radius::control);SideGlyph(SB::Glyph::fold,tg,Design::Size::icon,K::foldGlyph);}   /* #6: 50 % like Back / Forward / Reload */
+        if(full)for(int id:{'B','F','R'}){const auto& b=id=='B'?L.back:id=='F'?L.forward:L.reload;PaintSideButton(id,overlay?R(b):Morph(id,b,now),hover,focus,now);}
         // Address in the column.
         if(full)PaintSideAddress(L,editing,hover,focus,now,labels);
         // Grid B.
@@ -1337,7 +1347,7 @@ public:
         if(L.scroll<L.maxScroll-.5f)DrawVerticalFade(L.tabsView.left,L.tabsView.bottom,L.tabsView.right,L.tabsView.bottom-Design::TabStrip::fade,overlay);
         // Tools.
         Color(1,K::line);target->FillRectangle(R(L.footerLine),brush);
-        for(size_t i=0;i<sideTools.size()&&i<L.tools.size();++i)DrawSideTool(sideTools[i],R(L.tools[i]),hover,focus,now);
+        for(size_t i=0;i<sideTools.size()&&i<L.tools.size();++i)DrawSideTool(sideTools[i],overlay?R(L.tools[i]):Morph(sideTools[i],L.tools[i],now),hover,focus,now);
         target->PopAxisAlignedClip();
     }
     // One bookmark tile (01 1Q23-0 / grid B 1WOO-0 / compact 1WDV-0): fill, hover, focus, favicon 18 or the folder glyph.
@@ -1351,7 +1361,7 @@ public:
     // A grid in its viewport: tiles clipped, the canvas fade at the bottom while more is below, the thin bar (1WRB-0, 1WRC-0).
     void DrawGridView(const Sidebar::Grid& g,float rest,int hover,int focus,Motion::Time now){namespace C=Sidebar::Complete;
         target->PushAxisAlignedClip(R(g.view),D2D1_ANTIALIAS_MODE_ALIASED);
-        for(int i=0;i<(int)g.tiles.size();++i){const auto& t=g.tiles[i];if(t.bottom<=g.view.top||t.top>=g.view.bottom)continue;DrawBookmarkTile(i,R(t),rest,hover,focus,now);}
+        for(int i=0;i<(int)g.tiles.size();++i){const auto& t=g.tiles[i];if(t.bottom<=g.view.top||t.top>=g.view.bottom)continue;DrawBookmarkTile(i,Morph(BookmarkBase+i,t,now),rest,hover,focus,now);}
         if(g.Scrolls()&&g.scroll<g.maxScroll-.5f)DrawVerticalFade(g.view.left,g.view.bottom,g.view.right,g.view.bottom-C::fade,false);
         target->PopAxisAlignedClip();
         if(!g.bar.Empty())FillBox(R(g.bar),2,D2D1::ColorF(1,1,1,C::barAlpha));}
@@ -1375,7 +1385,7 @@ public:
             if(!L.manage.Empty())PaintManageRow(R(L.manage),false,hover,focus,now,labels);
             return;}
         // Compact: the first tiles, then « » » (#FFFFFF0A, caret-double-right 70 %; open: #FFFFFF1F, white).
-        const int shown=SideBookmarkTiles(L);for(int i=0;i<shown;++i)DrawBookmarkTile(i,R(L.tiles[i]),K::compactTile,sidebarPopover?0:hover,focus,now);
+        const int shown=SideBookmarkTiles(L);for(int i=0;i<shown;++i)DrawBookmarkTile(i,Morph(BookmarkBase+i,L.tiles[i],now),K::compactTile,sidebarPopover?0:hover,focus,now);
         if(L.more){const auto t=R(L.tiles.back());const float hv=Hovered(SidebarMoreId,hover,now);const bool open=sidebarPopover;
             White(t,Design::Radius::r8,open?K::moreOpen:K::moreRest+(K::tileHover-K::moreRest)*hv);if(focus==SidebarMoreId)FocusRing(t,Design::Radius::r8);SideGlyph(SB::Glyph::more,t,Design::Size::icon,open?1.f:K::glyph);}}
     // The compact popover (« compact, 40 » 1WSC-0): canvas card, 1 DIP #FFFFFF0F border, radius 8, the unfolded grid.
@@ -1401,6 +1411,13 @@ public:
         Drop(g);Drop(stops);}
     // The address field (01 1Q26-0, editing 06 1QH8-0, compact 1Q3G-0).
     void PaintSideAddress(const Sidebar::Layout& L,bool editing,int hover,int focus,Motion::Time now,float labels){
+        // Motion spec §2: the field glides between the column and the window bar (translated with its morphed box).
+        D2D1_MATRIX_3X2_F keep;target->GetTransform(&keep);const bool glide=sideMorphing&&!editing;
+        if(glide){const auto m=Morph('L',L.address,now);target->SetTransform(D2D1::Matrix3x2F::Translation(m.left-L.address.left,m.top-L.address.top)*keep);}
+        PaintSideAddressAt(L,editing,hover,focus,now,labels);
+        if(glide)target->SetTransform(keep);else Morph('L',L.address,now);
+    }
+    void PaintSideAddressAt(const Sidebar::Layout& L,bool editing,int hover,int focus,Motion::Time now,float labels){
         namespace K=Sidebar::Look;const auto box=R(L.address);
         if(L.addressPlate||editing){White(box,Design::Radius::control,editing?K::fieldEditing:K::field);}DrawLoading(box);   // the compact bar's field has no background (Val's retouch 1WOG-0)
         if(editing||focus=='L')AddressRing(box,Design::Radius::control);   // #5: 5 % after a click, 50 % from the keyboard
@@ -1464,7 +1481,7 @@ public:
     void PaintSidebar(const std::vector<std::wstring>& titles,int selected,bool editing,int hover,int focus,Motion::Time now){
         namespace SB=Sidebar;
         // Window bar: compact navigation + address (02 1Q3F-0), window buttons.
-        if(!side.addressInColumn){for(int id:{'B','F','R'})PaintSideButton(id,id=='B'?R(side.back):id=='F'?R(side.forward):R(side.reload),sidebarOverlay?0:hover,sidebarOverlay?0:focus,now,1,side.navPlates);PaintSideAddress(side,editing&&!sidebarOverlay,hover,focus,now,1);}
+        if(!side.addressInColumn){for(int id:{'B','F','R'}){const auto& b=id=='B'?side.back:id=='F'?side.forward:side.reload;PaintSideButton(id,Morph(id,b,now),sidebarOverlay?0:hover,sidebarOverlay?0:focus,now,1,side.navPlates);}PaintSideAddress(side,editing&&!sidebarOverlay,hover,focus,now,1);}
         for(int id:{'m','M','X'})DrawWindowGlyph(id,id=='m'?R(side.minimize):id=='M'?R(side.maximize):R(side.close),hover,focus,now);
         // Under the page windows: the canvas around the page's rounded corners is the window's own.
         PaintSideColumn(side,titles,selected,editing&&!sidebarOverlay,sidebarOverlay?0:hover,sidebarOverlay?0:focus,now,false);

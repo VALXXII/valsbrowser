@@ -163,6 +163,19 @@ int wmain(int argc, wchar_t** argv) {
         Check(Near(from, c.side.tabs[1].top) && mid > from + 4 && mid < to - 4, msg);
         Check(SUCCEEDED(c.SavePng((out + L"\\anim-selection-70ms.png").c_str())), "frame: selection");
         c.Paint(five, 3, L"", false, 0, 0, nullptr, t2 + Motion::Milliseconds(1500)); Check(Near(c.selTop.Value(t2 + Motion::Milliseconds(1500)), to), "selection: settled on the new row");
+        // Spec §2: folding, the pieces glide from the complete layout to the compact one (morph on the fold's spring).
+        const auto t3 = t2 + Motion::Milliseconds(3000); c.bandShown = true; c.bandItems.clear();
+        for (int i = 0; i < 5; ++i) { Chrome::BandItem b; b.id = 100 + i; b.title = titles[i]; b.tip = titles[i]; b.image = icons[i]; c.bandItems.push_back(b); }
+        c.Paint(five, 3, L"", false, 0, 0, nullptr, t3); const auto tileFrom = c.side.grid.tiles[3], profileFrom = c.side.profile;
+        c.sideMorphing = true; c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = 150; c.sidebarTitles = 0;
+        c.Paint(five, 3, L"", false, 0, 0, nullptr, t3); const auto tileTo = c.side.tiles[3];
+        c.Paint(five, 3, L"", false, 0, 0, nullptr, t3 + Motion::Milliseconds(90));
+        const auto& mt = c.sideMorph[BookmarkBase + 3]; const float x = mt.l.Value(t3 + Motion::Milliseconds(90)), y = mt.t.Value(t3 + Motion::Milliseconds(90));
+        std::snprintf(msg, sizeof msg, "fold: tile 4 glides (%.0f,%.0f) -> (%.0f,%.0f) -> (%.0f,%.0f)", tileFrom.left, tileFrom.top, x, y, tileTo.left, tileTo.top);
+        Check(x < tileFrom.left - 2 && x > tileTo.left + 2 && y > tileFrom.top + 2 && y < tileTo.top - 2, msg);
+        Check(c.MorphMoving(t3 + Motion::Milliseconds(90)) && !c.MorphMoving(t3 + Motion::Milliseconds(2000)), "the morph settles");
+        Check(SUCCEEDED(c.SavePng((out + L"\\anim-pliage-90ms.png").c_str())), "frame: folding");
+        (void)profileFrom; c.sideMorphing = false;
     }
     {   // Val (24 nov.): the address field is ONE colour while typing: the native EDIT's colour (WM_CTLCOLOREDIT uses
         // Chrome::EditSurface) is the colour painted under it, in the column, the compact bar and the top bar; the EDIT spans
