@@ -71,16 +71,29 @@ fenêtre principale. Pendant que la colonne est ouverte par-dessus, chaque fenê
 le rectangle de la colonne (même technique que la branche Mode Focus) : la fenêtre principale dessine la colonne
 à cet endroit et reçoit la souris, la page ne bouge pas et n'est pas redimensionnée.
 
-## 4. Mode Focus (branche `VALXXII/Mode-Focus`, pas dans `main`)
+## 4. Mode Focus dans les dispositions latérales (fait, avec la branche Focus)
 
-Le panneau doit compiler et marcher sur `main` seul. Point d'intégration : `Sidebar::State::focus` (toujours
-`false` sur `main`) et `Presentation`. Ce que le mode Focus devra faire en arrivant :
-- mettre `focus=true` : la colonne passe en `Hidden`, la page prend la largeur (boîte Focus de `focus-mode.h`) ;
-- remplacer son panneau flottant du haut par la colonne : bande sensible au **bord gauche** (planche 13) au lieu
-  du bord haut ; après le délai, `Overlay` (planche 14) — la même colonne et la même découpe des pages que le
-  compact survolé ; elle repart quand la souris la quitte ;
-- tiroirs (planche 15) : ouverts au clavier ou depuis la colonne survolée, à droite comme ailleurs, colonne cachée ;
-- Ctrl+Maj+, en Focus : à décider (voir questions).
+Designer (24 nov.) : les planches les plus récentes font foi (« Annotation + Focus · panneau (bord survolé) » 2091-0,
+« … · compact » 20EJ-0, 20MM-0, 21HF-0) ; les planches 13 / 14 / 15, plus anciennes, s'alignent sur le code.
+- Le panneau flottant du haut de Focus reste celui de la barre du haut. En panneau latéral ou compact, Focus **cache
+  la colonne** : la page prend la fenêtre moins 4 sur chaque bord (rayon 8), sans barre de fenêtre ni boutons
+  − □ × ; avec le mode Annotation, le bandeau occupe le haut (x 4 → W − 4, y 0 → 32) et la page commence dessous.
+- Une bande de **8 DIP sur le bord gauche** rappelle la colonne : après 400 ms elle glisse par-dessus la page depuis la
+  gauche, sous le bandeau, carrée, un filet de 1 DIP #262626 à droite (hors de ses 248 / 40) ; elle repart vers la
+  gauche dès que la souris la quitte, sauf si quelque chose la retient (un tiroir ouvert depuis elle, un menu, un
+  glisser, la saisie dans le champ).
+- **Ctrl+Maj+,** (et le bouton ▯) la font venir, épinglée, puis repartir ; **Échap** la renvoie (avant de quitter le
+  mode Annotation). Le champ d'adresse (Ctrl+L, F6) la fait venir au repos tout de suite — la colonne complète en
+  disposition compacte, qui n'a pas de champ.
+- **Tiroirs** : depuis le haut de la page (4, ou sous le bandeau), ancrés à droite, la page s'arrête 4 DIP avant ; un
+  tiroir ouvert depuis la colonne la garde ouverte tant qu'il l'est (règle de la planche 15).
+- **Mouvement** (la spécification des tiroirs) : entrée sur un ressort critique de 0,3 s, sortie 0,2 s, toujours depuis
+  la position affichée ; pendant le glissement une image de la colonne se déplace (un trou mobile dans les fenêtres
+  des pages aurait une image de retard), la vraie colonne prend le relais au repos ; mouvement réduit : sur place,
+  fondu de 120 ms.
+- Code : `src/sidebar.h` (`FocusSide`, `ComputeHidden`, `ShiftColumn`, `FocusReveal`), `Chrome::sideHidden` /
+  `sideShown` / `RenderSideColumn`, `src/main.cpp` (« #127 × Mode Focus », `SideFocus*`). Tests : `sidebar_test`,
+  `sidebar_render_test` (rendus `focus-*`), `shortcuts_test`.
 
 ## 5. Tests
 
@@ -129,7 +142,7 @@ glisser, survol par-dessus la page, tiroirs) : liste pour la tournée de nuit de
 | 7 | Son des sites dans les outils du bas entre Annoter et Historique ; pastille d'autorisation dans le champ | outils `N V Y D S` ; la pastille suit le champ |
 | 8 | Popover des 4 derniers téléchargements gardé | au-dessus du bouton aligné sur la colonne (complet), à droite de la colonne aligné en bas (compact) |
 | 9 | Grille = nouveau favori, hors fenêtre = nouvelle fenêtre, page = vue partagée | `SidebarDragEnd`, `SidebarTearOff`, `SplitDragMove` (bascule à la sortie de la colonne) |
-| 10 | Focus : tiroirs à droite ; Ctrl+Maj+, ouvre la colonne par-dessus | à faire avec la branche Focus (§ 4) |
+| 10 | Focus : tiroirs à droite ; Ctrl+Maj+, ouvre la colonne par-dessus | fait (§ 4) |
 | 11 | Compact tout seul sous 800 DIP, sans toucher au choix | `Sidebar::Effective` ; Ctrl+Maj+, ouvre alors la colonne par-dessus |
 | 12 | Textes retirés de la planche 16 | rien à faire |
 | 13 | Contour de l'app partout (1 DIP blanc 10 % / 50 %) | `FocusRing` |

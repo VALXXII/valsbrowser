@@ -5060,7 +5060,7 @@ void SideSlideFrame(){
 void SideRevealChanged(){
     if(!window||!chrome.sideHidden)return;const auto now=NativeChrome::Motion::Now();const bool reduced=motion.ReducedMotion(),open=sideReveal.open;
     namespace FS=SBar::FocusSide;
-    if(sideReveal.wide||!open)BuildChrome();   // the complete column for the field (compact layout), or back
+    if(!open&&(GetFocus()==window||editing)){keyboardFocus=0;FocusPage();}   // the column goes: the keyboard back to the page
     if(!open&&sideLive){if(!SidePictureShow()){SideRevealLive(false);return;}sideSlide.Snap(1);sideFade.Snap(1);SidePictureMove(1,1);SideRevealLive(false);}
     else if(open&&!sideLive&&!sidePic.shown){if(!SidePictureShow()){SideRevealLive(true);return;}if(reduced){sideSlide.Snap(1);sideFade.Snap(0);}else{sideFade.Snap(1);if(sideSlide.Value(now)<=0)sideSlide.Snap(0);}SidePictureMove(sideSlide.Value(now),sideFade.Value(now));}
     if(reduced){sideSlide.Snap(1);sideFade.Set(open?1.f:0.f,now,std::chrono::milliseconds((int)FS::reducedFadeMs),false,NativeChrome::Motion::Curve::SmoothStep);}
@@ -5113,7 +5113,7 @@ void SideFocusCommand(int cmd){
     if(!chrome.sideHidden||!sideReveal.open)return;
     if(cmd=='Y'||cmd=='S'||cmd=='D'||cmd=='V'||cmd==BookmarksDrawerCommand||cmd==NativeChrome::Chrome::SidebarManageId)sideDrawerHold=true;
 }
-bool SideFocusEscape(){if(!chrome.sideHidden||!sideReveal.open)return false;sideReveal.Close();sideDrawerHold=false;SideRevealChanged();if(editing)FocusPage();return true;}
+bool SideFocusEscape(){if(!chrome.sideHidden||!sideReveal.open)return false;sideReveal.Close();sideDrawerHold=false;SideRevealChanged();return true;}
 // Window dragging: the bar right of the column, and the column's top above the field (complete) / the fold button (compact).
 bool SidebarCaption(float x,float y){if(!chrome.sidebar)return false;const auto& L=chrome.SideColumn();const float col=chrome.sidebarOverlay?L.column:chrome.side.column;
     if(x>=col)return y<chrome.side.bar;return y<(L.mode==SBar::Mode::Complete?L.address.top:L.toggle.bottom);}
@@ -5879,7 +5879,7 @@ bool EscapeOwnedBySurface(HWND focus){
         if(s&&(focus==s||root==s))return true;
     return false;
 }
-bool EscapeLeavesAnnotation(bool modeActive,HWND focus){return modeActive&&focus!=address&&!EscapeOwnedBySurface(focus);}
+bool EscapeLeavesAnnotation(bool modeActive,HWND focus){if(focus==window&&chrome.sidebar&&((chrome.sideHidden&&sideReveal.open)||chrome.sidebarPopover||sidebarHover.open))return false;   /* #127: the column / popover over the page first (top-most layer first) */return modeActive&&focus!=address&&!EscapeOwnedBySurface(focus);}
 void ToggleFocusMode(){
     settings.focusMode=!settings.focusMode;SettingChanged(BrowserSettings::Change::FocusMode);
     if(settingsDrawer.Visible())settingsDrawer.Changed();   // the switch follows the shortcut
