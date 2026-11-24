@@ -692,6 +692,33 @@ try:
         click(".bq-more"); time.sleep(.25)
         q6 = cdp.js(QL_JS)
         check(q6["n"] == 2 and q6["exp"] == "false" and sizes()[-1] == h4, "bubble (queue, lot R): a second click closes it (back to 2 messages, same size as before)", f"{q6['n']} {sizes()[-1]} {h4}")
+        # #110 / #185 / #219 (lot 1b's replay, 24 Nov 2026): little height offered (a bubble squeezed between its element and the
+        # window's edge) — the waiting messages take what is left, the input and its buttons stay inside the surface, whole
+        FT_JS = """(()=>{const a=document.getElementById('app').getBoundingClientRect(),b=document.querySelector('.bqs'),l=document.querySelector('.bq-list'),m=document.querySelector('.bq-more');
+          const vis=e=>!!e&&e.getBoundingClientRect().height>0;
+          return {inside:['.cin','.tb.mode','.model .m','.send'].every(s=>{const e=document.querySelector(s);if(!e)return false;const r=e.getBoundingClientRect();return r.height>0&&r.top>=a.top-1&&r.bottom<=a.bottom-11}),
+                  app:Math.round(a.height),list:vis(l)?Math.round(l.getBoundingClientRect().height):0,tight:!!b&&b.classList.contains('tight'),box:vis(b),more:vis(m)?m.innerText.trim():'',off:m?m.disabled:null,
+                  atEnd:vis(l)?Math.abs(l.scrollTop+l.clientHeight-l.scrollHeight)<2:null,fade:vis(l)?l.classList.contains('scrolled'):null,n:document.querySelectorAll('.bq').length}})()"""
+        def offered(hh):
+            host({"type": "layout", "mode": "bubble", "maxWidth": 305, "maxHeight": hh, "side": "right", "element": "h1.title", "open": False}); time.sleep(.2)
+            return cdp.js(FT_JS), sizes()[-1]
+        f0, s0 = offered(520)
+        f1, s1 = offered(269)
+        check(f0["inside"] and not f0["tight"] and f0["list"] > 150 and f1["inside"] and f1["tight"] and 28 <= f1["list"] < f0["list"] and f1["atEnd"] and f1["fade"] and f1["more"] == "+2 en attente" and s1[1] <= 269,
+              "bubble (queue, #110): 269 px offered — the list takes what is left (cut at its top under the fade, the most recent at its end); the input, the mode / model buttons and « envoyer » are whole inside the surface",
+              f"520: {json.dumps(f0, ensure_ascii=False)} {s0} | 269: {json.dumps(f1, ensure_ascii=False)} {s1}"[:420])
+        click(".bq-more"); time.sleep(.25); f1o = cdp.js(FT_JS); click(".bq-more"); time.sleep(.25)
+        check(f1o["inside"] and f1o["n"] == 4 and f1o["list"] <= f1["list"] + 1 and f1o["atEnd"], "bubble (queue, #110): 269 px offered, list opened — it keeps to the room left (never the 160 px that push the input out)", json.dumps(f1o, ensure_ascii=False)[:300])
+        f2, s2 = offered(150)
+        check(f2["inside"] and f2["tight"] and 28 <= f2["list"] < f1["list"] and f2["atEnd"] and f2["more"] == "+2 en attente" and s2[1] <= 150,
+              "bubble (queue, #110): 150 px offered — the list shrinks again (never under a line of it); the input is whole inside the surface", f"{json.dumps(f2, ensure_ascii=False)} {s2}"[:300])
+        f3, s3 = offered(120)
+        check(f3["inside"] and f3["list"] == 0 and f3["more"] == "+4 en attente" and f3["off"] is True and s3[1] <= 120,
+              "bubble (queue, #110): 120 px offered (the least the host offers) — no room for a line of the list: it goes, « +4 en attente » counts them all; the input is whole inside the surface", f"{json.dumps(f3, ensure_ascii=False)} {s3}"[:300])
+        f3b, s3b = offered(104)
+        check(f3b["inside"] and s3b[1] <= 104 and f3b["list"] == 0, "bubble (queue, #110): 104 px (the page's own floor) — the input is still whole inside the surface", f"{json.dumps(f3b, ensure_ascii=False)} {s3b}"[:300])
+        f4, s4 = offered(520)
+        check(f4 == f0 and s4 == s0, "bubble (queue, #110): the room back, the queue is back as validated (2 messages, « +2 en attente », same size)", f"{json.dumps(f4, ensure_ascii=False)} {s4} / {s0}"[:300])
         host({"type": "queue", "more": "+{n} queued", "items": [{"id": "q1", "text": "Premier", "after": "button.btn-primary"}, {"id": "q2", "text": "Deuxième", "after": "button.btn-primary"}, {"id": "q3", "text": "Troisième", "after": "button.btn-primary"}]})
         check(cdp.js("document.querySelector('.bq-more').innerText.trim()") == "+1 queued" and cdp.js("document.querySelectorAll('.bq').length") == 2, "bubble (queue, lot R): the count line is worded by the host (interface language): « +1 queued »")
         host({"type": "queue", "items": [{"id": "q1", "text": "Premier", "after": "button.btn-primary"}, {"id": "q2", "text": "Deuxième", "after": "button.btn-primary"}]})

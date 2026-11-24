@@ -1289,6 +1289,7 @@
   function publishSize(force) {
     if (!BUB() || S.fatal) return;
     if (ackPending && !force) return;   // nothing before the acknowledgement (it carries the final size)
+    bQueueRoom();   // the waiting messages take what the height offered leaves: the input is always whole, inside the surface
     const hgt = Math.max(1, Math.min(S.bsize ? Infinity : S.lay.maxH, Math.ceil(bubbleNatural())));
     const need = floats.size ? floatNeed(hgt) : { top: 0, right: 0, bottom: 0, left: 0 };
     const key = curW() + "x" + hgt + ":" + SIDES.map((k) => need[k]).join(",") + (S.bsize ? ":r" : "");
@@ -1567,10 +1568,12 @@
     if (!all.length) return null;
     const box = h("div", { class: "bqs" + (S.queueOpen ? " open" : "") });
     if (more) {
-      const label = (S.queueMore && S.queueMore.includes("{n}") ? S.queueMore : "+{n} en attente").replace("{n}", String(more));
+      const label = (n) => (S.queueMore && S.queueMore.includes("{n}") ? S.queueMore : "+{n} en attente").replace("{n}", String(n));
+      const tx = h("span", { text: label(more) });
+      box.__count = (hiddenList) => { const t = label(hiddenList ? all.length : more); if (tx.textContent !== t) tx.textContent = t; };   // bQueueRoom
       box.appendChild(h("button", { class: "bq-more", type: "button", "aria-expanded": String(!!S.queueOpen), "aria-controls": "bq-list",
         onclick: () => { S.queueOpen = !S.queueOpen; renderDock(true); const b = dock.querySelector(".bq-more"); if (b) b.focus(); } },
-        h("span", { text: label }), icon("chevron", "cv")));
+        tx, icon("chevron", "cv")));
     }
     const list = h("div", { class: "bq-list", id: "bq-list" });
     for (const q of (S.queueOpen ? all : all.slice(-2))) list.appendChild(bQueued(q));
@@ -1581,10 +1584,36 @@
   function bQueueFit(box) {
     for (const t of box.querySelectorAll(".bq-tx")) t.classList.toggle("cut", t.scrollHeight > t.clientHeight + 1);
     const list = box.querySelector(".bq-list");
-    if (!list || !box.classList.contains("open")) return;
-    const fade = () => list.classList.toggle("scrolled", list.scrollTop > 0);
-    list.addEventListener("scroll", fade, { passive: true });
-    list.scrollTop = list.scrollHeight; fade();
+    if (!list) return;
+    list.addEventListener("scroll", () => list.classList.toggle("scrolled", list.scrollTop > 0), { passive: true });
+    if (box.classList.contains("open")) { list.scrollTop = list.scrollHeight; list.classList.toggle("scrolled", list.scrollTop > 0); }
+    bQueueRoom();
+  }
+  // « The input always whole » when little height is offered (#110, and the clicks « through » the bubble #185 / #219 —
+  // lot 1b's replay, 24 Nov 2026: a bubble squeezed between its element and the window's edge got 269 px; two waiting
+  // messages and the input need 272, so the input and the buttons were drawn under the surface the host shows and makes
+  // clickable, and a click aimed at them reached the site's page). The thread gives its height first (it scrolls); then
+  // the list takes what is left, never more — cut at its top under the open list's fade, the most recent at its end, its
+  // own scroll. With no room for a line of it, the list goes and « +N en attente » counts them all; with no room for
+  // that line either, nothing of the queue is drawn. Run with each size published (the height offered changes).
+  const BQ_MIN = 28;
+  function bQueueRoom() {
+    const box = BUB() && !S.bview ? dock.querySelector(".bqs") : null, list = box && box.querySelector(".bq-list");
+    if (!list) return;
+    if (box.hidden || list.hidden) { box.hidden = false; list.hidden = false; }   // measured in the page
+    const want = box.classList.contains("open") ? Math.min(160, list.scrollHeight) : list.scrollHeight;
+    const thread = () => (body.hidden ? 0 : log.offsetHeight);
+    const room = S.bsize ? want : S.lay.maxH - (Math.ceil(bubbleNatural()) - list.offsetHeight - thread());
+    const cap = room >= want ? 0 : room >= BQ_MIN ? room : -1;   // 0: its own height; -1: no list
+    box.classList.toggle("tight", cap !== 0);
+    list.hidden = cap < 0;
+    if (box.__count) box.__count(cap < 0);
+    const more = box.querySelector(".bq-more"); if (more) more.disabled = cap < 0;
+    const css = cap > 0 ? cap + "px" : "";
+    if (list.style.maxHeight !== css) { list.style.maxHeight = css; if (cap > 0) list.scrollTop = list.scrollHeight; }
+    if (cap > 0) list.classList.toggle("scrolled", list.scrollTop > 0);
+    else if (!box.classList.contains("open")) list.classList.remove("scrolled");
+    if (cap < 0 && (!more || Math.ceil(bubbleNatural()) - thread() > S.lay.maxH)) box.hidden = true;
   }
 
   // The diff « en grand » (Paper 19ON-0 for a request, 19IO-0 for a finished turn): it takes the bubble, the thread waits.
