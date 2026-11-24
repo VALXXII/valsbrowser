@@ -25,6 +25,7 @@ Only when the computer is free (« Libre »): one real-window suite at a time.
 from __future__ import annotations
 import json
 import random
+import re
 import sys
 import time
 import traceback
@@ -369,6 +370,18 @@ class Monkey:
         m = F.log_mark(); t = F.click_at(*p, settle=0.0)
         self.inv.m.layout = 'comment'
         self.inv.after_element_click(sel, t, f'#{a["i"]} switch then click {sel}', mark=m, point=p)
+        # The page is still moving when this click lands (the panel is closing): the element under the point may be a CHILD of
+        # `sel`. Its bubble is then that child's, and so is what is sent from it. Monkey seed 3 on the 20:00 release (#117, then
+        # #125 #130 #304 #312): the message went to the price line inside div.plan-featured (its mark « En attente » on the
+        # capture), the model gave it to the card, and the card's own, new, conversation was 4 false « right conversation ».
+        # The host says what the click selected: when it is not `sel`, the bubble is one the model does not place.
+        hit = re.findall(r"the click's « selecting » \d+: (.+?) \(\d+x\d+\)", C.log_text()[m:])
+        if hit and self.inv.m.open == sel:
+            same = F.page('(function(){var e=document.querySelector(%s);try{return !!e&&e.matches(%s)}catch(x){return null}})()' % (json.dumps(sel), json.dumps(hit[-1])))
+            if same is False:
+                print(f'NOTE #{a["i"]} switch then click {sel}: the click selected {hit[-1]} (a child): a bubble the model does not place', flush=True)
+                self.inv.m.open = None; self.inv.m.anchor = None; self.inv.m.unknown = True
+                return f'Commentaire then click {sel} 50 ms later: {hit[-1]} selected', 0.3
         st = F.chat_state('bubble'); aw = (st['app'][2] - st['app'][0]) if st.get('app') else 0
         if self.inv.m.open and abs(aw - 320) > 2:
             self.R.step(f'#{a["i"]} invariant: the bubble has the bubble layout (M5: a 320 px surface)', False, {'surface width': aw, 'window': st.get('w')})
