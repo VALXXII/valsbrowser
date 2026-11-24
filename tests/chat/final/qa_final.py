@@ -428,7 +428,7 @@ def inject_embedded():
     r = page(EMBED_JS); time.sleep(0.5 if r else 0); return r
 
 
-def embedded_point(host):
+def embedded_point(host, strict=False):
     """Screen point of the block INSIDE the iframe / the shadow root of `host` (its anchor is the host); never under the
     open bubble (the click would reach the bubble, not the page): then the page is scrolled to free it."""
     inject_embedded()
@@ -439,10 +439,21 @@ def embedded_point(host):
             return None
         pg = page_area(); k = dpr(); p = (int(pg[0] + r[0] * k), int(pg[1] + r[1] * k))
         shown, rb = bubble_shown()
-        if not (shown and isinstance(rb, tuple) and rb[0] - 6 <= p[0] <= rb[2] + 6 and rb[1] - 6 <= p[1] <= rb[3] + 6):
+        under = shown and isinstance(rb, tuple) and rb[0] - 6 <= p[0] <= rb[2] + 6 and rb[1] - 6 <= p[1] <= rb[3] + 6
+        inside = pg[0] + 4 <= p[0] <= pg[2] - 20 and pg[1] + 4 <= p[1] <= pg[3] - 4
+        if inside and not under:
             return p
-        u32.SetCursorPos(pg[0] + 20, (pg[1] + pg[3]) // 2); wheel(2 if p[1] < (pg[1] + pg[3]) // 2 else -2, 0.05); time.sleep(0.6)
-    return p
+        u32.SetCursorPos(pg[0] + 20, (pg[1] + pg[3]) // 2)
+        if not inside:   # scrolled out of the page area (by the line below, a turn earlier): brought back, by one notch
+            wheel(1 if p[1] > pg[3] - 4 else -1, 0.05)
+        else:
+            wheel(2 if p[1] < (pg[1] + pg[3]) // 2 else -2, 0.05)
+        time.sleep(0.6)
+    # monkey seed 2 on the 20:00 release (#102, twice): freeing the block from under the bubble scrolled it OUT of the page area and
+    # the point was returned all the same — the click went under the browser's window, to the desktop (« foreground: Progman
+    # (another application), mouse button down ») or to the window behind it; no bubble could open. A point that is not in the
+    # page area, or still under the bubble, is not a point to click (`strict`: None; the journeys, whose bubble is closed, keep the point).
+    return None if strict else p
 
 
 def keyboard_to_page(avoid=None):

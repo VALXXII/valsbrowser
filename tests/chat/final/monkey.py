@@ -311,9 +311,9 @@ class Monkey:
             return 'embedded: panel layout', 0.1
         host = '#qa-frame' if a['r'][0] < 0.5 else '#qa-card'
         F.inject_embedded(); F.scroll_into_view(host, 'center'); F.front()
-        p = F.embedded_point(host)
+        p = F.embedded_point(host, strict=True)   # never a point out of the page area or under the bubble (seed 2 #102: the click went to the desktop)
         if not p:
-            return 'embedded: not found', 0.1
+            return 'embedded: not found, or not clickable (under the bubble / out of the page area)', 0.1
         m = F.log_mark(); t = F.click_at(*p, settle=0.04)
         self.inv.after_element_click(host, t, f'#{a["i"]} click inside {host}', mark=m)
         return f'click inside {host}', 0.8
