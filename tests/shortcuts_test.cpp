@@ -35,5 +35,18 @@ int main(){
     // Keyboard-opened menus sit under their control: the flower's opens rightward, the gear's leftward, in device pixels.
     {auto flower=PlaceMenu({8,6,40,38},1180,144);Assert(!flower.alignRight&&flower.control.left==12&&flower.control.top==9&&flower.control.right==60&&flower.control.bottom==57);
      auto gear=PlaceMenu({1150,48,1174,72},1180,96);Assert(gear.alignRight&&gear.control.right==1174&&gear.control.bottom==72);}
+    // Échap while a drawer has the keyboard (Mode Focus + Annotation, release run 2026-11-25: Échap in Historique also left the
+    // annotation mode): the drawer's own Échap first (the top-most layer), the mode only from the window. The real drawer,
+    // created hidden on a hidden owner (never shown); Key() uses EscapeLeavesAnnotation(AnnotationModeActive(), GetFocus()).
+    {   instance=GetModuleHandleW(nullptr);window=CreateWindowExW(0,L"STATIC",L"escape test",WS_POPUP,0,0,1180,815,nullptr,nullptr,instance,nullptr);Assert(window!=nullptr);
+        wchar_t cwd[MAX_PATH]{};GetCurrentDirectoryW(MAX_PATH,cwd);base=cwd;CreateHistoryPanel();HWND drawer=historyDrawer.Window();Assert(drawer!=nullptr);
+        HWND inner=CreateWindowExW(0,L"STATIC",L"",WS_CHILD,0,0,10,10,drawer,nullptr,instance,nullptr),page=CreateWindowExW(0,L"STATIC",L"",WS_CHILD,0,0,10,10,window,nullptr,instance,nullptr);
+        address=CreateWindowExW(0,L"EDIT",L"",WS_CHILD,0,0,10,10,window,nullptr,instance,nullptr);Assert(address!=nullptr);   // the field exists in the product
+        std::printf("escape: owned %d %d, leaves drawer %d inner %d window %d page %d field %d\n",(int)EscapeOwnedBySurface(drawer),(int)EscapeOwnedBySurface(inner),(int)EscapeLeavesAnnotation(true,drawer),(int)EscapeLeavesAnnotation(true,inner),(int)EscapeLeavesAnnotation(true,window),(int)EscapeLeavesAnnotation(true,page),(int)EscapeLeavesAnnotation(true,address));
+        Assert(EscapeOwnedBySurface(drawer)&&EscapeOwnedBySurface(inner));                       // the drawer, or a field in it: its Échap
+        Assert(!EscapeLeavesAnnotation(true,drawer)&&!EscapeLeavesAnnotation(true,inner));       // the mode stays while the drawer closes
+        Assert(EscapeLeavesAnnotation(true,window)&&EscapeLeavesAnnotation(true,page)&&!EscapeLeavesAnnotation(true,address));   // from the window (a page, the chat panel): the mode leaves, as before; the address field keeps it
+        Assert(!EscapeLeavesAnnotation(false,window)&&!EscapeOwnedBySurface(window)&&!EscapeOwnedBySurface(nullptr));
+        DestroyWindow(inner);DestroyWindow(page);}
     Modifiers();pages.clear();std::puts("Keyboard shortcut checks passed");
 }

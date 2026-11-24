@@ -1206,6 +1206,8 @@ void Close(){CloseAt(current);}
 void Command(int cmd){if(cmd==MotionLabCommand){if(motionLabMode)motionLab.Toggle();return;}if(halted||!chrome.Enabled(cmd))return;
     if(tabDrag.tab){CancelTabDrag();if(GetCapture()==window)ReleaseCapture();UpdateInteraction(hover,0);}auto t=Active();if(cmd>=SelectTabBase&&cmd<SelectTabBase+9){Select(cmd==SelectTabBase+8?(int)pages.size()-1:cmd-SelectTabBase);return;}switch(cmd){case FocusChrome:ToggleChromeFocus();break;case FocusChromeBack:ToggleChromeFocus(true);break;case FindPage:OpenFindBar();break;case '{':MoveTab(current,current-1);break;case '}':MoveTab(current,current+1);break;case 'L':FocusAddress();break;case ']':if(!pages.empty())Select((current+1)%(int)pages.size());break;case '[':if(!pages.empty())Select((current+(int)pages.size()-1)%(int)pages.size());break;case 'T':NewTab(NewTabTarget(),UserTabIndex());FocusAddress();break;case 'W':Close();break;case 'U':ReopenTab();break;case 'R':if(t&&t->view.p&&t->loading.IsLoading()){Check(t->view->Stop(),L"Stop");break;}if(t&&t->view.p&&CheckTab(t->view->Reload(),L"Reload")){t->refreshing=true;auto now=NativeChrome::Motion::Now();chrome.lottie.RefreshBegin(now);SyncStopMorph(now);InvalidateChrome();ScheduleMotion(now);}break;case 'H':Navigate(t,L"");break;case 'B':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoBack(&yes);if(yes&&Check(t->view->GoBack(),L"GoBack")){auto now=NativeChrome::Motion::Now();chrome.nav.back.Kick(-1,now,motion.ReducedMotion(),TravelParams(true));InvalidateChrome();ScheduleMotion(now);}}break;case 'F':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoForward(&yes);if(yes&&Check(t->view->GoForward(),L"GoForward")){auto now=NativeChrome::Motion::Now();chrome.nav.forward.Kick(1,now,motion.ReducedMotion(),TravelParams(false));InvalidateChrome();ScheduleMotion(now);}}break;default:ExtraCommand(cmd);break;}}
 bool BookmarkPopoverFocus();bool SmokeBookmarks();bool FolderRenameFocus();
+bool EscapeOwnedBySurface(HWND focus); // below, after the surfaces: a drawer or a toolbar popover with the keyboard closes on its own Échap
+bool EscapeLeavesAnnotation(bool modeActive,HWND focus); // below: Key()'s decision for Échap in the annotation mode (tests/shortcuts_test.cpp)
 int Key(UINT key){
     const bool ctrl=GetKeyState(VK_CONTROL)<0,alt=GetKeyState(VK_MENU)<0,shift=GetKeyState(VK_SHIFT)<0;
     // The bookmark popover's fields keep every key (Ctrl+D, Ctrl+Z… belong to the text there).
@@ -1246,7 +1248,9 @@ int Key(UINT key){
     if(!ctrl&&!alt&&shift&&key==VK_F6)return FocusChromeBack;
     if(!ctrl&&!alt&&key==VK_F5)return 'R';
     if(!ctrl&&!alt&&!shift&&key==VK_F11)return FullscreenCommand;
-    if(!ctrl&&!alt&&!shift&&key==VK_ESCAPE&&AnnotationModeActive()&&GetFocus()!=address)return AnnotateExitCommand; // Échap quitte le mode Annotation
+    // Échap quitte le mode Annotation, sauf quand une surface du dessus a le clavier (un tiroir, une fenêtre de la barre) :
+    // la couche du dessus d'abord, elle se ferme avec son propre Échap ; le suivant, depuis la fenêtre, quitte le mode.
+    if(!ctrl&&!alt&&!shift&&key==VK_ESCAPE&&EscapeLeavesAnnotation(AnnotationModeActive(),GetFocus()))return AnnotateExitCommand;
     if(!ctrl&&!alt&&!shift&&key==VK_ESCAPE&&PageFullscreenActive())return ExitFullscreenCommand; // C6: Échap quitte le plein écran de la page
     if(!ctrl&&!alt&&key==VK_F3)return shift?FindPreviousCommand:FindNextCommand;
     if(alt&&!ctrl&&!shift){if(key=='D')return 'L';if(key==VK_LEFT)return 'B';if(key==VK_RIGHT)return 'F';}
@@ -5379,6 +5383,16 @@ void FocusPlace(){
     chrome.PlacePanel(focusPlaced<0?0.f:focusPlaced);InvalidateFocusPanel();FocusCornersSync();FocusSlideMove();
     if(!focusPolling)FocusEvaluate();
 }
+// The surfaces over the window that close on their own Échap (the top-most layer first): the docked drawers (Réglages,
+// Historique, Favoris, Téléchargements) and the toolbar popovers (Téléchargements, Son). While one of them has the
+// keyboard, the message loop's Key() leaves Échap to it (before: the annotation mode left first, src/main.cpp Key).
+bool EscapeOwnedBySurface(HWND focus){
+    if(!focus)return false;const HWND root=GetAncestor(focus,GA_ROOT);
+    for(HWND s:{settingsDrawer.Window(),historyDrawer.Window(),bookmarksDrawer.Window(),downloadDrawer.Window(),downloadPanel.Window(),audioPanel.Window()})
+        if(s&&(focus==s||root==s))return true;
+    return false;
+}
+bool EscapeLeavesAnnotation(bool modeActive,HWND focus){return modeActive&&focus!=address&&!EscapeOwnedBySurface(focus);}
 void ToggleFocusMode(){
     settings.focusMode=!settings.focusMode;SettingChanged(BrowserSettings::Change::FocusMode);
     if(settingsDrawer.Visible())settingsDrawer.Changed();   // the switch follows the shortcut

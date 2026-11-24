@@ -110,10 +110,20 @@ def scene():
             best['banner'] = width; found['banner'] = r
         elif cls == 'BrowserChatPanelHost':
             found['chat'] = r
-        elif cls.startswith('Chrome_WidgetWin') and user32.GetParent(w) == h and width > best['page']:
-            best['page'] = width; found['page'] = r
+        elif cls.startswith('Chrome_WidgetWin') and user32.GetParent(w) == h:
+            views.append(r)
         return True
+    views = []
     user32.EnumChildWindows(h, cb, 0)
+    # The page: the widest WebView child of the window. The chat: with the default windowed hosting (visual hosting is
+    # off since 19 Nov, src/chat-bubble.h VisualHosting) the panel is the WebView child that sits right of the page.
+    for r in views:
+        if r[2] - r[0] > best['page']:
+            best['page'] = r[2] - r[0]; found['page'] = r
+    if found['chat'] is None and found['page']:
+        side = [r for r in views if r is not found['page'] and r[0] >= found['page'][2] - 2]
+        if side:
+            found['chat'] = max(side, key=lambda r: (r[2] - r[0]) * (r[3] - r[1]))
     for hw, cls, _, _ in Q.windows():   # an owned popup layer, if the banner is one
         if cls == 'BrowserAnnotationLayer':
             r = rect_of(hw)
