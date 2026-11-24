@@ -143,6 +143,23 @@ struct State { Mode mode; float width; };
 // The column under a pointer whose edge would be at `edge` (DIP from the window's left): compact under 160, else the
 // width held between 220 and 360. Stateless: going back past 160 opens it at 220 again.
 inline State At(float edge) { return edge < snap ? State{Mode::Compact, Clamp(edge)} : State{Mode::Complete, Clamp(edge)}; }
+// Motion spec §5 (Designer): the width follows the pointer 1:1 between 220 and 360 and resists past either bound
+// (rubber band: the further past, the less it follows); the compact decision is taken at the release on the PROJECTED
+// width, position + momentum (Apple's projection, deceleration .99: (v / 1000) × .99 / .01): under 160 the column folds
+// with the gesture's speed (damping .85, .3 s), so a quick flick left folds it even released at 230; otherwise it stays
+// where it was released, a rubber-banded width springing back to its bound (damping 1, .3 s).
+inline constexpr float rubberDimension = 120, rubberConstant = .55f, deceleration = .99f, settleResponse = .30f, throwDamping = .85f;
+inline float Rubber(float over) { return over * rubberDimension * rubberConstant / (rubberDimension + rubberConstant * std::fabs(over)); }
+inline float Shown(float raw) { return raw > maximum ? maximum + Rubber(raw - maximum) : raw < minimum ? minimum - Rubber(minimum - raw) : raw; }
+inline float Project(float velocity) { return velocity / 1000 * deceleration / (1 - deceleration); }
+// While dragging: a column that started compact stays compact until the pointer passes 160; then (and for a complete
+// one) the complete column at the rubber-banded width.
+inline State Dragging(float raw, bool startedCompact) { return startedCompact && raw < snap ? State{Mode::Compact, minimum} : State{Mode::Complete, Shown(raw)}; }
+struct Release { Mode mode; float width; bool springBack; };
+inline Release Released(float raw, float velocity) {
+    if (raw + Project(velocity) < snap) return {Mode::Compact, Clamp(raw), false};
+    return {Mode::Complete, Clamp(raw), raw < minimum || raw > maximum};
+}
 // The handle: `handle` DIP inside the column's right edge, along the page.
 inline Box Handle(float column, const Box& page) { return {column - handle, page.top, column, page.bottom}; }
 }

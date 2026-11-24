@@ -168,6 +168,15 @@ int main() {
         Check(R::At(100).mode == S::Mode::Compact && R::At(159.9f).mode == S::Mode::Compact, "under 160: compact");
         Check(R::At(160).mode == S::Mode::Complete && Near(R::At(160).width, 220) && Near(R::At(200).width, 220), "back past 160: opens at 220 (minimum)");
         Check(Near(R::At(250).width, 250) && Near(R::At(359).width, 359) && Near(R::At(600).width, 360), "220 .. 360, a hard stop at 360");
+        // Motion spec §5: 1:1 inside the bounds, a rubber band past them (progressive: it follows less and less).
+        Check(Near(R::Shown(300), 300) && R::Shown(380) > 360 && R::Shown(380) < 380 && (R::Shown(440) - R::Shown(400)) < (R::Shown(400) - R::Shown(360)) && R::Shown(200) < 220 && R::Shown(200) > 200 && R::Shown(100) > R::Shown(50), "rubber band past 360 and under 220");
+        Check(R::Shown(500) - 360 < 140 * .55f && R::Shown(5000) < 360 + 120, "the resistance grows with the distance (bounded by 120)");
+        // The release: the projected width decides (position + momentum, deceleration .99).
+        Check(Near(R::Project(1000), 99, .5f) && Near(R::Project(-500), -49.5f, .5f), "projection = (v / 1000) x .99 / .01");
+        Check(R::Released(230, -1000).mode == S::Mode::Compact, "a quick flick left folds it even released at 230");
+        Check(R::Released(230, 0).mode == S::Mode::Complete && Near(R::Released(230, 0).width, 230) && !R::Released(230, 0).springBack, "released at 230 without momentum: it stays");
+        Check(R::Released(150, 0).mode == S::Mode::Compact && R::Released(400, 0).springBack && Near(R::Released(400, 0).width, 360) && R::Released(200, 0).springBack && Near(R::Released(200, 0).width, 220), "under 160: compact; past a bound: springs back to it");
+        Check(R::Dragging(100, true).mode == S::Mode::Compact && R::Dragging(170, true).mode == S::Mode::Complete && R::Dragging(100, false).mode == S::Mode::Complete, "dragging: a compact one opens past 160; a complete one stays until the release");
         S::Input in; in.grid = true; in.bookmarks = 40; in.tabs = 5;
         const float widths[] = {220, 248, 296, 300, 360}; const int cols[] = {4, 5, 6, 6, 7};
         for (int i = 0; i < 5; ++i) { in.panel = widths[i]; const auto L = S::Compute(in);

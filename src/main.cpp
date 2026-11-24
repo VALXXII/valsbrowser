@@ -714,12 +714,13 @@ std::vector<PageCorner> PageCorners(){
     for(auto& b:boxes){for(int top=0;top<2;++top){if(std::fabs((top?b.top:b.bottom)-(top?c.top:c.bottom))>.5f)continue;if(!leftCovered&&std::fabs(b.left-c.left)<.5f)out.push_back({b,false,top!=0});if(std::fabs(b.right-c.right)<.5f)out.push_back({b,true,top!=0});}}
     return out;
 }
-std::vector<HWND> cornerMasks;struct CornerLook{int x=0,y=0,size=0;bool right=false,top=false;UINT dpi=0;unsigned edge=0;std::vector<std::uint32_t> pixels;};std::vector<CornerLook> cornerLooks;
+std::vector<HWND> cornerMasks;struct CornerLook{int x=0,y=0,size=0;bool right=false,top=false;UINT dpi=0;unsigned edge=0;int edgeAlpha=255;std::vector<std::uint32_t> pixels;};std::vector<CornerLook> cornerLooks;
 LRESULT CALLBACK CornerProc(HWND h,UINT msg,WPARAM w,LPARAM l){if(msg==WM_NCHITTEST)return HTCLIENT;if(msg==WM_ERASEBKGND)return 1;if(msg==WM_PAINT){PAINTSTRUCT ps;BeginPaint(h,&ps);EndPaint(h,&ps);return 0;}return DefWindowProcW(h,msg,w,l);}
 // `edge` (#127 « Redimensionner »): 0, or 0x1RRGGBB: the column edge's line, whose arc (radius pageRadius + 1, 2 DIP wide,
 // faded over 12 DIP from its end) crosses this left corner's square (Chrome::PaintSideEdge draws the rest).
-void RenderCorner(size_t i,bool right,int size,UINT dpi,bool top=false,unsigned edge=0){
-    auto& L=cornerLooks[i];if(L.size==size&&L.right==right&&L.top==top&&L.dpi==dpi&&L.edge==edge)return;HWND g=cornerMasks[i];
+void RenderCorner(size_t i,bool right,int size,UINT dpi,bool top=false,unsigned edge=0,float edgeAlpha=1){
+    const int alpha255=(int)std::lround(std::clamp(edgeAlpha,0.f,1.f)*255);
+    auto& L=cornerLooks[i];if(L.size==size&&L.right==right&&L.top==top&&L.dpi==dpi&&L.edge==edge&&L.edgeAlpha==alpha255)return;HWND g=cornerMasks[i];
     BITMAPINFO bi{};bi.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);bi.bmiHeader.biWidth=size;bi.bmiHeader.biHeight=-size;bi.bmiHeader.biPlanes=1;bi.bmiHeader.biBitCount=32;bi.bmiHeader.biCompression=BI_RGB;
     HDC screen=GetDC(nullptr);HDC mem=CreateCompatibleDC(screen);void* bits=nullptr;HBITMAP bmp=CreateDIBSection(mem,&bi,DIB_RGB_COLORS,&bits,nullptr,0);if(!bmp||!bits){if(bmp)DeleteObject(bmp);DeleteDC(mem);ReleaseDC(nullptr,screen);return;}
     HGDIOBJ old=SelectObject(mem,bmp);auto* px=(std::uint32_t*)bits;const float r=PageRadiusDip()*dpi/96.f;
@@ -730,11 +731,11 @@ void RenderCorner(size_t i,bool right,int size,UINT dpi,bool top=false,unsigned 
         if(beyond&&(top?py0<cy:py0>cy)){const float d=std::hypot(px0-cx,py0-cy);a=std::clamp(d-r+.5f,0.f,1.f);  // outside the arc: canvas
             if(edge&&!right){const float k=dpi/96.f,ring=r+NativeChrome::Sidebar::Resize::line/2*k,half=NativeChrome::Sidebar::Resize::line/2*k;
                 const float cover=std::clamp(half+.5f-std::fabs(d-ring),0.f,1.f),fromEnd=(top?py0:(float)size-py0)/k+1;
-                la=cover*std::clamp(fromEnd/NativeChrome::Sidebar::Resize::fade,0.f,1.f);lr=((edge>>16)&255)*la;lg=((edge>>8)&255)*la;lb=(edge&255)*la;}}
+                la=cover*std::clamp(fromEnd/NativeChrome::Sidebar::Resize::fade,0.f,1.f)*alpha255/255.f;lr=((edge>>16)&255)*la;lg=((edge>>8)&255)*la;lb=(edge&255)*la;}}
         const float A0=la+a*(1-la);const auto A=(std::uint32_t)std::lround(A0*255);
         const auto R=(std::uint32_t)std::lround(lr+canvas*a*(1-la)),G=(std::uint32_t)std::lround(lg+canvas*a*(1-la)),B=(std::uint32_t)std::lround(lb+canvas*a*(1-la));px[y*size+x]=(A<<24)|(R<<16)|(G<<8)|B;}
     POINT src{0,0};SIZE sz{size,size};BLENDFUNCTION blend{AC_SRC_OVER,0,255,AC_SRC_ALPHA};
-    if(UpdateLayeredWindow(g,screen,nullptr,&sz,mem,&src,0,&blend,ULW_ALPHA)){L.size=size;L.right=right;L.top=top;L.dpi=dpi;L.edge=edge;if(splitTest)L.pixels.assign(px,px+(size_t)size*size);}
+    if(UpdateLayeredWindow(g,screen,nullptr,&sz,mem,&src,0,&blend,ULW_ALPHA)){L.size=size;L.right=right;L.top=top;L.dpi=dpi;L.edge=edge;L.edgeAlpha=alpha255;if(splitTest)L.pixels.assign(px,px+(size_t)size*size);}
     SelectObject(mem,old);DeleteObject(bmp);DeleteDC(mem);ReleaseDC(nullptr,screen);
 }
 void BlendLayered(HDC dc,POINT client,HWND h,const std::vector<std::uint32_t>& pixels,int w,int hgt);
@@ -749,8 +750,9 @@ void SyncCornerMasks(){
     for(size_t i=0;i<cornerMasks.size();++i){
         if(i>=corners.size()){if(GetWindowLongW(cornerMasks[i],GWL_STYLE)&WS_VISIBLE)ShowWindow(cornerMasks[i],SW_HIDE);continue;}
         const auto& c=corners[i];const int x=c.right?S(c.page.right)-size:S(c.page.left),y=c.top?S(c.page.top):S(c.page.bottom)-size;
-        const unsigned edge=!c.right&&chrome.sidebar&&std::fabs(c.page.left-chrome.side.page.left)<.5f?chrome.EdgeLineColor(keyboardFocus==NativeChrome::Chrome::SidebarEdgeId&&keyboardModality):0;
-        SetWindowPos(cornerMasks[i],HWND_TOP,x,y,size,size,SWP_NOACTIVATE|SWP_SHOWWINDOW);RenderCorner(i,c.right,size,dpi,c.top,edge);
+        const bool keyed=keyboardFocus==NativeChrome::Chrome::SidebarEdgeId&&keyboardModality;
+        const unsigned edge=!c.right&&chrome.sidebar&&std::fabs(c.page.left-chrome.side.page.left)<.5f?chrome.EdgeLineColor(keyed):0;
+        SetWindowPos(cornerMasks[i],HWND_TOP,x,y,size,size,SWP_NOACTIVATE|SWP_SHOWWINDOW);RenderCorner(i,c.right,size,dpi,c.top,edge,keyed?1.f:chrome.EdgeAlpha(NativeChrome::Motion::Now()));
     }
 }
 // ---- Resize readiness probe ----------------------------------------------------------
@@ -4748,6 +4750,9 @@ LRESULT CALLBACK AddressProc(HWND h,UINT msg,WPARAM w,LPARAM l,UINT_PTR,DWORD_PT
 HWND PageHostWindow(Tab& t);
 namespace SBar=NativeChrome::Sidebar;
 SBar::Fold sidebarFold;SBar::Hover sidebarHover;bool sidebarReady=false;int sidebarShownTab=-1;
+// The panel's presented width (motion spec §5): a spring towards the profile's width; a rubber-banded release springs
+// back to its bound (.3 s), a double-click goes to 248 (.35 s); at rest it sits on the saved width.
+NativeChrome::Motion::Spring sideWidthSpring{.05f};bool sideWidthKnown=false;
 constexpr UINT_PTR SidebarFoldTimerId=0x5161,SidebarHoverTimerId=0x5162;
 double SidebarNowMs(){return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();}
 // --tab-layout=top|side|compact (Fix's tests; --side-panel = side): this run's layout, never saved. Réglages and the
@@ -4804,7 +4809,12 @@ void SidebarPrepare(){
     if(window){bookmarkToast.pageLeftPx=chrome.sidebar?S(chrome.SidebarZoneLeft()):0;bookmarkToast.pageBottomPx=chrome.sidebar?S(SBar::Zone::inset):0;}
     if(!chrome.sidebar){chrome.sidebarResizable=false;chrome.sidebarEdge=0;LogLayout();return;}const double now=SidebarNowMs();const auto mode=SidebarEffective();
     // The complete width: the profile's « side-width », or the edge being dragged.
-    if(!SidebarEdgeDragging())chrome.sidebarWidth=SBar::Resize::Clamp((float)settings.sideWidth);sidebarFold.panel=chrome.sidebarWidth;
+    if(!SidebarEdgeDragging()){const auto mnow=NativeChrome::Motion::Now();const float saved=SBar::Resize::Clamp((float)settings.sideWidth);
+        if(!sideWidthKnown){sideWidthSpring.Snap(saved);sideWidthKnown=true;}
+        else if(!sideWidthSpring.Moving(mnow)&&!sidebarFold.Moving(now)&&sideWidthSpring.Target()!=saved)sideWidthSpring.Snap(saved);
+        else if(sideWidthSpring.Moving(mnow)&&sideWidthSpring.Target()!=saved)sideWidthSpring.Set(saved,mnow,SBar::Resize::settleResponse,motion.ReducedMotion());
+        chrome.sidebarWidth=sideWidthSpring.Value(mnow);}
+    sidebarFold.panel=chrome.sidebarWidth;
     if(!sidebarReady){sidebarFold.Set(mode,now,false);sidebarReady=true;}
     else if(mode!=sidebarFold.target){sidebarFold.Set(mode,now,!SidebarEdgeDragging()&&!motion.ReducedMotion()&&window&&IsWindowVisible(window)&&!IsIconic(window));if(window&&sidebarFold.Moving(now))SetTimer(window,SidebarFoldTimerId,15,nullptr);}
     sidebarFold.Update(now);sidebarFold.Settle(now);const bool moving=sidebarFold.Moving(now);   /* motion spec §2: the titles' fade-in starts past 70 % */
@@ -4838,28 +4848,47 @@ void ToggleSidebar(){
 // the profile (« side-width ») and « Panneau latéral »; a compact one « Panneau compact » (the width is kept for the next
 // time it opens). Double-click (or Entrée on the focused edge): 248, from compact too. Échap / a lost capture: undone.
 // A run forced with --tab-layout keeps the layout change in the run (the width is saved either way).
-struct EdgeDrag{bool active=false;float offset=0;SBar::Resize::State state{SBar::Mode::Complete,SBar::Complete::width};} edgeDrag;DWORD edgeClickAt=0;
+struct EdgeDrag{bool active=false;float offset=0;SBar::Resize::State state{SBar::Mode::Complete,SBar::Complete::width};bool startedCompact=false;float raw=0;
+    struct Sample{float x;double ms;};std::vector<Sample> trail;   // the pointer's last positions (velocity at the release)
+    float Velocity()const{if(trail.size()<2)return 0;const auto& a=trail.front();const auto& b=trail.back();const double dt=(b.ms-a.ms)/1000;return dt>.001?(float)((b.x-a.x)/dt):0.f;}
+} edgeDrag;DWORD edgeClickAt=0;
+void SidebarWidthTo(float w,float response){const auto mnow=NativeChrome::Motion::Now();if(!sideWidthKnown||!window){sideWidthSpring.Snap(w);sideWidthKnown=true;return;}sideWidthSpring.Set(w,mnow,response,motion.ReducedMotion());if(window)SetTimer(window,0x5161 /* SidebarFoldTimerId */,15,nullptr);}
 bool SidebarEdgeDragging(){return edgeDrag.active;}
-void SidebarEdgeLook(int state){if(edgeDrag.active)state=2;if(!chrome.sidebarResizable&&!edgeDrag.active)state=0;if(chrome.sidebarEdge==state)return;chrome.sidebarEdge=state;if(window){SyncCornerMasks();InvalidateChrome();}}
+constexpr UINT_PTR SidebarEdgeFadeTimerId=0x5163;
+void SidebarEdgeLook(int state){if(edgeDrag.active)state=2;if(!chrome.sidebarResizable&&!edgeDrag.active)state=0;if(chrome.sidebarEdge==state)return;
+    if(state==1&&chrome.sidebarEdge==0){chrome.edgeHoverAt=NativeChrome::Motion::Now();if(window)SetTimer(window,SidebarEdgeFadeTimerId,15,nullptr);}   // §5: the line fades in (120 ms) after 150 ms
+    chrome.sidebarEdge=state;if(window){SyncCornerMasks();InvalidateChrome();}}
 // The layout the edge leaves: « Panneau latéral » or « Panneau compact » (saved, or for this run when forced).
 void SidebarEdgeMode(SBar::Mode m){using BrowserSettings::TabsPosition;const auto p=m==SBar::Mode::Compact?TabsPosition::Compact:TabsPosition::Side;
     if(forcedLayout>=0){forcedLayout=static_cast<int>(p);if(window)Layout();return;}
     if(settings.tabsPosition!=p)SetTabsPosition(p);else if(window)Layout();}
 void SidebarEdgeAnnounce(){const std::wstring text=SidebarEffective()==SBar::Mode::Compact?std::wstring(TR(sidebar_resize_compact)):TRF(sidebar_resize_announce,std::to_wstring((int)std::lround(chrome.sidebarWidth)));
     accessibility.Notify(NativeChrome::Chrome::SidebarEdgeId,text.c_str(),L"PanelWidth" /* i18n-exempt: UIA activity id */);}
-void SidebarEdgeReset(){settings.sideWidth=BrowserSettings::SideWidthDefault;SaveSettings();chrome.sidebarWidth=SBar::Complete::width;SidebarEdgeMode(SBar::Mode::Complete);if(window)Layout();SidebarEdgeAnnounce();Log(L"SIDEBAR width reset to 248");}
+void SidebarEdgeReset(){settings.sideWidth=BrowserSettings::SideWidthDefault;SaveSettings();SidebarWidthTo(SBar::Complete::width,(float)SBar::Timing::foldResponse);   // §5: the same spring as the fold
+    if(!window)chrome.sidebarWidth=SBar::Complete::width;SidebarEdgeMode(SBar::Mode::Complete);if(window)Layout();SidebarEdgeAnnounce();Log(L"SIDEBAR width reset to 248");}
 bool SidebarEdgeDown(float x){if(!chrome.sidebar||!chrome.sidebarResizable)return false;ChromeTipHide();
     const DWORD now=GetMessageTime();if(edgeClickAt&&now-edgeClickAt<=GetDoubleClickTime()){edgeClickAt=0;SidebarEdgeReset();return true;}
     edgeClickAt=now;edgeDrag.active=true;edgeDrag.offset=chrome.side.column-x;edgeDrag.state={SidebarEffective(),chrome.sidebarWidth};keyboardFocus=0;keyboardModality=false;
+    edgeDrag.startedCompact=edgeDrag.state.mode==SBar::Mode::Compact;edgeDrag.raw=chrome.side.column;edgeDrag.trail.clear();edgeDrag.trail.push_back({edgeDrag.raw,SidebarNowMs()});
     if(window){SetFocus(window);if(!splitTest)SetCapture(window);}SidebarEdgeLook(2);return true;}
-void SidebarEdgeMove(float x){if(!edgeDrag.active)return;const auto s=SBar::Resize::At(x+edgeDrag.offset);
+void SidebarEdgeMove(float x){if(!edgeDrag.active)return;edgeDrag.raw=x+edgeDrag.offset;const double t=SidebarNowMs();
+    edgeDrag.trail.push_back({edgeDrag.raw,t});while(edgeDrag.trail.size()>2&&t-edgeDrag.trail.front().ms>80)edgeDrag.trail.erase(edgeDrag.trail.begin());   // the last 80 ms
+    const auto s=SBar::Resize::Dragging(edgeDrag.raw,edgeDrag.startedCompact);
     if(s.mode==edgeDrag.state.mode&&std::fabs(s.width-edgeDrag.state.width)<.01f)return;edgeDrag.state=s;
-    chrome.sidebarMode=s.mode;if(s.mode==SBar::Mode::Complete)chrome.sidebarWidth=std::round(s.width);
+    chrome.sidebarMode=s.mode;if(s.mode==SBar::Mode::Complete){chrome.sidebarWidth=s.width;sideWidthSpring.Snap(s.width);sideWidthKnown=true;}
     if(window)Layout();}
-void SidebarEdgeUp(bool commit){if(!edgeDrag.active)return;const auto s=edgeDrag.state;edgeDrag.active=false;if(window&&GetCapture()==window)ReleaseCapture();
-    if(commit){if(s.mode==SBar::Mode::Complete){settings.sideWidth=BrowserSettings::SideWidth((int)std::lround(s.width));SaveSettings();}SidebarEdgeMode(s.mode);
-        Log(s.mode==SBar::Mode::Compact?std::wstring(L"SIDEBAR edge released under 160: compact"):L"SIDEBAR width "+std::to_wstring(settings.sideWidth));}
-    else if(window)Layout();
+void SidebarEdgeUp(bool commit){if(!edgeDrag.active)return;const auto s=edgeDrag.state;const float v=edgeDrag.Velocity(),raw=edgeDrag.raw;edgeDrag.active=false;if(window&&GetCapture()==window)ReleaseCapture();
+    if(commit){
+        const auto r=edgeDrag.startedCompact&&s.mode==SBar::Mode::Compact?SBar::Resize::Release{SBar::Mode::Compact,SBar::Resize::Clamp(raw),false}:SBar::Resize::Released(raw,v);
+        if(r.mode==SBar::Mode::Complete){settings.sideWidth=BrowserSettings::SideWidth((int)std::lround(r.width));SaveSettings();
+            if(r.springBack)SidebarWidthTo((float)settings.sideWidth,SBar::Resize::settleResponse);}   // §5: back to the bound
+        else if(s.mode==SBar::Mode::Complete){   // §5: folded with the gesture's speed (.85 / .3 s) from the width it shows
+            const double t=SidebarNowMs();const float w=chrome.sidebarWidth;sidebarFold.panel=w;sideWidthSpring.Snap(w);
+            sidebarFold.Set(SBar::Mode::Compact,t,!motion.ReducedMotion()&&window&&IsWindowVisible(window),std::min(0.f,v)/std::max(1.f,w-SBar::Compact::width),SBar::Resize::throwDamping);
+            if(window)SetTimer(window,0x5161 /* SidebarFoldTimerId */,15,nullptr);}
+        SidebarEdgeMode(r.mode);
+        Log(r.mode==SBar::Mode::Compact?std::wstring(L"SIDEBAR edge released (projected under 160): compact"):L"SIDEBAR width "+std::to_wstring(settings.sideWidth));}
+    else{if(window)Layout();}
     chrome.sidebarEdge=0;POINT p{};if(window&&GetCursorPos(&p)){ScreenToClient(window,&p);const float d=GetDpiForWindow(window)/96.f;SidebarEdgeLook(chrome.Hit(p.x/d,p.y/d)==NativeChrome::Chrome::SidebarEdgeId?1:0);}
     if(window){SyncCornerMasks();InvalidateChrome();}if(commit)SidebarEdgeAnnounce();}
 // Keyboard on the focused edge (a separator, like the split view's): ← → 16 DIP (Maj 64), Début 220, Fin 360, Entrée / Espace
@@ -5091,7 +5120,8 @@ case WM_TIMER:
     if(w==UpdateTimerId){UpdateTimerFired();return 0;}
 #endif
     if(w==SleepTimerId){SleepTabs();return 0;}
-    if(w==SidebarFoldTimerId){Layout();if(!sidebarFold.Moving(SidebarNowMs())&&!chrome.MorphMoving(NativeChrome::Motion::Now())){KillTimer(h,SidebarFoldTimerId);Layout();}return 0;}
+    if(w==SidebarFoldTimerId){Layout();if(!sidebarFold.Moving(SidebarNowMs())&&!chrome.MorphMoving(NativeChrome::Motion::Now())&&!sideWidthSpring.Moving(NativeChrome::Motion::Now())){KillTimer(h,SidebarFoldTimerId);Layout();}return 0;}
+    if(w==SidebarEdgeFadeTimerId){SyncCornerMasks();InvalidateChrome();if(chrome.sidebarEdge!=1||chrome.EdgeAlpha(NativeChrome::Motion::Now())>=1)KillTimer(h,SidebarEdgeFadeTimerId);return 0;}
     if(w==SidebarHoverTimerId){SidebarHoverDue();return 0;}
     if(w==AudioTimerId){KillTimer(h,AudioTimerId);RefreshAudio();return 0;}
     if(w==AudioSaveTimerId){AudioSaveDue();return 0;}

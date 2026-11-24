@@ -50,8 +50,8 @@ int main(){
      // layout, double-click 248, the keyboard on the focused edge.
      {SidebarPrepare();Assert(chrome.sidebarResizable&&chrome.sidebarWidth==248);chrome.side=SBar::Compute(chrome.SideInput(SBar::Mode::Complete,1));
       edgeClickAt=0;Assert(SidebarEdgeDown(246)&&SidebarEdgeDragging());SidebarEdgeMove(298);Assert(chrome.sidebarWidth==300&&SidebarEffective()==SBar::Mode::Complete);
-      SidebarEdgeMove(498);Assert(chrome.sidebarWidth==360);SidebarEdgeMove(178);Assert(chrome.sidebarWidth==220&&SidebarEffective()==SBar::Mode::Complete);
-      SidebarEdgeMove(150);Assert(SidebarEffective()==SBar::Mode::Compact);SidebarEdgeMove(170);Assert(SidebarEffective()==SBar::Mode::Complete&&chrome.sidebarWidth==220);
+      SidebarEdgeMove(498);Assert(chrome.sidebarWidth>360&&chrome.sidebarWidth<420);SidebarEdgeMove(178);Assert(chrome.sidebarWidth<220&&chrome.sidebarWidth>190&&SidebarEffective()==SBar::Mode::Complete);   // §5: rubber band past 360 / under 220
+      SidebarEdgeMove(120);Assert(SidebarEffective()==SBar::Mode::Complete&&chrome.sidebarWidth>170);SidebarEdgeMove(170);Assert(SidebarEffective()==SBar::Mode::Complete);   // §5: no compact during the drag
       SidebarEdgeMove(288);SidebarEdgeUp(true);Assert(!SidebarEdgeDragging()&&settings.sideWidth==290&&settings.tabsPosition==P::Side);SidebarPrepare();Assert(chrome.sidebarWidth==290&&LayoutLine()==L"layout: side 290");
       chrome.side=SBar::Compute(chrome.SideInput(SBar::Mode::Complete,1));Assert(chrome.side.column==290);
       edgeClickAt=0;SidebarEdgeDown(288);SidebarEdgeMove(100);SidebarEdgeUp(false);SidebarPrepare();Assert(settings.tabsPosition==P::Side&&chrome.sidebarWidth==290);   // Échap: undone

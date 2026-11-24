@@ -1058,6 +1058,9 @@ public:
     // The column's edge (Sidebar::Resize): 0 rest, 1 hovered, 2 dragged (the line along the page's left edge); the handle
     // exists while the host allows it (docked, settled, the window wide enough for the chosen layout).
     int sidebarEdge=0;bool sidebarResizable=false;static constexpr int SidebarEdgeId=909;std::wstring edgeTip;
+    // Motion spec §5: the hover line fades in over 120 ms once the pointer has rested 150 ms (dragging: at once).
+    Motion::Time edgeHoverAt{};
+    float EdgeAlpha(Motion::Time now)const{if(sidebarEdge==2)return 1;if(sidebarEdge!=1)return 0;const double ms=std::chrono::duration<double,std::milli>(now-edgeHoverAt).count()-150;return (float)std::clamp(ms/120,0.0,1.0);}
     // The chat card (#127 side panel layouts; src/chat-host.h CardInset): its frame, the border ring painted here.
     D2D1_RECT_F chatFrame{};
     float sidebarTitles=1;                               // titles and labels (fold animation)
@@ -1473,7 +1476,7 @@ public:
     // ends. The page's corner masks draw the part of the arcs inside the page's box (src/main.cpp RenderCorner).
     static D2D1_COLOR_F EdgeColor(unsigned c,float a=1){return D2D1::ColorF(((c>>16)&255)/255.f,((c>>8)&255)/255.f,(c&255)/255.f,a);}
     unsigned EdgeLineColor(bool focused)const{if(!sidebar||sidebarOverlay||side.page.Empty())return 0;if(sidebarEdge==2||focused)return 0x1000000|Sidebar::Resize::drag;if(sidebarEdge==1)return 0x1000000|Sidebar::Resize::hover;return 0;}
-    void PaintSideEdge(bool focused){const unsigned c=EdgeLineColor(focused);if(!c||!factory||!target)return;namespace RZ=Sidebar::Resize;
+    void PaintSideEdge(bool focused){const unsigned c=EdgeLineColor(focused);if(!c||!factory||!target)return;namespace RZ=Sidebar::Resize;const float a=focused?1.f:EdgeAlpha(Motion::Now());if(a<=0)return;
         const auto& P=side.page;const float x=P.left-RZ::line/2,r=RZ::arc,k=Sidebar::Zone::pageRadius,top=P.top-1,bottom=P.bottom+1;
         ID2D1PathGeometry* g=nullptr;if(FAILED(factory->CreatePathGeometry(&g))||!g)return;ID2D1GeometrySink* s=nullptr;
         if(SUCCEEDED(g->Open(&s))&&s){s->BeginFigure({P.left+k,top},D2D1_FIGURE_BEGIN_HOLLOW);
@@ -1482,7 +1485,7 @@ public:
             s->AddArc(D2D1::ArcSegment({P.left+k,bottom},D2D1::SizeF(r,r),0,D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,D2D1_ARC_SIZE_SMALL));
             s->EndFigure(D2D1_FIGURE_END_OPEN);s->Close();s->Release();}
         const float span=std::max(1.f,bottom-top),f=std::min(.5f,RZ::fade/span);const unsigned rgb=c&0xFFFFFF;
-        D2D1_GRADIENT_STOP stops[4]={{0,EdgeColor(rgb,0)},{f,EdgeColor(rgb)},{1-f,EdgeColor(rgb)},{1,EdgeColor(rgb,0)}};
+        D2D1_GRADIENT_STOP stops[4]={{0,EdgeColor(rgb,0)},{f,EdgeColor(rgb,a)},{1-f,EdgeColor(rgb,a)},{1,EdgeColor(rgb,0)}};
         ID2D1GradientStopCollection* col=nullptr;ID2D1LinearGradientBrush* gb=nullptr;ID2D1StrokeStyle* cap=nullptr;
         factory->CreateStrokeStyle(D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND,D2D1_CAP_STYLE_ROUND,D2D1_CAP_STYLE_ROUND),nullptr,0,&cap);
         if(SUCCEEDED(target->CreateGradientStopCollection(stops,4,&col))&&col&&SUCCEEDED(target->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({0,top},{0,bottom}),col,&gb))&&gb)target->DrawGeometry(g,gb,RZ::line,cap);
