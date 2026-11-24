@@ -328,7 +328,7 @@ def main():
             compile_exe("acp_client_test.exe", ["tests/acp/acp_client_test.cpp", *CLIENT], CLIENT_LIBS)
             compile_exe("agent_runtime_test.exe", ["tests/acp/agent_runtime_test.cpp", *RUNTIME], RUNTIME_LIBS)
             # « Ton agent » (design/ton-agent-interface.md): the one status + the official installers, on fakes only.
-            compile_exe("agent_status_test.exe", ["tests/acp/agent_status_test.cpp", "src/agent-install.cpp", *RUNTIME], RUNTIME_LIBS)
+            compile_exe("agent_status_test.exe", ["tests/acp/agent_status_test.cpp", "src/agent-install.cpp", *RUNTIME], [*RUNTIME_LIBS, "-lpsapi"])
         if args.real or args.real_only:
             compile_exe("real_adapter_probe.exe", ["tests/acp/real_adapter_probe.cpp", *RUNTIME], RUNTIME_LIBS)
         if failures:

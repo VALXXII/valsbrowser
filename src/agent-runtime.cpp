@@ -1242,7 +1242,8 @@ SignIn RunTerminalSignIn(const Environment& env, Agent agent, const Acp::AuthMet
     PROCESS_INFORMATION pi{};
     const std::wstring cwd = DirExists(env.userProfile) ? env.userProfile : std::wstring();
     // A console of its own, visible: the CLI says what it is doing and opens the user's web browser.
-    if (!CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
+    // (tests: env.signInConsoleHidden runs it without a window — a headless test must not show a console)
+    if (!CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, (env.signInConsoleHidden ? CREATE_NO_WINDOW : CREATE_NEW_CONSOLE) | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
                         block.data(), cwd.empty() ? nullptr : cwd.c_str(), &si, &pi)) {
         const DWORD code = GetLastError();
         if (job) CloseHandle(job);

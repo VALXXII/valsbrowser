@@ -44,6 +44,7 @@ the chat's own Node + adapter download used to set « Installé » whatever the 
 | `Install(UserClicked(agent))` | B / C / chat: the strong button's click ONLY | NotInstalled / Error → Installing → NeedsSignIn / Ready / Error |
 | `SignIn(agent)` | « Se connecter à … » | NeedsSignIn → SigningIn → Ready / Error(signInFailed) |
 | `Retry(UserClicked(agent))` | « Réessayer » | the failed step again |
+| `CancelSignIn(agent)` (`AGENT_STATUS_CANCEL_SIGN_IN`) | « Annuler » while signing in | SigningIn only (else false): the console is killed at once, a new detection → NeedsSignIn (reason `Cancelled`, not an error) or Ready |
 | `ManualInstall(agent)` | « Installer moi-même ↗ » | `{command, url}`: show the command to copy, open the page |
 
 **Consent**: `Install` and `Retry` need an `AgentStatus::Consent` made by `UserClicked(agent)` — call it only in the click

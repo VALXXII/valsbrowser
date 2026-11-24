@@ -56,7 +56,8 @@ enum class Reason {
     SignInFailed,          // the console closed and the CLI is still signed out
     SignInTimeout,         // no sign-in within 15 min
     // either
-    Cancelled,             // the browser closed during it (never shown: the next start detects again)
+    Cancelled,             // the browser closed during it (never shown: the next start detects again), or the user cancelled the
+                           // sign-in (« Annuler »): NeedsSignIn with this reason — not a failure, nothing to show
 };
 enum class Stage { None, Downloading, Running, Checking };   // Installing only: where the install is (no percentage exists)
 
@@ -122,6 +123,11 @@ void Unsubscribe(int id);
 bool Install(const Consent& consent);        // NotInstalled / Error → Installing → (detect) NeedsSignIn / Ready / Error
 bool SignIn(Agent agent);                    // NeedsSignIn / Error(sign-in) → SigningIn → (detect) Ready / Error
 bool Retry(const Consent& consent);          // Error: the failed step again (install with the consent, or sign-in)
+// « Annuler » while signing in (Designer's board): only when the agent is SigningIn (false otherwise). Closes its sign-in
+// console (its process tree is killed, the wait ends at once), then the normal end: a new detection — still signed out →
+// NeedsSignIn (reason Cancelled, not an error); signed in meanwhile → Ready. Listeners are called as for any change.
+#define AGENT_STATUS_CANCEL_SIGN_IN 1
+bool CancelSignIn(Agent agent);
 void Refresh();                              // detect both again (window focus, settings opened, chat opened)
 void Refresh(Agent agent);
 void Refresh(std::function<void()> done);    // both again, then `done` on the UI thread (after the listeners)
