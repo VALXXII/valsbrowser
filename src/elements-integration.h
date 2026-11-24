@@ -67,9 +67,13 @@ RECT PageScreenRect(){
     if(window)MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&r),2);return r;
 }
 RECT WindowScreenRect(){RECT r{};if(window)GetWindowRect(window,&r);return r;}
+// The find bar hangs 8 DIP inside the page's top-right corner; in Mode Focus it keeps clear of the floating panel while
+// the panel is on screen (it follows the slide: FocusApply), so it never covers the toolbar.
+RECT FindBarArea(){RECT r=PageScreenRect();const RECT p=FocusPanelPixels();if(!IsRectEmpty(&p)&&window){POINT b{0,p.bottom};ClientToScreen(window,&b);r.top=std::min(r.bottom,std::max(r.top,b.y));}return r;}
 RECT OriginAnchorRect(){
+    FocusAnchor(L"permission prompt"); // i18n-exempt: log tag. Mode Focus: the permission prompt hangs from the address field: the panel at rest
     auto i=chrome.indicator;if(i.right<=i.left||i.bottom<=i.top)i=chrome.AddressSlot();
-    RECT r{S(i.left),S(i.top),S(i.right),S(i.bottom)};if(window)MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&r),2);return r;
+    RECT r=ChromePx(i);if(window)MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&r),2);return r;   // Mode Focus: the panel at rest
 }
 
 // ---------------------------------------------------------------------------------------
@@ -601,7 +605,7 @@ void FindQuery(const std::wstring& term,const NativeChrome::FindBar::Options& op
 void OpenFindBar(){
     auto t=Active();if(!t||!t->view.p||!PageShown(*t)||halted)return;
     if(!findBar.Window()){FindInPage();return;} // component unavailable: engine find
-    findBar.Show(PageScreenRect(),findSession.tab.lock()==t?findSession.term:L"");findBar.Focus();
+    findBar.Show(FindBarArea(),findSession.tab.lock()==t?findSession.term:L"");findBar.Focus();
     if(findSession.tab.lock()==t&&!findSession.term.empty())FindQuery(findSession.term,findSession.options);
 }
 void CloseFindBar(bool focusPage){
@@ -1131,6 +1135,7 @@ void VaultOffer(const std::shared_ptr<Tab>& t,Vault::CaptureMessage& m,const std
 void VaultCaptureEvent(const std::shared_ptr<Tab>& t,std::wstring json){
     struct WipeOnExit{std::wstring& m;~WipeOnExit(){Wipe(m);}} wipeJson{json};
     if(halted||!t||t->closed||json.size()>8192)return;
+    {std::wstring name;if(!Vault::JsonStringAt(json,Vault::JsonMemberAt(json,Vault::JsonRoot(json),L"name"),name)||name!=Vault::CaptureBindingName)return;}   // #121: the forms world's binding is not a capture (src/forms-integration.h)
     if(!VaultCaptureWanted()||smoke)return;   // inactive / private / « Mots de passe » off (F4): nothing kept
     Vault::CaptureMessage m;
     if(!Vault::ParseCaptureEvent(json,m)){Log(L"VAULT capture ignored: not a capture of a secure, non-opaque document");return;}
@@ -1273,6 +1278,7 @@ void VaultSessionSetup(const std::shared_ptr<Tab>& t,const std::wstring& session
 }
 // Review V-5: « Mots de passe » turned off (or on) applies to the tabs already open: the capture is detached (its
 // script and binding removed, frames no longer paused, the DevTools domains disabled) or attached.
+extern std::set<unsigned> formsInstalled;   // src/forms-integration.h: its world needs the Page domain (P16)
 void VaultCaptureRemove(const std::shared_ptr<Tab>& t){
     auto it=vaultScriptIds.find(t->serial);if(it==vaultScriptIds.end()||!t->view.p)return;
     const std::wstring id=it->second;vaultScriptIds.erase(it);
@@ -1280,7 +1286,7 @@ void VaultCaptureRemove(const std::shared_ptr<Tab>& t){
     call(L"Target.setAutoAttach",L"{\"autoAttach\":false,\"waitForDebuggerOnStart\":false,\"flatten\":true}");
     if(!id.empty())call(L"Page.removeScriptToEvaluateOnNewDocument",L"{\"identifier\":"+Vault::JsonString(id)+L"}");
     call(L"Runtime.removeBinding",std::wstring(L"{\"name\":\"")+Vault::CaptureBindingName+L"\"}");
-    call(L"Page.disable",L"{}");
+    if(!formsInstalled.count(t->serial))call(L"Page.disable",L"{}");   // the forms world (#121) keeps it on
     Log(L"VAULT capture detached from a tab (« Mots de passe » off)");
 }
 void VaultCaptureSync(){
@@ -1413,6 +1419,7 @@ void SyncVaultKey(){
     auto t=Active();const bool show=VaultKeyVisible();
     if(show&&(!vaultKeyWasShown||!t||t->serial!=vaultKeySerial||t->navStamp!=vaultKeyNav)){vaultKeyShownAt=GetTickCount64();vaultKeySerial=t?t->serial:0;vaultKeyNav=t?t->navStamp:0;}
     vaultKeyWasShown=show;chrome.vaultKey=show;
+    chrome.vaultKeyCount=show?(int)vault.For(Vault::CanonicalOrigin(t->uri)).size():0;   // #121 C: the pill's number (the vault's accounts for this origin, never the page's)
 }
 bool VaultKeyArmed(){auto t=Active();bool fg=GetForegroundWindow()==window;
 #ifdef BROWSER_E2E_VAULT_HOST
@@ -1428,7 +1435,43 @@ void VaultKeyActivated(){
 }
 // The source is read from the ENGINE now (review §5), never from our cached URL or a page message.
 void VaultFillIsolated(const std::shared_ptr<Tab>& t,std::wstring script);
+void VaultEvaluateIsolated(const std::shared_ptr<Tab>& t,std::wstring script,std::function<void(Vault::FillOutcome,const std::wstring&)> done);
+void VaultFillNotDone(Vault::FillOutcome o,const std::wstring& why);
 Vault::Target VaultTargetNow(const std::shared_ptr<Tab>& t,bool userAction){const std::wstring src=EngineSource(t);Vault::Target v;v.frameSource=src;v.topSource=src;v.frameId=0;v.navigation=t->navStamp;v.userAction=userAction;return v;}
+// Guards at choice (§5): still the active tab, foreground window, no interstitial/error page, same document.
+bool VaultChoiceStillValid(const std::shared_ptr<Tab>& t,const std::wstring& origin,const Vault::Target& atAction){
+    if(!t||t->closed||!t->view.p)return false;
+    bool foreground=GetForegroundWindow()==window;
+#ifdef BROWSER_E2E_VAULT_HOST
+    foreground=true;   // TEST HOST ONLY
+#endif
+    if(t!=Active()||!foreground||!t->errorPage.shown.empty()||!t->https.shown.empty()){VaultNotice(TR(vault_fill_canceled),Vault::RefusalText(Vault::Refusal::Stale));return false;}
+    const auto refusal=Vault::CanFill(atAction,VaultTargetNow(t,false),origin);
+    if(refusal!=Vault::Refusal::None){Log(std::wstring(L"VAULT fill refused: ")+Vault::RefusalText(refusal));VaultNotice(L"Remplissage annulé",Vault::RefusalText(refusal));return false;}   // F5: said, not only logged
+    return true;
+}
+// The account the person chose (B03 from the key, or our list under the field, #121): every guard at choice (§5), then
+// the fresh read. #121: first Vault::UserStepScript, which holds no secret: on an identifier-only step it fills the
+// account's username and nothing is decrypted (the merged list's behaviour, review P10). Only when the page shows a
+// password field are the guards checked again, the secret decrypted and FillScript run (review R-1, unchanged).
+// `atAction`: the target captured at the person's action.
+void VaultFillChosen(const std::shared_ptr<Tab>& t,std::uint64_t id,const std::wstring& origin,const Vault::Target& atAction){
+    if(!VaultChoiceStillValid(t,origin,atAction))return;
+    if(!LoadVault(TR(vault_fill_canceled)))return;   // F11: fresh read at the real choice
+    const Vault::Entry* e=vault.Find(id);
+    if(!e||Vault::CanonicalOrigin(e->origin)!=origin){VaultNotice(TR(vault_fill_canceled),TR(vault_account_gone));return;}
+    std::weak_ptr<Tab> weak=t;
+    VaultEvaluateIsolated(t,Vault::UserStepScript(origin,e->user),[weak,id,origin,atAction](Vault::FillOutcome o,const std::wstring& why){
+        if(o==Vault::FillOutcome::User){Log(L"VAULT filled the username only (identifier step, no secret decrypted)");return;}
+        if(o!=Vault::FillOutcome::NeedsPassword){VaultFillNotDone(o,why);return;}
+        auto tab=weak.lock();if(!VaultChoiceStillValid(tab,origin,atAction))return;   // the page asks for a password: guards again
+        const Vault::Entry* entry=vault.Find(id);
+        if(!entry||Vault::CanonicalOrigin(entry->origin)!=origin){VaultNotice(TR(vault_fill_canceled),TR(vault_account_gone));return;}
+        std::wstring secret;if(!VaultRevealForFill(*entry,origin,secret))return;
+        std::wstring script=Vault::FillScript(origin,entry->user,secret);Wipe(secret);
+        VaultFillIsolated(tab,std::move(script));   // review R-1: isolated world of this document, never the page's main world
+    });
+}
 void OfferVaultFill(const std::shared_ptr<Tab>& t){
     if(!Vault::Active()||!t||t->closed||!t->view.p)return;
     if(!LoadVault(TR(vault_unavailable)))return;   // F11: fresh read (normal and private)
@@ -1443,20 +1486,7 @@ void OfferVaultFill(const std::shared_ptr<Tab>& t){
     AskPrompt(std::move(s),t,[weak,ids,atAction,origin](OP::Result& r){
         if(r.action==OP::Action::Manage){ShowVaultManager(false);return;}
         auto t=weak.lock();if(r.action!=OP::Action::Fill||!t||t->closed||!t->view.p||r.choice<0||r.choice>=(int)ids.size())return;
-        // Guards at choice (§5): still the active tab, foreground window, no interstitial/error page, same document.
-        bool foreground=GetForegroundWindow()==window;
-#ifdef BROWSER_E2E_VAULT_HOST
-        foreground=true;   // TEST HOST ONLY
-#endif
-        if(t!=Active()||!foreground||!t->errorPage.shown.empty()||!t->https.shown.empty()){VaultNotice(TR(vault_fill_canceled),Vault::RefusalText(Vault::Refusal::Stale));return;}
-        const auto refusal=Vault::CanFill(atAction,VaultTargetNow(t,false),origin);
-        if(refusal!=Vault::Refusal::None){Log(std::wstring(L"VAULT fill refused: ")+Vault::RefusalText(refusal));VaultNotice(L"Remplissage annulé",Vault::RefusalText(refusal));return;}   // F5: said, not only logged
-        if(!LoadVault(TR(vault_fill_canceled)))return;   // F11: fresh read at the real choice
-        const Vault::Entry* e=vault.Find(ids[(size_t)r.choice]);
-        if(!e||Vault::CanonicalOrigin(e->origin)!=origin){VaultNotice(TR(vault_fill_canceled),TR(vault_account_gone));return;}
-        std::wstring secret;if(!VaultRevealForFill(*e,origin,secret))return;
-        std::wstring script=Vault::FillScript(origin,e->user,secret);Wipe(secret);
-        VaultFillIsolated(t,std::move(script));   // review R-1: isolated world of this document, never the page's main world
+        VaultFillChosen(t,ids[(size_t)r.choice],origin,atAction);
     },L"vaultfill:"+std::to_wstring(t->serial));
 }
 // Review R-1: FillScript is evaluated in a FRESH isolated world of the top-level document (Vault::IsolatedEvaluateParams),
@@ -1466,21 +1496,29 @@ void OfferVaultFill(const std::shared_ptr<Tab>& t){
 // said. The script (it holds the secret) is wiped as soon as it is handed over, or when the job ends.
 void VaultFillNotDone(Vault::FillOutcome o,const std::wstring& why){Log(L"VAULT fill not done: outcome="+std::to_wstring((int)o)+L" "+why);VaultNotice(TR(vault_fill_not_done),Vault::FillOutcomeText(o));}
 void VaultFillIsolated(const std::shared_ptr<Tab>& t,std::wstring script){
-    struct Job{std::weak_ptr<Tab> tab;std::uint64_t nav=0;std::wstring script;~Job(){Wipe(script);}};
-    auto job=std::make_shared<Job>();job->tab=t;job->nav=t->navStamp;job->script=std::move(script);Wipe(script);
+    VaultEvaluateIsolated(t,std::move(script),[](Vault::FillOutcome o,const std::wstring& why){
+        if(o==Vault::FillOutcome::Filled){Log(L"VAULT filled (user action, same document, confirmed by the page)");return;}
+        VaultFillNotDone(o,why);});
+}
+// The three engine steps for one script of the vault (FillScript, or #121 UserStepScript): `answer` gets the fixed word
+// the page answered (or Failed and why), exactly once. The script is wiped as soon as it is handed over.
+void VaultEvaluateIsolated(const std::shared_ptr<Tab>& t,std::wstring script,std::function<void(Vault::FillOutcome,const std::wstring&)> answer){
+    struct Job{std::weak_ptr<Tab> tab;std::uint64_t nav=0;std::wstring script;std::function<void(Vault::FillOutcome,const std::wstring&)> done;~Job(){Wipe(script);}};
+    auto job=std::make_shared<Job>();job->tab=t;job->nav=t->navStamp;job->script=std::move(script);job->done=std::move(answer);Wipe(script);
+    auto VaultFillNotDone=[job](Vault::FillOutcome o,const std::wstring& why){auto d=std::move(job->done);job->done=nullptr;if(d)d(o,why);};
     auto same=[job]()->std::shared_ptr<Tab>{auto tab=job->tab.lock();return !halted&&tab&&!tab->closed&&tab->view.p&&tab->navStamp==job->nav?tab:nullptr;};
     auto frames=Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler,HRESULT,LPCWSTR>([job,same](HRESULT hr,LPCWSTR json)->HRESULT{
+        auto VaultFillNotDone=[job](Vault::FillOutcome o,const std::wstring& why){auto d=std::move(job->done);job->done=nullptr;if(d)d(o,why);};
         auto tab=same();const std::wstring frame=SUCCEEDED(hr)&&json?Vault::MainFrameId(json):L"";
         if(!tab||frame.empty()){Wipe(job->script);VaultFillNotDone(Vault::FillOutcome::Failed,tab?L"(no main frame)":L"(the document changed)");return S_OK;}
         auto world=Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler,HRESULT,LPCWSTR>([job,same](HRESULT hr2,LPCWSTR json2)->HRESULT{
+            auto VaultFillNotDone=[job](Vault::FillOutcome o,const std::wstring& why){auto d=std::move(job->done);job->done=nullptr;if(d)d(o,why);};
             auto tab2=same();const long long context=SUCCEEDED(hr2)&&json2?Vault::ContextIdOf(json2):0;
             if(!tab2||!context){Wipe(job->script);VaultFillNotDone(Vault::FillOutcome::Failed,tab2?L"(no isolated world)":L"(the document changed)");return S_OK;}
             std::wstring params=Vault::IsolatedEvaluateParams(context,job->script);Wipe(job->script);
             // Only a fixed status word comes back (never a page value or the secret); « rempli » only when the page says so.
-            auto done=Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler,HRESULT,LPCWSTR>([](HRESULT hr3,LPCWSTR json3)->HRESULT{
-                const auto o=Vault::ParseIsolatedFillResult(hr3,json3);
-                if(o==Vault::FillOutcome::Filled){Log(L"VAULT filled (user action, same document, confirmed by the page)");return S_OK;}
-                VaultFillNotDone(o,L"hr="+std::to_wstring((long)hr3));return S_OK;});
+            auto done=Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler,HRESULT,LPCWSTR>([VaultFillNotDone](HRESULT hr3,LPCWSTR json3)->HRESULT{
+                VaultFillNotDone(Vault::ParseIsolatedFillResult(hr3,json3),L"hr="+std::to_wstring((long)hr3));return S_OK;});
             const HRESULT h=tab2->view->CallDevToolsProtocolMethod(L"Runtime.evaluate",params.c_str(),done);done->Release();Wipe(params);
             if(FAILED(h))VaultFillNotDone(Vault::FillOutcome::Failed,L"Runtime.evaluate hr="+std::to_wstring((long)h));
             return S_OK;});
@@ -1536,11 +1574,13 @@ HRESULT PageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceive
 // installed after the target's assignment (RegisterSandboxResources from PopupAssign), and *required is cleared
 // when a security handler could not be registered (the target is refused before it can load).
 bool RegisterSandboxResources(const std::shared_ptr<Tab>& t);
+void FormsInstall(const std::shared_ptr<Tab>& t,const PopupHost::RequestPtr& popup);   // src/forms-integration.h (#121)
 void RegisterElementEvents(const std::shared_ptr<Tab>& t,ICoreWebView2Settings* settings,const PopupHost::RequestPtr& popup,bool* required){
     std::weak_ptr<Tab> weak=t;EventRegistrationToken token{};
     auto need=[required](HRESULT hr){if(FAILED(hr)&&required)*required=false;return hr;};
     if(settings&&FAILED(settings->put_AreDefaultScriptDialogsEnabled(FALSE)))Log(L"DIALOG default dialogs could not be disabled");
     VaultCaptureInstall(t,popup);   // owner decision A: isolated world + binding, frames included (only while the vault is active, never private)
+    FormsInstall(t,popup);          // #121: our list under the field and our validation bubble (own world, the tab's own session)
     VaultEngineMigrationTick();     // owner decision B: activation date, then the engine's old passwords cleared after 30 days (active vault only)
     {auto h=Callback<ICoreWebView2ScriptDialogOpeningEventHandler,ICoreWebView2*,ICoreWebView2ScriptDialogOpeningEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ScriptDialogOpeningEventArgs* a)->HRESULT{return ScriptDialogOpening(weak.lock(),a);});
      if(FAILED(need(t->view->add_ScriptDialogOpening(h,&token))))Log(L"DIALOG add_ScriptDialogOpening failed");h->Release();}
@@ -1584,6 +1624,7 @@ bool ElementSurfaceKey(UINT key,bool ctrl,bool alt,bool shift,int& cmd){
     cmd=0;HWND f=GetFocus();if(!f)return false;
     if(InWindow(findBar.Window(),f)){
         if(ctrl&&!alt&&!shift&&key=='F'){cmd=FindPage;return true;}
+        if(ctrl&&!alt&&shift&&key=='F'){cmd=FocusModeCommand;return true;}   // Ctrl+Maj+F: Mode Focus, from the find field too
         if(!ctrl&&!alt&&key==VK_F3){cmd=shift?FindPreviousCommand:FindNextCommand;return true;}
         return true;
     }
@@ -1594,7 +1635,7 @@ void RepositionElementSurfaces(){
     if(modal.Visible())modal.Reposition(PageScreenRect());
     if(notesCard.Visible())notesCard.Reposition(PageScreenRect());
     if(originPrompt.Visible())originPrompt.Reposition(OriginAnchorRect());
-    if(findBar.Visible())findBar.Reposition(PageScreenRect());
+    if(findBar.Visible())findBar.Reposition(FindBarArea());
     if(contextToast.Visible())contextToast.Reposition(PageScreenRect());
     originPrompt.SetPageArea(PageScreenRect());
 }
@@ -1871,10 +1912,11 @@ NativeChrome::Tooltip::Content TipContent(const wchar_t* tip){
 }
 void ChromeTipHover(int x,int y){
     if(!chromeTip.Window())return;
-    const float d=GetDpiForWindow(window)/96.f,fx=x/d,fy=y/d;
+    const float d=GetDpiForWindow(window)/96.f;float fx=x/d,fy=y/d;
+    if(!chrome.Local(fx,fy)){chromeTip.Hide();return;}   // Mode Focus: only over the floating panel's visible part
     for(auto& r:chrome.regions){
         if(!r.tip||!*r.tip||fx<r.rect.left||fx>=r.rect.right||fy<r.rect.top||fy>=r.rect.bottom)continue;
-        RECT target{S(r.rect.left),S(r.rect.top),S(r.rect.right),S(r.rect.bottom)};MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&target),2);
+        RECT target=ChromePx(r.rect);MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&target),2);
         RECT bounds=NativeChrome::TooltipPlacement::VisibleRect(window);chromeTip.Hover(TipContent(r.tip),target,&bounds);return;
     }
     chromeTip.Hide();

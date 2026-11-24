@@ -478,7 +478,7 @@ def scenario_full(app, work, evidence):
         if main:
             Ui(main).grab(evidence / 'full-browser.png')
         log = run.log()
-        check('ONBOARDING shown (requested)' in log and 'ONBOARDING ended: completed' in log and 'annotation asked' in log, 'full: log: shown, completed, annotation asked')
+        check('ONBOARDING shown (requested)' in log and 'ONBOARDING ended: completed' in log and 'annotation tutorial asked' in log, 'full: log: shown, completed, annotation tutorial asked')
         check('ONBOARDING opens the annotation tutorial' in log, 'full: « Essayer en 1 minute » opened the annotation tutorial in the browser')
         check('home.example' not in log and 'QA L' not in log, 'full: the log carries no address and no name')
         import re

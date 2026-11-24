@@ -285,10 +285,16 @@ void SyncChrome() {
         AUI::PaintToolbarButton(t, f, b, box, v);
     };
 }
-RECT BandRect() { RECT c{}; GetClientRect(window, &c); return {0, S(chrome.ContentTop() - chrome.annotationBand), c.right, S(chrome.ContentTop())}; }
+RECT BandRect() {
+    RECT c{}; GetClientRect(window, &c);
+    // Mode Focus (owner's rule 2026-11-24, Paper « Annotation + Focus · barre du haut » 203J-0): the banner at the very top,
+    // 4 DIP in from the window's left and right edges; the tabs and toolbar float under it (src/focus-mode.h).
+    if (chrome.floating) { const auto b = NativeChrome::FocusMode::Banner(chrome.ClientWidth(), chrome.annotationBand); return {S(b.left), S(b.top), S(b.right), S(b.bottom)}; }
+    return {0, S(chrome.ContentTop() - chrome.annotationBand), c.right, S(chrome.ContentTop())};
+}
 RECT PageClient(const std::shared_ptr<Tab>& t) {
     if (t && !IsRectEmpty(&t->placed)) return t->placed;
-    RECT c{}; GetClientRect(window, &c); c.top = S(chrome.ContentTop()); return c;
+    RECT c{}; GetClientRect(window, &c); c.top = S(PageTopDip()); return c;   // Mode Focus: under the banner, not the toolbar
 }
 RECT ClientScreen() { RECT r{}; GetClientRect(window, &r); MapWindowPoints(window, nullptr, reinterpret_cast<POINT*>(&r), 2); return r; }
 RECT PageScreen(const std::shared_ptr<Tab>& t) { RECT r = PageClient(t); MapWindowPoints(window, nullptr, reinterpret_cast<POINT*>(&r), 2); return r; }
@@ -1099,6 +1105,7 @@ void AnnotationClearAll(std::function<void(bool, std::size_t)> done) {
         });
 }
 bool AnnotationsCompiled() { return true; }
+HWND AnnotationBannerWindow() { return Ann::uiReady && Ann::banner.Visible() ? Ann::banner.Window() : nullptr; }   // Mode Focus: kept above the sliding panel
 // Page menu (PageContextMenu / ShowPageMenu): « Annoter l'élément », « Annoter la sélection ».
 constexpr int AnnotateElementItem = 0x10010, AnnotateSelectionItem = 0x10011;
 void AnnotationMenuItems(const std::shared_ptr<Tab>& tab, ICoreWebView2ContextMenuRequestedEventArgs* args, std::vector<CM::Item>& items) {
@@ -1146,6 +1153,7 @@ bool AnnotationCommand(int) { return false; }
 bool AnnotationChatShortcut() { return false; }
 bool AnnotationSettingsAvailable() { return false; }
 bool AnnotationsCompiled() { return false; }
+HWND AnnotationBannerWindow() { return nullptr; }
 void AnnotationOpenConnect(bool) {}
 void AnnotationOpenTutorial(bool) {}
 void AnnotationConnectAgent(AnnotationApp, bool, std::function<void(bool, const std::wstring&)> done) { if (done) done(false, TR(annotation_mode_absent)); }

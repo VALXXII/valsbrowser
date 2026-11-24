@@ -37,6 +37,13 @@ int main(){
      {State s;s.annotationConnectDeclines=MaxConnectDeclines;assert(!ConnectPromptActive(s));SetConnectPrompt(s,true);assert(ConnectPromptActive(s)&&s.annotationConnectDeclines==0);
       s.annotationConnectDeclines=2;SetConnectPrompt(s,false);assert(!ConnectPromptActive(s)&&s.annotationConnectDeclines==2);SetConnectPrompt(s,true);assert(s.annotationConnectDeclines==0);}
      }
+    // Mode Focus (design/focus-mode-plan.md): off by default; round trip; unknown or damaged values keep the default.
+    {State d;assert(!d.focusMode);
+     State on;on.focusMode=true;std::stringstream io;Write(io,on);assert(io.str().find("focus-mode=1\n")!=std::string::npos);assert(Read(io)==on&&!(on==State{}));
+     State off;std::stringstream io2;Write(io2,off);assert(io2.str().find("focus-mode=0\n")!=std::string::npos&&!Read(io2).focusMode);
+     for(const char* bad:{"browser-settings 1\nfocus-mode=yes\n","browser-settings 1\nfocus-mode=2\n","browser-settings 1\nfocus-mode=\n","browser-settings 1\nfocus-mode= 1\n"}){std::istringstream in(bad);assert(!Read(in).focusMode);}
+     {std::istringstream crlf("browser-settings 1\r\nfocus-mode=1\r\n");assert(Read(crlf).focusMode);}
+     {std::istringstream old("browser-settings 1\nengine=bing\n");assert(!Read(old).focusMode);}}
     // Missing, foreign or damaged files keep the defaults; unknown keys and bad values are ignored.
     for(const char* bad:{"","garbage\nengine=google\n","browser-settings 2\nengine=google\n"}){std::istringstream in(bad);assert(Read(in)==State{});}
     std::istringstream partial("browser-settings 1\r\nengine=bing\r\nrestore-tabs=maybe\r\nfuture-key=1\r\nreduce-motion=1\r\nengine=nope\r\n");

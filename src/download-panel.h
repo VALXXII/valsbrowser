@@ -10,6 +10,7 @@
 // right while un-blurring (D2D Gaussian blur), staggered: see Downloads::RowReveal.
 #include <windowsx.h>
 #include <dwmapi.h>
+#include "drawer-corners.h"   // Mode Focus: the docked drawer's antialiased top corners
 #include <d2d1_1.h>
 #include <shellapi.h>
 #include <commoncontrols.h>
@@ -1016,7 +1017,7 @@ class Drawer final : public Host {
             if (lead_ > 0) chrome_.KeyOut(DrawerLayout::margin + lead_ * Scale());
             return;
         }
-        chrome_.KeyOut(DrawerLayout::margin + lead_ * Scale());
+        chrome_.KeyOut(DrawerLayout::margin + lead_ * Scale()); KeyCorners();
     }
     // Window = margin strip + 268 DIP column, docked to the owner's right edge. It
     // never moves while sliding (NativeUI::KeyedDrawer): a slide step is one present,
@@ -1029,14 +1030,18 @@ class Drawer final : public Host {
         if (!hwnd_) return false;
         const RECT owner = OwnerClient();
         const int column = OwnerPx(DrawerLayout::width), margin = OwnerPx(DrawerLayout::margin), width = column + margin;
-        const int top = owner.top + OwnerPx(DrawerLayout::top), height = std::max(1, static_cast<int>(owner.bottom - top));
+        const int top = owner.top + OwnerPx(DrawerLayout::liveTop), height = std::max(1, static_cast<int>(owner.bottom - OwnerPx(DrawerLayout::liveBottom) - top));
         const int shown = static_cast<int>(std::lround(column * Motion::Clamp(slide_.Value(now))));
         const float t = Morph(now); const int morphKey = t >= 1 ? 1000 : static_cast<int>(t * 999);
-        if (!force && shown == appliedVisible_ && morphKey == appliedMorph_ && EqualRect(&owner, &appliedOwner_)) return false;
-        const bool resized = !EqualRect(&owner, &appliedOwner_), slid = shown != appliedVisible_;
+        const int inset = OwnerPx(DrawerLayout::liveRight); const RECT window{owner.right - inset - width, top, owner.right - inset, top + height};   // Mode Focus: the floating panel's right edge (0 otherwise)
+        const float radius = DrawerLayout::liveRadius * GetDpiForWindow(owner_) / 96.f;   // Mode Focus: round top corners (src/drawer-corners.h), never while morphing
+        const bool restyled = !EqualRect(&window, &appliedWindow_) || radius != corners_.Radius();
+        if (!force && !restyled && shown == appliedVisible_ && morphKey == appliedMorph_ && EqualRect(&owner, &appliedOwner_)) return false;
+        const bool resized = !EqualRect(&owner, &appliedOwner_) || restyled, slid = shown != appliedVisible_;
         const bool reshape = force || resized || (morphKey < 1000) != (appliedMorph_ < 1000) || (shown > 0) != (appliedVisible_ > 0);
-        appliedVisible_ = shown; appliedMorph_ = morphKey; appliedOwner_ = owner; lead_ = column - shown;
-        const RECT window{owner.right - width, top, owner.right, top + height};
+        appliedVisible_ = shown; appliedMorph_ = morphKey; appliedOwner_ = owner; lead_ = column - shown; corners_.SetRadius(radius);
+        if (lead_ > 0 || morphKey < 1000) corners_.HideLeading();   // Mode Focus: it moves with the content: back at rest
+        if (restyled && !force) InvalidateRect(hwnd_, nullptr, FALSE);   // the corners keyed out (or no longer) by the next paint
         if (force || !EqualRect(&window, &appliedWindow_)) { SetWindowPos(hwnd_, nullptr, window.left, window.top, width, height, SWP_NOACTIVATE | SWP_NOZORDER); appliedWindow_ = window; }
         HRGN region = nullptr;
         if (!reshape) {}
@@ -1045,7 +1050,7 @@ class Drawer final : public Host {
             // at 10 DIP, inside the owner's antialiased 8 DIP DWM corner: canvas over canvas, so the
             // visible outline stays the owner's smooth one.
             const int right = width, r = OwnerPx(20);
-            region = IsZoomed(owner_) ? CreateRectRgn(0, 0, right, height) : CreateRoundRectRgn(-r * 2, -r * 2, right + 1, height + 1, r, r);
+            region = IsZoomed(owner_) || inset > 0 ? CreateRectRgn(0, 0, right, height) : CreateRoundRectRgn(-r * 2, -r * 2, right + 1, height + 1, r, r);   // Mode Focus: off the window's corner, square
             // Docked: the column [margin, width] — never the margin strip, which only
             // exists for the popover to morph from. Morphing: the whole window, the
             // same for the whole morph; the popover's shape growing into the column is
@@ -1057,8 +1062,8 @@ class Drawer final : public Host {
         // shrinks to the column once that strip is keyed; a slide step presents right after.
         if (region) SetWindowRgn(hwnd_, region, FALSE);
         if (resized) { scroll_.Snap(std::clamp(scroll_.Target(), 0.f, MaxScroll(now, true))); RefreshTips(); }
-        if (force || !slid || shown == 0 || t < 1 || !IsWindowVisible(hwnd_)) return false;
-        PaintNow(); ValidateRect(hwnd_, nullptr);
+        if (force || !slid || shown == 0 || t < 1 || !IsWindowVisible(hwnd_)) { SyncCorners(); return false; }
+        PaintNow(); ValidateRect(hwnd_, nullptr); SyncCorners();
         return true;
     }
     void ScrollTo(float target, Motion::Time now, Motion::Milliseconds duration) {
@@ -1097,8 +1102,17 @@ class Drawer final : public Host {
     void Finish() {
         closing_ = false; visible_ = false; appliedVisible_ = appliedMorph_ = -1; appliedWindow_ = {};
         morph_.Snap(1);
-        KillTimer(hwnd_, TickTimer); ShowWindow(hwnd_, SW_HIDE);
+        KillTimer(hwnd_, TickTimer); corners_.Hide(); ShowWindow(hwnd_, SW_HIDE);
     }
+    // Mode Focus: the antialiased top corners as presented (src/drawer-corners.h), never while morphing: the trailing one
+    // whenever the column is in, the leading one at rest only (it moves with the content while sliding). KeyCorners: the
+    // paint's part of them (KeyOut).
+    DrawerCorners::Pair corners_;
+    void SyncCorners() {
+        if (!visible_ || appliedVisible_ <= 0 || appliedMorph_ < 1000 || !IsWindowVisible(hwnd_)) { corners_.Hide(); return; }
+        const float c = Design::Surface::canvas; corners_.Place(hwnd_, appliedWindow_, OwnerPx(DrawerLayout::margin) + lead_, appliedWindow_.right - appliedWindow_.left, c + (1 - c) * Popup::border, c, lead_ == 0);
+    }
+    void KeyCorners() { if (corners_.Radius() <= 0) return; HRGN cut = corners_.CutRegion(OwnerPx(DrawerLayout::margin) + lead_, appliedWindow_.right - appliedWindow_.left); chrome_.KeyOutRegion(cut); DeleteObject(cut); }
     // Layered alpha 0, the colour key kept: nothing of the window reaches the
     // screen, while what it presents still lands in its surface.
     void Veil(bool veiled) { SetLayeredWindowAttributes(hwnd_, NativeUI::drawerKey, 0, veiled ? LWA_COLORKEY | LWA_ALPHA : LWA_COLORKEY); }
@@ -1112,7 +1126,7 @@ class Drawer final : public Host {
         if (morph) {
             // Window-local pixels of the popover, the drawer's column at its docked place.
             const RECT owner = OwnerClient();
-            const int width = OwnerPx(DrawerLayout::width + DrawerLayout::margin), left = owner.right - width, top = owner.top + OwnerPx(DrawerLayout::top);
+            const int width = OwnerPx(DrawerLayout::width + DrawerLayout::margin), left = owner.right - OwnerPx(DrawerLayout::liveRight) - width, top = owner.top + OwnerPx(DrawerLayout::liveTop);
             morphFrom_ = {from->left - left, from->top - top, from->right - left, from->bottom - top};
             morphFrom_.left = std::max(0L, morphFrom_.left); morphFrom_.top = std::max(0L, morphFrom_.top);
             morphRadius_ = static_cast<float>(OwnerPx(Panel::radius));
@@ -1142,6 +1156,7 @@ class Drawer final : public Host {
         if (morph) { Veil(false); DwmFlush(); }   // one more composition: the unveiled frame is on screen before the popover goes
         DwmFlush();
         if (under) SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        SyncCorners();   // Mode Focus: a slide-in without morph (or reduced motion) may have no later frame
         if (!test) Activated();
         // The morph's clock starts now that its first frame is on screen: any time
         // spent above must never be skipped by the animation (that was a jump).
@@ -1191,7 +1206,7 @@ public:
         if (visible_ && hooks_.schedule) hooks_.schedule(now);
     }
     // Owner moved, resized or changed DPI.
-    void Reposition() { if (visible_) ApplyGeometry(Motion::Now()); }
+    void Reposition() { if (visible_) ApplyGeometry(Motion::Now()); }   // Mode Focus: a new live top / right / radius counts as a move (ApplyGeometry)
     void Changed() {
         if (!hwnd_ || !visible_) return;
         auto now = Motion::Now();

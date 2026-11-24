@@ -118,7 +118,7 @@ std::vector<NativeChrome::AudioPanel::Item> AudioItems(const std::vector<AU::Row
         item.artwork=AudioArtwork(r.artwork);items.push_back(std::move(item));}
     return items;
 }
-void InvalidateAudioIcon(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */if(!chrome.audioShown)return;auto d=chrome.AudioIconDirty();RECT r{S(d.left),S(d.top),S(d.right),S(d.bottom)};InvalidateRect(window,&r,FALSE);}
+void InvalidateAudioIcon(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */if(!chrome.audioShown)return;if(chrome.floating&&!chrome.PanelShown())return;RECT r=ChromePx(chrome.AudioIconDirty());InvalidateRect(window,&r,FALSE);}
 // Housekeeping deadlines (sustained sound, the music hold, forgetting quiet entries).
 void ArmAudioTimer(NativeChrome::Motion::Time now){
     NativeChrome::Motion::Wake w=audioToolbar.NextWake(now);bool listed=false;
@@ -240,9 +240,10 @@ void RegisterAudio(const std::shared_ptr<Tab>& t,const PopupHost::RequestPtr& po
 // ---- Toolbar button and panel ----------------------------------------------------------------
 void ShowAudio(bool keyboard){
     if(!audioPanel.Window()||!chrome.audioShown)return;
+    FocusAnchor(L"audio"); // Mode Focus: the panel at rest, the audio panel hangs from its button
     const auto* r=[]()->const NativeChrome::Region*{for(auto& x:chrome.regions)if(x.id=='V')return &x;return nullptr;}();if(!r)return;
     audioPanel.SetItems(AudioItems(AudioRows(NativeChrome::Motion::Now())));
-    RECT anchor{S(r->rect.left),S(r->rect.top),S(r->rect.right),S(r->rect.bottom)};MapWindowPoints(window,nullptr,(POINT*)&anchor,2);
+    RECT anchor=ChromePx(r->rect);MapWindowPoints(window,nullptr,(POINT*)&anchor,2);
     RECT bounds{};GetClientRect(window,&bounds);MapWindowPoints(window,nullptr,(POINT*)&bounds,2);
     chrome.latched='V';InvalidateChrome();audioPanel.Show(anchor,bounds,keyboard);
     Log(L"AUDIO panel opened rows="+std::to_wstring(audioPanel.Items().size()));
@@ -257,7 +258,7 @@ void CreateAudioPanel(){
     hooks.show=[](int tab){if(tab>=0&&tab<(int)pages.size())Select(tab);};
     // « Voir tout »: the drawer takes the window's right strip, from the chrome's lower edge down.
     hooks.drawerOpening=[]{CloseOtherDrawers();};
-    hooks.drawerArea=[]()->RECT{RECT r{};GetClientRect(window,&r);r.top=S(chrome.ContentTop());MapWindowPoints(window,nullptr,(POINT*)&r,2);return r;};
+    hooks.drawerArea=[]()->RECT{RECT r{};GetClientRect(window,&r);r.top=S(chrome.floating?FM::DrawerTop(chrome.bandShown,chrome.panelAbove.banner):chrome.ContentTop());if(chrome.floating){r.right-=S(FM::pageInset);r.bottom-=S(FM::drawerBottom);}MapWindowPoints(window,nullptr,(POINT*)&r,2);return r;};   // Mode Focus: 4 DIP under the floating panel
     hooks.closed=[](bool keyboard){
         SyncLatch();
         // Keyboard: back to the button that opened it (it may have gone if the last site left).

@@ -15,6 +15,7 @@
 #include <unordered_set>
 #include <vector>
 #include "downloads.h" // ToUtf8 / FromUtf8
+#include "annotation-sites.h" // « Local »: the same rule as the annotation mode and the chat (ChatLocal::Classify)
 
 namespace AddressBar {
 
@@ -29,23 +30,29 @@ inline std::wstring Trim(const std::wstring& s) {
 // ---- Display ---------------------------------------------------------------
 // How the address reads outside editing. Every non-secure state carries an icon
 // AND a label: colour is never the only signal.
-enum class Security { Empty, Secure, Insecure, CertificateError, File, Other };
+// Local: a project on this computer (Paper #127 « Adresse · pastille « Local » (validée) »): http(s) on localhost,
+// *.localhost, 127.0.0.0/8 or [::1], any port — the pages AnnotationSites::Of calls Place::Local, so the pill and the
+// annotation mode never disagree. It replaces « Non sécurisé », the lock and a certificate warning alike: that traffic
+// never leaves the machine (a development server's own certificate is the usual « error » there).
+enum class Security { Empty, Secure, Insecure, CertificateError, File, Other, Local };
 enum class Tone { Primary, Secondary, Danger };
 struct Run { std::wstring text; Tone tone = Tone::Secondary; bool strike = false; };
 struct Display {
     Security security = Security::Empty;
     std::vector<Run> runs;
-    // Leading chip label ("Non sécurisé", "Fichier"); empty: icon-only slot.
+    // Leading chip label ("Non sécurisé", "Fichier", "Local"); empty: icon-only slot.
     const wchar_t* chip() const {
         switch (security) {
         case Security::Insecure: case Security::CertificateError: return TR(address_not_secure);
         case Security::File: return TR(download_file_generic);
+        case Security::Local: return TR(address_local);
         default: return L"";
         }
     }
-    // Icon asset name (assets\icons\<name>-<dpi>.png).
+    // Icon asset name (assets\icons\<name>-<dpi>.png); « monitor » (Local) is a Phosphor path the chrome draws.
     const wchar_t* icon() const {
         switch (security) {
+        case Security::Local: return L"monitor";
         case Security::Secure: return L"lock";
         case Security::Insecure: return L"lock-open";
         case Security::CertificateError: return L"danger";
@@ -61,6 +68,7 @@ struct Display {
         case Security::Insecure: return TR(address_insecure_tip);
         case Security::CertificateError: return TR(address_cert_error_tip);
         case Security::File: return TR(history_local_file);
+        case Security::Local: return TR(address_local_tip);
         default: return L"";
         }
     }
@@ -111,6 +119,16 @@ inline std::wstring PercentDecode(const std::wstring& s) {
     return NativeChrome::Downloads::FromUtf8(bytes, out) ? out : s;
 }
 
+// « localhost:5173 » → « localhost » and « :5173 » (an IPv6 literal keeps its brackets: « [::1] », « :8080 »).
+inline void SplitPort(const std::wstring& host, std::wstring& name, std::wstring& port) {
+    const auto close = host.find(L']');
+    const auto colon = host.find(L':', close == std::wstring::npos ? 0 : close);
+    name = colon == std::wstring::npos ? host : host.substr(0, colon);
+    port = colon == std::wstring::npos ? L"" : host.substr(colon);
+}
+// A project on this computer (Security::Local): exactly the annotation mode's local pages (AnnotationSites::Place::Local).
+inline bool IsLocalProject(const std::wstring& uri) { return AnnotationSites::Of(NativeChrome::Downloads::ToUtf8(uri)) == AnnotationSites::Place::Local; }
+
 // `certificateError`: the engine reported an invalid server certificate for the
 // document now shown (ICoreWebView2_14::ServerCertificateErrorDetected).
 inline Display Describe(const std::wstring& uri, bool certificateError = false) {
@@ -118,7 +136,12 @@ inline Display Describe(const std::wstring& uri, bool certificateError = false) 
     if (uri.empty()) return d;   // about:blank is described as any other address: only the home tab shows an empty field
     Parts p;
     if (Split(uri, p) && (p.scheme == L"https" || p.scheme == L"http")) {
-        if (certificateError) {
+        if (IsLocalProject(uri)) {
+            // Paper 1ZX1-0: the host in the primary tone, its port and the path in the secondary one.
+            d.security = Security::Local;
+            std::wstring name, port; SplitPort(p.host, name, port);
+            d.runs = {{name, Tone::Primary}, {port + ReadableRest(p.rest), Tone::Secondary}};
+        } else if (certificateError) {
             d.security = Security::CertificateError;
             d.runs = {{p.scheme, Tone::Danger, p.scheme == L"https"}, {L"://", Tone::Secondary}, {p.host, Tone::Primary}, {ReadableRest(p.rest), Tone::Secondary}};
         } else {

@@ -31,12 +31,18 @@ static void FlowTests() {
     Expect(!f.Back() && f.step() == Step::What, "flow: A1's secondary is « Plus tard » (not a step back)");
     Expect(f.Next() && f.step() == Step::Pick, "flow: A1 « Suivant » → A2 « choisissez un élément »");
     Expect(!f.Pick(Part::Title) && !f.Pick(Part::Email) && !f.Pick(Part::Header) && f.step() == Step::Pick, "trial: a click on anything but « Payer » does not pick");
-    Expect(f.Pick(Part::Pay) && f.step() == Step::Write, "trial: « Payer » picked → A3 « Décrivez le changement »");
-    Expect(!f.CanSend() && !f.Send() && f.step() == Step::Write, "trial: nothing typed, nothing sent");
-    f.SetText(L"   "); Expect(!f.CanSend(), "trial: blanks are not a note");
-    f.SetText(L"Rends ce bouton plus large"); Expect(f.CanSend() && f.Send() && f.step() == Step::Result && f.tried(), "trial: the note sent → A4, the button wider");
+    f.Suggest(L"Rends ce bouton plus large");   // what the window gives (annotation_onboarding_write_hint)
+    Expect(f.text().empty(), "trial: the note is written only once « Payer » is picked");
+    Expect(f.Pick(Part::Pay) && f.step() == Step::Write && f.text() == L"Rends ce bouton plus large", "trial: « Payer » picked → A3 « Envoyez la demande », the note already written");
+    Expect(f.CanSend(), "trial: A3's « Envoyer » is on at once (nothing to type)");
+    f.SetText(L"   "); Expect(!f.CanSend() && !f.Send() && f.step() == Step::Write, "trial: emptied (blanks only), nothing to send");
+    f.SetText(L"Rends ce bouton plus large"); Expect(f.Send() && f.step() == Step::Result && f.tried(), "trial: the note sent → A4, the button wider");
     Expect(f.Back() && f.step() == Step::Pick && !f.tried() && f.text().empty(), "trial: A4 « Recommencer » → A2, everything as at the start");
-    f.Pick(Part::Pay); f.SetText(L"Autre chose"); Expect(f.Send() && f.step() == Step::Result, "trial: any text makes it wider (the demo does not read it)");
+    Expect(f.Pick(Part::Pay) && f.text() == L"Rends ce bouton plus large" && f.CanSend(), "trial: « Recommencer » then « Payer »: the note written again, « Envoyer » on");
+    f.SetText(L"Autre chose"); Expect(f.Send() && f.step() == Step::Result, "trial: any text makes it wider (the demo does not read it)");
+    AO::Flow g; g.Suggest(L"Rends ce bouton plus large"); g.Next(); g.Pick(Part::Pay);
+    g.Suggest(L"Make this button wider"); Expect(g.text() == L"Make this button wider" && g.CanSend(), "trial: a new language rewrites the untouched note");
+    g.SetText(L"Plus large"); g.Suggest(L"Rends ce bouton plus large"); Expect(g.text() == L"Plus large", "trial: an edited note is kept when the language changes");
     Expect(f.Next() && f.step() == Step::Where, "flow: A4 « Suivant » → A5 « Où ça marche »");
     Expect(f.Back() && f.step() == Step::Result && f.Next(), "flow: A5 « Retour » → A4 once the trial was done");
     Expect(f.Next() && f.step() == Step::Connect && f.Next() && f.step() == Step::Ready, "flow: A5 → A6 « Connecter » → A7 « Prêt »");
@@ -87,7 +93,7 @@ struct Fixture {
     D2D1_RECT_F Item(int id, NativeChrome::Chrome& c) { for (const auto& i : window.ItemsForTest(c)) if (i.first == id) return i.second; return {}; }
 };
 
-// A2 – A4 in one colour, as the boards draw them: the pointer on « Payer » (A2), the note typed (A3), the result (A4).
+// A2 – A4 in one colour, as the boards draw them: the pointer on « Payer » (A2), the note written (A3), the result (A4).
 static void Trial(Fixture& f, const std::wstring& suffix, const Profiles::Profile* tint, unsigned accent) {
     const A::AppStatus connected{A::ConnectState::Connected, L""};
     f.Setup(connected, {}, Step::Pick, tint, accent);
@@ -96,8 +102,8 @@ static void Trial(Fixture& f, const std::wstring& suffix, const Profiles::Profil
     Expect(f.Shot(L"A2" + suffix), "render: A2 « Essayez : choisissez un élément »");
     f.window.PointForTest(308, 248, true);
     Expect(f.window.Flow().step() == Step::Write, "A2: the click on « Payer » picks it → A3");
-    f.window.TypeForTest(L"Rends ce bouton plus large");
-    Expect(f.Shot(L"A3" + suffix), "render: A3 « Décrivez le changement » (the note typed)");
+    Expect(f.window.Flow().text() == L"Rends ce bouton plus large" && f.window.Flow().CanSend() && !f.window.NoteActiveForTest(), "A3: the note arrives written, « Envoyer » on and ringed, no caret (1S2M-0, 1S33-0)");
+    Expect(f.Shot(L"A3" + suffix), "render: A3 « Envoyez la demande » (the note written, « Envoyer » highlighted)");
     f.window.ActivateForTest(UI::Window::Send);
     Expect(f.window.Flow().step() == Step::Result, "A3: « Envoyer » → A4");
     Expect(f.Shot(L"A4" + suffix), "render: A4 « Et voilà : le bouton est plus large »");
@@ -146,14 +152,21 @@ int wmain(int argc, wchar_t** argv) {
     f.window.PointForTest(400, 80, false); Expect(f.window.HoveredForTest() == Part::Header, "A2: the site's header framed");
     f.window.KeyForTest(VK_TAB); Expect(f.window.FocusForTest() == UI::Window::Payer, "A2 keyboard: Tab reaches « Payer »");
     f.window.KeyForTest(VK_RETURN); Expect(f.window.Flow().step() == Step::Write && f.window.FocusForTest() == UI::Window::Field, "A2 keyboard: Entrée on « Payer » picks it; the note takes the keys");
-    f.window.KeyForTest(VK_RETURN); Expect(f.window.Flow().step() == Step::Write, "A3: Entrée with nothing typed sends nothing");
-    f.window.TypeForTest(L"Rends ce bouton plus larg"); f.window.TypeForTest(L"x"); f.window.EraseForTest(); f.window.TypeForTest(L"e");
-    Expect(f.window.Flow().text() == L"Rends ce bouton plus large", "A3: typing and erasing");
+    Expect(f.window.Flow().text() == L"Rends ce bouton plus large" && f.window.Flow().CanSend() && !f.window.NoteActiveForTest(), "A3: the note arrives written, « Envoyer » on, no caret");
+    f.window.EraseForTest(); f.window.TypeForTest(L"x"); f.window.EraseForTest(); f.window.TypeForTest(L"e");
+    Expect(f.window.Flow().text() == L"Rends ce bouton plus large" && f.window.NoteActiveForTest(), "A3: the note stays editable (erase, type); the caret shows once edited");
+    f.window.KeyForTest(VK_RETURN);
+    Expect(f.window.Flow().step() == Step::Result && f.window.Flow().tried(), "A3: Entrée sends at once (« Envoyer » is on)");
+    f.window.ActivateForTest(UI::Window::Secondary);
+    Expect(f.window.Flow().step() == Step::Pick && f.window.Flow().text().empty(), "A4 « Recommencer » → A2");
+    f.window.PointForTest(308, 248, true);
+    Expect(f.window.Flow().step() == Step::Write && f.window.Flow().text() == L"Rends ce bouton plus large" && f.window.Flow().CanSend() && !f.window.NoteActiveForTest(), "A4 « Recommencer » then « Payer »: the note written again, « Envoyer » on, no caret");
     if (measured) { const auto send = f.Item(UI::Window::Send, measure); Expect(Near(send.left, 569) && Near(send.top, 240), "A3 geometry: « Envoyer » 28 × 28 at (569, 240) (1S33-0)"); }
+    f.window.ActivateForTest(UI::Window::Field); Expect(f.window.NoteActiveForTest(), "A3: a click in the note shows the caret");
     f.window.ActivateForTest(UI::Window::Send);
     Expect(f.window.Flow().step() == Step::Result && f.window.Flow().tried(), "A3 « Envoyer » → A4");
     f.window.ActivateForTest(UI::Window::Secondary);
-    Expect(f.window.Flow().step() == Step::Pick && f.window.Flow().text().empty(), "A4 « Recommencer » → A2, the note empty");
+    Expect(f.window.Flow().step() == Step::Pick && f.window.Flow().text().empty(), "A4 « Recommencer » → A2, the note empty until « Payer »");
     f.window.ActivateForTest(UI::Window::Primary);
     Expect(f.window.Flow().step() == Step::Where, "A2 « Passer l'essai » → A5");
     Expect(f.Shot(L"A5"), "render: A5 « Sur vos projets en cours »");
@@ -184,7 +197,9 @@ int wmain(int argc, wchar_t** argv) {
     f.Setup(idle, idle, Step::Connect); f.closed = 0; f.window.ActivateForTest(UI::Window::Manual);
     Expect(f.closed == 1 && f.manual && f.ending == AO::Ending::Skipped, "A6 « Autre app ou réglage manuel »: closed, the host opens the manual setup");
     f.Setup(idle, idle, Step::Write); f.closed = 0;
-    Expect(f.Shot(L"A3-empty"), "render: A3 before typing (the hint, « Envoyer » dimmed)");
+    for (int i = 0; i < 40 && !f.window.Flow().text().empty(); ++i) f.window.EraseForTest();
+    Expect(f.window.Flow().text().empty() && !f.window.Flow().CanSend(), "A3 emptied by the person: nothing to send");
+    Expect(f.Shot(L"A3-empty"), "render: A3 emptied (the hint, « Envoyer » dimmed, no ring)");
 
     // ---- the trial in the boards' cyan, in violet and in « Personnel »'s blue ----
     Trial(f, L"", nullptr, 0);
@@ -244,6 +259,9 @@ int wmain(int argc, wchar_t** argv) {
     f.window.ActivateForTest(UI::Window::Primary); Expect(f.Shot(L"en-A5"), "render: A5 in English");
     f.window.ActivateForTest(UI::Window::Primary); f.window.ActivateForTest(UI::Window::Primary); Expect(f.Shot(L"en-A7"), "render: A7 in English");
     Expect(f.window.BodyForTest().find(L"Ctrl + Shift + A") != std::wstring::npos, "A7 in English: the shortcut's own names");
+    f.Setup(connected, idle, Step::Pick); f.window.PointForTest(308, 248, true);
+    Expect(f.window.Flow().text() == L"Make this button wider" && f.window.Flow().CanSend(), "A3 in English: « Make this button wider » already written, « Send » on");
+    Expect(f.Shot(L"en-A3"), "render: A3 in English « Send the request »");
     I18n::SetForProcess(I18n::Locale::Fr);
 
     if (scratch) { measure.Dispose(); DestroyWindow(scratch); }

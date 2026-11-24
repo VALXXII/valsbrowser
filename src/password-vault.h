@@ -356,12 +356,43 @@ inline std::wstring FillScript(const std::wstring& origin, const std::wstring& u
     s.append(body); AppendJsonString(s, origin); s.push_back(L','); AppendJsonString(s, user); s.push_back(L','); AppendJsonString(s, secret); s.append(L");");
     return s;
 }
+// #121 (identifier-only step, the key path like the list under the field): run BEFORE any decryption, in the same
+// fresh isolated world as FillScript. It never holds the secret. Same origin / secure context / ancestor checks as
+// FillScript, then:
+//   "password" the focused element's form (or the document, when it has no form) shows a password field: the full fill
+//              (FillScript) is needed; nothing touched here;
+//   "user"     no visible password field and the focused element is a visible, writable identifier field (e-mail, or
+//              text with a username / e-mail hint, as the forms world's own test): the account's username only is
+//              filled there (the merged list's identifier-only fill, review P10);
+//   "noform" / "nofield" / "origin": as FillScript (its words and messages, unchanged).
+inline constexpr const wchar_t* UserStepScriptBody =
+           L"(function(o,u){'use strict';if(location.origin!==o||self.origin!==o||!window.isSecureContext)return 'origin';"
+           L"var an=location.ancestorOrigins;if(an)for(var i=0;i<an.length;i++)if(an[i]!==o)return 'origin';"
+           L"function shown(e){if(!e||e.type==='hidden'||e.disabled||e.offsetParent===null)return false;"
+           L"if(e.checkVisibility&&!e.checkVisibility({opacityProperty:true,visibilityProperty:true,contentVisibilityAuto:true}))return false;"
+           L"var r=e.getBoundingClientRect();if(r.width<2||r.height<2||r.right<=0||r.bottom<=0||r.left>=innerWidth||r.top>=innerHeight)return false;"
+           L"var h=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);return !!h&&(h===e||e.contains(h)||h.control===e);}"
+           L"var a=document.activeElement;var f=a&&a.form;"
+           L"if(Array.prototype.some.call((f||document).querySelectorAll('input[type=password]'),shown))return f?'password':'noform';"
+           L"if(!a||a.tagName!=='INPUT'||a.readOnly||!shown(a)||!u)return f?'nofield':'noform';"
+           L"var t=String(a.type||'text').toLowerCase(),ac=String(a.getAttribute('autocomplete')||'').toLowerCase();"
+           L"if(!(t==='email'||(t==='text'&&(/(^|\\s)(username|email)(\\s|$)/.test(ac)||/mail|login|user|ident|account|compte/i.test(String(a.name||'')+' '+String(a.id||''))))))return f?'nofield':'noform';"
+           L"var d=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');d.set.call(a,u);"
+           L"a.dispatchEvent(new Event('input',{bubbles:true}));a.dispatchEvent(new Event('change',{bubbles:true}));return 'user';})(";
+inline std::wstring UserStepScript(const std::wstring& origin, const std::wstring& user) {
+    const std::wstring_view body(UserStepScriptBody);
+    std::wstring s; s.reserve(body.size() + JsonStringLength(origin) + 1 + JsonStringLength(user) + 2);
+    s.append(body); AppendJsonString(s, origin); s.push_back(L','); AppendJsonString(s, user); s.append(L");");
+    return s;
+}
 // What the host may say about the script's answer (the JSON the engine returns): only the fixed words.
-enum class FillOutcome { Filled, Origin, NoForm, NoField, Failed };
+// User / NeedsPassword come from UserStepScript only (FillScript never answers them).
+enum class FillOutcome { Filled, Origin, NoForm, NoField, Failed, User, NeedsPassword };
 inline FillOutcome ParseFillResult(long hr, const wchar_t* json) {
     if (hr < 0 || !json) return FillOutcome::Failed;
     const std::wstring j = json;
-    return j == L"\"filled\"" ? FillOutcome::Filled : j == L"\"origin\"" ? FillOutcome::Origin : j == L"\"noform\"" ? FillOutcome::NoForm : j == L"\"nofield\"" ? FillOutcome::NoField : FillOutcome::Failed;
+    return j == L"\"filled\"" ? FillOutcome::Filled : j == L"\"origin\"" ? FillOutcome::Origin : j == L"\"noform\"" ? FillOutcome::NoForm : j == L"\"nofield\"" ? FillOutcome::NoField
+         : j == L"\"user\"" ? FillOutcome::User : j == L"\"password\"" ? FillOutcome::NeedsPassword : FillOutcome::Failed;
 }
 // ---- Review R-1: the fill runs in an ISOLATED world, never in the page's main world ------------------
 // In the main world `self` and `window.origin` are [Replaceable]: an opaque-origin document (CSP sandbox)
@@ -440,7 +471,7 @@ inline FillOutcome ParseIsolatedFillResult(long hr, const wchar_t* json) {
 }
 inline const wchar_t* FillOutcomeText(FillOutcome o) {
     switch (o) {
-    case FillOutcome::Filled: return L"";
+    case FillOutcome::Filled: case FillOutcome::User: return L"";
     case FillOutcome::Origin: return TR(vault_fill_origin);
     case FillOutcome::NoForm: return TR(vault_fill_no_form);
     case FillOutcome::NoField: return TR(vault_fill_no_field);

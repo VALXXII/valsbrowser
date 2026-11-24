@@ -115,6 +115,13 @@ namespace Address {
 inline constexpr float slotInset=Space::xs, slot=Size::compact, textInset=slotInset+slot+Space::xs; // 4, 24, 32
 inline constexpr float chipRadius=4, chipIcon=14, chipPadLeft=Space::xs, chipPadRight=Space::md, chipPlate=.06f;
 inline constexpr float divider=Space::md, fade=24, primary=Text::primary, secondary=Text::secondary;
+// « Local » pill (Paper #127 « Proposition — Adresse · pastille « Local » (validée) »; AddressBar::Security::Local):
+// 20 high, padding-inline 5, radius 4, gap 4, Phosphor « monitor » (bold) 14, « Local » 13/16 regular; in the field it sits
+// 6 after the field's edge, then 6, the 1 × 10 divider, 6, the address. Its colours follow the profile: src/local-pill.h
+// (LocalPill::For(ink, inField)), solid, for the #292929 field and for #127's compact bar on #171717 (its row: padding 10).
+inline constexpr float localHeight=20,localPad=5,localRadius=4,localGap=4,localIcon=14,localText=13,localLead=Space::sm,localDivider=Space::sm;
+// Phosphor « monitor » (bold), 256 view box (Paper 1ZWX-0).
+inline constexpr char monitorPath[]="M208,36H48A28,28,0,0,0,20,64V176a28,28,0,0,0,28,28H208a28,28,0,0,0,28-28V64A28,28,0,0,0,208,36Zm4,140a4,4,0,0,1-4,4H48a4,4,0,0,1-4-4V64a4,4,0,0,1,4-4H208a4,4,0,0,1,4,4Zm-40,52a12,12,0,0,1-12,12H96a12,12,0,0,1,0-24h64A12,12,0,0,1,172,228Z";
 }
 namespace Focus {
 inline constexpr float color=1, pointerOpacity=.10f, keyboardOpacity=.50f, stroke=Size::focusStroke;
