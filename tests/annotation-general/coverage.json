@@ -1128,7 +1128,7 @@
     "#125-parcours-local-en-ligne": {
       "gap": {
         "lot": 3,
-        "why": "parcours en vraie fenêtre local_en_ligne à écrire ; réécrire chat_qa_run.py:600 et chat_qa_v12.py:220 (le mode s'arrête au lieu de « site pas local ») ; protections du chat sur file:// et en fenêtre privée"
+        "why": "parcours en vraie fenêtre local_en_ligne à écrire (localhost, *.localhost, 127.x, [::1], file:// local allumés ; site en ligne, adresse du réseau local éteints ; fenêtre privée même règle) ; les points 6 (pointeur après la saisie dans la note) et 5 (cadre de la note au défilement) de chat_qa_v12.py passaient par la note d'un site non local : à rejouer sur une page file:// ; chat_qa_run.py et chat_qa_v12.py vérifient déjà qu'un site non local ne démarre ni le mode ni le panneau (fait le 24/11)"
       }
     }
   }

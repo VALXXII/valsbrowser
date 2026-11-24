@@ -583,7 +583,8 @@ void WarmBubble() {
     SetWindowRgn(bubble.hwnd, CreateRectRgn(0, 0, 0, 0), FALSE);
     SetWindowPos(bubble.hwnd, HWND_TOP, a.left, a.top, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     bubble.win = RECT{}; bubble.region = RECT{};
-    if (!view.Usable(environment.p)) { view.Destroy(); panelReady = false; if (!view.Create(environment.p, bubble.hwnd, {0, 0, w, h})) return; Diag(L"bubble WebView created in advance (Mode Commentaire)"); }
+    if (!view.Usable(environment.p)) { view.Destroy(); panelReady = false; stats.requestedAt = stats.createdAt = stats.readyAt = 0;   // made in advance: no opening to time
+        if (!view.Create(environment.p, bubble.hwnd, {0, 0, w, h})) return; Diag(L"bubble WebView created in advance (Mode Commentaire)"); }
     else if (view.Parent() != bubble.hwnd) view.Reparent(bubble.hwnd, {0, 0, w, h});
     else view.Place({0, 0, w, h});
     view.Show(true);

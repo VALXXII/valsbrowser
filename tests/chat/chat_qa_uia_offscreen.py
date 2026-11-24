@@ -106,6 +106,7 @@ def launch():
         except OSError:
             pass
     (app / 'session').write_text('browser-session-2\n0\n1\n' + json.dumps(LANDING) + '\n0\n', encoding='utf-8', newline='\n')
+    C.mark_tutorial_seen(app)   # #125: the tutorial (its veil, its own windows) is not what this suite reads
     shutil.rmtree(C.SITE, ignore_errors=True); shutil.copytree(ROOT / 'sandbox' / 'chat' / 'site', C.SITE)
     for sub in ('AppData/Roaming/Claude', 'AppData/Local', 'home/.codex'):
         (C.AGENTS / sub).mkdir(parents=True, exist_ok=True)

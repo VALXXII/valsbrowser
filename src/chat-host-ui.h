@@ -641,7 +641,7 @@ void EnsureInit() {
     if (uiInit) return; uiInit = true; EnsurePost(); LoadOptionsCache();
     ChatPanelView::Hooks h;
     h.message = [](const std::string& json) { OnPanelMessage(json); };
-    h.created = [](bool ok) { stats.createdAt = Ann::NowMs(); Diag(ok ? L"panel WebView created in " + Ann::Ms(stats.createdAt - stats.requestedAt) + L" ms" : L"panel WebView could not be created"); if (!ok) { if (BubbleOpen()) CloseBubble(true); ClosePanel(); } else Layout(); };   // F7: a bubble without its WebView closes
+    h.created = [](bool ok) { stats.createdAt = Ann::NowMs(); Diag(ok ? (stats.requestedAt > 0 ? L"panel WebView created in " + Ann::Ms(stats.createdAt - stats.requestedAt) + L" ms" : std::wstring(L"panel WebView created in advance (no opening to time)")) : std::wstring(L"panel WebView could not be created"));   // a page made in advance has no request: it logged the time since the start, ~68 h (general test, 24 Nov 2026) if (!ok) { if (BubbleOpen()) CloseBubble(true); ClosePanel(); } else Layout(); };   // F7: a bubble without its WebView closes
     h.accelerator = [](int vk) { const int cmd = Key(UINT(vk)); if (cmd) { view.AcceleratorHandled(); PostMessageW(window, Shortcut, WPARAM(cmd), 0); } };
     h.crashed = [] { Diag(L"panel renderer failed: the panel is rebuilt at the next opening"); panelReady = false; if (Open()) ClosePanel(); view.Destroy(); };
     std::wstring exe = Ann::BrowserExe(); const auto slash = exe.find_last_of(L'\\');
@@ -726,6 +726,7 @@ void WarmPanel() {
     EnsureInit(); PrepareChat(t);
     if (view.Usable(environment.p) || view.Creating()) return;
     view.Destroy(); panelReady = false;
+    stats.requestedAt = stats.createdAt = stats.readyAt = 0;   // made in advance: no opening to time (the log said ~68 h)
     if (view.Create(environment.p, window, PanelRect(0.f))) { view.Show(false); panelWarm = true; Diag(L"panel WebView created in advance (Chat a droite)"); }   // i18n-exempt: log detail
     DetectAgents([] { MaybeStartSession(); });   // O1: its agent too: the model and effort are known before the panel shows
 }
@@ -872,7 +873,7 @@ void OnPanelMessage(const std::string& json) {
     if (json.size() > (256u << 10) && type != "attachImage") { Diag(L"panel message too large (" + W(type) + L"): ignored"); return; }
     if (type == "ready") {
         panelReady = true; stats.readyAt = Ann::NowMs();
-        Diag(L"panel ready " + Ann::Ms(stats.readyAt - stats.requestedAt) + L" ms after the request (build " + W(m.Text("build", 64)) + L")");
+        Diag((stats.requestedAt > 0 ? L"panel ready " + Ann::Ms(stats.readyAt - stats.requestedAt) + L" ms after the request" : std::wstring(L"panel ready in advance")) + L" (build " + W(m.Text("build", 64)) + L")");
         SJ::Value hello = SJ::Value::Obj(); hello.Set("locale", Str(std::string(I18n::Current() == I18n::Locale::En ? "en" : "fr"))); hello.Set("platform", Str(std::string("windows"))); hello.Set("reducedMotion", SJ::Value::Bool(Ann::Reduced()));
         Send("hello", std::move(hello)); if (BubbleOpen()) SendLayout(true); else SendLayout(false);   // R34: the layout the page needs, always first
         SendState(); SendThread(); SendCommands(); SendQueue();   // C1 (review R): were left in the comment above — a bubble opened before the page was ready got no thread

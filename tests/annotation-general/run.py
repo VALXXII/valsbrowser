@@ -291,6 +291,19 @@ def run_suite(suite, part, env, logs):
     text = log.read_text(encoding='utf-8', errors='replace')
     result['objectives'] = [{'id': m.group(1), 'reached': m.group(2) == 'atteint', 'label': m.group(3).strip(), 'value': m.group(4).strip()[:300]}
                             for m in re.finditer(r'^OBJECTIF (\S+) (atteint|manque) \| (.*?) \| (.*)$', text, re.M)]
+    # the #125 tutorial opened in a test browser of this suite: its veil covers the page, the suite measured the veil (rule 8).
+    # Every prototype.log written under build/ since the suite started is read; a suite of the tutorial itself says `tutorial: true`.
+    if not suite.get('tutorial'):
+        opened = []
+        for lg in (ROOT / 'build').glob('*/prototype.log'):
+            try:
+                if lg.stat().st_mtime >= started - 2 and 'ANNOTATE onboarding opened' in lg.read_text(encoding='utf-8', errors='replace'):
+                    opened.append(lg.parent.name)
+            except OSError:
+                pass
+        if opened:
+            status = 'fail'; result['why'] = ('le tutoriel du mode annotation (#125) s\'est ouvert dans le profil de test (' + ', '.join(sorted(opened)) +
+                                              ') : son voile couvre la page, cette suite n\'a pas mesuré le produit')
     marker = suite.get('skipMarker')   # a suite that says it skipped something is not a full run of it
     if marker and part == 'night' and re.search(marker, text):
         status = 'fail'; result['why'] = 'the suite says it skipped a test: ' + marker
