@@ -309,8 +309,11 @@ inline const wchar_t* IconFor(Kind kind) {
 // buttons / sheet, 8 between title and text. Title 20/28 Inter Display SemiBold #FFFFFFE6 balanced; text
 // 14/20 Regular #FFFFFF99 (host Medium #FFFFFFE6); buttons h 32 radius 8 padding 14, 14 Medium. Title,
 // text and buttons carry the boards' cv01-04/cv13; the sheet, the status and the countdown do not.
+// `uri` is a data: URI; its type says the format (font/woff2: Inter Display, the files the crashed-tab page also
+// embeds; font/ttf: the JetBrains Mono subset).
 inline std::wstring Face(const wchar_t* family, const std::wstring& uri, const wchar_t* weight) {
-    return std::wstring(L"@font-face{font-family:\"") + family + L"\";src:url(" + uri + L") format(\"truetype\");font-weight:" + weight + L";font-display:block}";
+    const wchar_t* format = uri.rfind(L"data:font/woff2", 0) == 0 ? L"woff2" : L"truetype";
+    return std::wstring(L"@font-face{font-family:\"") + family + L"\";src:url(" + uri + L") format(\"" + format + L"\");font-weight:" + weight + L";font-display:block}";
 }
 inline std::wstring Head(const std::wstring& title, const Extras& x, bool mono) {
     std::wstring h = std::wstring(L"<!doctype html><html lang=\"") + (I18n::Current() == I18n::Locale::En ? L"en" : L"fr") + LR"("><meta charset="utf-8"><meta name="color-scheme" content="dark">)"

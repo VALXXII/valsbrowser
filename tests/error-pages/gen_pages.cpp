@@ -19,7 +19,8 @@ std::wstring FontUri(const wchar_t* file) {
     std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     if (bytes.empty()) { std::fprintf(stderr, "missing font %ls\n", file); std::exit(2); }
     static const char* digits = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::wstring r = L"data:font/ttf;base64,";
+    const std::wstring name = file;
+    std::wstring r = std::wstring(L"data:font/") + (name.size() > 6 && name.compare(name.size() - 6, 6, L".woff2") == 0 ? L"woff2" : L"ttf") + L";base64,";
     for (size_t i = 0; i < bytes.size(); i += 3) {
         const unsigned n = (static_cast<unsigned char>(bytes[i]) << 16) | (i + 1 < bytes.size() ? static_cast<unsigned char>(bytes[i + 1]) << 8 : 0) | (i + 2 < bytes.size() ? static_cast<unsigned char>(bytes[i + 2]) : 0);
         r += static_cast<wchar_t>(digits[(n >> 18) & 63]); r += static_cast<wchar_t>(digits[(n >> 12) & 63]);
@@ -40,8 +41,9 @@ int wmain(int argc, wchar_t** argv) {
     if (argc != 3) { std::fprintf(stderr, "usage: gen_pages.exe <root> <out>\n"); return 2; }
     root = argv[1]; out = argv[2];
     const std::wstring token = L"{00000000-0000-4000-8000-000000000121}";
-    ErrorPages::Extras x; x.fontRegular = FontUri(L"InterDisplay-Regular.ttf"); x.fontMedium = FontUri(L"InterDisplay-Medium.ttf");
-    x.fontSemiBold = FontUri(L"InterDisplay-SemiBold-Latin.ttf"); x.fontMono = FontUri(L"JetBrainsMono-Codes.ttf");
+    // The files the browser embeds (main's PageFonts).
+    ErrorPages::Extras x; x.fontRegular = FontUri(L"InterDisplay-Regular.woff2"); x.fontMedium = FontUri(L"InterDisplay-Medium.woff2");
+    x.fontSemiBold = FontUri(L"InterDisplay-SemiBold.woff2"); x.fontMono = FontUri(L"JetBrainsMono-Codes.ttf");
     x.reducedMotion = true;   // no entrance animation: measured and captured at rest
     // Boards 1LXF-0, 1LZP-0, 1M1W-0 (DNS, refusée, délai, reprise) and 1M3Q-0 (5 certificates), their own hosts.
     Write(L"offline", ErrorPages::Html(Kind::Offline, L"https://www.lemonde.fr/planete/", token, false, x));

@@ -17,7 +17,8 @@ static std::wstring Msg(const std::wstring& token, const std::wstring& action) {
 static std::wstring FontUri(const char* file) {
     std::ifstream in(std::string("assets/fonts/") + file, std::ios::binary); std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     Require(!bytes.empty(), "bundled font readable (run from the repository root)");
-    static const char* digits = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"; std::wstring r = L"data:font/ttf;base64,";
+    const std::string name = file; const bool woff2 = name.size() > 6 && name.compare(name.size() - 6, 6, ".woff2") == 0;
+    static const char* digits = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"; std::wstring r = woff2 ? L"data:font/woff2;base64," : L"data:font/ttf;base64,";
     for (size_t i = 0; i < bytes.size(); i += 3) {
         const unsigned n = (static_cast<unsigned char>(bytes[i]) << 16) | (i + 1 < bytes.size() ? static_cast<unsigned char>(bytes[i + 1]) << 8 : 0) | (i + 2 < bytes.size() ? static_cast<unsigned char>(bytes[i + 2]) : 0);
         r += static_cast<wchar_t>(digits[(n >> 18) & 63]); r += static_cast<wchar_t>(digits[(n >> 12) & 63]); r += i + 1 < bytes.size() ? static_cast<wchar_t>(digits[(n >> 6) & 63]) : L'='; r += i + 2 < bytes.size() ? static_cast<wchar_t>(digits[n & 63]) : L'=';
@@ -126,13 +127,13 @@ int main() {
     for (auto* page : {&offline, &dns, &refused, &escaped}) Require(!Has(*page, L"drop-shadow") && !Has(*page, L"text-shadow") && Count(*page, L"box-shadow") == Count(*page, L"box-shadow:inset"), "no decorative shadow (inset focus ring only)");
     ErrorPages::Extras fonts; fonts.fontRegular = L"data:font/ttf;base64,AAAA"; fonts.fontMedium = L"data:font/ttf;base64,BBBB";
     Require(Has(ErrorPages::Html(Kind::Offline, L"https://a.test", token, false, fonts), L"src:url(data:font/ttf;base64,BBBB)"), "fonts as data: URIs");
-    fonts.fontSemiBold = L"data:font/ttf;base64,CCCC"; fonts.fontMono = L"data:font/ttf;base64,DDDD";
-    Require(Has(ErrorPages::Html(Kind::Offline, L"https://a.test", token, false, fonts), L"base64,CCCC) format(\"truetype\");font-weight:600") && Has(ErrorPages::Html(Kind::Offline, L"https://a.test", token, false, fonts), L"base64,BBBB) format(\"truetype\");font-weight:500;"), "titles in Inter Display SemiBold (600), Medium for 500");
+    fonts.fontSemiBold = L"data:font/woff2;base64,CCCC"; fonts.fontMono = L"data:font/ttf;base64,DDDD";
+    Require(Has(ErrorPages::Html(Kind::Offline, L"https://a.test", token, false, fonts), L"base64,CCCC) format(\"woff2\");font-weight:600") && Has(ErrorPages::Html(Kind::Offline, L"https://a.test", token, false, fonts), L"base64,BBBB) format(\"truetype\");font-weight:500;"), "titles in Inter Display SemiBold (600), Medium for 500; the format follows the data: type");
     Require(!Has(ErrorPages::Html(Kind::Offline, L"https://a.test", token, false, fonts), L"DDDD") && Has(ErrorPages::Html(Kind::Refused, L"https://a.test", token, false, fonts), L"font-family:\"JetBrains Mono\";src:url(data:font/ttf;base64,DDDD)"), "JetBrains Mono only on a page with a sheet");
     {   // NavigateToString refuses a document over ~1.5 MB (it becomes a base64 data: URL capped at 2 MB; measured by
         // tests/error-pages/run.py: 1 108 832 bytes shown, 1 663 648 refused with E_INVALIDARG). The heaviest pages, with
-        // the files the browser embeds (main's PageFonts: whole Regular / Medium, reduced SemiBold / mono), stay under 1.5 MB.
-        ErrorPages::Extras real; real.fontRegular = FontUri("InterDisplay-Regular.ttf"); real.fontMedium = FontUri("InterDisplay-Medium.ttf"); real.fontSemiBold = FontUri("InterDisplay-SemiBold-Latin.ttf"); real.fontMono = FontUri("JetBrainsMono-Codes.ttf");
+        // the files the browser embeds (main's PageFonts: Inter Display WOFF2, the reduced mono), stay under 1.5 MB.
+        ErrorPages::Extras real; real.fontRegular = FontUri("InterDisplay-Regular.woff2"); real.fontMedium = FontUri("InterDisplay-Medium.woff2"); real.fontSemiBold = FontUri("InterDisplay-SemiBold.woff2"); real.fontMono = FontUri("JetBrainsMono-Codes.ttf");
         real.certStatus = COREWEBVIEW2_WEB_ERROR_STATUS_CLIENT_CERTIFICATE_CONTAINS_ERRORS; real.issuer = std::wstring(400, L'é'); real.code = L"ERR_CONNECTION_REFUSED"; real.address = std::wstring(300, L'a'); real.tries = ErrorPages::TriesText(12, L"23:59");
         const std::wstring longUrl = L"https://" + std::wstring(300, L'x') + L".exemple.test/" + std::wstring(2000, L'y');
         size_t heaviest = 0;

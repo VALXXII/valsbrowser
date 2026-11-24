@@ -46,7 +46,7 @@ The fonts stay under the SIL Open Font License 1.1, whatever the licence of the 
 
 | Font | Licence | Where it is used | Licence file |
 |---|---|---|---|
-| Inter and Inter Display | OFL-1.1 | `assets/fonts` (including the Latin subset `InterDisplay-SemiBold-Latin.ttf` of the error pages), and a subset embedded in `src/annotation-font.h` | `assets/fonts/Inter-LICENSE.txt` |
+| Inter and Inter Display | OFL-1.1 | `assets/fonts`, and a subset embedded in `src/annotation-font.h` | `assets/fonts/Inter-LICENSE.txt` |
 | JetBrains Mono | OFL-1.1 | `assets/fonts` (including the subset `JetBrainsMono-Codes.ttf` of the error pages) | `assets/fonts/JetBrainsMono-OFL.txt` |
 | Gelasio | OFL-1.1 | `assets/fonts` | `assets/fonts/Gelasio-OFL.txt` |
 

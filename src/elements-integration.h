@@ -633,12 +633,15 @@ const std::wstring& PageFont(bool medium){
 }
 // The error pages' fonts (#121): Inter Display 400 / 500 / 600 (titles are SemiBold on the boards) and, only for
 // a page with a technical sheet, JetBrains Mono for its code. The engine refuses a NavigateToString document over
-// ~1.5 MB, so the SemiBold (titles: catalog text) and the mono (codes) are the reduced Latin files made by
-// tests/error-pages/make_page_fonts.py; tests/error_pages_test.cpp checks the heaviest page with the real files.
+// ~1.5 MB: Inter Display is embedded as the WOFF2 files the crashed-tab page uses too (assets\fonts\InterDisplay-
+// *.woff2, Inter 4.1 like the .ttf), the mono as the reduced file of tests/error-pages/make_page_fonts.py (codes).
+// tests/error_pages_test.cpp checks the heaviest page with the real files.
 void PageFonts(NativeChrome::ErrorPages::Extras& x,bool mono){
-    static const std::wstring semiBold=DataUri(base+L"\\assets\\fonts\\InterDisplay-SemiBold-Latin.ttf",L"font/ttf",256*1024);
+    static const std::wstring regular=DataUri(base+L"\\assets\\fonts\\InterDisplay-Regular.woff2",L"font/woff2",512*1024);
+    static const std::wstring medium=DataUri(base+L"\\assets\\fonts\\InterDisplay-Medium.woff2",L"font/woff2",512*1024);
+    static const std::wstring semiBold=DataUri(base+L"\\assets\\fonts\\InterDisplay-SemiBold.woff2",L"font/woff2",512*1024);
     static const std::wstring code=DataUri(base+L"\\assets\\fonts\\JetBrainsMono-Codes.ttf",L"font/ttf",256*1024);
-    x.fontRegular=PageFont(false);x.fontMedium=PageFont(true);x.fontSemiBold=semiBold;if(mono)x.fontMono=code;
+    x.fontRegular=regular;x.fontMedium=medium;x.fontSemiBold=semiBold;if(mono)x.fontMono=code;
 }
 // Local time for the sheet's « Essai » row, as Windows writes it for this user (« 14:32 »).
 std::wstring ClockNow(){
