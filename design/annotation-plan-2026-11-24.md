@@ -653,7 +653,7 @@ Le choix retenu tient dans une tournée de nuit de 3 h, sans marge.
 
 ## 10. Lot R — retrait de l'ancien système (24/11, branche `VALXXII/annotation-lotR`)
 
-État : **codé et vérifié sans fenêtre ; pas encore prouvé en vraie fenêtre.** Le lot ne sort qu'après la nuit commune
+État : **codé, partie sans fenêtre verte (11 suites sur 11, commit `88ac0bd`) ; pas encore prouvé en vraie fenêtre.** Le lot ne sort qu'après la nuit commune
 (lots 1, 2, R et 5 ensemble) verte sur le commit final. Le lot R contient le lot 1 et fusionne après lui et après le Mode
 Focus.
 
@@ -754,9 +754,16 @@ fonction `CloseStaleNote` du lot 1 (elle fermait l'ancienne note) est retirée �
 
 ### Vérifications sans fenêtre
 
-Deux passages complets de la partie sans fenêtre (`python tests/annotation-general/run.py --day`) le 24/11, arbre
-propre, aucune relance : commit `ea7f36e` puis commit `3d36be2`. **Les deux sont ROUGES, 10 suites sur 11**, à cause
-d'une seule vérification de la suite `chat-panel`, différente à chaque fois. Tableau du premier passage :
+Trois passages complets de la partie sans fenêtre (`python tests/annotation-general/run.py --day`) le 24/11, arbre
+propre, chacun sur un nouveau commit, aucune relance d'une suite dans un passage :
+
+| Passage | Commit | Verdict |
+|---|---|---|
+| 1 | `ea7f36e` | ROUGE, 10 sur 11 (`chat-panel` : la mesure de vitesse à 16,3 ms) |
+| 2 | `3d36be2` | ROUGE, 10 sur 11 (`chat-panel` : une autre vérification liée à la vitesse) |
+| 3 | `88ac0bd` (code final du lot) | **VERT, 11 sur 11**, 16 min 20 s ; objectif `accuse-ouverture-16ms` manqué et rapporté |
+
+Tableau du premier passage :
 
 | Suite | Résultat |
 |---|---|
@@ -779,9 +786,11 @@ d'une seule vérification de la suite `chat-panel`, différente à chaque fois. 
   qui échoue, « bubble: the next `layout` shows it again, opening from the element's side (180 ms) », qui lit une
   animation de 180 ms et dépend elle aussi de la vitesse de la machine. Elle avait réussi aux trois passages
   précédents du même code. Les 10 autres suites sont vertes aux deux passages.
-- Pendant ces passages, plusieurs autres agents compilaient et jouaient leurs tests sur la même machine. **Je ne peux
-  donc pas dire « vert de jour » :** le lot R n'a pas eu de passage complet sans échec. Ce qui échoue n'est pas du code
-  que le lot R change, mais ce n'est prouvé que par comparaison, pas par un passage vert.
+- **Troisième passage** (commit `88ac0bd`, avec les corrections pour le lecteur d'écran) : vert, les 11 suites. La
+  vérification du second passage réussit ; l'objectif de vitesse est manqué et écrit dans le rapport.
+- Pendant ces passages, plusieurs autres agents compilaient et jouaient leurs tests sur la même machine. À retenir :
+  la suite `chat-panel` contient des vérifications qui dépendent de la vitesse de la machine et peuvent échouer une
+  fois sur trois quand elle est chargée. La nuit, rien d'autre ne doit tourner.
 
 Aussi vérifié : le produit entier compile sans avertissement (vérification de syntaxe de `src/main.cpp` avec le mode
 annotation et le chat) ; `settings_test`, `i18n_test` (78 vérifications) ; la page du chat seule : 843 sur 844 (les 9
