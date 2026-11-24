@@ -780,13 +780,14 @@ try:
         load("c-menu-modele-inconnu")
         g = cdp.js(geo_js); t = cdp.js(top_js)
         btn = cdp.js("(()=>{const m=document.querySelector('.model .m');return [m.querySelector('.mn').textContent, m.querySelector('.e')&&!m.querySelector('.e').hidden?m.querySelector('.e').textContent.trim():'']})()")
-        check(btn == ["Opus 5.5", "Moyen"] and t and t["rows"] == ["Claude Code", "Codex"] and t["focus"] == "Claude Code",
-              "#129: no model known yet (button « Opus 5.5 · Moyen »), the bubble's model menu lists the providers as the panel does, focus on the first", json.dumps([btn, t], ensure_ascii=False)[:300])
+        heads = cdp.js("Array.from(document.querySelectorAll('.menu .mm-head .mm-hn')).map(n=>n.textContent)")   # #128: the list is grouped by provider
+        check(btn == ["Opus 5.5", "Moyen"] and t and heads == ["Claude Code", "Codex"] and t["rows"] == ["Opus 5.5", "Modèle par défaut"] and t["focus"] == "Opus 5.5",
+              "#129 (#128 list): no model known yet (button « Opus 5.5 · Moyen »), the bubble's model menu lists the providers — each group names the model its agent will use; focus on the chosen one", json.dumps([btn, heads, t], ensure_ascii=False)[:300])
         check(t and t["hit"] and t["layer"] == "layer" and t["z"] > t["appZ"] and g["mTop"] < g["aTop"] and g["mTop"] >= 0 and g["mBottom"] <= g["winH"] and g["h"] > 40
               and (g["ask"].get("overflowTop") or 0) >= g["aTop"] - g["mTop"],
               "#129: that menu opens above its button, out of the bubble (overflowTop asked), whole, on top of everything (its layer above the surface, hit-tested on it)", json.dumps([g, t], ensure_ascii=False)[:400])
         n0 = len(cdp.js("window.__posted"))
-        cdp.js("Array.from(document.querySelectorAll('.menu .mi')).find(b=>b.textContent.startsWith('Codex')).click()"); time.sleep(.1)
+        cdp.js("Array.from(document.querySelectorAll('.menu .mi')).find(b=>b.querySelector('.lb').textContent==='Modèle par défaut').click()"); time.sleep(.1)   # #128: Codex's row
         cdp.js("document.getElementById('composer-input').focus()"); cdp.call("Input.insertText", text="Le bouton en pleine largeur"); key("Enter"); time.sleep(.15)
         sent = [(m["type"], m.get("id") or m.get("text")) for m in cdp.js("window.__posted")[n0:] if m["type"] in ("setAgent", "setModel", "send")]
         check(sent == [("setAgent", "codex"), ("send", "Le bouton en pleine largeur")] and cdp.js("!document.querySelector('.menu')"),
