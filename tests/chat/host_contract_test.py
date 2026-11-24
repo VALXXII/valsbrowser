@@ -372,5 +372,11 @@ check('BubbleMarginCss = 8' in consts and '2 * BubbleMarginCss' in block_after(c
       '#130 C: 8 px from the page area\'s edges; the height offered is at most the page area - 16 px')
 
 ok = all(checks)
+# M5 (real-window monkey, 24 Nov 2026, seed 1 #81 / #101): a click while the chat panel is still on screen (sliding out) — its
+# rectangle is of a page about to widen: the bubble waits for the page's first measure instead of being shown, then moved
+oe5 = block_after(comment, 'bool OpenEarly(')
+check('const bool areaMoving = Shown();' in oe5 and oe5.count('areaMoving') >= 4 and 'holdForMeasure = stale || areaMoving' in oe5,
+      'M5: a click while the chat panel is still on screen — the bubble waits for the first measure of the page')
+
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

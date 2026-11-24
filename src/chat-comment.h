@@ -1062,12 +1062,18 @@ bool OpenEarly(const std::shared_ptr<Tab>& t, const AnnotationHost::Envelope& en
     // monkey 0.3.561 (div.plans 597 ms): a bubble open on ANOTHER element no longer waits for the full selection — the click
     // opens its element's bubble now (as TakeCommentSelection does later); a click on the open bubble's own element is left to it
     if (!ChatBubble::EarlyOpenAllowed(bubble.open, bubble.selector, env.selector)) return false;
+    // Real-window monkey of 24 Nov 2026 (seed 1 #81, #101: « switch then click »): the click came while the chat panel was still on
+    // screen (sliding out after « Commentaire »). Its rectangle was measured in the page as it was then (794 px wide); the page
+    // widens when the panel is gone (1269 px) — the bubble was shown at the right of the narrow element, then placed again
+    // below the wide one: a jump. The page area is about to change: the bubble waits for the page's first measure (as H2 6e60162).
+    const bool areaMoving = Shown();
     { UiSlow slowPrep("prepare the chat"); PrepareChat(t); }
     if (bubble.open) { Diag(L"a click on another element: its bubble opens (at the click)"); ForgetUnsent(bubble.conv); }   // i18n-exempt: log detail
     const float k = Dpi() * float(Ann::s.zoom > 0 ? Ann::s.zoom : 1.0); const RECT pa = Ann::PageScreen(t);
     const RECT element{pa.left + LONG(std::lround(env.x * k)), pa.top + LONG(std::lround(env.y * k)), pa.left + LONG(std::lround((env.x + env.w) * k)), pa.top + LONG(std::lround((env.y + env.h) * k))};
     const std::string page = ChatBubble::PageKey(U8(t->uri)), label = LabelOfSelector(env.selector);
     const bool stale = k > 0 && ChatBubble::StaleViewport(env.vw, env.vh, (pa.right - pa.left) / k, (pa.bottom - pa.top) / k);   // H2 6e60162
+    if (areaMoving && !stale) Diag(L"the chat panel was still on screen at the click: the bubble is shown at the page's first measure");   // i18n-exempt: log detail
     if (stale) Diag(L"the click's rectangle was measured in another viewport (" + std::to_wstring(int(env.vw)) + L"x" + std::to_wstring(int(env.vh)) + L" CSS px, the page area is " +
                     std::to_wstring(int((pa.right - pa.left) / k)) + L"x" + std::to_wstring(int((pa.bottom - pa.top) / k)) + L"): the bubble is shown at the page's first measure");   // i18n-exempt: log detail
     early = EarlyOpen{true, env.serial, "", Ann::NowMs()}; UiWatchStart();
@@ -1077,12 +1083,13 @@ bool OpenEarly(const std::shared_ptr<Tab>& t, const AnnotationHost::Envelope& en
         const double now = double(u.QuadPart / 10000ULL) - 11644473600000.0; early.clickLag = std::max(0.0, now - env.at); Diag(L"the click's « selecting » reached the host " + Ann::Ms(early.clickLag) + L" ms after the click"); }
     if (const auto* hp = FindAnchored(page, env.selector, "")) {   // its conversation (saved, or only in memory: F6)
         const auto& h = *hp; const std::string id = h.id, l = h.anchorLabel.empty() ? label : h.anchorLabel; early.conv = id;
-        ShowConversation(id, [id, element, l, stale] { OpenBubble(id, &element, ShownSelector(id), false, l); if (bubble.open && bubble.conv == id) bubble.holdForMeasure = stale; }, nullptr, true);   // opening time: one sending, with the opening
+        const bool hold = stale || areaMoving;
+        ShowConversation(id, [id, element, l, hold] { OpenBubble(id, &element, ShownSelector(id), false, l); if (bubble.open && bubble.conv == id) bubble.holdForMeasure = hold; }, nullptr, true);   // opening time: one sending, with the opening
         Diag(L"bubble opened on the click (selecting " + std::to_wstring(env.serial) + L"), the element's conversation");
         return true;
     }
     std::string id; { UiSlow slowNew("new conversation"); id = NewAnchoredConversation(env.selector, label, page, ""); } early.conv = id;
-    OpenBubble(id, &element, env.selector, false, label); if (bubble.open && bubble.conv == id) bubble.holdForMeasure = stale;
+    OpenBubble(id, &element, env.selector, false, label); if (bubble.open && bubble.conv == id) bubble.holdForMeasure = stale || areaMoving;
     Diag(L"bubble opened on the click (selecting " + std::to_wstring(env.serial) + L")");
     return true;
 }

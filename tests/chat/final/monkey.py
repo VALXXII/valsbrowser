@@ -67,6 +67,11 @@ class Monkey:
         shown, rb = F.bubble_shown()
         return rb if shown and isinstance(rb, tuple) else None
 
+    def under_bubble(self, p):
+        '''The point is on the open bubble: a click there is the bubble's, the element under it cannot be clicked.'''
+        b = self.bubble_box()
+        return bool(b and p and b[0] <= p[0] <= b[2] and b[1] <= p[1] <= b[3])
+
     def turn_wait(self, m, timeout=0.0):
         return F.wait_log(r'CHAT turn t\d+ ended', m, timeout) if timeout else None
 
@@ -78,6 +83,8 @@ class Monkey:
         sel = vis[int(a['r'][0] * len(vis))]
         F.front()
         p = F.element_point(sel, avoid=self.bubble_box())
+        if self.under_bubble(p):   # real-window monkey of 24 Nov 2026 (#85): the click landed on the bubble, not on the element
+            return f'click: {sel} is under the open bubble (not clickable)', 0.1
         if self.inv.m.layout == 'panel':
             F.click_at(*p); self.picked = getattr(self, 'picked', set()) | {sel}; return f'panel: click on {sel} (a chip)', 0.6
         m = F.log_mark(); t = F.click_at(*p, settle=0.04)
