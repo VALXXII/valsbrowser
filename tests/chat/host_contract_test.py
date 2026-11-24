@@ -507,5 +507,17 @@ on_perm = block_after(turn, 'void OnPermission(const Acp::PermissionRequest& p) 
 check(on_perm.count('Send("permission.request"') == 1 and 'waitingPermissions[p.requestId] = m;' in on_perm and 'm.Set("toolCallId"' in on_perm,
       'permission: the agent\'s request is sent to the page once, with its tool call, and kept while it waits')
 
+# Owner's trial 0.3.952, decision A: another application in front no longer hides the bubble (the click that brought the
+# browser back fell on the page: another element selected, the request « asked twice »); away, it never takes the keyboard
+away = block_after(comment, 'void BubbleAway(')
+check('inline constexpr bool BubbleHidesBehindOthers = false;' in comment and 'if (BubbleHidesBehindOthers) SetWindowRgn(bubble.hwnd, CreateRectRgn(0, 0, 0, 0), TRUE)' in away and 'bubble.away = true;' in away,
+      'A: another application in front — the bubble keeps its region (it stays on the browser\'s window), only its state says « away »')
+ktry = block_after(comment, 'void KeyboardTry() {')
+check('bubble.away' in ktry.split('SetForegroundWindow')[0] and '!bubble.away' in comment[comment.find('if (m == WM_APP + 2)'):comment.find('if (m == WM_APP + 3)')],
+      'A: while another application is in front the bubble never takes the foreground nor the keyboard')
+place = block_after(comment, 'void PlaceBubble(bool scrolling) {')
+check('!BubbleHidden()' in place and 'bubble.away' not in place, 'A: the bubble on screen behind another application still follows its element (its region is kept up to date)')
+check('if (BubbleHidden())' in block_after(comment, 'void RevealBubble(const wchar_t* why) {'), 'A: a bubble that becomes ready while another application is in front is shown (never left invisible)')
+
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)
