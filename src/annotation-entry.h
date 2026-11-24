@@ -35,6 +35,9 @@ enum class AnnotationApp { Claude = 0, Codex = 1 };
 void AnnotationSettingsChanged();
 // The « Connecter un agent » modal (not the launch variant); manual = « Autre app ou réglage manuel » unfolded.
 void AnnotationOpenConnect(bool manual);
+// #125 v2: the mode's tutorial over the browser (fromWelcome: the welcome window's « Essayer en 1 minute », it starts at
+// the trial; otherwise at its first step). Works outside the mode, on any page.
+void AnnotationOpenTutorial(bool fromWelcome);
 // Same code paths as the modal (src/agent-connect.h: backup + atomic write, .mcpb when associated, codex CLI
 // when present; BROWSER_ANNOTATIONS_CONNECT_ROOT redirects every write). message: French, for the UI.
 void AnnotationConnectAgent(AnnotationApp app, bool connect, std::function<void(bool ok, const std::wstring& message)> done);
