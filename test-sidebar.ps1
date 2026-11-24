@@ -5,6 +5,7 @@ param([string]$DependencyRoot = $PSScriptRoot)
 #  3. tests/ui/sidebar_render_test.cpp: the production painter in its column layout, PNGs + pixel checks
 #     (build/sidebar-qa/renders), then tools/sidebar/compose.py: side-by-side with the Paper boards
 #     (design/127-sidebar-evidence/paper -> design/127-sidebar-evidence).
+#     tools/sidebar/compose_split.py: the split view in the column (tab list crops) next to Paper 2473-0's frames.
 # The keyboard shortcut (Ctrl+Maj+,) is covered by test-shortcuts.ps1 (it compiles the whole browser).
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
@@ -24,4 +25,6 @@ if ($LASTEXITCODE -ne 0) { throw 'sidebar_render_test compilation failed.' }
 & "./$out/sidebar_render_test.exe" $PSScriptRoot "$PSScriptRoot/$out/renders"; if ($LASTEXITCODE -ne 0) { throw 'sidebar_render_test failed.' }
 python tools/sidebar/compose.py "$out/renders" design/127-sidebar-evidence
 if ($LASTEXITCODE -ne 0) { throw 'compose failed.' }
+python tools/sidebar/compose_split.py "$out/renders" design/127-sidebar-evidence
+if ($LASTEXITCODE -ne 0) { throw 'compose_split failed.' }
 Write-Host 'test-sidebar: ok'

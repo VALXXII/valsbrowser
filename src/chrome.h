@@ -471,6 +471,7 @@ public:
     // an outlined slot. `split` is painted on the canvas around the page windows.
     std::vector<int> tabGroups;int liftedIndex=-1,visibleTabGroup=0;
     std::vector<int> menuTargets;  // tabs a highlighted split-menu row designates (Paper V2: 1 DIP white 50 % outline)
+    int menuSource=-1;             // #127: the right-clicked tab while a split-menu row designates a target (the column outlines both)
     struct SplitDecor{bool shown=false,ring=true;D2D1_RECT_F active{};std::vector<D2D1_RECT_F> rails;std::vector<int> railTabs;std::vector<D2D1_RECT_F> handles;int hotHandle=-1,focusedHandle=-1;bool paintHandles=true,activeBottomLeft=false,activeBottomRight=false;} split;
     UINT dpi=96;float width=1180,height=815;D2D1_RECT_F bar{},edit{};std::vector<Region> regions;
     // Fullscreen (F11 or a page's element): the page takes the whole window. Nothing of the chrome is drawn, hit,
@@ -1037,7 +1038,7 @@ public:
     static constexpr int SidebarGridToggleId=908,SidebarMoreId='O',SidebarManageId=910;   // 910: « Gérer les favoris » (grid or popover foot)   // « » » keeps the band overflow's id (its tile, its keyboard stop)
     Sidebar::Input SideInput(Sidebar::Mode m,int count,float zoneLeft=-1,bool compactZone=false)const{Sidebar::Input in;in.mode=m;in.zoneLeft=zoneLeft;in.width=width;in.height=height;
         if(compactZone){in.zoneSet=true;in.zoneMode=Sidebar::Mode::Compact;}
-        in.grid=bandShown;in.bookmarks=(int)bandItems.size();in.gridOpen=sidebarGridOpen;in.gridScroll=sidebarGridScroll;in.tabs=count;in.tools=(int)std::max<size_t>(1,sideTools.size());in.scroll=sidebarScroll;in.band=annotationBand;in.reserve=sidebarReserve;in.panel=sidebarWidth;return in;}
+        in.grid=bandShown;in.bookmarks=(int)bandItems.size();in.gridOpen=sidebarGridOpen;in.gridScroll=sidebarGridScroll;in.tabs=count;in.tools=(int)std::max<size_t>(1,sideTools.size());in.scroll=sidebarScroll;in.band=annotationBand;in.reserve=sidebarReserve;in.panel=sidebarWidth;in.groups=tabGroups;return in;}
     // Visible bookmark tiles of the column (index i = bandItems[i]): complete, the grid's at its scroll; compact, the first
     // four (five when they all fit).
     int SideBookmarkTiles(const Sidebar::Layout& L)const{if(L.emptyGrid)return 0;if(L.mode==Sidebar::Mode::Complete)return (int)L.grid.tiles.size();return L.more?(int)L.tiles.size()-1:(int)L.tiles.size();}
@@ -1182,6 +1183,16 @@ public:
             SideGlyph(Sidebar::Glyph::close,c,Sidebar::Complete::closeGlyph*Motion::PressScale(press,motion&&motion->ReducedMotion()),K::glyph*std::max(h,focus==CloseBase+i?1.f:0.f)*labels*alpha);
             if(focus==CloseBase+i)FocusRing(c,Design::Radius::button);}
     }
+    // Vue partagée dans la colonne (Sidebar::Split; Paper 2473-0 « 1 · Repos » 247H-0 / 248B-0): each block's shared background
+    // #262626 (radius 8) under its rows, the 10 x 1 #545454 line between joined rows. The rows paint over it (DrawSideTab).
+    void PaintSideSplit(const Sidebar::Layout& L){namespace S=Sidebar::Split;
+        for(const auto& b:L.blocks)Round(R(b),S::radius,S::fill);
+        Color(S::line);for(const auto& j:L.joints)target->FillRectangle(R(j),brush);}
+    // « 2 · Survol du menu » (2492-0 / 24AJ-0): the tabs a highlighted split-menu row designates and the right-clicked tab,
+    // a 1 DIP inner #8C8C8C stroke on each row (its radius 6), over the row.
+    void PaintSideMenuTargets(const Sidebar::Layout& L){namespace S=Sidebar::Split;const float k=S::outlineW/2,r=Design::Radius::control-k;
+        for(int i:Sidebar::Designated(menuTargets,menuSource,(int)L.tabs.size())){const auto b=R(L.tabs[i]);Color(S::outline);
+            target->DrawRoundedRectangle(D2D1::RoundedRect({b.left+k,b.top+k,b.right-k,b.bottom-k},r,r),brush,S::outlineW);}}
     // The column's own fills and glyphs (the shared toolbar buttons are painted by PaintSideButton).
     void PaintSideColumn(const Sidebar::Layout& L,const std::vector<std::wstring>& titles,int selected,bool editing,int hover,int focus,Motion::Time now,bool overlay){
         namespace SB=Sidebar;namespace K=SB::Look;const bool full=L.mode==SB::Mode::Complete;
@@ -1201,17 +1212,21 @@ public:
         // Tabs.
         Color(1,K::line);target->FillRectangle(R(L.line),brush);
         target->PushAxisAlignedClip(R(L.tabsView),D2D1_ANTIALIAS_MODE_ALIASED);
+        PaintSideSplit(L);
         const int n=std::min((int)titles.size(),(int)L.tabs.size());
         for(int i=0;i<n;++i){if(L.tabs[i].bottom<=L.tabsView.top||L.tabs[i].top>=L.tabsView.bottom)continue;
             const std::wstring title=titles[i].empty()?std::wstring(i<(int)sideHome.size()&&sideHome[i]?TR(tab_new):TR(chrome_tab_untitled_tip)):titles[i];
             DrawSideTab(L,i,title,selected,hover,focus,now,R(L.tabs[i]),i==sidebarDrag?K::origin:1.f,labels);}
+        PaintSideMenuTargets(L);
         {const auto r=R(L.newTab);const float hv=Hovered('T',hover,now);if(hv>0)White(r,Design::Radius::control,K::tabHover*hv);if(focus=='T')FocusRing(r,Design::Radius::control);
             const auto f=SB::FaviconIn(L.newTab,L.mode);SideGlyph(SB::Glyph::plus,R(f),14,K::newTab);
             if(full)Text(TR(tab_new),{f.right+SB::Complete::tabIconGap,r.top,r.right-SB::Complete::tabPad,r.bottom},Design::Type::label.size,K::newTab*labels,false,false,0);}
         // Drag (05): the place it leaves stays hollow (30 %), an accent line marks where it lands, the row follows the pointer.
         if(sidebarDrag>=0&&sidebarDrag<n){
-            if(sidebarInsert>=0&&sidebarInsert<n&&sidebarInsert!=sidebarDrag){const auto& t=L.tabs[sidebarInsert];const float y=sidebarInsert>sidebarDrag?t.bottom+1:t.top-1;const auto a=Design::Accent::Get();
-                FillBox({t.left+6,y-K::insertion/2,t.right-6,y+K::insertion/2},1,D2D1::ColorF(a.r,a.g,a.b,1));}
+            if(sidebarInsert>=0&&sidebarInsert<n&&sidebarInsert!=sidebarDrag){const auto& t=L.tabs[sidebarInsert];const auto a=Design::Accent::Get();
+                const float e=sidebarInsert<(int)L.split.size()&&L.split[sidebarInsert].Member()?SB::Split::pad:0.f;   // a split view block: its edge
+                const float y=sidebarInsert>sidebarDrag?t.bottom+e+1:t.top-e-1;
+                FillBox({t.left-e+6,y-K::insertion/2,t.right+e-6,y+K::insertion/2},1,D2D1::ColorF(a.r,a.g,a.b,1));}
             const auto& o=L.tabs[sidebarDrag];const D2D1_RECT_F d{o.left,sidebarDragY,o.right,sidebarDragY+o.Height()};
             Round(d,Design::Radius::control,K::dragged);Color(1,K::draggedBorder);target->DrawRoundedRectangle(D2D1::RoundedRect({d.left+.5f,d.top+.5f,d.right-.5f,d.bottom-.5f},5.5f,5.5f),brush,1);
             const SB::Box db{d.left,d.top,d.right,d.bottom};DrawFavicon(sidebarDrag,R(SB::FaviconIn(db,L.mode)));
