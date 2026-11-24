@@ -182,6 +182,7 @@ inline constexpr const char* more = "M141.66,133.66l-80,80a8,8,0,0,1-11.32-11.32
 // group; a run of joined tabs is one block (a member away from the others is a block of one).
 namespace Split {
 inline constexpr float pad = 2, radius = 8, joint = 1, lineW = 10, lineH = 1, outlineW = 1;
+inline constexpr float compactMember = 34;   // a compact member tab: 36 x 34 (radius 6) inside the 40-wide block
 inline constexpr float fill = 0x26 / 255.f, line = 0x54 / 255.f, outline = 0x8C / 255.f;   // #262626, #545454, #8C8C8C
 }
 enum class SplitPos { None, Single, First, Middle, Last };
@@ -468,13 +469,16 @@ inline Layout Compute(const Input& in) {
         L.line = {l, y, r, y + 1};
         L.tabsView = {l, y + 1, r, std::max(y + 1, footer - K::gap)};
         const float pitch = K::tabRow + K::tabGap, lead = K::tabsLead - 1;
-        L.split = SplitRows(in.groups, in.tabs); const auto shift = SplitShift(L.split, K::tabGap);   // split view blocks
+        L.split = SplitRows(in.groups, in.tabs); auto shift = SplitShift(L.split, K::tabGap);   // split view blocks
+        // Compact members are 36 x 34 inside their 40-wide block (Designer, 24 nov.): each member row is 2 shorter.
+        { float trim = 0; for (int i = 0; i <= in.tabs; ++i) { shift[i] += trim; if (i < in.tabs && L.split[i].Member()) trim -= K::tabRow - Split::compactMember; } }
         L.content = lead + (in.tabs + 1) * pitch - K::tabGap + shift.back();
         L.maxScroll = std::max(0.f, L.content - L.tabsView.Height());
         L.scroll = std::clamp(in.scroll, 0.f, L.maxScroll);
         for (int i = 0; i <= in.tabs; ++i) {
-            const float t = L.tabsView.top + lead + i * pitch + shift[i] - L.scroll, x = i < in.tabs && L.split[i].Member() ? Split::pad : 0;
-            const Box row{l + x, t, r - x, t + K::tabRow};
+            const bool member = i < in.tabs && L.split[i].Member();
+            const float t = L.tabsView.top + lead + i * pitch + shift[i] - L.scroll, x = member ? Split::pad : 0;
+            const Box row{l + x, t, r - x, t + (member ? Split::compactMember : K::tabRow)};
             if (i < in.tabs) L.tabs.push_back(row); else L.newTab = row;
         }
         PlaceSplit(L);

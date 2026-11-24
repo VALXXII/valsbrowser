@@ -246,10 +246,10 @@ int main() {
         Check(Same(T.blocks[0], 8, 153, 240, 255) && Near(T.tabs[0].top, 155) && Near(T.tabs[1].top, 188) && Near(T.tabs[2].top, 221) && T.joints.size() == 2, "three at the top: one background from the list's first row");
         in.groups = {0, 7, 7, 0, 0}; in.mode = S::Mode::Compact; const auto K0 = S::Compute(Compact(5)); const auto K = S::Compute(in);
         const float t0 = K0.tabs[0].top;
-        Check(Same(K.tabs[0], 0, t0, 40, t0 + 36) && K.blocks.size() == 1 && Same(K.blocks[0], 0, t0 + 38, 40, t0 + 38 + 77), "compact: the background across the column's 40, around its rows + 2");
-        Check(Same(K.tabs[1], 2, t0 + 40, 38, t0 + 76) && Same(K.tabs[2], 2, t0 + 77, 38, t0 + 113), "compact: the icons' rows 2 inside, 1 apart");
-        Check(K.joints.size() == 1 && Same(K.joints[0], 15, t0 + 76, 25, t0 + 77), "compact: the line centred (248F-0)");
-        Check(Near(K.tabs[3].top, K0.tabs[3].top + 3), "compact: after the block, 2");
+        Check(Same(K.tabs[0], 0, t0, 40, t0 + 36) && K.blocks.size() == 1 && Same(K.blocks[0], 0, t0 + 38, 40, t0 + 38 + 73), "compact: the background across the column's 40, around its 34-high rows + 2 (Designer)");
+        Check(Same(K.tabs[1], 2, t0 + 40, 38, t0 + 74) && Same(K.tabs[2], 2, t0 + 75, 38, t0 + 109), "compact: members 36 x 34, 2 inside, 1 apart (Designer)");
+        Check(K.joints.size() == 1 && Same(K.joints[0], 15, t0 + 74, 25, t0 + 75), "compact: the line centred (248F-0)");
+        Check(Near(K.tabs[3].top, K0.tabs[3].top - 1), "compact: after the block, 2 (members 2 shorter each)");
     }
     // Reorder (« la paire se déplace d'un bloc »): a member drags its block; nothing lands inside a block.
     {
