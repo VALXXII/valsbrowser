@@ -1159,7 +1159,7 @@
       if (!S.perms.length) cin.focus(); else dock.querySelector(".perm") && dock.querySelector(".perm").focus();   // SEC-23: the next card, never its « Autoriser »
     };
     const refuse = h("button", { class: "btn", type: "button", "aria-keyshortcuts": "Escape", onclick: () => respond(reject, instead.value.trim() || undefined) },
-      "Refuser", h("span", { class: "kbd", "aria-hidden": "true" }, "Échap"));
+      "Refuser");   // Paper (boards 8 / 9 of the permission card, 24 Nov 2026): no key drawn on « Refuser » — Échap still refuses
     const allow = h("button", { class: "btn primary", type: "button",
                                 onclick: (e) => { if (permArmed(card, e)) respond(always && allowAlways ? allowAlways : allowOnce); } },
       "Autoriser", h("span", { class: "kbd", "aria-hidden": "true" }, "↵"));
@@ -2338,7 +2338,10 @@
     // said only where it is true (owner decision, 24 Nov 2026): « Entrée » when the card shown has the keyboard, « Échap »
     // when this request is the one shown (Échap answers the card shown, not one waiting behind it)
     const shown = !BUB() && S.perms[0] && S.perms[0].requestId === m.requestId ? dock.querySelector(".perm") : null;
-    shout(title + (BUB() ? ". Autoriser avec Entrée." : shown && shown.__enter ? ". Autoriser avec Entrée, refuser avec Échap." : shown ? ". Refuser avec Échap." : "."));
+    // « Échap » refuses the card shown while the keyboard is in the chat (the page's own Échap; in the site's page Échap
+    // leaves the mode instead) and the request can be refused
+    const esc = !!shown && document.hasFocus() && m.options.some((o) => /^reject/.test(o.kind));
+    shout(title + (BUB() ? ". Autoriser avec Entrée." : shown && shown.__enter ? (esc ? ". Autoriser avec Entrée, refuser avec Échap." : ". Autoriser avec Entrée.") : esc ? ". Refuser avec Échap." : "."));
   }
 
   function copyButton(get, label) {

@@ -1277,7 +1277,7 @@ try:
         # announcement « Autoriser avec Entrée » are there only while Entrée really allows (the keyboard is in the card)
         keys_js = ("(()=>{const c=document.querySelector('.perm');if(!c)return null;const a=c.querySelector('.btn.primary');"
                    "return {keys:c.classList.contains('keys'),aria:a.getAttribute('aria-keyshortcuts'),kbd:getComputedStyle(a.querySelector('.kbd')).display!=='none',"
-                   "esc:c.querySelector('.btn:not(.primary)').getAttribute('aria-keyshortcuts'),said:document.querySelector('.sr-only[role=alert]').textContent,active:document.activeElement===c}})()")
+                   "esc:c.querySelector('.btn:not(.primary)').getAttribute('aria-keyshortcuts'),refuse:c.querySelector('.btn:not(.primary)').textContent,said:document.querySelector('.sr-only[role=alert]').textContent,active:document.activeElement===c}})()")
         perm_msg = ("{type:'permission.request',requestId:'%s',turnId:'t1',title:'Claude veut modifier checkout.css',kind:'edit',"
                     "options:[{optionId:'allow',name:'Autoriser',kind:'allow_once'},{optionId:'reject',name:'Refuser',kind:'reject_once'}]}")
         load("6.10-travaille"); cdp.js("document.activeElement&&document.activeElement.blur()")
@@ -1285,6 +1285,12 @@ try:
         k1 = cdp.js(keys_js) or {}
         check(k1.get("active") and k1.get("keys") and k1.get("aria") == "Enter" and k1.get("kbd") and k1.get("esc") == "Escape" and k1.get("said", "").endswith("Autoriser avec Entrée, refuser avec Échap."),
               "permission (owner, 24 Nov): the card has the keyboard — « Autoriser ↵ », aria-keyshortcuts=Enter, announced « Autoriser avec Entrée, refuser avec Échap. »", json.dumps(k1, ensure_ascii=False)[:300])
+        # Paper, boards « carte d'autorisation · la carte a le clavier » / « après un message » (24 Nov 2026): the key on
+        # « Autoriser » — 16 high, radius 3, white 16 % on the accent, 11 / 14 white, 6 from the label; no key on « Refuser »
+        kb = cdp.js("(()=>{const a=document.querySelector('.perm .btn.primary'),k=a.querySelector('.kbd'),s=getComputedStyle(k),b=getComputedStyle(a);"
+                    "return [k.textContent,Math.round(k.getBoundingClientRect().height),s.borderRadius,s.backgroundColor,s.color,s.fontSize,s.lineHeight,s.paddingLeft,s.paddingRight,b.columnGap,b.height,b.paddingLeft,document.querySelectorAll('.perm .kbd').length]})()")
+        check(kb == ["↵", 16, "3px", "rgba(255, 255, 255, 0.16)", "rgb(255, 255, 255)", "11px", "14px", "4px", "4px", "6px", "28px", "8px", 1] and k1.get("refuse") == "Refuser",
+              "permission (Paper): the « ↵ » key on « Autoriser » — 16 high, radius 3, white 16 % on the accent, 11 / 14 white, padding 4, 6 from the label; « Refuser » draws no key", f"{kb} {k1.get('refuse')!r}")
         load("6.10-travaille"); cdp.js("document.getElementById('composer-input').focus()")
         cdp.js("window.devHost.send(" + perm_msg % "k2" + ")"); time.sleep(.25)
         k2 = cdp.js(keys_js) or {}
