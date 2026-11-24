@@ -55,6 +55,8 @@
 #include "viewport-scrollbar.h"
 #include "content-transition.h"
 #include <shlobj.h>
+#include <atomic>
+#include <thread>
 // Self-update host integration is compiled into identity-stamped builds only
 // (tools/release/build.py defines BROWSER_HAS_BUILD_INFO). Unstamped builds and the
 // native fixtures that include this file keep the portable, update-free behaviour.
@@ -188,7 +190,11 @@ struct ErrorPageState { std::wstring shown,token; bool pending=false; int kind=0
     std::wstring starting; UINT64 startingId=0; /* last top-level navigation: only its failure gets the page */
     // Server certificate refused by the engine for the request `certUri` (CANCEL, never allowed): the
     // page shows only if the latest top-level navigation then fails for that same URL.
-    int certStatus=-1; std::wstring certUri,certIssuer; };
+    int certStatus=-1; std::wstring certUri,certIssuer;
+    // #121 sheet: the code the page shows (its copy button), and the consecutive failures of `triedUri` in
+    // this tab (« Essai : 2e tentative »; the time-out's 8 / 16 / 32 s retries), reset by another address or a success.
+    std::wstring code,triedUri; int tries=0;
+    int forcedCert=-1; std::wstring forcedIssuer; /* sandbox: a certificate case to show (status, example issuer) */ };
 struct Tab { unsigned serial=NextTabSerial(); Com<ICoreWebView2Controller> controller; Com<ICoreWebView2> view; Com<ICoreWebView2_15> faviconView; NativeChrome::FaviconState favicon; NativeChrome::Loading::State loading; std::wstring title=TR(tab_new),uri; bool closed=false,home=true,refreshing=false,certificateError=false;
     ULONGLONG hiddenAt=GetTickCount64(); bool sleeping=false; HttpsOnlyState https; // hiddenAt: when it last stopped being shown
     // Split view: group id (0 = none), relative size, use order (rails collapse the least
@@ -449,7 +455,7 @@ void Update(){if(WorkspaceParked())return; /* a hidden profile's event: the wind
            !Check(t->view->get_CanGoForward(&canGoForward),L"get_CanGoForward"))return;
     }
     chrome.SetEnabled('B',canGoBack!=FALSE);chrome.SetEnabled('F',canGoForward!=FALSE);
-    chrome.SetEnabled('C',!t->home&&!t->uri.empty());AnnotationSyncChrome();if(!editing)SetWindowTextW(address,t->home?L"":t->uri.c_str());SetWindowTextW(window,(privateWindow?TRF(window_title_private,t->title):TRF(window_title,t->title)).c_str());RefreshTools(); /* builds the chrome (PERF-07: no second BuildChrome) */InvalidateRect(window,nullptr,FALSE);
+    chrome.SetEnabled('C',!t->home&&!t->uri.empty());AnnotationSyncChrome();if(!editing)SetWindowTextW(address,t->home?L"":t->uri.c_str());NativeUI::SetTextIfChanged(window,privateWindow?TRF(window_title_private,t->title):TRF(window_title,t->title)); /* only a new title reaches Windows: Update runs on every address, history and load event */RefreshTools(); /* builds the chrome (PERF-07: no second BuildChrome) */InvalidateRect(window,nullptr,FALSE);
     ScrollbarRefresh(NativeChrome::Motion::Now()); // home <-> page hides or restores the handle
 }
 // Tab / profile switch transition (src/content-transition.h; functions defined before profile-workspace.h).
@@ -1300,8 +1306,9 @@ bool SearchResultPage(const std::wstring& uri){for(int i=0;i<BrowserSettings::En
     const std::wstring custom=BrowserSettings::SearchTemplate(settings.customSearch);const size_t at=custom.find(L"%s");return at!=std::wstring::npos&&at>0&&uri.rfind(custom.substr(0,at),0)==0;}
 // Remembered site icons (issue #20): the favicon a tab received, kept per site in
 // <data>\favicons\<site>.png and shown by the suggestions. Never fetched while typing.
+// An import of bookmarks also leaves its sites' icons there (src/import-icons.h).
 std::map<std::wstring,std::shared_ptr<const NativeChrome::FaviconImage>> siteIcons;std::set<std::wstring> siteIconsMissing;std::map<std::wstring,size_t> siteIconsWritten;
-std::wstring SiteIconFile(const std::wstring& site){std::wstring name=site;for(auto& c:name)if(!(iswalnum(c)||c==L'.'||c==L'-'))c=L'_';return dataDir+L"\\favicons\\"+name+L".png";}
+std::wstring SiteIconFile(const std::wstring& site){return dataDir+L"\\favicons\\"+AddressBar::SiteFileName(site)+L".png";}
 std::shared_ptr<const NativeChrome::FaviconImage> DecodeIconFile(const std::wstring& path){
     std::shared_ptr<const NativeChrome::FaviconImage> image;IStream* stream=nullptr;
     if(SUCCEEDED(SHCreateStreamOnFileEx(path.c_str(),STGM_READ|STGM_SHARE_DENY_WRITE,FILE_ATTRIBUTE_NORMAL,FALSE,nullptr,&stream))&&stream){image=chrome.DecodeFavicon(stream);stream->Release();}
@@ -1312,11 +1319,13 @@ std::shared_ptr<const NativeChrome::FaviconImage> DecodeIconFile(const std::wstr
 std::map<std::wstring,std::shared_ptr<const NativeChrome::FaviconImage>> bundledIcons;
 std::shared_ptr<const NativeChrome::FaviconImage> BundledIcon(const std::wstring& site){
     auto found=bundledIcons.find(site);if(found!=bundledIcons.end())return found->second;
-    std::wstring name=site;for(auto& c:name)if(!(iswalnum(c)||c==L'.'||c==L'-'))c=L'_';
+    const std::wstring name=AddressBar::SiteFileName(site);
     std::shared_ptr<const NativeChrome::FaviconImage> image;
     for(const wchar_t* ext:{L".png",L".ico"})if(!image)image=DecodeIconFile(base+L"\\assets\\sites\\"+name+ext);
     return bundledIcons[site]=image;
 }
+// A shipped icon exists for the site (files only: no decoding, usable before the window's graphics exist).
+bool BundledIconFile(const std::wstring& site){const std::wstring name=AddressBar::SiteFileName(site);for(const wchar_t* ext:{L".png",L".ico"}){const DWORD a=GetFileAttributesW((base+L"\\assets\\sites\\"+name+ext).c_str());if(a!=INVALID_FILE_ATTRIBUTES&&!(a&FILE_ATTRIBUTE_DIRECTORY))return true;}return false;}
 std::shared_ptr<const NativeChrome::FaviconImage> SiteIcon(const std::wstring& site){
     if(site.empty())return {};auto found=siteIcons.find(site);if(found!=siteIcons.end())return found->second;
     if(!smoke&&!siteIconsMissing.count(site)){
@@ -1432,7 +1441,11 @@ DL::Item* FindDownload(int id);
 // tab: the serial of the tab that started it. view: that tab's WebView once the tab closed while the download runs
 // (a tab opened only for its download closes at once): the engine stops raising the operation's events when its
 // WebView closes, so the closed tab's hidden controller lives until its last download ends (released with the entry).
-struct DownloadOperation { Com<ICoreWebView2DownloadOperation> op; bool userPaused=false; Workspace* owner=nullptr; unsigned tab=0; std::shared_ptr<Com<ICoreWebView2Controller>> view; };
+// fullAt: when every byte was in (GetTickCount64, 0 = not yet): past DL::Engine::HoldGraceMs still in progress, the
+// engine holds the file for the user's decision. keeping/keepLink: « Conserver » in progress (KeepHeldDownload).
+struct DownloadOperation { Com<ICoreWebView2DownloadOperation> op; bool userPaused=false; Workspace* owner=nullptr; unsigned tab=0; std::shared_ptr<Com<ICoreWebView2Controller>> view; ULONGLONG fullAt=0; bool keeping=false; std::wstring keepLink; };
+static_assert(DL::Engine::InProgress==COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS&&DL::Engine::Interrupted==COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED&&DL::Engine::Completed==COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED,"engine download states");
+static_assert(DL::Engine::ReasonUserCanceled==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED&&DL::Engine::ReasonUserPaused==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_PAUSED,"engine interrupt reasons");
 std::map<int,std::shared_ptr<DownloadOperation>> downloadOps;
 // Drops the operations of `owner` (the workspace in the globals by default) whose row is gone from its downloads.
 void PruneDownloadOps(Workspace* owner=WorkspaceNow()){for(auto it=downloadOps.begin();it!=downloadOps.end();)it=it->second->owner==owner&&!FindDownload(it->first)?downloadOps.erase(it):std::next(it);}
@@ -1497,6 +1510,7 @@ std::wstring InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON r){
     return DL::ReasonCode(I18n::Id::download_error_file);
 }
 void ShowDownloadDrawer();void SyncLatch();
+void DeferAfter(UINT ms,std::function<void()> job);void ShowDownloads();void FinishKeep(int id,int attempt);
 // Toolbar icon: a run lasts while any download is active; its progress counts
 // every download of the run (completed ones included) so it never goes back.
 std::set<int> downloadIconRun;
@@ -1505,7 +1519,8 @@ bool labDownloadRunning=false; // motion lab download replay (a real download ca
 void UpdateDownloadIcon(bool completedNow){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
     if(labDownloadRunning){labDownloadRunning=false;KillTimer(window,MotionLabTimerId);}
     bool active=false;
-    for(auto& item:downloads)if(item.state==DL::State::InProgress||item.state==DL::State::Paused){active=true;downloadIconRun.insert(item.id);}
+    // A held download (every byte in, waiting for « Conserver » / « Supprimer ») ends the run: never a 100 % bar that spins on.
+    for(auto& item:downloads)if((item.state==DL::State::InProgress&&!item.held)||item.state==DL::State::Paused){active=true;downloadIconRun.insert(item.id);}
     long double received=0,total=0;
     for(auto& item:downloads)if(downloadIconRun.count(item.id)&&item.total>0&&(item.state==DL::State::InProgress||item.state==DL::State::Paused||item.state==DL::State::Completed)){total+=item.total;received+=std::min(item.received,item.total);}
     const float fraction=total>0?static_cast<float>(received/total):0.f;
@@ -1557,22 +1572,30 @@ void SyncDownload(int id){
     text=nullptr;item->endTime=0;if(SUCCEEDED(op->get_EstimatedEndTime(&text))&&text){item->endTime=DL::ParseIsoTime(text);CoTaskMemFree(text);}
     BOOL resume=FALSE;op->get_CanResume(&resume);item->canResume=resume!=FALSE;
     COREWEBVIEW2_DOWNLOAD_STATE state=COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS;op->get_State(&state);
-    const auto before=item->state;
-    if(state==COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED){item->state=DL::State::Completed;item->missing=false;}
-    else if(state==COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS)item->state=entry->userPaused?DL::State::Paused:DL::State::InProgress;
-    else{
-        COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE;op->get_InterruptReason(&reason);
-        if(reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_PAUSED)item->state=DL::State::Paused;
-        else if(reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED)item->state=DL::State::Cancelled;
-        else{item->state=DL::State::Failed;item->reason=InterruptText(reason);
-            if(before!=DL::State::Failed&&(reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS||reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED||reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY))
-                ElementsDangerousDownload(id,item->path,item->uri,reason);}
-    }
+    COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE;if(state==COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED)op->get_InterruptReason(&reason);
+    // « Conserver »: the engine let go of the file (our cancel); the kept copy takes its place.
+    if(entry->keeping){if(state!=COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS)FinishKeep(id,0);return;}
+    const auto before=item->state;const bool heldBefore=item->held;
+    item->state=DL::MapEngineState(state,reason,entry->userPaused);
+    if(item->state==DL::State::Completed)item->missing=false;
+    // Every byte in but still in progress: past the grace, the engine holds it for the user's decision (no event says
+    // so). One re-check is scheduled for the end of the grace.
+    const ULONGLONG tick=GetTickCount64();
+    if(state==COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS&&total>0&&received>=total){if(!entry->fullAt){entry->fullAt=tick;DeferAfter((UINT)DL::Engine::HoldGraceMs+50,[id]{if(!halted)SyncDownload(id);});}}
+    else entry->fullAt=0;
+    item->held=DL::HeldForDecision(state,received,total,entry->userPaused,entry->fullAt?(std::int64_t)(tick-entry->fullAt):-1);
+    if(item->held&&!heldBefore)Log(L"DOWNLOAD held by the engine for the user's decision (all bytes in, still in progress): "+DL::FileName(item->path));
+    if(!item->held&&heldBefore)Log(L"DOWNLOAD no longer held: state="+std::to_wstring((int)state)+L" reason="+std::to_wstring((int)reason));
+    if(item->state==DL::State::Failed){item->reason=InterruptText(reason);
+        if(before!=DL::State::Failed&&(reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS||reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED||reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY))
+            ElementsDangerousDownload(id,item->path,item->uri,reason);}
     if(item->state!=before)Log(L"DOWNLOAD state="+std::to_wstring((int)item->state)+L" "+DL::FileName(item->path));
     // Terminal rows keep no engine reference; resumable failures keep it for Retry.
     if(item->state==DL::State::Completed||item->state==DL::State::Cancelled||(item->state==DL::State::Failed&&!item->canResume))downloadOps.erase(found);
     if(item->state!=before&&DL::Persistent(*item))SaveDownloads();
-    DownloadsChanged();
+    // Newly held: the decision lives in the downloads popover, so it is shown (as when a download starts).
+    if(item->held&&!heldBefore&&!smoke&&!downloadPanel.Visible()&&!(downloadDrawer.Visible()&&!downloadDrawer.Closing()))ShowDownloads();
+    else DownloadsChanged();
     UpdateDownloadIcon(item->state!=before&&item->state==DL::State::Completed);
     if(smoke&&item->state!=before&&testStage==7){
         if(item->state==DL::State::Completed){
@@ -1587,6 +1610,61 @@ void SyncDownload(int id){
             DeleteFileW(item->path.c_str());PostMessageW(window,WM_APP+3,0,0);
         }else if(item->state!=DL::State::InProgress){Fail(L"Smoke download did not complete",E_FAIL);return;}
     }
+}
+// ---- A download held for the user's decision (B07b « À confirmer ») --------------------------------------
+// WebView2 has no API to accept a file its SmartScreen check holds (no danger type, no « keep »): its own flyout is
+// the only way, and this browser replaces it. The held file is complete at its final path, so « Conserver » keeps a
+// second link to it, lets the engine go (Cancel: it deletes its file), puts the kept link back at the same path, and
+// then hands the file to Windows' attachment services like any finished download (Mark of the Web, antivirus
+// scan): SmartScreen still checks it when it is opened. « Supprimer » cancels: the engine deletes the file.
+std::wstring KeepLinkPath(const std::wstring& path,int id){return path+L".keep-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(id);}
+void KeepHeldDownload(int id){
+    auto* item=FindDownload(id);auto found=downloadOps.find(id);if(!item||found==downloadOps.end()||!item->held||found->second->keeping)return;
+    auto entry=found->second;auto* op=entry->op.p;if(!op)return;
+    const auto link=KeepLinkPath(item->path,id);DeleteFileW(link.c_str());
+    if(!CreateHardLinkW(link.c_str(),item->path.c_str(),nullptr)&&!CopyFileW(item->path.c_str(),link.c_str(),TRUE)){Log(L"DOWNLOAD keep: the held file could not be kept ("+std::to_wstring(GetLastError())+L")");return;}
+    SetFileAttributesW(link.c_str(),FILE_ATTRIBUTE_HIDDEN);
+    entry->keeping=true;entry->keepLink=link;
+    Log(L"DOWNLOAD keep requested: "+DL::FileName(item->path));
+    if(FAILED(op->Cancel())){entry->keeping=false;entry->keepLink.clear();DeleteFileW(link.c_str());Log(L"DOWNLOAD keep: the engine refused to let go");return;}
+    SyncDownload(id);
+}
+// Windows attachment services on a kept file (what the engine does for every finished download): zone mark and
+// antivirus scan, off the UI thread. done: 1 saved, 2 refused (the file may be gone).
+void QuarantineKeptFile(const std::wstring& path,const std::wstring& uri,std::shared_ptr<std::atomic<int>> done,std::shared_ptr<std::atomic<long>> result){
+    std::thread([path,uri,done,result]{
+        const HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);HRESULT hr=E_FAIL;IAttachmentExecute* ae=nullptr;
+        if(SUCCEEDED(CoCreateInstance(CLSID_AttachmentServices,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&ae)))&&ae){
+            static const GUID client={0x6d3f1c52,0x0b2e,0x4d0c,{0x9a,0x41,0x52,0x7e,0x2b,0x11,0x84,0x3a}};   // this browser's downloads
+            ae->SetClientGuid(client);ae->SetLocalPath(path.c_str());if(!uri.empty())ae->SetSource(uri.c_str());hr=ae->Save();ae->Release();}
+        if(SUCCEEDED(init))CoUninitialize();
+        result->store((long)hr);done->store(SUCCEEDED(hr)?1:2);
+    }).detach();
+}
+void KeptFileChecked(int id,std::shared_ptr<std::atomic<int>> done,std::shared_ptr<std::atomic<long>> result,int attempt){
+    if(halted)return;const int r=done->load();
+    if(!r&&attempt<600){DeferAfter(100,[id,done,result,attempt]{KeptFileChecked(id,done,result,attempt+1);});return;}
+    auto* item=FindDownload(id);if(!item)return;
+    const bool there=GetFileAttributesW(item->path.c_str())!=INVALID_FILE_ATTRIBUTES;
+    if(r!=1)Log(L"DOWNLOAD kept file: attachment services refused it hr="+std::to_wstring((unsigned long)result->load())+std::wstring(there?L" (file kept)":L" (file removed)"));
+    else Log(L"DOWNLOAD kept file handed to attachment services");
+    if(!there){item->state=DL::State::Failed;item->canResume=false;item->reason=DL::ReasonCode(I18n::Id::download_blocked_dangerous);SaveDownloads();DownloadsChanged();UpdateDownloadIcon(false);}
+}
+// The engine let go of the held file: the kept link goes back to its path once the engine's file is gone.
+void FinishKeep(int id,int attempt){
+    auto found=downloadOps.find(id);auto* item=FindDownload(id);if(found==downloadOps.end()||!item||!found->second->keeping)return;
+    auto entry=found->second;const auto path=item->path,link=entry->keepLink;
+    if(GetFileAttributesW(path.c_str())!=INVALID_FILE_ATTRIBUTES&&attempt<30){DeferAfter(100,[id,attempt]{if(!halted)FinishKeep(id,attempt+1);});return;}
+    bool kept=false;
+    if(GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES)kept=MoveFileExW(link.c_str(),path.c_str(),MOVEFILE_COPY_ALLOWED)!=FALSE;
+    else{kept=true;DeleteFileW(link.c_str());}   // the engine left its file: it is the same file
+    if(kept)SetFileAttributesW(path.c_str(),FILE_ATTRIBUTE_NORMAL);
+    downloadOps.erase(found);
+    item->held=false;item->endTime=0;
+    if(kept){item->state=DL::State::Completed;item->missing=false;if(item->total>0)item->received=item->total;Log(L"DOWNLOAD kept by the user: "+DL::FileName(path));}
+    else{item->state=DL::State::Failed;item->canResume=false;item->reason=DL::ReasonCode(I18n::Id::download_error_file);DeleteFileW(link.c_str());Log(L"DOWNLOAD keep failed: the kept file could not be put back ("+std::to_wstring(GetLastError())+L")");}
+    SaveDownloads();DownloadsChanged();UpdateDownloadIcon(kept);
+    if(kept){auto done=std::make_shared<std::atomic<int>>(0);auto result=std::make_shared<std::atomic<long>>(0);QuarantineKeptFile(path,item->uri,done,result);KeptFileChecked(id,done,result,0);}
 }
 void RefreshMissing(){for(auto& item:downloads)if(item.state==DL::State::Completed)item.missing=GetFileAttributesW(item.path.c_str())==INVALID_FILE_ATTRIBUTES;}
 void ShowDownloads(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
@@ -1716,6 +1794,10 @@ void DownloadAction(int id,DL::Action action){
         else if(action==DL::Action::Cancel){const HRESULT hr=op->Cancel();Log(L"DOWNLOAD cancel "+DL::FileName(item->path)+(SUCCEEDED(hr)?L"":L" failed"));}
         else if(SUCCEEDED(op->Resume()))entry->userPaused=false;
         SyncDownload(id);break;
+    case DL::Action::Keep:KeepHeldDownload(id);break;
+    // « Supprimer » on a held file: the engine cancels and deletes it; the row leaves the list (like B07's Delete).
+    case DL::Action::Discard:{if(!item->held||(entry&&entry->keeping))break;const auto path=item->path;Log(L"DOWNLOAD held file discarded by the user: "+DL::FileName(path));DownloadAction(id,DL::Action::Remove);
+        DeferAfter(1500,[path]{if(GetFileAttributesW(path.c_str())!=INVALID_FILE_ATTRIBUTES&&!DeleteFileW(path.c_str()))Log(L"DOWNLOAD discarded file could not be removed");});break;}
     case DL::Action::Remove:{if(op&&(item->state==DL::State::InProgress||item->state==DL::State::Paused))op->Cancel();downloadOps.erase(id);downloads.erase(std::find_if(downloads.begin(),downloads.end(),[id](const DL::Item& d){return d.id==id;}));SaveDownloads();DownloadsChanged();UpdateDownloadIcon(false);break;}
     case DL::Action::ShowInFolder:{const auto path=item->path;CloseDownloadSurfaces();
         PIDLIST_ABSOLUTE pidl=ILCreateFromPathW(path.c_str());HRESULT hr=pidl?SHOpenFolderAndSelectItems(pidl,0,nullptr,0):E_FAIL;if(pidl)ILFree(pidl);
@@ -2128,8 +2210,9 @@ bool HttpExempt(const std::wstring& host){
         return a==127||a==10||a==0||(a==172&&b>=16&&b<=31)||(a==192&&b==168)||(a==169&&b==254);
     return false;
 }
-std::wstring HtmlText(const std::wstring& s){std::wstring r;for(wchar_t ch:s){switch(ch){case L'&':r+=L"&amp;";break;case L'<':r+=L"&lt;";break;case L'>':r+=L"&gt;";break;case L'"':r+=L"&quot;";break;case L'\'':r+=L"&#39;";break;default:r+=ch;}}return r;}
-// The "not secure" page for `insecure` (an http:// address), in place of the failed attempt.
+void PageFonts(NativeChrome::ErrorPages::Extras& x,bool mono); // elements-integration.h
+// The "not secure" page for `insecure` (an http:// address), in place of the failed attempt
+// (#121 layout and lock-open icon: NativeChrome::ErrorPages::InsecureHtml).
 void ShowInsecureInterstitial(const std::shared_ptr<Tab>& t,const std::wstring& insecure){
     if(halted||!t||t->closed||!t->view.p)return;
     std::wstring host,port;size_t end=0;if(!HttpParts(insecure,host,port,end))return;
@@ -2137,29 +2220,8 @@ void ShowInsecureInterstitial(const std::shared_ptr<Tab>& t,const std::wstring& 
     auto& h=t->https;h.shown=insecure;h.token=token;h.pending=true;h.upgrade=0;
     t->uri=insecure;t->home=false;t->title=TR(insecure_title);
     Log(L"HTTPS interstitial "+insecure);
-    const bool still=motion.ReducedMotion();
-    std::wstring html=std::wstring(L"<!doctype html><html lang=\"")+(I18n::Current()==I18n::Locale::En?L"en":L"fr")+L"\"><meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"dark\"><title>"+HtmlText(TR(insecure_title))+LR"HTML(</title><style>
-html,body{margin:0;height:100%;background:#171717;color:rgba(255,255,255,.9);font-family:"Inter Display",Inter,system-ui,sans-serif}
-body{display:flex;align-items:center;justify-content:center;padding:0 16px;box-sizing:border-box}
-main{width:100%;max-width:420px;display:flex;flex-direction:column;align-items:center;text-align:center)HTML";
-    html+=still?L"}":L";animation:in 150ms ease-out}@keyframes in{from{opacity:0}}@media (prefers-reduced-motion:reduce){main{animation:none}}";
-    html+=LR"HTML(
-h1{margin:0;font-size:20px;line-height:28px;font-weight:600;text-wrap:balance}
-p{margin:8px 0 24px;font-size:14px;line-height:20px;color:rgba(255,255,255,.6);text-wrap:balance;overflow-wrap:anywhere}
-p b{font-weight:500;color:rgba(255,255,255,.9)}
-div{display:flex;flex-wrap:wrap;justify-content:center;gap:8px}
-button{height:32px;padding:0 14px;border:0;border-radius:8px;font:inherit;font-size:14px;font-weight:500;cursor:pointer}
-button:focus-visible{outline:2px solid rgba(255,255,255,.9);outline-offset:2px}
-#back{background:rgba(255,255,255,.9);color:#171717}#back:hover{background:#fff}
-#go{background:rgba(255,255,255,.08);color:rgba(255,255,255,.9)}#go:hover{background:rgba(255,255,255,.12)}
-</style><main><h1>)HTML";
-    html+=HtmlText(TR(insecure_title))+L"</h1><p>";
-    // The host is escaped, then put in bold inside the escaped sentence (never the other way round).
-    html+=I18n::FormatText(HtmlText(TR(insecure_body)).c_str(),{L"<b>"+HtmlText(host)+L"</b>"});
-    html+=L"</p>\n<div><button id=\"back\" autofocus>"+HtmlText(TR(insecure_back))+L"</button><button id=\"go\">"+HtmlText(TR(insecure_continue))+L"</button></div></main>\n";
-    html+=LR"HTML(<script>const t=")HTML";
-    html+=token;
-    html+=LR"HTML(";const send=a=>window.chrome.webview.postMessage(t+":"+a);back.onclick=()=>send("back");go.onclick=()=>send("continue");</script></html>)HTML";
+    NativeChrome::ErrorPages::Extras extras;PageFonts(extras,false);extras.reducedMotion=motion.ReducedMotion();
+    const std::wstring html=NativeChrome::ErrorPages::InsecureHtml(host,token,extras);
     CheckTab(t->view->NavigateToString(html.c_str()),L"NavigateToString interstitial");
     if(t==Active())Update();
 }
@@ -2396,6 +2458,9 @@ void CreateSettingsPanel(){
     hooks.clearOnExitNote=[]{return ClearOnExitNote();};   // owner decision B
     hooks.checkUpdates=[](){CheckForUpdates();};
     hooks.version=SettingsVersion;
+    // The version line opens « À propos de Browser » (Paper « À propos : point d'entrée » A; the A8 window): the drawer
+    // closes first and the window gets the keyboard back when the A8 window closes (as from the old menu).
+    hooks.about=[](bool keyboard){settingsDrawer.Hide(false,true);if(window)SetFocus(window);keyboardModality=keyboard;Log(std::wstring(L"ABOUT opened from Réglages")+(keyboard?L" (keyboard)":L""));ShowAboutDialog();};
     hooks.downloadFolder=EffectiveDownloadFolder;
     hooks.reducedMotion=ReducedMotionPreferred;
     hooks.loadSites=LoadSitePermissions;
@@ -3640,7 +3705,7 @@ std::vector<std::tuple<unsigned,int,std::wstring>> FolderChoices(BM::Id exclude)
     for(BM::Id root:{BM::BarRoot,BM::OtherRoot}){std::vector<std::pair<BM::Id,int>> stack{{root,0}};
         while(!stack.empty()){auto [id,depth]=stack.back();stack.pop_back();const auto* n=bookmarks.Find(id);if(!n||n->kind!=BM::Kind::Folder)continue;
             if(exclude&&(id==exclude||bookmarks.IsAncestor(exclude,id)))continue;
-            out.emplace_back(id,depth,n->title);for(auto c=n->children.rbegin();c!=n->children.rend();++c)stack.push_back({*c,depth+1});}}
+            out.emplace_back(id,depth,n->title.empty()?std::wstring(TR(bookmarks_unnamed_folder)):n->title);for(auto c=n->children.rbegin();c!=n->children.rend();++c)stack.push_back({*c,depth+1});}}
     return out;
 }
 RECT ClientScreen(){RECT r{};GetClientRect(window,&r);MapWindowPoints(window,nullptr,(POINT*)&r,2);return r;}
@@ -3799,9 +3864,9 @@ std::vector<CM::Item> BookmarkFolderItems(BM::Id folder,int depth=0){
     if(links){auto all=CM::Command(MenuId(MenuOpenAll,folder),TRP(bookmark_open_all,links));all.icon=L"open-out";items.push_back(all);items.push_back(CM::Separator());}
     for(BM::Id id:f->children){const auto* n=bookmarks.Find(id);if(!n)continue;
         if(n->kind==BM::Kind::Folder){CM::Item sub;sub.id=MenuId(MenuOpen,id);sub.label=NativeUI::EscapeMenuText(n->title.empty()?std::wstring(TR(bookmarks_unnamed_folder)):n->title);sub.icon=L"folder-closed";sub.help=FolderSummary(id);
-            if(depth<(int)BM::Store::MaxDepth)sub.children=BookmarkFolderItems(id,depth+1);if(sub.children.empty())sub.children.push_back(CM::Command(0,L"(Vide)",L"",false));items.push_back(sub);}
+            if(depth<(int)BM::Store::MaxDepth)sub.children=BookmarkFolderItems(id,depth+1);if(sub.children.empty())sub.children.push_back(CM::Command(0,TR(bookmarks_menu_empty),L"",false));items.push_back(sub);}
         else{auto item=CM::Command(MenuId(MenuOpen,id),NativeUI::EscapeMenuText(BM::DisplayTitle(*n)));item.image=SiteIcon(AddressBar::SiteOf(n->url));item.icon=L"favicon";item.help=ReadableUrl(n->url);items.push_back(item);}}
-    if(f->children.empty()){items.push_back(CM::Command(0,L"(Vide)",L"",false));}
+    if(f->children.empty()){items.push_back(CM::Command(0,TR(bookmarks_menu_empty),L"",false));}
     auto t=Active();if(f->children.empty()&&t&&!t->home&&BM::Admissible(t->uri)){auto add=CM::Command(MenuId(MenuAddHere,folder),TR(bookmark_add_here));add.icon=L"star";items.push_back(add);}
     return items;
 }
@@ -3830,7 +3895,7 @@ void RunBookmarkMenu(const std::vector<CM::Item>& items,int region,bool keyboard
 void OverflowMenu(bool keyboard){
     std::vector<CM::Item> items;const auto& bar=bookmarks.Root(BM::BarRoot).children;
     for(size_t i=(size_t)chrome.band.visible;i<bar.size();++i){const auto* n=bookmarks.Find(bar[i]);if(!n)continue;
-        if(n->kind==BM::Kind::Folder){CM::Item sub;sub.id=MenuId(MenuOpen,n->id);sub.label=NativeUI::EscapeMenuText(n->title);sub.icon=L"folder-closed";sub.help=FolderSummary(n->id);sub.children=BookmarkFolderItems(n->id,1);items.push_back(sub);}
+        if(n->kind==BM::Kind::Folder){CM::Item sub;sub.id=MenuId(MenuOpen,n->id);sub.label=NativeUI::EscapeMenuText(n->title.empty()?std::wstring(TR(bookmarks_unnamed_folder)):n->title);sub.icon=L"folder-closed";sub.help=FolderSummary(n->id);sub.children=BookmarkFolderItems(n->id,1);items.push_back(sub);}
         else{auto item=CM::Command(MenuId(MenuOpen,n->id),NativeUI::EscapeMenuText(BM::DisplayTitle(*n)));item.image=SiteIcon(AddressBar::SiteOf(n->url));item.icon=L"favicon";item.help=ReadableUrl(n->url);items.push_back(item);}}
     if(!bookmarks.Root(BM::OtherRoot).children.empty()){if(!items.empty())items.push_back(CM::Separator());CM::Item other;other.id=MenuId(MenuOpen,BM::OtherRoot);other.label=TR(bookmarks_other_root);other.icon=L"folder-closed";other.children=BookmarkFolderItems(BM::OtherRoot,1);items.push_back(other);}
     if(!items.empty())items.push_back(CM::Separator());
@@ -4603,6 +4668,8 @@ void UpdateFont(){if(font)DeleteObject(font);font=CreateFontW(-S(16),0,0,0,FW_NO
 constexpr UINT EngineInstallMessage=WM_APP+41;void OnEngineInstallMessage();void StopEngineStart();
 // « Importer depuis un navigateur… » (src/browser-import-integration.h): the worker's result reaches the UI thread.
 constexpr UINT ImportMessage=WM_APP+43;void ImportFinished();
+// Icons of imported bookmarks fetched in the background (src/browser-import-integration.h): the bar redraws with them.
+constexpr UINT ImportIconsMessage=WM_APP+44;void ImportIconsArrived();
 // The monitor a maximized window fills. Restored from minimized, the window still sits at Windows' off-screen minimized
 // position (-32000, -32000) during the first size calculation: the nearest monitor is then whichever lies closest to
 // that point (a second screen on the left or above), the window was laid out once at that screen's size and back, and
@@ -4614,16 +4681,18 @@ LRESULT CALLBACK ChromeProc(HWND h,UINT msg,WPARAM w,LPARAM l){LRESULT frameResu
     // is the monitor's work area exactly (nothing cut at the edges, the taskbar left visible).
     if(msg==WM_NCCALCSIZE&&w&&IsZoomed(h)){MONITORINFO mi{sizeof(mi)};if(GetMonitorInfoW(MaximizedMonitor(h),&mi)){reinterpret_cast<NCCALCSIZE_PARAMS*>(l)->rgrc[0]=mi.rcWork;return 0;}}
     // WS_CAPTION makes DefWindowProc paint a classic caption straight onto the window when the title or icon changes
-    // (and through the undocumented uxtheme caption / frame messages): the title and icon are stored with the window
-    // briefly marked invisible, so nothing is drawn; the two theme messages draw nothing.
+    // (and through the undocumented uxtheme caption / frame messages): the title and icon are stored with the caption
+    // style briefly cleared, so nothing is drawn (NativeUI::DefWindowProcNoCaption); the two theme messages draw nothing.
     if(msg==0x00AE/*WM_NCUAHDRAWCAPTION*/||msg==0x00AF/*WM_NCUAHDRAWFRAME*/)return 0;
     // Activation changes (a drawer or popup taking the focus, Alt+Tab): the frame is ours, so DefWindowProc is not
     // called at all (it painted the classic frame over the chrome, as Chromium's custom frame avoids it too). Marking
     // the window invisible around it instead, as above, hid the engine's page windows for that instant: one composed
     // frame showed the canvas (#171717) in place of the page (measured: about one activation change in four).
     if(msg==WM_NCACTIVATE){InvalidateRect(h,nullptr,FALSE);return TRUE;}
-    if(msg==WM_SETTEXT||msg==WM_SETICON){const LONG_PTR style=GetWindowLongPtrW(h,GWL_STYLE);if(!(style&WS_VISIBLE))return DefWindowProcW(h,msg,w,l);
-        SetWindowLongPtrW(h,GWL_STYLE,style&~static_cast<LONG_PTR>(WS_VISIBLE));const LRESULT r=DefWindowProcW(h,msg,w,l);SetWindowLongPtrW(h,GWL_STYLE,style);return r;}if(NativeUI::HandleFrame(h,msg,w,l,frameResult))return frameResult;if(msg==ProfilesChangedMessage()){ReloadProfiles();return 0;}switch(msg){
+    // Not by marking the window invisible (the earlier way, as for WM_NCACTIVATE above): that hid the pages for that instant
+    // too, and as the page's title, address and history changes all set the window title, clicks in a site could flash
+    // the canvas in place of the page.
+    if(msg==WM_SETTEXT||msg==WM_SETICON)return NativeUI::DefWindowProcNoCaption(h,msg,w,l);if(NativeUI::HandleFrame(h,msg,w,l,frameResult))return frameResult;if(msg==ProfilesChangedMessage()){ReloadProfiles();return 0;}switch(msg){
 case WM_CREATE:window=h;address=CreateWindowExW(0,L"EDIT",L"",WS_CHILD|WS_TABSTOP|ES_AUTOHSCROLL,0,0,1,1,h,nullptr,instance,nullptr); NativeUI::SelectAllOnCtrlA(address);SendMessageW(address,EM_SETLIMITTEXT,8192,0);SendMessageW(address,EM_SETMARGINS,EC_LEFTMARGIN|EC_RIGHTMARGIN,0);SetWindowSubclass(address,AddressProc,1,0);addressSelection.Attach(address,AddressSelectionColors);accessibility.Attach(AccessibleHost());tooltip=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP,0,0,0,0,h,nullptr,instance,nullptr);NativeUI::StripTooltipShadow(tooltip);return 0;
 // Alt alone (or F10) asks for the menu bar; this window has none, and the system-menu state it starts instead freezes
 // the WebView that had the keyboard (page or chat panel) until the next key. Alt+Espace (lParam = the key) still opens the system menu.
@@ -4743,6 +4812,7 @@ case WM_TIMER:
     if(w==MotionTimerId){KillTimer(h,MotionTimerId);motionDeadline.reset();auto now=NativeChrome::Motion::Now();InvalidateMotion(now);ScheduleMotion(now);return 0;}if(w==1&&smoke){KillTimer(h,1);Fail(L"Smoke timeout after 60 seconds",HRESULT_FROM_WIN32(WAIT_TIMEOUT));}return 0;
 case EngineInstallMessage:OnEngineInstallMessage();return 0;
 case ImportMessage:ImportFinished();return 0;
+case ImportIconsMessage:ImportIconsArrived();return 0;
 // A window that never became ready (WebView2 recovery) never removes its session: it keeps it for the
 // relaunch or the next start. Release also gives up this window's open marker inside the profile lock.
 case WM_ACTIVATEAPP:if(!w)contentTransition.Cancel();AnnotationWindowState();break; /* another application came to the foreground; V3-B: the annotation band's wave stops in the background */

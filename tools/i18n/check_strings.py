@@ -84,6 +84,8 @@ def looks_textual(text: str) -> bool:
         return False                      # separators and punctuation only (« › », « · »)
     if re.search(r'://|\\\\|^[\w.\-]+\.(png|svg|ico|json|txt|exe|dll|ttf|html?|js|css|ini|lsrupd|mcpb|toml)$', t):
         return False
+    if re.fullmatch(r'\(' + CAPWORD + r'\)', t):
+        return True                       # a word in parentheses is a label (« (Vide) » / « (Empty) »), not an identifier
     if re.fullmatch(r'[#%]?[\w.\-:/+*=<>()\[\]{}|,;@$^&!?~]*', t) and not re.fullmatch(CAPWORD, t) and not ACCENT.search(t):
         return False                      # identifiers, keys, formats, single lowercase ASCII tokens (« déconnecté » is French text)
     if re.fullmatch(r'[a-z0-9]+(-[a-z0-9]+)+ \d+', t):
@@ -164,6 +166,7 @@ def self_test() -> list[str]:
         ('return Make(Result::Failed, "Configuration de Claude illisible.", configPath);', 1),
         ('return Error("invalid header"); Log("ANNOTATE store error"); w.Key("message");', 0),
         ('auto t = name + L", " + std::to_wstring(i) + L" sur " + std::to_wstring(n);', 1),
+        ('items.push_back(CM::Command(0, L"(Vide)", L"", false)); f(L"(int)");', 1),
     ]
     errors = []
     for src, want in cases:

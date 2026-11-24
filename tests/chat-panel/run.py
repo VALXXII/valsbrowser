@@ -389,7 +389,7 @@ try:
                 spec = FID[name] if isinstance(FID[name], dict) else {"nodes": FID[name]}
                 fidelity[name] = cdp.js("(" + FID_JS + ")(" + json.dumps(spec["nodes"]) + "," + json.dumps(spec.get("root", "#app")) + "," + str(spec.get("dy", 0)) + ")")
             over = cdp.js("(()=>{const s=document.querySelector('.scroller'),a=document.getElementById('app');return [s.scrollHeight-s.clientHeight, s.scrollTop, a.scrollTop, Math.round(a.getBoundingClientRect().height)]})()")
-            if name in ("c-2-autorisation", "c-fil-long", "c-autorisation-reouverte", "c-autorisation-courte"): check(over[0] > 0 and over[2] == 0, f"{name}: at its maximum height only the thread scrolls", str(over))
+            if name in ("c-2-autorisation", "c-fil-long", "c-menu-modele-fil-long", "c-autorisation-reouverte", "c-autorisation-courte"): check(over[0] > 0 and over[2] == 0, f"{name}: at its maximum height only the thread scrolls", str(over))
             else: check(over[:3] == [0, 0, 0] and size and over[3] == size[1], f"{name}: the window fits the content exactly (nothing scrolls, nothing is cut)", str(over) + " " + str(size))
             out = os.path.join(COMMENT, name + ".png")
             cdp.call("Emulation.setDefaultBackgroundColorOverride", color={"r": 0, "g": 0, "b": 0, "a": 0})
@@ -772,6 +772,29 @@ try:
         sl = cdp.js(sub_js)
         check(sl and sl["gapL"] == 4 and sl["top"] == 0 and sl["inWin"] and (sl["ask"].get("overflowRight") or 0) == 0 and (sl["ask"].get("overflowLeft") or 0) > 0,
               "sub-menu: no room on the right (screen edge), it opens on the left of the menu (overflowLeft)", json.dumps(sl, ensure_ascii=False)[:240])
+        # #129: no provider said its models yet (the button shows its fallback « Opus 5.5 · Moyen »): the bubble's model menu
+        # was an empty 14 px box. It lists the providers as the panel does, above everything, and the choice goes to the host.
+        top_js = """(()=>{const m=document.querySelector('.menu');if(!m)return null;const r=m.getBoundingClientRect(),hit=[[.5,.5],[.1,.2],[.9,.8]].every(([fx,fy])=>{const n=document.elementFromPoint(r.left+r.width*fx,r.top+r.height*fy);return !!n&&m.contains(n)});
+          const L=m.parentNode,s=getComputedStyle(L);return {rows:Array.from(m.querySelectorAll('.mi .lb')).map(n=>n.textContent),hit,layer:L.className,z:+s.zIndex,appZ:+(getComputedStyle(document.getElementById('app')).zIndex)||0,
+          focus:document.activeElement&&m.contains(document.activeElement)?document.activeElement.textContent.trim():'',scrolled:(()=>{const sc=document.querySelector('.scroller');return sc.scrollHeight>sc.clientHeight})()}})()"""
+        load("c-menu-modele-inconnu")
+        g = cdp.js(geo_js); t = cdp.js(top_js)
+        btn = cdp.js("(()=>{const m=document.querySelector('.model .m');return [m.querySelector('.mn').textContent, m.querySelector('.e')&&!m.querySelector('.e').hidden?m.querySelector('.e').textContent.trim():'']})()")
+        check(btn == ["Opus 5.5", "Moyen"] and t and t["rows"] == ["Claude Code", "Codex"] and t["focus"] == "Claude Code",
+              "#129: no model known yet (button « Opus 5.5 · Moyen »), the bubble's model menu lists the providers as the panel does, focus on the first", json.dumps([btn, t], ensure_ascii=False)[:300])
+        check(t and t["hit"] and t["layer"] == "layer" and t["z"] > t["appZ"] and g["mTop"] < g["aTop"] and g["mTop"] >= 0 and g["mBottom"] <= g["winH"] and g["h"] > 40
+              and (g["ask"].get("overflowTop") or 0) >= g["aTop"] - g["mTop"],
+              "#129: that menu opens above its button, out of the bubble (overflowTop asked), whole, on top of everything (its layer above the surface, hit-tested on it)", json.dumps([g, t], ensure_ascii=False)[:400])
+        n0 = len(cdp.js("window.__posted"))
+        cdp.js("Array.from(document.querySelectorAll('.menu .mi')).find(b=>b.textContent.startsWith('Codex')).click()"); time.sleep(.1)
+        cdp.js("document.getElementById('composer-input').focus()"); cdp.call("Input.insertText", text="Le bouton en pleine largeur"); key("Enter"); time.sleep(.15)
+        sent = [(m["type"], m.get("id") or m.get("text")) for m in cdp.js("window.__posted")[n0:] if m["type"] in ("setAgent", "setModel", "send")]
+        check(sent == [("setAgent", "codex"), ("send", "Le bouton en pleine largeur")] and cdp.js("!document.querySelector('.menu')"),
+              "#129: the provider chosen in the bubble is told to the host (setAgent) before this comment is sent; the menu closes", str(sent))
+        load("c-menu-modele-fil-long")
+        g = cdp.js(geo_js); t = cdp.js(top_js)
+        check(t and t["scrolled"] and t["rows"][:3] == ["Opus 5.5", "Sonnet 5.5", "Haiku 5.5"] and t["hit"] and t["layer"] == "layer" and g["mTop"] >= 0 and g["mBottom"] <= g["winH"] and g["mLeft"] >= 0 and g["mRight"] <= g["winW"] and g["scroll"] <= 0,
+              "#129 / #130: bubble above its element at its maximum height, thread scrolled — the model menu still opens whole, on top of everything", json.dumps([g, t], ensure_ascii=False)[:400])
 
         load("c-menu-mode")
         mm = cdp.js("""(()=>{const m=document.querySelector('.menu');return {rows:Array.from(m.querySelectorAll('.mi')).map(b=>[b.querySelector('.lb').textContent,(b.querySelector('.ds')||{}).textContent||'']),

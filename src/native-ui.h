@@ -428,6 +428,26 @@ inline HRGN DrawerRegion(bool entered,int right,int height,int radius,bool squar
     HRGN region=CreateRoundRectRgn(-radius*2,-radius*2,right+1,height+1,radius,radius),clip=CreateRectRgn(0,0,right+1,height+1);
     CombineRgn(region,region,clip,RGN_AND);DeleteObject(clip);return region;
 }
+// The main window (WS_CAPTION for Windows' minimize / maximize animations, its client covering the whole window):
+// DefWindowProc paints a classic caption over the client when the title or icon changes (WM_SETTEXT / WM_SETICON).
+// Windows draws that caption only for a full WS_CAPTION (WS_BORDER | WS_DLGFRAME), so the title and icon are stored
+// with WS_DLGFRAME briefly cleared: the frame Windows computed stays as it is (cached until SWP_FRAMECHANGED, never
+// sent here) and the window keeps WS_VISIBLE. Never by clearing WS_VISIBLE instead: that hides the window's children,
+// the WebView2 pages, for that instant, and a frame DWM composes then shows the canvas in place of the page (the brief
+// flash seen on clicks: every title, address or history change of the page sent a WM_SETTEXT).
+inline LRESULT DefWindowProcNoCaption(HWND window,UINT message,WPARAM w,LPARAM l){
+    const LONG_PTR style=GetWindowLongPtrW(window,GWL_STYLE);if((style&WS_CAPTION)!=WS_CAPTION)return DefWindowProcW(window,message,w,l);
+    SetWindowLongPtrW(window,GWL_STYLE,style&~static_cast<LONG_PTR>(WS_DLGFRAME));const LRESULT r=DefWindowProcW(window,message,w,l);
+    SetWindowLongPtrW(window,GWL_STYLE,GetWindowLongPtrW(window,GWL_STYLE)|WS_DLGFRAME);return r;}
+// A window's text set only when it really changes: no WM_SETTEXT (nor its caption, accessibility and taskbar work)
+// for the same title on each of the page's address, history or loading events.
+inline bool SetTextIfChanged(HWND window,const std::wstring& text){
+    if(!window)return false;
+    const int n=GetWindowTextLengthW(window);
+    std::wstring now(n>0?n:0,L'\0');
+    if(n>0)now.resize(std::max(0,GetWindowTextW(window,now.data(),n+1)));
+    if(now==text)return false;
+    return SetWindowTextW(window,text.c_str())!=FALSE;}
 inline bool HandleFrame(HWND window,UINT message,WPARAM w,LPARAM,LRESULT& result){switch(message){case WM_NCCALCSIZE:result=0;return true;case WM_NCPAINT:result=0;return true;case WM_NCACTIVATE:result=DefWindowProcW(window,message,w,-1);InvalidateRect(window,nullptr,FALSE);return true;}return false;}
 // ---------------------------------------------------------------------------------
 // Zero drop shadow (user decision, 2026-11-09). The earlier acceptance of DWM's

@@ -185,11 +185,20 @@
     "c-menu-modele": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }, wait(30), click(".model .m"), wait(60)],
     "c-menu-mode": cDone().concat([wait(30), click(".tb.mode"), wait(60)]),
     "c-menu-au-dessus": [LAY({ side: "above" }), st(), { type: "thread.reset", conversationId: "new", items: [] }, wait(30), click(".tb.mode"), wait(60)],
+    // #129: no provider said its models yet (new profile, agent not started): the button shows « Opus 5.5 · Moyen »
+    "c-menu-modele-inconnu": [LAY(), st({ agents: [Object.assign({}, CLAUDE, { models: [] }), Object.assign({}, CODEX, { models: [] })], model: null, efforts: [], effort: null }),
+      { type: "thread.reset", conversationId: "new", items: [] }, wait(30), click(".model .m"), wait(60)],
     "c-fil-long": [LAY({ maxHeight: 360 }), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: cDoneItems().concat([
       { type: "message.user", id: "u2", text: "Et garde 16 px de marge sur tablette.", at: today(15, 40), elements: [] },
       { type: "turn.start", turnId: "t2", model: "Sonnet 5.5", effort: "Élevé", agentId: "claude-code", at: today(15, 40) },
       { type: "message.agentChunk", turnId: "t2", messageId: "m3", text: "C'est ajouté : entre 640 et 1024 px, le bouton garde **16 px** de marge de chaque côté.\n\n- `checkout.css` : une règle de plus\n- rien d'autre n'a changé" },
       { type: "turn.end", turnId: "t2", stopReason: "end_turn", durationMs: 7000 }]) }],
+    // #129 / #130: the bubble flipped above its element (growing up) at its maximum height, its thread scrolled: the model menu
+    "c-menu-modele-fil-long": [LAY({ maxHeight: 360, side: "above" }), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: cDoneItems().concat([
+      { type: "message.user", id: "u2", text: "Et garde 16 px de marge sur tablette.", at: today(15, 40), elements: [] },
+      { type: "turn.start", turnId: "t2", model: "Sonnet 5.5", effort: "Élevé", agentId: "claude-code", at: today(15, 40) },
+      { type: "message.agentChunk", turnId: "t2", messageId: "m3", text: "C'est ajouté : entre 640 et 1024 px, le bouton garde **16 px** de marge de chaque côté.\n\n- `checkout.css` : une règle de plus\n- rien d'autre n'a changé" },
+      { type: "turn.end", turnId: "t2", stopReason: "end_turn", durationMs: 7000 }]) }, wait(30), click(".model .m"), wait(80)],
     "c-sans-dossier": [LAY(), st({ folder: null }), { type: "thread.reset", conversationId: "new", items: [] }],
     // B 1.9 — R8: before the agent's first words; R7: the user's message with its element; R3: menus outside the
     // bubble, with a host that cannot give the room above (screen edge); R5: « + » with a folder found for sure or not

@@ -907,8 +907,9 @@
       if (i) items.push({ sep: true });
       items.push({ node: groupHead(a, usable) });
       for (const m of ms) items.push(row(a, m.label, m, usable));
-      // #129 / R13: a provider ready but whose models are not known yet (its agent never started here) — one row that names
-      // the model it will use (the button's own fallback), never an empty group, never « Claude Code » / « Codex »
+      // #129 / R13: a provider ready but whose models are not known yet (new profile, its agent never started here) — its
+      // group and one row naming the model it will use (the button's own fallback, FALLBACK_MODEL): the bubble's menu
+      // is never the empty 14 px box #129 fixed, and the choice is a model, never « Claude Code » / « Codex »
       if (!ms.length && usable) items.push(row(a, fallbackModel(a).label, null, true));
     });
     if (efforts.length) items.push({ sep: true }, { label: "Effort", value: curEffort() ? effortName(curEffort().id, curEffort().label) : "", sub: true, key: "effort", cls: "mm-eff", onSelect: subOrView("effort") });
