@@ -236,7 +236,10 @@ def run_main():
         C.click_page('.title')
         # final QA: the panel is created in advance (O1): its opening by a click may be logged « panel in place » / « panel opened »
         opened = logged(r'CHAT (a click on an element opens the chat|panel in place|panel opened)', m1, 8)
-        ready = logged(r'CHAT panel ready', m1, 15)
+        # the panel's page is created when the mode starts (O1, « Chat à droite »): it says « panel ready » ONCE, usually before
+        # this click. Waited for after the click it was never found (15 s lost, step 7 failed on the 20:00 release's pass,
+        # ae51111): read from the start of the log — ready by the time the click has opened the chat, whenever it was said
+        ready = logged(r'CHAT panel ready', 0, 15)
         time.sleep(0.4)
         step('7 · chat closed: a click on an element OPENS the chat (no note panel)', opened is not None and ready is not None and not [w for w in Q.windows() if w[1] == 'BrowserAnnotationNote'])
         has_chip = C.wait_for(chips, 10)
