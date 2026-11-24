@@ -1130,6 +1130,14 @@
         "lot": 3,
         "why": "parcours en vraie fenêtre local_en_ligne à écrire (localhost, *.localhost, 127.x, [::1], file:// local allumés ; site en ligne, adresse du réseau local éteints ; fenêtre privée même règle) ; les points 6 (pointeur après la saisie dans la note) et 5 (cadre de la note au défilement) de chat_qa_v12.py passaient par la note d'un site non local : à rejouer sur une page file:// ; chat_qa_run.py et chat_qa_v12.py vérifient déjà qu'un site non local ne démarre ni le mode ni le panneau (fait le 24/11)"
       }
+    },
+    "focus-annotation": {
+      "tests": [
+        {
+          "suite": "focus-annotation",
+          "what": "tests/focus/annotation_focus_journey.py — Mode Focus et mode Annotation ensemble : bandeau et chat gardés, rien ne saute (propriétaire : Mode Focus)"
+        }
+      ]
     }
   }
 }

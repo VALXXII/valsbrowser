@@ -162,6 +162,8 @@ def check_static(manifest, coverage):
         if not s.get('cmd') or not isinstance(s.get('timeout'), int):
             bad.append(f"manifest: suite {s['id']} needs a command and a time limit")
         script = next((a for a in s.get('cmd', []) if a.endswith(('.py', '.ps1'))), None)
+        if script and not (ROOT / script).exists() and s.get('pendingMerge'):
+            continue   # its script arrives with a branch not merged yet: said « en attente de fusion » at each run, never counted as passed
         if script and not (ROOT / script).exists():
             bad.append(f"manifest: suite {s['id']} names a script that does not exist ({script})")
     kinds = {t['id']: t.get('kind') for t in manifest.get('thresholds', [])}
@@ -322,7 +324,7 @@ def coverage_view(coverage, results, part, manifest):
     """Per inventory line: proved in this run / waits for the night part / failed / planned gap."""
     by = {r['id']: r for r in results}
     parts = {s['id']: s['part'] for s in manifest['suites']}
-    view = {'proved': [], 'night': [], 'failed': [], 'gaps': {}}
+    view = {'proved': [], 'night': [], 'failed': [], 'pending': [], 'gaps': {}}
     for lid, line in coverage['lines'].items():
         tests = line.get('tests') or []
         if not tests:
@@ -330,6 +332,8 @@ def coverage_view(coverage, results, part, manifest):
         ran = [by[t['suite']] for t in tests if t['suite'] in by]
         if any(r['status'] == 'pass' for r in ran):
             view['proved'].append(lid)
+        elif ran and all(r['status'] == 'pending' for r in ran):
+            view['pending'].append(lid)   # its only suite waits for its branch to be merged
         elif ran:
             view['failed'].append(lid)
         elif part == 'day' and all(parts.get(t['suite']) == 'night' for t in tests):
@@ -352,7 +356,7 @@ def write_report(folder, data):
         L += [f"Passage filtré (`--only {','.join(data['only'])}`) : il ne vaut pas pour le test général.", '']
     L += ['## Suites', '', '| Suite | Résultat | Durée | Journal | Remarque |', '|---|---|---|---|---|']
     for r in data['suites']:
-        mark = {'pass': 'réussi', 'fail': '**échec**', 'timeout': '**délai dépassé**', 'not run': '**pas lancé**'}[r['status']]
+        mark = {'pass': 'réussi', 'fail': '**échec**', 'timeout': '**délai dépassé**', 'not run': '**pas lancé**', 'pending': 'en attente de fusion'}[r['status']]
         note = r.get('why', '') or ('; '.join(r.get('daySkips', [])) and 'en journée, sauté : ' + '; '.join(r.get('daySkips', [])))
         L.append(f"| {r['title']} | {mark} | {r.get('seconds', 0)} s | `{r.get('log', '')}` | {note} |")
     L += ['', '## Objectifs (mesurés, jamais bloquants — décision 5 du 24/11)', '']
@@ -366,6 +370,8 @@ def write_report(folder, data):
           f"- Lignes dont le test a échoué ou n'a pas tourné : {len(cv['failed'])}" + ('' if not cv['failed'] else ' — ' + ', '.join(cv['failed']))]
     if data['part'] == 'day':
         L.append(f"- Lignes vérifiées seulement la nuit (vraie fenêtre) : {len(cv['night'])}")
+    if cv.get('pending'):
+        L.append(f"- En attente de fusion (suite pas encore dans ce commit) : {', '.join(cv['pending'])}")
     for lot, ids in sorted(cv['gaps'].items()):
         L.append(f"- Sans test, prévu au lot {lot} : {', '.join(ids)}")
     L += ['', '## Sécurité', '',
@@ -444,6 +450,11 @@ def main():
     for s in suites:
         if only and s['id'] not in only:
             continue
+        script = next((a for a in s.get('cmd', []) if a.endswith(('.py', '.ps1'))), None)
+        if s.get('pendingMerge') and script and not (ROOT / script).exists():   # its script is on a branch not merged yet
+            results.append({'id': s['id'], 'title': s.get('title', s['id']), 'status': 'pending', 'seconds': 0,
+                            'why': 'en attente de fusion : ' + script + ' arrive avec ' + s['pendingMerge']})
+            print(f"pending  {s['id']} (waits for {s['pendingMerge']})", flush=True); continue
         if blocked and s['part'] == 'night':
             results.append({'id': s['id'], 'title': s.get('title', s['id']), 'status': 'not run', 'seconds': 0, 'why': 'no build of this commit'}); continue
         r = run_suite(s, part, env, logs); results.append(r)
@@ -467,7 +478,8 @@ def main():
                 e['missed'].append(f"{o['label']} ({o['value'][:80]})")
     after = fingerprints(); same = after == before
     cv = coverage_view(coverage, results, part, manifest)
-    failed = [r for r in results if r['status'] != 'pass']
+    waiting = [r for r in results if r['status'] == 'pending']   # not run: their script is not in this commit — never green, never a failure of this commit
+    failed = [r for r in results if r['status'] not in ('pass', 'pending')]
     reasons = []
     if failed:
         reasons.append(f"{len(failed)} suite(s) en échec, hors délai ou pas lancée(s) : " + ', '.join(r['id'] for r in failed))
@@ -482,6 +494,9 @@ def main():
         verdict, why, code = 'PARTIEL — non valable', 'Passage filtré par --only : il sert à chercher un défaut, pas à valider. ' + (' ; '.join(reasons) if reasons else 'Les suites lancées ont réussi.'), 3
     elif green:
         verdict, why, code = 'VERT', ('Toute la partie sans fenêtre a tourné et réussi.' if part == 'day' else 'Toutes les suites ont tourné et réussi, en vraie fenêtre.'), 0
+        if waiting:
+            verdict = f'VERT, sauf {len(waiting)} suite(s) en attente de fusion'
+            why += ' Pas lancée(s), leur script n\'est pas encore dans ce commit : ' + ', '.join(r['id'] for r in waiting) + '.'
     else:
         verdict, why, code = 'ROUGE', ' ; '.join(reasons) + '.', 1
     release = part == 'night' and green and not only and not idn['dirty']

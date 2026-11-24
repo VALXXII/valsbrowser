@@ -334,6 +334,10 @@ check('EarlyOpenAllowed(bubble.open, bubble.selector, env.selector)' in block_af
 
 # monkey 0.3.561 #102 / #261: the bubbles' own elements left in `aiming` never block a click (only the panel's chips count)
 tcs = block_after(comment, 'bool TakeCommentSelection(')
+# O3 / M4 (real-window monkey, 24 Nov 2026): the old note panel never stays open under a bubble nor through a change of layout
+csn = block_after(comment, 'void CloseStaleNote(')
+check('note.Close(false)' in csn and 'CloseStaleNote(' in block_after(comment, 'void OpenBubble(')[:400] and 'CloseStaleNote(' in block_after(comment, 'void SwitchLayout(')[:300],
+      'O3 / M4: an open note panel is closed when a bubble opens and when the layout changes (it kept the keyboard)')
 # O3 (« clic sans bulle », monkey 0.3.611 #116: the old note opened instead of a bubble): in Commentaire nothing declines a click
 # on an element — the panel's limit of 10 chips is not this layout's; the early opening's ways out say why in the log
 check('return false' not in tcs and 'BubbleClickAllowed' not in tcs, 'O3: TakeCommentSelection never declines a click (the note panel never opens instead of a bubble)')

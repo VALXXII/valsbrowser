@@ -351,6 +351,19 @@
       "timeout": 1800
     },
     {
+      "id": "focus-annotation",
+      "title": "Mode Focus avec le mode Annotation : bandeau et chat gardés, rien ne saute (barre du haut)",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/focus/annotation_focus_journey.py",
+        "--tab-layout",
+        "top"
+      ],
+      "timeout": 900,
+      "pendingMerge": "VALXXII/mode-focus-2"
+    },
+    {
       "id": "journeys",
       "title": "Parcours de l'utilisateur (R1–R48 et revue)",
       "part": "night",

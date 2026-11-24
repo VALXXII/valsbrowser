@@ -610,8 +610,18 @@ void EnsureOnScreen(const wchar_t* why) {
     }
     SetForegroundWindow(bubble.hwnd); PostMessageW(bubble.hwnd, WM_APP + 2, 0, 0);
 }
+// O3 / M4 (real-window monkey of 24 Nov 2026, seed 1 #150 and #167): the old note panel (« Que faut-il changer ? », opened in
+// « Chat à droite » by a click past the composer's 10 chips) stayed open when the layout went to Commentaire. A bubble then
+// opened next to it and the note kept the keyboard: what the user typed for the bubble went into the note, nothing was sent.
+// The note never stays under a bubble, nor through a change of layout: closed without saving (its words are kept as its draft).
+void CloseStaleNote(const wchar_t* why) {
+    if (!Ann::uiReady || (!Ann::note.Visible() && !Ann::panel.on)) return;
+    Ann::panel.on = false; if (Ann::note.Visible()) Ann::note.Close(false);
+    Diag(std::wstring(L"the note panel was open: closed (") + why + L")");   // i18n-exempt: log detail
+}
 void OpenBubble(const std::string& conv, const RECT* element, const std::string& selector, bool followCurrent, const std::string& label) {
     auto t = Active(); if (!t || !Ann::s.active || Ann::ModeTab() != t || halted || privateWindow) return;
+    CloseStaleNote(L"a bubble opens");   // i18n-exempt: log detail
     UiSlow slowStart("opening: the panel's close and the window");   // monkey 0.3.561: host -> opened 40-50 ms right after a switch
     if (Open()) ClosePanel();
     if (panelState == PanelState::Closing) FinishClose();   // M5 (review R): the panel's slide ends now — it would move and hide the view the bubble takes
@@ -1184,6 +1194,7 @@ bool KeepAnchorElement(Element& e) {
 // ---------------------------------------------------------------- the layout switch of the band (Paper 1AYP-0)
 void SwitchLayout(bool comment) {
     const bool was = CommentLayout();
+    CloseStaleNote(comment ? L"layout: Commentaire" : L"layout: Panneau");   // i18n-exempt: log detail
     if (!comment) ForgetUnsent(convo.data.head.id);   // M6: the panel never shows an element's unsent conversation
     if (comment != was) { projects.layout = comment ? "comment" : "panel"; SaveProjects(); Diag(comment ? L"layout: Commentaire (a bubble on the element)" : L"layout: Panneau (the chat at the right)"); }
     if (comment) {
