@@ -94,12 +94,13 @@ public:
     // DIP rectangle repainted for download-icon-only frames (the 'D' button).
     // The ripple grows well past the button (x4): the rectangle covers its reach,
     // down to the chrome's lower edge (the page covers what lies below).
-    D2D1_RECT_F DownloadIconDirty()const{const float cx=width-55,cy=60,r=DownloadIcon::Ripple::reach*Design::Size::icon/256+1;return {cx-r,cy-r,cx+r,std::min(cy+r,ContentTop())};}
+    D2D1_RECT_F RegionRect(int id)const{for(auto& r:regions)if(r.id==id)return r.rect;return {};}
+    D2D1_RECT_F DownloadIconDirty()const{if(sidebar){auto b=RegionRect('D');const float cx=(b.left+b.right)/2,cy=(b.top+b.bottom)/2,r=DownloadIcon::Ripple::reach*Design::Size::icon/256+1;return {cx-r,cy-r,cx+r,cy+r};}const float cx=width-55,cy=60,r=DownloadIcon::Ripple::reach*Design::Size::icon/256+1;return {cx-r,cy-r,cx+r,std::min(cy+r,ContentTop())};}
     // Audio button (left of History, only while a site has made sound): icon-only frames.
     static constexpr float AudioRight=103,AudioLeft=127;   // from the window's right edge; the field ends 6 DIP before
     bool audioShown=false;   // tooltip resolved at use (TR(chrome_tip_audio)): `chrome` is a global built before the language is pinned
     Audio::IconModel audioIcon;
-    D2D1_RECT_F AudioIconDirty()const{return {width-AudioLeft-1,47,width-AudioRight+1,73};}
+    D2D1_RECT_F AudioIconDirty()const{if(sidebar){auto b=RegionRect('V');return {b.left-1,b.top-1,b.right+1,b.bottom+1};}return {width-AudioLeft-1,47,width-AudioRight+1,73};}
     D2D1_RECT_F LoadingDirty()const{return {bar.left-1,bar.top-1,bar.right+1,bar.bottom+1};}
     // Quantised on-screen identity of the loading fill: equal signatures render
     // identical pixels, so a loading-only frame with an unchanged signature is skipped.

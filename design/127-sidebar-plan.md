@@ -150,7 +150,7 @@ glisser, survol par-dessus la page, tiroirs) : liste pour la tournée de nuit de
 - Barre compacte (02) : pas de Copier ni d'étoile dans le champ du haut (comme Paper) ; Ctrl+D reste.
 - Renommer un dossier de la grille (F2) ouvre la fenêtre de modification (pas de place pour un titre dans une tuile).
 - Glisser un favori pour réordonner la grille : pas encore (Ctrl+Maj+←/→ marche).
-- Échap ne referme pas la colonne ouverte par-dessus la page (elle se referme quand la souris la quitte, ou par
+- Échap referme la colonne ouverte par-dessus la page quand la fenêtre a le focus clavier (pas quand il est dans la page) ; sinon elle se referme quand la souris la quitte, ou par
   Ctrl+Maj+, en fenêtre étroite).
 - Coffre de mots de passe : la clé du champ reste à gauche de Copier, sans autre changement (hors périmètre).
 
