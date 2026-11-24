@@ -77,8 +77,12 @@ drawn in SVG from `design/lottie/download-progress.py`'s data (tray → ring in 
 then bobbing 12 units every 1.3 s, a band cut around the arrow); reduced motion: the still icon.
 
 « Installer » of a missing agent elsewhere in the chat (the dock's strip « X n'est pas installé… », the model menu's
-header, the folder screen's agent rows) now opens the « Ton agent » screen (`agents.setup.open`) instead of the old
-runtime download.
+header, the folder screen's agent rows) now opens the « Ton agent » screen (`agents.setup.open` → `OpenTonAgent(Chat)`)
+instead of the old runtime download (Val's decision via Fix, 24/11: the chat's « Installer » uses « Ton agent »; never an
+install without the click on the screen's strong button). The other buttons keep their messages: « Réessayer » of a
+too old CLI or of a failed runtime download sends `agent.prepare`, « Se connecter » `agent.connect` — A routes them on top
+of lots R and 2 (`PrepareAgent`: CLI missing / too old / Claude Desktop only → `OpenTonAgent(Chat)`; `Connect()` →
+`AgentStatus::SignIn`, so `CancelSignIn` applies).
 
 Protocol (v1, `src/chat-ton-agent.h` ↔ `assets/chat-panel/panel.js`):
 
