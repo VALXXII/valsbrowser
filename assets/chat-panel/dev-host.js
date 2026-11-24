@@ -491,6 +491,33 @@
     "stream": [st(Object.assign({ running: true }, conv("Texte en flux", { running: true }))), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Explique tout en détail.", null, []), { type: "turn.start", turnId: "t1", model: "Sonnet 5.5", effort: "Élevé" }] }],
   };
   Object.assign(SC, C_SCENARIOS);
+
+  // #128 (Paper « #128 Menu des modèles · A liste groupée (validée) »): the model menu as one list grouped by provider, in
+  // the panel and in the comment bubble. The model names are this fake host's agents' (the board's Codex names are only
+  // examples): the page writes none of its own. tests/chat-panel/model_menu_128.py drives these.
+  const CODEX_A = Object.assign({}, CODEX, { models: [{ id: "gpt-5.5", label: "GPT-5.5" }, { id: "gpt-5.5-mini", label: "GPT-5.5 mini" }] });
+  const AGENTS_A = (codex) => ({ agents: [CLAUDE, Object.assign({}, CODEX_A, codex || {})] });
+  const OFF = { status: "notConnected", detail: "Pas connecté", authMethods: [{ id: "chatgpt", label: "ChatGPT" }] };
+  const withChat = (over) => [st(Object.assign(AGENTS_A(), conv("Bouton de paiement"), over || {})), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", ASK)].concat(doneTurn("t1")) }];
+  const openModels = [wait(30), click(".model .m"), wait(80)];
+  Object.assign(SC, {
+    "128-panneau": withChat().concat(openModels),
+    "128-panneau-vide": [st(AGENTS_A()), { type: "thread.reset", conversationId: "new", items: [] }].concat(openModels),
+    "128-codex-non-connecte": withChat(AGENTS_A(OFF)).concat(openModels),
+    "128-codex-pas-installe": withChat(AGENTS_A({ status: "notInstalled", detail: "Pas installé", models: [] })).concat(openModels),
+    "128-codex-erreur": withChat(AGENTS_A({ status: "error", detail: "Codex est trop ancien" })).concat(openModels),
+    "128-effort": withChat().concat(openModels, [click(".menu .mi[data-key='effort']"), wait(80)]),
+    // #129 in the new list: providers ready, no model said yet — each group names the model its agent will use
+    "128-modeles-inconnus": [st({ agents: [Object.assign({}, CLAUDE, { models: [] }), Object.assign({}, CODEX, { models: [] })], model: null, efforts: [], effort: null }),
+      { type: "thread.reset", conversationId: "new", items: [] }].concat(openModels),
+    "128-codex-choisi": withChat({ agentId: "codex", model: "gpt-5.5", efforts: [{ id: "medium", label: "Medium" }, { id: "high", label: "High" }] }).concat(openModels),
+    "c-128-bulle": [LAY({ maxWidth: 320 }), st(Object.assign(AGENTS_A(), conv("Bouton de paiement"))), { type: "thread.reset", conversationId: "c1", items: cDoneItems() }].concat(openModels),
+    "c-128-bulle-vide": [LAY({ maxWidth: 320 }), st(AGENTS_A()), { type: "thread.reset", conversationId: "new", items: [] }].concat(openModels),
+    "c-128-bulle-non-connecte": [LAY({ maxWidth: 320 }), st(Object.assign(AGENTS_A(OFF), conv("Bouton de paiement"))), { type: "thread.reset", conversationId: "c1", items: cDoneItems() }].concat(openModels),
+    "c-128-bulle-effort": [LAY({ maxWidth: 320 }), st(Object.assign(AGENTS_A(), conv("Bouton de paiement"))), { type: "thread.reset", conversationId: "c1", items: cDoneItems() }].concat(openModels, [click(".menu .mi[data-key=effort]"), wait(120)]),
+    "c-128-modeles-inconnus": [LAY({ maxWidth: 320 }), st({ agents: [Object.assign({}, CLAUDE, { models: [] }), Object.assign({}, CODEX, { models: [] })], model: null, efforts: [], effort: null }),
+      { type: "thread.reset", conversationId: "new", items: [] }].concat(openModels),
+  });
   function bigThread(n) {
     const out = [];
     for (let i = 0; i < n; i++) {
