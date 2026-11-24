@@ -191,7 +191,15 @@ static void Screens(Fixture& f) {
         Mode(L"ok"); f.Click(UI::Window::Primary);
         Expect(AS::Get(X).state == S::Installing && f.window.TitleForTest() == L"Installation de Codex", "Codex 2 Installation");
         Expect(f.Shot(L"codex-2-installation"), "render: Codex 2 Installation (24X8-0)");
+        // « Installation… » (Paper 253G-0): the Downloads button's morph, drawn off screen at chosen instants
+        f.window.MorphForTest(X, 120); Expect(f.Shot(L"morph-installing-start"), "render: the morph starting (the tray curls into a ring, 120 ms)");
+        f.window.MorphForTest(X, 900); Expect(f.Shot(L"morph-installing-loop"), "render: the morph looping (the arrow bobbing, 900 ms)");
+        Expect(f.window.MorphDrawsForTest() >= 4, "« Installation… »: drawn from the Downloads icon's Lottie layers (assets/lottie/download-*.json)");
         Pump();
+        Expect(f.window.EndKindForTest(X) == 1, "« Installation… » ended well: the success morph (into the check) plays");
+        const int before = f.window.MorphDrawsForTest();
+        f.window.MorphForTest(X, 200); Expect(f.Shot(L"morph-success") && f.window.MorphDrawsForTest() > before, "render: the arrow morphing into the check (200 ms after the end)");
+        f.window.MorphForTest(X, 5000); Expect(f.Shot(L"morph-after") && f.window.MorphDrawsForTest() == before + 2, "after the morph: the still « Connecter » mark again");
         Expect(AS::Get(X).state == S::NeedsSignIn && f.window.TitleForTest() == L"Connectez Codex" && Near(f.window.CardTopForTest(), 141.5f), "Codex 3 À connecter: centred again");
         Expect(f.Shot(L"codex-3-a-connecter"), "render: Codex 3 À connecter (24YO-0)");
         f.Click(UI::Window::Primary); Pump();

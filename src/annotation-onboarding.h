@@ -215,7 +215,7 @@ private:
     TonAgent::Screen pick_; int listener_ = 0; AgentStatus::Status seen_[2]; Agent chatAgent_ = Agent::Claude; int manualForTest_ = 0; std::wstring page_;
     DownloadIcon::Model install_[2]; Motion::Time ended_[2]{}; int endKind_[2] = {0, 0}; AState endTo_[2] = {AState::Unknown, AState::Unknown};   // the install's end: 1 the success morph, 2 the fade to the error icon
     float cardFrom_ = -1, cardTo_ = -1; Motion::Time cardAt_{};   // the card glides between its places (Paper: one per state)
-    InstallGlyph installGlyph_;
+    InstallGlyph installGlyph_; bool morphForTest_ = false; int morphDrawsForTest_ = 0;   // tests: the morph drawn off screen
     static constexpr float SuccessMs = DownloadIcon::SuccessMorph * 1000.f / 60, SuccessHoldMs = 600, FailMs = 150, GlideMs = 220;
 
     // ---- small helpers ----
@@ -798,7 +798,7 @@ private:
         const int i = TonAgent::Index(a); const auto& s = St(a); const TonAgent::Mark m = TonAgent::MarkOf(s);
         if (m == TonAgent::Mark::Unknown) return;
         const auto colour = InkColour(TonAgent::InkOf(s, target), alpha); const float cx = (tile.left + tile.right) / 2;
-        const bool animate = !options_.reduced && !offscreen_; const bool ending = animate && Ending(i, now);
+        const bool animate = morphForTest_ || (!options_.reduced && !offscreen_); const bool ending = animate && Ending(i, now);
         const float endMs = ending ? Ms(ended_[i], now) : 0;
         const bool morphing = ending && endKind_[i] == 1 && installGlyph_.Success();   // success: the arrow morphs into the check (then the mark)
         if (m == TonAgent::Mark::Ready && !morphing) {
@@ -813,10 +813,10 @@ private:
         auto still = [&](const char* d, D2D1_COLOR_F col) { glyphs_.Fill(*c_, d, icon, TonGlyph::side, col); };
         if (morphing) {
             DownloadIcon::Pose pose; pose.idle = false; pose.ring = DownloadIcon::FillEnd; pose.arrow = DownloadIcon::Morph; pose.success = std::min(DownloadIcon::SuccessMorph, static_cast<int>(endMs * 60 / 1000));
-            if (!installGlyph_.Draw(c_->RenderTarget(), i, icon, Scale(), pose, Tone(0x2FD1D9), alpha)) still(TonGlyph::download, colour);
+            if (installGlyph_.Draw(c_->RenderTarget(), i, icon, Scale(), pose, Tone(0x2FD1D9), alpha)) ++morphDrawsForTest_; else still(TonGlyph::download, colour);
         } else if (m == TonAgent::Mark::Installing && animate) {
             const auto pose = install_[i].At(now);
-            if (pose.idle || !installGlyph_.Draw(c_->RenderTarget(), i, icon, Scale(), pose, Tone(0x2FD1D9), alpha)) still(TonGlyph::download, colour);
+            if (!pose.idle && installGlyph_.Draw(c_->RenderTarget(), i, icon, Scale(), pose, Tone(0x2FD1D9), alpha)) ++morphDrawsForTest_; else still(TonGlyph::download, colour);
         } else if (m == TonAgent::Mark::Error && ending && endKind_[i] == 2) {   // the install failed: the icon fades into the error icon
             const float u = Motion::Clamp(endMs / FailMs);
             still(TonGlyph::download, K::Col(Tone(0x2FD1D9), (1 - u) * alpha)); still(TonGlyph::error, InkColour(TonAgent::Ink::Danger, u * alpha));
@@ -1145,6 +1145,15 @@ public:
     float CardTopForTest() const { return CardTopAt(Motion::Now()); }
     std::wstring TroubleForTest() const { return TroubleText(); }
     bool DotsForTest() const { return !Alone(); }
+    // The morph as it is `ms` after the install began (installing) or ended (its end), drawn by the next RenderForTest;
+    // returns how many frames of it were drawn from the Lottie layers so far.
+    void MorphForTest(AgentStatus::Agent a, double ms) {
+        morphForTest_ = true; const int i = TonAgent::Index(a); const auto at = Motion::Now() - std::chrono::duration_cast<Motion::Clock::duration>(std::chrono::duration<double, std::milli>(ms));
+        if (St(a).state == AState::Installing) { install_[i] = DownloadIcon::Model{}; install_[i].Update(true, 0, false, at, false); }
+        else ended_[i] = at;
+    }
+    int MorphDrawsForTest() const { return morphDrawsForTest_; }
+    int EndKindForTest(AgentStatus::Agent a) const { return endKind_[TonAgent::Index(a)]; }
     K::Rgb8 AccentForTest() const { return Accent(); }
     bool RenderForTest(UINT dpi, const wchar_t* path) {
         offscreen_ = true; dpi_ = dpi;
