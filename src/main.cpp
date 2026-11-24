@@ -521,7 +521,7 @@ void DissolveSmallGroups(){
 int VisibleGroup(){auto t=Active();return t&&t->group&&splitGroups.count(t->group)&&Members(t->group).size()>=2?t->group:0;}
 // Same box as a single page: under the chrome, 81 DIP or 121 with the bookmarks band
 // (SV::Content assumes the former fixed 84 DIP top).
-SV::Box ContentBox(){namespace View=NativeChrome::Design::Viewport;auto c=SV::Content(chrome.width,chrome.height);c.top=chrome.ContentTop();const float inset=NativeChrome::Sidebar::Zone::inset; /* #127 (Val): 4 DIP around the page in both layouts */c.left=chrome.sidebar?chrome.SidebarZoneLeft():inset;c.right=std::max(c.left,chrome.width-inset-ChatInsetDip());
+SV::Box ContentBox(){namespace View=NativeChrome::Design::Viewport;auto c=SV::Content(chrome.width,chrome.height);c.top=chrome.ContentTop();const float inset=NativeChrome::Sidebar::Zone::inset; /* #127 (Val): 4 DIP around the page in both layouts */c.left=chrome.sidebar?chrome.SidebarZoneLeft():inset;c.right=std::max(c.left,chrome.width-inset-ChatInsetDip());   /* #127 panel layouts: ChatInsetDip includes the 4 DIP gap to the chat card */
     if(const float drawer=DrawerReserveDip();drawer>0)c.right=std::max(c.left,std::min(c.right,chrome.width-drawer-inset)); /* #127 (Val, B): an open drawer: the page stops 4 DIP before it, its right corners rounded */ /* the chat panel sits at the right of the page area: the page shrinks, it is never covered */c.bottom=chrome.height-inset;if(AnnotationBandSliding())c.bottom+=chrome.annotationBand; /* R25: while the annotation band slides, the page keeps its size and only moves (its bottom goes past the window, unseen): no relayout per frame */if(InFullscreen()){c={0,0,chrome.width,chrome.height};}c.bottom=std::max(c.top,c.bottom);return c;}
 struct SplitView{int group=0,active=-1;float min=SV::minWidthCss;std::vector<std::shared_ptr<Tab>> members;std::vector<float> weights;SV::Arrangement a;};
 SplitView CurrentSplit(){
@@ -4592,6 +4592,10 @@ std::vector<Accessibility::Node> AccessibleNodes(){
     if(auto* r=region('K')){auto label=AccessibleButton('K');Node n;n.key='K';n.parent=AccessibleToolbar;n.name=label.name;n.accelerator=label.accelerator;n.automationId=label.id;n.bounds=screen(r->rect);n.enabled=chrome.Enabled('K');n.focusable=n.enabled;n.toggle=chrome.starred?2:1;nodes.push_back(std::move(n));}
     if(auto* r=region('N')){auto label=AccessibleButton('N');Node n;n.key='N';n.parent=AccessibleToolbar;n.name=label.name;n.accelerator=label.accelerator;n.help=label.help;n.automationId=label.id;n.bounds=screen(r->rect);n.enabled=chrome.Enabled('N');n.focusable=n.enabled;n.toggle=chrome.annotateActive?2:1;nodes.push_back(std::move(n));}
     for(int id:{'V','Y','D','S'})button(id,AccessibleToolbar);
+    // #127 side panel: the fold button, « Tous les favoris (N) » / « Réduire », the edge (« Largeur du panneau »: ← → resize it).
+    if(auto* r=region(NativeChrome::Chrome::SidebarToggleId)){Node n;n.key=NativeChrome::Chrome::SidebarToggleId;n.parent=AccessibleToolbar;n.name=r->tip?r->tip:L"";n.automationId=L"SidePanelFold";n.bounds=screen(r->rect);n.focusable=true;nodes.push_back(std::move(n));}
+    if(auto* r=region(NativeChrome::Chrome::SidebarGridToggleId)){Node n;n.key=NativeChrome::Chrome::SidebarGridToggleId;n.parent=AccessibleToolbar;n.name=chrome.gridToggleTip;n.automationId=L"BookmarksGridToggle";n.bounds=screen(r->rect);n.expand=chrome.sidebarGridOpen?2:1;n.focusable=true;nodes.push_back(std::move(n));}
+    if(auto* r=region(NativeChrome::Chrome::SidebarEdgeId)){Node n;n.key=NativeChrome::Chrome::SidebarEdgeId;n.parent=AccessibleToolbar;n.name=TR(sidebar_tip_resize);n.help=TR(sidebar_resize_help);n.automationId=L"SidePanelEdge";n.bounds=screen(r->rect);n.focusable=true;nodes.push_back(std::move(n));}
     // Decision 7: the private chip is plain text for UIA (not a button: no focus, no Invoke).
     if(auto* r=region(NativeChrome::Chrome::PrivateChipId)){Node n;n.key=AccessiblePrivateChip;n.role=Role::Text;n.name=TR(a11y_private_chip);n.automationId=L"PrivateWindowChip";n.focusable=false;n.bounds=screen(r->rect);nodes.push_back(std::move(n));}
     // "Barre de favoris": every item of the bar root, those behind » listed off screen (still invocable).
@@ -4723,8 +4727,8 @@ SBar::Mode SidebarEffective(){if(SidebarEdgeDragging())return chrome.sidebarMode
 // « (narrow window) » when a window under 800 DIP shows the side panel compact by itself, « (this run) » when forced.
 std::wstring LayoutLine(){std::wstring line=L"layout: ";
     if(!chrome.sidebar)line+=L"top";else{const bool chosenCompact=LayoutInEffect()==BrowserSettings::TabsPosition::Compact;const bool compact=SidebarEffective()==SBar::Mode::Compact;
-        line+=compact?L"compact":L"side";if(compact&&!chosenCompact)line+=L" (narrow window)";if(!compact)line+=L" "+std::to_wstring((int)std::lround(chrome.sidebarWidth));}
-    if(forcedLayout>=0)line+=L" (this run)";return line;}
+        line+=compact?L"compact":L"side";if(compact&&!chosenCompact)line+=L" (narrow window)" /* i18n-exempt: log line read by tests */;if(!compact)line+=L" "+std::to_wstring((int)std::lround(chrome.sidebarWidth));}
+    if(forcedLayout>=0)line+=L" (this run)" /* i18n-exempt: log line read by tests */;return line;}
 void LogLayout(){static std::wstring last;if(!window)return;const auto line=LayoutLine();if(line==last)return;last=line;Log(line);}
 // The start switches: --tab-layout=top|side|compact (a whole word), else --side-panel (side); -1 when neither.
 int TabLayoutArg(const wchar_t* args){if(!args)return -1;if(const wchar_t* tl=wcsstr(args,L"--tab-layout=")){tl+=13;

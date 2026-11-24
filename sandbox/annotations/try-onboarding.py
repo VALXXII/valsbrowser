@@ -97,6 +97,8 @@ def main() -> int:
     ap.add_argument('--welcome', action='store_true', help="comme une nouvelle installation : la fenêtre d'accueil d'abord (son étape « Mode Annotation » propose le tutoriel)")
     ap.add_argument('--english', action='store_true', help='interface en anglais')
     ap.add_argument('--dry-run', action='store_true', help='tout préparer (copie, pages) sans ouvrir le navigateur (vérification sans écran)')
+    ap.add_argument('--layout', choices=('top', 'side', 'compact'), help="#127 : disposition des onglets pour ce lancement (--tab-layout, rien n'est enregistré)")
+    ap.add_argument('--name', default='browser-essai-onboarding-annotation', help="dossier de l'essai dans %%TEMP%% (un essai par nom)")
     a = ap.parse_args()
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -107,7 +109,7 @@ def main() -> int:
     if not (app / 'browser.exe').is_file():
         print(f'Build introuvable : {app}\\browser.exe', file=sys.stderr)
         return 1
-    home = pathlib.Path(tempfile.gettempdir()) / 'browser-essai-onboarding-annotation'
+    home = pathlib.Path(tempfile.gettempdir()) / a.name
     run, agents, site, files = home / 'app', home / 'agents', home / 'site', home / 'fichier-local'
     keep = a.keep or a.private
     fresh = not keep or not (run / 'browser.exe').is_file()
@@ -161,7 +163,7 @@ def main() -> int:
         print(f'Page locale    : {URL}   (Annoter allumé)')
         print(f'Fichier local  : {file_url}   (Annoter allumé)')
         print(f'Site en ligne  : {ONLINE}   (Annoter éteint)')
-        command = [str(run / 'browser.exe')] + (['--private', URL] if a.private else ['--onboarding'] if a.welcome else [])
+        command = [str(run / 'browser.exe')] + (['--private', URL] if a.private else ['--onboarding'] if a.welcome else []) + ([f'--tab-layout={a.layout}'] if a.layout else [])
         if a.dry_run:
             import urllib.request
             with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(URL, timeout=5) as r:

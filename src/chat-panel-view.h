@@ -126,6 +126,17 @@ class View {
         panelHost_ = CreateWindowExW(0, wc.lpszClassName, L"", WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 1, 1, parent, nullptr, wc.hInstance, nullptr);
         return panelHost_;
     }
+    // #127 side panel layouts: the panel host window rounded (`radius` px) and `border` px inside its bounds, the chrome
+    // painting the border ring around it (Chat::SyncCardFrame). 0, 0: square, edge to edge (the top bar).
+    int cornerRadius_ = 0, cornerBorder_ = 0; SIZE regionFor_{};
+    void Corner(int radius, int border) { if (radius == cornerRadius_ && border == cornerBorder_) return; cornerRadius_ = radius; cornerBorder_ = border; regionFor_ = {}; if (panelHost_) ShapeHost(); }
+    void ShapeHost() {
+        if (!panelHost_) return; RECT r{}; GetClientRect(panelHost_, &r); const SIZE sz{r.right, r.bottom};
+        if (sz.cx == regionFor_.cx && sz.cy == regionFor_.cy) return; regionFor_ = sz;
+        if (cornerRadius_ <= 0) { SetWindowRgn(panelHost_, nullptr, TRUE); return; }
+        const int b = cornerBorder_, k = 2 * std::max(1, cornerRadius_ - b);
+        SetWindowRgn(panelHost_, CreateRoundRectRgn(b, b, sz.cx - b + 1, sz.cy - b + 1, k, k), TRUE);
+    }
     // Where the controller sits: its host window, and the WebView's bounds in that window's client pixels.
     void Seat(HWND parent, RECT bounds) {
         HWND host = parent; RECT inHost = bounds;
@@ -133,6 +144,7 @@ class View {
             host = PanelHost(parent); if (!host) return;
             SetWindowPos(host, HWND_TOP, bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top, SWP_NOACTIVATE | (visible_ ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
             inHost = {0, 0, bounds.right - bounds.left, bounds.bottom - bounds.top};
+            ShapeHost();
         } else if (panelHost_) ShowWindow(panelHost_, SW_HIDE);
         hostBounds_ = inHost;
         if (host != host_) {

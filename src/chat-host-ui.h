@@ -579,21 +579,34 @@ bool EnsurePost() {
     return post != nullptr;
 }
 RECT PanelRect(float shown) {   // client pixels; shown 0 (off the right edge) .. 1 (in place)
-    RECT c{}; GetClientRect(window, &c); const int w = S(PanelDip()); const int left = c.right - w + int(std::lround((1 - shown) * w));
+    RECT c{}; GetClientRect(window, &c); const int w = S(PanelDip());
+    if (chrome.sidebar) {   // #127: the card (CardInset from the right and bottom; left of an open drawer unless DrawerOverChat)
+        const int in = S(CardInset), right = c.right - in - (DrawerOverChat || chrome.sidebarReserve <= 0 ? 0 : S(chrome.sidebarReserve + CardInset));
+        const int left = right - w + int(std::lround((1 - shown) * (w + in)));
+        return {left, S(chrome.ContentTop()), left + w, c.bottom - in + (AnnotationBandSliding() ? S(chrome.annotationBand) : 0)};
+    }
+    const int left = c.right - w + int(std::lround((1 - shown) * w));
     return {left, S(chrome.ContentTop()), left + w, c.bottom + (AnnotationBandSliding() ? S(chrome.annotationBand) : 0)};
+}
+// #127: the card's frame for the chrome painter (its border; the WebView sits 1 DIP inside, rounded) — empty in the top bar.
+void SyncCardFrame(RECT r) {
+    D2D1_RECT_F f{};
+    if (chrome.sidebar && Shown()) { const float d = GetDpiForWindow(window) / 96.f; f = {r.left / d, r.top / d, r.right / d, r.bottom / d}; }
+    if (f.left != chrome.chatFrame.left || f.top != chrome.chatFrame.top || f.right != chrome.chatFrame.right || f.bottom != chrome.chatFrame.bottom) { chrome.chatFrame = f; InvalidateRect(window, nullptr, FALSE); }
+    view.Corner(chrome.sidebar ? S(CardRadius) : 0, chrome.sidebar ? S(CardBorder) : 0);
 }
 void FinishClose();
 struct SlideClient : AUI::Animator::Client {
     bool Frame(NativeChrome::Motion::Time now) override {
         if (!Shown()) return false;
-        view.Place(PanelRect(slide.Value(now)));
+        { const RECT r = PanelRect(slide.Value(now)); SyncCardFrame(r); view.Place(r); }
         if (slide.Moving(now)) return true;
         if (panelState == PanelState::Opening) { panelState = PanelState::Open; Diag(L"panel in place " + Ann::Ms(Ann::NowMs() - stats.requestedAt) + L" ms after the request"); }
         else if (panelState == PanelState::Closing) FinishClose();
         return false;
     }
 } slideClient;
-void Layout() { if (Shown() && view.Exists()) view.Place(PanelRect(slide.Value(NativeChrome::Motion::Now()))); if (BubbleOpen()) PlaceBubble(); }
+void Layout() { if (Shown() && view.Exists()) { const RECT r = PanelRect(slide.Value(NativeChrome::Motion::Now())); SyncCardFrame(r); view.Place(r); } else SyncCardFrame({}); if (BubbleOpen()) PlaceBubble(); }
 void SyncChromeBits() {
     if (!Ann::uiReady) return;
     Ann::banner.SetChat(Ann::s.active && AskAvailable(Ann::ModeTab()), CommentLayout());   // Paper 1AYP-0: the layout switch

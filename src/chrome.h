@@ -999,6 +999,8 @@ public:
     // The column's edge (Sidebar::Resize): 0 rest, 1 hovered, 2 dragged (the line along the page's left edge); the handle
     // exists while the host allows it (docked, settled, the window wide enough for the chosen layout).
     int sidebarEdge=0;bool sidebarResizable=false;static constexpr int SidebarEdgeId=909;std::wstring edgeTip;
+    // The chat card (#127 side panel layouts; src/chat-host.h CardInset): its frame, the border ring painted here.
+    D2D1_RECT_F chatFrame{};
     float sidebarTitles=1;                               // titles and labels (fold animation)
     float sidebarScroll=0;                               // tab list scroll
     int sidebarDrag=-1;float sidebarDragY=0;int sidebarInsert=-1;   // tab dragged in the list: its row, pointer top, drop slot
@@ -1129,8 +1131,8 @@ public:
         if(g){const float k=std::min(G::annotateBox/G::annotateW,G::annotateBox/G::annotateH)*Motion::PressScale(v.press,reduced),w=G::annotateW*k,h=G::annotateH*k;
             const float x=(box.left+box.right-w)/2,y=(box.top+box.bottom-h)/2;D2D1_MATRIX_3X2_F old;target->GetTransform(&old);
             target->SetTransform(D2D1::Matrix3x2F::Translation(-G::annotateX,-G::annotateY)*D2D1::Matrix3x2F::Scale(k,k)*D2D1::Matrix3x2F::Translation(x,y)*old);
-            brush->SetColor(annotateActive?D2D1::ColorF(a.r,a.g,a.b,1):D2D1::ColorF(1,1,1,annotateDimmed||!Enabled('N')?Design::Text::disabled:Sidebar::Look::glyph));target->FillGeometry(g,brush);target->SetTransform(old);}
-        if(annotateActive){const float cx=(box.left+box.right)/2;FillBox({cx-5,box.bottom+2,cx+5,box.bottom+4},1,D2D1::ColorF(a.r,a.g,a.b,1));}
+                        // Active (Paper « Annotation · panneau » 1YHH-0): the profile's ink (#6FD087 for Travail) on the tinted plate, no underline.
+            const auto ink=Design::Accent::Ink();brush->SetColor(annotateActive?D2D1::ColorF(ink.r,ink.g,ink.b,1):D2D1::ColorF(1,1,1,annotateDimmed||!Enabled('N')?Design::Text::disabled:Sidebar::Look::glyph));target->FillGeometry(g,brush);target->SetTransform(old);}
     }
     // Tab rows (01 1Q1K-0 / 1Q1C-0 / 1Q17-0; compact 1Q4Z-0): active #3E3E3E, hover white 4 %, rest none.
     void DrawSideTab(const Sidebar::Layout& L,int i,const std::wstring& title,int selected,int hover,int focus,Motion::Time now,D2D1_RECT_F row,float alpha,float labels){
@@ -1310,6 +1312,7 @@ public:
         if(sidebarOverlay)PaintSideColumn(sideOver,titles,selected,editing,hover,focus,now,true);
         PaintSidePopover(hover,focus,now);
         PaintSideEdge(focus==SidebarEdgeId&&keyboardModality);   // keyboard focus: the dragging colour
+        if(chatFrame.right>chatFrame.left){brush->SetColor(D2D1::ColorF(0x26/255.f,0x26/255.f,0x26/255.f,1));target->DrawRoundedRectangle(D2D1::RoundedRect({chatFrame.left+.5f,chatFrame.top+.5f,chatFrame.right-.5f,chatFrame.bottom-.5f},7.5f,7.5f),brush,1);}   // Paper 1YJQ-0
         DrawSplit();
         if(const auto ripple=downloadIcon.At(now).ripple;ripple>=0){const auto d=std::find_if(regions.begin(),regions.end(),[](const Region& r){return r.id=='D';});
             if(d!=regions.end())DrawDownloadRipple(ripple,d->rect,Design::Size::icon);}
