@@ -1318,13 +1318,14 @@ public:
         target->PushAxisAlignedClip({L.tabsView.left-Sidebar::Split::frameW,L.tabsView.top,L.tabsView.right+Sidebar::Split::frameW,L.tabsView.bottom},D2D1_ANTIALIAS_MODE_ALIASED);   // the split frame's outline sits 1 DIP outside the rows
         PaintSideSplit(L,selected);
         const int n=std::min((int)titles.size(),(int)L.tabs.size());
+        auto emptySlot=[&](D2D1_RECT_F r){Color(K::lifted);target->DrawRoundedRectangle(D2D1::RoundedRect({r.left+.5f,r.top+.5f,r.right-.5f,r.bottom-.5f},Design::Radius::control-.5f,Design::Radius::control-.5f),brush,1);};   // Dragged onto the page (split view, « Vue partagée dans la colonne » 3): its place stays empty, a 1 DIP inner outline.
         auto titleOf=[&](int i){return titles[i].empty()?std::wstring(i<(int)sideHome.size()&&sideHome[i]?TR(tab_new):TR(chrome_tab_untitled_tip)):titles[i];};
         const bool moving=!overlay&&sidebarDrag<0&&&L==&side&&!sideFrame.items.empty();
         auto newRow=L.newTab;
         if(moving){   // the strip's model on rows: ghosts under, live rows at their presented slots, « + » after them
             const float pitch=SB::Rows(L.mode).row+SB::Rows(L.mode).gap;
             for(auto& it:sideFrame.items)if(it.index<0)DrawSideGhost(L,it,labels);
-            for(auto& it:sideFrame.items){const int i=it.index;if(i!=selected||i<0||i>=n||PairShown(L,i,selected))continue;   // the plate first, under every row (not a displayed pair: its own #262626)
+            for(auto& it:sideFrame.items){const int i=it.index;if(i!=selected||i<0||i>=n||i==liftedIndex||PairShown(L,i,selected))continue;   // the plate first, under every row (not a displayed pair: its own #262626)
                 const float dy=(it.slot-i*pitch)-(sideFrame.scroll-L.scroll);auto r=L.tabs[i];r.top+=dy;r.bottom=r.top+L.tabs[i].Height()*std::clamp(it.presence,0.f,1.f);PaintSelectionPlate(R(r),it.key,now);}
             for(auto& it:sideFrame.items){const int i=it.index;if(i<0||i>=n)continue;
                 // The laid-out row (split blocks keep their offsets and insets), moved by what the motion adds: its slot's
@@ -1332,12 +1333,14 @@ public:
                 const float dy=(it.slot-i*pitch)-(sideFrame.scroll-L.scroll);auto rowFull=L.tabs[i];rowFull.top+=dy;rowFull.bottom+=dy;
                 auto rowShown=rowFull;rowShown.bottom=rowShown.top+rowFull.Height()*std::clamp(it.presence,0.f,1.f);
                 if(rowFull.bottom<=L.tabsView.top||rowFull.top>=L.tabsView.bottom)continue;
+                if(i==liftedIndex){emptySlot(R(rowFull));continue;}
                 const auto title=titleOf(i);const auto shown=R(rowShown);
                 const float fill=DrawSideTab(L,i,title,selected,hover,focus,now,R(rowFull),1.f,labels,&shown,it.opacity,it.fill,true);
                 auto& snap=sideSnapshots[it.key];snap.title=title;snap.favicon=i<(int)favicons.size()?favicons[i]:nullptr;snap.fill=fill;snap.selected=i==selected;}
             for(auto s=sideSnapshots.begin();s!=sideSnapshots.end();){if(std::none_of(sideFrame.items.begin(),sideFrame.items.end(),[&](const Motion::TabItem& i){return i.key==s->first;}))s=sideSnapshots.erase(s);else ++s;}
             const float dn=(sideFrame.content-n*pitch)-(sideFrame.scroll-L.scroll);newRow.top+=dn;newRow.bottom+=dn;}
         else for(int i=0;i<n;++i){if(L.tabs[i].bottom<=L.tabsView.top||L.tabs[i].top>=L.tabsView.bottom)continue;
+            if(i==liftedIndex){emptySlot(R(L.tabs[i]));continue;}
             DrawSideTab(L,i,titleOf(i),selected,hover,focus,now,R(L.tabs[i]),i==sidebarDrag?K::origin:1.f,labels);}
         PaintSideMenuTargets(L);
         {const auto r=R(newRow);const float hv=Hovered('T',hover,now);if(hv>0)White(r,Design::Radius::control,K::tabHover*hv);if(focus=='T')FocusRing(r,Design::Radius::control);

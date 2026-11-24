@@ -243,7 +243,8 @@ std::wstring base,dataDir,profileDir,sessionFile,logFile,downloadsFile,settingsF
 NativeChrome::Chrome chrome; NativeChrome::DownloadsUI::Popover downloadPanel; NativeChrome::DownloadsUI::Drawer downloadDrawer; NativeChrome::SettingsUI::Drawer settingsDrawer; NativeChrome::ContextMenu::Menu contextMenu; BrowserSettings::State settings; NativeUI::AddressKeyState addressKeys; NativeChrome::Motion::State motion; int pressed=0; bool motionMinimized=false; constexpr UINT_PTR MotionTimerId=72; std::optional<NativeChrome::Motion::Time> motionDeadline; HWND tooltip; int hover=0,keyboardFocus=0; bool editing=false,keyboardModality=false;
 namespace SV=NativeChrome::Split;
 // `origin`: index at the press, restored by Escape. `lifted`: dragged out of the strip into the split overlay.
-struct TabDrag { std::shared_ptr<Tab> tab; POINT start{}; float grab=0; bool active=false; int origin=-1; bool lifted=false; float grabY=0; SV::Target target; } tabDrag;
+// #127 column: `at` the last pointer (client px: the drop on the grid, outside the window), `cardW` the lifted card's width.
+struct TabDrag { std::shared_ptr<Tab> tab; POINT start{}; float grab=0; bool active=false; int origin=-1; bool lifted=false; float grabY=0; SV::Target target; POINT at{}; float cardW=0; } tabDrag;
 std::map<int,SV::Orientation> splitGroups; int nextSplitGroup=1; std::uint64_t useClock=0; int splitResize=-1;
 NativeChrome::SplitUI::Overlay splitOverlay;NativeChrome::StatusBubble::Bubble statusBubble;unsigned statusSerial=0;
 struct SeparatorDrag { bool active=false; int handle=-1,slot=-1; float grab=0; std::vector<float> extents; float last=0; DWORD lastTime=0; float velocity=0; } sepDrag; int lastSeparator=-1; DWORD lastSeparatorClick=0;
@@ -479,8 +480,10 @@ void MoveTab(int from,int to){
 void DragTab(POINT point){
     if(!tabDrag.tab||halted)return;
     auto it=std::find(pages.begin(),pages.end(),tabDrag.tab);if(it==pages.end()){CancelTabDrag();return;}
+    tabDrag.at=point;
     if(!tabDrag.active){
-        if(std::abs(point.x-tabDrag.start.x)<=GetSystemMetrics(SM_CXDRAG)&&std::abs(point.y-tabDrag.start.y)<=GetSystemMetrics(SM_CYDRAG))return;
+        // #127 motion spec: 6 DIP before the tab lifts (a click otherwise), or the system's drag distance when larger.
+        if(std::abs(point.x-tabDrag.start.x)<std::max(S(6),GetSystemMetrics(SM_CXDRAG)+1)&&std::abs(point.y-tabDrag.start.y)<std::max(S(6),GetSystemMetrics(SM_CYDRAG)+1))return;
         tabDrag.active=true;
     }
     if(SplitDragMove(point))return;
@@ -836,56 +839,67 @@ void ApplySplitTarget(std::shared_ptr<Tab> tab,const SV::Target& target,std::sha
 }
 // ---- Drag overlay animation (springs from src/split-view.h, display-paced frames)
 bool resizePreviewFading();void ClearResizePreviewNow();
-struct SplitAnim{SV::BoxSpring plate,card;SV::Spring plateOpacity,cardOpacity,tileOpacity;float fade=.30f;bool returning=false,committing=false;NativeChrome::Motion::Time last{};NativeChrome::SplitUI::Frame frame;} splitAnim;
-bool SplitAnimating(){return splitOverlay.Visible()&&(!splitAnim.plate.Settled()||!splitAnim.card.Settled()||!splitAnim.plateOpacity.Settled()||!splitAnim.cardOpacity.Settled()||!splitAnim.tileOpacity.Settled());}
+// #127 motion spec: the lifted card grows to x1.02 (spring 1.0 / 0.15 s) around the point it was grabbed (`anchor`, a
+// fraction of the card). `cardScale` is in percent (100 = rest): the springs settle within 0.25 of their unit.
+struct SplitAnim{SV::BoxSpring plate,card;SV::Spring plateOpacity,cardOpacity,tileOpacity,cardScale;float fade=.30f,anchorX=.5f,anchorY=.5f;bool returning=false,committing=false;NativeChrome::Motion::Time last{};NativeChrome::SplitUI::Frame frame;} splitAnim;
+bool SplitAnimating(){return splitOverlay.Visible()&&(!splitAnim.plate.Settled()||!splitAnim.card.Settled()||!splitAnim.plateOpacity.Settled()||!splitAnim.cardOpacity.Settled()||!splitAnim.tileOpacity.Settled()||!splitAnim.cardScale.Settled());}
 void RenderSplitOverlay(){
     auto& f=splitAnim.frame;f.plate.box=splitAnim.plate.Value();f.plate.opacity=std::clamp(splitAnim.plateOpacity.x,0.f,1.f);f.plate.shown=f.plate.opacity>.01f;
-    f.card.box=splitAnim.card.Value();f.card.opacity=std::clamp(splitAnim.cardOpacity.x,0.f,1.f);f.tileOpacity=std::clamp(splitAnim.tileOpacity.x,0.f,1.f);splitOverlay.Show(f);
+    f.card.box=splitAnim.card.Value();f.card.opacity=std::clamp(splitAnim.cardOpacity.x,0.f,1.f);f.tileOpacity=std::clamp(splitAnim.tileOpacity.x,0.f,1.f);
+    if(const float s=splitAnim.cardScale.ready?splitAnim.cardScale.x/100:1;s!=1){auto& b=f.card.box;const float ax=b.left+(b.right-b.left)*splitAnim.anchorX,ay=b.top+(b.bottom-b.top)*splitAnim.anchorY;b={ax-(ax-b.left)*s,ay-(ay-b.top)*s,ax+(b.right-ax)*s,ay+(b.bottom-ay)*s};}
+    splitOverlay.Show(f);
 }
 void FinishSplitAnimation(){splitOverlay.Hide();splitAnim.returning=splitAnim.committing=false;splitAnim.frame={};chrome.liftedIndex=-1;SyncSplitDecor();InvalidateRect(window,nullptr,FALSE);}
 void SplitFrame(NativeChrome::Motion::Time now){
     if(!splitOverlay.Visible())return;
     const float dt=std::clamp(std::chrono::duration<float>(now-splitAnim.last).count(),0.f,.05f);splitAnim.last=now;
-    splitAnim.plate.Step(dt,.30f);splitAnim.card.Step(dt,.35f);splitAnim.plateOpacity.Step(dt,splitAnim.fade);splitAnim.cardOpacity.Step(dt,.20f);splitAnim.tileOpacity.Step(dt,.12f);
+    splitAnim.plate.Step(dt,.20f);splitAnim.card.Step(dt,.35f);splitAnim.plateOpacity.Step(dt,splitAnim.fade);splitAnim.cardOpacity.Step(dt,.20f);splitAnim.tileOpacity.Step(dt,.12f);splitAnim.cardScale.Step(dt,.15f);   /* #127 motion spec: the zone morphs 1.0 / 0.2 s */
     if(resizePreviewFading()&&splitAnim.tileOpacity.x<=.01f&&splitAnim.tileOpacity.Settled())ClearResizePreviewNow();
     if((splitAnim.returning||splitAnim.committing)&&!SplitAnimating()){FinishSplitAnimation();return;}
     RenderSplitOverlay();
 }
+// #127 column (section « Panneau latéral »): its right edge is the lift line, the lift empties its row and sizes the card.
+float SidebarDropEdge();void SidebarLift();
 // Lift / track / drop. Returns true while the tab is lifted (the strip reorder is off).
 bool SplitDragMove(POINT point){
     if(!tabDrag.tab||halted)return false;const float d=GetDpiForWindow(window)/96.f,x=point.x/d,y=point.y/d;
     const bool reduced=motion.ReducedMotion();auto& f=splitAnim.frame;
     if(!tabDrag.lifted){
-        // Lift below the address row; one tab alone has no partner and stays in the strip.
-        if((chrome.sidebar?x<ContentBox().left:y<chrome.ContentTop())||pages.size()<2)return false;
+        // Lift below the address row (the column: past its right edge); one tab alone has no partner and stays in the strip.
+        if((chrome.sidebar?x<SidebarDropEdge():y<chrome.ContentTop())||pages.size()<2)return false;
         if(splitAnim.returning||splitAnim.committing)FinishSplitAnimation();
         tabDrag.lifted=true;tabDrag.target={};chrome.liftedIndex=TabIndexOf(tabDrag.tab);chrome.dragIndex=-1;chrome.dragOffset=0;splitResize=-1;chrome.split.hotHandle=-1;
-        splitAnim=SplitAnim{};f.card.shown=true;f.card.title=SiteLabel(tabDrag.tab);f.card.favicon=tabDrag.tab->favicon.image;
+        if(chrome.sidebar)SidebarLift();
+        splitAnim=SplitAnim{};f.card.shown=true;f.card.title=chrome.sidebar?TabLabel(tabDrag.tab):SiteLabel(tabDrag.tab);f.card.favicon=tabDrag.tab->favicon.image;   /* the column's card is its row lifted: the row's title (Paper 24BU-0) */
         splitAnim.cardOpacity.Snap(1);splitAnim.plateOpacity.Snap(0);splitAnim.last=NativeChrome::Motion::Now();
+        {const float w=chrome.sidebar?tabDrag.cardW:chrome.strip.tab;splitAnim.anchorX=w>0?std::clamp(tabDrag.grab/w,0.f,1.f):.5f;splitAnim.anchorY=std::clamp(tabDrag.grabY/32,0.f,1.f);
+         splitAnim.cardScale.Snap(100);if(!reduced)splitAnim.cardScale.Set(102);}   // lifted: x1.02 around the grab point (none under reduced motion)
         AnnounceSplit(TRF(split_announce_drag,SiteLabel(tabDrag.tab)));
         SyncSplitDecor();InvalidateRect(window,nullptr,FALSE);
-    }else if(chrome.sidebar?x<ContentBox().left-20:y<SV::reattachY){
-        // Back above the address row: reordering in the strip resumes.
+    }else if(chrome.sidebar?x<SidebarDropEdge()-20:y<SV::reattachY){
+        // Back above the address row (into the column): reordering in the strip resumes.
         tabDrag.lifted=false;tabDrag.target={};chrome.liftedIndex=-1;splitOverlay.Hide();splitAnim=SplitAnim{};
         SetCursor(LoadCursor(nullptr,IDC_ARROW));SyncSplitDecor();InvalidateRect(window,nullptr,FALSE);return false;
     }
     auto v=CurrentSplit();SV::Target target;std::shared_ptr<Tab> partner;
-    if(chrome.sidebar?x>=ContentBox().left:y>=chrome.ContentTop()){
+    if(chrome.sidebar?x>=SidebarDropEdge()&&y>=ContentBox().top:y>=chrome.ContentTop()){
         if(v.group){int dragged=-1;for(int i=0;i<(int)v.members.size();++i)if(v.members[i]==tabDrag.tab)dragged=i;target=SV::GroupTarget(v.a,v.weights,dragged,x,y,v.min,&tabDrag.target);}
         else if((partner=SplitPartner(tabDrag.tab)))target=SV::SingleTarget(ContentBox(),x,y,SV::MinExtent(SV::Orientation::Row,PageZoom()),SV::MinExtent(SV::Orientation::Column,PageZoom()),&tabDrag.target);
     }
     const bool changed=!(target==tabDrag.target);tabDrag.target=target;
     // The tab follows 1:1 from where it was grabbed: never animated.
-    const float w=chrome.strip.tab;splitAnim.card.Snap({x-tabDrag.grab,y-tabDrag.grabY,x-tabDrag.grab+w,y-tabDrag.grabY+32});
+    const float w=chrome.sidebar?tabDrag.cardW:chrome.strip.tab;splitAnim.card.Snap({x-tabDrag.grab,y-tabDrag.grabY,x-tabDrag.grab+w,y-tabDrag.grabY+32});
     const bool valid=target.kind!=SV::Kind::None&&target.kind!=SV::Kind::Refuse;
     if(valid){
+        // #127 motion spec: the zone morphs from one zone to the next (position and size, never gone and back); reduced
+        // motion: it jumps there and fades in (80 ms).
         if(!f.plate.shown||reduced)splitAnim.plate.Snap(target.preview);else splitAnim.plate.Set(target.preview);
+        if(reduced&&changed)splitAnim.plateOpacity.Snap(0);
         // The chip names only the dragged tab; where it lands is shown by the preview itself
         // and spoken to screen readers (TargetText below), never written in the chip.
         splitAnim.plateOpacity.Set(1);f.plate.title=SiteLabel(tabDrag.tab);f.plate.detail.clear();f.plate.favicon=tabDrag.tab->favicon.image;
     }else splitAnim.plateOpacity.Set(0);
-    if(reduced)splitAnim.plateOpacity.Snap(splitAnim.plateOpacity.target);
-    splitAnim.fade=valid?.20f:.12f;  // the preview answers within ~100 ms, a refusal clears faster
+    splitAnim.fade=reduced?.08f:valid?.20f:.10f;  // the preview answers within ~200 ms; outside any zone it fades out in 100 ms (80 ms reduced)
     f.pill.shown=target.kind==SV::Kind::Refuse;if(f.pill.shown){f.pill.x=x+14;f.pill.y=y+22;f.pill.title=RefusalTitle(target.needed);f.pill.detail=RefusalDetail(target.orientation);}
     SetCursor(LoadCursor(nullptr,target.kind==SV::Kind::Refuse?IDC_NO:IDC_ARROW));
     if(changed&&target.kind!=SV::Kind::None)AnnounceSplit(target.kind==SV::Kind::Refuse?RefusalTitle(target.needed)+L", "+RefusalDetail(target.orientation):TRF(split_announce_target,SiteLabel(tabDrag.tab),TargetText(target,v,partner,tabDrag.tab)));
@@ -914,7 +928,8 @@ void EndSplitDrag(bool restore){
         tabDrag.lifted=false;const int i=TabIndexOf(tabDrag.tab);
         if(restore&&i>=0&&!motion.ReducedMotion()&&splitOverlay.Visible()){
             chrome.liftedIndex=i;auto s=chrome.strip.Surface(i);splitAnim.card.Set({s.left,s.top,s.right,s.bottom});
-            splitAnim.fade=.30f;splitAnim.plateOpacity.Set(0);splitAnim.frame.pill.shown=false;splitAnim.returning=true;
+            if(chrome.sidebar&&i<(int)chrome.SideColumn().tabs.size()){const auto& r=chrome.SideColumn().tabs[i];splitAnim.card.Set({r.left,r.top,r.right,r.bottom});}   /* #127: back to its row in the column */
+            splitAnim.fade=.30f;splitAnim.plateOpacity.Set(0);splitAnim.cardScale.Set(100);splitAnim.frame.pill.shown=false;splitAnim.returning=true;
             splitAnim.last=NativeChrome::Motion::Now();ScheduleMotion(splitAnim.last);
             if(restore)AnnounceSplit(TR(split_announce_drag_canceled));
         }else FinishSplitAnimation();
@@ -4947,11 +4962,24 @@ bool SidebarDragMove(POINT point){
     if(y<L.tabsView.top+16&&L.scroll>0)chrome.sidebarScroll=std::max(0.f,L.scroll-8);else if(y>L.tabsView.bottom-16&&L.scroll<L.maxScroll)chrome.sidebarScroll=std::min(L.maxScroll,L.scroll+8);
     InvalidateChrome();return true;
 }
-// Released outside the window: the tab opens in a new window (answer 9). True when handled.
-bool SidebarTearOff(){
-    if(!chrome.sidebar||!tabDrag.tab||!tabDrag.active)return false;POINT p;GetCursorPos(&p);RECT w;GetWindowRect(window,&w);if(PtInRect(&w,p))return false;
+// Split view from the column (answer 9, Paper « Vue partagée dans la colonne » 3): a row dragged past the column's right
+// edge into the page lifts like a top bar tab (SplitDragMove: the same card, drop preview, refusal and split creation);
+// back 20 DIP inside the column, reordering resumes. The column open over the page (narrow window) is column too: its
+// own edge, and it closes at the lift so the whole page takes the drop.
+float SidebarDropEdge(){return chrome.sidebarOverlay?chrome.sideOver.column+SBar::Overlay::border:ContentBox().left;}
+void SidebarLift(){
+    chrome.sidebarDrag=-1;chrome.sidebarInsert=-1;   // no row follows in the list: the row's place stays empty (liftedIndex)
+    // The card fits its title (Paper 24BU-0: 8 · favicon 16 · 8 · title 14 medium · 10), at most 240 like the drop chip;
+    // it keeps the grab point when it can, never so far right that the card is left behind the pointer.
+    tabDrag.cardW=std::min(240.f,8+16+8+splitOverlay.painter.TextWidth(TabLabel(tabDrag.tab),true)+10);tabDrag.grab=std::min(tabDrag.grab,tabDrag.cardW-16);
+    if(sidebarHover.open){sidebarHover.Leave();Layout();}
+}
+// Released outside the window (the release point `up`, client px): the tab opens in a new window (answer 9). True when handled.
+bool SidebarTearOff(POINT up){
+    if(!chrome.sidebar||!tabDrag.tab||!tabDrag.active)return false;ClientToScreen(window,&up);RECT w;GetWindowRect(window,&w);if(PtInRect(&w,up))return false;
     auto t=tabDrag.tab;CancelTabDrag(true);
-    if(!t->home&&!t->uri.empty()&&pages.size()>1&&!privateWindow){OpenWindowWith({t->uri});CloseAt(TabIndexOf(t));Log(L"SIDEBAR tab moved to a new window");}
+    if(!t->home&&!t->uri.empty()&&pages.size()>1&&!privateWindow){if(splitAnim.returning)FinishSplitAnimation(); /* lifted onto the page first: the card leaves with the tab, no flight home */
+        OpenWindowWith({t->uri});CloseAt(TabIndexOf(t));Log(L"SIDEBAR tab moved to a new window");}
     return true;
 }
 // A split view block dropped in the list (Paper 2473-0 « la paire se déplace d'un bloc »): its tabs move together, as MoveTab moves one.
@@ -4965,7 +4993,7 @@ void SidebarMoveBlock(int first,int count,int dest){
 void SidebarDragEnd(bool commit){
     const int from=chrome.sidebarDrag,to=chrome.sidebarInsert;chrome.sidebarDrag=-1;chrome.sidebarInsert=-1;
     if(!commit||from<0||!tabDrag.tab)return;
-    POINT p;GetCursorPos(&p);ScreenToClient(window,&p);const float d=GetDpiForWindow(window)/96.f,x=p.x/d,y=p.y/d;
+    const float d=GetDpiForWindow(window)/96.f,x=tabDrag.at.x/d,y=tabDrag.at.y/d;   // the last pointer of the drag (what the list showed)
     const auto& L=chrome.SideColumn();
     if(!L.gridBlock.Empty()&&L.gridBlock.Contains(x,y)){   // onto the grid: a new bookmark (answer 9)
         auto t=tabDrag.tab;if(t->home||!BM::Admissible(t->uri))return;
@@ -5053,9 +5081,9 @@ case WM_COMMAND:if((HWND)l==address&&HIWORD(w)==EN_CHANGE){AddressEdited();retur
 case WM_MOUSELEAVE:ChromeTipHide();UnlockTabWidth();SidebarPointerLeft();if(!SidebarEdgeDragging())SidebarEdgeLook(0);if(chrome.split.hotHandle>=0&&!sepDrag.active&&!PointerOnGrip()){chrome.split.hotHandle=-1;SyncGripLooks();InvalidateRect(h,nullptr,FALSE);}UpdateInteraction(0,pressed);return 0;
 case WM_LBUTTONDOWN:{if(folderRename.Active()&&folderRename.Host()==h)SetFocus(h);ChromeTipHide();{const float d=GetDpiForWindow(h)/96.f,x=GET_X_LPARAM(l)/d,y=GET_Y_LPARAM(l)/d;if(splitResize>=0){splitResize=-1;SyncSplitDecor();InvalidateRect(h,nullptr,FALSE);}if(y>=SV::liftY&&!chrome.Hit(x,y)&&SplitPointerDown(x,y))return 0;if(chrome.Hit(x,y)==NativeChrome::Chrome::SidebarEdgeId&&SidebarEdgeDown(x))return 0;}
     int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));vaultKeyPress=id==NativeChrome::Chrome::VaultKeyId?(VaultKeyArmed()?1:0):-1;downloadDismissClick=id=='D'&&GetTickCount64()-std::max(downloadPanel.hiddenAt,downloadDrawer.hiddenAt)<150;settingsDismissClick=id=='S'&&GetTickCount64()-settingsDrawer.hiddenAt<150;historyDismissClick=id=='Y'&&GetTickCount64()-historyDrawer.hiddenAt<150;audioDismissClick=id=='V'&&GetTickCount64()-audioPanel.hiddenAt<150;if(id){keyboardFocus=0;keyboardModality=false;if(!NativeChrome::IsClose(id)&&id!='Q')SetFocus(h); /* B01 chip: focus stays with its popover (no light dismiss) */if(!splitTest)SetCapture(h);UpdateInteraction(id,id);if(NativeChrome::IsTab(id)){tabDrag.tab=pages[NativeChrome::TabIndex(id)];tabDrag.start={GET_X_LPARAM(l),GET_Y_LPARAM(l)};tabDrag.grab=GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.ShownTabLeft(NativeChrome::TabIndex(id));tabDrag.grabY=GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.strip.Surface(NativeChrome::TabIndex(id)).top;tabDrag.origin=NativeChrome::TabIndex(id);
-        if(chrome.sidebar&&NativeChrome::TabIndex(id)<(int)chrome.SideColumn().tabs.size())tabDrag.grabY=GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.SideColumn().tabs[NativeChrome::TabIndex(id)].top;}
+        if(chrome.sidebar&&NativeChrome::TabIndex(id)<(int)chrome.SideColumn().tabs.size()){tabDrag.grabY=GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.SideColumn().tabs[NativeChrome::TabIndex(id)].top;tabDrag.grab=GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.SideColumn().tabs[NativeChrome::TabIndex(id)].left;}}
     if(NativeChrome::IsBookmark(id)){const int i=NativeChrome::BookmarkIndex(id);if(i<(int)chrome.bandItems.size()){const BM::Id bid=chrome.bandItems[i].id;bandDrag={i,bid,{GET_X_LPARAM(l),GET_Y_LPARAM(l)},GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.BandRect(i).left,false,BM::BarRoot,bookmarks.IndexOf(bid)};}}}return 0;}
-case WM_LBUTTONUP:{const POINT up{GET_X_LPARAM(l),GET_Y_LPARAM(l)};if(outerDrag.active){OuterDragEnd(false,&up);return 0;}if(sepDrag.active){SeparatorUp();return 0;}if(SidebarEdgeDragging()){SidebarEdgeUp(true);return 0;}bool dragged=tabDrag.active||bandDrag.active;if(SidebarTearOff()){}else if(tabDrag.lifted)CommitSplitDrag();else if(tabDrag.active){if(chrome.sidebar)SidebarDragEnd(true);FinishReorder();}CancelTabDrag();BandDragEnd(false,&up);int original=pressed;int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(GetCapture()==h)ReleaseCapture();UpdateInteraction(id,0);
+case WM_LBUTTONUP:{const POINT up{GET_X_LPARAM(l),GET_Y_LPARAM(l)};if(outerDrag.active){OuterDragEnd(false,&up);return 0;}if(sepDrag.active){SeparatorUp();return 0;}if(SidebarEdgeDragging()){SidebarEdgeUp(true);return 0;}bool dragged=tabDrag.active||bandDrag.active;if(SidebarTearOff(up)){}else if(tabDrag.lifted)CommitSplitDrag();else if(tabDrag.active){if(chrome.sidebar)SidebarDragEnd(true);FinishReorder();}CancelTabDrag();BandDragEnd(false,&up);int original=pressed;int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(GetCapture()==h)ReleaseCapture();UpdateInteraction(id,0);
     if(!dragged&&original&&original==id&&NativeChrome::IsBookmark(id)){BandActivate(NativeChrome::BookmarkIndex(id),(w&MK_CONTROL)!=0,(w&MK_SHIFT)!=0,false);return 0;}
     if(!dragged&&original&&original==id){if(NativeChrome::IsClose(id)){LockTabWidth();CloseAt(NativeChrome::TabIndex(id));}else if(NativeChrome::IsTab(id))Select(NativeChrome::TabIndex(id));else Command(id);}vaultKeyPress=-1;return 0;}   /* review R3: a press never outlives its release */
 case WM_CAPTURECHANGED:case WM_CANCELMODE:if(outerDrag.active&&(msg==WM_CANCELMODE||(HWND)l!=h))OuterDragEnd(true);CancelSeparator();if(SidebarEdgeDragging()&&(msg==WM_CANCELMODE||(HWND)l!=h))SidebarEdgeUp(false);CancelTabDrag(true);if(bandDrag.index>=0&&(HWND)l!=h)BandDragEnd(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;
