@@ -1259,6 +1259,118 @@ try:
               and hs == ["Ce site · boutique", ["1 fichier modifié", "vitrine · 3 fichiers modifiés"]],
               "folder (B 1.8/1.9): the folder's name instead of its path or the site's address (folder screen, history); a sure folder is not in « + »", f"{plus!r} {tile} {hs}"[:300])
 
+    # ---------------------------------------------------------------- 6p. the permission circuit (owner's trial 0.3.952, 24 Nov 2026)
+    # `--only perm` runs this block alone. One request per change, a card that never changes shape, a thread that never
+    # says « A modifié » before the answer.
+    if not ONLY or "perm" in ONLY:
+        p_opts = ("options:[{optionId:'allow',name:'Autoriser',kind:'allow_once'},{optionId:'always',name:'Toujours autoriser',kind:'allow_always'},"
+                  "{optionId:'reject',name:'Refuser',kind:'reject_once'}]")
+        p_diff = ("diff:{path:'style.css',added:1,removed:1,lines:[{op:'@',text:'@@ -1,1 +1,1 @@'},"
+                  "{op:'-',text:'.row button { padding: 6px 12px; border: 1px solid #D9D9D6; border-radius: 6px; font-size: 13px; cursor: pointer; }'},"
+                  "{op:'+',text:'.row button { padding: 6px 12px; border: 1px solid #D9D9D6; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }'}]}")
+        def p_ask(rid="p1", tool="e1", extra=""):
+            cdp.js("window.devHost.send({type:'permission.request',requestId:'%s',turnId:'t1',toolCallId:'%s',title:'Claude veut modifier style.css',kind:'edit',%s,%s%s})"
+                   % (rid, tool, p_diff, p_opts, extra)); time.sleep(.25)
+        def p_tool(status, first=False):
+            if first: cdp.js("window.devHost.send({type:'toolCall',turnId:'t1',id:'e1',title:'Edit style.css',kind:'edit',status:'%s',locations:[{path:'C:\\\\site\\\\style.css'}]})" % status)
+            else: cdp.js("window.devHost.send({type:'toolCallUpdate',id:'e1',status:'%s'})" % status)
+            time.sleep(.2)
+        def p_arm(sel): cdp.js(f"document.querySelector({json.dumps(sel)}).__shownAt = -1e6")
+        def p_center(sel): return cdp.js(f"(()=>{{const n=document.querySelector({json.dumps(sel)});if(!n)return null;const r=n.getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2]}})()")
+        def p_mouse(x, y):   # a real click: pressed and released at the same point, as a hand does
+            cdp.call("Input.dispatchMouseEvent", type="mouseMoved", x=x, y=y)
+            cdp.call("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button="left", clickCount=1); time.sleep(.05)
+            cdp.call("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button="left", clickCount=1); time.sleep(.2)
+        p_resp = lambda: cdp.js("window.__posted.filter(m=>m.type==='permission.respond')")
+        # the card's geometry: every part's box relative to the card, and what leaves it
+        p_geo_js = ("(()=>{const c=document.querySelector('.perm, .bperm');if(!c)return null;const R=c.getBoundingClientRect();const o={w:Math.round(R.width),out:[]};"
+                    "for(const n of c.querySelectorAll('.perm-hd, .perm-t, .diff, .perm-details, .instead, .perm-ft, .always, .btn, .bperm-file, .bperm-in, .bperm-ft')){"
+                    "const r=n.getBoundingClientRect();const k='.'+n.className.split(' ').slice(0,2).join('.')+(n.classList.contains('btn')?':'+n.firstChild.textContent:'');"
+                    "o[k]=[Math.round(r.left-R.left),Math.round(r.top-R.top),Math.round(r.width),Math.round(r.height)];if(r.left<R.left-.5||r.right>R.right+.5)o.out.push(k);}"
+                    "o.doc=document.documentElement.scrollWidth>document.documentElement.clientWidth;return o})()")
+        def p_text(): return cdp.js("document.querySelector('.log').innerText")
+        p_steps = lambda: cdp.js("Array.from(document.querySelectorAll('.log .step, .log .fold, .log .waiting')).map(n=>n.textContent.trim())")
+
+        # --- points 2 and 4 (panel): the card keeps its shape whatever takes the focus in it
+        load("6.10-travaille"); cdp.js("document.getElementById('composer-input').focus()")   # the user was typing: the card does not take the keyboard
+        p_tool("pending", True); p_ask(extra=",tool:{name:'Edit'},input:'{\"file_path\":\"C:/site/style.css\"}'")
+        g0 = cdp.js(p_geo_js)
+        check(g0 and not g0["out"] and not g0["doc"] and g0[".perm-hd"][0] == 12 and g0[".diff"][2] == g0["w"] - 24,
+              "permission (panel): at rest the card is whole — title at the left, the diff as wide as the card (it scrolls inside itself)", json.dumps(g0, ensure_ascii=False)[:400])
+        x, y = p_center(".perm .perm-t"); p_mouse(x, y)                                      # a click on the card, outside its buttons
+        g1 = cdp.js(p_geo_js)
+        # the card's shape: every part but the two buttons, which « ↵ » moves (the keyboard is in the card now) — still right-aligned
+        p_shape = lambda g: [g[k] for k in (".perm-hd", ".perm-t", ".diff", ".perm-details", ".instead", ".perm-ft")] + [g["out"], g["doc"], g["w"], sum(g[".btn.primary:Autoriser"][::2]), g[".btn:Refuser"][1:]]
+        check(p_shape(g1) == p_shape(g0) and not p_resp() and cdp.js("document.querySelector('.perm').classList.contains('kbd-on') && !document.querySelector('.perm').classList.contains('keys')"),
+              "permission (panel, point 2): a click on the card outside its buttons changes nothing of its shape and answers nothing",
+              f"before {json.dumps(g0)[:260]} after {json.dumps(g1)[:260]}")
+        x, y = p_center(".perm .always"); p_mouse(x, y)
+        g2 = cdp.js(p_geo_js); on = cdp.js("document.querySelector('.perm .always').getAttribute('aria-checked')")
+        check(p_shape(g2) == p_shape(g0) and g2 == g1 and on == "true" and not p_resp(), "permission (panel, point 4): « Toujours autoriser » switches on with one click and the card keeps its shape",
+              f"checked {on} after {json.dumps(g2)[:300]}")
+        x, y = p_center(".perm .perm-more"); p_mouse(x, y)
+        g3 = cdp.js(p_geo_js)
+        check(g3 and not g3["out"] and not g3["doc"] and g3[".perm-hd"] == g0[".perm-hd"] and g3[".diff"] == g0[".diff"] and cdp.js("!document.getElementById('perm-details').hidden"),
+              "permission (panel): « Détails » opens under the diff, nothing leaves the card", json.dumps(g3, ensure_ascii=False)[:300])
+        cdp.js("document.querySelector('.perm .instead').focus()"); g4 = cdp.js(p_geo_js)
+        check(g4 == g3 and p_shape(g4)[:3] == p_shape(g0)[:3], "permission (panel): writing in « Dire à Claude quoi faire à la place… » keeps the card's shape", json.dumps(g4)[:300])
+        shot(os.path.join(OUT, "perm-carte-cliquee.png"))
+
+        # --- point 1 (panel): one click on « Autoriser » answers — the first one, wherever the keyboard was
+        p_box = lambda sel: cdp.js(f"(()=>{{const r=document.querySelector({json.dumps(sel)}).getBoundingClientRect();return [r.left,r.top,r.width,r.height]}})()")
+        for btn, want in ((".perm .btn.primary", "allow"), (".perm .btn:not(.primary)", "reject")):
+            got = []
+            for where in (.08, .5, .92):   # near its left edge, its middle, near its right edge
+                load("6.10-travaille"); cdp.js("document.getElementById('composer-input').focus()")   # the keyboard is elsewhere: the card has no « ↵ » yet
+                p_tool("pending", True); p_ask(); p_arm(".perm")
+                bx = p_box(btn); p_mouse(bx[0] + bx[2] * where, bx[1] + bx[3] / 2)
+                r1 = p_resp(); got.append([r1[0]["optionId"] if len(r1) == 1 else len(r1), cdp.js("!document.querySelector('.perm')")])
+            check(got == [[want, True]] * 3, f"permission (panel, point 1): ONE real click on « {'Autoriser' if want == 'allow' else 'Refuser'} » — pressed and released at the same point, near either edge or in the middle — answers; never a second click for the same request", str(got))
+        # the same request sent again by the host (WebView re-created, thread.reset) never makes a second card nor a second answer
+        load("6.10-travaille"); p_tool("pending", True); p_ask(); p_ask(); p_arm(".perm")
+        n = cdp.js("[document.querySelectorAll('.perm').length, !!document.querySelector('.perm-of')]")
+        x, y = p_center(".perm .btn.primary"); p_mouse(x, y)
+        check(n == [1, False] and len(p_resp()) == 1 and cdp.js("!document.querySelector('.perm')"), "permission (panel): the same request received twice is one card, one answer", f"{n} {p_resp()}")
+
+        # --- point 3 (panel): the thread says what is true — « Veut modifier » until the answer, « A modifié » once done, nothing if refused
+        load("6.10-travaille"); p_tool("pending", True); p_ask()
+        s0 = p_steps(); t0 = p_text()
+        check("A modifié" not in t0 and "Modifie style.css" not in t0 and any(s.endswith("eut modifier style.css") for s in s0) and "Attend votre accord pour modifier style.css" in t0,
+              "thread (point 3): while the request waits the step reads « Veut modifier style.css » — never « A modifié », never « Modifie… »", str(s0))
+        p_arm(".perm"); x, y = p_center(".perm .btn.primary"); p_mouse(x, y)
+        s1 = p_steps(); t1 = p_text()
+        check("A modifié" not in t1 and "Veut modifier" not in t1 and any(s == "Modifie style.css…" for s in s1), "thread (point 3): allowed, the edit is under way — « Modifie style.css… »", str(s1))
+        p_tool("completed"); s2 = p_steps()
+        check(any("A modifié style.css" in s or "a modifié style.css" in s for s in s2) and "Veut modifier" not in p_text(), "thread (point 3): « A modifié style.css » only once the edit really happened", str(s2))
+        load("6.10-travaille"); p_tool("pending", True); p_ask(); p_arm(".perm")
+        x, y = p_center(".perm .btn:not(.primary)"); p_mouse(x, y); p_tool("failed"); time.sleep(.2)
+        t3 = p_text()
+        check("modifié" not in t3 and "Veut modifier" not in t3 and "Modifie" not in t3 and "échec" not in t3, "thread (point 3): refused, nothing is said of the edit (no « A modifié », no « échec »)", str(p_steps()))
+        # replayed (thread.reset) with the refused step: still nothing
+        cdp.js("window.devHost.send({type:'thread.reset',conversationId:'c1',items:[{type:'message.user',id:'u1',text:'Mets en gras',at:new Date().toISOString()},{type:'turn.start',turnId:'t1',model:'Sonnet 5.5',at:new Date().toISOString()},"
+               "{type:'toolCall',turnId:'t1',id:'r1',title:'Read style.css',kind:'read',status:'completed',locations:[{path:'style.css'}]},"
+               "{type:'toolCall',turnId:'t1',id:'e1',title:'Edit style.css',kind:'edit',status:'failed',refused:true,locations:[{path:'style.css'}]},"
+               "{type:'turn.end',turnId:'t1',stopReason:'end_turn',durationMs:4000}]})"); time.sleep(.3)
+        t4 = p_text()
+        check("A lu style.css" in t4 and "modifié" not in t4 and "échec" not in t4, "thread (point 3): a conversation opened again does not show the refused edit either", str(p_steps()))
+        # no request (mode Auto / Accept edits): a pending edit is simply under way
+        load("6.10-travaille"); p_tool("pending", True)
+        check(any(s == "Modifie style.css…" for s in p_steps()), "thread: without a request (Auto), a pending edit reads « Modifie style.css… »", str(p_steps()))
+
+        # --- the bubble: same rules
+        load("c-2-envoye"); p_tool("pending", True); p_ask(); p_arm(".bperm")
+        b0 = cdp.js("[document.querySelector('#app').innerText, document.querySelectorAll('.bperm').length]")
+        check("Modifie style.css" not in b0[0] and "A modifié" not in b0[0] and "Attend votre accord…" in b0[0] and b0[1] == 1,
+              "bubble (point 3, Paper « Mode Commentaire 4 »): while the request waits the status reads « Attend votre accord… » — never « Modifie style.css… » nor « A modifié »", b0[0][-200:].replace("\n", " | "))
+        gb0 = cdp.js(p_geo_js)
+        x, y = p_center(".bperm .always"); p_mouse(x, y); gb1 = cdp.js(p_geo_js)
+        check(gb0 and gb1 == gb0 and not gb0["out"] and cdp.js("document.querySelector('.bperm .always').getAttribute('aria-checked')") == "true" and not p_resp(),
+              "bubble (points 2 and 4): « Auto. » switches on with one click, the card keeps its shape, nothing leaves it", f"{json.dumps(gb0)[:200]} / {json.dumps(gb1)[:200]}")
+        x, y = p_center(".bperm .btn.primary"); p_mouse(x, y); rb = p_resp()
+        check(len(rb) == 1 and rb[0]["optionId"] == "always" and cdp.js("!document.querySelector('.bperm')"), "bubble (point 1): one real click on « Autoriser » answers (Auto on: allow_always)", json.dumps(rb)[:200])
+        p_tool("in_progress"); bs = cdp.js("document.querySelector('#app').innerText")
+        check("Modifie style.css…" in bs, "bubble (point 3): allowed, the status reads « Modifie style.css… »", bs[-160:].replace("\n", " | "))
+
     if not ONLY:
         load("6.1-autorisation")
         check(cdp.js("document.activeElement.classList.contains('perm')"), "keyboard (SEC-23): the permission card holds the focus, never « Autoriser »", active())
@@ -1278,7 +1390,7 @@ try:
         # Owner decision (24 Nov 2026): the card tells the truth — « ↵ » on « Autoriser », its `aria-keyshortcuts` and the
         # announcement « Autoriser avec Entrée » are there only while Entrée really allows (the keyboard is in the card)
         keys_js = ("(()=>{const c=document.querySelector('.perm');if(!c)return null;const a=c.querySelector('.btn.primary');"
-                   "return {keys:c.classList.contains('keys'),aria:a.getAttribute('aria-keyshortcuts'),kbd:getComputedStyle(a.querySelector('.kbd')).display!=='none',"
+                   "return {keys:c.classList.contains('kbd-on'),aria:a.getAttribute('aria-keyshortcuts'),kbd:getComputedStyle(a.querySelector('.kbd')).display!=='none',"
                    "esc:c.querySelector('.btn:not(.primary)').getAttribute('aria-keyshortcuts'),refuse:c.querySelector('.btn:not(.primary)').textContent,said:document.querySelector('.sr-only[role=alert]').textContent,active:document.activeElement===c}})()")
         perm_msg = ("{type:'permission.request',requestId:'%s',turnId:'t1',title:'Claude veut modifier checkout.css',kind:'edit',"
                     "options:[{optionId:'allow',name:'Autoriser',kind:'allow_once'},{optionId:'reject',name:'Refuser',kind:'reject_once'}]}")
