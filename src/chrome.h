@@ -24,6 +24,7 @@
 #include "site-request.h"
 #include "sidebar.h"
 #include "emoji-text.h"
+#include "focus-mode.h"
 #include <set>
 #include <tuple>
 #include <cstring>
@@ -128,9 +129,10 @@ public:
         // Active panel ring (Paper 08): neutral, 1 DIP off the page, 2 DIP. After a click it is
         // discreet (white 10 %); reached by keyboard (F6, menu) it is the focus ring's 50 % (5.26:1).
         // The accent is kept for drop previews and manipulation, never a permanent frame.
-        // At an outer bottom corner the page is round (6 DIP): the ring follows it (8 on its centre line).
+        // At an outer bottom corner the page is round (6 DIP): the ring follows it (8 on its centre line). Mode Focus: the
+        // outer top corners too (the page's 6 DIP corners, 8 on the ring's centre line, 2 DIP off the page).
         if(split.ring){auto a=split.active;Color(1,keyboardModality?Design::Focus::keyboardOpacity:Design::Focus::pointerOpacity);
-            if(auto g=CornerBox({a.left-2,a.top-2,a.right+2,a.bottom+2},2,2,split.activeBottomRight?8.f:2.f,split.activeBottomLeft?8.f:2.f)){target->DrawGeometry(g,brush,2);g->Release();}}
+            if(auto g=CornerBox({a.left-2,a.top-2,a.right+2,a.bottom+2},split.activeTopLeft?8.f:2.f,split.activeTopRight?8.f:2.f,split.activeBottomRight?8.f:2.f,split.activeBottomLeft?8.f:2.f)){target->DrawGeometry(g,brush,2);g->Release();}}
         // Separator (Paper 08): at rest only the 4 DIP canvas gap, a thin neutral line. The
         // handle, 8 x 36 #2F2F2F fully rounded, appears while hovered, dragged or keyboard-focused
         // and overlaps both page edges by 2 DIP. Pages are child windows that cover the canvas,
@@ -524,11 +526,41 @@ public:
     std::vector<int> tabGroups;int liftedIndex=-1,visibleTabGroup=0;
     std::vector<int> menuTargets;  // tabs a highlighted split-menu row designates (Paper V2: 1 DIP white 50 % outline)
     int menuSource=-1;             // #127: the right-clicked tab while a split-menu row designates a target (the column outlines both)
-    struct SplitDecor{bool shown=false,ring=true;D2D1_RECT_F active{};std::vector<D2D1_RECT_F> rails;std::vector<int> railTabs;std::vector<D2D1_RECT_F> handles;int hotHandle=-1,focusedHandle=-1;bool paintHandles=true,activeBottomLeft=false,activeBottomRight=false;} split;
+    struct SplitDecor{bool shown=false,ring=true;D2D1_RECT_F active{};std::vector<D2D1_RECT_F> rails;std::vector<int> railTabs;std::vector<D2D1_RECT_F> handles;int hotHandle=-1,focusedHandle=-1;bool paintHandles=true,activeBottomLeft=false,activeBottomRight=false,activeTopLeft=false,activeTopRight=false;} split;
     UINT dpi=96;float width=1180,height=815;D2D1_RECT_F bar{},edit{};std::vector<Region> regions;
     // Fullscreen (F11 or a page's element): the page takes the whole window. Nothing of the chrome is drawn, hit,
     // focused, given a tooltip or exposed to UI Automation (all of these read `regions`); Paint only clears the canvas.
     bool contentOnly=false;
+    // Mode Focus (src/focus-mode.h, Paper p-U-0): the chrome floats in a panel over the top of the page. `width` is then
+    // the chrome's layout width (the client's minus FocusMode::layoutInset) and `clientWidth` the window's; `origin` is
+    // where chrome-local (0, 0) lands in client DIP and `panel` the panel's client rectangle at its slide position
+    // (bottom <= 0: off screen). Regions, `bar`, `edit` and every Design constant stay chrome-local: the host maps them
+    // with ToClient(), and Hit() / Local() take client DIP. Without `floating` the origin is (0, 0) and nothing changes.
+    bool floating=false;D2D1_POINT_2F origin{0,0};D2D1_RECT_F panel{};float clientWidth=0;
+    // The window paints the panel itself only while it is « live » (at rest, in the page windows' hole); while it slides,
+    // the host shows a picture of it (RenderPanel) in a layered window above the page instead.
+    bool panelLive=true;
+    // With the annotation mode (src/focus-mode.h « With the annotation mode »): the banner above the panel and the chat
+    // card's strip on its right (the chrome's layout width shrinks by it). Set by the host before Resize().
+    FocusMode::Above panelAbove{};
+    float ClientWidth()const{return floating?clientWidth:width;}
+    void SetFloating(bool on){if(on==floating)return;if(on){clientWidth=width;width=std::max(0.f,clientWidth-FocusMode::layoutInset-panelAbove.reserve);}else{width=clientWidth;origin={0,0};panel={};}floating=on;}
+    void SetPanelAbove(FocusMode::Above a){panelAbove=a;if(floating)width=std::max(0.f,clientWidth-FocusMode::layoutInset-a.reserve);}
+    // The panel's part inside the window (nothing above the client's top edge, nor over the annotation banner); empty when
+    // off screen.
+    D2D1_RECT_F PanelVisible()const{const float top=std::max(0.f,panelAbove.banner);if(!floating||panel.bottom<=top||panel.right<=panel.left)return {};return {panel.left,std::max(top,panel.top),panel.right,panel.bottom};}
+    bool PanelShown()const{const auto v=PanelVisible();return v.bottom>v.top;}
+    // Client DIP -> chrome-local; false where no chrome is on screen (floating: outside the panel's visible part).
+    bool Local(float& x,float& y)const{if(!floating)return true;const auto v=PanelVisible();if(!(x>=v.left&&x<v.right&&y>=v.top&&y<v.bottom))return false;x-=origin.x;y-=origin.y;return true;}
+    D2D1_RECT_F ToClient(D2D1_RECT_F r)const{return {r.left+origin.x,r.top+origin.y,r.right+origin.x,r.bottom+origin.y};}
+    // The panel at slide `position` (0 hidden .. 1 at rest), its edges and the content's origin on whole device pixels:
+    // the same rounding as the page windows, so the hole made in them and the painted panel meet exactly, and the
+    // chrome inside rasterises like the normal one (an integer pixel offset).
+    struct PanelPlace{D2D1_RECT_F panel;D2D1_POINT_2F origin;};
+    PanelPlace PanelAt(float position)const{namespace FM=FocusMode;const float s=dpi/96.f;const auto r=FM::Panel(ClientWidth(),bandShown,position,panelAbove);
+        const float top=FM::Snap(r.top,s),h=FM::Snap(FM::PanelHeight(bandShown),s);
+        return {{FM::Snap(r.left,s),top,FM::Snap(r.right,s),top+h},{FM::Snap(r.left+FM::border,s),top+FM::Snap(FM::border,s)}};}
+    void PlacePanel(float position){if(!floating)return;const auto p=PanelAt(position);panel=p.panel;origin=p.origin;}
     // Tab strip: adaptive width + horizontal scroll (DIP). `lockedTab` (0 = off) is set by
     // the host after a pointer close and cleared when the pointer leaves the strip.
     float scroll=0,lockedTab=0;Design::TabStrip::Strip strip;
@@ -576,6 +608,7 @@ public:
     HRESULT SavePng(const wchar_t* path){if(!surface)return E_FAIL;IWICStream* stream=nullptr;IWICBitmapEncoder* encoder=nullptr;IWICBitmapFrameEncode* frame=nullptr;HRESULT hr=wic->CreateStream(&stream);if(SUCCEEDED(hr))hr=stream->InitializeFromFilename(path,GENERIC_WRITE);if(SUCCEEDED(hr))hr=wic->CreateEncoder(GUID_ContainerFormatPng,nullptr,&encoder);if(SUCCEEDED(hr))hr=encoder->Initialize(stream,WICBitmapEncoderNoCache);if(SUCCEEDED(hr))hr=encoder->CreateNewFrame(&frame,nullptr);if(SUCCEEDED(hr))hr=frame->Initialize(nullptr);if(SUCCEEDED(hr))hr=frame->WriteSource(surface,nullptr);if(SUCCEEDED(hr))hr=frame->Commit();if(SUCCEEDED(hr))hr=encoder->Commit();Drop(frame);Drop(encoder);Drop(stream);return hr;}
     UINT32 SurfacePixel(float x,float y){UINT32 pixel=0;WICRect r{(INT)(x*dpi/96),(INT)(y*dpi/96),1,1};if(surface)surface->CopyPixels(&r,4,4,(BYTE*)&pixel);return pixel;}
     HRESULT Resize(){if(!factory||!hwnd)return S_OK;RECT r;GetClientRect(hwnd,&r);dpi=GetDpiForWindow(hwnd);width=(float)r.right*96/dpi;height=(float)r.bottom*96/dpi;
+        if(floating){clientWidth=width;width=std::max(0.f,clientWidth-FocusMode::layoutInset-panelAbove.reserve);}
         if(target){target->SetDpi((float)dpi,(float)dpi);return hwndTarget->Resize(D2D1::SizeU(r.right,r.bottom));}
         initStep=L"window render target" /* i18n-exempt: log only */;HRESULT hr=factory->CreateHwndRenderTarget(D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,D2D1::PixelFormat(),(float)dpi,(float)dpi),D2D1::HwndRenderTargetProperties(hwnd,D2D1::SizeU(r.right,r.bottom),presentOptions),&hwndTarget);if(FAILED(hr))return hr;target=hwndTarget;target->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);initStep=L"brush";return target->CreateSolidColorBrush(D2D1::ColorF(1,1,1),&brush);
     }
@@ -1074,8 +1107,6 @@ public:
     // Motion spec §5: the hover line fades in over 120 ms once the pointer has rested 150 ms (dragging: at once).
     Motion::Time edgeHoverAt{};
     float EdgeAlpha(Motion::Time now)const{if(sidebarEdge==2)return 1;if(sidebarEdge!=1)return 0;const double ms=std::chrono::duration<double,std::milli>(now-edgeHoverAt).count()-150;return (float)std::clamp(ms/120,0.0,1.0);}
-    // The chat card (#127 side panel layouts; src/chat-host.h CardInset): its frame, the border ring painted here.
-    D2D1_RECT_F chatFrame{};
     float sidebarTitles=1;                               // titles and labels (fold animation)
     float sidebarScroll=0;                               // tab list scroll
     int sidebarDrag=-1;float sidebarDragY=0,sidebarDragTopAtDrop=0;int sidebarInsert=-1;   // tab dragged in the list: its row, pointer top, drop slot
@@ -1526,7 +1557,7 @@ public:
         if(sidebarOverlay)PaintSideColumn(sideOver,titles,selected,editing,hover,focus,now,true);
         PaintSidePopover(hover,focus,now);
         PaintSideEdge(focus==SidebarEdgeId&&keyboardModality);   // keyboard focus: the dragging colour
-        if(chatFrame.right>chatFrame.left){brush->SetColor(D2D1::ColorF(0x26/255.f,0x26/255.f,0x26/255.f,1));target->DrawRoundedRectangle(D2D1::RoundedRect({chatFrame.left+.5f,chatFrame.top+.5f,chatFrame.right-.5f,chatFrame.bottom-.5f},7.5f,7.5f),brush,1);}   // Paper 1YJQ-0
+        DrawChatFrame();   // Paper 1YJQ-0
         DrawSplit();
         if(const auto ripple=downloadIcon.At(now).ripple;ripple>=0){const auto d=std::find_if(regions.begin(),regions.end(),[](const Region& r){return r.id=='D';});
             if(d!=regions.end())DrawDownloadRipple(ripple,d->rect,Design::Size::icon);}
@@ -1584,7 +1615,8 @@ public:
     int BandStop()const{if(!bandShown)return 0;if(bandRover>=0&&bandRover<band.visible)return BookmarkBase+bandRover;if(bandRover==-2&&band.overflow)return 'O';if(band.visible>0)return BookmarkBase;return band.overflow?'O':0;}
     // Band order for arrows: visible items, then the » button.
     std::vector<int> BandOrder()const{std::vector<int> o;for(int i=0;i<band.visible;++i)o.push_back(BookmarkBase+i);if(band.overflow)o.push_back('O');return o;}
-    int Hit(float x,float y){for(auto& r:regions)if(r.id==SidebarEdgeId&&x>=r.rect.left&&x<r.rect.right&&y>=r.rect.top&&y<r.rect.bottom)return r.id;   // #127: the edge wins over the tiles it overlaps
+    // Client DIP (the floating panel's offset is taken off here; outside its visible part nothing is hit).
+    int Hit(float x,float y){if(!Local(x,y))return 0;for(auto& r:regions)if(r.id==SidebarEdgeId&&x>=r.rect.left&&x<r.rect.right&&y>=r.rect.top&&y<r.rect.bottom)return r.id;   // #127: the edge wins over the tiles it overlaps
         for(auto& r:regions){if(x>=r.rect.left&&x<r.rect.right&&y>=r.rect.top&&y<r.rect.bottom)return Enabled(r.id)?r.id:0;}return 0;}
     bool AssetsReady(){if(bitmaps.size()<11)return false;for(auto& b:bitmaps)if(!b.second)return false;return fonts&&fonts->GetFontFamilyCount()==1;}
     // Tabs at their presented geometry. Exactly one surface per tab (no second
@@ -1661,7 +1693,60 @@ public:
     }
     // Smoke diagnostics: why AssetsReady() is false (bitmap count, keys that failed to load, font families).
     std::wstring AssetsReport(){std::wstring s=L"bitmaps="+std::to_wstring(bitmaps.size())+L" fonts="+std::to_wstring(fonts?fonts->GetFontFamilyCount():0)+L" missing=";for(auto& b:bitmaps)if(!b.second)s+=b.first+L";";return s;}
-    void Paint(const std::vector<std::wstring>& titles,int selected,const std::wstring& uri,bool editing,int hover,int focus,const D2D1_RECT_F* dirty=nullptr,Motion::Time now=Motion::Now()){(void)uri;/* the field reads `address`, set by the host */if(!target||!brush)return;++textPass;Build((int)titles.size(),selected,&titles,now);target->BeginDraw();target->PushAxisAlignedClip(dirty?*dirty:D2D1::RectF(0,0,width,height),D2D1_ANTIALIAS_MODE_ALIASED);target->Clear(D2D1::ColorF(Design::Surface::canvas,Design::Surface::canvas,Design::Surface::canvas));if(!contentOnly&&sidebar)PaintSidebar(titles,selected,editing,hover,focus,now);else if(!contentOnly){
+    // `dirty`: client DIP.
+    void Paint(const std::vector<std::wstring>& titles,int selected,const std::wstring& uri,bool editing,int hover,int focus,const D2D1_RECT_F* dirty=nullptr,Motion::Time now=Motion::Now()){(void)uri;/* the field reads `address`, set by the host */if(!target||!brush)return;++textPass;Build((int)titles.size(),selected,&titles,now);target->BeginDraw();target->PushAxisAlignedClip(dirty?*dirty:D2D1::RectF(0,0,ClientWidth(),height),D2D1_ANTIALIAS_MODE_ALIASED);target->Clear(D2D1::ColorF(Design::Surface::canvas,Design::Surface::canvas,Design::Surface::canvas));
+        if(!contentOnly){if(floating){DrawSplit();DrawChatFrame();if(panelLive)DrawPanel(titles,selected,editing,hover,focus,dirty,now);}else if(sidebar)PaintSidebar(titles,selected,editing,hover,focus,now);else DrawChrome(titles,selected,editing,hover,focus,dirty,now,true);}
+        target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET)RecreateTarget(); /* every target resource, the Lottie bitmap included */
+    }
+    // The chat card's 1 DIP #262626 ring (Mode Focus, Paper 203J-0: radius 6; the side panel layouts, Paper 1YJQ-0: 8), on
+    // the canvas around the chat's WebView (placed 1 DIP inside `chatFrame`, client DIP; its rounded corners are the host's
+    // layered masks). Empty: nothing. One card for both (src/chat-host-ui.h CardOn): the host sets the radius.
+    D2D1_RECT_F chatFrame{};float chatRadius=FocusMode::chatRadius;
+    void DrawChatFrame(){if(chatFrame.right<=chatFrame.left||chatFrame.bottom<=chatFrame.top)return;namespace FM=FocusMode;const float g=((FM::chatBorderRgb>>16)&255)/255.f,b=FM::chatBorder/2;
+        brush->SetColor(D2D1::ColorF(g,g,g,1));target->DrawRoundedRectangle(D2D1::RoundedRect({chatFrame.left+b,chatFrame.top+b,chatFrame.right-b,chatFrame.bottom-b},chatRadius-b,chatRadius-b),brush,FM::chatBorder);}
+    // Mode Focus, « Hover en haut » (Paper 1JBQ-0): the panel (#171717, a 1 DIP #FFFFFF14 border, radius 4, no shadow)
+    // at its slide position, then the chrome inside it, translated to `origin` and clipped to the inside of the border.
+    // The normal chrome's 1 DIP lower hairline is not drawn: the border replaces it.
+    void DrawPanel(const std::vector<std::wstring>& titles,int selected,bool editing,int hover,int focus,const D2D1_RECT_F* dirty,Motion::Time now){
+        if(!PanelShown())return;
+        const D2D1_RECT_F p=panel;namespace FM=FocusMode;
+        Round(p,FM::panelRadius,Design::Surface::canvas);
+        Color(1,FM::borderAlpha);const float half=FM::border/2;
+        target->DrawRoundedRectangle(D2D1::RoundedRect({p.left+half,p.top+half,p.right-half,p.bottom-half},FM::panelRadius-half,FM::panelRadius-half),brush,FM::border);
+        target->PushAxisAlignedClip({p.left+FM::border,p.top+FM::border,p.right-FM::border,p.bottom-FM::border},D2D1_ANTIALIAS_MODE_ALIASED);
+        D2D1_MATRIX_3X2_F base;target->GetTransform(&base);target->SetTransform(D2D1::Matrix3x2F::Translation(origin.x,origin.y)*base);
+        D2D1_RECT_F local{};if(dirty)local={dirty->left-origin.x,dirty->top-origin.y,dirty->right-origin.x,dirty->bottom-origin.y};
+        DrawChrome(titles,selected,editing,hover,focus,dirty?&local:nullptr,now,false);
+        target->SetTransform(base);target->PopAxisAlignedClip();
+    }
+    // The panel at rest drawn alone into premultiplied BGRA pixels, outside its rounded shape transparent: the picture the
+    // host slides above the page during the slide (src/main.cpp « Mode Focus »: the page windows' region reaches the
+    // screen a frame after the window's paint, a moving hole would lag the panel). Drawn on a render target compatible
+    // with this one (same brushes, bitmaps and text), read back through Direct2D 1.1; false without it.
+    bool RenderPanel(const std::vector<std::wstring>& titles,int selected,bool editing,int hover,int focus,Motion::Time now,std::vector<uint32_t>& out,UINT& w,UINT& h){
+        if(!floating||!target||!brush||contentOnly)return false;
+        ++textPass;Build((int)titles.size(),selected,&titles,now);
+        const auto savedPanel=panel;const auto savedOrigin=origin;const auto rest=PanelAt(1);panel=rest.panel;origin=rest.origin;
+        const float s=dpi/96.f;w=(UINT)std::lround((panel.right-panel.left)*s);h=(UINT)std::lround((panel.bottom-panel.top)*s);
+        bool ok=false;ID2D1BitmapRenderTarget* bt=nullptr;
+        if(w&&h&&SUCCEEDED(target->CreateCompatibleRenderTarget(D2D1::SizeF(w/s,h/s),D2D1::SizeU(w,h),D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED),D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_NONE,&bt))&&bt){
+            bt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+            auto* main=SwapTarget(bt);bt->BeginDraw();bt->Clear(D2D1::ColorF(0,0,0,0));bt->SetTransform(D2D1::Matrix3x2F::Translation(-panel.left,-panel.top));
+            DrawPanel(titles,selected,editing,hover,focus,nullptr,now);
+            bt->SetTransform(D2D1::Matrix3x2F::Identity());const HRESULT hr=bt->EndDraw();SwapTarget(main);
+            ID2D1Bitmap* bitmap=nullptr;ID2D1DeviceContext* dc=nullptr;ID2D1Bitmap1* cpu=nullptr;
+            if(SUCCEEDED(hr)&&SUCCEEDED(bt->GetBitmap(&bitmap))&&bitmap&&SUCCEEDED(bt->QueryInterface(__uuidof(ID2D1DeviceContext),reinterpret_cast<void**>(&dc)))&&dc){
+                const D2D1_BITMAP_PROPERTIES1 props=D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_CPU_READ|D2D1_BITMAP_OPTIONS_CANNOT_DRAW,D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED),(float)dpi,(float)dpi);
+                if(SUCCEEDED(dc->CreateBitmap(D2D1::SizeU(w,h),nullptr,0,&props,&cpu))&&cpu&&SUCCEEDED(cpu->CopyFromBitmap(nullptr,bitmap,nullptr))){
+                    D2D1_MAPPED_RECT m{};if(SUCCEEDED(cpu->Map(D2D1_MAP_OPTIONS_READ,&m))){out.resize((size_t)w*h);for(UINT y=0;y<h;++y)memcpy(&out[(size_t)y*w],m.bits+(size_t)y*m.pitch,(size_t)w*4);cpu->Unmap();ok=true;}}
+            }
+            Drop(cpu);Drop(dc);Drop(bitmap);Drop(bt);
+        }
+        panel=savedPanel;origin=savedOrigin;return ok;
+    }
+    // The tab row, the toolbar and the band in chrome-local DIP (`dirty` too). `lowerEdge`: the normal chrome's hairline
+    // and split canvas under it (the floating panel has neither: DrawSplit runs on the canvas before the panel).
+    void DrawChrome(const std::vector<std::wstring>& titles,int selected,bool editing,int hover,int focus,const D2D1_RECT_F* dirty,Motion::Time now,bool lowerEdge){
         Round(bar,Design::Radius::control,Design::Surface::raised);DrawLoading(bar);if(focus=='L')AddressRing(bar,Design::Radius::control);   /* #5 */
         // Skip controls wholly outside the dirty rectangle (4 DIP margin covers focus rings).
         auto visible=[&](D2D1_RECT_F b){return !dirty||(b.right+4>dirty->left&&b.left-4<dirty->right&&b.bottom+4>dirty->top&&b.top-4<dirty->bottom);};
@@ -1708,15 +1793,13 @@ public:
         DrawAddress(editing,hover=='I');
         DrawBand(hover,focus,now);
         // Chrome's lower edge: a 1 DIP #FFFFFF05 hairline, then the page (Paper: no top padding).
-        Color(1,5/255.f);target->FillRectangle(D2D1::RectF(0,ContentTop()-1,width,ContentTop()),brush);
-        DrawSplit();
+        if(lowerEdge){Color(1,5/255.f);target->FillRectangle(D2D1::RectF(0,ContentTop()-1,width,ContentTop()),brush);
+            DrawSplit();}
         // Ripple last, over the neighbouring buttons it reaches, never over the page edge.
         if(const auto ripple=downloadIcon.At(now).ripple;ripple>=0){
             const auto d=std::find_if(regions.begin(),regions.end(),[](const Region& r){return r.id=='D';});
             if(d!=regions.end()){target->PushAxisAlignedClip(D2D1::RectF(0,0,width,ContentTop()-1),D2D1_ANTIALIAS_MODE_ALIASED);DrawDownloadRipple(ripple,d->rect,Design::Size::icon);target->PopAxisAlignedClip();}
         }
-        }   // !contentOnly
-        target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET)RecreateTarget(); /* every target resource, the Lottie bitmap included */
     }
 };
 }

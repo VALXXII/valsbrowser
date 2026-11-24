@@ -427,6 +427,15 @@ static_assert(HeldCard::innerWidth == 212 && HeldCard::Height(0) == 120, "held c
 namespace DrawerLayout {
 using Design::Box;
 inline constexpr float width = Panel::width, top = Design::Vertical::top; // window client DIP: right under the chrome (81, no top padding)
+// Where the docked drawers (downloads, history, settings, bookmarks) start now: `top`, or in Mode Focus 4 DIP under the
+// floating panel (src/focus-mode.h DrawerTop). Set by the host before it places them; UI thread only.
+inline float liveTop = top;
+// Mode Focus also lines the drawers' right edge up with the floating panel's (4 DIP in from the window's, `liveRight`)
+// and rounds their two top corners (`liveRadius`, 6 DIP, src/drawer-corners.h). 0 / 0 outside focus mode.
+inline float liveRight = 0, liveRadius = 0;
+// Mode Focus also keeps them 4 DIP above the window's bottom edge (Paper « Annotation + Focus · barre du haut · tiroir
+// ouvert »: 612 high from 124 in a 740 window), their bottom corners square. 0 outside focus mode.
+inline float liveBottom = 0;
 // The popover floats 6 DIP in from the window edge; the drawer window keeps that
 // strip (clipped by its region) so the popover rectangle can morph into it.
 inline constexpr float margin = Design::Space::sm;

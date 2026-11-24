@@ -186,6 +186,69 @@ int wmain(int argc,wchar_t** argv){
         Check(r.regions.size()==normal&&r.Hit(w-18,60)=='S'&&(r.SurfacePixel(Design::TabStrip::Surface(0).left+8,16)&0xffffff)==tabPixel,"fullscreen left: every control and pixel is back");
     }
     std::puts("fullscreen content only: no region, hit, focus or chrome pixel; restored after (96/144 DPI, 560/1180 DIP, normal/private)");
+    // Mode Focus (Paper « Mode Focus – Activé – Hover en haut », 1JBQ-0; design/focus-mode-plan.md): the chrome in its
+    // floating panel. 1180 x 705 client at 96 and 144 DPI, with and without the bookmarks band: the panel {4, 4, W-4, 88}
+    // (128 with the band) filled #171717 with a 1 DIP #FFFFFF14 border; inside, the normal chrome laid out on 1170 DIP and
+    // translated by a whole number of device pixels, pixel for pixel; no 1 DIP lower hairline; hidden: only the canvas.
+    for(UINT dpi:{96u,144u})for(bool band:{false,true}){
+        const float s=dpi/96.f,W=1180,H=705;const std::vector<std::wstring> two{L"Paper",L"Ggyp ÉÀç"};
+        auto dress=[&](Chrome& c){c.address=AddressBar::Describe(L"https://app.paper.design/file/mode-focus",false);c.audioShown=true;c.bandShown=band;
+            if(band){Chrome::BandItem a;a.id=1;a.title=L"Paper";c.bandItems.push_back(a);Chrome::BandItem b;b.id=2;b.title=L"Dossier";b.folder=true;c.bandItems.push_back(b);}};
+        Chrome normal;Check(SUCCEEDED(normal.InitOffscreen(root,dpi,W-FocusMode::layoutInset,H)),"focus: reference renderer");dress(normal);normal.Paint(two,0,L"",false,0,0);
+        Check(SUCCEEDED(normal.SavePng((output+L"\\focus-reference"+(band?L"-band-":L"-")+std::to_wstring(dpi)+L".png").c_str())),"focus reference sample exported");
+        Chrome f;Check(SUCCEEDED(f.InitOffscreen(root,dpi,W,H)),"focus: floating renderer");dress(f);
+        f.SetFloating(true);Check(f.floating&&f.width==W-10&&f.ClientWidth()==W,"focus: layout width = client - 10");
+        f.PlacePanel(1);f.Paint(two,0,L"",false,0,0);
+        Check(SUCCEEDED(f.SavePng((output+L"\\focus-panel"+(band?L"-band-":L"-")+std::to_wstring(dpi)+L".png").c_str())),"focus panel sample exported");
+        const float bottom=4+FocusMode::PanelHeight(band);
+        Check(f.panel.left==4&&f.panel.top==4&&f.panel.right==W-4&&f.panel.bottom==bottom,"focus: panel {4, 4, W - 4, 88 / 128}");
+        auto px=[&](Chrome& c,int X,int Y){return c.SurfacePixel((X+.5f)/s,(Y+.5f)/s)&0xffffff;};
+        auto grey=[](UINT32 p,int v){return std::abs(int(p&0xff)-v)<=1&&std::abs(int((p>>8)&0xff)-v)<=1&&std::abs(int((p>>16)&0xff)-v)<=1;};
+        const int border=23+(int)std::lround((255-23)*20/255.f);   // #FFFFFF14 over #171717
+        Check(grey(f.SurfacePixel(600,4+.5f/s),border)&&grey(f.SurfacePixel(600,bottom-.5f/s),border)&&grey(f.SurfacePixel(4+.5f/s,60),border)&&grey(f.SurfacePixel(W-4-.5f/s,60),border),"focus: 1 DIP #FFFFFF14 border on all four sides");
+        Check(grey(f.SurfacePixel(800+5,25),0x17),"focus: panel fill #171717 (the tab row's empty space)");
+        Check(grey(f.SurfacePixel(600,2),0x17)&&grey(f.SurfacePixel(2,60),0x17)&&grey(f.SurfacePixel(600,bottom+1),0x17)&&grey(f.SurfacePixel(W-2,60),0x17),"focus: canvas around the panel (no shadow)");
+        Check(grey(f.SurfacePixel(4+.4f/s,4+.4f/s),0x17),"focus: radius 4 (the corner's outer pixel is canvas)");
+        // The chrome inside: the normal chrome's pixels, shifted by the panel's whole-pixel offset (5 DIP at 96, 8 px at 144).
+        const int ox=(int)std::lround(f.origin.x*s),oy=(int)std::lround(f.origin.y*s);
+        Check(std::fabs(ox-f.origin.x*s)<1e-3f&&std::fabs(oy-f.origin.y*s)<1e-3f&&ox==(int)std::lround(5*s),"focus: chrome offset on whole device pixels");
+        // At 96 DPI the offset is exactly 5 DIP: every pixel equal. At 144 it is 8 px = 5.333 DIP, not exact in float: plates
+        // and icons stay identical, text antialiasing may shift by a fraction of a pixel. Compared after a 3 x 3 box blur,
+        // a sub-pixel phase stays under 40 levels where a whole-pixel shift of the same text gives about 70.
+        int diff=0,compared=0,worst=0;const int X0=(int)(6*s),X1=(int)((W-10-6)*s),Y0=(int)(2*s),Y1=(int)((band?116:76)*s);
+        std::vector<int> fa((X1-X0)*(Y1-Y0)),na(fa.size());
+        for(int Y=Y0;Y<Y1;++Y)for(int X=X0;X<X1;++X){const auto i=(size_t)(Y-Y0)*(X1-X0)+(X-X0);fa[i]=(int)(px(f,X+ox,Y+oy)&0xff);na[i]=(int)(px(normal,X,Y)&0xff);++compared;if(fa[i]!=na[i])++diff;}
+        auto blur=[&](const std::vector<int>& v,int x,int y){int sum=0;for(int dy=-1;dy<=1;++dy)for(int dx=-1;dx<=1;++dx)sum+=v[(size_t)(y+dy)*(X1-X0)+(x+dx)];return sum/9;};
+        for(int y=1;y+1<Y1-Y0;++y)for(int x=1;x+1<X1-X0;++x)worst=std::max(worst,std::abs(blur(fa,x,y)-blur(na,x,y)));
+        std::printf("focus %u dpi%s: %d of %d chrome pixels differ (text antialiasing phase), blurred max %d\n",dpi,band?" band":"",diff,compared,worst);
+        Check(compared>80000&&(dpi==96?diff==0:worst<40),"focus: tabs, field, buttons (and band): the normal chrome, translated");
+        bool hairline=true;for(float x=20;x<W-20;x+=37)if(!grey(f.SurfacePixel(x,f.origin.y+(band?120:80)+.5f/s),0x17))hairline=false;
+        Check(hairline&&!grey(normal.SurfacePixel(600,(band?120:80)+.5f/s),0x17),"focus: no 1 DIP hairline in the panel (the normal chrome has one)");
+        Check(f.Hit(W-4-1-38+5+10,20)=='X'&&f.Hit(2,20)==0&&f.Hit(600,bottom+2)==0&&f.Hit(f.bar.left+5+40,60)=='L',"focus: hit in client DIP through the panel");
+        // The sliding picture (fidelity audit D1): the panel at rest drawn alone, premultiplied, its rounded corners
+        // transparent; laid over the canvas it is the painted panel (exact at 96 DPI, text phase only at 144).
+        {   std::vector<uint32_t> pic;UINT pw=0,ph=0;
+            Check(f.RenderPanel(two,0,false,0,0,Motion::Now(),pic,pw,ph)&&pw==(UINT)std::lround((W-8)*s)&&ph==(UINT)std::lround(FocusMode::PanelHeight(band)*s)&&pic.size()==(size_t)pw*ph,"focus: the panel's picture, the panel's size");
+            const int px0=(int)std::lround(4*s),py0=(int)std::lround(4*s);int off=0,n=0;
+            for(UINT y=0;y<ph;++y)for(UINT x=0;x<pw;x+=2){const uint32_t p=pic[(size_t)y*pw+x];const int a=(int)(p>>24),c=(int)(p&255),over=c+(255-a)*23/255;
+                ++n;if(std::abs(over-(int)(px(f,(int)x+px0,(int)y+py0)&255))>2)++off;}
+            std::printf("focus %u dpi%s: picture vs painted panel: %d of %d pixels differ\n",dpi,band?" band":"",off,n);
+            Check(dpi==96?off==0:off*50<n,"focus: the picture over the canvas is the painted panel");
+            const uint32_t corner=pic[0],bottomCorner=pic[(size_t)(ph-1)*pw],centre=pic[(size_t)(ph/2)*pw+pw/2];
+            Check((corner>>24)<128&&(bottomCorner>>24)<128&&(centre>>24)==255,"focus: the picture's corners transparent (rounded), its body opaque");
+            bool partial=false;for(UINT y=ph-4;y<ph;++y)for(UINT x=0;x<4;++x){const uint32_t a=pic[(size_t)y*pw+x]>>24;if(a>0&&a<255)partial=true;}
+            Check(partial,"focus: the picture's bottom corners antialiased (partial alpha on the arc)");
+        }
+        // Halfway through the slide: the panel's lower part, its bottom border at 44 (64 with the band).
+        f.PlacePanel(.5f);f.Paint(two,0,L"",false,0,0);const float half=band?64:44;
+        Check(f.panel.bottom==half&&grey(f.SurfacePixel(600,half-.5f/s),border)&&grey(f.SurfacePixel(600,half+1),0x17),"focus: halfway, bottom border at 44 / 64");
+        // Hidden: nothing of the chrome (pixels, hits).
+        f.PlacePanel(0);f.Paint(two,0,L"",false,0,0);bool clean=true,hit=false;
+        for(float y:{2.f,10.f,30.f,60.f,90.f,120.f})for(float x=2;x<W;x+=23){if(!grey(f.SurfacePixel(x,y),0x17))clean=false;if(f.Hit(x,y))hit=true;}
+        Check(clean&&!hit&&!f.PanelShown(),"focus: hidden, only the canvas and nothing hit");
+        f.SetFloating(false);Check(f.width==W&&f.origin.x==0&&!f.floating,"focus off: the client width again");
+    }
+    std::puts("focus mode: floating panel (fill, border, radius, no shadow, no hairline), translated chrome pixel for pixel, hit, slide, hidden (96/144 DPI, band on/off)");
     DestroyWindow(h);for(auto name:FontFiles)RemoveFontResourceExW((root+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();
     Check(!GetModuleHandleW(L"WebView2Loader.dll"),"native test completed without loading WebView2");
     std::printf("PASS: %d native UI checks; no browser/WebView2 loaded or launched.\n",checks);return 0;

@@ -303,11 +303,17 @@ void SyncChrome() {
         AUI::PaintToolbarButton(t, f, b, box, v);
     };
 }
-RECT BandRect() { RECT c{}; GetClientRect(window, &c); if (chrome.sidebar) return {S(chrome.SidebarZoneLeft()), S(chrome.ContentTop() - chrome.annotationBand), c.right - S(NativeChrome::Sidebar::Zone::inset), S(chrome.ContentTop())};   // #127: over the page's width (answer 6)
-    return {0, S(chrome.ContentTop() - chrome.annotationBand), c.right, S(chrome.ContentTop())}; }
+RECT BandRect() {
+    RECT c{}; GetClientRect(window, &c);
+    // Mode Focus (owner's rule 2026-11-24, Paper « Annotation + Focus · barre du haut » 203J-0): the banner at the very top,
+    // 4 DIP in from the window's left and right edges; the tabs and toolbar float under it (src/focus-mode.h).
+    if (chrome.floating) { const auto b = NativeChrome::FocusMode::Banner(chrome.ClientWidth(), chrome.annotationBand); return {S(b.left), S(b.top), S(b.right), S(b.bottom)}; }
+    if (chrome.sidebar) return {S(chrome.SidebarZoneLeft()), S(chrome.ContentTop() - chrome.annotationBand), c.right - S(NativeChrome::Sidebar::Zone::inset), S(chrome.ContentTop())};   // #127: over the page's width (answer 6)
+    return {0, S(chrome.ContentTop() - chrome.annotationBand), c.right, S(chrome.ContentTop())};
+}
 RECT PageClient(const std::shared_ptr<Tab>& t) {
     if (t && !IsRectEmpty(&t->placed)) return t->placed;
-    RECT c{}; GetClientRect(window, &c); c.top = S(chrome.ContentTop()); return c;
+    RECT c{}; GetClientRect(window, &c); c.top = S(PageTopDip()); return c;   // Mode Focus: under the banner, not the toolbar
 }
 RECT ClientScreen() { RECT r{}; GetClientRect(window, &r); MapWindowPoints(window, nullptr, reinterpret_cast<POINT*>(&r), 2); return r; }
 RECT PageScreen(const std::shared_ptr<Tab>& t) { RECT r = PageClient(t); MapWindowPoints(window, nullptr, reinterpret_cast<POINT*>(&r), 2); return r; }
@@ -1549,6 +1555,7 @@ void AnnotationClearAll(std::function<void(bool, std::size_t)> done) {
 bool AnnotationsCompiled() { return true; }
 // #127 column: Annoter greyed (still shown) where the mode cannot start — same rule as the toolbar button's state.
 bool AnnotationButtonDimmed() { if (Ann::s.active) return false; std::wstring why; return !Ann::Available(Active(), &why); }
+HWND AnnotationBannerWindow() { return Ann::uiReady && Ann::banner.Visible() ? Ann::banner.Window() : nullptr; }   // Mode Focus: kept above the sliding panel
 void AnnotationSettingsChanged() { Ann::LauncherSync(); }
 // Page menu (PageContextMenu / ShowPageMenu): « Annoter l'élément », « Annoter la sélection », Markdown.
 constexpr int AnnotateElementItem = 0x10010, AnnotateSelectionItem = 0x10011, AnnotateMarkdownItem = 0x10012;
@@ -1604,6 +1611,7 @@ bool AnnotationCommand(int) { return false; }
 bool AnnotationHistoryAvailable() { return false; }
 bool AnnotationsCompiled() { return false; }
 bool AnnotationButtonDimmed() { return false; }
+HWND AnnotationBannerWindow() { return nullptr; }
 std::wstring AnnotationStoreRoot() { return L""; }
 void AnnotationOpenConnect(bool) {}
 void AnnotationOpenTutorial(bool) {}

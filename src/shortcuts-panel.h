@@ -49,7 +49,7 @@ inline std::vector<Section> BuildSections() {
             {TR(shortcut_reload), {L"Ctrl", L"R"}}, {TR(shortcut_reload), {L"F5"}}, {TR(a11y_back), {L"Alt", L"←"}}, {TR(a11y_forward), {L"Alt", L"→"}}}},
         {TR(shortcut_section_page), {
             {TR(find_title), {L"Ctrl", L"F"}}, {TR(find_next), {L"F3"}}, {TR(find_previous), {shift, L"F3"}},
-            {TR(shortcut_print), {L"Ctrl", L"P"}}, {TR(fullscreen_title), {L"F11"}}}},
+            {TR(shortcut_print), {L"Ctrl", L"P"}}, {TR(fullscreen_title), {L"F11"}}, {TR(focus_mode_title), {L"Ctrl", shift, L"F"}}}},
         {TR(shortcut_section_bookmarks), {
             {TR(a11y_add_bookmark), {L"Ctrl", L"D"}}, {TR(bookmarks_bar_show), {L"Ctrl", shift, L"B"}}, {TR(shortcut_open_bookmarks), {L"Ctrl", shift, L"O"}},
             {TR(shortcut_undo_bookmark), {L"Ctrl", L"Z"}}, {TR(history_title), {L"Ctrl", L"H"}}}},

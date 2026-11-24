@@ -258,6 +258,16 @@ AddressBar::History history; std::vector<AddressBar::PopularSite> popularSites; 
 // Browsing history drawer (src/history-panel.h): the toolbar History button (or Ctrl+H) opens it docked on the right.
 NativeChrome::HistoryUI::Drawer historyDrawer; bool historyDismissClick=false;
 void InvalidateChrome();
+// Mode Focus (src/focus-mode.h; section « Mode Focus » near the window procedure). While it is on, `chrome.floating`:
+// the chrome is a panel over the page, chrome-local rectangles reach the client through ChromeClient / ChromePx.
+namespace FM=NativeChrome::FocusMode;
+constexpr int FocusModeCommand=3070; constexpr UINT_PTR FocusPollTimerId=0x464D,FocusSlideTimerId=0x464E;
+FM::Bar focusBar; const wchar_t* focusRevealWhy=L"keyboard"; // why the panel last came at once (log)
+bool SyncFocusMode(); void FocusPlace(); void ToggleFocusMode(); void FocusEvaluate(bool pointerMoved=false); void FocusReveal(); void FocusFrame(NativeChrome::Motion::Time now);
+NativeChrome::Motion::Wake FocusWake(NativeChrome::Motion::Time now); void InvalidateFocusPanel(); void FocusHoles(bool force);
+double FocusMs(NativeChrome::Motion::Time t); void FocusAnchor(const wchar_t* why=L"surface"); bool FocusPanelOver(const RECT& px); bool FocusHoleOver(const RECT& px); extern bool focusLive; void FocusSlideHide(); float PageTopDip(); float ChromeBottomDip(); RECT FocusPanelPixels();
+D2D1_POINT_2F ChromeOrigin(); D2D1_RECT_F ChromeClient(D2D1_RECT_F r); RECT ChromePx(D2D1_RECT_F r);
+void FocusAbove(); HWND AnnotationBannerWindow(); D2D1_RECT_F FocusChatCard(float widthDip); // Mode Focus with the annotation mode: the banner above the panel, the chat card beside it
 // restore=true (Escape, lost capture, Alt+Tab): the order before the press comes back.
 void CancelTabDrag(bool restore=false){EndSplitDrag(restore);tabDrag={};chrome.dragIndex=-1;chrome.dragOffset=0;chrome.sidebarDrag=-1;chrome.sidebarInsert=-1;InvalidateChrome();}
 int S(float value){return (int)std::lround(value*GetDpiForWindow(window)/96.f);}
@@ -298,7 +308,7 @@ void CheckForUpdates(); bool UpdateCheckAvailable(); bool FocusUpdateToast(); bo
 void SetUpdateToastTop(float dip); float UpdateToastHeight(); // the bookmarks band and the undo toast keep clear of it
 void SyncUpdateToastMotion();
 constexpr int CheckUpdatesCommand=3020;
-void InvalidateChrome(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */RECT r;GetClientRect(window,&r);if(!chrome.sidebar)r.bottom=std::min(r.bottom,(LONG)S(chrome.ContentTop()));InvalidateRect(window,&r,FALSE);}
+void InvalidateChrome(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */if(chrome.floating){InvalidateFocusPanel();return;}RECT r;GetClientRect(window,&r);if(!chrome.sidebar)r.bottom=std::min(r.bottom,(LONG)S(chrome.ContentTop()));InvalidateRect(window,&r,FALSE);}
 // Frame wakes are display-paced by FrameClock (one outstanding notification, worker
 // dormant when idle). Deadline-only dwells keep a single one-shot SetTimer. If the
 // clock is unavailable the legacy SetTimer path remains (not display synchronised).
@@ -324,6 +334,7 @@ void SyncStopMorph(NativeChrome::Motion::Time now){chrome.nav.stop.Sync(chrome.n
 // ends, so its endpoint is painted) repaints the whole header.
 void CloseAudioDrawer();void InvalidateDownloadIcon();void AudioFrame(NativeChrome::Motion::Time now);NativeChrome::Motion::Wake AudioNextWake(NativeChrome::Motion::Time now);void RefreshAudio();
 void InvalidateMotion(NativeChrome::Motion::Time now){
+    FocusFrame(now); // Mode Focus: the floating panel's slide (the page windows' hole, then its own repaint)
     ScrollbarRefresh(now); // overlay handles only: never repaints the chrome
     SplitFrame(now);GripFrame(now);ElementsFrame(now);downloadPanel.Frame(now);downloadDrawer.Frame(now);settingsDrawer.Frame(now);historyDrawer.Frame(now);bookmarksDrawer.Frame(now);
     // Downloads icon: its own button only (also the frame that lands its last pose).
@@ -333,11 +344,12 @@ void InvalidateMotion(NativeChrome::Motion::Time now){
     const bool full=motionFullFrames||motion.NextWake(now).delay||chrome.TabsNextWake(now).delay||chrome.lottie.NextWake(now,motion.ReducedMotion()).delay||chrome.nav.NextWake(now).delay;
     if(full){InvalidateChrome();return;}
     auto t=Active();if(chrome.LoadingSignature(t?t->loading.Sample(now,motion.ReducedMotion()):NativeChrome::Loading::Visual{})==paintedLoading)return;
-    auto d=chrome.LoadingDirty();RECT r{S(d.left),S(d.top),S(d.right),S(d.bottom)};InvalidateRect(window,&r,FALSE);
+    if(chrome.floating&&!chrome.panelLive)return;   // Mode Focus: no panel painted by the window (hidden, or its picture slides)
+    RECT r=ChromePx(chrome.LoadingDirty());InvalidateRect(window,&r,FALSE);
 }
 void ScheduleMotion(NativeChrome::Motion::Time now){
     const bool reduced=motion.ReducedMotion();auto ui=NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(motion.NextWake(now),chrome.TabsNextWake(now)),chrome.lottie.NextWake(now,reduced)),chrome.nav.NextWake(now));motionFullFrames=ui.delay.has_value();
-    auto wake=NativeChrome::Motion::Earlier(ui,NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(downloadPanel.NextWake(now),downloadDrawer.NextWake(now)),settingsDrawer.NextWake(now)),NativeChrome::Motion::Earlier(historyDrawer.NextWake(now),bookmarksDrawer.NextWake(now))));wake=NativeChrome::Motion::Earlier(wake,chrome.downloadIcon.NextWake(now));wake=NativeChrome::Motion::Earlier(wake,AudioNextWake(now));wake=NativeChrome::Motion::Earlier(wake,ElementsNextWake(now));if(current>=0&&current<(int)pages.size())wake=NativeChrome::Motion::Earlier(wake,pages[current]->loading.NextWake(now,reduced));if(SplitAnimating()||GripsAnimating())wake=NativeChrome::Motion::Earlier(wake,NativeChrome::Motion::Frame());wake=NativeChrome::Motion::Earlier(wake,ScrollbarWake(now));if(halted||motionMinimized||!wake.delay){KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();return;}
+    auto wake=NativeChrome::Motion::Earlier(ui,NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(downloadPanel.NextWake(now),downloadDrawer.NextWake(now)),settingsDrawer.NextWake(now)),NativeChrome::Motion::Earlier(historyDrawer.NextWake(now),bookmarksDrawer.NextWake(now))));wake=NativeChrome::Motion::Earlier(wake,chrome.downloadIcon.NextWake(now));wake=NativeChrome::Motion::Earlier(wake,AudioNextWake(now));wake=NativeChrome::Motion::Earlier(wake,ElementsNextWake(now));if(current>=0&&current<(int)pages.size())wake=NativeChrome::Motion::Earlier(wake,pages[current]->loading.NextWake(now,reduced));if(SplitAnimating()||GripsAnimating())wake=NativeChrome::Motion::Earlier(wake,NativeChrome::Motion::Frame());wake=NativeChrome::Motion::Earlier(wake,ScrollbarWake(now));wake=NativeChrome::Motion::Earlier(wake,FocusWake(now));if(halted||motionMinimized||!wake.delay){KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();return;}
     // A deadline due within one nominal frame is served by the next compositor tick.
     if(frameClockReady&&(wake.frames||*wake.delay<=*NativeChrome::Motion::Frame().delay)){if(motionDeadline){KillTimer(window,MotionTimerId);motionDeadline.reset();}frameClock.Request();return;}
     frameClock.Cancel();
@@ -393,7 +405,7 @@ bool Check(HRESULT hr,const wchar_t* op){if(FAILED(hr)){Fail(op,hr);return false
 // A refused per-tab operation (find, reload, favicon, interstitial): logged, never the loss of the engine.
 bool CheckTab(HRESULT hr,const wchar_t* op){if(FAILED(hr)){wchar_t code[32];swprintf(code,32,L"0x%08lX",(unsigned long)hr);Log(std::wstring(L"WEBVIEW2 refused ")+op+L" "+code);return false;}return !halted;}
 std::shared_ptr<Tab> Active(){return current>=0&&current<(int)pages.size()?pages[current]:nullptr;}
-void FocusAddress(){if(InFullscreen())return; /* no address field over a fullscreen page */editing=true;ShowWindow(address,SW_SHOW);SetFocus(address);SendMessageW(address,EM_SETSEL,0,-1);InvalidateRect(window,nullptr,FALSE);}
+void FocusAddress(){if(InFullscreen())return; /* no address field over a fullscreen page */editing=true;FocusAnchor(L"address field"); /* Mode Focus: the panel at once, at rest (the field sits there); i18n-exempt: log tag */ShowWindow(address,SW_SHOW);SetFocus(address);SendMessageW(address,EM_SETSEL,0,-1);InvalidateRect(window,nullptr,FALSE);}
 std::vector<std::wstring> Titles(){std::vector<std::wstring> titles;for(auto& t:pages)titles.push_back(t->title);return titles;}
 std::shared_ptr<const NativeChrome::FaviconImage> SiteIcon(const std::wstring& site);
 // What the field reads: the active tab's address and security outside editing; while
@@ -422,7 +434,7 @@ void ToggleChromeFocus(bool back=false){
     auto panels=ShownPanels();
     if(GetFocus()==window||GetFocus()==address){editing=false;if(!back&&FocusUpdateToast()){keyboardFocus=0;InvalidateChrome();return;}if(!back&&FocusContextToast()){keyboardFocus=0;InvalidateChrome();return;}if(panels.size()>1){Select(back?panels.back():panels.front());}FocusPage();return;}
     if(panels.size()>1){auto it=std::find(panels.begin(),panels.end(),current);if(it!=panels.end()){const int k=(int)(it-panels.begin())+(back?-1:1);if(k>=0&&k<(int)panels.size()){Select(panels[k]);return;}}}
-    SetFocus(window);auto order=chrome.FocusOrder();keyboardFocus=order.empty()?0:order.front();InvalidateChrome();
+    SetFocus(window);auto order=chrome.FocusOrder();keyboardFocus=order.empty()?0:order.front();FocusAnchor(L"F6");InvalidateChrome();
 }
 void FindInPage(){
     auto t=Active();if(!t||!t->view.p||t->home)return;
@@ -437,17 +449,19 @@ void FindInPage(){
 }
 void CancelContentTransitionIfMoved();
 void SyncFolderRename();
-void Layout(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */if(!window)return;CancelContentTransitionIfMoved();chrome.Resize();BuildChrome();SyncFolderRename();auto r=chrome.edit;
+void Layout(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */if(!window)return;CancelContentTransitionIfMoved();SyncFocusMode();FocusAbove();chrome.Resize();BuildChrome();FocusPlace();SyncFolderRename();auto r=chrome.edit;
     HDC dc=GetDC(address);auto old=SelectObject(dc,font?font:GetStockObject(DEFAULT_GUI_FONT));TEXTMETRICW metrics{};GetTextMetricsW(dc,&metrics);SelectObject(dc,old);ReleaseDC(address,dc);
     {static float fontSize=0;if(fontSize!=chrome.addressFont){fontSize=chrome.addressFont;UpdateFont();HDC d2=GetDC(address);auto o2=SelectObject(d2,font?font:GetStockObject(DEFAULT_GUI_FONT));GetTextMetricsW(d2,&metrics);SelectObject(d2,o2);ReleaseDC(address,d2);}}
     auto placement=chrome.MeasureText(L"Ag",{r.left,r.top,r.right,r.bottom},chrome.addressFont,false,false,chrome.AddressTracking());
-    const int baseline=S(placement.originY+placement.baseline);int editHeight=std::max(S(22),(int)(metrics.tmHeight+metrics.tmExternalLeading+2));
-    MoveWindow(address,S(r.left),baseline-metrics.tmAscent,std::max(1,S(r.right-r.left)),editHeight,TRUE);
+    // Mode Focus: the field sits in the floating panel at rest (editing keeps the panel there).
+    const D2D1_POINT_2F to=ChromeOrigin();
+    const int baseline=S(to.y+placement.originY+placement.baseline);int editHeight=std::max(S(22),(int)(metrics.tmHeight+metrics.tmExternalLeading+2));
+    MoveWindow(address,S(to.x+r.left),baseline-metrics.tmAscent,std::max(1,S(r.right-r.left)),editHeight,TRUE);
     RECT format{};SendMessageW(address,EM_GETRECT,0,(LPARAM)&format);
-    SetWindowPos(address,nullptr,S(r.left),baseline-metrics.tmAscent-format.top,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
+    SetWindowPos(address,nullptr,S(to.x+r.left),baseline-metrics.tmAscent-format.top,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
     // The page (and a split view's panels, see ContentBox) starts right under the chrome:
-    // 81 DIP, 121 with the bookmarks band, no top padding (Paper c-v7q0dg).
-    SetUpdateToastTop(chrome.ContentTop());bookmarkToast.Reposition();
+    // 81 DIP, 121 with the bookmarks band, no top padding (Paper c-v7q0dg). Mode Focus: 4 DIP, the panel floats over it.
+    SetUpdateToastTop(ChromeBottomDip());bookmarkToast.Reposition();
     ApplyPages();
     RefreshTools();InvalidateRect(window,nullptr,FALSE);
 }
@@ -490,7 +504,7 @@ void DragTab(POINT point){
     }
     if(SplitDragMove(point))return;
     if(chrome.sidebar){SidebarDragMove(point);return;}
-    float x=point.x*96.f/GetDpiForWindow(window);
+    float x=point.x*96.f/GetDpiForWindow(window)-ChromeOrigin().x; // chrome-local (Mode Focus: the panel's offset)
     // Drop slot = the visible tab under the pointer on the adaptive, scrolled strip.
     const auto* strip=&chrome.strip;int from=(int)(it-pages.begin()),lo=0,hi=(int)pages.size()-1;
     while(lo<hi&&!strip->Visible(lo))++lo;while(hi>lo&&!strip->Visible(hi))--hi;
@@ -526,7 +540,12 @@ void DissolveSmallGroups(){
 int VisibleGroup(){auto t=Active();return t&&t->group&&splitGroups.count(t->group)&&Members(t->group).size()>=2?t->group:0;}
 // Same box as a single page: under the chrome, 81 DIP or 121 with the bookmarks band
 // (SV::Content assumes the former fixed 84 DIP top).
-SV::Box ContentBox(){namespace View=NativeChrome::Design::Viewport;auto c=SV::Content(chrome.width,chrome.height);c.top=chrome.ContentTop();const float inset=NativeChrome::Sidebar::Zone::inset; /* #127 (Val): 4 DIP around the page in both layouts */c.left=chrome.sidebar?chrome.SidebarZoneLeft():inset;c.right=std::max(c.left,chrome.width-inset-ChatInsetDip());   /* #127 panel layouts: ChatInsetDip includes the 4 DIP gap to the chat card */
+SV::Box ContentBox(){namespace View=NativeChrome::Design::Viewport;
+    // Mode Focus (Paper 1J9P-0): the page 4 DIP inside the window on all four sides; the panel floats over its top.
+    // With the annotation mode (Paper 203J-0): under the banner, 4 DIP before the chat card. R25: while the banner slides the
+    // page keeps its size and only moves (no relayout per frame), as in the normal chrome.
+    if(chrome.floating&&!InFullscreen()){auto f=FM::Content(chrome.ClientWidth(),chrome.height,FM::ChatReserve(ChatInsetDip()),chrome.annotationBand);if(AnnotationBandSliding())f.bottom+=f.top-FM::pageInset;return {f.left,f.top,f.right,f.bottom};}
+    auto c=SV::Content(chrome.width,chrome.height);c.top=chrome.ContentTop();const float inset=NativeChrome::Sidebar::Zone::inset; /* #127 (Val): 4 DIP around the page in both layouts */c.left=chrome.sidebar?chrome.SidebarZoneLeft():inset;c.right=std::max(c.left,chrome.width-inset-ChatInsetDip());   /* #127 panel layouts: ChatInsetDip includes the 4 DIP gap to the chat card */
     if(const float drawer=DrawerReserveDip();drawer>0)c.right=std::max(c.left,std::min(c.right,chrome.width-drawer-inset)); /* #127 (Val, B): an open drawer: the page stops 4 DIP before it, its right corners rounded */ /* the chat panel sits at the right of the page area: the page shrinks, it is never covered */c.bottom=chrome.height-inset;if(AnnotationBandSliding())c.bottom+=chrome.annotationBand; /* R25: while the annotation band slides, the page keeps its size and only moves (its bottom goes past the window, unseen): no relayout per frame */if(InFullscreen()){c={0,0,chrome.width,chrome.height};}c.bottom=std::max(c.top,c.bottom);return c;}
 struct SplitView{int group=0,active=-1;float min=SV::minWidthCss;std::vector<std::shared_ptr<Tab>> members;std::vector<float> weights;SV::Arrangement a;};
 SplitView CurrentSplit(){
@@ -554,7 +573,9 @@ void SyncSplitDecor(){
     d.ring=!tabDrag.lifted&&!ResizePlaceholdersUp();
     if(!d.shown){d.hotHandle=d.focusedHandle=-1;splitResize=-1;SyncGripLooks();return;}
     for(auto& s:v.a.slots){D2D1_RECT_F r{s.box.left,s.box.top,s.box.right,s.box.bottom};if(s.rail){d.rails.push_back(r);d.railTabs.push_back(TabIndexOf(v.members[s.member]));}else if(s.member==v.active)d.active=r;}
-    {const auto c=ContentBox();const bool low=std::fabs(d.active.bottom-c.bottom)<.5f;d.activeBottomLeft=low&&std::fabs(d.active.left-c.left)<.5f;d.activeBottomRight=low&&std::fabs(d.active.right-c.right)<.5f;}
+    {const auto c=ContentBox();const bool low=std::fabs(d.active.bottom-c.bottom)<.5f;d.activeBottomLeft=low&&std::fabs(d.active.left-c.left)<.5f;d.activeBottomRight=low&&std::fabs(d.active.right-c.right)<.5f;
+     // Mode Focus: the pages' top corners are round too (6 DIP); the ring follows them on the content's top edge.
+     const bool high=chrome.floating&&std::fabs(d.active.top-c.top)<.5f;d.activeTopLeft=high&&std::fabs(d.active.left-c.left)<.5f;d.activeTopRight=high&&std::fabs(d.active.right-c.right)<.5f;}
     for(int s:v.a.separators){auto b=v.a.SeparatorBox(s);d.handles.push_back({b.left,b.top,b.right,b.bottom});}
     if(splitResize>=(int)d.handles.size())splitResize=-1;
     d.focusedHandle=splitResize;if(sepDrag.active)d.hotHandle=sepDrag.handle;else if(d.hotHandle>=(int)d.handles.size())d.hotHandle=-1;
@@ -608,6 +629,7 @@ void ApplyPages(){if(WorkspaceParked())return; /* a hidden profile's event: the 
         }
     }
     if(under)ReleaseDC(window,under);
+    FocusHoles(true); // Mode Focus: Chromium may reset a page window's region when it resizes; the hole goes back at once
     SyncGrips(v);SyncCornerMasks();SidebarHoles();SyncSplitDecor();SyncStatusBubble();SyncScrollbars();AnnotationLayout();InvalidateRect(window,nullptr,FALSE);
 }
 // Separator grips. Pages are child windows of another process: over them the main
@@ -636,7 +658,10 @@ void SyncGrips(const SplitView& v){
         splitGrips.push_back(g);  // content (and hit-testing) comes with its first UpdateLayeredWindow
     }
     for(size_t i=0;i<splitGrips.size();++i){
-        if(i<n){auto b=v.a.SeparatorHit(v.a.separators[i]);SetWindowPos(splitGrips[i],HWND_TOP,S(b.left),S(b.top),std::max(1,S(b.right)-S(b.left)),std::max(1,S(b.bottom)-S(b.top)),SWP_NOACTIVATE|SWP_SHOWWINDOW);}
+        // Mode Focus: a grip under the floating panel would draw over it and take its clicks: it steps away while the panel is on screen.
+        if(i<n){auto b=v.a.SeparatorHit(v.a.separators[i]);const RECT px{S(b.left),S(b.top),S(b.right),S(b.bottom)};
+            if(FocusPanelOver(px)){if(IsWindowVisible(splitGrips[i]))ShowWindow(splitGrips[i],SW_HIDE);continue;}
+            SetWindowPos(splitGrips[i],HWND_TOP,S(b.left),S(b.top),std::max(1,S(b.right)-S(b.left)),std::max(1,S(b.bottom)-S(b.top)),SWP_NOACTIVATE|SWP_SHOWWINDOW);}
         else if(IsWindowVisible(splitGrips[i]))ShowWindow(splitGrips[i],SW_HIDE);
     }
 }
@@ -707,7 +732,8 @@ void GripFrame(NativeChrome::Motion::Time now){
 // bottom one). Top corners meet the toolbar and stay square, as in Paper.
 struct PageCorner{SV::Box page;bool right=false,top=false;};
 // The page card's corner (Designer, 24 nov.): 6 DIP with the top bar, 8 DIP with the side panel (the column's cards).
-float PageRadiusDip(){return chrome.sidebar?NativeChrome::Sidebar::Zone::pageRadius:NativeChrome::Sidebar::Zone::topBarPageRadius;}
+// Mode Focus (Paper 1J9P-0): 6, its four corners round; they step away while the floating panel covers them.
+float PageRadiusDip(){return chrome.floating?FM::pageRadius:chrome.sidebar?NativeChrome::Sidebar::Zone::pageRadius:NativeChrome::Sidebar::Zone::topBarPageRadius;}
 std::vector<PageCorner> PageCorners(){
     // Val (24 nov.): the page card keeps its rounded corners and 4 DIP inset when the window is MAXIMIZED too; only F11
     // fullscreen is square, edge to edge. One switch to go back to square-when-maximized: kRoundWhenMaximized = false.
@@ -719,16 +745,16 @@ std::vector<PageCorner> PageCorners(){
     for(auto& b:boxes){for(int top=0;top<2;++top){if(std::fabs((top?b.top:b.bottom)-(top?c.top:c.bottom))>.5f)continue;if(!leftCovered&&std::fabs(b.left-c.left)<.5f)out.push_back({b,false,top!=0});if(std::fabs(b.right-c.right)<.5f)out.push_back({b,true,top!=0});}}
     return out;
 }
-std::vector<HWND> cornerMasks;struct CornerLook{int x=0,y=0,size=0;bool right=false,top=false;UINT dpi=0;unsigned edge=0;int edgeAlpha=255;std::vector<std::uint32_t> pixels;};std::vector<CornerLook> cornerLooks;
+std::vector<HWND> cornerMasks;struct CornerLook{int x=0,y=0,size=0;bool right=false,top=false;float radius=0;UINT dpi=0;unsigned edge=0;int edgeAlpha=255;std::vector<std::uint32_t> pixels;};std::vector<CornerLook> cornerLooks;
 LRESULT CALLBACK CornerProc(HWND h,UINT msg,WPARAM w,LPARAM l){if(msg==WM_NCHITTEST)return HTCLIENT;if(msg==WM_ERASEBKGND)return 1;if(msg==WM_PAINT){PAINTSTRUCT ps;BeginPaint(h,&ps);EndPaint(h,&ps);return 0;}return DefWindowProcW(h,msg,w,l);}
 // `edge` (#127 « Redimensionner »): 0, or 0x1RRGGBB: the column edge's line, whose arc (radius pageRadius + 1, 2 DIP wide,
 // faded over 12 DIP from its end) crosses this left corner's square (Chrome::PaintSideEdge draws the rest).
 void RenderCorner(size_t i,bool right,int size,UINT dpi,bool top=false,unsigned edge=0,float edgeAlpha=1){
     const int alpha255=(int)std::lround(std::clamp(edgeAlpha,0.f,1.f)*255);
-    auto& L=cornerLooks[i];if(L.size==size&&L.right==right&&L.top==top&&L.dpi==dpi&&L.edge==edge&&L.edgeAlpha==alpha255)return;HWND g=cornerMasks[i];
+    auto& L=cornerLooks[i];const float radius=PageRadiusDip();if(L.size==size&&L.radius==radius&&L.right==right&&L.top==top&&L.dpi==dpi&&L.edge==edge&&L.edgeAlpha==alpha255)return;HWND g=cornerMasks[i];
     BITMAPINFO bi{};bi.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);bi.bmiHeader.biWidth=size;bi.bmiHeader.biHeight=-size;bi.bmiHeader.biPlanes=1;bi.bmiHeader.biBitCount=32;bi.bmiHeader.biCompression=BI_RGB;
     HDC screen=GetDC(nullptr);HDC mem=CreateCompatibleDC(screen);void* bits=nullptr;HBITMAP bmp=CreateDIBSection(mem,&bi,DIB_RGB_COLORS,&bits,nullptr,0);if(!bmp||!bits){if(bmp)DeleteObject(bmp);DeleteDC(mem);ReleaseDC(nullptr,screen);return;}
-    HGDIOBJ old=SelectObject(mem,bmp);auto* px=(std::uint32_t*)bits;const float r=PageRadiusDip()*dpi/96.f;
+    HGDIOBJ old=SelectObject(mem,bmp);auto* px=(std::uint32_t*)bits;const float r=radius*dpi/96.f;
     // Mask origin: the corner square's top-left. Arc centre: r inside the page from the corner.
     const float cx=right?(float)size-r:r,cy=top?r:(float)size-r;const std::uint32_t canvas=GetRValue(BG);
     for(int y=0;y<size;++y)for(int x=0;x<size;++x){const float px0=x+.5f,py0=y+.5f;const bool beyond=right?px0>cx:px0<cx;float a=0;
@@ -740,7 +766,7 @@ void RenderCorner(size_t i,bool right,int size,UINT dpi,bool top=false,unsigned 
         const float A0=la+a*(1-la);const auto A=(std::uint32_t)std::lround(A0*255);
         const auto R=(std::uint32_t)std::lround(lr+canvas*a*(1-la)),G=(std::uint32_t)std::lround(lg+canvas*a*(1-la)),B=(std::uint32_t)std::lround(lb+canvas*a*(1-la));px[y*size+x]=(A<<24)|(R<<16)|(G<<8)|B;}
     POINT src{0,0};SIZE sz{size,size};BLENDFUNCTION blend{AC_SRC_OVER,0,255,AC_SRC_ALPHA};
-    if(UpdateLayeredWindow(g,screen,nullptr,&sz,mem,&src,0,&blend,ULW_ALPHA)){L.size=size;L.right=right;L.top=top;L.dpi=dpi;L.edge=edge;L.edgeAlpha=alpha255;if(splitTest)L.pixels.assign(px,px+(size_t)size*size);}
+    if(UpdateLayeredWindow(g,screen,nullptr,&sz,mem,&src,0,&blend,ULW_ALPHA)){L.size=size;L.radius=radius;L.right=right;L.top=top;L.dpi=dpi;L.edge=edge;L.edgeAlpha=alpha255;if(splitTest)L.pixels.assign(px,px+(size_t)size*size);}
     SelectObject(mem,old);DeleteObject(bmp);DeleteDC(mem);ReleaseDC(nullptr,screen);
 }
 void BlendLayered(HDC dc,POINT client,HWND h,const std::vector<std::uint32_t>& pixels,int w,int hgt);
@@ -755,6 +781,7 @@ void SyncCornerMasks(){
     for(size_t i=0;i<cornerMasks.size();++i){
         if(i>=corners.size()){if(GetWindowLongW(cornerMasks[i],GWL_STYLE)&WS_VISIBLE)ShowWindow(cornerMasks[i],SW_HIDE);continue;}
         const auto& c=corners[i];const int x=c.right?S(c.page.right)-size:S(c.page.left),y=c.top?S(c.page.top):S(c.page.bottom)-size;
+        if(c.top&&FocusHoleOver({x,y,x+size,y+size})){if(GetWindowLongW(cornerMasks[i],GWL_STYLE)&WS_VISIBLE)ShowWindow(cornerMasks[i],SW_HIDE);continue;}
         const bool keyed=keyboardFocus==NativeChrome::Chrome::SidebarEdgeId&&keyboardModality;
         const unsigned edge=!c.right&&chrome.sidebar&&std::fabs(c.page.left-chrome.side.page.left)<.5f?chrome.EdgeLineColor(keyed):0;
         SetWindowPos(cornerMasks[i],HWND_TOP,x,y,size,size,SWP_NOACTIVATE|SWP_SHOWWINDOW);RenderCorner(i,c.right,size,dpi,c.top,edge,keyed?1.f:chrome.EdgeAlpha(NativeChrome::Motion::Now()));
@@ -868,7 +895,8 @@ bool SplitDragMove(POINT point){
     const bool reduced=motion.ReducedMotion();auto& f=splitAnim.frame;
     if(!tabDrag.lifted){
         // Lift below the address row (the column: past its right edge); one tab alone has no partner and stays in the strip.
-        if((chrome.sidebar?x<SidebarDropEdge():y<chrome.ContentTop())||pages.size()<2)return false;
+        // Mode Focus: below the floating panel.
+        if((chrome.sidebar?x<SidebarDropEdge():y<ChromeBottomDip())||pages.size()<2)return false;
         if(splitAnim.returning||splitAnim.committing)FinishSplitAnimation();
         tabDrag.lifted=true;tabDrag.target={};chrome.liftedIndex=TabIndexOf(tabDrag.tab);chrome.dragIndex=-1;chrome.dragOffset=0;splitResize=-1;chrome.split.hotHandle=-1;
         if(chrome.sidebar)SidebarLift();
@@ -878,13 +906,13 @@ bool SplitDragMove(POINT point){
          splitAnim.cardScale.Snap(100);if(!reduced)splitAnim.cardScale.Set(102);}   // lifted: x1.02 around the grab point (none under reduced motion)
         AnnounceSplit(TRF(split_announce_drag,SiteLabel(tabDrag.tab)));
         SyncSplitDecor();InvalidateRect(window,nullptr,FALSE);
-    }else if(chrome.sidebar?x<SidebarDropEdge()-20:y<SV::reattachY){
+    }else if(chrome.sidebar?x<SidebarDropEdge()-20:y<SV::reattachY+ChromeOrigin().y){
         // Back above the address row (into the column): reordering in the strip resumes.
         tabDrag.lifted=false;tabDrag.target={};chrome.liftedIndex=-1;splitOverlay.Hide();splitAnim=SplitAnim{};
         SetCursor(LoadCursor(nullptr,IDC_ARROW));SyncSplitDecor();InvalidateRect(window,nullptr,FALSE);return false;
     }
     auto v=CurrentSplit();SV::Target target;std::shared_ptr<Tab> partner;
-    if(chrome.sidebar?x>=SidebarDropEdge()&&y>=ContentBox().top:y>=chrome.ContentTop()){
+    if(chrome.sidebar?x>=SidebarDropEdge()&&y>=ContentBox().top:y>=ChromeBottomDip()){
         if(v.group){int dragged=-1;for(int i=0;i<(int)v.members.size();++i)if(v.members[i]==tabDrag.tab)dragged=i;target=SV::GroupTarget(v.a,v.weights,dragged,x,y,v.min,&tabDrag.target);}
         else if((partner=SplitPartner(tabDrag.tab)))target=SV::SingleTarget(ContentBox(),x,y,SV::MinExtent(SV::Orientation::Row,PageZoom()),SV::MinExtent(SV::Orientation::Column,PageZoom()),&tabDrag.target);
     }
@@ -1130,7 +1158,7 @@ void SetAddressText(const std::wstring& s,int from,int to){addressSetting=true;S
 void PlaceSuggestions(AddressBar::Suggestions data,int active){
     // SETTINGS(privacy): "Suggestions de recherche" off keeps the list closed (inline completion stays).
     if(!settings.searchSuggestions){HideSuggestions();return;}
-    RECT r{S(chrome.bar.left),S(chrome.bar.top),S(chrome.bar.right),S(chrome.bar.bottom)};if(chrome.sidebar&&chrome.SideColumn().addressInColumn)r.right=S(chrome.bar.left+430);MapWindowPoints(window,nullptr,(POINT*)&r,2);
+    RECT r=ChromePx(chrome.bar);if(chrome.sidebar&&chrome.SideColumn().addressInColumn)r.right=S(chrome.bar.left+430);MapWindowPoints(window,nullptr,(POINT*)&r,2);
     const bool was=suggestions.Visible();
     suggestions.Show(std::move(data),active,BrowserSettings::Info(settings.engine).name,r.left,r.bottom,r.right,GetDpiForWindow(window));
     InvalidateChrome();if(suggestions.Visible()!=was)SuggestionsStructureChanged();
@@ -1212,6 +1240,8 @@ void Close(){CloseAt(current);}
 void Command(int cmd){if(cmd==MotionLabCommand){if(motionLabMode)motionLab.Toggle();return;}if(halted||!chrome.Enabled(cmd))return;
     if(tabDrag.tab){CancelTabDrag();if(GetCapture()==window)ReleaseCapture();UpdateInteraction(hover,0);}auto t=Active();if(cmd>=SelectTabBase&&cmd<SelectTabBase+9){Select(cmd==SelectTabBase+8?(int)pages.size()-1:cmd-SelectTabBase);return;}switch(cmd){case FocusChrome:ToggleChromeFocus();break;case FocusChromeBack:ToggleChromeFocus(true);break;case FindPage:OpenFindBar();break;case '{':MoveTab(current,current-1);break;case '}':MoveTab(current,current+1);break;case 'L':FocusAddress();break;case ']':if(!pages.empty())Select((current+1)%(int)pages.size());break;case '[':if(!pages.empty())Select((current+(int)pages.size()-1)%(int)pages.size());break;case 'T':NewTab(NewTabTarget(),UserTabIndex());FocusAddress();break;case 'W':Close();break;case 'U':ReopenTab();break;case 'R':if(t&&t->view.p&&t->loading.IsLoading()){Check(t->view->Stop(),L"Stop");break;}if(t&&t->view.p&&CheckTab(t->view->Reload(),L"Reload")){t->refreshing=true;auto now=NativeChrome::Motion::Now();chrome.lottie.RefreshBegin(now);SyncStopMorph(now);InvalidateChrome();ScheduleMotion(now);}break;case 'H':Navigate(t,L"");break;case 'B':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoBack(&yes);if(yes&&Check(t->view->GoBack(),L"GoBack")){auto now=NativeChrome::Motion::Now();chrome.nav.back.Kick(-1,now,motion.ReducedMotion(),TravelParams(true));InvalidateChrome();ScheduleMotion(now);}}break;case 'F':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoForward(&yes);if(yes&&Check(t->view->GoForward(),L"GoForward")){auto now=NativeChrome::Motion::Now();chrome.nav.forward.Kick(1,now,motion.ReducedMotion(),TravelParams(false));InvalidateChrome();ScheduleMotion(now);}}break;default:ExtraCommand(cmd);break;}}
 bool BookmarkPopoverFocus();bool SmokeBookmarks();bool FolderRenameFocus();
+bool EscapeOwnedBySurface(HWND focus); // below, after the surfaces: a drawer or a toolbar popover with the keyboard closes on its own Échap
+bool EscapeLeavesAnnotation(bool modeActive,HWND focus); // below: Key()'s decision for Échap in the annotation mode (tests/shortcuts_test.cpp)
 int Key(UINT key){
     const bool ctrl=GetKeyState(VK_CONTROL)<0,alt=GetKeyState(VK_MENU)<0,shift=GetKeyState(VK_SHIFT)<0;
     // The bookmark popover's fields keep every key (Ctrl+D, Ctrl+Z… belong to the text there).
@@ -1240,6 +1270,7 @@ int Key(UINT key){
         // In the page WebView2 handles Ctrl+F itself, retaining its native find state.
         // Ctrl+F opens our find bar (src/find-bar.h) everywhere, the page included (the engine's is suppressed).
         if(!shift&&key=='F')return FindPage;
+        if(shift&&key=='F')return FocusModeCommand; // Ctrl+Maj+F: Mode Focus (toggle; Réglages › Affichage)
         if(shift&&key==VK_F12)return SandboxCommandId;
         if(!shift&&key==VK_OEM_2)return ShortcutsCommand; // Ctrl+/ : raccourcis clavier (C5)
         // Ctrl+P likewise: the page opens the same browser print preview itself (no double dialog).
@@ -1252,7 +1283,9 @@ int Key(UINT key){
     if(!ctrl&&!alt&&shift&&key==VK_F6)return FocusChromeBack;
     if(!ctrl&&!alt&&key==VK_F5)return 'R';
     if(!ctrl&&!alt&&!shift&&key==VK_F11)return FullscreenCommand;
-    if(!ctrl&&!alt&&!shift&&key==VK_ESCAPE&&AnnotationModeActive()&&GetFocus()!=address)return AnnotateExitCommand; // Échap quitte le mode Annotation
+    // Échap quitte le mode Annotation, sauf quand une surface du dessus a le clavier (un tiroir, une fenêtre de la barre) :
+    // la couche du dessus d'abord, elle se ferme avec son propre Échap ; le suivant, depuis la fenêtre, quitte le mode.
+    if(!ctrl&&!alt&&!shift&&key==VK_ESCAPE&&EscapeLeavesAnnotation(AnnotationModeActive(),GetFocus()))return AnnotateExitCommand;
     if(!ctrl&&!alt&&!shift&&key==VK_ESCAPE&&PageFullscreenActive())return ExitFullscreenCommand; // C6: Échap quitte le plein écran de la page
     if(!ctrl&&!alt&&key==VK_F3)return shift?FindPreviousCommand:FindNextCommand;
     if(alt&&!ctrl&&!shift){if(key=='D')return 'L';if(key==VK_LEFT)return 'B';if(key==VK_RIGHT)return 'F';}
@@ -1553,7 +1586,7 @@ void DeferAfter(UINT ms,std::function<void()> job);void ShowDownloads();void Fin
 // Toolbar icon: a run lasts while any download is active; its progress counts
 // every download of the run (completed ones included) so it never goes back.
 std::set<int> downloadIconRun;
-void InvalidateDownloadIcon(){auto d=chrome.DownloadIconDirty();RECT r{S(d.left),S(d.top),S(d.right),S(d.bottom)};InvalidateRect(window,&r,FALSE);}
+void InvalidateDownloadIcon(){if(chrome.floating&&!chrome.PanelShown())return;RECT r=ChromePx(chrome.DownloadIconDirty());InvalidateRect(window,&r,FALSE);}
 bool labDownloadRunning=false; // motion lab download replay (a real download cancels it)
 void UpdateDownloadIcon(bool completedNow){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
     if(labDownloadRunning){labDownloadRunning=false;KillTimer(window,MotionLabTimerId);}
@@ -1708,9 +1741,10 @@ void FinishKeep(int id,int attempt){
 void RefreshMissing(){for(auto& item:downloads)if(item.state==DL::State::Completed)item.missing=GetFileAttributesW(item.path.c_str())==INVALID_FILE_ATTRIBUTES;}
 void ShowDownloads(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
     if(!downloadPanel.Window())return;
+    FocusAnchor(L"downloads"); // Mode Focus: the panel at rest, the popover hangs from its button
     CloseAudioDrawer();RefreshMissing();settingsDrawer.Hide(false,true);historyDrawer.Hide(false,true);bookmarksDrawer.Hide(false,true);
     // Right edge on the toolbar's 6 DIP margin, just under the toolbar row.
-    RECT anchor{0,S(48),S(chrome.width-NativeChrome::Design::Space::sm),S(76)};MapWindowPoints(window,nullptr,(POINT*)&anchor,2);
+    RECT anchor=ChromePx({0,48,chrome.width-NativeChrome::Design::Space::sm,76});MapWindowPoints(window,nullptr,(POINT*)&anchor,2);
     chrome.latched='D';InvalidateChrome();
     POINT from{};if(ColumnPopoverAt('D',NativeChrome::Downloads::Panel::anchorGap,from))downloadPanel.ShowFrom((float)from.x,(float)from.y);
     else downloadPanel.Show(anchor);
@@ -2459,6 +2493,7 @@ void SettingChanged(BrowserSettings::Change change){
     case Change::AnnotationConnectPrompt:Log(BrowserSettings::ConnectPromptActive(settings)?L"SETTINGS annotation connect prompt on (« Plus tard » count reset)":L"SETTINGS annotation connect prompt off");AnnotationSettingsChanged();break;
     case Change::AnnotationRetention:Log(L"SETTINGS annotation retention "+std::to_wstring(settings.annotationRetentionDays)+L" days");AnnotationSettingsChanged();break;
     case Change::DefaultBrowserLater:Log(L"SETTINGS default browser card: later (30 days)");break;
+    case Change::FocusMode:Log(settings.focusMode?L"SETTINGS focus mode on":L"SETTINGS focus mode off");Layout();break; // instant relayout, like the bookmarks bar
     case Change::HttpsOnly:case Change::ThirdPartyCookies:ApplySecuritySettings();break;
     case Change::AdBlock:ApplyAdBlock();break;
     case Change::MemorySaver:ApplyMemorySaver();break;
@@ -2470,6 +2505,7 @@ void SettingChanged(BrowserSettings::Change change){
 void SyncLatch(){chrome.latched=audioPanel.Visible()?'V':settingsDrawer.Open()?'S':(downloadPanel.Visible()||(downloadDrawer.Visible()&&!downloadDrawer.Closing()))?'D':historyDrawer.Open()?'Y':0;InvalidateChrome();}
 void ShowSettings(){
     if(!settingsDrawer.Window())return;
+    FocusAnchor(L"settings"); // Mode Focus: the panel at rest above the drawer
     CloseAudioDrawer();CloseDownloadSurfaces();historyDrawer.Hide(false,true);bookmarksDrawer.Hide(false,true);chrome.latched='S';InvalidateChrome();
     settingsDrawer.Show();SyncUpdateToastReserve();
 }
@@ -2551,6 +2587,7 @@ void CreateSettingsPanel(){
 void AnnounceHistory(const std::wstring& text);
 void ShowHistory(bool keyboard){
     if(!historyDrawer.Window())return;
+    FocusAnchor(L"history"); // Mode Focus: the panel at rest above the drawer
     CloseAudioDrawer();HideSuggestions();CloseDownloadSurfaces();settingsDrawer.Hide(false,true);bookmarksDrawer.Hide(false,true);
     chrome.latched='Y';InvalidateChrome();historyDrawer.Show(keyboard);SyncUpdateToastReserve();
 }
@@ -3299,7 +3336,7 @@ void SplitTestStep(){
     ++splitStage;
 }
 // i18n-exempt-end
-void RefreshTools(){auto tab=Active();chrome.navigationLoading=tab&&tab->loading.IsLoading();SyncStopMorph(NativeChrome::Motion::Now());BuildChrome();if(!tooltip)return;static std::vector<int> previous;for(int id:previous){TOOLINFOW t{sizeof(t)};t.hwnd=window;t.uId=id;SendMessageW(tooltip,TTM_DELTOOLW,0,(LPARAM)&t);}previous.clear();for(auto&r:chrome.regions){TOOLINFOW t{sizeof(t)};t.uFlags=TTF_SUBCLASS;t.hwnd=window;t.uId=r.id;t.rect={S(r.rect.left),S(r.rect.top),S(r.rect.right),S(r.rect.bottom)};t.lpszText=const_cast<wchar_t*>(r.tip);SendMessageW(tooltip,TTM_ADDTOOLW,0,(LPARAM)&t);previous.push_back(r.id);}}
+void RefreshTools(){auto tab=Active();chrome.navigationLoading=tab&&tab->loading.IsLoading();SyncStopMorph(NativeChrome::Motion::Now());BuildChrome();if(!tooltip)return;static std::vector<int> previous;for(int id:previous){TOOLINFOW t{sizeof(t)};t.hwnd=window;t.uId=id;SendMessageW(tooltip,TTM_DELTOOLW,0,(LPARAM)&t);}previous.clear();for(auto&r:chrome.regions){TOOLINFOW t{sizeof(t)};t.uFlags=TTF_SUBCLASS;t.hwnd=window;t.uId=r.id;t.rect=ChromePx(r.rect);t.lpszText=const_cast<wchar_t*>(r.tip);SendMessageW(tooltip,TTM_ADDTOOLW,0,(LPARAM)&t);previous.push_back(r.id);}}
 namespace CM=NativeChrome::ContextMenu;
 void AnnounceCopied();
 // A keyboard-opened menu drops just below its control (DIP region -> device pixels), aligned to the
@@ -3315,7 +3352,8 @@ int ShowMenu(const std::vector<CM::Item>& items,int anchor){
     POINT p{};GetCursorPos(&p);
     auto region=anchor?std::find_if(chrome.regions.begin(),chrome.regions.end(),[anchor](const NativeChrome::Region& r){return r.id==anchor;}):chrome.regions.end();
     if(region==chrome.regions.end())return contextMenu.Track(items,p,nullptr,false,motion.ReducedMotion());
-    auto place=PlaceMenu(region->rect,chrome.width,GetDpiForWindow(window));
+    FocusAnchor(L"menu"); // Mode Focus: a keyboard menu under its control: the panel at rest first
+    auto place=PlaceMenu(ChromeClient(region->rect),chrome.ClientWidth(),GetDpiForWindow(window));
     MapWindowPoints(window,nullptr,(POINT*)&place.control,2);
     return contextMenu.Track(items,p,&place.control,true,motion.ReducedMotion(),place.alignRight);
 }
@@ -3790,7 +3828,7 @@ RECT ClientScreen(){RECT r{};GetClientRect(window,&r);MapWindowPoints(window,nul
 bool ColumnPopoverAt(int id,float gap,POINT& at){if(!chrome.sidebar||!window)return false;const RECT b=RegionScreen(id);if(IsRectEmpty(&b))return false;
     const auto& L=chrome.SideColumn();POINT o{0,0};ClientToScreen(window,&o);
     if(L.mode==NativeChrome::Sidebar::Mode::Complete)at={o.x+S(L.footerLine.left),b.top-S(gap)};else at={o.x+S(L.column+gap),b.bottom};return true;}
-RECT RegionScreen(int id){for(auto& r:chrome.regions)if(r.id==id){RECT p{S(r.rect.left),S(r.rect.top),S(r.rect.right),S(r.rect.bottom)};MapWindowPoints(window,nullptr,(POINT*)&p,2);return p;}return {};}
+RECT RegionScreen(int id){FocusAnchor(L"region"); /* Mode Focus: whatever opens at a chrome region opens under the panel at rest */for(auto& r:chrome.regions)if(r.id==id){RECT p=ChromePx(r.rect);MapWindowPoints(window,nullptr,(POINT*)&p,2);return p;}return {};}
 // The popover under `anchor` (screen); `returnTo`: chrome region keeping the keyboard after Escape (0 = page).
 void EditBookmark(BM::Id id,RECT anchor,bool alignRight,bool keyboard,bool added=false,int returnTo=0){
     const auto* n=bookmarks.Find(id);if(!n||BM::Store::IsRoot(id))return;
@@ -3813,7 +3851,7 @@ bool FolderLabelBox(BM::Id id,int surface,RECT& box){
     // The content-only chrome (page fullscreen, F11) has no regions or band either.
     if(surface!=RenameBand||!chrome.bandShown||InFullscreen()||chrome.contentOnly)return false;
     for(int i=0;i<chrome.band.visible&&i<(int)chrome.bandItems.size();++i){if(chrome.bandItems[i].id!=id)continue;if(!chrome.bandItems[i].folder)return false;
-        const auto b=chrome.BandTitleBox(i);if(b.right-b.left<24)return false;box={S(b.left),S(b.top),S(b.right),S(b.bottom)};return true;}
+        const auto b=chrome.BandTitleBox(i);if(b.right-b.left<24)return false;box=ChromePx(b);return true;}
     return false;
 }
 void MarkFolderRename(){
@@ -4104,6 +4142,7 @@ void BandActivate(int index,bool ctrl,bool shift,bool keyboard){
 }
 void ShowBookmarksDrawer(bool keyboard){
     if(!bookmarksDrawer.Window())return;
+    FocusAnchor(L"bookmarks"); // Mode Focus: the panel at rest above the drawer
     CloseAudioDrawer();HideSuggestions();CloseDownloadSurfaces();settingsDrawer.Hide(false,true);historyDrawer.Hide(false,true);
     bookmarksDrawer.Show(keyboard);SyncUpdateToastReserve();
 }
@@ -4175,7 +4214,7 @@ void ClearOuterMarkers(){chrome.bandInsertX=-1;chrome.bandDropInto=-1;bookmarksD
 // Where a drag at `client` would land (bar: within its band only; drawer: over its window); nothing else is a target.
 // Sets the markers. The store is never touched here.
 BookmarkDrag::Drop DropTargetAt(BM::Id id,POINT client){
-    const float k=96.f/GetDpiForWindow(window),x=client.x*k,y=client.y*k;
+    const float k=96.f/GetDpiForWindow(window);float x=client.x*k,y=client.y*k;const bool onChrome=chrome.Local(x,y); // chrome-local (Mode Focus: in the panel only)
     POINT screen=client;ClientToScreen(window,&screen);
     BookmarkDrag::Drop drop;chrome.bandInsertX=-1;chrome.bandDropInto=-1;
     RECT dr{};const bool overDrawer=bookmarksDrawer.Visible()&&GetWindowRect(bookmarksDrawer.Window(),&dr)&&PtInRect(&dr,screen);
@@ -4191,9 +4230,9 @@ BookmarkDrag::Drop DropTargetAt(BM::Id id,POINT client){
     if(chrome.sidebar){const int i=chrome.SideFolderAt(x,y,(unsigned)id);
         if(i>=0&&BookmarkDrag::Accepts(bookmarks,id,chrome.bandItems[i].id)){drop.parent=chrome.bandItems[i].id;drop.index=BM::End;drop.valid=true;chrome.bandDropInto=i;}
         return drop;}
-    if(chrome.bandShown&&y>=BookmarksBar::Layout::top-6&&y<BookmarksBar::Layout::bottom+6&&x>=0){
+    if(onChrome&&chrome.bandShown&&y>=BookmarksBar::Layout::top-6&&y<BookmarksBar::Layout::bottom+6&&x>=0){
         std::vector<BookmarkDrag::Box> boxes;for(int i=0;i<chrome.band.visible;++i){const auto r=chrome.BandRect(i);boxes.push_back({r.left,r.right});}
-        RECT client{};GetClientRect(window,&client);const float end=chrome.band.overflow?chrome.band.overflowLeft:client.right*k;
+        RECT client{};GetClientRect(window,&client);const float end=chrome.band.overflow?chrome.band.overflowLeft:chrome.floating?chrome.width:client.right*k;
         if(x<end){   // the bar's own width (trailing blank included), never the overflow button or past the window
             const auto t=BookmarkDrag::BarTarget(bookmarks,id,boxes,x);
             if(t.drop.valid){drop=t.drop;chrome.bandDropInto=t.into;chrome.bandInsertX=t.into>=0?-1:t.marker;}
@@ -4331,6 +4370,7 @@ case NativeChrome::Chrome::SidebarEdgeId:SidebarEdgeReset();break;   // UI Autom
 case NativeChrome::Chrome::SidebarGridToggleId:chrome.sidebarGridOpen=!chrome.sidebarGridOpen;if(!chrome.sidebarGridOpen)chrome.sidebarGridScroll=0;BuildChrome();InvalidateChrome();{const std::wstring said=chrome.sidebarGridOpen?std::wstring(TR(sidebar_collapse_grid)):TRF(sidebar_all_bookmarks,std::to_wstring(chrome.bandItems.size()));accessibility.Notify('K',said.c_str(),L"Bookmarks" /* i18n-exempt: UIA activity id */);}break;
 case BookmarkBarCommand:ToggleBookmarkBar();break;
 case SidebarToggleCommand:ToggleSidebar();break;
+case FocusModeCommand:ToggleFocusMode();break;
 case BookmarksDrawerCommand:if(bookmarksDismissClick){bookmarksDismissClick=false;break;}ToggleBookmarksDrawer(keyboardModality);break;
 case BookmarkUndoCommand:UndoBookmark();break;
 case 'I':FocusAddress();break; // the security indicator opens the address
@@ -4585,7 +4625,7 @@ std::vector<Accessibility::Node> AccessibleNodes(){
     using Accessibility::Node;using Accessibility::Role;namespace TS=NativeChrome::Design::TabStrip;
     std::vector<Node> nodes;
     if(InFullscreen())return nodes;   // the page alone: no tab strip, toolbar or band to read or focus
-    auto screen=[](D2D1_RECT_F r){RECT p{S(r.left),S(r.top),S(r.right),S(r.bottom)};MapWindowPoints(window,nullptr,(POINT*)&p,2);return p;};
+    auto screen=[](D2D1_RECT_F r){RECT p=ChromePx(r);MapWindowPoints(window,nullptr,(POINT*)&p,2);return p;};   // Mode Focus: the panel at rest
     auto region=[](int id)->const NativeChrome::Region*{for(auto& r:chrome.regions)if(r.id==id)return &r;return nullptr;};
     auto button=[&](int id,long long parent){
         auto* r=region(id);if(!r)return;auto label=AccessibleButton(id);
@@ -5045,7 +5085,8 @@ case WM_CREATE:window=h;address=CreateWindowExW(0,L"EDIT",L"",WS_CHILD|WS_TABSTO
 // Alt alone (or F10) asks for the menu bar; this window has none, and the system-menu state it starts instead freezes
 // the WebView that had the keyboard (page or chat panel) until the next key. Alt+Espace (lParam = the key) still opens the system menu.
 case WM_SYSCOMMAND:if((w&0xFFF0)==SC_KEYMENU&&l==0)return 0;break;
-case WM_NCHITTEST:{if(InFullscreen())return HTCLIENT;POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(h,&p);RECT r;GetClientRect(h,&r);int edge=S(4);if(!IsZoomed(h)){bool left=p.x<edge,right=p.x>=r.right-edge,top=p.y<S(3),bottom=p.y>=r.bottom-edge;if(top&&left)return HTTOPLEFT;if(top&&right)return HTTOPRIGHT;if(bottom&&left)return HTBOTTOMLEFT;if(bottom&&right)return HTBOTTOMRIGHT;if(left)return HTLEFT;if(right)return HTRIGHT;if(top)return HTTOP;if(bottom)return HTBOTTOM;}float x=p.x*96.f/GetDpiForWindow(h),y=p.y*96.f/GetDpiForWindow(h);int id=chrome.Hit(x,y);if(id=='M')return HTMAXBUTTON;if(chrome.sidebar){if(!id&&SidebarCaption(x,y))return HTCAPTION;return HTCLIENT;}if(y<44&&!id)return HTCAPTION;return HTCLIENT;}
+case WM_NCHITTEST:{if(InFullscreen())return HTCLIENT;POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(h,&p);RECT r;GetClientRect(h,&r);int edge=S(4);if(!IsZoomed(h)){bool left=p.x<edge,right=p.x>=r.right-edge,top=p.y<S(3),bottom=p.y>=r.bottom-edge;if(top&&left)return HTTOPLEFT;if(top&&right)return HTTOPRIGHT;if(bottom&&left)return HTBOTTOMLEFT;if(bottom&&right)return HTBOTTOMRIGHT;if(left)return HTLEFT;if(right)return HTRIGHT;if(top)return HTTOP;if(bottom)return HTBOTTOM;}float x=p.x*96.f/GetDpiForWindow(h),y=p.y*96.f/GetDpiForWindow(h);int id=chrome.Hit(x,y);if(id=='M')return HTMAXBUTTON;if(chrome.sidebar){if(!id&&SidebarCaption(x,y))return HTCAPTION;return HTCLIENT;}
+    if(chrome.Local(x,y)&&y<44&&!id)return HTCAPTION; /* the tab row's empty space (Mode Focus: only while the floating panel shows it) */return HTCLIENT;}
 case WM_NCLBUTTONDOWN:if(w==HTMAXBUTTON){Command('M');return 0;}break;
 // A click on the B01 request chip must not take activation from its popover (light dismiss
 // would answer « fermé »): the chip's click then hands focus back to that same popover.
@@ -5079,19 +5120,27 @@ case UpdateMessage:if(updatesStarted&&updates.OnNotify(w)){ShowUpdateView();ArmU
 case WM_ERASEBKGND:return 1;
 case WM_SETCURSOR:if(LOWORD(l)==HTCLIENT&&(HWND)w==h){POINT p;GetCursorPos(&p);ScreenToClient(h,&p);const float d=GetDpiForWindow(h)/96.f;auto v=CurrentSplit();
     if(SidebarEdgeDragging()||chrome.Hit(p.x/d,p.y/d)==NativeChrome::Chrome::SidebarEdgeId){SetCursor(LoadCursor(nullptr,IDC_SIZEWE));return TRUE;}   // #127: the column's edge
-    if(v.group&&(sepDrag.active||SeparatorAt(p.x/d,p.y/d,v)>=0)){SetCursor(LoadCursor(nullptr,v.a.orientation==SV::Orientation::Row?IDC_SIZEWE:IDC_SIZENS));return TRUE;}}break;
-case WM_PAINT:{PAINTSTRUCT paint;BeginPaint(h,&paint);++chromePaints;SyncAddressDisplay();std::vector<std::wstring> titles;std::vector<std::shared_ptr<const NativeChrome::FaviconImage>> icons;for(auto&t:pages){titles.push_back(t->title);icons.push_back(t->favicon.image);}chrome.SetFavicons(std::move(icons));{std::vector<bool> asleep;for(auto&t:pages)asleep.push_back(t->sleeping);chrome.sleeping=std::move(asleep);}auto t=Active();D2D1_RECT_F dirty{paint.rcPaint.left*96.f/GetDpiForWindow(h),paint.rcPaint.top*96.f/GetDpiForWindow(h),paint.rcPaint.right*96.f/GetDpiForWindow(h),paint.rcPaint.bottom*96.f/GetDpiForWindow(h)};chrome.loading=t?t->loading.Sample(NativeChrome::Motion::Now(),motion.ReducedMotion()):NativeChrome::Loading::Visual{};{auto b=chrome.LoadingDirty();if(dirty.left<=b.left&&dirty.top<=b.top&&dirty.right>=b.right&&dirty.bottom>=b.bottom)paintedLoading=chrome.LoadingSignature(chrome.loading);}chrome.keyboardModality=keyboardModality;SyncTabKeys();chrome.Paint(titles,current,t&&!t->home?t->uri:L"",editing,hover,GetFocus()==address?'L':GetFocus()==h?keyboardFocus:0,&dirty);EndPaint(h,&paint);if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());}if(editing)RedrawWindow(address,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_UPDATENOW);return 0;}
-case WM_MOUSEMOVE:{if(outerDrag.active){OuterDragMove({GET_X_LPARAM(l),GET_Y_LPARAM(l)});return 0;}ChromeTipHover(GET_X_LPARAM(l),GET_Y_LPARAM(l));{const float d=GetDpiForWindow(h)/96.f,x=GET_X_LPARAM(l)/d,y=GET_Y_LPARAM(l)/d;SidebarPointer(x,y);
+    float px=p.x/d,py=p.y/d;const bool overPanel=chrome.floating&&chrome.Local(px,py); // Mode Focus: no separator under the floating panel
+    if(v.group&&(sepDrag.active||(!overPanel&&SeparatorAt(p.x/d,p.y/d,v)>=0))){SetCursor(LoadCursor(nullptr,v.a.orientation==SV::Orientation::Row?IDC_SIZEWE:IDC_SIZENS));return TRUE;}}break;
+case WM_PAINT:{PAINTSTRUCT paint;BeginPaint(h,&paint);++chromePaints;SyncAddressDisplay();std::vector<std::wstring> titles;std::vector<std::shared_ptr<const NativeChrome::FaviconImage>> icons;for(auto&t:pages){titles.push_back(t->title);icons.push_back(t->favicon.image);}chrome.SetFavicons(std::move(icons));{std::vector<bool> asleep;for(auto&t:pages)asleep.push_back(t->sleeping);chrome.sleeping=std::move(asleep);}auto t=Active();D2D1_RECT_F dirty{paint.rcPaint.left*96.f/GetDpiForWindow(h),paint.rcPaint.top*96.f/GetDpiForWindow(h),paint.rcPaint.right*96.f/GetDpiForWindow(h),paint.rcPaint.bottom*96.f/GetDpiForWindow(h)};chrome.loading=t?t->loading.Sample(NativeChrome::Motion::Now(),motion.ReducedMotion()):NativeChrome::Loading::Visual{};{auto b=ChromeClient(chrome.LoadingDirty());if(dirty.left<=b.left&&dirty.top<=b.top&&dirty.right>=b.right&&dirty.bottom>=b.bottom)paintedLoading=chrome.LoadingSignature(chrome.loading);}chrome.keyboardModality=keyboardModality;SyncTabKeys();chrome.Paint(titles,current,t&&!t->home?t->uri:L"",editing,hover,GetFocus()==address?'L':GetFocus()==h?keyboardFocus:0,&dirty);EndPaint(h,&paint);if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());}if(editing)RedrawWindow(address,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_UPDATENOW);return 0;}
+case WM_MOUSEMOVE:{if(chrome.floating)FocusEvaluate(true); /* Mode Focus: the pointer on the window's own surface (hit box strip, panel) */
+    if(outerDrag.active){OuterDragMove({GET_X_LPARAM(l),GET_Y_LPARAM(l)});return 0;}ChromeTipHover(GET_X_LPARAM(l),GET_Y_LPARAM(l));{const float d=GetDpiForWindow(h)/96.f,x=GET_X_LPARAM(l)/d,y=GET_Y_LPARAM(l)/d;SidebarPointer(x,y);
     if(sepDrag.active){SeparatorMove(x,y);return 0;}
     if(SidebarEdgeDragging()){SidebarEdgeMove(x);return 0;}
-    if(!tabDrag.tab){auto v=CurrentSplit();const int hot=v.group?SeparatorAt(x,y,v):-1;if(hot!=chrome.split.hotHandle&&!sepDrag.active){chrome.split.hotHandle=hot;SyncGripLooks();InvalidateRect(h,nullptr,FALSE);}}}
+    if(!tabDrag.tab){auto v=CurrentSplit();float px=x,py=y;const int hot=v.group&&!(chrome.floating&&chrome.Local(px,py))?SeparatorAt(x,y,v):-1;if(hot!=chrome.split.hotHandle&&!sepDrag.active){chrome.split.hotHandle=hot;SyncGripLooks();InvalidateRect(h,nullptr,FALSE);}}}
     if(tabDrag.tab){DragTab({GET_X_LPARAM(l),GET_Y_LPARAM(l)});if(tabDrag.active)return 0;}if(bandDrag.index>=0){BandDragMove({GET_X_LPARAM(l),GET_Y_LPARAM(l)});if(bandDrag.active)return 0;}int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));SidebarEdgeLook(id==NativeChrome::Chrome::SidebarEdgeId?1:0);if(NativeChrome::TabIndex(id)<0)UnlockTabWidth();if(id!=hover)UpdateInteraction(id,pressed);TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,h,0};TrackMouseEvent(&track);return 0;}
 case WM_COMMAND:if((HWND)l==address&&HIWORD(w)==EN_CHANGE){AddressEdited();return 0;}break;
 case WM_MOUSELEAVE:ChromeTipHide();UnlockTabWidth();SidebarPointerLeft();if(!SidebarEdgeDragging())SidebarEdgeLook(0);if(chrome.split.hotHandle>=0&&!sepDrag.active&&!PointerOnGrip()){chrome.split.hotHandle=-1;SyncGripLooks();InvalidateRect(h,nullptr,FALSE);}UpdateInteraction(0,pressed);return 0;
-case WM_LBUTTONDOWN:{if(folderRename.Active()&&folderRename.Host()==h)SetFocus(h);ChromeTipHide();{const float d=GetDpiForWindow(h)/96.f,x=GET_X_LPARAM(l)/d,y=GET_Y_LPARAM(l)/d;if(splitResize>=0){splitResize=-1;SyncSplitDecor();InvalidateRect(h,nullptr,FALSE);}if(y>=SV::liftY&&!chrome.Hit(x,y)&&SplitPointerDown(x,y))return 0;if(chrome.Hit(x,y)==NativeChrome::Chrome::SidebarEdgeId&&SidebarEdgeDown(x))return 0;}
-    int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));vaultKeyPress=id==NativeChrome::Chrome::VaultKeyId?(VaultKeyArmed()?1:0):-1;downloadDismissClick=id=='D'&&GetTickCount64()-std::max(downloadPanel.hiddenAt,downloadDrawer.hiddenAt)<150;settingsDismissClick=id=='S'&&GetTickCount64()-settingsDrawer.hiddenAt<150;historyDismissClick=id=='Y'&&GetTickCount64()-historyDrawer.hiddenAt<150;audioDismissClick=id=='V'&&GetTickCount64()-audioPanel.hiddenAt<150;if(id){keyboardFocus=0;keyboardModality=false;if(!NativeChrome::IsClose(id)&&id!='Q')SetFocus(h); /* B01 chip: focus stays with its popover (no light dismiss) */if(!splitTest)SetCapture(h);UpdateInteraction(id,id);if(NativeChrome::IsTab(id)){tabDrag.tab=pages[NativeChrome::TabIndex(id)];tabDrag.start={GET_X_LPARAM(l),GET_Y_LPARAM(l)};tabDrag.grab=GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.ShownTabLeft(NativeChrome::TabIndex(id));tabDrag.grabY=GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.strip.Surface(NativeChrome::TabIndex(id)).top;tabDrag.origin=NativeChrome::TabIndex(id);
+case WM_LBUTTONDOWN:{if(folderRename.Active()&&folderRename.Host()==h)SetFocus(h);ChromeTipHide();
+    // Mode Focus: a press on the panel while it moves first lands it at rest (live): every hit test of this press and of
+    // its release then reads the same panel under the pointer (code review: a lost click / stray drag otherwise).
+    if(chrome.floating&&(focusBar.Moving(FocusMs(NativeChrome::Motion::Now()))||!focusLive)&&chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h)))FocusAnchor(L"press");
+    {const float d=GetDpiForWindow(h)/96.f,x=GET_X_LPARAM(l)/d,y=GET_Y_LPARAM(l)/d;if(splitResize>=0){splitResize=-1;SyncSplitDecor();InvalidateRect(h,nullptr,FALSE);}
+    if(y>=(chrome.floating?std::max(PageTopDip(),chrome.PanelVisible().bottom):SV::liftY)&&!chrome.Hit(x,y)&&SplitPointerDown(x,y))return 0;if(chrome.Hit(x,y)==NativeChrome::Chrome::SidebarEdgeId&&SidebarEdgeDown(x))return 0;}
+    int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));vaultKeyPress=id==NativeChrome::Chrome::VaultKeyId?(VaultKeyArmed()?1:0):-1;downloadDismissClick=id=='D'&&GetTickCount64()-std::max(downloadPanel.hiddenAt,downloadDrawer.hiddenAt)<150;settingsDismissClick=id=='S'&&GetTickCount64()-settingsDrawer.hiddenAt<150;historyDismissClick=id=='Y'&&GetTickCount64()-historyDrawer.hiddenAt<150;audioDismissClick=id=='V'&&GetTickCount64()-audioPanel.hiddenAt<150;if(id){keyboardFocus=0;keyboardModality=false;if(!NativeChrome::IsClose(id)&&id!='Q')SetFocus(h); /* B01 chip: focus stays with its popover (no light dismiss) */if(!splitTest)SetCapture(h);UpdateInteraction(id,id);if(NativeChrome::IsTab(id)){tabDrag.tab=pages[NativeChrome::TabIndex(id)];tabDrag.start={GET_X_LPARAM(l),GET_Y_LPARAM(l)};tabDrag.grab=GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-ChromeOrigin().x-chrome.ShownTabLeft(NativeChrome::TabIndex(id));tabDrag.grabY=GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h)-ChromeOrigin().y-chrome.strip.Surface(NativeChrome::TabIndex(id)).top;tabDrag.origin=NativeChrome::TabIndex(id);
         if(chrome.sidebar&&NativeChrome::TabIndex(id)<(int)chrome.SideColumn().tabs.size()){tabDrag.grabY=GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.SideColumn().tabs[NativeChrome::TabIndex(id)].top;tabDrag.grab=GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.SideColumn().tabs[NativeChrome::TabIndex(id)].left;}}
-    if(NativeChrome::IsBookmark(id)){const int i=NativeChrome::BookmarkIndex(id);if(i<(int)chrome.bandItems.size()){const BM::Id bid=chrome.bandItems[i].id;bandDrag={i,bid,{GET_X_LPARAM(l),GET_Y_LPARAM(l)},GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.BandRect(i).left,false,BM::BarRoot,bookmarks.IndexOf(bid)};}}}return 0;}
+    if(NativeChrome::IsBookmark(id)){const int i=NativeChrome::BookmarkIndex(id);if(i<(int)chrome.bandItems.size()){const BM::Id bid=chrome.bandItems[i].id;bandDrag={i,bid,{GET_X_LPARAM(l),GET_Y_LPARAM(l)},GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.BandRect(i).left,false,BM::BarRoot,bookmarks.IndexOf(bid)};}}}
+    if(chrome.floating&&id)FocusAnchor(L"press"); /* Mode Focus: a press on the floating panel: it is in use, at rest (no slide left under the pointer) */return 0;}
 case WM_LBUTTONUP:{const POINT up{GET_X_LPARAM(l),GET_Y_LPARAM(l)};if(outerDrag.active){OuterDragEnd(false,&up);return 0;}if(sepDrag.active){SeparatorUp();return 0;}if(SidebarEdgeDragging()){SidebarEdgeUp(true);return 0;}bool dragged=tabDrag.active||bandDrag.active;if(SidebarTearOff(up)){}else if(tabDrag.lifted)CommitSplitDrag();else if(tabDrag.active){if(chrome.sidebar)SidebarDragEnd(true);FinishReorder();}CancelTabDrag();BandDragEnd(false,&up);int original=pressed;int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(GetCapture()==h)ReleaseCapture();UpdateInteraction(id,0);
     if(!dragged&&original&&original==id&&NativeChrome::IsBookmark(id)){BandActivate(NativeChrome::BookmarkIndex(id),(w&MK_CONTROL)!=0,(w&MK_SHIFT)!=0,false);return 0;}
     if(!dragged&&original&&original==id){if(NativeChrome::IsClose(id)){LockTabWidth();CloseAt(NativeChrome::TabIndex(id));}else if(NativeChrome::IsTab(id))Select(NativeChrome::TabIndex(id));else Command(id);}vaultKeyPress=-1;return 0;}   /* review R3: a press never outlives its release */
@@ -5103,6 +5152,7 @@ case WM_DROPFILES:{HDROP drop=(HDROP)w;const UINT n=DragQueryFileW(drop,0xFFFFFF
     for(UINT i=0;i<n&&i<32;++i){const UINT len=DragQueryFileW(drop,i,nullptr,0);if(!len)continue;std::wstring path(len+1,L'\0');DragQueryFileW(drop,i,path.data(),len+1);path.resize(len);NewTab(AddressBar::FileUrlFromPath(path));++opened;}
     DragFinish(drop);if(opened){Select((int)pages.size()-1);Log(L"OPEN dropped files: "+std::to_wstring(opened));}return 0;}
 case WM_ACTIVATE:if(LOWORD(w)!=WA_INACTIVE){vaultKeyShownAt=GetTickCount64();PublishProfileWindow();settingsDrawer.RefreshDefaultBrowser();}   /* review N6: the key re-arms when the window is activated */
+    if(chrome.floating)FocusEvaluate(); /* Mode Focus: the pointer poll runs while the window is in front (or the panel still shows) */
     if(LOWORD(w)==WA_INACTIVE){CancelTabDrag(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(0,0);}else if(!smoke&&!halted)Defer([]{if(!bandDrag.active)SaveBookmarks();if(sessionReady){SaveHistory();SaveDownloads();if(!WorkspaceParked())historyDrawer.Changed();DownloadsChanged();}}); /* pick up the other windows' changes, a wipe included (S5) */return 0;
 case WM_SHOWWINDOW:AnnotationWindowState();break; // V3-B: the annotation band's wave stops in the background (WM_ACTIVATEAPP: below)
 case WM_DISPLAYCHANGE:Layout();break;
@@ -5110,7 +5160,8 @@ case WM_SETTINGCHANGE:ApplyReducedMotion();return 0; // Windows' switch, OR'd wi
 case WM_MBUTTONUP:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));
     if(NativeChrome::IsBookmark(id)){const int i=NativeChrome::BookmarkIndex(id);if(i<(int)chrome.bandItems.size()&&!chrome.bandItems[i].folder)BandActivate(i,true,false,false);return 0;}
     if(NativeChrome::TabIndex(id)>=0){LockTabWidth();CloseAt(NativeChrome::TabIndex(id));}return 0;}
-case WM_RBUTTONUP:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));const float y=GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h);
+case WM_RBUTTONUP:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));float x=GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),y=GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h);
+    if(!chrome.Local(x,y))return 0;   // Mode Focus: outside the floating panel there is no chrome to open a menu on (y is chrome-local below)
     if(NativeChrome::IsBookmark(id)&&NativeChrome::BookmarkIndex(id)<(int)chrome.bandItems.size()){POINT p{};GetCursorPos(&p);BookmarkContextMenu(chrome.bandItems[NativeChrome::BookmarkIndex(id)].id,p,nullptr,false);return 0;}
     if(!chrome.sidebar&&chrome.bandShown&&y>=NativeChrome::Design::Vertical::toolbarBottom&&y<chrome.ContentTop()){POINT p{};GetCursorPos(&p);BandContextMenu(p);return 0;}
     if(chrome.sidebar&&!id&&chrome.bandShown&&chrome.SideColumn().gridBlock.Contains(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),y)){POINT p{};GetCursorPos(&p);BandContextMenu(p);return 0;}
@@ -5119,7 +5170,7 @@ case WM_RBUTTONUP:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET
 // below it; on the flower or the gear, open their own menu.
 case WM_CONTEXTMENU:if(GET_X_LPARAM(l)==-1&&GET_Y_LPARAM(l)==-1&&GetFocus()==h){int tabIndex=NativeChrome::TabIndex(keyboardFocus);if(tabIndex>=0&&tabIndex<(int)pages.size()){keyboardModality=true;TabContextMenu(tabIndex,keyboardFocus);return 0;}if(keyboardFocus==900||keyboardFocus=='S'){keyboardModality=true;Command(keyboardFocus);return 0;}
     if(NativeChrome::IsBookmark(keyboardFocus)&&NativeChrome::BookmarkIndex(keyboardFocus)<(int)chrome.bandItems.size()){keyboardModality=true;const RECT r=RegionScreen(keyboardFocus);BookmarkContextMenu(chrome.bandItems[NativeChrome::BookmarkIndex(keyboardFocus)].id,{r.left,r.bottom},&r,true);if(GetForegroundWindow()==window&&!bookmarkPopover.Visible())SetFocus(window);InvalidateChrome();return 0;}}break;
-case WM_MOUSEWHEEL:{POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(h,&p);if(chrome.sidebar){SidebarWheel(p,GET_WHEEL_DELTA_WPARAM(w));return 0;}if(p.y<S(44)&&!pages.empty())Command(GET_WHEEL_DELTA_WPARAM(w)>0?'[':']');return 0;}
+case WM_MOUSEWHEEL:{POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(h,&p);if(chrome.sidebar){SidebarWheel(p,GET_WHEEL_DELTA_WPARAM(w));return 0;}float wx=p.x*96.f/GetDpiForWindow(h),wy=p.y*96.f/GetDpiForWindow(h);if(chrome.Local(wx,wy)&&S(wy)<S(44)&&!pages.empty())Command(GET_WHEEL_DELTA_WPARAM(w)>0?'[':']');return 0;}
 case WM_KEYDOWN:if(w==VK_ESCAPE&&chrome.sidebarPopover){SidebarPopover(false);return 0;}if(w==VK_ESCAPE&&chrome.sidebar&&sidebarHover.open&&!tabDrag.tab){sidebarHover.Close();Layout();return 0;} /* #127: Échap closes the column opened over the page */if(w==VK_ESCAPE&&sepDrag.active){CancelSeparator();return 0;}if(splitResize>=0&&SplitResizeKey(w))return 0;if(w==VK_ESCAPE&&tabDrag.tab){CancelTabDrag(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;}
     if(w==VK_ESCAPE&&outerDrag.active){OuterDragEnd(true);return 0;}
     if(w==VK_ESCAPE&&bandDrag.index>=0){BandDragEnd(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;}
@@ -5135,7 +5186,8 @@ case WM_CTLCOLOREDIT:{
     POINT origin{};MapWindowPoints(address,window,&origin,1);
     const float surface=chrome.EditSurface();   /* #127: the field's own colour in every layout (no lighter box in the column / compact bar) */
     const float alpha=AddressLoading::opacity*chrome.loading.opacity;
-    const int edge=S(chrome.bar.left+(chrome.bar.right-chrome.bar.left)*chrome.loading.fraction)-origin.x;
+    const auto field=ChromeClient(chrome.bar);   // client DIP (Mode Focus: the floating panel's offset), like the EDIT's own place
+    const int edge=S(field.left+(field.right-field.left)*chrome.loading.fraction)-origin.x;
     SetBkMode(dc,TRANSPARENT);SetBkColor(dc,NativeGray(surface));
     SetDCBrushColor(dc,NativeGray(surface));SetBrushOrgEx(dc,0,0,nullptr);
     SetTextColor(dc,NativeGray(surface+(1-surface)*Text::address));
@@ -5160,6 +5212,8 @@ case WM_TIMER:
     if(w==SidebarFoldTimerId){Layout();if(!sidebarFold.Moving(SidebarNowMs())&&!chrome.MorphMoving(NativeChrome::Motion::Now())&&!sideWidthSpring.Moving(NativeChrome::Motion::Now())){KillTimer(h,SidebarFoldTimerId);Layout();}return 0;}
     if(w==SidebarEdgeFadeTimerId){SyncCornerMasks();InvalidateChrome();if(chrome.sidebarEdge!=1||chrome.EdgeAlpha(NativeChrome::Motion::Now())>=1)KillTimer(h,SidebarEdgeFadeTimerId);return 0;}
     if(w==SidebarHoverTimerId){SidebarHoverDue();return 0;}
+    if(w==FocusPollTimerId){FocusEvaluate();return 0;}
+    if(w==FocusSlideTimerId){KillTimer(h,FocusSlideTimerId);if(focusLive)FocusSlideHide();return 0;}   // Mode Focus: the live panel is on screen, its picture goes
     if(w==AudioTimerId){KillTimer(h,AudioTimerId);RefreshAudio();return 0;}
     if(w==AudioSaveTimerId){AudioSaveDue();return 0;}
     if(w==MotionLabTimerId){MotionLabDownloadTick();return 0;}
@@ -5409,12 +5463,300 @@ HWND PageHostWindow(Tab& t){
     if(n==1)t.host=found;return t.host;}
 // The host windows of the pages shown NOW (the capture allowlist; split panes included).
 std::vector<HWND> ShownPageWindows(){std::vector<HWND> v;for(auto& t:pages)if(t&&!t->closed&&t->controller.p&&t->placedVisible==1&&PageShown(*t))if(HWND h=PageHostWindow(*t))v.push_back(h);return v;}
+// ---- Mode Focus (src/focus-mode.h, design/focus-mode-plan.md, Paper « Mode Focus » p-U-0) -------------------------
+// Off: the normal chrome. On (Réglages › Affichage, Ctrl+Maj+F; per profile, default off): the page fills the window
+// minus 4 DIP with 6 DIP corners, and the chrome is a floating panel that slides down over the page's top when the
+// pointer reaches the window's top edge (a 14 DIP hit box), stays while anything holds it and slides back up 300 ms
+// after. Fullscreen (F11, a page's element) suspends it. The annotation mode does not (owner's rule 2026-11-24): its
+// banner stays at the top and the chat (mode Panneau) on the right as a card, both visible and usable; the panel floats
+// under the banner, over the page's width only (src/focus-mode.h « With the annotation mode », Paper 203J-0 / 20MM-0).
+// The panel is the normal chrome, painted translated (Chrome::DrawPanel). The main window cannot draw over a page (each
+// page is a windowed WebView2 of another process, and the window clips its children), so while the panel is on screen
+// every page window under it gets a window region without the panel's pixels: the main window shows there and receives
+// the pointer there (WindowFromPoint honours regions). Updated on every frame of the slide.
+double FocusMs(NativeChrome::Motion::Time t){return std::chrono::duration<double,std::milli>(t.time_since_epoch()).count();}
+float focusPlaced=-1;bool focusPolling=false,focusCovering=false,focusCoveringLive=false;RECT focusPainted{};
+struct FocusHole{HWND host=nullptr;std::vector<FM::Pixels> spans;};std::map<unsigned,FocusHole> focusHoles;   // by tab serial
+bool FocusWanted(){return settings.focusMode&&!halted&&!InFullscreen();}
+// The panel's surroundings (Layout, before the chrome is measured): the annotation banner's height above it and the chat
+// card's strip on its right; nothing outside focus mode.
+void FocusAbove(){chrome.SetPanelAbove(chrome.floating?FM::Above{std::max(0.f,chrome.annotationBand),FM::ChatReserve(ChatInsetDip())}:FM::Above{});}
+// The chat card at rest (client DIP, src/chat-host-ui.h PanelRect): 4 DIP from the window's right and bottom edges, under
+// the banner; R25: while the banner slides it keeps its height and only moves, like the page.
+D2D1_RECT_F FocusChatCard(float widthDip){auto c=FM::ChatCard(chrome.ClientWidth(),chrome.height,widthDip,chrome.annotationBand);if(AnnotationBandSliding())c.bottom+=c.top-FM::pageInset;return {c.left,c.top,c.right,c.bottom};}
+// The sliding picture passes under the annotation banner (it comes out from behind it): the banner stays on top.
+void FocusBannerOnTop(){if(chrome.panelAbove.banner<=0)return;if(HWND b=AnnotationBannerWindow())if(IsWindowVisible(b))SetWindowPos(b,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);}
+// Chrome-local -> client: what is anchored to the chrome (popovers, menus, tooltips, the address field, UI Automation)
+// is anchored to the floating panel at rest; a surface held open keeps the panel there (FocusHold).
+D2D1_POINT_2F ChromeOrigin(){return chrome.floating?chrome.PanelAt(1).origin:D2D1_POINT_2F{0,0};}
+D2D1_RECT_F ChromeClient(D2D1_RECT_F r){const auto o=ChromeOrigin();return {r.left+o.x,r.top+o.y,r.right+o.x,r.bottom+o.y};}
+RECT ChromePx(D2D1_RECT_F r){const auto c=ChromeClient(r);return {S(c.left),S(c.top),S(c.right),S(c.bottom)};}
+// Where the page starts (81 / 121 DIP under the normal chrome, 4 in focus mode) and what lies under the toolbar (the
+// normal chrome's lower edge, or the floating panel's bottom at rest: 88 / 128).
+float PageTopDip(){return chrome.floating?FM::PageTop(chrome.annotationBand):chrome.ContentTop();}
+float ChromeBottomDip(){return chrome.floating?FM::RestBottom(chrome.bandShown,chrome.panelAbove.banner):chrome.ContentTop();}
+// The panel's part inside the window, in client pixels (empty while it is off screen or focus mode is off): the live
+// panel at rest, or its sliding picture.
+RECT FocusPanelPixels(){if(!chrome.floating||!chrome.PanelShown())return {};const auto v=chrome.PanelVisible();return {S(v.left),S(v.top),S(v.right),S(v.bottom)};}
+bool FocusPanelOver(const RECT& px){const RECT p=FocusPanelPixels();RECT i{};return !IsRectEmpty(&p)&&IntersectRect(&i,&p,&px);}
+// Only the live panel (the page windows' hole): the page's top corner masks step away for it; under the sliding picture
+// they stay (the picture is above them and its transparent corners show their canvas, as the live panel does).
+bool focusLive=false;
+bool FocusHoleOver(const RECT& px){return focusLive&&FocusPanelOver(px);}
+// The panel's current rectangle and the one painted before it (that one goes back to canvas or page).
+void InvalidateFocusPanel(){if(!window)return;const RECT r=FocusPanelPixels();if(!IsRectEmpty(&r))InvalidateRect(window,&r,FALSE);if(!IsRectEmpty(&focusPainted))InvalidateRect(window,&focusPainted,FALSE);focusPainted=r;}
+// Every shown page window under the panel loses the panel's pixels (bottom corners on their 4 DIP arc); every other
+// page window has its whole surface. `force`: set again even when unchanged (after a resize Chromium may reset it).
+void FocusHoles(bool force){
+    if(!window)return;std::vector<FM::Pixels> spans;
+    if(chrome.floating&&!halted&&focusLive&&chrome.PanelShown()){const float s=GetDpiForWindow(window)/96.f;const auto p=chrome.panel;
+        spans=FM::HoleSpans({(int)std::lround(p.left*s),(int)std::lround(p.top*s),(int)std::lround(p.right*s),(int)std::lround(p.bottom*s)},FM::panelRadius*s);}
+    for(auto& t:pages){if(!t)continue;auto it=focusHoles.find(t->serial);std::vector<FM::Pixels> mine;HWND host=nullptr;
+        if(!spans.empty()&&!t->closed&&t->controller.p&&t->placedVisible==1&&t->shown&&!IsRectEmpty(&t->placed)){
+            mine=FM::ClipTo(spans,{t->placed.left,t->placed.top,t->placed.right,t->placed.bottom});if(!mine.empty())host=PageHostWindow(*t);}
+        if(it!=focusHoles.end()&&(it->second.host!=host||mine.empty())){if(IsWindow(it->second.host))SetWindowRgn(it->second.host,nullptr,TRUE);focusHoles.erase(it);it=focusHoles.end();}
+        if(mine.empty()||!host)continue;
+        if(it!=focusHoles.end()&&it->second.spans==mine&&!force){
+            // The engine may drop a page window's region on its own (resize, focus, activation): put it back at once.
+            HRGN probe=CreateRectRgn(0,0,0,0);const int kind=GetWindowRgn(host,probe);DeleteObject(probe);
+            if(kind!=ERROR&&kind!=NULLREGION)continue;
+            static int restored=0;if(++restored<=5)Log(L"FOCUS page window region reset by the engine: set again");}
+        HRGN rgn=CreateRectRgn(0,0,t->placed.right-t->placed.left,t->placed.bottom-t->placed.top);
+        for(auto& s:mine){HRGN cut=CreateRectRgn(s.left,s.top,s.right,s.bottom);CombineRgn(rgn,rgn,cut,RGN_DIFF);DeleteObject(cut);}
+        if(SetWindowRgn(host,rgn,TRUE))focusHoles[t->serial]={host,std::move(mine)};   // the system owns the region now
+        else{DeleteObject(rgn);static bool logged=false;if(!logged){logged=true;Log(L"FOCUS page window region refused "+std::to_wstring(GetLastError()));}}
+    }
+    // Tabs no longer in this window's list (closed, or another profile's now on screen): their window gets its surface back.
+    for(auto it=focusHoles.begin();it!=focusHoles.end();){if(!TabBySerial(it->first)){if(IsWindow(it->second.host))SetWindowRgn(it->second.host,nullptr,FALSE);it=focusHoles.erase(it);continue;}++it;}
+}
+// ---- The slide: a picture of the panel above the page (fidelity audit D1) ----
+// A page window's new region reaches the screen a frame after the window's own paint: a hole moved on every frame
+// lagged the painted panel (slide-in: the page cut the toolbar's bottom; slide-out: a stale toolbar strip under it).
+// While the panel slides, it is a picture of the panel at rest (Chrome::RenderPanel, premultiplied, its rounded
+// corners transparent) in a per-pixel-alpha layered child window above the page windows, moved with SetWindowPos:
+// position and content reach the screen together. The page windows keep their whole surface meanwhile. At rest the
+// panel is live again (the hole, the window's own paint) and the picture stays 3 frames over it, until the hole is on
+// screen. A slide-out starts with the picture at rest and the hole taken away, and moves after a short lead
+// (FocusMode::Bar::hideLeadMs).
+struct FocusSlideWindow{HWND hwnd=nullptr;bool shown=false,broken=false;int w=0,h=0;} focusSlide;
+constexpr double FocusHideLeadMs=50;
+bool FocusRenderPanel(std::vector<std::uint32_t>& px,UINT& w,UINT& h){
+    SyncAddressDisplay();std::vector<std::wstring> titles;std::vector<std::shared_ptr<const NativeChrome::FaviconImage>> icons;
+    for(auto& t:pages){titles.push_back(t->title);icons.push_back(t->favicon.image);}chrome.SetFavicons(std::move(icons));
+    {std::vector<bool> asleep;for(auto& t:pages)asleep.push_back(t->sleeping);chrome.sleeping=std::move(asleep);}
+    auto t=Active();chrome.loading=t?t->loading.Sample(NativeChrome::Motion::Now(),motion.ReducedMotion()):NativeChrome::Loading::Visual{};
+    chrome.keyboardModality=keyboardModality;SyncTabKeys();
+    return chrome.RenderPanel(titles,current,editing,hover,GetFocus()==address?'L':GetFocus()==window?keyboardFocus:0,NativeChrome::Motion::Now(),px,w,h);
+}
+void FocusReveal();
+LRESULT CALLBACK FocusSlideProc(HWND h,UINT msg,WPARAM w,LPARAM l){
+    switch(msg){
+    case WM_NCHITTEST:return HTCLIENT;
+    case WM_ERASEBKGND:return 1;
+    case WM_PAINT:{PAINTSTRUCT ps;BeginPaint(h,&ps);EndPaint(h,&ps);return 0;}
+    case WM_MOUSEACTIVATE:return MA_NOACTIVATE;
+    case WM_SETCURSOR:SetCursor(LoadCursor(nullptr,IDC_ARROW));return TRUE;
+    // A press on the sliding panel: at rest at once (live), then the same press on the live panel under the pointer.
+    case WM_LBUTTONDOWN:case WM_RBUTTONDOWN:case WM_MBUTTONDOWN:case WM_LBUTTONDBLCLK:{FocusAnchor(L"press on the sliding panel"); /* i18n-exempt: log tag */POINT p{};GetCursorPos(&p);ScreenToClient(window,&p);return SendMessageW(window,msg,w,MAKELPARAM(p.x,p.y));}
+    case WM_MOUSEMOVE:case WM_LBUTTONUP:case WM_RBUTTONUP:case WM_MBUTTONUP:{POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};MapWindowPoints(h,window,&p,1);return SendMessageW(window,msg,w,MAKELPARAM(p.x,p.y));}
+    }
+    return DefWindowProcW(h,msg,w,l);
+}
+// The picture's place: the panel's current rectangle in client pixels (above the window's top while it slides).
+void FocusSlideMove(){
+    if(!focusSlide.shown||!focusSlide.hwnd)return;const float s=GetDpiForWindow(window)/96.f;
+    SetWindowPos(focusSlide.hwnd,HWND_TOP,(int)std::lround(chrome.panel.left*s),(int)std::lround(chrome.panel.top*s),0,0,SWP_NOSIZE|SWP_NOACTIVATE);
+    FocusBannerOnTop();
+}
+// A fresh picture of the panel at rest, shown at the panel's current place. False when it cannot be made (no
+// Direct2D 1.1, no layered child): the panel then slides as before, live in a moving hole.
+bool FocusSlideShow(){
+    if(focusSlide.broken||!window)return false;
+    std::vector<std::uint32_t> px;UINT w=0,h=0;if(!FocusRenderPanel(px,w,h)){focusSlide.broken=true;Log(L"FOCUS panel picture unavailable: the panel slides live");return false;}
+    HINSTANCE inst=instance?instance:GetModuleHandleW(nullptr);
+    if(!focusSlide.hwnd){static bool registered=false;if(!registered){WNDCLASSW wc{};wc.lpfnWndProc=FocusSlideProc;wc.hInstance=inst;wc.lpszClassName=L"BrowserFocusSlide";wc.style=CS_DBLCLKS;RegisterClassW(&wc);registered=true;}
+        focusSlide.hwnd=CreateWindowExW(WS_EX_LAYERED|WS_EX_NOACTIVATE,L"BrowserFocusSlide",L"",WS_CHILD,0,0,1,1,window,nullptr,inst,nullptr);
+        if(!focusSlide.hwnd){focusSlide.broken=true;Log(L"FOCUS panel picture window unavailable: the panel slides live");return false;}}
+    BITMAPINFO bi{};bi.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);bi.bmiHeader.biWidth=(LONG)w;bi.bmiHeader.biHeight=-(LONG)h;bi.bmiHeader.biPlanes=1;bi.bmiHeader.biBitCount=32;bi.bmiHeader.biCompression=BI_RGB;
+    HDC screen=GetDC(nullptr);HDC mem=CreateCompatibleDC(screen);void* bits=nullptr;HBITMAP bmp=CreateDIBSection(mem,&bi,DIB_RGB_COLORS,&bits,nullptr,0);bool ok=false;
+    if(bmp&&bits){memcpy(bits,px.data(),px.size()*4);HGDIOBJ old=SelectObject(mem,bmp);POINT src{0,0};SIZE size{(LONG)w,(LONG)h};BLENDFUNCTION blend{AC_SRC_OVER,0,255,AC_SRC_ALPHA};
+        // Child layered window: content and size here, its place by SetWindowPos (client pixels).
+        ok=UpdateLayeredWindow(focusSlide.hwnd,screen,nullptr,&size,mem,&src,0,&blend,ULW_ALPHA)!=FALSE;SelectObject(mem,old);}
+    if(bmp)DeleteObject(bmp);
+    DeleteDC(mem);ReleaseDC(nullptr,screen);
+    if(!ok){focusSlide.broken=true;Log(L"FOCUS panel picture refused: the panel slides live");return false;}
+    focusSlide.w=(int)w;focusSlide.h=(int)h;focusSlide.shown=true;const float s=GetDpiForWindow(window)/96.f;
+    SetWindowPos(focusSlide.hwnd,HWND_TOP,(int)std::lround(chrome.panel.left*s),(int)std::lround(chrome.panel.top*s),0,0,SWP_NOSIZE|SWP_NOACTIVATE|SWP_SHOWWINDOW);
+    FocusBannerOnTop();
+    return true;
+}
+void FocusSlideHide(){if(window)KillTimer(window,FocusSlideTimerId);if(focusSlide.hwnd&&focusSlide.shown)ShowWindow(focusSlide.hwnd,SW_HIDE);focusSlide.shown=false;}
+// ---- The panel's bottom corners over the page (fidelity audit D2) ----
+// The hole takes only the pixels the panel covers completely; the partly covered ones along the two bottom arcs stay
+// the page's, and a per-pixel-alpha layered child window per corner lays the panel's colour (its border along the arc,
+// its fill inside) back over them at its coverage: antialiased over any site. Shown only while the panel is live.
+struct FocusCornerWindows{HWND hwnd[2]{};int n=0;UINT dpi=0;bool shown=false;} focusCorners;
+LRESULT CALLBACK FocusCornerProc(HWND h,UINT msg,WPARAM w,LPARAM l){if(msg==WM_NCHITTEST)return HTTRANSPARENT;if(msg==WM_ERASEBKGND)return 1;if(msg==WM_PAINT){PAINTSTRUCT ps;BeginPaint(h,&ps);EndPaint(h,&ps);return 0;}return DefWindowProcW(h,msg,w,l);}
+void FocusCornersHide(){if(!focusCorners.shown)return;for(HWND c:focusCorners.hwnd)if(c)ShowWindow(c,SW_HIDE);focusCorners.shown=false;}
+void FocusCornersSync(){
+    if(!window||!chrome.floating||!focusLive||!chrome.PanelShown()||halted){FocusCornersHide();return;}
+    const UINT dpi=GetDpiForWindow(window);const float s=dpi/96.f,r=FM::panelRadius*s;const int n=FM::CornerSize(r);if(n<=0){FocusCornersHide();return;}
+    HINSTANCE inst=instance?instance:GetModuleHandleW(nullptr);
+    for(int i=0;i<2;++i)if(!focusCorners.hwnd[i]){static bool registered=false;if(!registered){WNDCLASSW wc{};wc.lpfnWndProc=FocusCornerProc;wc.hInstance=inst;wc.lpszClassName=L"BrowserFocusCorner";RegisterClassW(&wc);registered=true;}
+        focusCorners.hwnd[i]=CreateWindowExW(WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_NOACTIVATE,L"BrowserFocusCorner",L"",WS_CHILD,0,0,1,1,window,nullptr,inst,nullptr);if(!focusCorners.hwnd[i])return;}
+    if(focusCorners.n!=n||focusCorners.dpi!=dpi){
+        const float c=NativeChrome::Design::Surface::canvas;const auto px=FM::BottomCorner(r,FM::border*s,c,c+(1-c)*FM::borderAlpha);
+        for(int i=0;i<2;++i){   // 0: bottom-left, 1: bottom-right (mirrored); bitmap rows top-down (row 0 of the mask is the bottom one)
+            BITMAPINFO bi{};bi.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);bi.bmiHeader.biWidth=n;bi.bmiHeader.biHeight=-n;bi.bmiHeader.biPlanes=1;bi.bmiHeader.biBitCount=32;bi.bmiHeader.biCompression=BI_RGB;
+            HDC screen=GetDC(nullptr);HDC mem=CreateCompatibleDC(screen);void* bits=nullptr;HBITMAP bmp=CreateDIBSection(mem,&bi,DIB_RGB_COLORS,&bits,nullptr,0);
+            if(bmp&&bits){auto* out=static_cast<std::uint32_t*>(bits);
+                for(int y=0;y<n;++y)for(int x=0;x<n;++x){const int j=n-1-y,ii=i==0?x:n-1-x;const auto& p=px[(size_t)j*n+ii];
+                    const bool full=FM::FullyInside(ii,j,r);const float a=full?0.f:p.alpha;   // the hole's own pixels are the window's paint
+                    const auto A=(std::uint32_t)std::lround(a*255),C=(std::uint32_t)std::lround(p.grey*a*255);out[y*n+x]=(A<<24)|(C<<16)|(C<<8)|C;}
+                HGDIOBJ old=SelectObject(mem,bmp);POINT src{0,0};SIZE size{n,n};BLENDFUNCTION blend{AC_SRC_OVER,0,255,AC_SRC_ALPHA};
+                UpdateLayeredWindow(focusCorners.hwnd[i],screen,nullptr,&size,mem,&src,0,&blend,ULW_ALPHA);SelectObject(mem,old);}
+            if(bmp)DeleteObject(bmp);
+            DeleteDC(mem);ReleaseDC(nullptr,screen);}
+        focusCorners.n=n;focusCorners.dpi=dpi;}
+    const auto& p=chrome.panel;const int left=(int)std::lround(p.left*s),right=(int)std::lround(p.right*s),bottom=(int)std::lround(p.bottom*s);
+    SetWindowPos(focusCorners.hwnd[0],HWND_TOP,left,bottom-n,0,0,SWP_NOSIZE|SWP_NOACTIVATE|SWP_SHOWWINDOW);
+    SetWindowPos(focusCorners.hwnd[1],HWND_TOP,right-n,bottom-n,0,0,SWP_NOSIZE|SWP_NOACTIVATE|SWP_SHOWWINDOW);
+    focusCorners.shown=true;
+}
+// The panel at slide position `pos`. At rest (shown, not moving): live — the hole, the window's own paint, the corner
+// windows. Anywhere else: the picture at that place, the page windows whole.
+void FocusApply(float pos){
+    if(!window||!chrome.floating)return;
+    const double ms=FocusMs(NativeChrome::Motion::Now());
+    chrome.PlacePanel(pos);focusPlaced=pos;
+    const bool rest=focusBar.Shown()&&pos>=1&&!focusBar.Moving(ms);
+    if(rest||focusSlide.broken){
+        if(!focusLive){   // the picture (at rest) bridges the frame the page's new region takes to reach the screen
+            if(rest&&!focusSlide.shown)FocusSlideShow();else FocusSlideMove();
+            focusLive=true;chrome.panelLive=true;FocusHoles(true);FocusCornersSync();FocusSlideMove();InvalidateFocusPanel();if(!IsIconic(window))UpdateWindow(window);
+            {static int traced=0;if(++traced<=40)Log(L"FOCUS live (holes "+std::to_wstring(focusHoles.size())+L", picture "+std::to_wstring(focusSlide.shown)+L", panel "+std::to_wstring((int)std::lround(chrome.panel.left))+L","+std::to_wstring((int)std::lround(chrome.panel.top))+L","+std::to_wstring((int)std::lround(chrome.panel.right))+L","+std::to_wstring((int)std::lround(chrome.panel.bottom))+L")");}   // DIP (tests/focus/annotation_focus_journey.py)
+            if(focusSlide.shown)SetTimer(window,FocusSlideTimerId,60,nullptr);
+        }else{FocusHoles(false);FocusCornersSync();InvalidateFocusPanel();if(!IsIconic(window)&&focusSlide.broken)UpdateWindow(window);}
+    }else{
+        if(focusLive){   // leaving rest: the picture first (fresh, at rest), then the page windows get their whole surface back
+            KillTimer(window,FocusSlideTimerId);
+            const bool picture=pos>0&&FocusSlideShow();if(picture&&!IsIconic(window))DwmFlush();
+            focusLive=false;chrome.panelLive=false;FocusHoles(false);FocusCornersHide();InvalidateFocusPanel();
+            {static int traced=0;if(++traced<=40)Log(L"FOCUS sliding (picture "+std::to_wstring(picture)+L")");}
+        }else if((!focusSlide.shown&&pos>0)||(focusBar.Shown()&&pos<=0))FocusSlideShow();   // a reveal starts: a fresh picture of the panel as it is now
+        else FocusSlideMove();
+        if(pos<=0&&!focusBar.Shown()&&!focusBar.Moving(ms))FocusSlideHide();   // off screen: nothing left
+    }
+    const RECT p=FocusPanelPixels();const bool covering=!IsRectEmpty(&p)&&p.bottom>S(PageTopDip());
+    if(covering!=focusCovering||focusLive!=focusCoveringLive){focusCovering=covering;focusCoveringLive=focusLive;
+        SyncGrips(CurrentSplit());SyncCornerMasks();SyncStatusBubble();ScrollbarRefresh(NativeChrome::Motion::Now());   // overlays step away / come back at once
+        if(focusLive)FocusCornersSync();FocusSlideMove();}   // the corners and the picture (topmost) stay above the re-raised overlays
+    if(findBar.Visible())findBar.Reposition(FindBarArea());   // the find bar keeps clear of the panel
+}
+// The frame clock's tick while the panel slides (InvalidateMotion).
+void FocusFrame(NativeChrome::Motion::Time now){
+    if(!chrome.floating)return;const double ms=FocusMs(now);const float pos=(float)focusBar.Position(ms);
+    // The ease-out may land on 1 (or 0) a frame before its end: the frame after the end still settles the panel (live at
+    // rest; the picture gone once off screen) although the position no longer changes.
+    const bool settle=focusBar.Shown()&&!focusBar.Moving(ms)&&pos>=1&&!focusLive,gone=!focusBar.Shown()&&!focusBar.Moving(ms)&&pos<=0&&focusSlide.shown;
+    if(pos!=focusPlaced||settle||gone)FocusApply(pos);
+}
+NativeChrome::Motion::Wake FocusWake(NativeChrome::Motion::Time now){return chrome.floating&&focusBar.Moving(FocusMs(now))?NativeChrome::Motion::Frame():NativeChrome::Motion::Wake{};}
+// Shows the panel at once and keeps it: the chrome is in use from the keyboard, or one of its surfaces is open (the
+// panel is where it is anchored). Never animated: keyboard-initiated (emil-design-eng), and the address field, a
+// popover or a drawer is placed where the panel stays.
+bool FocusHold(){
+    if(editing||(address&&GetFocus()==address))return true;     // Ctrl+L, Alt+D, Ctrl+T, a click in the field
+    if(GetFocus()==window&&keyboardFocus)return true;             // F6 / Tab in the chrome
+    if(chrome.latched||chrome.bandOpen)return true;               // a toolbar button's surface or a band menu is open
+    if(bookmarkPopover.Visible()||bookmarksDrawer.Visible()||audioPanel.Visible())return true;
+    if(folderRename.Active()&&folderRenameState.surface==RenameBand)return true;   // a band folder renamed in place
+    if(RequestChipOpen()||originPrompt.Visible())return true;     // anchored to the address field
+    return false;
+}
+// Keeps a shown panel without bringing a hidden one: a menu, the suggestions, a drag, the mouse captured.
+bool FocusKeep(){
+    if(GetCapture()==window||tabDrag.tab||bandDrag.index>=0||outerDrag.active||sepDrag.active)return true;
+    if(contextMenu.Open()||profileMenu.Open()||suggestions.Visible())return true;
+    return false;
+}
+// One evaluation: the pointer (polled every ~30 ms while the window is in front or the panel shows: over a page the
+// window gets no mouse message), the window and what holds the chrome. `pointerMoved`: a WM_MOUSEMOVE of the window.
+void FocusEvaluate(bool pointerMoved){
+    (void)pointerMoved;if(!window)return;
+    if(!chrome.floating){if(focusPolling){KillTimer(window,FocusPollTimerId);focusPolling=false;}return;}
+    const auto now=NativeChrome::Motion::Now();const double ms=FocusMs(now);
+    POINT sp{};const bool pointer=GetCursorPos(&sp)!=FALSE;POINT cp=sp;ScreenToClient(window,&cp);
+    const float k=96.f/GetDpiForWindow(window),x=cp.x*k,y=cp.y*k;
+    // In front: the window, or one of its own popups / drawers, is the foreground window (no WindowFromPoint every 30 ms:
+    // it would hit-test the pages' windows across processes). The pointer counts only over the window then.
+    HWND fg=GetForegroundWindow();const bool front=fg&&(fg==window||GetAncestor(fg,GA_ROOTOWNER)==window)&&IsWindowVisible(window)&&!IsIconic(window);
+    const bool buttons=GetAsyncKeyState(VK_LBUTTON)<0||GetAsyncKeyState(VK_RBUTTON)<0||GetAsyncKeyState(VK_MBUTTON)<0;
+    RECT wr{};GetWindowRect(window,&wr);const bool ours=pointer&&front&&PtInRect(&wr,sp);
+    const bool inHit=pointer&&FM::InHitBox(x,y,chrome.ClientWidth(),chrome.panelAbove);   // under the annotation banner when it is there
+    const auto v=chrome.PanelVisible();const bool overPanel=pointer&&chrome.PanelShown()&&x>=v.left&&x<v.right&&y>=v.top&&y<v.bottom;
+    FM::Input in;in.reveal=inHit&&front&&ours&&!buttons;in.pointer=(inHit||overPanel)&&ours;in.hold=FocusHold();in.keep=FocusKeep();
+    const bool was=focusBar.Shown();
+    if(focusBar.Update(ms,in,motion.ReducedMotion())){FocusApply((float)focusBar.Position(ms));ScheduleMotion(now);
+        if(focusBar.Shown()!=was)Log(std::wstring(L"FOCUS bar ")+(focusBar.Shown()?L"shown":L"hidden")+L" (front "+std::to_wstring(front)+L", pointer "+std::to_wstring(in.pointer)+L", hold "+std::to_wstring(in.hold)+L", keep "+std::to_wstring(in.keep)+L")");}
+    else if(focusBar.Visible(ms))FocusHoles(false);   // still on screen: the hole is checked on every tick
+    const bool poll=front||focusBar.Shown()||focusBar.Visible(ms);
+    if(poll&&!focusPolling){focusPolling=SetTimer(window,FocusPollTimerId,(UINT)FM::pollMs,nullptr)!=0;}
+    else if(!poll&&focusPolling){KillTimer(window,FocusPollTimerId);focusPolling=false;}
+}
+// The keyboard (or a press on the panel) needs the chrome now: at rest at once.
+void FocusReveal(){
+    if(!chrome.floating||!window)return;const double ms=FocusMs(NativeChrome::Motion::Now());
+    const bool was=focusBar.Shown();FM::Input in;in.hold=true;focusBar.Update(ms,in,motion.ReducedMotion());if(focusPlaced!=1||!focusLive)FocusApply(1);
+    if(!was){static int traced=0;if(++traced<=40)Log(std::wstring(L"FOCUS bar shown at once (")+focusRevealWhy+L")");}
+}
+// A surface anchored to the chrome opens (a menu at a region, the profile menu, a popover, a drawer, the permission
+// prompt): the panel at rest at once, so its anchor is on screen (code review, keyboard-opened surfaces).
+void FocusAnchor(const wchar_t* why){if(!chrome.floating)return;focusRevealWhy=why;FocusReveal();focusRevealWhy=L"keyboard";}
+// On / off follows the setting, fullscreen and the annotation mode (Layout, before the chrome is measured). Returns
+// true when it changed. The bar starts hidden (the next evaluation reveals it if the pointer already asks for it).
+bool SyncFocusMode(){
+    const bool want=FocusWanted();if(want==chrome.floating)return false;
+    chrome.SetFloating(want);focusBar.Reset(false,FocusMs(NativeChrome::Motion::Now()));focusBar.hideLeadMs=FocusHideLeadMs;focusPlaced=want?0.f:-1.f;focusCovering=focusCoveringLive=false;
+    focusLive=false;chrome.panelLive=!want;FocusSlideHide();FocusCornersHide();
+    if(!want){FocusHoles(false);InvalidateFocusPanel();focusPainted={};if(focusPolling&&window){KillTimer(window,FocusPollTimerId);focusPolling=false;}}
+    Log(want?L"FOCUS mode on":L"FOCUS mode off");return true;
+}
+// After the chrome is measured (Layout): the panel at its slide position for the new size, the drawers' top under it.
+void FocusPlace(){
+    // Drawers (user request 2026-11-23): 4 DIP under the panel, their right edge on the panel's (W - 4), their two top
+    // corners round (6 DIP, antialiased: src/drawer-corners.h). Normal mode: 81 DIP, flush right, square top.
+    // With the annotation mode (Paper « Annotation + Focus · barre du haut · tiroir ouvert »): under the panel under the
+    // banner (124), at W - 4 over the chat card (FocusMode::drawerOverChat; the chat is back when the drawer closes).
+    namespace DL=NativeChrome::Downloads::DrawerLayout;
+    const float top=chrome.floating?FM::DrawerTop(chrome.bandShown,chrome.panelAbove.banner):NativeChrome::Design::Vertical::DrawerTop() /* #127: 40 / 32 in the panel layouts */,right=chrome.floating?FM::pageInset+(FM::drawerOverChat?0.f:chrome.panelAbove.reserve):0.f,radius=chrome.floating?FM::pageRadius:0.f,bottom=chrome.floating?FM::drawerBottom:0.f;
+    if(top!=DL::liveTop||right!=DL::liveRight||radius!=DL::liveRadius||bottom!=DL::liveBottom){DL::liveTop=top;DL::liveRight=right;DL::liveRadius=radius;DL::liveBottom=bottom;
+        downloadDrawer.Reposition();settingsDrawer.Reposition();historyDrawer.Reposition();bookmarksDrawer.Reposition();audioPanel.OwnerChanged();}
+    if(!chrome.floating)return;
+    chrome.PlacePanel(focusPlaced<0?0.f:focusPlaced);InvalidateFocusPanel();FocusCornersSync();FocusSlideMove();
+    if(!focusPolling)FocusEvaluate();
+}
+// The surfaces over the window that close on their own Échap (the top-most layer first): the docked drawers (Réglages,
+// Historique, Favoris, Téléchargements) and the toolbar popovers (Téléchargements, Son). While one of them has the
+// keyboard, the message loop's Key() leaves Échap to it (before: the annotation mode left first, src/main.cpp Key).
+bool EscapeOwnedBySurface(HWND focus){
+    if(!focus)return false;const HWND root=GetAncestor(focus,GA_ROOT);
+    for(HWND s:{settingsDrawer.Window(),historyDrawer.Window(),bookmarksDrawer.Window(),downloadDrawer.Window(),downloadPanel.Window(),audioPanel.Window()})
+        if(s&&(focus==s||root==s))return true;
+    return false;
+}
+bool EscapeLeavesAnnotation(bool modeActive,HWND focus){return modeActive&&focus!=address&&!EscapeOwnedBySurface(focus);}
+void ToggleFocusMode(){
+    settings.focusMode=!settings.focusMode;SettingChanged(BrowserSettings::Change::FocusMode);
+    if(settingsDrawer.Visible())settingsDrawer.Changed();   // the switch follows the shortcut
+}
 // The first input to a page (a click: WM_PARENTNOTIFY, sent before the page handles it; a key in the page) removes
 // the overlay at once: what the user acts on is what they see. Nothing is consumed or delayed.
 // Removes the overlay now, releases both snapshots and the pending readiness / end timers (no idle wake left).
 void CancelContentTransition(const wchar_t* why){if(!contentTransition.Active())return;contentTransition.Cancel();if(window){KillTimer(window,ContentReadyTimerId);KillTimer(window,ContentTransitionTimerId);}if(workspaceTest)Log(std::wstring(L"TRANSITION cancelled by ")+why);}
 void ContentTransitionInput(const wchar_t* what){CancelContentTransition((std::wstring(L"input: ")+what).c_str());}
-RECT ContentTransitionRect(){const auto c=ContentBox();return {S(c.left),S(c.top),S(c.right),S(c.bottom)};}
+// Mode Focus: the overlay (composed above every child window) stays under the floating panel while it is on screen.
+RECT ContentTransitionRect(){const auto c=ContentBox();RECT r{S(c.left),S(c.top),S(c.right),S(c.bottom)};if(chrome.floating){const RECT p=FocusPanelPixels();if(!IsRectEmpty(&p))r.top=std::min(r.bottom,std::max(r.top,p.bottom));}return r;}
 // Called just BEFORE the outgoing page is hidden: the snapshot is taken now, the switch then happens at once.
 void BeginContentTransition(ContentTransition::Kind kind){
     if(!window||halted||smoke||splitTest||windowClosing||WorkspaceParked()||IsIconic(window)||!IsWindowVisible(window))return;
