@@ -60,6 +60,8 @@ def existing_fixtures() -> None:
     fixture('session_test', [*STRICT, 'tests/session_test.cpp'])
     # Mode Focus (src/focus-mode.h, design/focus-mode-plan.md): panel geometry, hit box, slide timing, easing, hole spans.
     fixture('focus_mode_test', [*STRICT, 'tests/focus_mode_test.cpp'])
+    # Its entry / exit motion (src/focus-motion.h, design/focus-motion-report.md): spring 1.0 / 0.3 s, interruption, fades, glued layout.
+    fixture('focus_motion_test', [*STRICT, 'tests/focus_motion_test.cpp'])
     # Its drawers' antialiased top corners (src/drawer-corners.h): coverage, region cut, layered corner windows.
     fixture('drawer_corners_test', [*STRICT, '-municode', 'tests/drawer_corners_test.cpp', '-lgdi32', '-luser32'])
     # Address field model: display, suggestions, and what a typed text opens (links, local paths and file: URLs, searches).

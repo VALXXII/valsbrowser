@@ -54,6 +54,7 @@
 #include <wrl/client.h>
 #include "viewport-scrollbar.h"
 #include "content-transition.h"
+#include "focus-motion.h"   // Mode Focus entry / exit motion (Designer's spec 2026-11-25)
 #include <shlobj.h>
 #include <atomic>
 #include <thread>
@@ -260,14 +261,15 @@ NativeChrome::HistoryUI::Drawer historyDrawer; bool historyDismissClick=false;
 void InvalidateChrome();
 // Mode Focus (src/focus-mode.h; section « Mode Focus » near the window procedure). While it is on, `chrome.floating`:
 // the chrome is a panel over the page, chrome-local rectangles reach the client through ChromeClient / ChromePx.
-namespace FM=NativeChrome::FocusMode;
+namespace FM=NativeChrome::FocusMode;namespace FX=NativeChrome::FocusMotion;
 constexpr int FocusModeCommand=3070; constexpr UINT_PTR FocusPollTimerId=0x464D,FocusSlideTimerId=0x464E;
 FM::Bar focusBar; const wchar_t* focusRevealWhy=L"keyboard"; // why the panel last came at once (log)
 bool SyncFocusMode(); void FocusPlace(); void ToggleFocusMode(); void FocusEvaluate(bool pointerMoved=false); void FocusReveal(); void FocusFrame(NativeChrome::Motion::Time now);
 NativeChrome::Motion::Wake FocusWake(NativeChrome::Motion::Time now); void InvalidateFocusPanel(); void FocusHoles(bool force);
 double FocusMs(NativeChrome::Motion::Time t); void FocusAnchor(const wchar_t* why=L"surface"); bool FocusPanelOver(const RECT& px); bool FocusHoleOver(const RECT& px); extern bool focusLive; void FocusSlideHide(); float PageTopDip(); float ChromeBottomDip(); RECT FocusPanelPixels();
 D2D1_POINT_2F ChromeOrigin(); D2D1_RECT_F ChromeClient(D2D1_RECT_F r); RECT ChromePx(D2D1_RECT_F r);
-void FocusAbove(); HWND AnnotationBannerWindow(); D2D1_RECT_F FocusChatCard(float widthDip); // Mode Focus with the annotation mode: the banner above the panel, the chat card beside it
+void FocusAbove(); HWND AnnotationBannerWindow(); D2D1_RECT_F FocusChatCard(float widthDip);
+constexpr UINT_PTR FocusMotionTimerId=0x464F,FocusWarmTimerId=0x4650; void FocusMotionTimer(); void FocusMotionWarm(); void FocusMotionFrame(NativeChrome::Motion::Time now); NativeChrome::Motion::Wake FocusMotionWake(NativeChrome::Motion::Time now); bool FocusMotionKeepsFocus(); bool FocusMotionSliding(); void FocusMotionToggle(bool toFocus); void FocusMotionLayoutChanged(); // Mode Focus entry / exit motion (src/focus-motion.h) // Mode Focus with the annotation mode: the banner above the panel, the chat card beside it
 // restore=true (Escape, lost capture, Alt+Tab): the order before the press comes back.
 void CancelTabDrag(bool restore=false){EndSplitDrag(restore);tabDrag={};chrome.dragIndex=-1;chrome.dragOffset=0;InvalidateChrome();}
 int S(float value){return (int)std::lround(value*GetDpiForWindow(window)/96.f);}
@@ -332,6 +334,7 @@ void SyncStopMorph(NativeChrome::Motion::Time now){chrome.nav.stop.Sync(chrome.n
 // ends, so its endpoint is painted) repaints the whole header.
 void CloseAudioDrawer();void InvalidateDownloadIcon();void AudioFrame(NativeChrome::Motion::Time now);NativeChrome::Motion::Wake AudioNextWake(NativeChrome::Motion::Time now);void RefreshAudio();
 void InvalidateMotion(NativeChrome::Motion::Time now){
+    FocusMotionFrame(now); // Mode Focus entry / exit: the bar and the page's picture on the spring (src/focus-motion.h)
     FocusFrame(now); // Mode Focus: the floating panel's slide (the page windows' hole, then its own repaint)
     ScrollbarRefresh(now); // overlay handles only: never repaints the chrome
     SplitFrame(now);GripFrame(now);ElementsFrame(now);downloadPanel.Frame(now);downloadDrawer.Frame(now);settingsDrawer.Frame(now);historyDrawer.Frame(now);bookmarksDrawer.Frame(now);
@@ -347,7 +350,7 @@ void InvalidateMotion(NativeChrome::Motion::Time now){
 }
 void ScheduleMotion(NativeChrome::Motion::Time now){
     const bool reduced=motion.ReducedMotion();auto ui=NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(motion.NextWake(now),chrome.tabMotion.NextWake(now)),chrome.lottie.NextWake(now,reduced)),chrome.nav.NextWake(now));motionFullFrames=ui.delay.has_value();
-    auto wake=NativeChrome::Motion::Earlier(ui,NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(downloadPanel.NextWake(now),downloadDrawer.NextWake(now)),settingsDrawer.NextWake(now)),NativeChrome::Motion::Earlier(historyDrawer.NextWake(now),bookmarksDrawer.NextWake(now))));wake=NativeChrome::Motion::Earlier(wake,chrome.downloadIcon.NextWake(now));wake=NativeChrome::Motion::Earlier(wake,AudioNextWake(now));wake=NativeChrome::Motion::Earlier(wake,ElementsNextWake(now));if(current>=0&&current<(int)pages.size())wake=NativeChrome::Motion::Earlier(wake,pages[current]->loading.NextWake(now,reduced));if(SplitAnimating()||GripsAnimating())wake=NativeChrome::Motion::Earlier(wake,NativeChrome::Motion::Frame());wake=NativeChrome::Motion::Earlier(wake,ScrollbarWake(now));wake=NativeChrome::Motion::Earlier(wake,FocusWake(now));if(halted||motionMinimized||!wake.delay){KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();return;}
+    auto wake=NativeChrome::Motion::Earlier(ui,NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(downloadPanel.NextWake(now),downloadDrawer.NextWake(now)),settingsDrawer.NextWake(now)),NativeChrome::Motion::Earlier(historyDrawer.NextWake(now),bookmarksDrawer.NextWake(now))));wake=NativeChrome::Motion::Earlier(wake,chrome.downloadIcon.NextWake(now));wake=NativeChrome::Motion::Earlier(wake,AudioNextWake(now));wake=NativeChrome::Motion::Earlier(wake,ElementsNextWake(now));if(current>=0&&current<(int)pages.size())wake=NativeChrome::Motion::Earlier(wake,pages[current]->loading.NextWake(now,reduced));if(SplitAnimating()||GripsAnimating())wake=NativeChrome::Motion::Earlier(wake,NativeChrome::Motion::Frame());wake=NativeChrome::Motion::Earlier(wake,ScrollbarWake(now));wake=NativeChrome::Motion::Earlier(wake,FocusWake(now));wake=NativeChrome::Motion::Earlier(wake,FocusMotionWake(now));if(halted||motionMinimized||!wake.delay){KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();return;}
     // A deadline due within one nominal frame is served by the next compositor tick.
     if(frameClockReady&&(wake.frames||*wake.delay<=*NativeChrome::Motion::Frame().delay)){if(motionDeadline){KillTimer(window,MotionTimerId);motionDeadline.reset();}frameClock.Request();return;}
     frameClock.Cancel();
@@ -447,7 +450,7 @@ void FindInPage(){
 }
 void CancelContentTransitionIfMoved();
 void SyncFolderRename();
-void Layout(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */if(!window)return;CancelContentTransitionIfMoved();SyncFocusMode();FocusAbove();chrome.Resize();BuildChrome();FocusPlace();SyncFolderRename();auto r=chrome.edit;
+void Layout(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */if(!window)return;CancelContentTransitionIfMoved();FocusMotionLayoutChanged();SyncFocusMode();FocusAbove();chrome.Resize();BuildChrome();FocusPlace();SyncFolderRename();auto r=chrome.edit;
     HDC dc=GetDC(address);auto old=SelectObject(dc,font?font:GetStockObject(DEFAULT_GUI_FONT));TEXTMETRICW metrics{};GetTextMetricsW(dc,&metrics);SelectObject(dc,old);ReleaseDC(address,dc);
     auto placement=chrome.MeasureText(L"Ag",{r.left,44,r.right,76},16,false,false,-.16f);
     // Mode Focus: the field sits in the floating panel at rest (editing keeps the panel there).
@@ -532,7 +535,9 @@ void DissolveSmallGroups(){
 int VisibleGroup(){auto t=Active();return t&&t->group&&splitGroups.count(t->group)&&Members(t->group).size()>=2?t->group:0;}
 // Same box as a single page: under the chrome, 81 DIP or 121 with the bookmarks band
 // (SV::Content assumes the former fixed 84 DIP top).
+bool FocusMotionHeldBox(SV::Box& box);   // Mode Focus entry / exit: the live page keeps its box while the motion's pictures move
 SV::Box ContentBox(){namespace View=NativeChrome::Design::Viewport;
+    {SV::Box held;if(!InFullscreen()&&FocusMotionHeldBox(held))return held;}
     // Mode Focus (Paper 1J9P-0): the page 4 DIP inside the window on all four sides; the panel floats over its top.
     // With the annotation mode (Paper 203J-0): under the banner, 4 DIP before the chat card. R25: while the banner slides the
     // page keeps its size and only moves (no relayout per frame), as in the normal chrome.
@@ -2457,7 +2462,8 @@ void SettingChanged(BrowserSettings::Change change){
     case Change::AnnotationConnectPrompt:Log(BrowserSettings::ConnectPromptActive(settings)?L"SETTINGS annotation connect prompt on (« Plus tard » count reset)":L"SETTINGS annotation connect prompt off");AnnotationSettingsChanged();break;
     case Change::AnnotationRetention:Log(L"SETTINGS annotation retention "+std::to_wstring(settings.annotationRetentionDays)+L" days");AnnotationSettingsChanged();break;
     case Change::DefaultBrowserLater:Log(L"SETTINGS default browser card: later (30 days)");break;
-    case Change::FocusMode:Log(settings.focusMode?L"SETTINGS focus mode on":L"SETTINGS focus mode off");Layout();break; // instant relayout, like the bookmarks bar
+    case Change::FocusMode:{Log(settings.focusMode?L"SETTINGS focus mode on":L"SETTINGS focus mode off");const auto t0=std::chrono::steady_clock::now();FocusMotionToggle(settings.focusMode);const auto t1=std::chrono::steady_clock::now();Layout();const auto t2=std::chrono::steady_clock::now();
+        Log(L"FOCUS switch: motion setup "+std::to_wstring((int)std::chrono::duration<double,std::milli>(t1-t0).count())+L" ms, layout "+std::to_wstring((int)std::chrono::duration<double,std::milli>(t2-t1).count())+L" ms");break;} // the motion (src/focus-motion.h) over the relayout
     case Change::HttpsOnly:case Change::ThirdPartyCookies:ApplySecuritySettings();break;
     case Change::AdBlock:ApplyAdBlock();break;
     case Change::MemorySaver:ApplyMemorySaver();break;
@@ -4869,6 +4875,8 @@ case WM_TIMER:
 #endif
     if(w==SleepTimerId){SleepTabs();return 0;}
     if(w==FocusPollTimerId){FocusEvaluate();return 0;}
+    if(w==FocusMotionTimerId){KillTimer(h,FocusMotionTimerId);FocusMotionTimer();return 0;}
+    if(w==FocusWarmTimerId){KillTimer(h,FocusWarmTimerId);FocusMotionWarm();return 0;}   // Mode Focus: the composition device made before the first Ctrl+Maj+F   // Mode Focus entry / exit: readiness polls, the cross-fade's end
     if(w==FocusSlideTimerId){KillTimer(h,FocusSlideTimerId);if(focusLive)FocusSlideHide();return 0;}   // Mode Focus: the live panel is on screen, its picture goes
     if(w==AudioTimerId){KillTimer(h,AudioTimerId);RefreshAudio();return 0;}
     if(w==AudioSaveTimerId){AudioSaveDue();return 0;}
@@ -5133,13 +5141,14 @@ std::vector<HWND> ShownPageWindows(){std::vector<HWND> v;for(auto& t:pages)if(t&
 double FocusMs(NativeChrome::Motion::Time t){return std::chrono::duration<double,std::milli>(t.time_since_epoch()).count();}
 float focusPlaced=-1;bool focusPolling=false,focusCovering=false,focusCoveringLive=false;RECT focusPainted{};
 struct FocusHole{HWND host=nullptr;std::vector<FM::Pixels> spans;};std::map<unsigned,FocusHole> focusHoles;   // by tab serial
-bool FocusWanted(){return settings.focusMode&&!halted&&!InFullscreen();}
+bool FocusWanted(){return (settings.focusMode||FocusMotionKeepsFocus())&&!halted&&!InFullscreen();}   // an exit slide keeps the live Focus until it lands
 // The panel's surroundings (Layout, before the chrome is measured): the annotation banner's height above it and the chat
 // card's strip on its right; nothing outside focus mode.
 void FocusAbove(){chrome.SetPanelAbove(chrome.floating?FM::Above{std::max(0.f,chrome.annotationBand),FM::ChatReserve(ChatInsetDip())}:FM::Above{});}
 // The chat card at rest (client DIP, src/chat-host-ui.h PanelRect): 4 DIP from the window's right and bottom edges, under
 // the banner; R25: while the banner slides it keeps its height and only moves, like the page.
-D2D1_RECT_F FocusChatCard(float widthDip){auto c=FM::ChatCard(chrome.ClientWidth(),chrome.height,widthDip,chrome.annotationBand);if(AnnotationBandSliding())c.bottom+=c.top-FM::pageInset;return {c.left,c.top,c.right,c.bottom};}
+bool focusMotionChatOn=false;D2D1_RECT_F focusMotionChat{};   // the chat card's frame while the entry / exit moves (FocusMotionApply)
+D2D1_RECT_F FocusChatCard(float widthDip){if(focusMotionChatOn)return focusMotionChat;auto c=FM::ChatCard(chrome.ClientWidth(),chrome.height,widthDip,chrome.annotationBand);if(AnnotationBandSliding())c.bottom+=c.top-FM::pageInset;return {c.left,c.top,c.right,c.bottom};}
 // The sliding picture passes under the annotation banner (it comes out from behind it): the banner stays on top.
 void FocusBannerOnTop(){if(chrome.panelAbove.banner<=0)return;if(HWND b=AnnotationBannerWindow())if(IsWindowVisible(b))SetWindowPos(b,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);}
 // Chrome-local -> client: what is anchored to the chrome (popovers, menus, tooltips, the address field, UI Automation)
@@ -5341,6 +5350,7 @@ bool FocusKeep(){
 void FocusEvaluate(bool pointerMoved){
     (void)pointerMoved;if(!window)return;
     if(!chrome.floating){if(focusPolling){KillTimer(window,FocusPollTimerId);focusPolling=false;}return;}
+    if(FocusMotionSliding())return;   // the entry / exit moves the whole layout: the panel waits for it to land
     const auto now=NativeChrome::Motion::Now();const double ms=FocusMs(now);
     POINT sp{};const bool pointer=GetCursorPos(&sp)!=FALSE;POINT cp=sp;ScreenToClient(window,&cp);
     const float k=96.f/GetDpiForWindow(window),x=cp.x*k,y=cp.y*k;
@@ -5386,7 +5396,7 @@ void FocusPlace(){
     // banner (124), at W - 4 over the chat card (FocusMode::drawerOverChat; the chat is back when the drawer closes).
     namespace DL=NativeChrome::Downloads::DrawerLayout;
     const float top=chrome.floating?FM::DrawerTop(chrome.bandShown,chrome.panelAbove.banner):DL::top,right=chrome.floating?FM::pageInset+(FM::drawerOverChat?0.f:chrome.panelAbove.reserve):0.f,radius=chrome.floating?FM::pageRadius:0.f,bottom=chrome.floating?FM::drawerBottom:0.f;
-    if(top!=DL::liveTop||right!=DL::liveRight||radius!=DL::liveRadius||bottom!=DL::liveBottom){DL::liveTop=top;DL::liveRight=right;DL::liveRadius=radius;DL::liveBottom=bottom;
+    if(!FocusMotionSliding()&&(top!=DL::liveTop||right!=DL::liveRight||radius!=DL::liveRadius||bottom!=DL::liveBottom)){DL::liveTop=top;DL::liveRight=right;DL::liveRadius=radius;DL::liveBottom=bottom;
         downloadDrawer.Reposition();settingsDrawer.Reposition();historyDrawer.Reposition();bookmarksDrawer.Reposition();audioPanel.OwnerChanged();}
     if(!chrome.floating)return;
     chrome.PlacePanel(focusPlaced<0?0.f:focusPlaced);InvalidateFocusPanel();FocusCornersSync();FocusSlideMove();
@@ -5405,6 +5415,252 @@ bool EscapeLeavesAnnotation(bool modeActive,HWND focus){return modeActive&&focus
 void ToggleFocusMode(){
     settings.focusMode=!settings.focusMode;SettingChanged(BrowserSettings::Change::FocusMode);
     if(settingsDrawer.Visible())settingsDrawer.Changed();   // the switch follows the shortcut
+}
+
+// ---- Mode Focus entry / exit motion (Designer's spec 2026-11-25, Paper « Mode Focus — mouvement d'entrée et de sortie »;
+// src/focus-motion.h) ---------------------------------------------------------------------------------------------------
+// Before: Ctrl+Maj+F switched at once — the page window (another process's) resized and moved in one frame (its top 81 ->
+// 4 DIP), the bar gone in the same frame, and the UI thread held ~200 ms by the switch (tests/focus/transition_qa.py).
+// Now the bar and a frozen picture of the page move together on the spec's spring (no bounce, response 0.3 s), as
+// DirectComposition visuals above the window's children (the shared topmost target of src/content-transition.h): the bar
+// slides up and fades over 60 % of the path, the page's picture grows with its top edge on the bar's bottom edge plus the
+// growing inset. The live page is resized ONCE — at the start of an entry, at the end of an exit — under the picture, and
+// replaces it in a 120 ms cross-fade once it is drawn at its size. The live chrome is in Focus during every slide (an exit
+// switches back to the normal chrome when it lands, under the bar's picture at rest). The drawers and the chat card follow
+// the page's frame. A second press retargets the spring from what is on screen, keeping its velocity. Reduced motion:
+// no slide, a 120 ms cross-fade from a picture of before to the new screen.
+struct FocusMotionState{
+    bool active=false,sliding=false,waiting=false,fading=false,reduced=false,built=false,broken=false,hasChat=false,hasBar=false;
+    FX::Spring spring;FX::Fade fade;double opacity=1,lastMs=0,waitStartMs=0;
+    FX::Layout normal,focus;RECT client{};float coverRight=0;
+    IDCompositionVisual2 *bannerFrame=nullptr,*banner=nullptr;IDCompositionSurface* bannerS=nullptr;bool hasBanner=false;int bannerW=0,bannerH=0;FX::Rect bannerNormal,bannerFocus;   // the annotation banner's picture
+    IDCompositionVisual2 *layer=nullptr,*root=nullptr,*coverPage=nullptr,*bandFrame=nullptr,*bandFill=nullptr,*pageFrame=nullptr,*page=nullptr,*bar=nullptr;
+    IDCompositionSurface *canvasS=nullptr,*pageS=nullptr,*barS=nullptr;
+    IDCompositionRectangleClip *pageClip=nullptr,*bandClip=nullptr;IDCompositionEffectGroup *barGroup=nullptr,*layerGroup=nullptr;
+    int pageW=0,pageH=0,barW=0,barH=0;
+    int frames=0;double startedMs=0;bool ready=false;
+    bool holdBox=false;SV::Box heldBox{};
+    std::vector<float> trace;   // the page's top edge at every frame (DIP), logged when the motion lands (tests/focus/transition_qa.py)   // the live page's box while the pictures slide (resized once, when the motion lands)
+} focusMotion;
+template<class T> void FocusMotionRelease(T*& p){if(p){p->Release();p=nullptr;}}
+// The transition's visual tree off the layer and released (the layer, the device and the canvas surface stay).
+void FocusMotionTear(){auto& m=focusMotion;if(m.layer&&m.root)m.layer->RemoveVisual(m.root);
+    FocusMotionRelease(m.banner);FocusMotionRelease(m.bannerFrame);FocusMotionRelease(m.bar);FocusMotionRelease(m.page);FocusMotionRelease(m.pageFrame);FocusMotionRelease(m.bandFill);FocusMotionRelease(m.bandFrame);FocusMotionRelease(m.coverPage);FocusMotionRelease(m.root);
+    FocusMotionRelease(m.pageClip);FocusMotionRelease(m.bandClip);FocusMotionRelease(m.barGroup);FocusMotionRelease(m.layerGroup);m.built=false;
+    if(auto* dev=contentTransition.Device())dev->Commit();}
+bool FocusMotionSliding(){return focusMotion.active&&focusMotion.sliding;}
+// The live page (another process's window) is resized ONCE, when the motion lands, under the pictures at rest: during the
+// slide nothing heavy runs (resizing it at the start of an entry held the composition ~250 ms on this machine).
+bool FocusMotionHeldBox(SV::Box& box){if(!focusMotion.active||!focusMotion.holdBox)return false;box=focusMotion.heldBox;return true;}
+bool FocusMotionKeepsFocus(){return FocusMotionSliding()&&focusMotion.spring.target<.5;}
+// The two layouts the motion goes between (client DIP), from the live state's own rules (ContentBox, the chat card,
+// the drawers' places), whatever the live state is now.
+FX::Layout FocusLayoutFor(bool focus){
+    namespace View=NativeChrome::Design::Viewport;namespace DL=NativeChrome::Downloads::DrawerLayout;
+    FX::Layout l;const float W=chrome.ClientWidth(),H=chrome.height,chat=ChatInsetDip();const bool square=IsZoomed(window)!=FALSE;
+    if(focus){
+        const auto f=FM::Content(W,H,FM::ChatReserve(chat),chrome.annotationBand);
+        l.barHeight=0;l.page={f.left,f.top,f.right,f.bottom};l.topRadius=l.bottomRadius=square?0.f:FM::pageRadius;
+        if(chat>0){const auto c=FM::ChatCard(W,H,chat,chrome.annotationBand);l.chat={c.left,c.top,c.right,c.bottom};}
+        l.drawerTop=FM::DrawerTop(chrome.bandShown,chrome.annotationBand);
+    }else{
+        const float bar=NativeChrome::Design::Vertical::ContentTop(chrome.bandShown),top=bar+chrome.annotationBand;
+        l.barHeight=bar;l.page={View::inset,top,std::max(View::inset,W-View::inset-chat),H-View::inset};l.topRadius=0;l.bottomRadius=square?0.f:SV::pageRadius;
+        if(chat>0)l.chat={W-chat,top,W,H};
+        l.drawerTop=DL::top;
+    }
+    return l;
+}
+bool FocusMotionCapturePage(RECT box,std::vector<UINT32>& out);
+// The composition device (Direct3D + DirectComposition, shared with src/content-transition.h) and the canvas: about
+// 230 ms the first time, so made at idle 2 s after the window first shows (FocusWarmTimerId), not at the first press.
+bool FocusMotionWarm(bool){
+    auto& m=focusMotion;if(m.layer)return true;if(m.broken||!window||halted)return false;
+    m.layer=contentTransition.ExtraLayer(window);
+    const UINT32 c=0xFF000000u|(GetRValue(BG)<<16)|(GetGValue(BG)<<8)|GetBValue(BG);std::vector<UINT32> fill(64,c);
+    if(!m.layer||!contentTransition.UploadSurface(fill.data(),8,8,m.canvasS)){m.layer=nullptr;m.broken=true;Log(L"FOCUS motion unavailable (composition): the switch is instant");return false;}
+    return true;
+}
+void FocusMotionWarm(){
+    // The first page capture of a window costs ~200 ms (later ones ~20): one throwaway capture once a page is shown (the
+    // timer comes back every second until one is, 30 times at most).
+    static int tries=0;if(ShownPageWindows().empty()){if(++tries<30&&window)SetTimer(window,FocusWarmTimerId,1000,nullptr);return;}
+    const auto t0=std::chrono::steady_clock::now();
+    if(FocusMotionWarm(true)){const auto c=ContentBox();const float s=GetDpiForWindow(window)/96.f;std::vector<UINT32> px;
+        FocusMotionCapturePage({(LONG)std::lround(c.left*s),(LONG)std::lround(c.top*s),(LONG)std::lround(c.left*s)+8,(LONG)std::lround(c.top*s)+8},px);}
+    if(focusMotion.layer)Log(L"FOCUS motion ready ("+std::to_wstring((int)std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count())+L" ms)");}
+bool FocusMotionBuild(){
+    auto& m=focusMotion;if(!FocusMotionWarm(true))return false;
+    if(m.built)return true;
+    // A fresh visual tree for every transition (the device and the layer stay): a tree emptied after a cross-fade and
+    // filled again was not composed any more (hidden-desktop QA: only the first switch of a session moved).
+    auto* dev=contentTransition.Device();
+    bool ok=dev&&SUCCEEDED(dev->CreateVisual(&m.root))&&SUCCEEDED(dev->CreateVisual(&m.coverPage))&&SUCCEEDED(dev->CreateVisual(&m.bandFrame))&&SUCCEEDED(dev->CreateVisual(&m.bandFill))&&
+        SUCCEEDED(dev->CreateVisual(&m.pageFrame))&&SUCCEEDED(dev->CreateVisual(&m.page))&&SUCCEEDED(dev->CreateVisual(&m.bar))&&SUCCEEDED(dev->CreateVisual(&m.bannerFrame))&&SUCCEEDED(dev->CreateVisual(&m.banner))&&
+        SUCCEEDED(dev->CreateRectangleClip(&m.pageClip))&&SUCCEEDED(dev->CreateRectangleClip(&m.bandClip))&&SUCCEEDED(dev->CreateEffectGroup(&m.barGroup))&&SUCCEEDED(dev->CreateEffectGroup(&m.layerGroup));
+    // layer -> root (cross-fade) -> [ coverPage, bandFrame (clip) -> bandFill, pageFrame (offset, rounded clip) -> page (scale), bar (offset, opacity) ]
+    ok=ok&&SUCCEEDED(m.root->AddVisual(m.coverPage,FALSE,nullptr))&&SUCCEEDED(m.root->AddVisual(m.bandFrame,TRUE,m.coverPage))&&SUCCEEDED(m.bandFrame->AddVisual(m.bandFill,FALSE,nullptr))&&
+        SUCCEEDED(m.root->AddVisual(m.pageFrame,TRUE,m.bandFrame))&&SUCCEEDED(m.pageFrame->AddVisual(m.page,FALSE,nullptr))&&SUCCEEDED(m.root->AddVisual(m.bannerFrame,TRUE,m.pageFrame))&&SUCCEEDED(m.bannerFrame->AddVisual(m.banner,FALSE,nullptr))&&SUCCEEDED(m.root->AddVisual(m.bar,TRUE,m.bannerFrame))&&
+        SUCCEEDED(m.pageFrame->SetClip(m.pageClip))&&SUCCEEDED(m.bandFrame->SetClip(m.bandClip))&&SUCCEEDED(m.bar->SetEffect(m.barGroup))&&SUCCEEDED(m.root->SetEffect(m.layerGroup))&&
+        SUCCEEDED(m.layer->AddVisual(m.root,FALSE,nullptr));
+    if(ok)for(auto* v:{m.coverPage,m.bandFill,m.page,m.bar,m.banner}){v->SetBorderMode(DCOMPOSITION_BORDER_MODE_HARD);v->SetBitmapInterpolationMode(DCOMPOSITION_BITMAP_INTERPOLATION_MODE_LINEAR);}
+    if(!ok){FocusMotionTear();m.broken=true;Log(L"FOCUS motion unavailable (composition): the switch is instant");return false;}
+    m.built=true;return true;
+}
+// The page as it is on screen now: the shown page windows (PrintWindow, PW_RENDERFULLCONTENT: our own WebView hosts
+// only, as src/content-transition.h does) over the canvas, in the page box `box` (client pixels).
+bool FocusMotionCapturePage(RECT box,std::vector<UINT32>& out){
+    const int w=box.right-box.left,h=box.bottom-box.top;if(w<=0||h<=0)return false;
+    const UINT32 canvas=0xFF000000u|(GetRValue(BG)<<16)|(GetGValue(BG)<<8)|GetBValue(BG);out.assign((size_t)w*h,canvas);bool any=false;
+    HDC screen=GetDC(window);HDC mem=CreateCompatibleDC(screen);
+    for(HWND c:ShownPageWindows()){
+        if(!c||!IsWindowVisible(c)||GetParent(c)!=window)continue;RECT r{};GetWindowRect(c,&r);MapWindowPoints(nullptr,window,(POINT*)&r,2);
+        const int cw=r.right-r.left,ch=r.bottom-r.top;if(cw<=0||ch<=0)continue;
+        BITMAPINFO bi{};bi.bmiHeader.biSize=sizeof(bi.bmiHeader);bi.bmiHeader.biWidth=cw;bi.bmiHeader.biHeight=-ch;bi.bmiHeader.biPlanes=1;bi.bmiHeader.biBitCount=32;bi.bmiHeader.biCompression=BI_RGB;
+        void* bits=nullptr;HBITMAP dib=CreateDIBSection(screen,&bi,DIB_RGB_COLORS,&bits,nullptr,0);if(!dib||!bits){if(dib)DeleteObject(dib);continue;}
+        HGDIOBJ old=SelectObject(mem,dib);const bool ok=PrintWindow(c,mem,0x2)!=FALSE;SelectObject(mem,old);
+        if(ok){const auto* src=static_cast<const UINT32*>(bits);any=true;
+            for(int y=0;y<ch;++y){const int vy=r.top+y-box.top;if(vy<0||vy>=h)continue;for(int x=0;x<cw;++x){const int vx=r.left+x-box.left;if(vx<0||vx>=w)continue;out[(size_t)vy*w+vx]=src[(size_t)y*cw+x]|0xFF000000u;}}}
+        DeleteObject(dib);
+    }
+    DeleteDC(mem);ReleaseDC(window,screen);return any;
+}
+// The normal top bar as a picture (Chrome::RenderBar; the chrome briefly in its normal layout when it floats).
+bool FocusMotionRenderBar(std::vector<UINT32>& out,UINT& w,UINT& h){
+    const bool floated=chrome.floating;if(floated)chrome.SetFloating(false);
+    SyncAddressDisplay();std::vector<std::wstring> titles;std::vector<std::shared_ptr<const NativeChrome::FaviconImage>> icons;
+    for(auto& t:pages){titles.push_back(t->title);icons.push_back(t->favicon.image);}chrome.SetFavicons(std::move(icons));
+    {std::vector<bool> asleep;for(auto& t:pages)asleep.push_back(t->sleeping);chrome.sleeping=std::move(asleep);}
+    auto t=Active();chrome.loading=t?t->loading.Sample(NativeChrome::Motion::Now(),motion.ReducedMotion()):NativeChrome::Loading::Visual{};chrome.keyboardModality=keyboardModality;SyncTabKeys();
+    const bool ok=chrome.RenderBar(titles,current,false,hover,0,NativeChrome::Motion::Now(),NativeChrome::Design::Vertical::ContentTop(chrome.bandShown),out,w,h);
+    if(floated){chrome.SetFloating(true);BuildChrome();}
+    return ok;
+}
+// One frame of the motion at the spring's position: the composition, then the real windows that follow the page.
+void FocusMotionApply(){
+    auto& m=focusMotion;if(!m.built||!window)return;namespace DL=NativeChrome::Downloads::DrawerLayout;
+    const double x=m.spring.x;const auto fr=FX::At(m.normal,m.focus,x,m.opacity);const float s=GetDpiForWindow(window)/96.f,W=chrome.ClientWidth()*s,H=chrome.height*s;
+    // the cover hides the live page under the motion (canvas: only the inset shows it once the pictures are on top)
+    m.coverPage->SetContent(m.canvasS);m.coverPage->SetTransform(D2D1::Matrix3x2F::Scale(m.coverRight*s/8.f,H/8.f));
+    if(m.hasChat){const float bx=m.coverRight*s;m.bandFrame->SetOffsetX(bx);m.bandFrame->SetOffsetY(0.f);m.bandFill->SetContent(m.canvasS);m.bandFill->SetTransform(D2D1::Matrix3x2F::Scale(std::max(0.f,W-bx)/8.f,H/8.f));
+        m.bandClip->SetLeft(0.f);m.bandClip->SetTop(0.f);m.bandClip->SetRight(std::max(0.f,W-bx));m.bandClip->SetBottom(std::max(0.f,fr.chat.top*s));}
+    else m.bandFill->SetContent(nullptr);
+    const float pl=fr.page.left*s,pt=fr.page.top*s,pw=(fr.page.right-fr.page.left)*s,ph=(fr.page.bottom-fr.page.top)*s,tr=fr.topRadius*s,br=fr.bottomRadius*s;
+    m.pageFrame->SetOffsetX(pl);m.pageFrame->SetOffsetY(pt);
+    m.pageClip->SetLeft(0.f);m.pageClip->SetTop(0.f);m.pageClip->SetRight(pw);m.pageClip->SetBottom(ph);
+    m.pageClip->SetTopLeftRadiusX(tr);m.pageClip->SetTopLeftRadiusY(tr);m.pageClip->SetTopRightRadiusX(tr);m.pageClip->SetTopRightRadiusY(tr);
+    m.pageClip->SetBottomLeftRadiusX(br);m.pageClip->SetBottomLeftRadiusY(br);m.pageClip->SetBottomRightRadiusX(br);m.pageClip->SetBottomRightRadiusY(br);
+    m.page->SetContent(m.pageS);m.page->SetTransform(D2D1::Matrix3x2F::Scale(m.pageW?pw/m.pageW:1.f,m.pageH?ph/m.pageH:1.f));
+    if(m.hasBanner){const auto b=FX::Lerp(m.bannerNormal,m.bannerFocus,static_cast<float>(std::clamp(x,0.0,1.0)));const float bw=(b.right-b.left)*s,bh=(b.bottom-b.top)*s;
+        m.bannerFrame->SetOffsetX(b.left*s);m.bannerFrame->SetOffsetY(b.top*s);m.banner->SetContent(m.bannerS);m.banner->SetTransform(D2D1::Matrix3x2F::Scale(m.bannerW?bw/m.bannerW:1.f,m.bannerH?bh/m.bannerH:1.f));}
+    else m.banner->SetContent(nullptr);
+    if(m.hasBar){m.bar->SetContent(m.barS);m.bar->SetOffsetX(0.f);m.bar->SetOffsetY(fr.barOffset*s);m.barGroup->SetOpacity(fr.barOpacity);}else m.bar->SetContent(nullptr);
+    const HRESULT committed=contentTransition.Device()->Commit();
+    if(m.trace.size()<512)m.trace.push_back(fr.page.top);
+    if(FAILED(committed))Log(L"FOCUS motion frame "+std::to_wstring(m.frames)+L": x "+std::to_wstring(x)+L", page top "+std::to_wstring(fr.page.top)+L", bar "+std::to_wstring(fr.barOffset)+L" / "+std::to_wstring(fr.barOpacity)+L", commit 0x"+std::to_wstring((unsigned long)committed));
+    // the drawers: their top on the frame's, their right edge, bottom and top corners on the way to Focus's
+    const float t=static_cast<float>(std::clamp(x,0.0,1.0)),focusRight=FM::pageInset+(FM::drawerOverChat?0.f:FM::ChatReserve(ChatInsetDip()));
+    DL::liveTop=fr.drawerTop;DL::liveRight=focusRight*t;DL::liveRadius=FM::pageRadius*t;DL::liveBottom=FM::drawerBottom*t;
+    if(downloadDrawer.Visible())downloadDrawer.Reposition();if(settingsDrawer.Visible())settingsDrawer.Reposition();if(historyDrawer.Visible())historyDrawer.Reposition();if(bookmarksDrawer.Visible())bookmarksDrawer.Reposition();
+    // the chat card: on the frame's top and bottom (src/chat-host-ui.h PanelRect reads FocusChatCard while Focus is live)
+    if(m.hasChat){focusMotionChatOn=true;focusMotionChat={fr.chat.left,fr.chat.top,fr.chat.right,fr.chat.bottom};AnnotationLayout();}
+    ++m.frames;
+}
+void FocusMotionClear(){
+    auto& m=focusMotion;KillTimer(window,FocusMotionTimerId);
+    FocusMotionTear();
+    FocusMotionRelease(m.pageS);FocusMotionRelease(m.barS);FocusMotionRelease(m.bannerS);m.hasBanner=false;
+    const bool had=m.active;if(had)Log(L"FOCUS motion cleared");m.active=m.sliding=m.waiting=m.fading=m.holdBox=false;focusMotionChatOn=false;
+    if(had&&window){FocusPlace();AnnotationLayout();FocusEvaluate();}
+}
+// The live page is drawn at its size: the pictures leave in the 120 ms cross-fade (linear, run by DWM).
+void FocusMotionFadeOut(){
+    auto& m=focusMotion;if(!m.active)return;m.waiting=false;m.fading=true;
+    if(window){InvalidateRect(window,nullptr,FALSE);if(!IsIconic(window))UpdateWindow(window);}   // the live chrome painted under the pictures first
+    IDCompositionAnimation* a=nullptr;auto* dev=contentTransition.Device();const float d=static_cast<float>(FX::crossFadeMs/1000.0);
+    if(dev&&SUCCEEDED(dev->CreateAnimation(&a))){a->AddCubic(0.0,1.f,-1.f/d,0.f,0.f);a->End(d,0.f);m.layerGroup->SetOpacity(a);a->Release();dev->Commit();}
+    else m.layerGroup->SetOpacity(0.f);
+    SetTimer(window,FocusMotionTimerId,static_cast<UINT>(FX::crossFadeMs)+40,nullptr);
+    Log(L"FOCUS motion landed (x "+std::to_wstring(m.spring.target)+L", "+std::to_wstring(m.frames)+L" frames, "+std::to_wstring((int)(FocusMs(NativeChrome::Motion::Now())-m.startedMs))+L" ms): cross-fade to the live page");
+    {std::wstring t;wchar_t b[16];for(float v:m.trace){swprintf(b,16,L" %.1f",v);t+=b;}Log(L"FOCUS motion trace (page top per frame, DIP):"+t);m.trace.clear();}
+}
+// After the switch at the end of an exit (or at once with reduced motion): the live page resized under the picture is
+// drawn at its new size (CapturePreview: the first capture at the new size), or 150 ms passed.
+void FocusMotionCheckReady(){
+    auto& m=focusMotion;if(!m.active||!m.waiting)return;
+    if(m.ready||FocusMs(NativeChrome::Motion::Now())-m.waitStartMs>150){FocusMotionFadeOut();return;}
+    auto t=Active();if(!t||!t->shown){FocusMotionFadeOut();return;}
+    const RECT placed=t->placed;
+    CapturePanel(t,[placed](bool ok,UINT w,UINT h){auto& m=focusMotion;if(!m.active||!m.waiting)return;
+        if(ok&&std::abs((int)w-(placed.right-placed.left))<=1&&std::abs((int)h-(placed.bottom-placed.top))<=1){m.ready=true;if(window)SetTimer(window,FocusMotionTimerId,33,nullptr);}   // one more frame: its new pixels composed before the pictures leave
+        else if(window)SetTimer(window,FocusMotionTimerId,16,nullptr);});
+}
+void FocusMotionLand(){
+    auto& m=focusMotion;m.sliding=false;m.holdBox=false;m.waiting=true;m.ready=false;m.waitStartMs=FocusMs(NativeChrome::Motion::Now());focusMotionChatOn=false;
+    Layout();   // an exit lands: the normal chrome and the page resized now (FocusWanted no longer held), under the pictures at rest
+    FocusMotionCheckReady();
+}
+void FocusMotionFrame(NativeChrome::Motion::Time now){
+    auto& m=focusMotion;if(!m.active||!m.sliding)return;
+    const double ms=FocusMs(now),dt=std::clamp((ms-m.lastMs)/1000.0,0.0,.05);m.lastMs=ms;
+    m.spring.Step(dt);m.opacity=m.fade.At(m.spring.x);FocusMotionApply();
+    if(m.spring.Settled())FocusMotionLand();
+}
+void FocusMotionTimer(){if(focusMotion.fading)FocusMotionClear();else FocusMotionCheckReady();}
+NativeChrome::Motion::Wake FocusMotionWake(NativeChrome::Motion::Time){return FocusMotionSliding()?NativeChrome::Motion::Frame():NativeChrome::Motion::Wake{};}
+// Ctrl+Maj+F (or the setting): before the live layout switches (SettingChanged then runs Layout()).
+void FocusMotionToggle(bool toFocus){
+    auto& m=focusMotion;const double target=toFocus?1.0:0.0;
+    if(m.active&&m.sliding){   // interruptible: from the position and the velocity on screen, the opacity on screen too
+        m.spring.Retarget(target);m.fade=FX::Fade::Toward(target,m.spring.x,m.opacity);m.lastMs=FocusMs(NativeChrome::Motion::Now());
+        Log(std::wstring(L"FOCUS motion turned back at x ")+std::to_wstring(m.spring.x)+L" (velocity "+std::to_wstring(m.spring.v)+L")");ScheduleMotion(NativeChrome::Motion::Now());return;}
+    if(m.active)FocusMotionClear();   // landing or cross-fading: the live layout is the last one: a fresh start from it
+    const bool live=chrome.floating;if(live==toFocus||!window||halted||InFullscreen()||chrome.contentOnly||smoke||splitTest||IsIconic(window)||!IsWindowVisible(window)||WorkspaceParked())return;
+    if(!FocusMotionBuild())return;
+    CancelContentTransition(L"focus mode");
+    if(!toFocus){focusBar.Reset(false,FocusMs(NativeChrome::Motion::Now()));focusLive=false;chrome.panelLive=false;FocusSlideHide();FocusCornersHide();FocusHoles(false);InvalidateFocusPanel();}   // an exit: the floating panel (if shown) and its hole go first: the page's picture is whole
+    m.normal=FocusLayoutFor(false);m.focus=FocusLayoutFor(true);m.reduced=motion.ReducedMotion();
+    const FX::Layout& from=toFocus?m.normal:m.focus;const float s=GetDpiForWindow(window)/96.f;
+    // the page as it is now, at its place now
+    const RECT box{(LONG)std::lround(from.page.left*s),(LONG)std::lround(from.page.top*s),(LONG)std::lround(from.page.right*s),(LONG)std::lround(from.page.bottom*s)};
+    const auto c0=std::chrono::steady_clock::now();
+    std::vector<UINT32> px;if(!FocusMotionCapturePage(box,px)||!contentTransition.UploadSurface(px.data(),box.right-box.left,box.bottom-box.top,m.pageS)){Log(L"FOCUS motion: no page picture: the switch is instant");return;}
+    m.pageW=box.right-box.left;m.pageH=box.bottom-box.top;const auto c1=std::chrono::steady_clock::now();
+    // the normal bar (sliding: both ways; reduced motion: only the entry's picture of before has it)
+    m.hasBar=false;if(!m.reduced||toFocus){std::vector<UINT32> b;UINT bw=0,bh=0;if(FocusMotionRenderBar(b,bw,bh)&&contentTransition.UploadSurface(b.data(),(int)bw,(int)bh,m.barS)){m.hasBar=true;m.barW=(int)bw;m.barH=(int)bh;}}
+    if(!m.hasBar&&!m.reduced){FocusMotionRelease(m.pageS);Log(L"FOCUS motion: no bar picture: the switch is instant");return;}
+    const auto c2=std::chrono::steady_clock::now();auto msOf=[](auto d){return std::to_wstring((int)std::chrono::duration<double,std::milli>(d).count());};
+    // the annotation banner (owner's rule 2026-11-24: it stays): its window as it is now, then glued to the page's top
+    m.hasBanner=false;
+    if(HWND bw=AnnotationBannerWindow();bw&&IsWindowVisible(bw)&&chrome.annotationBand>0){RECT br{};GetWindowRect(bw,&br);const int w=br.right-br.left,h=br.bottom-br.top;
+        if(w>0&&h>0){HDC screen=GetDC(window);HDC mem=CreateCompatibleDC(screen);BITMAPINFO bi{};bi.bmiHeader.biSize=sizeof(bi.bmiHeader);bi.bmiHeader.biWidth=w;bi.bmiHeader.biHeight=-h;bi.bmiHeader.biPlanes=1;bi.bmiHeader.biBitCount=32;bi.bmiHeader.biCompression=BI_RGB;
+            void* bits=nullptr;HBITMAP dib=CreateDIBSection(screen,&bi,DIB_RGB_COLORS,&bits,nullptr,0);
+            if(dib&&bits){HGDIOBJ old=SelectObject(mem,dib);if(PrintWindow(bw,mem,0x2)){std::vector<UINT32> b(static_cast<const UINT32*>(bits),static_cast<const UINT32*>(bits)+(size_t)w*h);for(auto& v:b)v|=0xFF000000u;
+                if(contentTransition.UploadSurface(b.data(),w,h,m.bannerS)){m.hasBanner=true;m.bannerW=w;m.bannerH=h;}}SelectObject(mem,old);}
+            if(dib)DeleteObject(dib);
+            DeleteDC(mem);ReleaseDC(window,screen);}
+        const float band=chrome.annotationBand,W=chrome.ClientWidth();const auto fb=FM::Banner(W,band);
+        m.bannerNormal={0,m.normal.barHeight,W,m.normal.barHeight+band};m.bannerFocus={fb.left,fb.top,fb.right,fb.bottom};}
+    m.hasChat=m.normal.chat.right>m.normal.chat.left&&m.focus.chat.right>m.focus.chat.left;
+    m.coverRight=m.hasChat?std::min(m.normal.chat.left,m.focus.chat.left):chrome.ClientWidth();
+    GetClientRect(window,&m.client);
+    m.spring.Snap(toFocus?0.0:1.0);m.opacity=toFocus?1.0:0.0;m.frames=0;m.trace.clear();m.startedMs=m.lastMs=FocusMs(NativeChrome::Motion::Now());
+    m.active=true;m.layerGroup->SetOpacity(1.f);
+    FocusMotionApply();   // the pictures exactly as the screen is now, committed before the live layout changes under them
+    if(m.reduced){m.sliding=false;m.waiting=true;m.ready=false;m.waitStartMs=m.startedMs;Log(std::wstring(L"FOCUS motion (reduced): cross-fade ")+(toFocus?L"in":L"out"));return;}   // Layout() switches at once, then FocusMotionCheckReady
+    m.heldBox=ContentBox();m.holdBox=true;   // the live page stays where it is until the motion lands
+    m.sliding=true;m.spring.Retarget(toFocus?1.0:0.0);m.fade=FX::Fade::Toward(m.spring.target,m.spring.x,m.opacity);
+    focusBar.Reset(false,FocusMs(NativeChrome::Motion::Now()));
+    Log(std::wstring(L"FOCUS motion ")+(toFocus?L"in":L"out")+L" (spring 1.0 / 0.3 s, page "+std::to_wstring(m.pageW)+L"x"+std::to_wstring(m.pageH)+L" px, bar "+std::to_wstring(m.barW)+L"x"+std::to_wstring(m.barH)+L"; page picture "+msOf(c1-c0)+L" ms, bar picture "+msOf(c2-c1)+L" ms)");
+    ScheduleMotion(NativeChrome::Motion::Now());
+}
+// Layout() runs (a resize, the DPI, the band, the annotation banner…): a size change ends the motion at once (its
+// pictures would no longer match); a reduced-motion switch waits for the live page after the layout.
+void FocusMotionLayoutChanged(){
+    static bool warmArmed=false;if(!warmArmed&&window&&IsWindowVisible(window)&&!smoke&&!splitTest){warmArmed=true;SetTimer(window,FocusWarmTimerId,1500,nullptr);}
+    auto& m=focusMotion;if(!m.active||!window)return;
+    RECT c{};GetClientRect(window,&c);if(c.right!=m.client.right||c.bottom!=m.client.bottom||IsIconic(window)||InFullscreen()||halted){Log(L"FOCUS motion cancelled (the window changed)");m.spring.Snap(m.spring.target);FocusMotionClear();return;}
+    if(m.reduced&&m.waiting&&window)SetTimer(window,FocusMotionTimerId,16,nullptr);   // after this layout: is the live page drawn?
 }
 // The first input to a page (a click: WM_PARENTNOTIFY, sent before the page handles it; a key in the page) removes
 // the overlay at once: what the user acts on is what they see. Nothing is consumed or delayed.
