@@ -146,6 +146,31 @@ inline void GrainBackdrop(Chrome& c, const Onboarding::Shaders::Layer& grain, co
     if (auto* b = trame.Bitmap(t)) t->DrawBitmap(b, box, alpha, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);   // the band's dither over the gradient, under everything else
 }
 
+// ---- the note card of the illustrations ------------------------------------------------------------------
+// 305 wide at (nx, ny), #171717, radius 16, padding 12, gap 12: a text block `textH` high (drawn by the caller at
+// (nx + 12, ny + 12), 281 wide), then the footer row (28): plus 14 at 50 %, shield 13, Claude 14 + « Opus 5.5 » 12/16 500 +
+// « Moyen » 12/16 400 at 50 %, send 28 × 28 in the accent (radius 8, arrow 14). `sendAlpha`: the send button's own
+// opacity (the tutorial's A3 dims it while nothing is typed). Returns the card's height.
+inline float DemoNote(Chrome& c, K::Glyphs& glyphs, float nx, float ny, float textH, K::Rgb8 accent, float alpha, float sendAlpha = 1) {
+    auto box = [](float x, float y, float w, float h) { return D2D1_RECT_F{x, y, x + w, y + h}; };
+    const float height = 12 + textH + 12 + 28 + 12;
+    K::Fill(c, box(nx, ny, 305, height), 16, K::Col(K::Token::canvas, alpha));
+    const float fy = ny + 12 + textH + 12;   // the footer row, 28 high
+    glyphs.Fill(c, K::Path::plus, box(nx + 12 + 5, fy + 2 + 5, 14, 14), 256, PopupKit::White(.5f * alpha));
+    glyphs.Fill(c, K::Path::shield, box(nx + 12 + 24 + 6, fy + 2 + 5.5f, 13, 13), 256, PopupKit::White(.45f * alpha));
+    const K::Font model{12, 16, 500, 0}, effort{12, 16, 400, 0}; const std::wstring name = L"Opus 5.5", level = TR(onboarding_demo_effort);   // i18n-exempt: a model name in the illustration
+    const float wn = K::Width(c, name, model), wl = K::Width(c, level, effort), chipW = 6 + 14 + 4 + wn + 4 + wl + 6;
+    const float send = nx + 305 - 12 - 28, chip = send - 4 - chipW;
+    glyphs.Fill(c, K::Path::claude, box(chip + 6, fy + 2 + 5, 14, 14), 18.666f, K::Col(0xD97757, alpha), .667f, 1.6f);
+    K::Text(c, name, {chip + 24, fy + 5, chip + 24 + wn + 8, fy + 21}, model, PopupKit::White(.9f * alpha));       // 1CIF-0 / 1CIH-0: measured one row above the 12/16 rule
+    K::Text(c, level, {chip + 28 + wn, fy + 5, chip + 28 + wn + wl + 8, fy + 21}, effort, PopupKit::White(.5f * alpha));
+    K::Fill(c, box(send, fy, 28, 28), 8, K::Col(accent, alpha * sendAlpha));
+    glyphs.Fill(c, K::Path::arrowUp, box(send + 7, fy + 7, 14, 14), 256, K::Col(K::Token::text, alpha * sendAlpha));
+    return height;
+}
+// Where DemoNote's send button is (hit testing).
+inline D2D1_RECT_F DemoNoteSend(float nx, float ny, float textH) { const float fy = ny + 12 + textH + 12, send = nx + 305 - 12 - 28; return {send, fy, send + 28, fy + 28}; }
+
 // ---- board 6's illustration -------------------------------------------------------------------------------
 // 1CHL-0 at (81, 155) — the annotation onboarding's A1 1MLY-0 is the same group at the same place: the picked
 // button of a site, its selection frame and labels, the crosshair, the note with its footer row.
@@ -169,19 +194,8 @@ inline void AnnotationDemo(Chrome& c, K::Glyphs& glyphs, K::Rgb8 accent, float a
     b->SetColor(K::Col(accent, alpha)); t->FillEllipse(D2D1::Ellipse({cross.left + 16, cross.top + 16}, 2.6f, 2.6f), b);
     b->SetColor(K::Col(K::Token::text, alpha)); t->DrawEllipse(D2D1::Ellipse({cross.left + 16, cross.top + 16}, 2.6f, 2.6f), b, 1.2f);
     const float nx = x + 252, ny = y + 20;
-    K::Fill(c, box(nx, ny, 305, 104), 16, K::Col(K::Token::canvas, alpha));
+    DemoNote(c, glyphs, nx, ny, 40, accent, alpha);
     K::Text(c, TR(onboarding_demo_note), {nx + 12, ny + 12, nx + 293, ny + 52}, {14, 20, 400, 0}, PopupKit::White(.9f * alpha), DWRITE_TEXT_ALIGNMENT_LEADING, true);
-    const float fy = ny + 64;   // the footer row, 28 high
-    glyphs.Fill(c, K::Path::plus, box(nx + 12 + 5, fy + 2 + 5, 14, 14), 256, PopupKit::White(.5f * alpha));
-    glyphs.Fill(c, K::Path::shield, box(nx + 12 + 24 + 6, fy + 2 + 5.5f, 13, 13), 256, PopupKit::White(.45f * alpha));
-    const K::Font model{12, 16, 500, 0}, effort{12, 16, 400, 0}; const std::wstring name = L"Opus 5.5", level = TR(onboarding_demo_effort);   // i18n-exempt: a model name in the illustration
-    const float wn = K::Width(c, name, model), wl = K::Width(c, level, effort), chipW = 6 + 14 + 4 + wn + 4 + wl + 6;
-    const float send = nx + 305 - 12 - 28, chip = send - 4 - chipW;
-    glyphs.Fill(c, K::Path::claude, box(chip + 6, fy + 2 + 5, 14, 14), 18.666f, K::Col(0xD97757, alpha), .667f, 1.6f);
-    K::Text(c, name, {chip + 24, fy + 5, chip + 24 + wn + 8, fy + 21}, model, PopupKit::White(.9f * alpha));       // 1CIF-0 / 1CIH-0: measured one row above the 12/16 rule
-    K::Text(c, level, {chip + 28 + wn, fy + 5, chip + 28 + wn + wl + 8, fy + 21}, effort, PopupKit::White(.5f * alpha));
-    K::Fill(c, box(send, fy, 28, 28), 8, K::Col(accent, alpha));
-    glyphs.Fill(c, K::Path::arrowUp, box(send + 7, fy + 7, 14, 14), 256, K::Col(K::Token::text, alpha));
 }
 
 } // namespace OnboardingParts

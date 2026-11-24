@@ -49,7 +49,9 @@
 #include "annotation-ui.h"
 #include "annotation-private.h"      // #125: a private window's annotations are erased when it closes
 #include "annotation-sites.h"        // #125: « Annoter » on local projects and files only (the one rule)
-#include "annotation-onboarding.h"   // #125: the mode's onboarding (variant A), in the place of « Connecter un agent » the first time
+#include "annotation-onboarding.h"   // #125 v2: the mode's tutorial, in the place of « Connecter un agent » the first time
+#include "annotation-local-card.h"   // #125 v2 E1b: « Annoter marche sur vos projets et fichiers locaux » on a live site
+RECT RegionScreen(int id);           // src/main.cpp: a chrome control in screen pixels (the card sits under the button)
 #include "annotation-script.h"
 #include "annotation-host.h"
 #include "annotation-capture.h"
@@ -80,6 +82,8 @@ std::unique_ptr<NativeChrome::AnnotationOnboardingUI::Window> onboarding;
 // process's ledger (opened at its first note), and the notes still being written (the close waits for them).
 AnnotationPrivate::Ledger privateLedger; std::atomic<int> jobsInFlight{0};
 bool OnboardingOpen() { return onboarding && onboarding->Visible(); }
+NativeChrome::AnnotationLocalCard::Card localCard;   // #125 v2 E1b
+bool buttonOff = false;                              // #125 v2 E1a: the toolbar button greyed on a live site (still clickable)
 // V3 capture pipeline (src/annotation-frame.h): one shot at a time; it outlives the panel (« Ajouter » / Échap before
 // the image is ready) so the page is only told to resume once the engine has its frame.
 struct ShotJob { std::uint64_t serial = 0; std::int64_t pageSeq = -1; bool waiting = false, inFlight = false, deferred = false; AH::Selection sel; double selectedAt = 0, lag = -1, handoffAt = 0, frameMs = 0, panelMs = 0, hiddenAt = 0; };
@@ -290,10 +294,11 @@ bool Selecting() { return s.active && !s.paused; }   // the mode as the user see
 void SyncChrome() {
     chrome.annotateShown = true; chrome.annotateActive = Selecting();
     std::wstring why; const bool ok = Available(Active(), &why);
-    chrome.SetEnabled('N', ok || s.active);
+    buttonOff = !ok && !s.active && why == TR(annotate_local_only);   // #125 v2: a live site — greyed, its click opens the E1b card
+    chrome.SetEnabled('N', ok || s.active || buttonOff);
     chrome.annotateTip = Selecting() ? std::wstring(TR(annotate_tip_quit)) : ok ? std::wstring(TR(chrome_tip_annotate)) : why == TR(annotate_local_only) ? why : TRF(annotate_tip_unavailable, why);   // #125 E1a: the live-site tooltip is a whole sentence
     if (!chrome.paintAnnotate) chrome.paintAnnotate = [](ID2D1RenderTarget* t, ID2D1Factory* f, ID2D1SolidColorBrush* b, D2D1_RECT_F box, NativeChrome::Motion::InteractionVisual iv, bool focus) {
-        AUI::ToolbarVisual v; v.active = Selecting(); v.hover = chrome.Enabled('N') ? iv.hover : 0; v.press = iv.press; v.focus = focus; v.keyboard = keyboardModality; v.reduced = Reduced();
+        AUI::ToolbarVisual v; v.active = Selecting(); v.hover = chrome.Enabled('N') ? iv.hover : 0; v.press = iv.press; v.focus = focus; v.keyboard = keyboardModality; v.reduced = Reduced(); v.off = buttonOff;
         AUI::PaintToolbarButton(t, f, b, box, v);
     };
 }
@@ -1111,11 +1116,20 @@ void OnboardingClosed(AnnotationOnboarding::Ending end, bool manual) {
     if (s.active) { banner.SetReminder(!agents.any() && !Chat::Open()); FocusPage(); }
     SyncWatch();
 }
-bool OpenOnboarding() {
+// #125 v2: the tutorial's colour is the profile's, like the mode's; « Personnel » (no colour) takes the mode's blue
+// #3E67FF (Val), its gradient turned to that hue.
+void TintTutorial(NativeChrome::AnnotationOnboardingUI::Options& o) {
+    const auto* p = CurrentProfile();
+    if (p && !p->neutral && p->intensity > 0) { o.tint = *p; o.accent = 0; return; }
+    int hue = 267; float chroma = ProfileColor::MaxChroma; ProfileColor::FromHex(L"#3E67FF", hue, chroma);
+    o.tint.hue = hue; o.tint.intensity = chroma; o.tint.neutral = false; o.accent = 0x3E67FF;
+}
+bool OpenOnboarding(AnnotationOnboarding::Step start = AnnotationOnboarding::Step::What) {
     namespace OUI = NativeChrome::AnnotationOnboardingUI;
     EnsureUi();
     if (OnboardingOpen()) return true;
-    OUI::Options o; o.reduced = Reduced(); o.claude = StatusFor(0, agents.claude); o.codex = StatusFor(1, agents.codex);
+    if (localCard.Visible()) localCard.Close();
+    OUI::Options o; o.reduced = Reduced(); o.start = start; TintTutorial(o); o.claude = StatusFor(0, agents.claude); o.codex = StatusFor(1, agents.codex);
     if (pendingInstall && !agents.claude.connected()) o.claude = {AUI::ConnectState::Working, TR(connect_click_install_claude)};
     o.hooks.connect = [](AUI::AgentKind a) { ConnectApp(a, true); };
     o.hooks.closed = [](AnnotationOnboarding::Ending end, bool manual) { OnboardingClosed(end, manual); };
@@ -1200,9 +1214,28 @@ void EnsureUi() {
     veil.OnEnded([](double ms, unsigned long long frames, double worst) {
         Log(L"ANNOTATE entry veil destroyed after " + Ms(ms) + L" ms (" + std::to_wstring(frames) + L" frames, worst frame " + Ms(worst) + L" ms)"); });
 }
+// #125 v2 E1b: the card under the greyed button (a click on it, or Ctrl+Maj+A, on a live site).
+void ShowLocalCard(const std::shared_ptr<Tab>& t) {
+    EnsureUi();
+    if (OnboardingOpen()) return;
+    if (localCard.Visible()) { localCard.Close(); return; }   // a second click puts it away
+    RECT button = RegionScreen('N');
+    if (IsRectEmpty(&button)) { RECT c = ClientScreen(); button = {c.right - 120, c.top + 48, c.right - 96, c.top + 72}; }
+    std::wstring host = t ? AH::Wide(ChatLocal::Classify(AH::Utf8(t->uri)).label) : std::wstring();
+    if (host.empty() && t) host = t->uri;
+    NativeChrome::AnnotationOnboardingUI::Options tint; TintTutorial(tint);
+    const auto accent = tint.accent ? tint.accent : [&] { const auto a = NativeChrome::OnboardingKit::Accent(tint.tint); return (unsigned(a.r) << 16) | (unsigned(a.g) << 8) | a.b; }();
+    NativeChrome::AnnotationLocalCard::Hooks h;
+    h.discover = [] { Log(L"ANNOTATE live-site card: « Découvrir en 1 minute »"); OpenOnboarding(); };
+    h.announce = [](const std::wstring& text) { Announce(text); };
+    if (localCard.Show(instance, window, base, button, host, accent, Reduced(), std::move(h))) Log(L"ANNOTATE live-site card shown (the mode is for local projects and files)");
+}
 void Activate(const Start& st) {
     auto t = Active(); std::wstring why;
-    if (!Available(t, &why)) { Announce(why == TR(annotate_local_only) ? why : L"Annoter : " + why); return; }
+    if (!Available(t, &why)) {
+        if (why == TR(annotate_local_only)) { ShowLocalCard(t); return; }   // #125 v2 E1b: a live site — why, and the tutorial
+        Announce(L"Annoter : " + why); return;
+    }
     if (s.active) { if (ModeTab() == t) { if (st.kind) SendStart(t, st); return; } Exit(L"tab"); }
     EnsureUi(); EnsurePost(); Store();   // the store object is created here, on the UI thread, before any job uses it
     const std::wstring keepDraft = s.draft;
@@ -1389,7 +1422,7 @@ bool AnnotationBandSliding() { return Ann::s.active && Ann::bandSliding; }   // 
 bool AnnotationSurfaceFocus() {
     if (!Ann::uiReady) return false;
     HWND f = GetFocus(); if (!f) return false;
-    for (HWND w : {Ann::note.Window(), Ann::connect.Window(), Ann::onboarding ? Ann::onboarding->Handle() : HWND(nullptr), Ann::launcher.LauncherWindow(), Ann::launcher.CardWindow(), Ann::launcher.HistoryWindow(), Ann::launcher.ToastWindow(), Ann::banner.Window()})
+    for (HWND w : {Ann::note.Window(), Ann::connect.Window(), Ann::onboarding ? Ann::onboarding->Handle() : HWND(nullptr), Ann::localCard.Window(), Ann::launcher.LauncherWindow(), Ann::launcher.CardWindow(), Ann::launcher.HistoryWindow(), Ann::launcher.ToastWindow(), Ann::banner.Window()})
         if (w && (f == w || IsChild(w, f))) return true;
     return false;
 }
@@ -1398,11 +1431,12 @@ void AnnotationLayout() { Ann::Place(); }
 void AnnotationWindowState() { if (Ann::uiReady) Ann::banner.WindowStateChanged(); Ann::CtrlWatch(); }   // R31: Ctrl read only in front   // V3-B: the wave's clock
 void AnnotationAccentChanged() { Ann::AccentChanged(); }   // profiles-integration.h: the window's accent changed
 void AnnotationNavigation(const std::shared_ptr<Tab>& t) {
+    if (Ann::localCard.Visible()) Ann::localCard.Close();   // #125 v2 E1b: the card was about the page that leaves
     if (!Ann::s.active || Ann::ModeTab() != t) return;
     if (Chat::KeepsMode(t)) Chat::PageNavigating(t);   // chat intégré: the mode survives a reload of its page (Ann::Rearm)
     else Ann::Exit(L"navigation", true);
 }
-void AnnotationTabChanged() { if (Ann::s.active && Ann::ModeTab() != Active()) Ann::Exit(L"tab change"); Ann::LauncherSync(); }   // i18n-exempt: log reason
+void AnnotationTabChanged() { if (Ann::localCard.Visible()) Ann::localCard.Close(); if (Ann::s.active && Ann::ModeTab() != Active()) Ann::Exit(L"tab change"); Ann::LauncherSync(); }   // i18n-exempt: log reason
 void AnnotationTabSleeping(const std::shared_ptr<Tab>& t) { if (Ann::s.active && Ann::ModeTab() == t) Ann::Exit(L"tab asleep"); }   // i18n-exempt: log reason
 bool AnnotationPageMessage(const std::shared_ptr<Tab>& t, ICoreWebView2WebMessageReceivedEventArgs* a) {
     using namespace Ann;
@@ -1462,6 +1496,7 @@ bool AnnotationHistoryAvailable() { return !privateWindow && !halted; }
 // ---- src/annotation-entry.h (settings section « Annotations »)
 std::wstring AnnotationStoreRoot() { return Ann::Store().Root(); }
 void AnnotationOpenConnect(bool manual) { if (!halted) Ann::OpenConnect(false, manual); }
+void AnnotationOpenTutorial(bool fromWelcome) { if (!halted) Ann::OpenOnboarding(fromWelcome ? AnnotationOnboarding::Step::Pick : AnnotationOnboarding::Step::What); }
 void AnnotationConnectAgent(AnnotationApp app, bool on, std::function<void(bool, const std::wstring&)> done) {
     Ann::ConnectApp(app == AnnotationApp::Claude ? Ann::AUI::AgentKind::Claude : Ann::AUI::AgentKind::Codex, on,
                     [done](const AgentConnect::Report& r) { if (done) done(r.ok(), AnnotationHost::Wide(r.message)); });
@@ -1561,6 +1596,7 @@ bool AnnotationHistoryAvailable() { return false; }
 bool AnnotationsCompiled() { return false; }
 std::wstring AnnotationStoreRoot() { return L""; }
 void AnnotationOpenConnect(bool) {}
+void AnnotationOpenTutorial(bool) {}
 void AnnotationConnectAgent(AnnotationApp, bool, std::function<void(bool, const std::wstring&)> done) { if (done) done(false, TR(annotation_mode_absent)); }
 void AnnotationAgentsStatus(std::function<void(const AnnotationAgentState&, const AnnotationAgentState&)> done) { if (done) done({}, {}); }
 void AnnotationOpenFolder() {}

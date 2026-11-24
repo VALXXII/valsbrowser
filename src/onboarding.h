@@ -10,7 +10,8 @@
 //   3 Importer vos données  browser and profile selects, « Favoris et dossiers » / « Historique »
 //   4 Import en cours…    source logo → 19 ticks → GemSmoke logo; the mock shows the bookmarks bar
 //   5 Import terminé !    5.1 the error state (what failed, why, « Réessayer »)
-//   6 Mode Annotation     GrainGradient + the annotation illustration (only when the mode is compiled in)
+//   6 Mode Annotation     GrainGradient + the annotation illustration (only when the mode is compiled in); #125 v2 E2
+//                         (Paper p-Y-0 1SWL-0): « Plus tard » / « Essayer en 1 minute » opens the mode's tutorial at its trial
 //   7 the logo alone      closing transition: the window fades and the browser opens
 //
 // The flow is src/onboarding-flow.h (pure, unit-tested); this window draws it and turns input into its events.
@@ -239,7 +240,7 @@ private:
         case Screen::ImportPick: return {{Back, TR(common_back), false}, {SkipStep, TR(onboarding_skip), false}};
         case Screen::ImportRunning: return {{Cancel, TR(common_cancel), false}};
         case Screen::ImportError: return {{SkipStep, TR(onboarding_skip), false}};
-        case Screen::Annotation: return {{Decline, TR(onboarding_not_interested), false}};
+        case Screen::Annotation: return {{Decline, TR(common_later), false}};   // #125 v2 E2 (Paper 1SWL-0): « Plus tard »
         default: return {};
         }
     }
@@ -249,7 +250,7 @@ private:
         case Screen::Profile: case Screen::ImportDone: return TR(onboarding_continue);
         case Screen::ImportPick: return TR(onboarding_import_action);
         case Screen::ImportError: return TR(onboarding_retry);
-        case Screen::Annotation: return TR(onboarding_activate);
+        case Screen::Annotation: return TR(onboarding_try_minute);   // #125 v2 E2: « Essayer en 1 minute » (the tutorial, once the browser is up)
         default: return L"";
         }
     }

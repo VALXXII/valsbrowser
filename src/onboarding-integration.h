@@ -19,7 +19,10 @@
 //    the browser window comes in on it: created and painted cloaked, photographed, shown scaled-in as a picture,
 //    then uncovered under the picture's last frame. Skipping (Échap, close, « Passer et naviguer ») starts the
 //    browser the plain way.
-//  * « Activer » on the annotation board: once the browser window is up, the « Connecter un agent » dialog opens
+//  * « Essayer en 1 minute » on the annotation board (#125 v2 E2): once the browser window is up, the mode's tutorial
+//    opens over it at its trial (A2; it is where « Connecter » works for real). « Plus tard »: it opens the first time
+//    the mode is turned on.
+//  (before #125 v2: « Activer » opened the « Connecter un agent » dialog)
 //    (the mode itself needs a web page; connecting an agent is what turns it on for the person).
 // Logs carry counts and the source brand only: never a URL, a title or a path of the person's data.
 #include "onboarding.h"
@@ -123,7 +126,7 @@ void RunOnboarding(Onboarding::Reason reason) {
     onboardingUi = nullptr; onboardingWindow = nullptr;
     { std::lock_guard<std::mutex> guard(importLock); onboardingFinished.reset(); }
     onboardingAnnotate = result.annotate;
-    Log(std::wstring(L"ONBOARDING ended: ") + (result.ending == Onboarding::Ending::Completed ? L"completed" : L"skipped") + (result.profileSaved ? L", profile step done" : L"") + (result.annotate ? L", annotation asked" : L"") + (result.handedOff ? L", hand-off" : L""));
+    Log(std::wstring(L"ONBOARDING ended: ") + (result.ending == Onboarding::Ending::Completed ? L"completed" : L"skipped") + (result.profileSaved ? L", profile step done" : L"") + (result.annotate ? L", annotation tutorial asked" : L"") + (result.handedOff ? L", hand-off" : L""));
 }
 // In place of ShowWindow + UpdateWindow at the end of the start. After a completed onboarding the window is
 // shown cloaked (composed by DWM, not visible), painted, photographed and handed to the stage, which plays its
@@ -147,5 +150,5 @@ void OnboardingShowBrowser(int show) {
 void OnboardingAfterStart() {
     if (!onboardingAnnotate || !window) return;
     onboardingAnnotate = false;
-    SetTimer(window, OnboardingAnnotateTimerId, 900, [](HWND h, UINT, UINT_PTR id, DWORD) { KillTimer(h, id); if (!halted && !privateWindow) { Log(L"ONBOARDING opens the agent connection"); AnnotationOpenConnect(false); } });
+    SetTimer(window, OnboardingAnnotateTimerId, 900, [](HWND h, UINT, UINT_PTR id, DWORD) { KillTimer(h, id); if (!halted) { Log(L"ONBOARDING opens the annotation tutorial"); AnnotationOpenTutorial(true); } });
 }
