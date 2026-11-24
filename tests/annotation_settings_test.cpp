@@ -156,7 +156,7 @@ int wmain(int argc, wchar_t** argv) {
     Modal::Dialog confirm; Check(confirm.Create(hi, owner, root, {}), "confirmation dialog created");
 
     BrowserSettings::State st;
-    std::vector<BrowserSettings::Change> changes; int opened = 0, folders = 0; std::size_t count = 3, clearAsked = 0; int clears = 0;
+    std::vector<BrowserSettings::Change> changes; int opened = 0; std::size_t count = 3, clearAsked = 0; int clears = 0;
     std::vector<ContextMenu::Item> menu; int choice = 0; bool deferConnect = false; std::function<void()> pendingConnect;
     Modal::Result confirmResult; std::wstring confirmTitle; int confirmFocus = -9; bool confirmShot = false;
     SettingsUI::Drawer::Hooks h;
@@ -174,8 +174,6 @@ int wmain(int argc, wchar_t** argv) {
         if (deferConnect) pendingConnect = work; else work();
     };
     h.openConnect = [&] { ++opened; };
-    h.annotationFolder = [&] { return e.target.storeRoot; };
-    h.openAnnotationFolder = [&] { ++folders; };
     h.countAnnotations = [&](std::function<void(std::size_t)> done) { done(count); };
     h.clearAnnotations = [&](std::size_t n, bool) {
         ++clears; clearAsked = n;
@@ -249,12 +247,14 @@ int wmain(int argc, wchar_t** argv) {
         Check(Find(slots, Kind::Nav, L"Autre app ou réglage manuel") != nullptr, "« Autre app ou réglage manuel »");
         const auto* launcher = Find(slots, Kind::Switch, L"Afficher le lanceur d'annotations"); const auto* prompt = Find(slots, Kind::Switch, L"Proposer de connecter un agent");
         Check(!launcher && prompt && !prompt->lines.empty(), "one switch with its description (V3: no launcher switch)");
-        const auto* note = Find(slots, Kind::Note, AS::ShortcutsNote()); Check(note && note->hit == 0, "shortcut reminder: Ctrl+Maj+A, Ctrl+Maj+H (text, not focusable)");
-        const auto* retention = Find(slots, Kind::Value, L"Conserver les terminées"); Check(retention && retention->value == L"30 jours", "retention: « 30 jours » by default");
-        const auto* folder = Find(slots, Kind::Folder, L"Ouvrir le dossier des annotations"); Check(folder && folder->value == L"…\\annotations", "folder row: the store's folder name");
+        const auto* note = Find(slots, Kind::Note, AS::ShortcutsNote()); Check(note && note->hit == 0, "shortcut reminder: Ctrl+Maj+A (text, not focusable)");
+        Check(std::wstring(AS::ShortcutsNote()) == L"Ctrl+Maj+A lance le mode Annotation.", "lot R: the reminder no longer names Ctrl+Maj+H nor the history");
+        Check(!Find(slots, Kind::Value, L"Conserver les terminées") && !Find(slots, Kind::Folder, L"Ouvrir le dossier des annotations"), "lot R: no « Conserver les terminées », no « Ouvrir le dossier des annotations » (the history rows are gone)");
         const auto* clear = Find(slots, Kind::Danger, L"Effacer toutes les annotations…"); Check(clear && !clear->disabled, "« Effacer toutes les annotations… » enabled (3 annotations)");
         std::vector<std::wstring> labels; for (auto& s : slots) if (s.kind == Kind::Label) labels.push_back(s.text);
-        Check(labels == std::vector<std::wstring>{L"Agents", L"Mode Annotation", L"Historique"}, "groups: Agents, Mode Annotation, Historique");
+        Check(labels == std::vector<std::wstring>{L"Agents", L"Mode Annotation"}, "groups: Agents, Mode Annotation (lot R: no « Historique »)");
+        {   const auto* promptRow = Find(slots, Kind::Switch, L"Proposer de connecter un agent");
+            Check(promptRow && clear && note && promptRow->top < clear->top && clear->top < note->top, "lot R: « Effacer toutes les annotations… » kept, last row of « Mode Annotation », under the switch and above the reminder"); }
         // Every label fits its box (no clipped text): 16 DIP labels before their trailing control.
         using namespace SettingsUI::Layout; bool fit = true;
         for (auto& s : slots) {
@@ -274,7 +274,7 @@ int wmain(int argc, wchar_t** argv) {
     }
     {
         using namespace SettingsUI;
-        const std::vector<int> want{Back, Close, AgentBase, ManualConnect, AnnotationPrompt, AnnotationRetention, AnnotationFolder, AnnotationClear};
+        const std::vector<int> want{Back, Close, AgentBase, ManualConnect, AnnotationPrompt, AnnotationClear};
         Check(dr.FocusOrderForTest() == want, "Tab order: Retour, Fermer, Connecter Claude, manuel, proposition, conservation, dossier, effacer");
         bool walked = true; for (size_t i = 0; i < want.size(); ++i) { dr.KeyForTest(VK_TAB); walked = walked && dr.FocusForTest() == want[i]; }
         dr.KeyForTest(VK_TAB); walked = walked && dr.FocusForTest() == want[0];
@@ -295,8 +295,6 @@ int wmain(int argc, wchar_t** argv) {
         Check(NodeNamed(nodes, L"Codex : Non installé") && !NodeNamed(nodes, L"Codex : Non installé")->focusable, "UIA: « Codex : Non installé » read as text");
         const auto* prompt = Node(nodes, SettingsUI::AnnotationPrompt);
         Check(!NodeNamed(nodes, L"Afficher le lanceur d'annotations") && prompt && prompt->toggle == 2 && !prompt->help.empty(), "UIA: one toggle (proposition), on, described; no launcher toggle");
-        const auto* retention = Node(nodes, SettingsUI::AnnotationRetention); Check(retention && retention->expand == 1 && retention->status == L"30 jours", "UIA: retention opens a list, value « 30 jours »");
-        const auto* folder = Node(nodes, SettingsUI::AnnotationFolder); Check(folder && folder->help == e.target.storeRoot, "UIA: folder button, full path as help");
         const auto* clear = Node(nodes, SettingsUI::AnnotationClear); Check(clear && clear->enabled && clear->help == L"Effacer 3 annotations", "UIA: clear names the count");
         Check(NodeNamed(nodes, AS::ShortcutsNote()) != nullptr, "UIA: the shortcut reminder is readable");
         std::vector<long long> focusables; for (auto& n : nodes) if (n.focusable && n.role != Role::Text && n.role != Role::Group) focusables.push_back(n.key);
@@ -385,15 +383,9 @@ int wmain(int argc, wchar_t** argv) {
     Check(!st.annotationConnectPrompt && st.annotationConnectDeclines == 0, "turned off: no more prompt");
     dr.ActivateForTest(SettingsUI::AnnotationPrompt, true); Check(BrowserSettings::ConnectPromptActive(st), "on again");
 
-    // ---- Retention menu -------------------------------------------------------------------------------
-    changes.clear(); choice = 3; dr.ActivateForTest(SettingsUI::AnnotationRetention, true);
-    Check(menu.size() == 3 && menu[0].label == L"7 jours" && menu[1].label == L"30 jours" && menu[1].checked && menu[1].description == L"Recommandé." && menu[2].label == L"90 jours", "retention menu: 7 / 30 (checked, recommended) / 90 jours");
-    Check(st.annotationRetentionDays == 90 && changes == std::vector<BrowserSettings::Change>{BrowserSettings::Change::AnnotationRetention}, "90 jours chosen: state + Change::AnnotationRetention");
-    choice = 0; changes.clear(); dr.ActivateForTest(SettingsUI::AnnotationRetention, true); Check(st.annotationRetentionDays == 90 && changes.empty(), "menu dismissed: nothing changes");
 
-    // ---- Manual setup, folder, clear all ------------------------------------------------------------
+    // ---- Manual setup, clear all ------------------------------------------------------------
     dr.ActivateForTest(SettingsUI::ManualConnect, true); Check(opened == 1, "« Autre app ou réglage manuel » asks for the connect modal (manual fallback)");
-    dr.ActivateForTest(SettingsUI::AnnotationFolder, false); Check(folders == 1, "« Ouvrir le dossier des annotations » asks the host");
     dr.ActivateForTest(SettingsUI::AnnotationClear, true);
     Check(clears == 1 && clearAsked == 3, "« Effacer toutes les annotations… »: the host confirms 3");
     Check(confirmFocus == Modal::Dialog::ButtonHit(0), "confirmation: focus starts on Annuler");

@@ -36,7 +36,7 @@ int main(){
      // The switch: off after 3 « Plus tard »; turning it on again restarts the count at 0; off keeps the count.
      {State s;s.annotationConnectDeclines=MaxConnectDeclines;assert(!ConnectPromptActive(s));SetConnectPrompt(s,true);assert(ConnectPromptActive(s)&&s.annotationConnectDeclines==0);
       s.annotationConnectDeclines=2;SetConnectPrompt(s,false);assert(!ConnectPromptActive(s)&&s.annotationConnectDeclines==2);SetConnectPrompt(s,true);assert(s.annotationConnectDeclines==0);}
-     assert(RetentionLabel(30)==L"30 jours"&&RetentionCount==3);}
+     }
     // Missing, foreign or damaged files keep the defaults; unknown keys and bad values are ignored.
     for(const char* bad:{"","garbage\nengine=google\n","browser-settings 2\nengine=google\n"}){std::istringstream in(bad);assert(Read(in)==State{});}
     std::istringstream partial("browser-settings 1\r\nengine=bing\r\nrestore-tabs=maybe\r\nfuture-key=1\r\nreduce-motion=1\r\nengine=nope\r\n");

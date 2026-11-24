@@ -2,7 +2,7 @@
 # Réglages › « Annotations » (src/annotation-settings.h, src/settings-panel.h, src/settings.h):
 #  1. tests/settings_test.cpp (new keys: defaults, round trip, tolerant read), -Werror like test.ps1;
 #  2. tests/annotation_settings_test.cpp: pure model, the real drawer (rows, Tab order, hit testing, UIA tree,
-#     switches, retention, folder, clear-all confirmation), Connecter / Déconnecter through src/agent-connect.*
+#     switches, clear-all confirmation), Connecter / Déconnecter through src/agent-connect.*
 #     on TEMPORARY folders only, PNG captures in build/annotations-v2-qa/settings;
 #  3. the user's REAL Claude Desktop / Codex configurations fingerprinted before and after: any change fails.
 $ErrorActionPreference = 'Stop'
@@ -78,7 +78,8 @@ Need ($rows | Where-Object { $_.Type -eq 'Button' -and $_.Name -eq 'Connecter Cl
 Need ($rows | Where-Object { $_.Type -eq 'Text' -and $_.Name -eq 'Codex : Non installé' }) 'text « Codex : Non installé »'
 Need (-not ($rows | Where-Object { $_.Name -eq "Afficher le lanceur d'annotations" })) 'no launcher switch (V3: the launcher only exists in the mode)'
 Need ($rows | Where-Object { $_.Name -eq 'Proposer de connecter un agent' -and "$($_.Toggle)" -eq 'On' }) 'prompt switch exposes Toggle = On'
-Need ($rows | Where-Object { $_.Name -eq 'Conserver les terminées' -and $_.Status -eq '30 jours' -and "$($_.Expand)" -eq 'Collapsed' }) 'retention: value « 30 jours », ExpandCollapse'
+Need (-not ($rows | Where-Object { $_.Name -eq 'Conserver les terminées' -or $_.Name -eq 'Ouvrir le dossier des annotations' })) 'lot R: no retention row, no folder row (the annotation history is gone)'
+Need (-not ($rows | Where-Object { $_.Name -like '*Ctrl+Maj+H*' })) 'lot R: nothing names Ctrl+Maj+H'
 Need ($rows | Where-Object { $_.Name -eq 'Effacer toutes les annotations…' -and $_.Enabled }) 'clear-all button'
 Need ($rows | Where-Object { $_.Name -eq 'Fermer les réglages' }) 'close button'
 $switch = $items | Where-Object { $_.Current.Name -eq 'Proposer de connecter un agent' } | Select-Object -First 1
