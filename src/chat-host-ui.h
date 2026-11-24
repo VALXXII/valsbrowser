@@ -500,19 +500,23 @@ void MarkSwitch(const std::string& agent, const std::string& model) {
     if (aside.on) shown.data.items.push_back(Item("model.switch", m)); else Keep("model.switch", m);
     Send("model.switch", std::move(m));
 }
-// R42: another provider's model = the same chat, without a confirmation: the session of the other agent starts for the
-// next message, with the conversation so far given as context. A turn running is never stopped for it: the change
-// waits for its end (its queue too).
+// #128 (was R42: the same chat, with the conversation so far as context): another provider's model, without a confirmation,
+// in a chat that has messages = a NEW chat with that agent — the page says so under the model's name (« Passer à Codex
+// ouvre un nouveau chat »). The conversation so far stays in the history; an element's conversation (Mode Commentaire)
+// starts again on the same element, in its open bubble (NewChatForAgent). An empty chat only changes its agent. A turn
+// running is never stopped for it: the change waits for its end (its queue too). Another model of the same provider
+// stays in the same chat (setModel).
+void NewChatForAgent();   // chat-comment.h
 void SwitchAgent(const std::string& id, const std::string& model) {
     if (!AgentOf(id)) return;
     auto go = [id, model] {
         if (id != agentId) {
-            const auto* before = AgentOf(agentId); const std::string previous = before ? before->name : agentId;
+            const bool newChat = !convo.data.items.empty();
             agentId = id; agentChosen = true; RememberChoices();
-            DisposeSession(L"provider changed, same conversation");   // i18n-exempt: log reason
-            convo.data.head.agentId = id; convo.data.head.sessionId.clear(); convo.preambleSent = false;
-            convo.recap = convo.data.items.empty() ? std::string() : ConversationRecap(previous);
-            Diag(L"the conversation goes on with " + W(std::string(AgentOf(id)->name)) + (convo.recap.empty() ? L"" : L" (the conversation so far goes with the next message)"));
+            DisposeSession(newChat ? L"provider changed, new conversation" : L"provider changed");   // i18n-exempt: log reason
+            if (newChat) NewChatForAgent();   // its header takes `agentId` (NewConversation)
+            else { convo.data.head.agentId = id; convo.data.head.sessionId.clear(); convo.preambleSent = false; convo.recap.clear(); }
+            Diag(L"agent: " + W(std::string(AgentOf(id)->name)) + (newChat ? L" (a new conversation; the previous one stays in the history)" : L""));
         }
         pendingModel = model; MarkSwitch(id, model); SendState(); DetectAgents([] { MaybeStartSession(); });
     };

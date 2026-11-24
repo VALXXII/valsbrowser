@@ -103,10 +103,9 @@
   const turnEffort = (label) => (!label || /^(default|par défaut)\b/i.test(label) ? "" : effortName(label, label));
   const visibleEfforts = () => (S.st.efforts || []).filter((e) => !isDefaultChoice(e));
   const curEffort = () => visibleEfforts().find((e) => e.id === S.st.effort) || null;
-  // Model menu (V1.2, Paper 17US-0): one group per CONNECTED provider; one that is not installed or not signed in is not listed.
+  // Model menu (#128, Paper « #128 Menu des modèles · A liste groupée (validée) »): every provider the host lists, in its
+  // order, connected or not — a provider not ready to answer keeps its group, its models greyed out (`CONNECTED` = usable).
   const CONNECTED = ["ready", "starting", "preparing"];
-  const connectedAgents = () => (S.st.agents || []).filter((a) => CONNECTED.includes(a.status));
-  const PER_GROUP = 3;
   // Modes (B 1.9, Paper 14RK-0 as updated by the user): exactly these four rows, in this order, with these words. A mode
   // the agent does not have is not shown; anything else (the adapter's « bypass every permission », unknown modes) never is.
   // `kind` comes from the host; before 1.9 acceptEdits came as « auto » — its id still tells it apart.
@@ -742,20 +741,21 @@
       el._morphBox = null;
     }, MORPH_MS + 20);
   }
-  const menuItems = () => S.menu ? Array.from(S.menu.el.querySelectorAll(".mi:not([aria-disabled='true']), .menu .btn, .menu .btn-s")) : [];
+  const menuItems = () => S.menu ? Array.from(S.menu.el.querySelectorAll(".mi:not([aria-disabled='true']), .menu .btn, .menu .btn-s, .menu .mm-act")) : [];
   function fillMenu(el, items) {
     clear(el);
     for (const it of items) {
       if (it.sep) { el.appendChild(h("div", { class: "sep", role: "separator" })); continue; }
       if (it.head) { el.appendChild(h("div", { class: "mh", role: "presentation", text: it.head })); continue; }
       if (it.node) { el.appendChild(it.node); continue; }
-      const b = h("button", { class: "mi" + (it.desc ? " top" : "") + (it.back ? " back" : ""), type: "button", role: it.radio ? "menuitemradio" : "menuitem", tabindex: "-1",
+      const b = h("button", { class: "mi" + (it.desc ? " top" : "") + (it.back ? " back" : "") + (it.cls ? " " + it.cls : ""), type: "button", role: it.radio ? "menuitemradio" : "menuitem", tabindex: "-1",
                               "aria-checked": it.radio ? String(!!it.checked) : null, "aria-disabled": it.disabled ? "true" : null, "data-sub": it.sub ? "1" : null, "data-key": it.key || null,
                               "aria-haspopup": it.sub && BUB() ? "menu" : null, "aria-expanded": it.sub && BUB() ? "false" : null,
                               onclick: () => { if (!it.disabled) it.onSelect(); } });
       if (it.lead) b.appendChild(it.lead);
       const g = h("span", { class: "grow", style: "flex:1" }, h("span", { class: "row1" }, h("span", { class: "lb", text: it.label }), it.tag ? h("span", { class: "tag", text: it.tag }) : null));
       if (it.desc) g.appendChild(h("span", { class: "ds", text: it.desc }));
+      if (it.hint) g.appendChild(h("span", { class: "mm-hint", text: it.hint }));   // #128: shown on hover / keyboard focus (CSS)
       b.appendChild(g);
       if (it.value) b.appendChild(h("span", { class: "val", text: it.value }));
       if (it.checked) b.appendChild(icon("check", "ck"));
@@ -770,21 +770,28 @@
     if (S.menu && !S.menu.el.contains(e.target) && !(S.sub && S.sub.el.contains(e.target)) && !(S.menu.anchor && S.menu.anchor.contains(e.target)) && e.target !== cin && !cin.contains(e.target)) closeMenu();
   }, true);
 
+  // #128 (Paper A): 280 px, one list grouped by provider; the class before the menu is placed (its rows set its height)
+  const MM_W = 280;
   function openModelMenu(anchor) {
-    openMenu(anchor, { label: "Modèle et effort", items: modelItems("main"), align: "right", width: 300, cls: "models" });   // the class before the menu is placed: its rows are tighter
+    openMenu(anchor, { label: "Modèle et effort", items: modelItems("main"), align: "right", width: MM_W, cls: "models mm-list" });
     if (!S.menu) return;
     S.menu.view = "main";
-    // Bubble: « Autres modèles › » and « Effort › » open a real sub-menu next to this one (pointer: a short pause on the row)
-    if (BUB()) S.menu.el.addEventListener("pointerover", (e) => {
+    if (!BUB()) return;
+    // Bubble: « Effort › » opens a real sub-menu next to this one (pointer: a short pause on the row)
+    S.menu.el.addEventListener("pointerover", (e) => {
       const row = e.target.closest && e.target.closest(".mi");
       if (!row || !S.menu || !S.menu.el.contains(row)) return;
       clearTimeout(subTimer);
       if (row.dataset.sub) { if (!S.sub || S.sub.view !== row.dataset.key) subTimer = setTimeout(() => openSub(row.dataset.key, row, false), 120); }
       else if (S.sub) subTimer = setTimeout(() => closeSub(), 250);
     });
+    // #128: the hint under another provider's model (hover, keyboard focus) makes the menu taller: the region asked of the
+    // host follows (the menu grows upward from its button)
+    const reask = () => requestAnimationFrame(() => { if (S.menu && S.menu.el.querySelector(".mm-x")) publishSize(); });
+    for (const t of ["pointerover", "pointerout", "focusin"]) S.menu.el.addEventListener(t, reask);
   }
-  // B 1.9 (Paper 6.4: 17VU-0 next to 17US-0): in the bubble, Effort and Autres modèles are true sub-menus beside the model
-  // menu — on its right, or on its left when the host cannot give the room (`overflowRight` / `overflowLeft`). Tops aligned,
+  // B 1.9 (Paper 6.4: 17VU-0 next to 17US-0): in the bubble, Effort is a true sub-menu beside the model menu (#128: every
+  // model is in the list, no « Autres modèles » any more) — on its right, or on its left when the host cannot give the room (`overflowRight` / `overflowLeft`). Tops aligned,
   // 4 px apart. ArrowRight or the pointer opens; ArrowLeft or Échap closes it and returns to its row. The panel, too narrow
   // for two menus side by side, keeps the view inside the menu (« ‹ Effort »).
   let subTimer = 0;
@@ -808,8 +815,8 @@
       if (old.row) old.row.setAttribute("aria-expanded", "false");
       from = ghostMenu(old.el);
     } else closeSub();
-    const width = view === "effort" ? 214 : 300;
-    const el = h("div", { class: "menu models sub-menu", role: "menu", "aria-label": view === "effort" ? "Effort" : "Autres modèles", tabindex: "-1" });
+    const width = 214;   // « Effort » (Paper 17VU-0), as before #128
+    const el = h("div", { class: "menu models sub-menu", role: "menu", "aria-label": "Effort", tabindex: "-1" });
     fillMenu(el, subItems(view));
     menuLayer.appendChild(el);
     S.sub = { el, view, row };
@@ -853,15 +860,18 @@
     if (!S.menu) return;
     S.menu.view = view;
     fillMenu(S.menu.el, modelItems(view));
-    S.menu.el.setAttribute("aria-label", view === "effort" ? "Effort" : view === "more" ? "Autres modèles" : "Modèle et effort");
-    place(S.menu.el, S.menu.anchor, "right", view === "effort" ? 214 : 300);
+    S.menu.el.classList.toggle("mm-list", view === "main");   // #128: the grouped list; « ‹ Effort » keeps its look (17VU-0)
+    S.menu.el.setAttribute("aria-label", view === "effort" ? "Effort" : "Modèle et effort");
+    place(S.menu.el, S.menu.anchor, "right", view === "effort" ? 214 : MM_W);
     const its = menuItems();
     const back = from && S.menu.el.querySelector(".mi[data-key='" + from + "']");
     (back || its.find((i) => i.getAttribute("aria-checked") === "true") || its.find((i) => !i.classList.contains("back")) || its[0] || S.menu.el).focus({ preventScroll: BUB() });
   }
-  // R42: the model changes at any time, in the same chat, with no confirmation — the same provider or another one (the host
-  // starts the other agent at the next message with the conversation as context). Agents are compared by id: the state is
-  // sent again often (bubble), so the same agent may be another object.
+  // R42: the model changes at any time with no confirmation. The same provider keeps the chat; another provider (#128)
+  // opens a new chat when this one has messages — the host decides (`setModel` / `setAgent` with the other agent), the page
+  // only tells it beforehand (the row's hint). Agents are compared by id: the state is sent again often (bubble), so the
+  // same agent may be another object.
+  const chatHasMessages = () => S.users.size > 0 || S.turns.size > 0;
   function chooseModel(a, m) {
     const cur = curAgent();
     closeSub(); closeMenu(true);
@@ -871,10 +881,7 @@
     renderComposerBar();
   }
   function modelItems(view) {
-    const cur = curAgent(), items = [], groups = connectedAgents();
-    const pickModel = (a, m) => ({ radio: true, label: m.label, tag: m.isDefault ? "Par défaut" : null, checked: !!cur && a.id === cur.id && m.id === S.st.model, onSelect: () => chooseModel(a, m) });
-    // a connected provider whose models are not known yet (its agent never started here): one row, its name
-    const pickAgent = (a) => ({ radio: true, label: a.name, lead: agentIcon(a, "lead"), checked: false, onSelect: () => chooseModel(a, null) });
+    const cur = curAgent(), items = [];
     const back = (label) => ({ back: true, label, lead: icon("chevron", "lead backi"), onSelect: () => showModelView("main", view) });
     const efforts = visibleEfforts();
     if (view === "effort") {
@@ -883,35 +890,41 @@
         onSelect: () => { post("setEffort", { id: e.id }); S.st.effort = e.id; closeMenu(true); renderComposerBar(); } });
       return items;
     }
-    if (view === "more") {
-      items.push(back("Autres modèles"));
-      for (const a of groups) {
-        const rest = (a.models || []).slice(PER_GROUP);
-        if (!rest.length) continue;
-        items.push({ sep: true });
-        if (groups.length > 1) items.push({ head: a.name });
-        rest.forEach((m) => items.push(pickModel(a, m)));
-      }
-      return items;
-    }
-    if (!groups.length) {   // nobody connected: the connection state, with its action (Se connecter, Installer…)
-      for (const a of S.st.agents || []) items.push({ node: agentRow(a, true) });
-      return items;
-    }
-    let firstGroup = true;
-    groups.forEach((a) => {
-      if (BUB() && !(a.models || []).length) return;
-      if (!firstGroup) items.push({ sep: true });
-      firstGroup = false;
-      const ms = a.models || [];
-      if (ms.length) ms.slice(0, PER_GROUP).forEach((m) => items.push(pickModel(a, m)));
-      else if (!BUB()) items.push(pickAgent(a));   // R13: in the bubble one picks a model, never « Claude Code » / « Codex »
+    // #128 (Paper A): one list — each provider the host lists, in its order (Claude Code, then Codex): its header (logo, name),
+    // then every model the agent said (never a name written here). A provider that cannot answer yet keeps its group: the
+    // header says why with the action that fixes it (Connecter, Installer, Réessayer — the existing flows), its models greyed
+    // out (32 %), not choosable. A model of the other provider says, under its name, that it opens a new chat (when this
+    // one has messages). The effort stays the last row, its sub-menu as before.
+    const hasChat = chatHasMessages();
+    const row = (a, label, m, usable) => {
+      const other = !cur || a.id !== cur.id;
+      return { radio: true, label, tag: m && m.isDefault ? "Par défaut" : null, cls: "mm-row" + (other && usable && hasChat ? " mm-x" : ""),
+               hint: other && usable && hasChat ? "Passer à " + a.name + " ouvre un nouveau chat" : null, disabled: !usable,
+               checked: !other && (m ? m.id === S.st.model : !curModel()), onSelect: () => chooseModel(a, m) };
+    };
+    (S.st.agents || []).forEach((a, i) => {
+      const usable = CONNECTED.includes(a.status), ms = a.models || [];
+      if (i) items.push({ sep: true });
+      items.push({ node: groupHead(a, usable) });
+      for (const m of ms) items.push(row(a, m.label, m, usable));
+      // #129 / R13: a provider ready but whose models are not known yet (its agent never started here) — one row that names
+      // the model it will use (the button's own fallback), never an empty group, never « Claude Code » / « Codex »
+      if (!ms.length && usable) items.push(row(a, fallbackModel(a).label, null, true));
     });
-    const more = groups.some((a) => (a.models || []).length > PER_GROUP);
-    if (more || efforts.length) items.push({ sep: true });
-    if (more) items.push({ label: "Autres modèles", sub: true, key: "more", onSelect: subOrView("more") });
-    if (efforts.length) items.push({ label: "Effort", value: curEffort() ? effortName(curEffort().id, curEffort().label) : "", sub: true, key: "effort", onSelect: subOrView("effort") });
+    if (efforts.length) items.push({ sep: true }, { label: "Effort", value: curEffort() ? effortName(curEffort().id, curEffort().label) : "", sub: true, key: "effort", cls: "mm-eff", onSelect: subOrView("effort") });
     return items;
+  }
+  // #128: a provider's header (Paper: 28 px, logo 14, 12/16 Medium at 50 %); not ready: « Codex · non connecté » and its
+  // action at the right (32 px row, accent button 24 px)
+  const MM_STATE = { notConnected: "non connecté", notInstalled: "pas installé", error: "erreur" };
+  function groupHead(a, usable) {
+    const act = usable ? null : agentAction(a);
+    const word = usable ? "" : MM_STATE[a.status] || "";
+    const label = act && a.status === "notConnected" ? "Connecter" : act ? act.label : "";
+    return h("div", { class: "mm-head" + (act ? " mm-off" : ""), role: "presentation" },
+      h("span", { class: "mm-hl" }, agentIcon(a, "mm-logo"), h("span", { class: "mm-hn", text: a.name + (word ? " · " + word : "") })),
+      act ? h("button", { class: "mm-act", type: "button", role: "menuitem", tabindex: "-1", "aria-label": label + " " + a.name,
+                          onclick: () => { act.run(); closeMenu(true); } }, label) : null);
   }
   function agentAction(a) {
     if (a.status === "notConnected") return { label: "Se connecter", run: () => post("agent.connect", { agentId: a.id, methodId: a.authMethods && a.authMethods[0] ? a.authMethods[0].id : undefined }) };
@@ -920,12 +933,6 @@
     return null;
   }
   const statusText = (a) => a.detail || ({ ready: "Installé", starting: "Démarrage…", preparing: "Préparation…", notInstalled: "Pas installé", notConnected: "Pas connecté", error: "Erreur" })[a.status] || "";
-  function agentRow(a, inMenu) {
-    const act = agentAction(a);
-    return h("div", { class: "agent-row", role: "group", "aria-label": a.name + ", " + statusText(a) }, agentIcon(a, "lead"),
-      h("span", { class: "grow" }, h("span", { class: "lb", text: a.name }), h("span", { class: "ds", text: statusText(a) })),
-      act ? h("button", { class: "btn-s", type: "button", onclick: () => { act.run(); if (inMenu) closeMenu(true); } }, act.label) : null);
-  }
   function openModeMenu(anchor) {
     // Paper 14RK-0: 290 px, rows 8/10, the two automatic modes' icons in the accent (16 px), the others white (15 px)
     const items = shownModes().map((m) => ({ radio: true, label: m.label, desc: m.desc, checked: m.id === S.st.mode,

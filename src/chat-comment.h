@@ -902,6 +902,18 @@ std::string NewAnchoredConversation(const std::string& selector, const std::stri
     setAnchor(h); const std::string id = h.id; ShowAside(std::move(c));
     return id;
 }
+// #128: another provider's model in a chat that has messages = a new chat (SwitchAgent, after any turn running). The
+// panel's: a new conversation, as « Nouveau chat ». An element's: a new conversation on the SAME element (R6's « unreadable »
+// path), shown in its open bubble; its element (image, source) goes with it. The old one stays in the history; the element
+// opens its newest (FindAnchored) and shows one mark (SyncMarks).
+void NewChatForAgent() {
+    const ChatStore::Header was = convo.data.head;
+    if (!was.Anchored()) { NewConversation(); return; }
+    const std::string fresh = NewAnchoredConversation(was.anchorSelector, was.anchorLabel, was.anchorPage, was.anchorSource, was.anchorKey);
+    if (auto it = anchorElements.find(was.id); it != anchorElements.end()) anchorElements[fresh] = it->second;
+    if (bubble.open && bubble.conv == was.id) bubble.conv = fresh;   // same element, same place: the bubble now shows it
+    Diag(L"a new conversation on the same element: " + W(fresh) + L" (was " + W(was.id) + L")");   // i18n-exempt: log detail
+}
 // Called by ProcessQueue: the next message waiting belongs to another conversation — it becomes the engine's.
 bool SwitchEngineTo(const std::string& id) {
     Convo next; bool fromAside = false;
@@ -969,10 +981,12 @@ void SyncMarks() {
         auto add = [&](const ChatStore::Header& h) { if (!h.Anchored() || !HasQueued(h.id)) return; for (auto* a : all) if (a->id == h.id) return; all.push_back(&h); };   // waiting, not saved yet
         if (aside.on) add(aside.c.data.head);
         for (const auto& p : parked) add(p.second.data.head);
+        std::set<std::string> marked;   // #128: an element with several conversations (another provider = a new chat) shows one mark, its newest's (`anchored`: newest first)
         for (const auto* hp : all) { const auto& h = *hp;
             if (h.origin != here.origin || h.anchorPage != page) continue;
             if (bubble.open && bubble.conv == h.id) { found0.insert(h.id); continue; }   // D1: its bubble is open: the frame + labels, not the icon
             if (h.anchorSelector.empty()) { found0.insert(h.id); continue; }   // Q 6: an element in a frame / web component: no mark drawn by selector
+            if ((bubble.open && h.anchorSelector == bubble.selector) || !marked.insert(h.anchorSelector).second) { found0.insert(h.id); continue; }   // #128: its element already has its frame or its mark
             SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(h.id)); o.Set("selector", Str(h.anchorSelector)); o.Set("state", Str(MarkState(h.id)));
             if (MarkState(h.id) == "waiting") o.Set("waitLabel", Str(T8(I18n::Id::chat_mark_waiting)));
             list.Push(std::move(o));
