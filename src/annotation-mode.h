@@ -159,7 +159,13 @@ std::wstring PrivateDir() { return DataRoot() + L"\\annotations-private"; }   //
 // project's files taken before a turn) goes into this window's own folder beside its ledger, erased with it when the
 // window closes, and at the next start after a crash (src/annotation-private.h). Empty: not a private window, or the
 // ledger could not be opened — the chat then stays off in this window (Chat::AskAvailable).
-std::wstring PrivateData() { if (!privateWindow) return L""; if (!privateLedger.Opened() && !privateLedger.Open(PrivateDir())) return L""; return privateLedger.DataDir(); }
+std::wstring PrivateData() {
+    static std::wstring made;   // asked at every layout: the folder is made once
+    if (!privateWindow) return L"";
+    if (!made.empty() && privateLedger.Opened()) return made;
+    if (!privateLedger.Opened() && !privateLedger.Open(PrivateDir())) return L"";
+    made = privateLedger.DataDir(); return made;
+}
 // Created on the UI thread before any job uses it (every caller of Run touches it first).
 BA::Store& Store() { if (!store) store = std::make_unique<BA::Store>(BA::GlobalStoreRoot(DataRoot())); return *store; }
 // Older builds kept one store per profile (<data root>\profiles\<id>\annotations): merged once into the global

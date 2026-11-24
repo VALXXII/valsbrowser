@@ -162,7 +162,7 @@ bool CommentFirst(const std::shared_ptr<Tab>& t) {
 // Lot R (validated by the owner, 2026-11-24): « Panneau » holds 10 elements at most. An 11th click adds nothing — no
 // frame, no shot, no chip — and the neutral strip above the composer says why for 4 s (again at each extra click).
 inline constexpr std::size_t ComposerMax = 10; inline constexpr UINT LimitStripMs = 4000;
-bool ComposerFull() { return !CommentLayout() && Open() && composerElements.size() + aiming.size() >= ComposerMax; }
+bool ComposerFull() { return !CommentLayout() && composerElements.size() + aiming.size() >= ComposerMax; }
 void SayComposerFull() {
     Strip("limit", "neutral", TR(chat_strip_limit));
     if (post) SetTimer(post, LimitTimer, LimitStripMs, nullptr);
@@ -171,7 +171,7 @@ void SayComposerFull() {
 bool TakeSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible) {
     if (!AskAvailable(t) || halted || Ann::s.paused) return false;
     if (CommentLayout()) return TakeCommentSelection(t, serial, captureImpossible);   // Mode Commentaire: a bubble on the element
-    if (composerElements.size() + aiming.size() >= ComposerMax) { SayComposerFull(); return false; }
+    if (composerElements.size() + aiming.size() >= ComposerMax) { if (!Open()) OpenPanel(); SayComposerFull(); return false; }   // the panel was closed on its 10 elements: it comes back to say why
     if (!Open()) { OpenPanel(); if (!Open()) return false; Diag(L"a click on an element opens the chat"); }
     OnSelection(t, serial, captureImpossible);
     return true;
@@ -722,10 +722,10 @@ void Toggle(bool keyboard) {
     (void)keyboard;
     // Lot R: the panel the mode opened by itself (« Panneau ») was never asked for: the first Ctrl+Maj+D asks for it —
     // the caret goes to its composer — and only the next one closes it.
-    if (Open() && openedByMode) { openedByMode = false; SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus(); Diag(L"Ctrl+Maj+D on the panel opened with the mode: the caret goes to the composer"); return; }
+    if (Open() && openedByMode) { openedByMode = quietOpening = false; SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus(); Diag(L"Ctrl+Maj+D on the panel opened with the mode: the caret goes to the composer"); return; }
     if (Open()) { ClosePanel(); return; }
     if (!Ann::s.active) { AnnotationCommand(AnnotateCommand); if (!Ann::s.active) return; }
-    openedByMode = false;   // asked for by the user (even when the mode's start already opened it)
+    openedByMode = quietOpening = false;   // asked for by the user (even when the mode's start already opened it): its page takes the caret when it is ready
     if (CommentLayout() && Ann::ModeTab() == Active()) { SwitchLayout(false); return; }   // Ctrl+Maj+D: the chat panel (the band's « Panneau »)
     else if (Ann::ModeTab() != Active()) return;
     if (Open()) { SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus(); return; }   // the mode's start opened it: Ctrl+Maj+D puts the caret in it

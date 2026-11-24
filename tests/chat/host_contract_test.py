@@ -419,7 +419,7 @@ check('first.chatOpen = Chat::AskedFor();' in act and 'if (Chat::AskedFor()) {' 
 # « 10 éléments au maximum » (validated 2026-11-24): the strip, 4 s, and no frame nor shot for the click
 ts = block_after(ui, 'bool TakeSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible) {')
 full = block_after(ui, 'void SayComposerFull() {')
-check('>= ComposerMax) { SayComposerFull(); return false; }' in ts and 'ComposerMax = 10' in ui and 'LimitStripMs = 4000' in ui
+check('>= ComposerMax) { if (!Open()) OpenPanel(); SayComposerFull(); return false; }' in ts and 'ComposerMax = 10' in ui and 'LimitStripMs = 4000' in ui
       and 'Strip("limit", "neutral", TR(chat_strip_limit))' in full and 'SetTimer(post, LimitTimer, LimitStripMs' in full and 'ClearStrip("limit")' in line_of(ui, 'if (w == LimitTimer)'),
       'lot R: an 11th element in « Panneau » is refused with the neutral strip, for 4 s, shown again at each extra click')
 cat = (SRC / 'i18n-catalog.inc').read_text(encoding='utf-8')
