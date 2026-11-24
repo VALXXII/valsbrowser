@@ -1,0 +1,225 @@
+{
+ "_": "Model and effort options as the REAL adapters reported them at session/new (tests/acp/run_tests.py --real, real_adapter_probe: no prompt), 17 Nov 2026 — claude-agent-acp 0.107.3 with the Claude Code CLI 2.1.326, codex-acp 2.6.0 with @openai/codex 0.166.0 (the pinned versions of src/agent-runtime-pins.inc). Source of src/chat-known-models.h (#128 v2: the models shown before an agent is read).",
+ "claude": {
+  "adapter": "@agentclientprotocol/claude-agent-acp@0.107.3",
+  "cli": "2.1.326",
+  "options": [
+   {
+    "id": "model",
+    "name": "Model",
+    "category": "model",
+    "type": "select",
+    "currentValue": "opus",
+    "choices": [
+     {
+      "value": "default",
+      "name": "Default (recommended)",
+      "description": "Opus 5.5"
+     },
+     {
+      "value": "opus",
+      "name": "Opus 5.5",
+      "description": "For complex work and everyday tasks"
+     },
+     {
+      "value": "fable",
+      "name": "Fable 5.2",
+      "description": "For your toughest challenges"
+     },
+     {
+      "value": "sonnet",
+      "name": "Sonnet 5.5",
+      "description": "Most efficient for simpler tasks"
+     },
+     {
+      "value": "haiku",
+      "name": "Haiku 5.5",
+      "description": "Fastest for quick answers"
+     },
+     {
+      "value": "claude-fable-5-1",
+      "name": "Fable 5.1",
+      "description": "Most capable for your hardest and longest-running tasks"
+     },
+     {
+      "value": "claude-haiku-4-5-20251001",
+      "name": "Haiku 4.5",
+      "description": "Fastest for quick answers"
+     },
+     {
+      "value": "claude-sonnet-5",
+      "name": "Sonnet 5",
+      "description": "Efficient for routine tasks"
+     },
+     {
+      "value": "claude-opus-5",
+      "name": "Opus 5",
+      "description": "Best for everyday, complex tasks"
+     },
+     {
+      "value": "claude-fable-5",
+      "name": "Fable 5",
+      "description": "Most capable for your hardest and longest-running tasks"
+     },
+     {
+      "value": "claude-opus-4-8",
+      "name": "Opus 4.8",
+      "description": "Best for everyday, complex tasks"
+     },
+     {
+      "value": "claude-opus-4-7",
+      "name": "Opus 4.7",
+      "description": "Best for everyday, complex tasks"
+     },
+     {
+      "value": "claude-opus-4-6",
+      "name": "Opus 4.6",
+      "description": "Best for everyday, complex tasks"
+     },
+     {
+      "value": "claude-sonnet-4-6",
+      "name": "Sonnet 4.6",
+      "description": "Efficient for routine tasks"
+     }
+    ]
+   },
+   {
+    "id": "effort",
+    "name": "Effort",
+    "category": "thought_level",
+    "type": "select",
+    "currentValue": "default",
+    "choices": [
+     {
+      "value": "default",
+      "name": "Default"
+     },
+     {
+      "value": "low",
+      "name": "Low"
+     },
+     {
+      "value": "medium",
+      "name": "Medium"
+     },
+     {
+      "value": "high",
+      "name": "High"
+     },
+     {
+      "value": "xhigh",
+      "name": "Xhigh"
+     },
+     {
+      "value": "max",
+      "name": "Max"
+     }
+    ]
+   }
+  ]
+ },
+ "codex": {
+  "adapter": "@agentclientprotocol/codex-acp@2.6.0",
+  "cli": "0.166.0",
+  "options": [
+   {
+    "id": "model",
+    "name": "Model",
+    "category": "model",
+    "type": "select",
+    "currentValue": "gpt-6.2-sol",
+    "choices": [
+     {
+      "value": "gpt-6.2-sol",
+      "name": "6.2 Sol",
+      "description": "Fast, go-to model for coding and everyday work."
+     },
+     {
+      "value": "gpt-6.2-astra",
+      "name": "6.2 Astra",
+      "description": "Our most capable model for complex coding and professional work."
+     },
+     {
+      "value": "gpt-6.1-terra",
+      "name": "6.1 Terra",
+      "description": "Efficient model that excels at visual understanding and computer use."
+     },
+     {
+      "value": "gpt-6.1-sol",
+      "name": "6.1 Sol",
+      "description": "Previous generation model for coding and everyday work."
+     },
+     {
+      "value": "gpt-6-astra",
+      "name": "6 Astra",
+      "description": "Previous generation model for complex coding and professional work."
+     },
+     {
+      "value": "gpt-6-sol",
+      "name": "6 Sol",
+      "description": "Legacy model for coding and everyday work."
+     },
+     {
+      "value": "gpt-6-luna",
+      "name": "6 Luna",
+      "description": "Fast and affordable model for easier tasks."
+     },
+     {
+      "value": "gpt-5.6-sol",
+      "name": "5.6 Sol",
+      "description": "Legacy model for coding and everyday work."
+     },
+     {
+      "value": "gpt-5.6-terra",
+      "name": "5.6 Terra",
+      "description": "Legacy balanced model for agentic coding."
+     },
+     {
+      "value": "gpt-5.6-luna",
+      "name": "5.6 Luna",
+      "description": "Legacy fast model for simpler tasks."
+     }
+    ]
+   },
+   {
+    "id": "reasoning_effort",
+    "name": "Reasoning effort",
+    "category": "thought_level",
+    "type": "select",
+    "currentValue": "low",
+    "choices": [
+     {
+      "value": "low",
+      "name": "Low",
+      "description": "Fast responses with lighter reasoning"
+     },
+     {
+      "value": "medium",
+      "name": "Medium",
+      "description": "Balances speed and reasoning depth for everyday tasks"
+     },
+     {
+      "value": "high",
+      "name": "High",
+      "description": "Greater reasoning depth for complex problems"
+     },
+     {
+      "value": "xhigh",
+      "name": "Xhigh",
+      "description": "Extra high reasoning depth for complex problems"
+     },
+     {
+      "value": "max",
+      "name": "Max",
+      "description": "Maximum reasoning depth for the hardest problems"
+     },
+     {
+      "value": "ultra",
+      "name": "Ultra",
+      "description": "Maximum reasoning with automatic task delegation"
+     }
+    ]
+   }
+  ]
+ }
+}
