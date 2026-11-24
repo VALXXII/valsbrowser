@@ -273,133 +273,492 @@
    "f"
   ]
  ],
- "c-2-autorisation": [
-  [
-   "1AQU-0",
-   "#app",
-   "f"
-  ],
-  [
-   "1AQW-0",
-   ".um .bubble",
-   "f"
-  ],
-  [
-   "1AQX-0",
-   ".um .bubble",
-   "t"
-  ],
-  [
-   "1AR0-0",
-   ".bt-model",
-   "f"
-  ],
-  [
-   "1AR4-0",
-   ".bt-model .n",
-   "t"
-  ],
-  [
-   "1AR6-0",
-   ".bt-model .e",
-   "t"
-  ],
-  [
-   "1ARB-0",
-   ".bt-stw .lb",
-   "t"
-  ],
-  [
-   "1ARC-0",
-   ".bt-text",
-   "f"
-  ],
-  [
-   "1ARD-0",
-   ".bt-text .text",
-   "t"
-  ],
-  [
-   "1ARE-0",
-   ".b-rule",
-   "f"
-  ],
-  [
-   "1ARF-0",
-   ".bperm",
-   "f"
-  ],
-  [
-   "1ARH-0",
-   ".bperm-file",
-   "f"
-  ],
-  [
-   "1ARI-0",
-   ".bperm-file .t",
-   "t"
-  ],
-  [
-   "1ARJ-0",
-   ".bperm-file .num.plus",
-   "t"
-  ],
-  [
-   "1ARK-0",
-   ".bperm-file .num.minus",
-   "t"
-  ],
-  [
-   "1ARN-0",
-   ".bperm-in",
-   "f"
-  ],
-  [
-   "1ARQ-0",
-   ".bperm-in .instead",
-   "ph"
-  ],
-  [
-   "1ARR-0",
-   ".bperm-ft",
-   "f"
-  ],
-  [
-   "1ART-0",
-   ".bperm .always .sw",
-   "f"
-  ],
-  [
-   "1ARU-0",
-   ".bperm .always .sw i",
-   "f"
-  ],
-  [
-   "1ARV-0",
-   ".bperm .always > span:last-child",
-   "t"
-  ],
-  [
-   "1ARW-0",
-   ".bperm .btn:not(.primary)",
-   "f"
-  ],
-  [
-   "1ARX-0",
-   ".bperm .btn:not(.primary)",
-   "tc"
-  ],
-  [
-   "1ARY-0",
-   ".bperm .btn.primary",
-   "f"
-  ],
-  [
-   "1ARZ-0",
-   ".bperm .btn.primary",
-   "tc"
+ "c-2-autorisation": {
+  "note": "Planche 1ANU-0 redessinée le 24 nov. 2026 (Designer) : la carte d'autorisation est une vraie carte (26HS-0 : #292929, bordure 1 px #FFFFFF14, rayon 12, marges et écarts de 10), la même que « App réelle · Mode Commentaire 4 » (1V51-0). Elle fait 118 px de haut au lieu de 104 : tout ce qui est au-dessus est 14 px plus haut que dans le relevé de F (valeurs du relevé décalées ici). Styles lus dans Paper (get_jsx) ; boîtes calculées à partir de ces styles et vérifiées sur l'export 4x de la bulle (page Paper non affichée : pas de mesure directe).",
+  "paper": {
+   "1AQW-0": {
+    "name": "Frame",
+    "w": 210.0,
+    "h": 52.0,
+    "x": 83.0,
+    "y": -12.0,
+    "st": {
+     "dir": "column",
+     "align": "start",
+     "paddingInline": "10px",
+     "paddingBlock": "6px",
+     "borderTopLeftRadius": "12px",
+     "borderTopRightRadius": "12px",
+     "borderBottomLeftRadius": "12px",
+     "borderBottomRightRadius": "4px",
+     "bg": "#3E67FF"
+    }
+   },
+   "1AQX-0": {
+    "name": "Fais en sorte que le… « Fais en sorte que le bouton prenne toute la largeur du form »",
+    "w": 190.0,
+    "h": 40.0,
+    "x": 93.0,
+    "y": -6.0,
+    "st": {
+     "font": "\"Inter Display\"",
+     "size": "13px",
+     "lh": "20px",
+     "width": "190px",
+     "weight": "500",
+     "ws": "pre-wrap",
+     "color": "#FFFFFFE6"
+    }
+   },
+   "1AR0-0": {
+    "name": "Modèle",
+    "w": 122.0,
+    "h": 24.0,
+    "x": 12.0,
+    "y": 52.0,
+    "st": {
+     "align": "center",
+     "height": "24px",
+     "gap": "4",
+     "paddingLeft": "6px",
+     "paddingRight": "8px",
+     "borderTopLeftRadius": "12px",
+     "borderTopRightRadius": "12px",
+     "borderBottomLeftRadius": "4px",
+     "borderBottomRightRadius": "12px",
+     "bg": "#FFFFFF14"
+    }
+   },
+   "1AR4-0": {
+    "name": "Sonnet 5.5 « Sonnet 5.5 »",
+    "w": 58.0,
+    "h": 16.0,
+    "x": 36.0,
+    "y": 56.0,
+    "st": {
+     "font": "\"Inter Display\"",
+     "size": "12px",
+     "lh": "16px",
+     "ws": "pre",
+     "weight": "500",
+     "color": "#FFFFFFE6"
+    }
+   },
+   "1AR6-0": {
+    "name": "Élevé « Élevé »",
+    "w": 28.0,
+    "h": 16.0,
+    "x": 98.0,
+    "y": 56.0,
+    "st": {
+     "font": "\"Inter Display\"",
+     "size": "12px",
+     "lh": "16px",
+     "ws": "pre",
+     "weight": "400",
+     "color": "#FFFFFF80"
+    }
+   },
+   "1ARB-0": {
+    "name": "Lit checkout.css… « Lit checkout.css… »",
+    "w": 100.0,
+    "h": 18.0,
+    "x": 193.0,
+    "y": 55.0,
+    "st": {
+     "font": "\"Inter Display\"",
+     "size": "13px",
+     "lh": "18px",
+     "ws": "pre",
+     "weight": "400",
+     "color": "#FFFFFFCC"
+    }
+   },
+   "1ARC-0": {
+    "name": "Frame",
+    "w": 281.0,
+    "h": 70.0,
+    "x": 12.0,
+    "y": 78.0,
+    "st": {
+     "dir": "column",
+     "align": "start",
+     "borderTopLeftRadius": "4px",
+     "borderTopRightRadius": "12px",
+     "borderBottomLeftRadius": "12px",
+     "borderBottomRightRadius": "16px",
+     "paddingTop": "4px",
+     "paddingBottom": "6px",
+     "alignSelf": "stretch",
+     "paddingInline": "8px",
+     "bg": "#FFFFFF14"
+    }
+   },
+   "1ARD-0": {
+    "name": "Le bouton a une larg… « Le bouton a une largeur fixe de 240 px. Je le passe à droite sur grand écran et en pleine largeur sous 640 px. »",
+    "w": 265.0,
+    "h": 60.0,
+    "x": 20.0,
+    "y": 82.0,
+    "st": {
+     "font": "\"Inter Display\"",
+     "size": "13px",
+     "lh": "20px",
+     "alignSelf": "stretch",
+     "weight": "400",
+     "ws": "pre-wrap",
+     "color": "#FFFFFFE6"
+    }
+   },
+   "1ARE-0": {
+    "name": "Rectangle",
+    "w": 281.0,
+    "h": 1.0,
+    "x": 12.0,
+    "y": 160.0,
+    "st": {
+     "height": "1px",
+     "radius": "calc(infinity * 1px)",
+     "alignSelf": "stretch",
+     "shrink": "0",
+     "bg": "color-mix(#DDDDDD 10%, transparent)"
+    }
+   },
+   "26HS-0": {
+    "name": "Carte d'autorisation (bulle, textes de l'app)",
+    "w": 281,
+    "h": 118,
+    "x": 12,
+    "y": 173,
+    "st": {
+     "dir": "column",
+     "radius": "12px",
+     "gap": "10px",
+     "padding": "10px",
+     "bg": "#292929",
+     "borderWidth": "1px",
+     "borderColor": "#FFFFFF14"
+    }
+   },
+   "26I7-0": {
+    "name": "Frame",
+    "w": 259,
+    "h": 18,
+    "x": 23,
+    "y": 184,
+    "st": {
+     "align": "center",
+     "gap": "6px"
+    }
+   },
+   "26ID-0": {
+    "name": "Claude veut modifier checkout.css",
+    "w": 200,
+    "h": 18,
+    "x": 23,
+    "y": 184,
+    "st": {
+     "size": "13px",
+     "lh": "18px",
+     "weight": "500",
+     "color": "#FFFFFFE6",
+     "font": "Inter Display"
+    }
+   },
+   "26IB-0": {
+    "name": "+6",
+    "w": 15,
+    "h": 16,
+    "x": 229.5,
+    "y": 185,
+    "st": {
+     "size": "12px",
+     "lh": "16px",
+     "weight": "400",
+     "color": "#7FD39A",
+     "font": "Inter Display"
+    }
+   },
+   "26IA-0": {
+    "name": "−2",
+    "w": 13.5,
+    "h": 16,
+    "x": 250.5,
+    "y": 185,
+    "st": {
+     "size": "12px",
+     "lh": "16px",
+     "weight": "400",
+     "color": "#FF8A80",
+     "font": "Inter Display"
+    }
+   },
+   "26I3-0": {
+    "name": "Frame",
+    "w": 259,
+    "h": 30,
+    "x": 23,
+    "y": 212,
+    "st": {
+     "align": "center",
+     "height": "30px",
+     "paddingInline": "10px",
+     "gap": "8px",
+     "radius": "8px",
+     "bg": "#1F1F1F"
+    }
+   },
+   "26I4-0": {
+    "name": "Dire à Claude quoi faire à la place…",
+    "w": 182,
+    "h": 16,
+    "x": 53,
+    "y": 219,
+    "st": {
+     "size": "12px",
+     "lh": "16px",
+     "weight": "400",
+     "color": "#FFFFFF66",
+     "font": "Inter Display"
+    }
+   },
+   "26HT-0": {
+    "name": "Frame",
+    "w": 259,
+    "h": 28,
+    "x": 23,
+    "y": 252,
+    "st": {
+     "align": "center",
+     "gap": "8px"
+    }
+   },
+   "26I1-0": {
+    "name": "Interrupteur — éteint",
+    "w": 28,
+    "h": 16,
+    "x": 23,
+    "y": 258,
+    "st": {
+     "width": "28px",
+     "height": "16px",
+     "padding": "2px",
+     "radius": "8px",
+     "bg": "#FFFFFF26"
+    }
+   },
+   "26I2-0": {
+    "name": "Rectangle",
+    "w": 12,
+    "h": 12,
+    "x": 25,
+    "y": 260,
+    "st": {
+     "width": "12px",
+     "height": "12px",
+     "radius": "6px",
+     "bg": "#FFFFFF"
+    }
+   },
+   "26I0-0": {
+    "name": "Auto.",
+    "w": 28,
+    "h": 16,
+    "x": 57,
+    "y": 258,
+    "st": {
+     "size": "12px",
+     "lh": "16px",
+     "weight": "400",
+     "color": "#FFFFFFB3",
+     "font": "Inter Display"
+    }
+   },
+   "26HW-0": {
+    "name": "Frame",
+    "w": 65,
+    "h": 28,
+    "x": 136,
+    "y": 252,
+    "st": {
+     "align": "center",
+     "height": "28px",
+     "paddingInline": "10px",
+     "radius": "6px",
+     "bg": "#FFFFFF0F"
+    }
+   },
+   "26HX-0": {
+    "name": "Refuser",
+    "w": 45,
+    "h": 16,
+    "x": 146,
+    "y": 258,
+    "st": {
+     "size": "13px",
+     "lh": "16px",
+     "weight": "500",
+     "color": "#FFFFFFCC",
+     "font": "Inter Display"
+    }
+   },
+   "26HU-0": {
+    "name": "Frame",
+    "w": 73,
+    "h": 28,
+    "x": 209,
+    "y": 252,
+    "st": {
+     "align": "center",
+     "height": "28px",
+     "paddingInline": "10px",
+     "radius": "6px",
+     "bg": "#3E67FF"
+    }
+   },
+   "26HV-0": {
+    "name": "Autoriser",
+    "w": 53,
+    "h": 16,
+    "x": 219,
+    "y": 258,
+    "st": {
+     "size": "13px",
+     "lh": "16px",
+     "weight": "500",
+     "color": "#FFFFFF",
+     "font": "Inter Display"
+    }
+   }
+  },
+  "nodes": [
+   [
+    "1AQU-0",
+    "#app",
+    "f"
+   ],
+   [
+    "1AQW-0",
+    ".um .bubble",
+    "f"
+   ],
+   [
+    "1AQX-0",
+    ".um .bubble",
+    "t"
+   ],
+   [
+    "1AR0-0",
+    ".bt-model",
+    "f"
+   ],
+   [
+    "1AR4-0",
+    ".bt-model .n",
+    "t"
+   ],
+   [
+    "1AR6-0",
+    ".bt-model .e",
+    "t"
+   ],
+   [
+    "1ARB-0",
+    ".bt-stw .lb",
+    "t"
+   ],
+   [
+    "1ARC-0",
+    ".bt-text",
+    "f"
+   ],
+   [
+    "1ARD-0",
+    ".bt-text .text",
+    "t"
+   ],
+   [
+    "1ARE-0",
+    ".b-rule",
+    "f"
+   ],
+   [
+    "26HS-0",
+    ".bperm",
+    "f"
+   ],
+   [
+    "26I7-0",
+    ".bperm-file",
+    "f"
+   ],
+   [
+    "26ID-0",
+    ".bperm-file .t",
+    "t"
+   ],
+   [
+    "26IB-0",
+    ".bperm-file .num.plus",
+    "t"
+   ],
+   [
+    "26IA-0",
+    ".bperm-file .num.minus",
+    "t"
+   ],
+   [
+    "26I3-0",
+    ".bperm-in",
+    "f"
+   ],
+   [
+    "26I4-0",
+    ".bperm-in .instead",
+    "ph"
+   ],
+   [
+    "26HT-0",
+    ".bperm-ft",
+    "f"
+   ],
+   [
+    "26I1-0",
+    ".bperm .always .sw",
+    "f"
+   ],
+   [
+    "26I2-0",
+    ".bperm .always .sw i",
+    "f"
+   ],
+   [
+    "26I0-0",
+    ".bperm .always > span:last-child",
+    "t"
+   ],
+   [
+    "26HW-0",
+    ".bperm .btn:not(.primary)",
+    "f"
+   ],
+   [
+    "26HX-0",
+    ".bperm .btn:not(.primary)",
+    "tc"
+   ],
+   [
+    "26HU-0",
+    ".bperm .btn.primary",
+    "f"
+   ],
+   [
+    "26HV-0",
+    ".bperm .btn.primary",
+    "tc"
+   ]
   ]
- ],
+ },
  "c-2-autorisation-diff": [
   [
    "19RN-0",

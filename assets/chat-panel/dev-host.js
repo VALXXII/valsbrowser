@@ -147,7 +147,7 @@
     "c-2-envoye": cRun(),
     "c-2.1-survol": cRun(),
     "c-2.1-arrete": [LAY(), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: cRunning().concat([{ type: "turn.end", turnId: "t1", stopReason: "cancelled", durationMs: 9000 }]) }],
-    "c-2-autorisation": cRun({ maxHeight: 303 }).concat([C_PERM, wait(60), click(".bperm .always")]),
+    "c-2-autorisation": cRun({ maxHeight: 303 }).concat([C_PERM, wait(60)]),   // Paper 1ANU-0 (card 26HS-0, 24 Nov 2026): « Auto. » drawn off
     "c-2-autorisation-diff": cRun({ maxHeight: 303 }).concat([C_PERM, wait(60), click(".bperm .always"), click(".bperm-file"), wait(60)]),
     "c-2.2b-erreur": cError(),
     "c-2.2b-erreur-details": cError().concat([click(".bt-more"), wait(30)]),

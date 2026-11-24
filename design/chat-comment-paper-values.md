@@ -305,6 +305,7 @@ Captures de référence (export Paper 1x, PNG) : `build/chat-qa/comment-v2/paper
 
 ## 2 · Prompt envoyé (autorisation) — `1ANU-0` (1180×815)
 
+- **Planche redessinée le 24 nov. 2026 (Designer)** : la carte d'autorisation est une vraie carte, nœud `26HS-0` (#292929, bordure 1 px #FFFFFF14, rayon 12, marges et écarts de 10 px ; ligne du fichier 13 / 18 sans fond, champ #1F1F1F rayon 8 haut de 30, « Auto. » dessiné éteint #FFFFFF26, « Refuser » #FFFFFF0F texte #FFFFFFCC, boutons à 10 px de marge), la même que « App réelle · Mode Commentaire 4 » (`1V51-0`). Elle fait 118 px de haut au lieu de 104 : tout ce qui est au-dessus est 14 px plus haut. Le tableau ci-dessous est le relevé d'origine (carte `1ARF-0`, qui n'existe plus) ; les valeurs en vigueur sont dans `tests/chat-panel/fidelity.json` (`c-2-autorisation`, clé `paper`). La planche du diff en grand (`19ON-0`, carte `1AMG-0`) n'a pas été redessinée.
 - Bulle `1AQU-0` 305×303 ; élément visé `1AQJ-0` Bouton Payer (site) 520×44. Bulle − élément : x 532, y -4 ; écart horizontal bord droit élément → bord gauche bulle : 12 px ; haut bulle − bas élément : -48 px ; bulle dans le contenu web : (596, 346).
 
 ### Élément visé et marques
