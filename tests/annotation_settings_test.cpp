@@ -61,10 +61,10 @@ static void TestModel() {
         AS::Agent r = a; r.restart = true; Check(AS::StatusText(r, now) == L"Connecté · redémarrez Claude pour l'activer" && AS::ActionFor(r) == AS::Action::Disconnect, "restart: « Connecté · redémarrez Claude pour l'activer »");
         AS::Agents both; both.claude = r; both.codex = r; both.codex.app = AS::App::Codex;
         Check(AS::StatusText(both.codex, now) == L"Connecté · redémarrez Codex pour l'activer" && AS::Agents{}.codex.app == AS::App::Codex, "restart: the line names the app (Codex)"); }
-    a.lastReadAt = now - 300; Check(AS::StatusText(a, now) == L"Connecté · a lu vos annotations il y a 5 min", "read: « Connecté · a lu vos annotations il y a 5 min »");
+    a.lastReadAt = now - 300; Check(AS::StatusText(a, now) == L"Connecté · actif il y a 5 min", "read: « Connecté · actif il y a 5 min »");
     a.stalePath = true; Check(AS::ActionFor(a) == AS::Action::Reconnect && AS::ActionLabel(AS::ActionFor(a)) == std::wstring(L"Reconnecter"), "stale path: Reconnecter");
     AS::Agent reader; reader.known = reader.detected = reader.connected = true; reader.lastReadAt = now - 90000;
-    Check(AS::ActionFor(reader) == AS::Action::None && AS::StatusText(reader, now) == L"Connecté · a lu vos annotations hier", "connected by a setup we did not write: status only, nothing to undo");
+    Check(AS::ActionFor(reader) == AS::Action::None && AS::StatusText(reader, now) == L"Connecté · actif hier", "connected by a setup we did not write: status only, nothing to undo");
     AS::Agent busy; busy.known = busy.detected = true; busy.activity = AS::Activity::Connecting;
     Check(AS::StatusText(busy, now) == L"Connexion…" && AS::ActionFor(busy) == AS::Action::Connect && !AS::ActionEnabled(busy), "connecting: « Connexion… », same button, disabled");
     busy.activity = AS::Activity::Disconnecting; Check(AS::StatusText(busy, now) == L"Déconnexion…" && AS::ActionFor(busy) == AS::Action::Disconnect, "disconnecting: « Déconnexion… »");
@@ -315,7 +315,7 @@ int wmain(int argc, wchar_t** argv) {
     slots = dr.SlotsForTest();
     {
         const auto* claude = Find(slots, Kind::Agent, L"Claude Desktop"); std::wstring all; if (claude) for (auto& l : claude->lines) all += (all.empty() ? L"" : L" ") + l;
-        Check(all == L"Connecté · a lu vos annotations il y a 5 min", "Claude read the store: « Connecté · a lu vos annotations il y a 5 min »");
+        Check(all == L"Connecté · actif il y a 5 min", "Claude read the store: « Connecté · actif il y a 5 min »");
     }
     dr.KeyForTest(VK_ESCAPE); dr.SettleForTest();
     { const auto* cat = Find(dr.SlotsForTest(), Kind::Nav, L"Annotations"); Check(cat && cat->value == L"Claude", "root summary: « Claude »"); }
