@@ -4736,7 +4736,8 @@ std::wstring LayoutLine(){std::wstring line=L"layout: ";
     if(!chrome.sidebar)line+=L"top";else{const bool chosenCompact=LayoutInEffect()==BrowserSettings::TabsPosition::Compact;const bool compact=SidebarEffective()==SBar::Mode::Compact;
         line+=compact?L"compact":L"side";if(compact&&!chosenCompact)line+=L" (narrow window)" /* i18n-exempt: log line read by tests */;if(!compact)line+=L" "+std::to_wstring((int)std::lround(chrome.sidebarWidth));}
     if(forcedLayout>=0)line+=L" (this run)" /* i18n-exempt: log line read by tests */;return line;}
-void LogLayout(){static std::wstring last;if(!window)return;const auto line=LayoutLine();if(line==last)return;last=line;Log(line);}
+bool layoutApplied=false;   // LogLayout waits for the first ApplyLayout (the settings are read): never a passing « top » at start
+void LogLayout(){static std::wstring last;if(!window||!layoutApplied)return;const auto line=LayoutLine();if(line==last)return;last=line;Log(line);}
 // The start switches: --tab-layout=top|side|compact (a whole word), else --side-panel (side); -1 when neither.
 int TabLayoutArg(const wchar_t* args){if(!args)return -1;if(const wchar_t* tl=wcsstr(args,L"--tab-layout=")){tl+=13;
         for(int i=0;i<BrowserSettings::TabsPositionCount;++i){const char* k=BrowserSettings::Info(static_cast<BrowserSettings::TabsPosition>(i)).key;size_t n=0;while(k[n]&&tl[n]==(wchar_t)k[n])++n;if(!k[n]&&(!tl[n]||tl[n]==L' '||tl[n]==L'"'))return i;}return -1;}
@@ -4754,6 +4755,7 @@ float DrawerReserveDip(){if(InFullscreen()||halted)return 0;if(settingsDrawer.Op
     if(audioPanel.Docked())return NativeChrome::AudioPanel::Layout::width;return 0;}
 void SyncDrawerReserve(){static float applied=0;const float r=DrawerReserveDip();if(r==applied)return;applied=r;if(window&&!halted)Layout();}
 void ApplyLayout(){
+    layoutApplied=true;
     const bool want=SidePanelWanted();NativeChrome::ShortcutsPanel::SidePanelRows()=want;if(want==chrome.sidebar)return;
     if(tabDrag.tab)CancelTabDrag(true);sidebarHover.Close();chrome.sidebarOverlay=false;chrome.sidebarDrag=-1;chrome.sidebarInsert=-1;
     if(window){KillTimer(window,SidebarFoldTimerId);KillTimer(window,SidebarHoverTimerId);}
