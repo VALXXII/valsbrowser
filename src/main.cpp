@@ -1300,8 +1300,9 @@ bool SearchResultPage(const std::wstring& uri){for(int i=0;i<BrowserSettings::En
     const std::wstring custom=BrowserSettings::SearchTemplate(settings.customSearch);const size_t at=custom.find(L"%s");return at!=std::wstring::npos&&at>0&&uri.rfind(custom.substr(0,at),0)==0;}
 // Remembered site icons (issue #20): the favicon a tab received, kept per site in
 // <data>\favicons\<site>.png and shown by the suggestions. Never fetched while typing.
+// An import of bookmarks also leaves its sites' icons there (src/import-icons.h).
 std::map<std::wstring,std::shared_ptr<const NativeChrome::FaviconImage>> siteIcons;std::set<std::wstring> siteIconsMissing;std::map<std::wstring,size_t> siteIconsWritten;
-std::wstring SiteIconFile(const std::wstring& site){std::wstring name=site;for(auto& c:name)if(!(iswalnum(c)||c==L'.'||c==L'-'))c=L'_';return dataDir+L"\\favicons\\"+name+L".png";}
+std::wstring SiteIconFile(const std::wstring& site){return dataDir+L"\\favicons\\"+AddressBar::SiteFileName(site)+L".png";}
 std::shared_ptr<const NativeChrome::FaviconImage> DecodeIconFile(const std::wstring& path){
     std::shared_ptr<const NativeChrome::FaviconImage> image;IStream* stream=nullptr;
     if(SUCCEEDED(SHCreateStreamOnFileEx(path.c_str(),STGM_READ|STGM_SHARE_DENY_WRITE,FILE_ATTRIBUTE_NORMAL,FALSE,nullptr,&stream))&&stream){image=chrome.DecodeFavicon(stream);stream->Release();}
@@ -1312,11 +1313,13 @@ std::shared_ptr<const NativeChrome::FaviconImage> DecodeIconFile(const std::wstr
 std::map<std::wstring,std::shared_ptr<const NativeChrome::FaviconImage>> bundledIcons;
 std::shared_ptr<const NativeChrome::FaviconImage> BundledIcon(const std::wstring& site){
     auto found=bundledIcons.find(site);if(found!=bundledIcons.end())return found->second;
-    std::wstring name=site;for(auto& c:name)if(!(iswalnum(c)||c==L'.'||c==L'-'))c=L'_';
+    const std::wstring name=AddressBar::SiteFileName(site);
     std::shared_ptr<const NativeChrome::FaviconImage> image;
     for(const wchar_t* ext:{L".png",L".ico"})if(!image)image=DecodeIconFile(base+L"\\assets\\sites\\"+name+ext);
     return bundledIcons[site]=image;
 }
+// A shipped icon exists for the site (files only: no decoding, usable before the window's graphics exist).
+bool BundledIconFile(const std::wstring& site){const std::wstring name=AddressBar::SiteFileName(site);for(const wchar_t* ext:{L".png",L".ico"}){const DWORD a=GetFileAttributesW((base+L"\\assets\\sites\\"+name+ext).c_str());if(a!=INVALID_FILE_ATTRIBUTES&&!(a&FILE_ATTRIBUTE_DIRECTORY))return true;}return false;}
 std::shared_ptr<const NativeChrome::FaviconImage> SiteIcon(const std::wstring& site){
     if(site.empty())return {};auto found=siteIcons.find(site);if(found!=siteIcons.end())return found->second;
     if(!smoke&&!siteIconsMissing.count(site)){
@@ -4603,6 +4606,8 @@ void UpdateFont(){if(font)DeleteObject(font);font=CreateFontW(-S(16),0,0,0,FW_NO
 constexpr UINT EngineInstallMessage=WM_APP+41;void OnEngineInstallMessage();void StopEngineStart();
 // « Importer depuis un navigateur… » (src/browser-import-integration.h): the worker's result reaches the UI thread.
 constexpr UINT ImportMessage=WM_APP+43;void ImportFinished();
+// Icons of imported bookmarks fetched in the background (src/browser-import-integration.h): the bar redraws with them.
+constexpr UINT ImportIconsMessage=WM_APP+44;void ImportIconsArrived();
 // The monitor a maximized window fills. Restored from minimized, the window still sits at Windows' off-screen minimized
 // position (-32000, -32000) during the first size calculation: the nearest monitor is then whichever lies closest to
 // that point (a second screen on the left or above), the window was laid out once at that screen's size and back, and
@@ -4745,6 +4750,7 @@ case WM_TIMER:
     if(w==MotionTimerId){KillTimer(h,MotionTimerId);motionDeadline.reset();auto now=NativeChrome::Motion::Now();InvalidateMotion(now);ScheduleMotion(now);return 0;}if(w==1&&smoke){KillTimer(h,1);Fail(L"Smoke timeout after 60 seconds",HRESULT_FROM_WIN32(WAIT_TIMEOUT));}return 0;
 case EngineInstallMessage:OnEngineInstallMessage();return 0;
 case ImportMessage:ImportFinished();return 0;
+case ImportIconsMessage:ImportIconsArrived();return 0;
 // A window that never became ready (WebView2 recovery) never removes its session: it keeps it for the
 // relaunch or the next start. Release also gives up this window's open marker inside the profile lock.
 case WM_ACTIVATEAPP:if(!w)contentTransition.Cancel();AnnotationWindowState();break; /* another application came to the foreground; V3-B: the annotation band's wave stops in the background */

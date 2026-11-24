@@ -75,6 +75,11 @@ int wmain(int argc, wchar_t** argv) {
         Expect(Count(b, "home.example") >= 1 && Count(b, "docs.example") >= 1 && b.find("javascript:") == std::string::npos, "the bookmarks are in the profile file (script addresses left out)");
         Expect(!fs::exists(files.history) || Slurp(files.history).find("news.example") == std::string::npos, "no history was written");
         CloseHandle(h);
+        // The bar's icons come with the bookmarks: Chrome's own (its Favicons is free), in the profile's favicons folder.
+        const fs::path icons = fs::path(profile) / L"favicons";
+        const std::string home = Slurp((icons / L"home.example.png").wstring()), docs = Slurp((icons / L"docs.example.png").wstring());
+        Expect(home.rfind("\x89PNG\r\n\x1a\n", 0) == 0 && docs.rfind("\x89PNG\r\n\x1a\n", 0) == 0, "the source's icons of the imported sites are saved for the bar (home, docs)");
+        Expect(!fs::exists(icons / L"three.example.png") && !fs::exists(icons / L"localhost.png"), "a site the source has no icon for gets none from it (the browser fetches it)");
     }
     {
         // The bookmarks bar boards 4 – 5.1 show in the browser mock: the source's own bar, in order.
@@ -102,9 +107,12 @@ int wmain(int argc, wchar_t** argv) {
         Expect(Slurp(files.bookmarks) == afterFirst, "the retry did not touch the bookmarks");
     }
     {
+        const std::wstring visited = (fs::path(profile) / L"favicons" / L"home.example.png").wstring();
+        { std::ofstream out{fs::path(visited), std::ios::binary | std::ios::trunc}; out << "visited"; }   // the icon a visit left meanwhile
         const auto again = run(true, true);
         Expect(again.bookmarksSaved && again.historySaved, "importing the same source again succeeds");
         Expect(Count(Slurp(files.bookmarks), "home.example") == Count(afterFirst, "home.example"), "and adds no duplicate");
+        Expect(Slurp(visited) == "visited", "an icon already in the profile is never replaced by the source's");
     }
     {
         const auto none = run(false, false);

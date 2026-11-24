@@ -16,8 +16,80 @@
 // Logs carry counts and the source brand only: never a URL, a title or a path of the person's data.
 #include "browser-import.h"
 #include "browser-catalog.h"
+#include "import-icons.h"
 
 namespace BI = BrowserImport;
+// ---- Site icons of the imported bookmarks (src/import-icons.h) --------------------------------------------------
+// After a saved bookmarks import (Réglages here, the onboarding in onboarding-integration.h) the source's own icons are
+// already on disk, and the sites still without one are fetched by a few worker threads. Each icon a worker saves comes
+// back to the UI thread (ImportIconsMessage) as its site: that profile's negative cache forgets it and, if the profile
+// is on screen, the bar, its menus and the drawer are rebuilt with it. Counts only in the log.
+struct IconArrival { Workspace* owner = nullptr; std::wstring data, site; bool done = false; std::size_t fetched = 0, asked = 0; };
+struct IconMailbox { std::mutex lock; std::vector<IconArrival> arrived; bool posted = false; };
+// Never destroyed: a worker may still be fetching while the process runs its static destructors at exit.
+IconMailbox& ImportIconMailbox() { static IconMailbox* box = new IconMailbox; return *box; }
+void PostIconArrival(IconArrival a) {
+    auto& box = ImportIconMailbox(); bool post = false;
+    { std::lock_guard<std::mutex> guard(box.lock); if (box.arrived.size() < 4096) box.arrived.push_back(std::move(a)); if (!box.posted) box.posted = post = true; }
+    if (!post) return;
+    const HWND target = window;   // none yet during the onboarding: the files are on disk, read when the bar first asks
+    if (!target || !PostMessageW(target, ImportIconsMessage, 0, 0)) { std::lock_guard<std::mutex> guard(box.lock); box.posted = false; }
+}
+struct IconFetchJob {
+    std::vector<ImportIcons::Want> wants; std::wstring data; Workspace* owner = nullptr; HINTERNET session = nullptr;
+    std::atomic<std::size_t> next{0}, fetched{0}; std::atomic<int> running{0};
+    ~IconFetchJob() { ImportIcons::CloseSession(session); }
+};
+void FinishIconFetch(IconFetchJob& job) { IconArrival last; last.owner = job.owner; last.data = job.data; last.done = true; last.fetched = job.fetched; last.asked = job.wants.size(); PostIconArrival(std::move(last)); }
+DWORD WINAPI IconFetchWorker(LPVOID param) {
+    std::unique_ptr<std::shared_ptr<IconFetchJob>> holder(static_cast<std::shared_ptr<IconFetchJob>*>(param));
+    IconFetchJob& job = **holder;
+    for (std::size_t i = job.next++; i < job.wants.size(); i = job.next++) {
+        const ImportIcons::Want& w = job.wants[i];
+        std::string bytes;
+        try { bytes = ImportIcons::Fetch(job.session, w.origin); } catch (...) { bytes.clear(); }
+        if (ImportIcons::SaveOne(job.data, w.site, bytes)) { ++job.fetched; IconArrival a; a.owner = job.owner; a.data = job.data; a.site = w.site; PostIconArrival(std::move(a)); }
+    }
+    if (--job.running == 0) FinishIconFetch(job);
+    return 0;
+}
+// The imported sites that still have no icon (none on disk, none remembered, none shipped): fetched in the background.
+void FetchImportIcons(const std::vector<BI::Item>& roots, const wchar_t* who) {
+    if (smoke || privateWindow) return;
+    auto job = std::make_shared<IconFetchJob>();
+    job->wants = ImportIcons::Missing(dataDir, roots, [](const std::wstring& site) { return siteIcons.count(site) > 0 || BundledIconFile(site); });
+    Log(std::wstring(who) + L" icons to fetch: " + std::to_wstring(job->wants.size()));
+    if (job->wants.empty()) return;
+    job->data = dataDir; job->owner = WorkspaceNow(); job->session = ImportIcons::OpenSession();
+    if (!job->session) { Log(std::wstring(who) + L" icons not fetched: no network session"); return; }
+    const int threads = static_cast<int>(std::min<std::size_t>(4, job->wants.size()));
+    job->running = threads;
+    for (int i = 0; i < threads; ++i) {
+        auto* param = new std::shared_ptr<IconFetchJob>(job);
+        if (HANDLE t = CreateThread(nullptr, 0, IconFetchWorker, param, 0, nullptr)) { CloseHandle(t); continue; }
+        delete param;
+        if (--job->running == 0) FinishIconFetch(*job);
+    }
+}
+// UI thread: the icons the workers saved since the last message.
+void ImportIconsArrived() {
+    std::vector<IconArrival> arrived;
+    { auto& box = ImportIconMailbox(); std::lock_guard<std::mutex> guard(box.lock); arrived.swap(box.arrived); box.posted = false; }
+    std::vector<std::pair<Workspace*, std::wstring>> refresh;
+    for (const IconArrival& a : arrived) {
+        if (a.done) { Log(L"IMPORT icons fetched: " + std::to_wstring(a.fetched) + L" of " + std::to_wstring(a.asked)); continue; }
+        if (halted || WorkspaceDead(a.owner)) continue;
+        WorkspaceScope scope(a.owner);
+        if (dataDir != a.data) continue;   // that profile is not in this window any more
+        siteIconsMissing.erase(a.site);
+        if (std::find(refresh.begin(), refresh.end(), std::make_pair(a.owner, a.data)) == refresh.end()) refresh.push_back({a.owner, a.data});
+    }
+    for (const auto& [owner, data] : refresh) {
+        if (halted || WorkspaceDead(owner)) continue;
+        WorkspaceScope scope(owner);
+        if (dataDir == data && !WorkspaceParked()) BookmarksChanged();   // a parked profile rebuilds its bar when it comes back
+    }
+}
 // The destination named in the dialog: pinned when the dialog opens, checked again when « Importer » is pressed and
 // when the read comes back. If this window shows another profile at either moment, nothing is written.
 struct ImportDestination {
@@ -181,8 +253,12 @@ void ImportFinished() {
                 anySaved = true; bookmarksSaveFailed = false; if (c.counts.Left()) anyLeft = true;
                 if (!bookmarks.Find(lastFolder)) lastFolder = BM::BarRoot;
                 lines.push_back(TRF(import_result_bookmarks, BI::CountsText(c.counts)));
-                Log(L"IMPORT bookmarks saved " + ImportCountsLog(c.counts) + L" ignored=" + std::to_wstring(r.ignored));
+                // The source's own icons of these sites, on disk before the bar is rebuilt (src/import-icons.h).
+                const std::vector<std::wstring> icons = ImportIcons::Save(dataDir, r.icons);
+                for (const auto& site : icons) siteIconsMissing.erase(site);
+                Log(L"IMPORT bookmarks saved " + ImportCountsLog(c.counts) + L" ignored=" + std::to_wstring(r.ignored) + L" icons=" + std::to_wstring(icons.size()));
                 BookmarksChanged();
+                FetchImportIcons(r.roots, L"IMPORT");
             } else { failed(TR(import_item_bookmarks), c.identity == BI::Identity::Newer ? TR(import_map_newer) : c.identity == BI::Identity::Damaged ? TR(import_map_damaged) : c.identity == BI::Identity::Full ? TR(import_map_full) : TR(import_save_failed)); Log(L"IMPORT bookmarks save failed result=" + std::to_wstring(static_cast<int>(c.result)) + L" identity=" + std::to_wstring(static_cast<int>(c.identity))); }
         }
     }

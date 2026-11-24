@@ -95,6 +95,11 @@ def existing_fixtures() -> None:
     import_work = OUT / 'browser-import-work'
     import_work.mkdir(parents=True, exist_ok=True)
     fixture('browser_import_test', [*STRICT, '-Isrc', 'tests/browser-import/browser_import_test.cpp', '-lshell32', '-lole32', '-ladvapi32'], [import_work])
+    # Imported bookmarks' site icons (src/import-icons.h): the source's own (synthetic Chromium / Firefox / HTML), saved
+    # without replacing any, the missing ones fetched from loopback servers only (127.0.0.1, ephemeral ports)
+    icons_work = OUT / 'import-icons-work'
+    icons_work.mkdir(parents=True, exist_ok=True)
+    fixture('import_icons_test', [*STRICT, '-Isrc', 'tests/browser-import/import_icons_test.cpp', '-lshell32', '-lole32', '-ladvapi32', '-lws2_32'], [icons_work])   # WinHTTP: loaded at run time, as in the browser
     # Settings wiring of the import row and the password manager row (main.cpp hooks + real drawer, synthetic hooks)
     fixture('import_settings_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/browser-import/import_settings_test.cpp', 'src/native-lottie.cpp', THORVG,
             *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt'], [ROOT])

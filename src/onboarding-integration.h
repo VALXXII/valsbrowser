@@ -81,6 +81,7 @@ void OnboardingImportRead(WPARAM token) {
     const OI::Files files{dataDir, BookmarksFile(), HistoryFile(), dataDir + L"\\bookmark-imports"};
     const OB::ImportOutcome outcome = OI::Commit(files, job->source, job->name, job->options, job->result, NativeChrome::DownloadsUI::UnixNowMs(),
                                                  [](const std::wstring& u) { return SearchResultPage(u); }, [](const std::wstring& line) { Log(line); });
+    if (outcome.bookmarksSaved) FetchImportIcons(job->result.bookmarks.roots, L"ONBOARDING");   // the source's icons are saved by Commit
     onboardingUi->ImportFinished(job->token, outcome);
 }
 // Read before SelectProfile (which creates the registry): is this a first run, or was the window asked for?
@@ -145,6 +146,8 @@ void OnboardingShowBrowser(int show) {
 }
 // Once the browser window is shown.
 void OnboardingAfterStart() {
+    // Icons the import's fetch saved before this window existed: their arrivals are taken in now (counts logged).
+    if (window) PostMessageW(window, ImportIconsMessage, 0, 0);
     if (!onboardingAnnotate || !window) return;
     onboardingAnnotate = false;
     SetTimer(window, OnboardingAnnotateTimerId, 900, [](HWND h, UINT, UINT_PTR id, DWORD) { KillTimer(h, id); if (!halted && !privateWindow) { Log(L"ONBOARDING opens the agent connection"); AnnotationOpenConnect(false); } });
