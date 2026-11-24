@@ -1334,11 +1334,10 @@ I18N(connect_failed_announce, L"Échec : {0}", L"Failed: {0}")
 I18N(connect_impossible, L"connexion impossible", L"couldn’t connect")
 
 // ---- Annotations: mode, availability, steps, context menu (src/annotation-mode.h) ----
-I18N(annotate_no_private, L"indisponible en navigation privée", L"unavailable in private browsing")
 I18N(annotate_no_page, L"aucune page", L"no page")
 I18N(annotate_open_web_page, L"ouvrez une page Web pour l'annoter", L"open a web page to annotate it")
 I18N(annotate_no_internal, L"indisponible sur une page interne", L"unavailable on an internal page")
-I18N(annotate_http_only, L"seules les pages http et https s'annotent", L"only http and https pages can be annotated")
+I18N(annotate_local_only, L"marche sur vos projets locaux", L"works on your local projects")
 I18N(annotate_no_fullscreen, L"indisponible en plein écran", L"unavailable in full screen")
 I18N(annotate_tip_quit, L"Quitter le mode Annotation (Ctrl+Maj+A)", L"Exit Annotation mode (Ctrl+Shift+A)")
 I18N(annotate_tip_unavailable, L"Annoter — {0}", L"Annotate — {0}")

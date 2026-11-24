@@ -47,6 +47,7 @@
 #include "annotation-problem.h"
 #include "agent-connect.h"
 #include "annotation-ui.h"
+#include "annotation-sites.h"        // #125: « Annoter » on local projects and files only (the one rule)
 #include "annotation-onboarding.h"   // #125: the mode's onboarding (variant A), in the place of « Connecter un agent » the first time
 #include "annotation-script.h"
 #include "annotation-host.h"
@@ -264,13 +265,16 @@ void Run(std::function<void()> work, std::function<void()> done) {
 
 // ---------------------------------------------------------------- availability, chrome, launcher
 std::shared_ptr<Tab> ModeTab() { return s.active ? s.tab.lock() : nullptr; }
+// #125: the mode starts only where src/annotation-sites.h allows it — local projects (localhost, 127.x, [::1],
+// *.localhost) and local files — in a normal window as in a private one (AnnotationSites::OnlineInPrivateWindow). Anywhere
+// else the toolbar button keeps its unavailable state: « Annoter — marche sur vos projets locaux ».
+bool SiteAllowed(const std::wstring& url) { return AnnotationSites::Allowed(AH::Utf8(url), privateWindow); }
 bool Available(const std::shared_ptr<Tab>& t, std::wstring* why) {
     auto no = [&](const wchar_t* w) { if (why) *why = w; return false; };
-    if (privateWindow) return no(TR(annotate_no_private));
     if (halted || !t || t->closed || !t->view.p || !t->controller.p) return no(TR(annotate_no_page));
     if (t->home) return no(TR(annotate_open_web_page));
     if (!t->https.shown.empty() || !t->errorPage.shown.empty() || t->sandbox || IsSandboxUri(t->uri)) return no(TR(annotate_no_internal));
-    if (t->uri.rfind(L"http://", 0) != 0 && t->uri.rfind(L"https://", 0) != 0) return no(TR(annotate_http_only));
+    if (!SiteAllowed(t->uri)) return no(TR(annotate_local_only));
     if (InFullscreen() || PageFullscreenActive()) return no(TR(annotate_no_fullscreen));
     return true;
 }
@@ -297,7 +301,7 @@ void RefreshCount();
 // V3 (retours §6): only in the mode, on the mode's tab, never in full screen.
 bool LauncherWanted() {
     auto t = Active();
-    return s.active && ModeTab() == t && !privateWindow && !halted && t && !t->closed && !InFullscreen() && !PageFullscreenActive() && !IsIconic(window) && !Chat::Open()
+    return s.active && ModeTab() == t && !halted && t && !t->closed && !InFullscreen() && !PageFullscreenActive() && !IsIconic(window) && !Chat::Open()
         && Chat::CommentLauncherCount(false) != 0;   // D3: in Mode Commentaire, only when a conversation's element is gone
 }
 void ShowLauncher(int delayMs = 0) {
@@ -1376,6 +1380,9 @@ bool AnnotationPageMessage(const std::shared_ptr<Tab>& t, ICoreWebView2WebMessag
     if (t != Active()) { LogOnce(L"inactive tab"); return true; }   // i18n-exempt: log reason
     if (source != s.source) { LogOnce(L"source"); return true; }
     if (t->navStamp != s.navStamp) { LogOnce(L"navStamp"); return true; }
+    // #125, belt and braces: whatever path brought the mode here, a page that is not a local project or file gets no
+    // selection, no note and no bubble — its message ends the mode (the button then shows why it is off).
+    if (!SiteAllowed(source) || !SiteAllowed(t->uri)) { Log(L"ANNOTATE message from a page that is not local: mode off"); Exit(L"page not local", true); return true; }   // i18n-exempt: log reason
     const auto c = AH::CheckMessage(utf8, s.nonce, std::int64_t(s.navStamp));
     // R45 (125 / 150 %): the page's zoom as it is NOW (Ctrl+= / Ctrl+- after the mode started): the bubble's first
     // placement (« selecting ») converts the element's CSS px with it; a stale 100 % put the bubble over the labels for
@@ -1418,7 +1425,7 @@ bool AnnotationCommand(int cmd) {
 bool AnnotationHistoryAvailable() { return !privateWindow && !halted; }
 // ---- src/annotation-entry.h (settings section « Annotations »)
 std::wstring AnnotationStoreRoot() { return Ann::Store().Root(); }
-void AnnotationOpenConnect(bool manual) { if (!privateWindow && !halted) Ann::OpenConnect(false, manual); }
+void AnnotationOpenConnect(bool manual) { if (!halted) Ann::OpenConnect(false, manual); }
 void AnnotationConnectAgent(AnnotationApp app, bool on, std::function<void(bool, const std::wstring&)> done) {
     Ann::ConnectApp(app == AnnotationApp::Claude ? Ann::AUI::AgentKind::Claude : Ann::AUI::AgentKind::Codex, on,
                     [done](const AgentConnect::Report& r) { if (done) done(r.ok(), AnnotationHost::Wide(r.message)); });
