@@ -23,8 +23,8 @@ document. Rien n'a été lancé en vraie fenêtre ; seules des suites sans fenê
   corrections. Chaque lot doit passer le test général en entier avant de sortir.
 - **Le test général** (§4) : une partie sans fenêtre (≈ 15 min, faisable en journée) et une partie en vraie fenêtre pour la
   nuit (≈ 1 h 45 à 2 h 15). Il refuse de dire « vert » si une seule suite est sautée, filtrée ou relancée.
-- **6 décisions à prendre** (§5), dont une importante : #130 contredit une décision du 20 novembre (R29, « la bulle ne
-  bouge jamais, l'utilisateur défile »).
+- **Décisions** (§5) : 2 sont prises depuis le 24 novembre. #130 l'emporte sur R29 : la bulle reste toujours entière
+  dans la fenêtre. Builder code l'extinction d'Annoter hors projet local, avec l'onboarding #125. **4 restent à prendre.**
 
 ## 1. Sources et versions
 
@@ -60,7 +60,7 @@ Versions publiques qui comptent pour le mode annotation (dépôt `browser-releas
 | Famille | Total | Corrigés et publiés | Revenus | Ouverts |
 |---|---|---|---|---|
 | Revue du 21/11 | 35 | 32 | 0 | 3 avec une variante ouverte (E4, M15, F11) |
-| Retours R1–R48 (+ R39b) | 49 | 44 | 3 (R2, R13, R47) | 2 (R39, R39b) ; R29 à redécider |
+| Retours R1–R48 (+ R39b) | 49 | 44 | 3 (R2, R13, R47) | 2 (R39, R39b) ; R29 remplacé par #130 (décision du 24/11) |
 | Annotations V2 (11) et chat V1.2 (7) | 18 | 17 | 0 | 1 à prouver avec un vrai agent |
 | QA du 22/11 | 4 | 0 | — | 4 |
 | Vus après la sortie (dossier, compteur, bandeau) | 3 | 3 | 1 (dossier) | 0 |
@@ -188,7 +188,7 @@ Tous sortis en 0.3.630 sauf mention. « Parcours » = nom dans `tests/chat/final
 | R25 | Bandeau qui glisse | Corrigé | `comment-v4b` (pas rejouée) |
 | R26 | Survol d'une puce = la page défile | Corrigé | Parcours `r26_survol_puce` |
 | R28, R46 | Bas de la saisie stable, mode jamais sur « Auto » tout seul | Corrigé | Parcours `r46_coller_mode_stable` ; reste O8 |
-| R29 | Position figée une fois posée | Fait comme décidé | **Contredit par #130 : décision à reprendre (§5)** |
+| R29 | Position figée une fois posée | **Remplacé le 24/11** : #130 l'emporte, la bulle reste entière dans la fenêtre | Code actuel encore selon R29 (`src/chat-comment.h:261-263`) ; nouvelles attentes au §4.4 |
 | R31 | Ctrl maintenu = site normal | Corrigé | Parcours `r31_ctrl_maintenu` |
 | R32 | Régression de R2 | Corrigé | Parcours `r02_…` |
 | R34, R35 | Bascule Commentaire / Chat, brouillons séparés | Corrigé | Parcours `r34_r35_bascules_mode` |
@@ -259,7 +259,7 @@ tester, pas des lignes de l'inventaire. O12 (fichiers locaux, fenêtre privée) 
 
 | Zone | Bug | Correctif prévu | Test qui le prouve |
 |---|---|---|---|
-| Bulle | O1 | Suivre la branche en cours. Règle visée (ticket #130) : la bulle reste entière dans la fenêtre ; au-dessus de l'élément s'il n'y a pas de place dessous, sinon hauteur limitée avec défilement intérieur et boutons toujours visibles. Refaire le calcul à chaque nouvelle hauteur, pas une fois par ouverture | Nouveau parcours `o1_bulle_bas_de_fenetre` : élément en bas d'une page qui ne défile pas, autorisation, clic réel sur Autoriser et sur Refuser, à 100 / 125 / 150 % et 3 tailles de fenêtre. Test de propriété sans fenêtre sur `ChatBubble` : pour toute position et toute hauteur, la surface est dans la zone |
+| Bulle | O1 | Suivre la branche en cours. Règle décidée le 24/11 : la bulle reste toujours entière dans la fenêtre (#130 remplace R29). La façon exacte de la placer (variante A, B ou C) est en cours de choix avec Designer. Dans tous les cas : refaire le calcul à chaque nouvelle hauteur, pas une fois par ouverture | Attentes du §4.4. Nouveau parcours `o1_bulle_bas_de_fenetre` : élément en bas d'une page qui ne défile pas, autorisation, clic réel sur Autoriser et sur Refuser, à 100 / 125 / 150 % et 3 tailles de fenêtre. Test de propriété sans fenêtre sur `ChatBubble` : pour toute position et toute hauteur, la surface est dans la zone |
 | Bulle | O5 | Rejouer monkey graine 1 jusqu'à #82 et #110, lire le journal, corriger le calcul de la place offerte après redimensionnement et le cadre gardé après un menu | Parcours `o5_redimensionnement_saisie` et `o5_menu_ne_bouge_pas` ; invariant « la saisie est dans la surface » après chaque action du monkey |
 | Bulle | O4 | Mesurer d'abord, image par image, les trois réglages déjà dans le code (tout de suite, une image plus tard, prédiction). Si aucun ne tient ± 2 px, c'est une limite de la fenêtre séparée : proposer une alternative au propriétaire, sans l'appliquer | `tests/chat/chat_qa_comment_v5.py` (`follow`, `edge_frames`), seuil inchangé |
 | Bulle | O6 | Lire les temps par phase déjà écrits dans le journal (`src/chat-comment.h:681-683`), traiter la phase la plus lente | Invariant « ouverture < 150 ms » sur chaque parcours |
@@ -269,7 +269,7 @@ tester, pas des lignes de l'inventaire. O12 (fichiers locaux, fenêtre privée) 
 | Menu des modèles, connexion | O8 | Pas de correctif connu : écrire les scénarios, corriger ce qu'ils trouvent | 4 parcours sur profil neuf : agent absent, agent pas connecté, Node.js à télécharger, cache vide puis liste reçue |
 | Autorisations | O10 | Rien à corriger a priori | Parcours clavier : Tab, Entrée, Échap sur la carte, délai de 600 ms, touche maintenue, deux cartes de suite ; bulle et panneau |
 | Chat | O7 | Selon la décision 3 : retirer tout le lot (hôte, page, tests), ou le réparer | Si retiré : le contrat vérifie qu'il ne reste rien. Si gardé : `chat_qa.py run`, étapes 6.15 à 6.17 |
-| Local / en ligne | #125, O12 | Bouton Annoter éteint hors projet local avec son explication ; plus de note native sur un site en ligne. Un seul propriétaire avec la branche `VALXXII/125-annotation-onboarding` (décision 6) | Parcours `local_en_ligne` : localhost, 127.0.0.1, `*.localhost`, site en ligne, faux localhost (`localhost.example.com`), `file://`, fenêtre privée. `ChatLocal::Classify` est déjà couvert en unité |
+| Local / en ligne | #125, O12 | L'extinction d'Annoter hors projet local (bouton éteint, explication) est codée par **Builder**, avec l'onboarding #125 (décision 6, même fichier `src/annotation-mode.h`). De notre côté : les tests, et ce qui reste de O12 une fois la décision 2 prise (fichiers locaux, fenêtre privée) | Parcours `local_en_ligne` : localhost, 127.0.0.1, `*.localhost`, site en ligne, faux localhost (`localhost.example.com`), `file://`, fenêtre privée. `ChatLocal::Classify` est déjà couvert en unité |
 | MCP, agents | O9 | Rien à corriger avant d'avoir vu | Sans fenêtre : annotation gardée, lue, prise, terminée par le client de test du pont (`tests/annotations`). En vrai : un essai Claude Code et un essai Codex dans le bac à sable, avec accord (décision 4) |
 
 ### 3.3 Lots
@@ -279,13 +279,13 @@ Les durées sont des **estimations**. Elles comptent le travail et une nuit de t
 | Lot | Contenu | Estimation | Dépend de |
 |---|---|---|---|
 | **0 — Filet de sécurité** | Aucun changement du produit. Commiter les 4 documents de retours. Fusionner les 2 commits de diagnostic. Écrire le lanceur du test général (§4), le Job Object, la table de couverture. Première nuit complète sur main : c'est la vraie liste des échecs. Trier les 7 anciennes suites : test périmé ou vrai bug | 1 jour + 1 nuit | Fusion de `fix-129-bubble-model-menu` |
-| **1 — Bulle et clic** | O1 et O2 revérifiés par le test général, O3, O5 | 1 à 1,5 jour + 1 nuit | Lot 0 ; décision 1 |
+| **1 — Bulle et clic** | O1 et O2 revérifiés par le test général, O3, O5 | 1 à 1,5 jour + 1 nuit | Lot 0 ; variante de placement choisie (A, B ou C) |
 | **2 — Premier lancement et autorisations** | O8, O10 | 1 jour + 1 nuit | Lot 0 |
-| **3 — Projets locaux seulement** | #125 côté mode, O12 ; retirer des tests les chemins « site en ligne » | 1 jour + 1 nuit, une fois la maquette validée | Décisions 2 et 6 ; maquette #125 v2 |
+| **3 — Projets locaux seulement** | Pas l'extinction elle-même (Builder). Le parcours `local_en_ligne`, le retrait des tests des chemins « site en ligne », et ce qui reste de O12 | 0,5 jour + 1 nuit | Travail #125 de Builder fusionné ; décision 2 |
 | **4 — Défilement et vitesse** | O4, O6 | 1 à 2 jours + 1 nuit. Incertain : O4 peut finir en décision de design | Lot 1 |
 | **5 — Agents réels, nettoyage** | O9, O7, O11 ; passage avec le Narrateur | 1 jour + 1 nuit | Décisions 3 et 4 |
 
-Total estimé : 6 à 7,5 jours de travail et 6 nuits. Règle de sortie : un lot ne part que si le test général est vert **en
+Total estimé : 5,5 à 7 jours de travail et 6 nuits. Règle de sortie : un lot ne part que si le test général est vert **en
 entier** sur le commit exact qui sort.
 
 ## 4. Test général
@@ -356,21 +356,64 @@ Ordre :
 Ne sont **pas** dans ce test : `tests/update-integration/run_all.py` (installateur, fenêtres réelles, tournée de nuit à
 part), `test-password-vault.ps1`, `tests/landing/`.
 
-## 5. Décisions à prendre et maquettes
+### 4.4 Comportement attendu de la bulle (décision 1 du 24/11)
+
+**#130 l'emporte sur R29.** La règle du 20/11 (« position figée, jamais replacée pour tenir dans la fenêtre,
+l'utilisateur défile ») n'est plus vérifiée. Le test général vérifie à la place :
+
+1. **Bulle entière.** Tant qu'une bulle est affichée, toute sa surface est dans la zone de page de la fenêtre : jamais
+   coupée par un bord, jamais sur les barres du navigateur. Vérifié à l'ouverture, après chaque changement de hauteur
+   (nouvelle carte, autorisation, erreur, diff ouvert ou fermé, poignée), après un redimensionnement de la fenêtre et
+   après un changement de zoom.
+2. **Actions toujours atteignables.** Quand une carte attend une réponse, Refuser et Autoriser sont visibles en entier
+   et répondent à un vrai clic. La saisie et son bouton d'envoi aussi. Y compris quand la page du site ne peut pas défiler.
+3. **Rien de perdu.** Si le contenu est plus haut que la place, il défile à l'intérieur de la bulle ; aucun message
+   n'est rogné sans moyen de le lire.
+4. **Pas de saut.** Ce qui était déjà vrai reste vérifié : pas d'image intermédiaire, les cartes déjà affichées ne
+   bougent pas quand une nouvelle arrive, un menu ne déplace pas la surface.
+
+Trois attentes dépendent de la variante (A, B ou C) et sont **à compléter quand elle est choisie** :
+
+- où va la bulle quand il n'y a pas la place à côté de l'élément (au-dessus, glissée, par-dessus l'élément) ;
+- ce qu'elle fait quand son élément sort de la zone visible au défilement (elle le suit et sort, elle reste au bord,
+  elle se masque) : c'est ce point qui dit comment lire la règle 1 pendant un défilement ;
+- si le navigateur fait encore défiler la page du site pour montrer une carte (correctif de R47), ou plus jamais.
+
+Tests écrits pour R29 dont l'attente change. Chaque changement sera listé dans le rapport (règle 7 du §4.1) avec la
+référence « décision 1 du 24/11 » :
+
+| Test | Attente actuelle (R29) | Devient |
+|---|---|---|
+| `tests/chat/chat_units_test.cpp:579` | « never moved to fit the window (the user scrolls) » : le bas peut dépasser la zone | La surface ne dépasse jamais la zone |
+| `tests/chat/chat_units_test.cpp:587` | Une seule exception, en fin de document, un seul décalage | Règle générale, à chaque nouvelle hauteur |
+| `tests/chat/host_contract_test.py:286` | La hauteur n'est jamais limitée par la place sous le bord fixe | Supprimé ou inversé, selon la variante |
+| `tests/chat/final/journeys.py:128` (`r44_…`) | Hauteur naturelle, jamais réduite pour tenir | Entière dans la zone, à l'ouverture et après |
+| `tests/chat/final/journeys.py:150` (`r47_…`) | La page du site défile pour montrer la carte | Boutons visibles sans compter sur le défilement de la page |
+| `tests/chat/final/journeys.py:383` | Pendant le tour, la bulle ne bouge jamais | Elle peut se replacer pour rester entière ; sans saut |
+| `tests/chat/chat_qa_comment_v4.py:173` | La surface garde son coin au pixel pendant le tour et le diff | Idem tant qu'elle tient ; sinon replacée, entière |
+| `tests/chat/chat_qa_comment_v4b.py:280` (T4) | Fin de document : un décalage au plus | Entière partout, pas seulement en fin de document |
+
+Restent tels quels : « jamais sur les barres du navigateur » (`chat_units_test.cpp:589`), l'arrivée douce d'une nouvelle
+carte (`tests/chat-panel/run.py:875-879`), la poignée et ses bornes (R40).
+
+La branche `VALXXII/fix-129-bubble-model-menu` modifie déjà une partie de ces fichiers : les numéros de ligne sont ceux de
+main `86697e0` et seront à relire après sa fusion.
+
+## 5. Décisions et maquettes
 
 | # | Décision | Pourquoi |
 |---|---|---|
-| 1 | **#130 remplace-t-il R29 ?** Le 20/11 : « la bulle garde sa position, ne se replace jamais, l'utilisateur défile ». #130 : « la bulle reste toujours entièrement dans la fenêtre » | Les deux ne tiennent pas ensemble. Le test général doit savoir laquelle vérifier |
+| 1 | ~~#130 remplace-t-il R29 ?~~ **Tranchée le 24/11 : oui.** La bulle reste toujours entièrement dans la fenêtre. La variante de placement (A, B ou C) est en cours de choix avec Designer | Attentes du test au §4.4 ; trois points à compléter avec la variante |
 | 2 | **Fichiers locaux (`file://`) et fenêtre privée après #125 : Annoter allumé ou éteint ?** | Aujourd'hui le chat y est coupé et la vieille note s'ouvre |
 | 3 | **Le « lot » (Traiter les annotations) : on le retire en entier ?** | R24 a retiré la suggestion, le reste traîne ; le bouton « Traiter avec l'agent » de l'historique n'a jamais été dessiné |
 | 4 | **Un essai réel avec Claude Code et un avec Codex** (une petite demande chacun, dans la copie du bac à sable) | Seule façon de prouver O9 ; utilise les comptes du propriétaire |
 | 5 | **150 ms et ± 2 px : obligatoires pour sortir, ou objectifs ?** | O4 peut être une limite technique de la bulle en fenêtre séparée |
-| 6 | **Qui code l'extinction hors projet local : Builder (avec l'onboarding) ou Fix ?** | Même fichier (`src/annotation-mode.h`) que la branche de l'onboarding |
+| 6 | ~~Qui code l'extinction hors projet local ?~~ **Tranchée le 24/11 : Builder**, avec l'onboarding #125 | Même fichier (`src/annotation-mode.h`). Notre lot 3 ne garde que les tests et le reste de O12 |
 
 Maquettes : je n'ai **pas ouvert Paper** pour ce document. Points à confirmer avec Designer avant de coder :
 
-- O1 : bulle à hauteur limitée, défilement intérieur, boutons d'autorisation toujours visibles (la planche `1ANU-0` montre
-  la carte entière ; l'état « limité » est à vérifier).
+- O1 : la variante de placement (A, B ou C) en cours de choix ; elle doit couvrir la bulle à hauteur limitée, le
+  défilement intérieur et les boutons d'autorisation toujours visibles (la planche `1ANU-0` montre la carte entière).
 - #125 : bouton Annoter éteint et son info-bulle (planche A2 de la v1 ; la v2 attend le choix du propriétaire).
 - O4 : si le suivi parfait est impossible, une alternative est à dessiner (R39b le prévoit : « proposer sans appliquer »).
 - C3 : bulle gardée à sa dernière place quand son élément a disparu pendant le travail : aucun état visuel connu.
