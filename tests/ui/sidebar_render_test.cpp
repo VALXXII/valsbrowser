@@ -187,6 +187,26 @@ int wmain(int argc, wchar_t** argv) {
         Check(SUCCEEDED(c.SavePng((out + L"\\anim-reordonner-60ms.png").c_str())), "frame: reorder");
         c.Paint(five, 0, L"", false, 0, 0, nullptr, t4 + Motion::Milliseconds(1500)); Check(Near(c.RowShift(2, t4 + Motion::Milliseconds(1500)), -step, .05f) && Near(c.liftGrow.Value(t4 + Motion::Milliseconds(1500)), 1.02f, .001f), "settled: a whole step, x1.02");
         c.sidebarDrag = -1; c.sidebarInsert = -1;
+        // Spec §4 « Repère de vue partagée »: a pair made from the menu (tab 5 joins tab 2, the active one): the moved rows
+        // slide from their former slots (.3 s), the frame grows from the active row to the block, the line comes once they touch.
+        c.Paint(five, 1, L"", false, 0, 0, nullptr, t4 + Motion::Milliseconds(2000)); c.Paint(five, 1, L"", false, 0, 0, nullptr, t4 + Motion::Milliseconds(3000));
+        Check(Near(c.RowShift(2, t4 + Motion::Milliseconds(3000)), 0, .05f), "the drag ended without a drop: the stepped-aside rows went home");
+        const auto t5 = t4 + Motion::Milliseconds(4000); c.Paint(five, 1, L"", false, 0, 0, nullptr, t5);
+        std::vector<std::wstring> moved = {five[0], five[1], five[4], five[2], five[3]}; c.tabKeys = {1, 2, 5, 3, 4}; c.tabGroups = {0, 7, 7, 0, 0};
+        c.Paint(moved, 1, L"", false, 0, 0, nullptr, t5); const auto t5b = t5 + Motion::Milliseconds(80); c.Paint(moved, 1, L"", false, 0, 0, nullptr, t5b);
+        {   const auto& mk = c.splitMarks[7]; const float sl = c.RowShift(5, t5b), up = c.RowShift(3, t5b), h = mk.b.Value(t5b) - mk.t.Value(t5b);
+            const float H = c.side.blocks.empty() ? 0.f : c.side.blocks[0].Height(), rowH = c.side.tabs[1].Height() + 2 * Sidebar::Split::pad;
+            std::snprintf(msg, sizeof msg, "§4: rows slide together (%.1f, %.1f), the frame grows from the active row (%.1f of %.1f..%.1f), no line yet", sl, up, h, rowH, H);
+            Check(sl > 2 && sl < 2 * pitch && up < -2 && h > rowH + 1 && h < H - 1 && mk.line.Value(t5b) < .01f, msg);
+            Check(SUCCEEDED(c.SavePng((out + L"\\anim-paire-80ms.png").c_str())), "frame: pair"); }
+        c.Paint(moved, 1, L"", false, 0, 0, nullptr, t5 + Motion::Milliseconds(1500)); c.Paint(moved, 1, L"", false, 0, 0, nullptr, t5 + Motion::Milliseconds(1800));
+        {   const auto tz = t5 + Motion::Milliseconds(1800); const auto& mk = c.splitMarks[7];
+            Check(Near(c.RowShift(5, tz), 0, .05f) && Near(mk.b.Value(tz) - mk.t.Value(tz), c.side.blocks[0].Height(), .05f) && mk.line.Value(tz) > .99f, "§4: settled, the block and its line"); }
+        // Separation: the line fades out, the frame goes back to the row it came from.
+        const auto t6 = t5 + Motion::Milliseconds(3000); c.tabGroups.clear(); c.Paint(moved, 1, L"", false, 0, 0, nullptr, t6); c.Paint(moved, 1, L"", false, 0, 0, nullptr, t6 + Motion::Milliseconds(60));
+        Check(c.splitMarks.count(7) && c.splitMarks[7].leaving && c.splitMarks[7].line.Value(t6 + Motion::Milliseconds(60)) < .99f, "§4: separated, the line fades out");
+        c.Paint(moved, 1, L"", false, 0, 0, nullptr, t6 + Motion::Milliseconds(1500)); c.Paint(moved, 1, L"", false, 0, 0, nullptr, t6 + Motion::Milliseconds(1600));
+        Check(!c.splitMarks.count(7), "§4: the frame gone once back on its row");
     }
     {   // Val (24 nov.): the address field is ONE colour while typing: the native EDIT's colour (WM_CTLCOLOREDIT uses
         // Chrome::EditSurface) is the colour painted under it, in the column, the compact bar and the top bar; the EDIT spans
@@ -285,12 +305,24 @@ int wmain(int argc, wchar_t** argv) {
             Check(std::abs(edge(3, 0) - 0x17) <= 1 && std::abs(edge(1, 0) - 0x3E) <= 1, "no designation: no outline");
             c.menuSource = 3; c.Paint(titles, 1, L"", false, 0, 0);
             Check(std::abs(edge(3, 0) - 0x17) <= 1, "the right-clicked tab alone is not outlined");
-            c.menuTargets = {1}; c.Paint(titles, 1, L"", false, 0, 0);
+            // Motion spec §4: the outline fades in over 100 ms (and out the same way).
+            const auto t0 = Motion::Now(); c.menuTargets = {1}; c.Paint(titles, 1, L"", false, 0, 0, nullptr, t0);
+            Check(std::abs(edge(1, 0) - 0x3E) <= 2 && std::abs(edge(3, 0) - 0x17) <= 2, "§4: the outline starts invisible");
+            c.Paint(titles, 1, L"", false, 0, 0, nullptr, t0 + std::chrono::milliseconds(50));
+            Check(edge(3, 0) > 0x17 + 8 && edge(3, 0) < 0x8C - 8, "§4: half-way through its 100 ms fade");
+            c.Paint(titles, 1, L"", false, 0, 0, nullptr, t0 + std::chrono::milliseconds(150));
             Check(std::abs(edge(1, 0) - 0x8C) <= 2 && std::abs(edge(3, 0) - 0x8C) <= 2, compact ? "compact: target and right-clicked tab outlined #8C8C8C" : "panel: target and right-clicked tab outlined #8C8C8C");
             Check(std::abs(edge(1, 1) - 0x3E) <= 1 && std::abs(edge(3, 1) - 0x17) <= 1, "1 DIP, inside the row");
             Check(std::abs(edge(0, 0) - 0x17) <= 1 && std::abs(edge(2, 0) - 0x17) <= 1 && std::abs(edge(4, 0) - 0x17) <= 1, "the other rows: no outline");
-            c.menuTargets.clear(); c.menuSource = -1; c.Paint(titles, 1, L"", false, 0, 0);
+            const auto t1 = t0 + std::chrono::milliseconds(300); c.menuTargets.clear(); c.menuSource = -1; c.Paint(titles, 1, L"", false, 0, 0, nullptr, t1);
+            Check(std::abs(edge(3, 0) - 0x8C) <= 2, "§4: the menu closed, the outline fades out (not cut)");
+            c.Paint(titles, 1, L"", false, 0, 0, nullptr, t1 + std::chrono::milliseconds(150));
             Check(std::abs(edge(1, 0) - 0x3E) <= 1 && std::abs(edge(3, 0) - 0x17) <= 1, "the menu closed: the outline goes");
+            // §4: a new pair (here without motion: reduced, in place) — its 10 x 1 line fades in over 120 ms.
+            const auto t2 = t1 + std::chrono::seconds(1); c.tabGroups = {0, 7, 7, 0, 0}; c.Paint(titles, 1, L"", false, 0, 0, nullptr, t2);
+            const auto lineAt = [&]() { const auto f = Sidebar::FaviconIn(c.side.tabs[1], c.side.mode); return grey(c, (f.left + f.right) / 2, c.side.tabs[1].bottom + .5f); };
+            const int l0 = lineAt(); c.Paint(titles, 1, L"", false, 0, 0, nullptr, t2 + std::chrono::milliseconds(20)); c.Paint(titles, 1, L"", false, 0, 0, nullptr, t2 + std::chrono::milliseconds(200));
+            Check(std::abs(l0 - 0x17) <= 2 && std::abs(lineAt() - 0x54) <= 2, compact ? "§4 compact: the new pair's line fades in (120 ms)" : "§4 panel: the new pair's line fades in (120 ms)");
         }
     }
     std::printf("sidebar_render_test: %d checks passed\n", checks);

@@ -429,12 +429,22 @@ public:
         else{const float k=(float)Sidebar::Timing::foldResponse;m.l.Set(to.left,now,k);m.t.Set(to.top,now,k);m.r.Set(to.right,now,k);m.b.Set(to.bottom,now,k);}
         return {m.l.Value(now),m.t.Value(now),m.r.Value(now),m.b.Value(now)};}
     bool MorphMoving(Motion::Time now)const{for(auto& e:sideMorph){const auto& m=e.second;if(m.l.Moving(now)||m.t.Moving(now)||m.r.Moving(now)||m.b.Moving(now))return true;}return false;}
+    // Motion spec §4 « Repère de vue partagée » (253L-0): a reorder outside a drag (a split view made from the menu or by a
+    // row dropped on the page, the keyboard moves) slides the moved rows from their former slots (1.0 / .3 s, rowShift);
+    // a new pair's frame grows from the active row to the block (size morph, .3 s), the 10 x 1 line fades in (120 ms)
+    // once they touch; separation: the line fades out, the frame shrinks back to that row. The split menu's outline
+    // fades in / out (100 ms). Reduced motion: the geometry snaps, the fades stay.
+    static constexpr float splitResponse=.30f;static constexpr int splitLineMs=120,menuOutlineMs=100;
+    struct SplitMark{Motion::Spring l{.05f},t{.05f},r{.05f},b{.05f};Motion::Tween line;unsigned anchor=0;float full=0,row=0;bool born=false,leaving=false;};
+    std::map<int,SplitMark> splitMarks;bool splitMarksPrimed=false;std::map<unsigned,Motion::Tween> menuOutlines;std::vector<unsigned> sideKeysSeen;
+    bool SplitMarksMoving(Motion::Time now)const{for(auto& e:splitMarks){const auto& m=e.second;if(m.l.Moving(now)||m.t.Moving(now)||m.r.Moving(now)||m.b.Moving(now)||m.line.Moving(now))return true;}
+        for(auto& e:menuOutlines){if(e.second.Moving(now))return true;}return false;}
     static constexpr float selectionResponse=.25f;
     bool PlateMoving(Motion::Time now)const{return selTop.Moving(now)||selBottom.Moving(now)||selLeft.Moving(now)||selRight.Moving(now);}
-    Motion::Wake TabsNextWake(Motion::Time now)const{auto w=Motion::Earlier(tabMotion.NextWake(now),sideMotion.NextWake(now));return PlateMoving(now)||ReorderMoving(now)?Motion::Earlier(w,Motion::Frame()):w;}
+    Motion::Wake TabsNextWake(Motion::Time now)const{auto w=Motion::Earlier(tabMotion.NextWake(now),sideMotion.NextWake(now));return PlateMoving(now)||ReorderMoving(now)||SplitMarksMoving(now)?Motion::Earlier(w,Motion::Frame()):w;}
     void SettleTabs(){tabMotion.Settle();sideMotion.Settle();selTop.Settle();selBottom.Settle();selLeft.Settle();selRight.Settle();}
     void SetTabsReducedMotion(bool reduced){tabMotion.SetReducedMotion(reduced);sideMotion.SetReducedMotion(reduced);}
-    void ResetTabMotion(){tabMotion.Reset();sideMotion.Reset();sideFrame={};sideSnapshots.clear();selPlateKey=0;}   // a layout switch: no stale open / close
+    void ResetTabMotion(){tabMotion.Reset();sideMotion.Reset();sideFrame={};sideSnapshots.clear();selPlateKey=0;splitMarks.clear();splitMarksPrimed=false;menuOutlines.clear();sideKeysSeen.clear();}   // a layout switch: no stale open / close
     void SyncSideMotion(int count,Motion::Time now){
         const auto m=Sidebar::Rows(side.mode);const float pitch=m.row+m.gap;
         // The model's content is the rows alone: its view leaves out the lead and « + Nouvel onglet », so its scroll range
@@ -445,6 +455,14 @@ public:
         if(sideMotion.ReducedMotion()!=motion->ReducedMotion())sideMotion.SetReducedMotion(motion->ReducedMotion());
         if(sideMotion.Sync(tabKeys,{m.row,side.scroll,view,true},m.gap,now,false))   /* overflow: the model honours the list's own view */tabMotionStarted=true;
         sideFrame=sideMotion.Sample(now);
+        // §4: the tabs present before and after in another order (not a drop: RowDropped throws that row itself) start from
+        // their former slot (opening / closing shift indices, not this order: the model slides those).
+        if(!sideKeysSeen.empty()&&sideKeysSeen!=tabKeys&&!rowDrop.pending&&sidebarDrag<0){
+            const std::set<unsigned> fresh(tabKeys.begin(),tabKeys.end()),old(sideKeysSeen.begin(),sideKeysSeen.end());
+            std::vector<unsigned> a,b;for(unsigned k:sideKeysSeen)if(fresh.count(k))a.push_back(k);for(unsigned k:tabKeys)if(old.count(k))b.push_back(k);
+            if(a!=b){std::map<unsigned,int> rank;for(int i=0;i<(int)a.size();++i)rank[a[i]]=i;const bool reduced=motion->ReducedMotion();
+                for(int i=0;i<(int)b.size();++i){const int d=rank[b[i]]-i;if(!d||reduced)continue;auto& sp=rowShift[b[i]];const float v=sp.Value(now);sp.Snap(v+d*pitch);sp.Set(0,now,splitResponse,false);tabMotionStarted=true;}}}
+        sideKeysSeen=tabKeys;
     }
     bool TabKeysValid(int count)const{return motion&&(int)tabKeys.size()==count;}
     unsigned TabKey(int n)const{return n>=0&&n<(int)tabKeys.size()?tabKeys[n]:(unsigned)(n+1);}
@@ -1298,18 +1316,57 @@ public:
     // the displayed pair's rows take #262626 with corners 6 outside / 3 inside; the 10 x 1 #545454 line on the favicons'
     // axis between joined rows.
     static bool PairShown(const Sidebar::Layout& L,int i,int selected){if(i<0||i>=(int)L.split.size()||!L.split[i].Member()||selected<0)return false;const auto b=Sidebar::BlockOf(L.split,i);return selected>=b.first&&selected<b.first+b.count;}
-    void PaintSideSplit(const Sidebar::Layout& L,int selected=-1){namespace S=Sidebar::Split;
-        const int n=std::min((int)L.tabs.size(),(int)L.split.size());
+    // `off`: per row, what its presented place adds to the laid-out one (slot motion, step aside, §4 slide); `animated`: the
+    // docked column (the one over the page in a narrow window is drawn as laid out).
+    void PaintSideSplit(const Sidebar::Layout& L,int selected,Motion::Time now,const std::vector<float>& off,bool animated){namespace S=Sidebar::Split;
+        const int n=std::min((int)L.tabs.size(),(int)L.split.size());const bool reduced=!motion||motion->ReducedMotion();
+        auto rowAt=[&](int i){auto b=L.tabs[i];const float o=i<(int)off.size()?off[i]:0.f;b.top+=o;b.bottom+=o;return b;};
+        auto padded=[](Sidebar::Box b){return Sidebar::Box{b.left-S::pad,b.top-S::pad,b.right+S::pad,b.bottom+S::pad};};
         for(int i=0;i<n;++i){if(!PairShown(L,i,selected))continue;const auto b=Sidebar::BlockOf(L.split,i);const bool first=i==b.first,last=i==b.first+b.count-1;
-            if(auto g=CornerBox(R(L.tabs[i]),first?S::outer:S::inner,first?S::outer:S::inner,last?S::outer:S::inner,last?S::outer:S::inner,true)){Color(S::fill);target->FillGeometry(g,brush);g->Release();}}
+            if(auto g=CornerBox(R(rowAt(i)),first?S::outer:S::inner,first?S::outer:S::inner,last?S::outer:S::inner,last?S::outer:S::inner,true)){Color(S::fill);target->FillGeometry(g,brush);g->Release();}}
         // The outline: outside the padding in the panel (Paper's CSS outline), inside the 40 in compact (the frame spans the column).
-        Color(S::frame);for(const auto& b:L.blocks){const float k=(L.mode==Sidebar::Mode::Complete?1:-1)*S::frameW/2;target->DrawRoundedRectangle(D2D1::RoundedRect({b.left-k,b.top-k,b.right+k,b.bottom+k},S::radius+k,S::radius+k),brush,S::frameW);}
-        Color(S::line);for(const auto& j:L.joints)target->FillRectangle(R(j),brush);}
+        const float k=(L.mode==Sidebar::Mode::Complete?1:-1)*S::frameW/2;
+        auto frame=[&](Sidebar::Box b,float alpha){if(alpha<=0)return;Color(S::frame,alpha);target->DrawRoundedRectangle(D2D1::RoundedRect({b.left-k,b.top-k,b.right+k,b.bottom+k},S::radius+k,S::radius+k),brush,S::frameW);};
+        auto joint=[&](int i,float alpha){if(alpha<=0)return;const auto row=rowAt(i);const auto f=Sidebar::FaviconIn(row,L.mode);const float cx=(f.left+f.right)/2;Color(S::line,alpha);target->FillRectangle(D2D1::RectF(cx-S::lineW/2,row.bottom,cx+S::lineW/2,row.bottom+S::lineH),brush);};
+        if(!animated){for(const auto& b:L.blocks)frame(b,1);for(int i=0;i<n;++i)if(L.split[i].JoinsNext()&&i+1<n)joint(i,1);return;}
+        std::set<int> live;size_t blockIndex=0;
+        for(int i=0;i<n;++i){const auto& sr=L.split[i];if(!sr.Member()||sr.JoinsPrevious())continue;if(blockIndex>=L.blocks.size())break;
+            const auto blk=Sidebar::BlockOf(L.split,i);const auto B=L.blocks[blockIndex++];const int g=sr.group;live.insert(g);
+            auto it=splitMarks.find(g);const bool fresh=it==splitMarks.end();auto& m=splitMarks[g];
+            if(fresh||m.leaving){const int a=selected>=blk.first&&selected<blk.first+blk.count?selected:blk.first;
+                if(fresh){const auto A=padded(rowAt(a));if(!splitMarksPrimed||reduced){m.l.Snap(B.left);m.t.Snap(B.top);m.r.Snap(B.right);m.b.Snap(B.bottom);m.line.Snap(splitMarksPrimed?0.f:1.f);}   /* reduced motion: in place, the line still fades */
+                    else{m.l.Snap(A.left);m.t.Snap(A.top);m.r.Snap(A.right);m.b.Snap(A.bottom);m.line.Snap(0);m.born=true;}}
+                m.anchor=TabKey(a);m.leaving=false;}
+            m.l.Set(B.left,now,splitResponse,reduced);m.t.Set(B.top,now,splitResponse,reduced);m.r.Set(B.right,now,splitResponse,reduced);m.b.Set(B.bottom,now,splitResponse,reduced);
+            m.full=B.Height();m.row=padded(rowAt(blk.first)).Height();
+            bool rowsMoving=false;for(int r=blk.first;r<blk.first+blk.count&&r<n;++r){auto sp=rowShift.find(TabKey(r));if(sp!=rowShift.end()&&sp->second.Moving(now))rowsMoving=true;}
+            const bool settled=!m.l.Moving(now)&&!m.t.Moving(now)&&!m.r.Moving(now)&&!m.b.Moving(now)&&!rowsMoving;
+            if(settled){m.born=false;m.line.Set(1,now,std::chrono::milliseconds(splitLineMs),false,Motion::Curve::SmoothStep);}}
+        // Separated: the line out, then the frame back to the row it came from.
+        for(auto& e:splitMarks){if(live.count(e.first))continue;auto& m=e.second;
+            if(!m.leaving){m.leaving=true;m.born=false;m.full=m.b.Value(now)-m.t.Value(now);m.line.Set(0,now,std::chrono::milliseconds(splitLineMs),false,Motion::Curve::SmoothStep);}
+            int a=-1;for(int r=0;r<n;++r)if(TabKey(r)==m.anchor)a=r;
+            if(a>=0){const auto A=padded(rowAt(a));m.row=A.Height();m.l.Set(A.left,now,splitResponse,reduced);m.t.Set(A.top,now,splitResponse,reduced);m.r.Set(A.right,now,splitResponse,reduced);m.b.Set(A.bottom,now,splitResponse,reduced);}
+            else{m.l.Snap(m.l.Value(now));m.t.Snap(m.t.Value(now));m.r.Snap(m.r.Value(now));m.b.Snap(m.b.Value(now));m.row=m.full;}}
+        for(auto e=splitMarks.begin();e!=splitMarks.end();){auto& m=e->second;const bool still=!m.l.Moving(now)&&!m.t.Moving(now)&&!m.r.Moving(now)&&!m.b.Moving(now);
+            if(m.leaving&&(still||reduced)&&!m.line.Moving(now)){e=splitMarks.erase(e);continue;}++e;}
+        splitMarksPrimed=true;
+        // Drawn: each frame at its presented box (its opacity follows its size while it grows from / shrinks to a row), the
+        // lines with their group's fade.
+        for(auto& e:splitMarks){const auto& m=e.second;const Sidebar::Box b{m.l.Value(now),m.t.Value(now),m.r.Value(now),m.b.Value(now)};
+            const float span=m.full-m.row;const float alpha=(m.born||m.leaving)&&span>1?std::clamp((b.Height()-m.row)/span,0.f,1.f):1.f;frame(b,alpha);}
+        for(int i=0;i<n;++i){if(!L.split[i].JoinsNext()||i+1>=n)continue;auto it=splitMarks.find(L.split[i].group);joint(i,it==splitMarks.end()?1.f:it->second.line.Value(now));}}
     // « 2 · Survol du menu » (2492-0 / 24AJ-0): the tabs a highlighted split-menu row designates and the right-clicked tab,
-    // a 1 DIP inner #8C8C8C stroke on each row (its radius 6), over the row.
-    void PaintSideMenuTargets(const Sidebar::Layout& L){namespace S=Sidebar::Split;const float k=S::outlineW/2,r=Design::Radius::control-k;
-        for(int i:Sidebar::Designated(menuTargets,menuSource,(int)L.tabs.size())){const auto b=R(L.tabs[i]);Color(S::outline);
-            target->DrawRoundedRectangle(D2D1::RoundedRect({b.left+k,b.top+k,b.right-k,b.bottom-k},r,r),brush,S::outlineW);}}
+    // a 1 DIP inner #8C8C8C stroke on each row (its radius 6), over the row; §4: it fades in / out (100 ms).
+    void PaintSideMenuTargets(const Sidebar::Layout& L,Motion::Time now,const std::vector<float>& off,bool animated){namespace S=Sidebar::Split;const float k=S::outlineW/2,r=Design::Radius::control-k;
+        auto draw=[&](int i,float alpha){if(alpha<=0||i<0||i>=(int)L.tabs.size())return;auto b=R(L.tabs[i]);const float o=i<(int)off.size()?off[i]:0.f;b.top+=o;b.bottom+=o;Color(S::outline,alpha);
+            target->DrawRoundedRectangle(D2D1::RoundedRect({b.left+k,b.top+k,b.right-k,b.bottom-k},r,r),brush,S::outlineW);};
+        const auto designated=Sidebar::Designated(menuTargets,menuSource,(int)L.tabs.size());
+        if(!animated){for(int i:designated)draw(i,1);return;}
+        std::set<unsigned> on;for(int i:designated)on.insert(TabKey(i));
+        for(unsigned key:on)menuOutlines[key].Set(1,now,std::chrono::milliseconds(menuOutlineMs),false,Motion::Curve::SmoothStep);
+        for(auto e=menuOutlines.begin();e!=menuOutlines.end();){if(!on.count(e->first)){e->second.Set(0,now,std::chrono::milliseconds(menuOutlineMs),false,Motion::Curve::SmoothStep);if(!e->second.Moving(now)){e=menuOutlines.erase(e);continue;}}++e;}
+        for(int i=0;i<(int)L.tabs.size();++i){auto e=menuOutlines.find(TabKey(i));if(e!=menuOutlines.end())draw(i,e->second.Value(now));}}
     // The column's own fills and glyphs (the shared toolbar buttons are painted by PaintSideButton).
     void PaintSideColumn(const Sidebar::Layout& L,const std::vector<std::wstring>& titles,int selected,bool editing,int hover,int focus,Motion::Time now,bool overlay){
         namespace SB=Sidebar;namespace K=SB::Look;const bool full=L.mode==SB::Mode::Complete;
@@ -1329,11 +1386,17 @@ public:
         // Tabs.
         Color(1,K::line);target->FillRectangle(R(L.line),brush);
         target->PushAxisAlignedClip({L.tabsView.left-Sidebar::Split::frameW,L.tabsView.top,L.tabsView.right+Sidebar::Split::frameW,L.tabsView.bottom},D2D1_ANTIALIAS_MODE_ALIASED);   // the split frame's outline sits 1 DIP outside the rows
-        PaintSideSplit(L,selected);
         const int n=std::min((int)titles.size(),(int)L.tabs.size());
+        const bool moving=!overlay&&sidebarDrag<0&&&L==&side&&!sideFrame.items.empty();
+        // No drag: every row's offset heads home (a drag cancelled by Échap, or dropped on the grid, leaves its stepped-aside
+        // rows at their step otherwise); a drop and a §4 slide already aim at 0.
+        if(moving){const bool reduced=!motion||motion->ReducedMotion();for(auto& e:rowShift)if(e.second.Target()!=0)e.second.Set(0,now,stepResponse,reduced);}
+        std::vector<float> rowOff(L.tabs.size(),0.f);   // what each row's presented place adds to its laid-out one
+        if(moving){const float pitch=SB::Rows(L.mode).row+SB::Rows(L.mode).gap;for(auto& it:sideFrame.items)if(it.index>=0&&it.index<(int)rowOff.size())rowOff[it.index]=(it.slot-it.index*pitch)-(sideFrame.scroll-L.scroll)+RowShift(it.key,now);}
+        else for(int i=0;i<(int)rowOff.size();++i)rowOff[i]=RowShift(TabKey(i),now);
+        PaintSideSplit(L,selected,now,rowOff,&L==&side);
         auto emptySlot=[&](D2D1_RECT_F r){Color(K::lifted);target->DrawRoundedRectangle(D2D1::RoundedRect({r.left+.5f,r.top+.5f,r.right-.5f,r.bottom-.5f},Design::Radius::control-.5f,Design::Radius::control-.5f),brush,1);};   // Dragged onto the page (split view, « Vue partagée dans la colonne » 3): its place stays empty, a 1 DIP inner outline.
         auto titleOf=[&](int i){return titles[i].empty()?std::wstring(i<(int)sideHome.size()&&sideHome[i]?TR(tab_new):TR(chrome_tab_untitled_tip)):titles[i];};
-        const bool moving=!overlay&&sidebarDrag<0&&&L==&side&&!sideFrame.items.empty();
         auto newRow=L.newTab;
         if(moving){   // the strip's model on rows: ghosts under, live rows at their presented slots, « + » after them
             const float pitch=SB::Rows(L.mode).row+SB::Rows(L.mode).gap;
@@ -1364,7 +1427,7 @@ public:
                 if(i==liftedIndex){emptySlot(R(row));continue;}
                 if(i==sidebarDrag)continue;   // it is the lifted row, drawn over the list below
                 DrawSideTab(L,i,titleOf(i),selected,hover,focus,now,R(row),1.f,labels);}}
-        PaintSideMenuTargets(L);
+        PaintSideMenuTargets(L,now,rowOff,&L==&side);
         {const auto r=R(newRow);const float hv=Hovered('T',hover,now);if(hv>0)White(r,Design::Radius::control,K::tabHover*hv);if(focus=='T')FocusRing(r,Design::Radius::control);
             const auto f=SB::FaviconIn(newRow,L.mode);SideGlyph(SB::Glyph::plus,R(f),14,K::newTab);
             if(full)Text(TR(tab_new),{f.right+SB::Complete::tabIconGap,r.top,r.right-SB::Complete::tabPad,r.bottom},Design::Type::label.size,K::newTab*labels,false,false,0);}
