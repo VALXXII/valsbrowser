@@ -1040,6 +1040,17 @@
         h("i", { style: "width:" + Math.round(s.progress * 100) + "%" })) : null),
       s.action ? h("button", { class: "btn-s", type: "button", onclick: () => stripAction(s) }, s.action.label) : null);
   }
+  // O10: while a request is shown, a redraw of the dock (another request queued behind it, a strip, the state) keeps the
+  // card the user is answering — the words typed in « à la place », the switch, the keyboard — and only its « 1 sur N »
+  // changes. A card is built for a new request only.
+  function permKept(p) {
+    const card = dock.querySelector(".perm, .bperm");
+    if (!card || card.__req !== p.requestId) return false;
+    let of = card.querySelector(".perm-of");
+    if (S.perms.length > 1) { if (!of) { of = h("span", { class: "perm-of" }); card.querySelector("#perm-t").after(of); } of.textContent = "1 sur " + S.perms.length; }
+    else if (of) of.remove();
+    return true;
+  }
   let lastDockKey = "";
   function renderDock(force) {
     if (BUB()) { renderDockB(force); return; }
@@ -1048,6 +1059,7 @@
     const key = JSON.stringify([p && p.requestId, S.perms.length, s, S.queue, S.st.disabledReason]);
     if (!force && key === lastDockKey) { composer.classList.toggle("disabled", !!(S.st.disabledReason || (s && s.tone === "danger"))); updateSend(); return; }
     lastDockKey = key;
+    if (p && permKept(p)) return;
     const hadFocusInComposer = composer.contains(document.activeElement);
     clear(dock);
     dock.className = "dock"; ruleEl.hidden = true;
@@ -1162,9 +1174,9 @@
       p.details ? detailsBlock(p.details) : null,
       reject ? instead : null,
       h("div", { class: "perm-ft" }, sw, reject ? refuse : null, allow));   // F10: no refuse option, no « Refuser »
-    card.__shownAt = p.shownAt || (p.shownAt = performance.now());
+    card.__shownAt = p.shownAt || (p.shownAt = performance.now()); card.__req = p.requestId;
     card.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); refuse.click(); }
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); if (!e.repeat) refuse.click(); }   // O10: a held Échap refuses this card only
       else if ((e.key === "Enter" || e.key === " ") && e.repeat && e.target !== instead) e.preventDefault();   // SEC-23: a held key answers nothing
       else if (e.key === "Enter" && e.target !== instead && e.target.tagName !== "BUTTON") { e.preventDefault(); if (permArmed(card, e)) allow.click(); }
     });
@@ -1412,6 +1424,7 @@
     lastDockKey = key;
     const a = document.activeElement;
     const mine = composer.contains(a) || a === app || a === document.body || !a;
+    if (p && permKept(p)) { app.classList.remove("running"); ruleEl.hidden = none || !!S.bview; return; }
     clear(dock);
     dock.className = "dock" + (p ? " has-perm" : "");
     app.classList.toggle("running", running && !p);
@@ -1485,7 +1498,7 @@
     const card = h("div", { class: "bperm" + (S.replay || p.shown ? "" : " pop-in"), role: "alertdialog", "aria-modal": "false", "aria-labelledby": "perm-t", tabindex: "-1" },
       h("div", { class: "bperm-rows" }, file, reject ? h("label", { class: "bperm-in" }, icon("pencilFill", "ic"), instead) : null),
       h("div", { class: "bperm-ft" }, sw, reject ? refuse : null, allow));   // F10
-    card.__shownAt = p.shownAt || (p.shownAt = performance.now());   // SEC-23: armed from its first appearance (a redraw of the same request does not re-arm)
+    card.__shownAt = p.shownAt || (p.shownAt = performance.now()); card.__req = p.requestId;   // SEC-23: armed from its first appearance (a redraw of the same request does not re-arm)
     card.addEventListener("keydown", (e) => {
       if ((e.key === "Enter" || e.key === " ") && e.repeat && e.target !== instead) e.preventDefault();   // SEC-23: a held key answers nothing
       else if (e.key === "Enter" && e.target !== instead && e.target.tagName !== "BUTTON") { e.preventDefault(); if (permArmed(card, e)) allow.click(); } });
@@ -2945,6 +2958,7 @@
   document.addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === "/") { e.preventDefault(); if (modelBtn.offsetParent) openModelMenu(modelBtn); return; }
     if (e.key !== "Escape" || e.defaultPrevented) return;
+    if (e.repeat) { e.preventDefault(); return; }   // O10: a held Échap does one thing — it never goes on to the next card, to « stop », to « close »
     if (S.menu) { e.preventDefault(); closeMenu(!S.menu.combo); return; }
     if (BUB()) {   // B 1.8: Échap never stops the agent nor refuses a request — it closes what is open, then the bubble
       e.preventDefault();
