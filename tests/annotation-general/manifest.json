@@ -63,6 +63,28 @@
       "timeout": 900
     },
     {
+      "id": "model-switch-128",
+      "title": "Changement de modèle et de fournisseur (#128), contrats de l'hôte",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/model_switch_128_test.py"
+      ],
+      "timeout": 300
+    },
+    {
+      "id": "annotation-units",
+      "title": "Unités du mode : où Annoter est allumé (#125), notes d'une fenêtre privée, tutoriel hors écran",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/annotation-general/units.py"
+      ],
+      "timeout": 1800
+    },
+    {
       "id": "chat-panel",
       "title": "Page du chat, navigateur sans tête",
       "part": "day",

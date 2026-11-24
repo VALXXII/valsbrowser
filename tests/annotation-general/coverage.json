@@ -882,6 +882,10 @@
         {
           "suite": "journeys",
           "what": "r42_modele"
+        },
+        {
+          "suite": "model-switch-128",
+          "what": "un modèle du même fournisseur garde le chat ; un autre fournisseur ouvre un nouveau chat (#128)"
         }
       ]
     },
@@ -1068,10 +1072,16 @@
       }
     },
     "O12": {
-      "gap": {
-        "lot": 3,
-        "why": "après la fusion de #125 (Builder, src/annotation-sites.h) : parcours local_en_ligne — localhost, *.localhost, 127.x, [::1] et file:// local allumés, fenêtre privée même règle, site en ligne et adresse du réseau local éteints ; réécrire chat_qa_run.py:600 et chat_qa_v12.py:220 (le mode s'arrête au lieu de « site pas local »)"
-      }
+      "tests": [
+        {
+          "suite": "annotation-units",
+          "what": "annotation_sites_test — localhost, *.localhost, 127.x, [::1] et file:// local allumés ; site en ligne, adresse du réseau local, partage réseau éteints ; fenêtre privée même règle"
+        },
+        {
+          "suite": "annotation-units",
+          "what": "annotation_private_test — les notes d'une fenêtre privée sont effacées à sa fermeture"
+        }
+      ]
     },
     "#130-règles-7-10": {
       "gap": {
@@ -1083,6 +1093,12 @@
       "gap": {
         "lot": 4,
         "why": "règles 5, 6 et 11 (recalcul pendant le défilement, glissement de 120 ms, mouvement réduit) : tests/chat/final/qa_final.py, C130_SCROLL_RULES ; parcours o1_regle5_defilement à écrire"
+      }
+    },
+    "#125-parcours-local-en-ligne": {
+      "gap": {
+        "lot": 3,
+        "why": "parcours en vraie fenêtre local_en_ligne à écrire ; réécrire chat_qa_run.py:600 et chat_qa_v12.py:220 (le mode s'arrête au lieu de « site pas local ») ; protections du chat sur file:// et en fenêtre privée"
       }
     }
   }
