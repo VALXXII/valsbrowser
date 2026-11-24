@@ -22,7 +22,7 @@ namespace Chat {
 
 bool CommentLayout() { LoadProjects(); return projects.layout == "comment"; }
 float Dpi() { return GetDpiForWindow(window) / 96.f; }
-inline constexpr int BubbleWidthCss = 320,   /* R20: the user's decision (Paper: 305) */ BubbleMaxHeightCss = 520, BubbleStartHeightCss = 104, BubbleGapCss = 12, BubbleLeadCss = 4, BubbleMarginCss = 12;   // Paper: 12 px from the element, 4 px above it
+inline constexpr int BubbleWidthCss = 320,   /* R20: the user's decision (Paper: 305) */ BubbleMaxHeightCss = 520, BubbleStartHeightCss = 104, BubbleGapCss = 12, BubbleLeadCss = 4, BubbleMarginCss = 8;   // Paper: 12 px from the element (8 from its selection frame), 4 px above it; #130 C: 8 px from the page area's edges (height at most page area − 16)
 
 struct BubbleState {
     HWND hwnd = nullptr; bool open = false; std::string conv;      // the conversation it shows
@@ -241,7 +241,23 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
         }
         bubble.anchorArea = a;
     }
-    if (!bubble.anchor.set) {   // R29: the first placement chooses the side and the anchor; then they never change
+    // #130 (the user: « la bulle reste toujours entièrement dans la fenêtre », wins over R29): R29's anchor held while the bubble
+    // grew, so an element low in the page had its bubble (an authorization's Refuser / Autoriser) past the bottom of the window,
+    // where the page cannot always scroll. A new size (never a scroll step, R39; never a size chosen with the handle, R40) that
+    // takes it closer than 8 px to the bottom while its element is on screen: variant C (Paper, validated) — at its side it
+    // slides up along its element by what is missing, never higher than 8 px under the banner, never over the element. An
+    // element with no free side (below it, over it: section.hero) keeps today's behaviour (a question for the Designer).
+    if (!scrolling && bubble.anchor.set && bubble.known && !bubble.resized && !bubble.lost &&
+        (bubble.anchor.side == ChatBubble::Side::Right || bubble.anchor.side == ChatBubble::Side::Left)) {
+        const auto where = ChatBubble::Anchored(bubble.anchor, er, w, h);
+        if (ChatBubble::PastBottom(where, er, area, margin)) {
+            if (const int up = ChatBubble::SlideUp(where, area, margin); up > 0) {
+                bubble.anchor.dy -= up;
+                Diag(L"the bubble grew past the bottom of the page area: slid up along its element by " + std::to_wstring(up) + L" px (#130 C)");   // i18n-exempt: log detail
+            }
+        }
+    }
+    if (!bubble.anchor.set) {   // R29: the first placement chooses the side and the anchor (#130 C: then it only slides up along its element to stay whole)
         // R44: the side is chosen for the height the bubble may take (520), so that it is whole in the visible area
         p = ChatBubble::Place(er, w, h, area, gap, margin, bubble.side, int(std::lround(BubbleLeadCss * k)),
                               PlannedHeightPx(k), bubble.click, int(std::lround(BubbleGapCss * k)));   // r44: a conversation with content may take 520 (inside: its corner where that fits)
@@ -258,9 +274,9 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
         // R38 / R47 (the user): the height offered is the room from the bubble's fixed edge to the page area's far side,
         // measured when it is placed and kept with the anchor — its composer and an authorization stay on screen (r47: past
         // the visible area « Autoriser » could not be clicked); its position stays Paper's, never moved
-        (void)placedNow;   // R29 (the user, coordinator's decision): natural height — never bounded by the room under the fixed edge; past the visible area the user scrolls (R47: the page brings a card on screen)
+        (void)placedNow;   // R29 (the user, coordinator's decision): natural height — never bounded by the room under the fixed edge, at most the page area − 16 px (#130 C: past the bottom it slides up along its element, see above)
         int room = std::min(BubbleMaxHeightCss, std::max(120, int(area.H() / k) - 2 * BubbleMarginCss));
-        if (p.fromBottom) room = std::min(room, std::max(120, int((p.rect.bottom - area.top) / k)));   // M15 (Q 0.3.542): growing up, never past the page area's top (it was cut 150 px above it)
+        if (p.fromBottom) room = std::min(room, std::max(120, int((p.rect.bottom - area.top - margin) / k)));   // M15 (Q 0.3.542): growing up, never past the page area's top (it was cut 150 px above it); #130 C: 8 px under the banner
         const auto rm = ChatBubble::ResizeRoom(p.rect, p.fromRight, p.fromBottom, area, margin, k);
         if (room != bubble.roomCss || rm.width != bubble.resizeMax.width || rm.height != bubble.resizeMax.height) {
             if (room != bubble.roomCss) Diag(L"bubble: height offered " + std::to_wstring(room) + L" CSS px (page area " + std::to_wstring(area.H()) + L" px" + (areaResized ? L", resized" : L"") + L")");   // M15 diagnostics   // i18n-exempt: log detail
@@ -902,6 +918,18 @@ std::string NewAnchoredConversation(const std::string& selector, const std::stri
     setAnchor(h); const std::string id = h.id; ShowAside(std::move(c));
     return id;
 }
+// #128: another provider's model in a chat that has messages = a new chat (SwitchAgent, after any turn running). The
+// panel's: a new conversation, as « Nouveau chat ». An element's: a new conversation on the SAME element (R6's « unreadable »
+// path), shown in its open bubble; its element (image, source) goes with it. The old one stays in the history; the element
+// opens its newest (FindAnchored) and shows one mark (SyncMarks).
+void NewChatForAgent() {
+    const ChatStore::Header was = convo.data.head;
+    if (!was.Anchored()) { NewConversation(); return; }
+    const std::string fresh = NewAnchoredConversation(was.anchorSelector, was.anchorLabel, was.anchorPage, was.anchorSource, was.anchorKey);
+    if (auto it = anchorElements.find(was.id); it != anchorElements.end()) anchorElements[fresh] = it->second;
+    if (bubble.open && bubble.conv == was.id) bubble.conv = fresh;   // same element, same place: the bubble now shows it
+    Diag(L"a new conversation on the same element: " + W(fresh) + L" (was " + W(was.id) + L")");   // i18n-exempt: log detail
+}
 // Called by ProcessQueue: the next message waiting belongs to another conversation — it becomes the engine's.
 bool SwitchEngineTo(const std::string& id) {
     Convo next; bool fromAside = false;
@@ -969,10 +997,12 @@ void SyncMarks() {
         auto add = [&](const ChatStore::Header& h) { if (!h.Anchored() || !HasQueued(h.id)) return; for (auto* a : all) if (a->id == h.id) return; all.push_back(&h); };   // waiting, not saved yet
         if (aside.on) add(aside.c.data.head);
         for (const auto& p : parked) add(p.second.data.head);
+        std::set<std::string> marked;   // #128: an element with several conversations (another provider = a new chat) shows one mark, its newest's (`anchored`: newest first)
         for (const auto* hp : all) { const auto& h = *hp;
             if (h.origin != here.origin || h.anchorPage != page) continue;
             if (bubble.open && bubble.conv == h.id) { found0.insert(h.id); continue; }   // D1: its bubble is open: the frame + labels, not the icon
             if (h.anchorSelector.empty()) { found0.insert(h.id); continue; }   // Q 6: an element in a frame / web component: no mark drawn by selector
+            if ((bubble.open && h.anchorSelector == bubble.selector) || !marked.insert(h.anchorSelector).second) { found0.insert(h.id); continue; }   // #128: its element already has its frame or its mark
             SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(h.id)); o.Set("selector", Str(h.anchorSelector)); o.Set("state", Str(MarkState(h.id)));
             if (MarkState(h.id) == "waiting") o.Set("waitLabel", Str(T8(I18n::Id::chat_mark_waiting)));
             list.Push(std::move(o));

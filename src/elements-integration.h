@@ -362,6 +362,7 @@ void ElementsNavigationStarting(const std::shared_ptr<Tab>& t){
 // source as Réglages › Autorisations). Allowed ones show as Granted (« mémorisée »).
 void QueryPermissions(std::function<void(std::vector<EnginePermission>)> done);
 void ElementsNavigationCompleted(const std::shared_ptr<Tab>& t,bool ok){
+    if(ok&&t&&t->errorPage.shown.empty()){t->errorPage.tries=0;t->errorPage.triedUri.clear();}   // a page loaded (not our error page): the « Essai » count starts over
     if(!ok||!t||t->closed||halted||t->home)return;
     const std::wstring origin=OriginOf(t->uri);if(origin.rfind(L"http",0)!=0)return;
     std::weak_ptr<Tab> weak=t;const unsigned stamp=t->navStamp;
@@ -630,11 +631,30 @@ const std::wstring& PageFont(bool medium){
     static const std::wstring bold=DataUri(base+L"\\assets\\fonts\\InterDisplay-Medium.ttf",L"font/ttf",1024*1024);
     return medium?bold:regular;
 }
+// The error pages' fonts (#121): Inter Display 400 / 500 / 600 (titles are SemiBold on the boards) and, only for
+// a page with a technical sheet, JetBrains Mono for its code. The engine refuses a NavigateToString document over
+// ~1.5 MB: Inter Display is embedded as the WOFF2 files the crashed-tab page uses too (assets\fonts\InterDisplay-
+// *.woff2, Inter 4.1 like the .ttf), the mono as the reduced file of tests/error-pages/make_page_fonts.py (codes).
+// tests/error_pages_test.cpp checks the heaviest page with the real files.
+void PageFonts(NativeChrome::ErrorPages::Extras& x,bool mono){
+    static const std::wstring regular=DataUri(base+L"\\assets\\fonts\\InterDisplay-Regular.woff2",L"font/woff2",512*1024);
+    static const std::wstring medium=DataUri(base+L"\\assets\\fonts\\InterDisplay-Medium.woff2",L"font/woff2",512*1024);
+    static const std::wstring semiBold=DataUri(base+L"\\assets\\fonts\\InterDisplay-SemiBold.woff2",L"font/woff2",512*1024);
+    static const std::wstring code=DataUri(base+L"\\assets\\fonts\\JetBrainsMono-Codes.ttf",L"font/ttf",256*1024);
+    x.fontRegular=regular;x.fontMedium=medium;x.fontSemiBold=semiBold;if(mono)x.fontMono=code;
+}
+// Local time for the sheet's « Essai » row, as Windows writes it for this user (« 14:32 »).
+std::wstring ClockNow(){
+    SYSTEMTIME now{};GetLocalTime(&now);wchar_t text[64]{};
+    return GetTimeFormatEx(LOCALE_NAME_USER_DEFAULT,TIME_NOSECONDS,&now,nullptr,text,64)?std::wstring(text):std::wstring();
+}
+bool CopyToClipboard(const std::wstring& text); // main.cpp
 bool ErrorPageNavigationStarting(const std::shared_ptr<Tab>& t,const std::wstring& uri,UINT64 id){
     auto& e=t->errorPage;const bool blank=uri==L"about:blank"||uri.rfind(L"data:",0)==0;
     if(blank&&e.pending){e.pending=false;return false;}
     e.starting=uri;e.startingId=id;e.certStatus=-1;e.certUri.clear();e.certIssuer.clear(); // a new navigation invalidates a refused certificate
-    e.shown.clear();e.pending=false;e.token.clear();return false;
+    if(!blank&&uri!=e.triedUri){e.triedUri.clear();e.tries=0;}   // another address: its own « Essai » count
+    e.shown.clear();e.pending=false;e.token.clear();e.code.clear();return false;
 }
 // Only the failure of the tab's latest top-level http(s) navigation (not an external
 // protocol hand-off, not an older navigation) replaces the document.
@@ -651,10 +671,18 @@ bool ShowErrorPage(const std::shared_ptr<Tab>& t,COREWEBVIEW2_WEB_ERROR_STATUS e
     auto& e=t->errorPage;
     const auto kind=e.forced>=0?(NativeChrome::ErrorPages::Kind)e.forced:NativeChrome::ErrorPages::Classify((int)error,online);
     if(kind==NativeChrome::ErrorPages::Kind::Certificate)Log(L"CERTIFICATE refused page for "+target);
-    NativeChrome::ErrorPages::Extras extras;extras.fontRegular=PageFont(false);extras.fontMedium=PageFont(true);extras.reducedMotion=motion.ReducedMotion();
-    extras.code=NativeChrome::ErrorPages::Code((int)error);extras.restored=e.forcedRestored;extras.certStatus=(int)error;extras.issuer=e.certIssuer;
-    const bool retrying=e.forcedRetrying;e.forced=-1;e.forcedRetrying=e.forcedRestored=false;
-    t->uri=target;t->home=false;e.shown=target;e.token=token;e.pending=true;e.kind=(int)kind;
+    const bool certificate=kind==NativeChrome::ErrorPages::Kind::Certificate,sheet=certificate||NativeChrome::ErrorPages::CopyFor(kind,L"").secondaryAction==NativeChrome::ErrorPages::Action::Details;
+    if(e.triedUri!=target){e.triedUri=target;e.tries=0;}
+    ++e.tries;   // this address's consecutive failures in the tab, this one included
+    NativeChrome::ErrorPages::Extras extras;PageFonts(extras,sheet);extras.reducedMotion=motion.ReducedMotion();
+    const bool forcedCert=certificate&&e.forcedCert>=0;   // sandbox only: the certificate case and its example issuer
+    const int status=forcedCert?e.forcedCert:(int)error;
+    extras.code=certificate?std::wstring(NativeChrome::ErrorPages::CertificateCode(status)):std::wstring(NativeChrome::ErrorPages::Code(status));
+    extras.address=NativeChrome::ErrorPages::AddressOf(target);extras.tries=NativeChrome::ErrorPages::TriesText(e.tries,ClockNow());
+    extras.attempt=e.tries-1;   // time-out: 8, 16 then 32 s before the next automatic try, then none
+    extras.restored=e.forcedRestored;extras.certStatus=status;extras.issuer=forcedCert?e.forcedIssuer:e.certIssuer;
+    const bool retrying=e.forcedRetrying;e.forced=-1;e.forcedRetrying=e.forcedRestored=false;e.forcedCert=-1;e.forcedIssuer.clear();
+    t->uri=target;t->home=false;e.shown=target;e.token=token;e.pending=true;e.kind=(int)kind;e.code=sheet?extras.code:std::wstring();
     const std::wstring html=NativeChrome::ErrorPages::Html(kind,target,token,retrying,extras);
     Log(L"ERROR PAGE kind="+std::to_wstring((int)kind)+L" status="+std::to_wstring(error));
     if(FAILED(t->view->NavigateToString(html.c_str()))){e=ErrorPageState{};return false;}
@@ -668,6 +696,8 @@ bool ErrorPageMessage(const std::shared_ptr<Tab>& t,const std::wstring& source,c
     switch(*action){
     case NativeChrome::ErrorPages::Action::Retry:Log(L"ERROR PAGE retry");Defer([weak,target]{auto tab=weak.lock();if(tab&&!tab->closed)Navigate(tab,target);});break;
     case NativeChrome::ErrorPages::Action::Back:Defer([weak]{auto tab=weak.lock();if(!tab||tab->closed||!tab->view.p)return;BOOL yes=FALSE;tab->view->get_CanGoBack(&yes);if(yes)tab->view->GoBack();else Navigate(tab,L"");});break;
+    // The sheet's copy button: the code this page shows (kept by the host, never taken from the page).
+    case NativeChrome::ErrorPages::Action::Copy:if(!e.code.empty()&&CopyToClipboard(e.code)){Log(L"ERROR PAGE code copied");accessibility.Notify('C',TR(error_code_copied),L"ErrorCodeCopied");}break;
     default:break;
     }
     return true;
@@ -1796,11 +1826,19 @@ void SandboxCommand(const std::shared_ptr<Tab>& t,const NativeChrome::DebugSandb
     if(n==L"error.page"||n==L"error.offline"){
         using EK=NativeChrome::ErrorPages::Kind;EK kind=EK::NameNotResolved;
         if(n==L"error.offline")kind=EK::Offline;else if(v==L"refused")kind=EK::Refused;else if(v==L"timedOut")kind=EK::TimedOut;else if(v==L"reset")kind=EK::Reset;else if(v==L"unreachable")kind=EK::Unreachable;else if(v==L"generic")kind=EK::Generic;
+        // #121 certificate cases (board 1M3Q-0): the engine's status and the board's example issuer (none for the client case).
+        int cert=-1;std::wstring issuer;
+        if(v==L"certInvalid"){cert=COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID;issuer=L"Example Internal CA";}
+        else if(v==L"certExpired"){cert=COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED;issuer=L"Example Issuing CA";}
+        else if(v==L"certWrongName"){cert=COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT;issuer=L"Example Issuing CA";}
+        else if(v==L"certRevoked"){cert=COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_REVOKED;issuer=L"Example Issuing CA";}
+        else if(v==L"certClient")cert=COREWEBVIEW2_WEB_ERROR_STATUS_CLIENT_CERTIFICATE_CONTAINS_ERRORS;
+        if(cert>=0)kind=EK::Certificate;
         if(pages.size()>=128){ShowTabLimitToast();return;}
         // A real navigation to a reserved, unresolvable host (RFC 2606 .invalid): the engine fails it,
         // our error page is shown for the requested variant.
         NewTab(L"https://"+(v.empty()?std::wstring(L"hors-ligne"):v)+L".sandbox.invalid/",current+1);auto nt=Active();
-        if(nt){nt->errorPage.forced=(int)kind;nt->errorPage.forcedRetrying=v==L"retrying";nt->errorPage.forcedRestored=v==L"restored";}
+        if(nt){nt->errorPage.forced=(int)kind;nt->errorPage.forcedRetrying=v==L"retrying";nt->errorPage.forcedRestored=v==L"restored";nt->errorPage.forcedCert=cert;nt->errorPage.forcedIssuer=issuer;}
         log(what+L" → nouvel onglet");return;}
     if(n==L"tooltip.show"){
         NativeChrome::Tooltip::Content content{L"Actualiser",v==L"label"?L"":L"F5",v==L"detail"?L"Recharge la page depuis le serveur":L""};
@@ -1842,3 +1880,5 @@ void ChromeTipHover(int x,int y){
     chromeTip.Hide();
 }
 void ChromeTipHide(){if(chromeTip.Window())chromeTip.Hide();}
+// #125 E1b: while the live-site card hangs under the Annoter button, no toolbar tip shows (the one there goes at once).
+void ChromeTipBlock(bool on){chromeTip.Block(on);}

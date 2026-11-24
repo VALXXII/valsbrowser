@@ -58,6 +58,7 @@ struct Slot {
     int index = -1;                 // Row: item index; Section: period
     float top = 0, opacity = 1, open = 1;
     float clipTop = -1e6f, clipBottom = 1e6f;
+    float height = 0;               // Row: a held download's card height in the popover (0: a plain row)
 };
 // Everything a frame depends on; the offscreen fixture builds one directly.
 struct Scene {
@@ -101,13 +102,27 @@ inline std::vector<Slot> DrawerSlots(const std::vector<Item>& items, const std::
     if (contentBottom) *contentBottom = y + scroll + Panel::padding - DrawerLayout::after;
     return slots;
 }
-inline std::vector<Slot> PopoverSlots(const std::vector<Item>& items) {
+// A held download shows as its card (HeldCard) when the caller measured one (cardHeight > 0).
+inline bool ShowsCard(const Item& item, float cardHeight) { return cardHeight > 0 && item.held && item.state == State::InProgress; }
+inline std::vector<Slot> PopoverSlots(const std::vector<Item>& items, float cardHeight = 0) {
     std::vector<Slot> slots;
     if (items.empty()) { slots.push_back({SlotKind::Empty, -1, Panel::RowTop(0)}); return slots; }
     const int rows = std::min<int>(Panel::popoverRows, static_cast<int>(items.size()));
-    for (int i = 0; i < rows; ++i) slots.push_back({SlotKind::Row, i, Panel::RowTop(i)});
-    slots.push_back({SlotKind::ViewAll, -1, Panel::ViewAllTop(rows)});
+    float top = Panel::firstRow, bottom = 0; bool previousCard = false;
+    for (int i = 0; i < rows; ++i) {
+        const bool card = ShowsCard(items[i], cardHeight);
+        // Rows 16 apart, a card 20 from a row's tile (12 + the row's 8 inset in Paper), 12 between two cards.
+        if (i > 0) top = bottom + (card && previousCard ? HeldCard::gap : card || previousCard ? HeldCard::around : Panel::rowGap);
+        Slot slot{SlotKind::Row, i, top}; slot.height = card ? cardHeight : 0; slots.push_back(slot);
+        bottom = top + (card ? cardHeight : Panel::tile); previousCard = card;
+    }
+    slots.push_back({SlotKind::ViewAll, -1, bottom + Panel::rowGap});
     return slots;
+}
+// Popover height for its slots: « View all » + its line + the bottom padding.
+inline float PopoverHeight(const std::vector<Slot>& slots) {
+    for (const auto& slot : slots) if (slot.kind == SlotKind::ViewAll) return slot.top + Panel::line + Panel::padding;
+    return Panel::Height(1);
 }
 
 class View {
@@ -123,6 +138,7 @@ public:
     ~View() { Release(); }
     bool blurAvailable = true;
     void Release() {
+        Drop(bodyLayout_); bodyText_.clear(); bodyHeight_ = 0; Drop(warning_);
         Drop(layer_); layerSize_ = {}; Drop(fade_); Drop(stops_); Drop(blur_); Drop(dc_);
         for (auto& icon : icons_) Drop(icon.second);
         icons_.clear();
@@ -236,11 +252,78 @@ public:
         }
         return x;
     }
+    // ---- Held download (Paper B07b, variant A) ----
+    static constexpr D2D1_COLOR_F Amber(float alpha = 1) { return {0xE6 / 255.f, 0xAC / 255.f, 0x3D / 255.f, alpha}; }   // --color-profile-ambre
+    IDWriteTextLayout* bodyLayout_ = nullptr; std::wstring bodyText_; float bodyHeight_ = 0;
+    ID2D1PathGeometry* warning_ = nullptr;
+    // Phosphor « Warning » (bold), the Paper frame's own path: drawn as a vector so the amber is full strength (the
+    // bundled glyph bitmaps carry the toolbar's 50 % alpha).
+    void Warning(D2D1_RECT_F box, float size, D2D1_COLOR_F color) {
+        static constexpr const char* path = "M240.26,186.1,152.81,34.23h0a28.74,28.74,0,0,0-49.62,0L15.74,186.1a27.45,27.45,0,0,0,0,27.71A28.31,28.31,0,0,0,40.55,228h174.9a28.31,28.31,0,0,0,24.79-14.19A27.45,27.45,0,0,0,240.26,186.1Zm-20.8,15.7a4.46,4.46,0,0,1-4,2.2H40.55a4.46,4.46,0,0,1-4-2.2,3.56,3.56,0,0,1,0-3.73L124,46.2a4.77,4.77,0,0,1,8,0l87.44,151.87A3.56,3.56,0,0,1,219.46,201.8ZM116,136V104a12,12,0,0,1,24,0v32a12,12,0,0,1-24,0Zm28,40a16,16,0,1,1-16-16A16,16,0,0,1,144,176Z";
+        if (!warning_) warning_ = DialogKit::SvgGeometry(chrome_.Factory(), path);
+        auto* t = chrome_.RenderTarget(); if (!warning_ || !t) return;
+        D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
+        const float x = (box.left + box.right - size) / 2, y = (box.top + box.bottom - size) / 2;
+        t->SetTransform(D2D1::Matrix3x2F::Scale(size / 256.f, size / 256.f) * D2D1::Matrix3x2F::Translation(x, y) * base);
+        chrome_.SolidBrush()->SetColor(color); t->FillGeometry(warning_, chrome_.SolidBrush());
+        t->SetTransform(base);
+    }
+    // The body paragraph wrapped in the card's inner width, on CSS 18 DIP lines (half-leading above each line).
+    IDWriteTextLayout* Body() {
+        const std::wstring text = TR(downloads_held_body);
+        if (bodyLayout_ && text == bodyText_) return bodyLayout_;
+        Drop(bodyLayout_); bodyText_ = text; bodyHeight_ = 0;
+        TextMeasure m; IDWriteTextLayout* layout = nullptr;
+        if (FAILED(chrome_.MakeTextLayout(text, {0, 0, HeldCard::innerWidth, HeldCard::bodyLine}, Panel::detailText, false, false, 0, &layout, m)) || !layout) return nullptr;
+        DWRITE_TRIMMING none{DWRITE_TRIMMING_GRANULARITY_NONE, 0, 0}; layout->SetTrimming(&none, nullptr);
+        layout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP); layout->SetMaxWidth(HeldCard::innerWidth); layout->SetMaxHeight(4096);
+        DWRITE_LINE_METRICS natural{}; UINT32 count = 0; layout->GetLineMetrics(&natural, 1, &count);
+        layout->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, HeldCard::bodyLine, (HeldCard::bodyLine - natural.height) / 2 + natural.baseline);
+        DWRITE_TEXT_METRICS metrics{}; layout->GetMetrics(&metrics);
+        bodyHeight_ = metrics.lineCount * HeldCard::bodyLine; bodyLayout_ = layout; return layout;
+    }
+    float CardHeight() { return Body() ? HeldCard::Height(bodyHeight_) : 0; }
+    void CardButton(int slot, Design::Box b, int hit, const Scene& scene) {
+        const auto v = Interaction(scene, hit); const D2D1_RECT_F r{b.left, b.top, b.right, b.bottom};
+        auto* t = chrome_.RenderTarget(); auto* brush = chrome_.SolidBrush();
+        // « Supprimer »: filled #FFFFFF1A; « Conserver »: ghost. Hover lifts the plate, press dims it.
+        const float plate = (slot == 0 ? .102f : 0) + .06f * v.hover - .03f * v.press;
+        if (plate > 0) { chrome_.Color(1, plate); t->FillRoundedRectangle(D2D1::RoundedRect(r, HeldCard::radius, HeldCard::radius), brush); }
+        const float label = slot == 0 ? 1.f : .6f + .2f * v.hover;
+        const std::wstring text = slot == 0 ? TR(downloads_action_discard) : TR(downloads_action_keep);
+        const float w = std::min(r.right - r.left, chrome_.TextWidth(text, Panel::detailText, true, false, 0)), x = (r.left + r.right - w) / 2;   // centred
+        chrome_.Text(text, {x, r.top, x + w + 1, r.bottom}, Panel::detailText, label * (1 - .15f * v.press), false, true, 0);
+        if (scene.focus == hit) chrome_.FocusRing(r, HeldCard::radius);
+    }
+    void Card(const Item& item, float top, float height, const Scene& scene) {
+        auto* t = chrome_.RenderTarget(); auto* brush = chrome_.SolidBrush();
+        const auto c = HeldCard::Card(top, height); const D2D1_RECT_F card{c.left, c.top, c.right, c.bottom};
+        brush->SetColor(Amber(0x14 / 255.f)); t->FillRoundedRectangle(D2D1::RoundedRect(card, HeldCard::radius, HeldCard::radius), brush);
+        // 1 px inset ring (box-shadow inset), on the physical pixel grid.
+        const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width));
+        brush->SetColor(Amber(0x33 / 255.f)); t->DrawRoundedRectangle(D2D1::RoundedRect({card.left + px / 2, card.top + px / 2, card.right - px / 2, card.bottom - px / 2}, HeldCard::radius - px / 2, HeldCard::radius - px / 2), brush, px);
+        const auto tb = HeldCard::Tile(top); const D2D1_RECT_F tile{tb.left, tb.top, tb.right, tb.bottom};
+        brush->SetColor(Amber(0x26 / 255.f)); t->FillRoundedRectangle(D2D1::RoundedRect(tile, HeldCard::radius, HeldCard::radius), brush);
+        Warning(tile, HeldCard::glyph, Amber());
+        const auto n = HeldCard::Name(top); chrome_.Text(FileName(item.path), {n.left, n.top, n.right, n.bottom}, 16, 1, false, true, -.16f);
+        const auto st = HeldCard::Status(top); const auto ink = chrome_.ink; chrome_.ink = Amber();
+        chrome_.Text(TRF(downloads_held_status, Bytes(item.total > 0 ? item.total : item.received, 0)), {st.left, st.top, st.right, st.bottom}, Panel::detailText, 1, false, false, 0);
+        chrome_.ink = ink;
+        if (auto* body = Body()) { brush->SetColor(D2D1::ColorF(1, 1, 1, 0xB3 / 255.f)); t->DrawTextLayout({HeldCard::left + HeldCard::inset, HeldCard::BodyTop(top)}, body, brush, D2D1_DRAW_TEXT_OPTIONS_NONE); }
+        for (int slot = 0; slot < 2; ++slot) CardButton(slot, HeldCard::Button(top, height, slot), ActionHit(item.id, slot), scene);
+    }
     void Detail(const Item& item, float top, std::int64_t nowMs) {
         const float y = top + Panel::line, muted = Design::Text::muted;
         float x = Panel::textLeft;
         switch (item.state) {
         case State::InProgress: {
+            if (item.held) {   // DL-V5: warning glyph + « À confirmer », amber at full opacity
+                Warning({x, y, x + Panel::detailIcon, y + Panel::line}, Panel::detailIcon, Amber());
+                x += Panel::detailIcon + Panel::iconGap; const auto ink = chrome_.ink; chrome_.ink = Amber();
+                const std::wstring text = TR(downloads_state_held); const float w = chrome_.TextWidth(text, Panel::detailText, false, true, -.14f);
+                chrome_.Text(text, {x, y, std::min(x + w + 2, Panel::width - Panel::padding), y + Panel::line}, Panel::detailText, 1, true, false, -.14f);
+                chrome_.ink = ink; break;
+            }
             x = Run(L"arrow-down", Bytes(item.received, item.total), x, y, muted);
             if (item.endTime > 0) {
                 const auto left = std::max<std::int64_t>(0, (item.endTime - nowMs + 999) / 1000);
@@ -274,12 +357,13 @@ public:
         chrome_.Round({tile.left, tile.top, tile.right, tile.bottom}, Design::Radius::control, Design::Surface::raised);
         if (auto* icon = FileIcon(item)) {
             const float s = 24, x = (tile.left + tile.right - s) / 2, y = (tile.top + tile.bottom - s) / 2;
-            const float fade = item.state == State::Completed && !item.missing ? 1.f : .5f;
+            const float fade = item.state == State::Completed && !item.missing ? 1.f : item.held ? .8f : .5f;
             if (dc_) dc_->DrawBitmap(icon, D2D1::RectF(x, y, x + s, y + s), fade, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, nullptr, nullptr);
             else target->DrawBitmap(icon, D2D1::RectF(x, y, x + s, y + s), fade);
         }
         const auto name = Panel::Name(top);
-        chrome_.Text(FileName(item.path), {name.left, name.top, name.right, name.bottom}, Panel::line, Design::Text::muted, false, true, -.16f);
+        // A held row keeps its name readable (#FFFFFFE6 at the rows' .9): it waits for a decision.
+        chrome_.Text(FileName(item.path), {name.left, name.top, name.right, name.bottom}, Panel::line, item.held ? .9f * .9f : Design::Text::muted, false, true, -.16f);
         // Keyboard focus on a finished row (Entrée opens it): the ring around the tile + text band, 6 DIP out.
         if (scene.focus == RowHit(item.id)) chrome_.FocusRing({Panel::padding - 6, top - 6, Panel::width - Panel::padding + 6, top + Panel::tile + 6}, Design::Radius::control + 6);
         Detail(item, top, scene.nowMs);
@@ -371,7 +455,7 @@ public:
                 if (slot.opacity <= .002f) break;
                 if (clipped) target->PushAxisAlignedClip(D2D1::RectF(0, top, Panel::width, bottom), D2D1_ANTIALIAS_MODE_ALIASED);
                 if (layered) PushOpacity(slot.opacity);
-                Row(items[slot.index], slot.top, scene);
+                if (slot.height > 0) Card(items[slot.index], slot.top, slot.height, scene); else Row(items[slot.index], slot.top, scene);
                 if (layered) dc_->PopLayer();
                 if (clipped) target->PopAxisAlignedClip();
                 break;
@@ -439,7 +523,7 @@ protected:
     virtual const wchar_t* ClassName() const = 0;
     virtual void Configure() {}
     virtual D2D1_POINT_2F Origin(Motion::Time) const { return {0, 0}; } // column offset in the window (DIP)
-    virtual float KeyedLead() const { return 0; } // DIP keyed out on the left (a sliding drawer, NativeUI::KeyedDrawer)
+    virtual void KeyOut(Motion::Time) {}          // paints what the frame must not show in the key colour (the drawer, NativeUI::KeyedDrawer)
 public:
     virtual void Dismiss(bool keyboard) = 0;
 protected:
@@ -462,6 +546,12 @@ protected:
             } else if (slot.kind == SlotKind::ViewAll) {
                 auto b = Panel::ViewAll(slot.top, const_cast<View&>(view_).ViewAllWidth());
                 if (x >= b.left && x < b.right && y >= b.top && y < b.bottom) return ViewAllHit;
+            } else if (slot.kind == SlotKind::Row && slot.opacity > .5f && slot.height > 0) {
+                const auto card = HeldCard::Card(slot.top, slot.height);
+                if (y < card.top || y >= card.bottom || x < card.left || x >= card.right) continue;
+                const auto& entry = (*items_)[slot.index]; item = entry.id;
+                for (int s = 0; s < 2; ++s) { auto box = HeldCard::Button(slot.top, slot.height, s); if (x >= box.left && x < box.right && y >= box.top && y < box.bottom) return ActionHit(entry.id, s); }
+                return 0;
             } else if (slot.kind == SlotKind::Row && slot.opacity > .5f) {
                 auto band = Panel::Hover(slot.top);
                 const float top = std::max(band.top, slot.clipTop), bottom = std::min(band.bottom, slot.clipBottom);
@@ -481,7 +571,7 @@ protected:
     // A row shows its actions while hovered or holding keyboard focus. A download in progress or paused shows its
     // Pause / Resume and Cancel at all times (user report 2026-11-14: an active download looked un-cancellable while
     // the pointer was elsewhere); the name keeps its mask, the hit lanes are the same buttons.
-    static bool Active(const Item& item) { return item.state == State::InProgress || item.state == State::Paused; }
+    static bool Active(const Item& item) { return (item.state == State::InProgress && !item.held) || item.state == State::Paused; }   // a held row (DL-V5) reveals on hover
     bool ActiveId(int id) const { if (!items_) return false; for (const auto& i : *items_) if (i.id == id) return Active(i); return false; }
     void UpdateReveals(Motion::Time now) {
         const bool reduced = motion_.ReducedMotion();
@@ -548,7 +638,7 @@ protected:
                     add(static_cast<UINT_PTR>(SectionHit(static_cast<Period>(slot.index))), DrawerLayout::Caret(slot.top), slot.open > .5f ? TR(common_collapse) : TR(common_expand));
                 continue;
             }
-            if (slot.kind != SlotKind::Row || slot.opacity < .99f || slot.top < scene.viewTop || slot.top + Panel::tile > scene.viewBottom) continue;
+            if (slot.kind != SlotKind::Row || slot.height > 0 || slot.opacity < .99f || slot.top < scene.viewTop || slot.top + Panel::tile > scene.viewBottom) continue;   // a card's buttons carry their label
             const auto& item = (*items_)[slot.index]; const auto actions = ActionsFor(item);
             for (int s = 0; s < 2; ++s) {
                 const Action action = s == 0 ? actions.first : actions.second;
@@ -566,7 +656,7 @@ protected:
         auto* target = chrome_.RenderTarget(); if (!target || !items_) return;
         const auto scene = MakeScene(Motion::Now());
         target->BeginDraw();
-        view_.Paint(scene, Slots(scene.now), SurfaceHeight()); chrome_.KeyOut(KeyedLead());
+        view_.Paint(scene, Slots(scene.now), SurfaceHeight()); KeyOut(scene.now);
         if (target->EndDraw() == D2DERR_RECREATE_TARGET) { view_.Release(); chrome_.RecreateTarget(); }
     }
     // ---- UI Automation (the actions were reachable by pointer / keyboard only) ----------------------------------
@@ -574,7 +664,7 @@ protected:
     static constexpr long long RowKeyBase = 1000000000LL;
     static std::wstring StatusText(const Item& item) {
         switch (item.state) {
-        case State::InProgress: return Bytes(item.received, item.total);
+        case State::InProgress: return item.held ? TRF(downloads_held_status, Bytes(item.total > 0 ? item.total : item.received, 0)) + L". " + TR(downloads_held_body) : Bytes(item.received, item.total);
         case State::Paused: return TR(downloads_state_paused);
         case State::Completed: return item.missing ? TR(downloads_state_file_deleted) : TR(downloads_state_completed);
         case State::Failed: return FailureText(item.reason);
@@ -584,7 +674,8 @@ protected:
     }
     static const wchar_t* ActionId(Action a) {
         switch (a) { case Action::Pause: return L"DownloadPause"; case Action::Resume: return L"DownloadResume"; case Action::Cancel: return L"DownloadCancel";
-        case Action::Retry: return L"DownloadRetry"; case Action::Remove: return L"DownloadRemove"; case Action::ShowInFolder: return L"DownloadShowInFolder"; case Action::Open: return L"DownloadOpen"; default: return L""; }
+        case Action::Retry: return L"DownloadRetry"; case Action::Remove: return L"DownloadRemove"; case Action::ShowInFolder: return L"DownloadShowInFolder"; case Action::Open: return L"DownloadOpen";
+        case Action::Discard: return L"DownloadDiscard"; case Action::Keep: return L"DownloadKeep"; default: return L""; }
     }
 public:
     // The accessible tree of the surface (screen pixels), in reading order. Public: tests read it.
@@ -601,13 +692,13 @@ public:
             if (slot.kind != SlotKind::Row || slot.opacity <= .5f || slot.index < 0 || slot.index >= static_cast<int>(items_->size())) continue;
             const auto& item = (*items_)[slot.index];
             Accessibility::Node row; row.key = RowKeyBase + item.id; row.parent = 3; row.role = Accessibility::Role::ListItem; row.name = FileName(item.path); row.status = StatusText(item);
-            row.automationId = L"DownloadItem"; row.position = ++position; row.count = count; row.focusable = Openable(item); row.bounds = screen(Panel::Hover(slot.top));
+            row.automationId = L"DownloadItem"; row.position = ++position; row.count = count; row.focusable = Openable(item); row.bounds = screen(slot.height > 0 ? HeldCard::Card(slot.top, slot.height) : Panel::Hover(slot.top));
             row.offscreen = slot.top + Panel::tile < scene.viewTop || slot.top > scene.viewBottom; out.push_back(row);
             const auto actions = ActionsFor(item);
             for (int sl = 0; sl < 2; ++sl) {
                 const Action a = sl == 0 ? actions.first : actions.second; if (a == Action::None) continue;
                 Accessibility::Node b; b.key = ActionHit(item.id, sl); b.parent = row.key; b.role = Accessibility::Role::Button; b.name = TipFor(a); b.help = FileName(item.path);
-                b.automationId = ActionId(a); b.bounds = screen(Panel::ActionBox(slot.top, sl)); b.offscreen = row.offscreen; out.push_back(b);
+                b.automationId = ActionId(a); b.bounds = screen(slot.height > 0 ? HeldCard::Button(slot.top, slot.height, sl) : Panel::ActionBox(slot.top, sl)); b.offscreen = row.offscreen; out.push_back(b);
             }
         }
         return out;
@@ -736,8 +827,9 @@ class Popover final : public Host {
     float anchorRight_ = 0, anchorTop_ = 0;
     float anchorLeft_ = -1, anchorBottom_ = 0;   // #127: opened from the column, left / bottom edges (screen px)
     int Rows() const { return items_ ? std::min<int>(Panel::popoverRows, static_cast<int>(items_->size())) : 0; }
-    float Height() const { return Panel::Height(Rows(), items_ && !items_->empty()); }
-    std::vector<Slot> Slots(Motion::Time) const override { static const std::vector<Item> none; return PopoverSlots(items_ ? *items_ : none); }
+    float CardHeight() const { return const_cast<View&>(view_).CardHeight(); }
+    float Height() const { if (!items_ || items_->empty()) return Panel::Height(Rows(), false); return PopoverHeight(Slots(Motion::Time{})); }
+    std::vector<Slot> Slots(Motion::Time) const override { static const std::vector<Item> none; return PopoverSlots(items_ ? *items_ : none, CardHeight()); }
     float SurfaceHeight() const override { return Height(); }
     void Decorate(Scene& scene) const override {
         scene.entrance = entrance_.Value(scene.now); scene.viewBottom = Height() - Panel::padding / 2;
@@ -811,8 +903,8 @@ public:
 // glides into place: section headers emerge from under the title instead of
 // crossing the rows. Content the popover did not show fades in over the last
 // 75%; "View all" leaves within the first 30%. Pure, so the fixture renders it.
-inline std::vector<Slot> MorphSlots(const std::vector<Item>& items, const std::vector<Slot>& drawer, float t) {
-    const auto popover = PopoverSlots(items);
+inline std::vector<Slot> MorphSlots(const std::vector<Item>& items, const std::vector<Slot>& drawer, float t, float cardHeight = 0) {
+    const auto popover = PopoverSlots(items, cardHeight);
     std::map<int, float> from; // item index -> popover top
     for (auto& slot : popover) if (slot.kind == SlotKind::Row) from[slot.index] = slot.top;
     float shift = 0; // first shared row: popover top - drawer top
@@ -830,13 +922,20 @@ inline std::vector<Slot> MorphSlots(const std::vector<Item>& items, const std::v
     return slots;
 }
 
-// Docked drawer: the full history grouped by period. Two motions, both cheap:
-//  - Morph (from "View all"): the window sits at its final place and size; a
-//    region shaped like the popover grows into the drawer while the content is
-//    re-laid out (one Direct2D frame + one GDI region per display frame).
-//  - Slide (close, Escape, toolbar button): the window itself moves right,
-//    clipped to the owner's client area, so DWM keeps content and position in
-//    sync without repainting.
+// Docked drawer: the full history grouped by period. Two motions, both cheap,
+// both one Direct2D present per display frame on a window that neither moves
+// nor changes its region while they run (NativeUI::KeyedDrawer):
+//  - Morph (from "View all"): the window sits at its final place and size; the
+//    popover's shape grows into the drawer while the content is re-laid out.
+//    What the shape does not cover yet is painted in the key colour (KeyOut).
+//  - Slide (close, Escape, toolbar button): the content is drawn further right
+//    each frame, the strip it has not entered keyed out.
+// Why the morph no longer grows a window region (user report 2026-11-23: small
+// flashes at the edges while the popover grows): a present into this layered
+// window only reaches the pixels inside the region in force when it presents.
+// Painting first and growing the region after left, every frame, the strip just
+// added holding what the window showed there before (black on a new surface,
+// earlier drawer pixels) until the next frame painted it; DWM showed it in between.
 class Drawer final : public Host {
     Lane slide_, scroll_, morph_;
     std::array<Lane, PeriodCount> fold_;
@@ -864,7 +963,7 @@ class Drawer final : public Host {
         static const std::vector<Item> none; const auto& items = items_ ? *items_ : none;
         auto slots = DrawerSlots(items, Groups(), Folds(now), scroll_.Value(now));
         const float t = Morph(now);
-        return t < 1 ? MorphSlots(items, slots, t) : slots;
+        return t < 1 ? MorphSlots(items, slots, t, const_cast<View&>(view_).CardHeight()) : slots;
     }
     float Scale() const { return 96.f / Dpi(); }
     // The 268 DIP column: at the popover's place when the morph starts, docked after
@@ -908,12 +1007,37 @@ class Drawer final : public Host {
     RECT OwnerClient() const { RECT r{}; GetClientRect(owner_, &r); MapWindowPoints(owner_, nullptr, reinterpret_cast<POINT*>(&r), 2); return r; }
     int OwnerPx(float dip) const { return static_cast<int>(std::lround(dip * GetDpiForWindow(owner_) / 96.f)); }
     float SurfaceHeight() const override { return ClientHeight(); }
+    // The popover's rectangle (rounded like DWM's popup corners) growing into the
+    // docked column [margin, width], in window pixels: a GDI region, so its corner is
+    // the 1-bit one the popover's own region has.
+    HRGN MorphShape(float t, int margin, int width, int height) const {
+        auto lerp = [t](LONG a, int b) { return static_cast<int>(std::lround(a + (b - a) * t)); };
+        const int radius = static_cast<int>(std::lround(morphRadius_ * (1 - t))) * 2 + 1;
+        return CreateRoundRectRgn(lerp(morphFrom_.left, margin), lerp(morphFrom_.top, 0), lerp(morphFrom_.right, width) + 1, lerp(morphFrom_.bottom, height) + 1, radius, radius);
+    }
+    // Key colour (NativeUI::KeyedDrawer: transparent, click-through) over what this
+    // frame must not show: while morphing, everything outside the growing shape;
+    // otherwise the margin strip (outside the docked column); and, while sliding
+    // (a close may start mid-morph), the strip the column has not entered (`lead_` px).
+    void KeyOut(Motion::Time now) override {
+        const float t = Morph(now);
+        if (t < 1) {
+            RECT client{}; GetClientRect(hwnd_, &client);
+            HRGN outside = CreateRectRgn(0, 0, client.right, client.bottom), shape = MorphShape(t, OwnerPx(DrawerLayout::margin), client.right, client.bottom);
+            CombineRgn(outside, outside, shape, RGN_DIFF); chrome_.KeyOutRegion(outside);
+            DeleteObject(shape); DeleteObject(outside);
+            if (lead_ > 0) chrome_.KeyOut(DrawerLayout::margin + lead_ * Scale());
+            return;
+        }
+        chrome_.KeyOut(DrawerLayout::margin + lead_ * Scale());
+    }
     // Window = margin strip + 268 DIP column, docked to the owner's right edge. It
     // never moves while sliding (NativeUI::KeyedDrawer): a slide step is one present,
     // the column drawn `lead_` pixels right of its place (Origin) and the strip it has
-    // not entered keyed out (KeyedLead). The region rounds the corner shared with the
-    // owner (empty while nothing has entered) and, while morphing, takes the shape of
-    // the popover growing into the drawer. Returns true when it painted.
+    // not entered keyed out (KeyOut). The region rounds the corner shared with the
+    // owner (empty while nothing has entered) and keeps the docked column, or the
+    // whole window while morphing: it changes only when a morph starts or lands,
+    // never during one. Returns true when it painted.
     bool ApplyGeometry(Motion::Time now, bool force = false) {
         if (!hwnd_) return false;
         const RECT owner = OwnerClient();
@@ -923,7 +1047,7 @@ class Drawer final : public Host {
         const float t = Morph(now); const int morphKey = t >= 1 ? 1000 : static_cast<int>(t * 999);
         if (!force && shown == appliedVisible_ && morphKey == appliedMorph_ && EqualRect(&owner, &appliedOwner_)) return false;
         const bool resized = !EqualRect(&owner, &appliedOwner_), slid = shown != appliedVisible_;
-        const bool reshape = force || resized || morphKey != appliedMorph_ || (shown > 0) != (appliedVisible_ > 0);
+        const bool reshape = force || resized || (morphKey < 1000) != (appliedMorph_ < 1000) || (shown > 0) != (appliedVisible_ > 0);
         appliedVisible_ = shown; appliedMorph_ = morphKey; appliedOwner_ = owner; lead_ = column - shown;
         const RECT window{owner.right - width, top, owner.right, top + height};
         if (force || !EqualRect(&window, &appliedWindow_)) { SetWindowPos(hwnd_, nullptr, window.left, window.top, width, height, SWP_NOACTIVATE | SWP_NOZORDER); appliedWindow_ = window; }
@@ -935,25 +1059,21 @@ class Drawer final : public Host {
             // visible outline stays the owner's smooth one.
             const int right = width, r = OwnerPx(20);
             region = IsZoomed(owner_) ? CreateRectRgn(0, 0, right, height) : CreateRoundRectRgn(-r * 2, -r * 2, right + 1, height + 1, r, r);
-            // Shape: the docked column [margin, width] — never the margin strip, which
-            // only exists for the popover to morph from — or, while morphing, the
-            // popover rectangle (rounded like DWM's popup corners) growing into it.
-            HRGN shape = nullptr;
-            if (t < 1) {
-                auto lerp = [t](LONG a, int b) { return static_cast<int>(std::lround(a + (b - a) * t)); };
-                const int radius = static_cast<int>(std::lround(morphRadius_ * (1 - t))) * 2 + 1;
-                shape = CreateRoundRectRgn(lerp(morphFrom_.left, margin), lerp(morphFrom_.top, 0), lerp(morphFrom_.right, width) + 1, lerp(morphFrom_.bottom, height) + 1, radius, radius);
-            } else shape = CreateRectRgn(margin, 0, width, height);
+            // Docked: the column [margin, width] — never the margin strip, which only
+            // exists for the popover to morph from. Morphing: the whole window, the
+            // same for the whole morph; the popover's shape growing into the column is
+            // what KeyOut leaves unkeyed, so shape and content reach DWM in one present.
+            HRGN shape = t < 1 ? CreateRectRgn(0, 0, width, height) : CreateRectRgn(margin, 0, width, height);
             CombineRgn(region, region, shape, RGN_AND); DeleteObject(shape);
         } else region = CreateRectRgn(0, 0, 0, 0);
-        // No redraw here: morph frames paint first; a slide step presents right after.
+        // No redraw here: a morph's region is set before its first frame (Enter) and
+        // shrinks to the column once that strip is keyed; a slide step presents right after.
         if (region) SetWindowRgn(hwnd_, region, FALSE);
         if (resized) { scroll_.Snap(std::clamp(scroll_.Target(), 0.f, MaxScroll(now, true))); RefreshTips(); }
         if (force || !slid || shown == 0 || t < 1 || !IsWindowVisible(hwnd_)) return false;
         PaintNow(); ValidateRect(hwnd_, nullptr);
         return true;
     }
-    float KeyedLead() const override { return lead_ > 0 ? DrawerLayout::margin + lead_ * Scale() : 0.f; }
     void ScrollTo(float target, Motion::Time now, Motion::Milliseconds duration) {
         target = std::clamp(target, 0.f, MaxScroll(now, true));
         scroll_.Set(target, now, Motion::Milliseconds(0), motion_.ReducedMotion() ? Motion::Milliseconds(0) : duration);
@@ -992,6 +1112,57 @@ class Drawer final : public Host {
         morph_.Snap(1);
         KillTimer(hwnd_, TickTimer); ShowWindow(hwnd_, SW_HIDE);
     }
+    // Layered alpha 0, the colour key kept: nothing of the window reaches the
+    // screen, while what it presents still lands in its surface.
+    void Veil(bool veiled) { SetLayeredWindowAttributes(hwnd_, NativeUI::drawerKey, 0, veiled ? LWA_COLORKEY | LWA_ALPHA : LWA_COLORKEY); }
+    // Show(); `test`: never activated (the user's focus stays where it is) and never reduced motion.
+    void Enter(const RECT* from, HWND under, bool test) {
+        if (!hwnd_) return;
+        motion_.SetReducedMotion(!test && Motion::PreferredReducedMotion());
+        auto now = Motion::Now(); const bool reduced = motion_.ReducedMotion();
+        if (!visible_) { slide_.Snap(0); scroll_.Snap(0); morph_.Snap(1); focus_ = 0; keyboard_ = false; ClearPointer(); }
+        const bool morph = from && !reduced;
+        if (morph) {
+            // Window-local pixels of the popover, the drawer's column at its docked place.
+            const RECT owner = OwnerClient();
+            const int width = OwnerPx(DrawerLayout::width + DrawerLayout::margin), left = owner.right - width, top = owner.top + OwnerPx(Design::Vertical::DrawerTop());
+            morphFrom_ = {from->left - left, from->top - top, from->right - left, from->bottom - top};
+            morphFrom_.left = std::max(0L, morphFrom_.left); morphFrom_.top = std::max(0L, morphFrom_.top);
+            morphRadius_ = static_cast<float>(OwnerPx(Panel::radius));
+            slide_.Snap(1);
+            if (!visible_) Warm(); // cheap when already warmed while the popover was open
+            morph_.Snap(0);        // its clock starts once the hand-off is on screen (below)
+        } else {
+            morph_.Snap(1);
+            view_.Preload(*items_);
+            // Re-opening mid-exit continues from where the drawer is on screen.
+            slide_.Set(1, now, Motion::Milliseconds(0), reduced ? Motion::Milliseconds(0) : DrawerMotion::enter, DrawerMotion::enterSpring);
+        }
+        closing_ = false; visible_ = true;
+        // Hand-off without a blank frame. A window only keeps what it is painted
+        // with while it is really on screen, so the drawer is shown *underneath*
+        // the popover (which still covers it), is painted there in the popover's
+        // shape, and DWM composes that frame. Only then is it activated, which
+        // hides the popover: the drawer under it is already showing it.
+        // A morph's region is the whole window from this first frame on (it no
+        // longer grows), so what an earlier session left in the window's surface
+        // must never reach the screen: the window stays veiled until this frame has
+        // filled every pixel of it, keyed out around the popover's shape.
+        if (morph) Veil(true);
+        ApplyGeometry(now, true);
+        SetWindowPos(hwnd_, under ? under : HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        PaintNow(); ValidateRect(hwnd_, nullptr);
+        if (morph) { Veil(false); DwmFlush(); }   // one more composition: the unveiled frame is on screen before the popover goes
+        DwmFlush();
+        if (under) SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        if (!test) Activated();
+        // The morph's clock starts now that its first frame is on screen: any time
+        // spent above must never be skipped by the animation (that was a jump).
+        now = Motion::Now();
+        if (morph) morph_.Set(1, now, Motion::Milliseconds(0), DrawerMotion::morph, DrawerMotion::morphSpring);
+        Repoint(); RefreshTips(); Ticker();
+        if (hooks_.schedule) hooks_.schedule(now);
+    }
 public:
     Drawer() { for (auto& lane : fold_) lane.Snap(1); morph_.Snap(1); }
     bool Create(HINSTANCE instance, HWND owner, const std::wstring& root, std::vector<Item>* items, Hooks hooks) {
@@ -1016,45 +1187,11 @@ public:
     }
     // from: the popover's screen rectangle to morph out of, or null to slide in;
     // under: the popover window, kept above the drawer until the hand-off.
-    void Show(const RECT* from = nullptr, HWND under = nullptr) {
-        if (!hwnd_) return;
-        motion_.SetReducedMotion(Motion::PreferredReducedMotion());
-        auto now = Motion::Now(); const bool reduced = motion_.ReducedMotion();
-        if (!visible_) { slide_.Snap(0); scroll_.Snap(0); morph_.Snap(1); focus_ = 0; keyboard_ = false; ClearPointer(); }
-        if (from && !reduced) {
-            // Window-local pixels of the popover, the drawer's column at its docked place.
-            const RECT owner = OwnerClient();
-            const int width = OwnerPx(DrawerLayout::width + DrawerLayout::margin), left = owner.right - width, top = owner.top + OwnerPx(Design::Vertical::DrawerTop());
-            morphFrom_ = {from->left - left, from->top - top, from->right - left, from->bottom - top};
-            morphFrom_.left = std::max(0L, morphFrom_.left); morphFrom_.top = std::max(0L, morphFrom_.top);
-            morphRadius_ = static_cast<float>(OwnerPx(Panel::radius));
-            slide_.Snap(1);
-            if (!visible_) Warm(); // cheap when already warmed while the popover was open
-            morph_.Snap(0);        // its clock starts once the hand-off is on screen (below)
-        } else {
-            morph_.Snap(1);
-            view_.Preload(*items_);
-            // Re-opening mid-exit continues from where the drawer is on screen.
-            slide_.Set(1, now, Motion::Milliseconds(0), reduced ? Motion::Milliseconds(0) : DrawerMotion::enter, DrawerMotion::enterSpring);
-        }
-        closing_ = false; visible_ = true;
-        // Hand-off without a blank frame. A window only keeps what it is painted
-        // with while it is really on screen, so the drawer is shown in the
-        // popover's shape *underneath* the popover (which still covers it), is
-        // painted there, and DWM composes that frame. Only then is it activated,
-        // which hides the popover: the drawer under it is already showing it.
-        ApplyGeometry(now, true);
-        SetWindowPos(hwnd_, under ? under : HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        PaintNow(); ValidateRect(hwnd_, nullptr); DwmFlush();
-        if (under) SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        Activated();
-        // The morph's clock starts now that its first frame is on screen: any time
-        // spent above must never be skipped by the animation (that was a jump).
-        now = Motion::Now();
-        if (from && !reduced) morph_.Set(1, now, Motion::Milliseconds(0), DrawerMotion::morph, DrawerMotion::morphSpring);
-        Repoint(); RefreshTips(); Ticker();
-        if (hooks_.schedule) hooks_.schedule(now);
-    }
+    void Show(const RECT* from = nullptr, HWND under = nullptr) { Enter(from, under, false); }
+    // Tests: the morph out of `from` (screen pixels), never activated, on a window kept off screen;
+    // MorphingForTest: true while its frames (Frame, called as the host clock does) still have work.
+    void MorphForTest(const RECT& from) { Enter(&from, nullptr, true); }
+    bool MorphingForTest() const { return visible_ && (morph_.Moving(Motion::Now()) || appliedMorph_ < 1000); }
     // Leaves along the path it came in on; `animate` false hides at once.
     void Dismiss(bool keyboard) override { Hide(keyboard, true); }
     void Hide(bool keyboard, bool animate) {
@@ -1078,8 +1215,9 @@ public:
     void Frame(Motion::Time now) override {
         if (!visible_) return;
         if (morph_.Moving(now) || appliedMorph_ < 1000) {
-            // Morph frame (and the one that lands it): paint the new layout first,
-            // then reshape the region, so both reach the same composition. One
+            // Morph frame (and the one that lands it): one present carries the new
+            // layout and, keyed around it, the new shape; the region stays (the
+            // landing frame keys the margin strip, then the region drops it). One
             // paint per frame: the pending invalidation is consumed here.
             PaintNow(); ValidateRect(hwnd_, nullptr); ApplyGeometry(now);
             if (closing_ && !slide_.Moving(now)) { Finish(); return; }

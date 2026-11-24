@@ -124,6 +124,31 @@ inline void Text(Chrome& c, const std::wstring& text, D2D1_RECT_F box, Font f, D
     b->SetColor(color); t->DrawTextLayout(D2D1::Point2F(box.left, box.top), layout, b, D2D1_DRAW_TEXT_OPTIONS_NONE); layout->Release();
 }
 
+// Runs of one text in their own colour (and weight): CSS « <span> »s. One layout, so every run starts at the exact
+// advance of the previous one (kerning included). `weight` 0: the font's.
+struct Span { std::wstring text; D2D1_COLOR_F color; int weight = 0; };
+inline void Spans(Chrome& c, const std::vector<Span>& runs, D2D1_RECT_F box, Font f, DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING, bool wrap = false, bool trim = false) {
+    auto* t = c.RenderTarget(); auto* b = c.SolidBrush(); if (!t || !b || runs.empty()) return;
+    std::wstring all; for (const auto& r : runs) all += r.text;
+    auto* layout = MakeLayout(c, all, box.right - box.left, f, wrap, align, trim); if (!layout) return;
+    std::vector<ID2D1SolidColorBrush*> brushes; UINT32 at = 0;
+    for (std::size_t i = 0; i < runs.size(); ++i) {
+        const DWRITE_TEXT_RANGE range{at, static_cast<UINT32>(runs[i].text.size())}; at += range.length;
+        if (runs[i].weight) layout->SetFontWeight(static_cast<DWRITE_FONT_WEIGHT>(runs[i].weight), range);
+        if (i == 0) continue;
+        ID2D1SolidColorBrush* own = nullptr;
+        if (SUCCEEDED(t->CreateSolidColorBrush(runs[i].color, &own)) && own) { layout->SetDrawingEffect(own, range); brushes.push_back(own); }
+    }
+    b->SetColor(runs[0].color); t->DrawTextLayout(D2D1::Point2F(box.left, box.top), layout, b, D2D1_DRAW_TEXT_OPTIONS_NONE);
+    for (auto* own : brushes) own->Release();
+    layout->Release();
+}
+// Height of `text` wrapped in `width` (whole line boxes).
+inline float WrappedHeight(Chrome& c, const std::wstring& text, float width, Font f) {
+    auto* layout = MakeLayout(c, text, width, f, true, DWRITE_TEXT_ALIGNMENT_LEADING, false); if (!layout) return f.line;
+    DWRITE_TEXT_METRICS m{}; layout->GetMetrics(&m); layout->Release(); return std::max(f.line, static_cast<float>(m.lineCount) * f.line);
+}
+
 // ---- Shapes ---------------------------------------------------------------------------------------------
 inline void Fill(Chrome& c, D2D1_RECT_F r, float radius, D2D1_COLOR_F color) {
     auto* t = c.RenderTarget(); auto* b = c.SolidBrush(); if (!t || !b || color.a <= 0) return;

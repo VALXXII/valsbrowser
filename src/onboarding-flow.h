@@ -8,7 +8,7 @@
 //      │ Passer et naviguer                                │ Passer                    ├─ all saved ─▶ 5 ImportDone ──Continuer─┐
 //      ▼                                                   ▼                           └─ a failure ─▶ 5.1 ImportError ─Passer──┤
 //   browser (Skipped)                                 6 Annotation ◀───────────────────────────────────  Réessayer ▶ 4 ───────┘
-//                                                          │ Activer / Pas intéressé(e)
+//                                                          │ Essayer en 1 minute / Plus tard (#125 v2 E2)
 //                                                          ▼
 //                                                     7 Outro (closing logo) ──▶ browser (Completed)
 //
@@ -135,7 +135,7 @@ public:
     bool SkipImport() { if (screen_ != Screen::ImportPick && screen_ != Screen::ImportError) return false; screen_ = AfterImport(); return true; }
     // Screen 5 « Continuer ».
     bool Continue() { if (screen_ != Screen::ImportDone) return false; screen_ = AfterImport(); return true; }
-    // Screen 6 « Activer » / « Pas intéressé(e) ».
+    // Screen 6 « Essayer en 1 minute » (true: the mode's tutorial opens once the browser is up) / « Plus tard ».
     bool AnswerAnnotation(bool activate) { if (screen_ != Screen::Annotation) return false; annotate_ = activate; screen_ = Screen::Outro; return true; }
     // Screen 7 is over.
     bool OutroDone() { if (screen_ != Screen::Outro) return false; ending_ = Ending::Completed; screen_ = Screen::Closed; return true; }

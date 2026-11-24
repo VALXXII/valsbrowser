@@ -185,11 +185,20 @@
     "c-menu-modele": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }, wait(30), click(".model .m"), wait(60)],
     "c-menu-mode": cDone().concat([wait(30), click(".tb.mode"), wait(60)]),
     "c-menu-au-dessus": [LAY({ side: "above" }), st(), { type: "thread.reset", conversationId: "new", items: [] }, wait(30), click(".tb.mode"), wait(60)],
+    // #129: no provider said its models yet (new profile, agent not started): the button shows « Opus 5.5 · Moyen »
+    "c-menu-modele-inconnu": [LAY(), st({ agents: [Object.assign({}, CLAUDE, { models: [] }), Object.assign({}, CODEX, { models: [] })], model: null, efforts: [], effort: null }),
+      { type: "thread.reset", conversationId: "new", items: [] }, wait(30), click(".model .m"), wait(60)],
     "c-fil-long": [LAY({ maxHeight: 360 }), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: cDoneItems().concat([
       { type: "message.user", id: "u2", text: "Et garde 16 px de marge sur tablette.", at: today(15, 40), elements: [] },
       { type: "turn.start", turnId: "t2", model: "Sonnet 5.5", effort: "Élevé", agentId: "claude-code", at: today(15, 40) },
       { type: "message.agentChunk", turnId: "t2", messageId: "m3", text: "C'est ajouté : entre 640 et 1024 px, le bouton garde **16 px** de marge de chaque côté.\n\n- `checkout.css` : une règle de plus\n- rien d'autre n'a changé" },
       { type: "turn.end", turnId: "t2", stopReason: "end_turn", durationMs: 7000 }]) }],
+    // #129 / #130: the bubble flipped above its element (growing up) at its maximum height, its thread scrolled: the model menu
+    "c-menu-modele-fil-long": [LAY({ maxHeight: 360, side: "above" }), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: cDoneItems().concat([
+      { type: "message.user", id: "u2", text: "Et garde 16 px de marge sur tablette.", at: today(15, 40), elements: [] },
+      { type: "turn.start", turnId: "t2", model: "Sonnet 5.5", effort: "Élevé", agentId: "claude-code", at: today(15, 40) },
+      { type: "message.agentChunk", turnId: "t2", messageId: "m3", text: "C'est ajouté : entre 640 et 1024 px, le bouton garde **16 px** de marge de chaque côté.\n\n- `checkout.css` : une règle de plus\n- rien d'autre n'a changé" },
+      { type: "turn.end", turnId: "t2", stopReason: "end_turn", durationMs: 7000 }]) }, wait(30), click(".model .m"), wait(80)],
     "c-sans-dossier": [LAY(), st({ folder: null }), { type: "thread.reset", conversationId: "new", items: [] }],
     // B 1.9 — R8: before the agent's first words; R7: the user's message with its element; R3: menus outside the
     // bubble, with a host that cannot give the room above (screen edge); R5: « + » with a folder found for sure or not
@@ -482,6 +491,33 @@
     "stream": [st(Object.assign({ running: true }, conv("Texte en flux", { running: true }))), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Explique tout en détail.", null, []), { type: "turn.start", turnId: "t1", model: "Sonnet 5.5", effort: "Élevé" }] }],
   };
   Object.assign(SC, C_SCENARIOS);
+
+  // #128 (Paper « #128 Menu des modèles · A liste groupée (validée) »): the model menu as one list grouped by provider, in
+  // the panel and in the comment bubble. The model names are this fake host's agents' (the board's Codex names are only
+  // examples): the page writes none of its own. tests/chat-panel/model_menu_128.py drives these.
+  const CODEX_A = Object.assign({}, CODEX, { models: [{ id: "gpt-5.5", label: "GPT-5.5" }, { id: "gpt-5.5-mini", label: "GPT-5.5 mini" }] });
+  const AGENTS_A = (codex) => ({ agents: [CLAUDE, Object.assign({}, CODEX_A, codex || {})] });
+  const OFF = { status: "notConnected", detail: "Pas connecté", authMethods: [{ id: "chatgpt", label: "ChatGPT" }] };
+  const withChat = (over) => [st(Object.assign(AGENTS_A(), conv("Bouton de paiement"), over || {})), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", ASK)].concat(doneTurn("t1")) }];
+  const openModels = [wait(30), click(".model .m"), wait(80)];
+  Object.assign(SC, {
+    "128-panneau": withChat().concat(openModels),
+    "128-panneau-vide": [st(AGENTS_A()), { type: "thread.reset", conversationId: "new", items: [] }].concat(openModels),
+    "128-codex-non-connecte": withChat(AGENTS_A(OFF)).concat(openModels),
+    "128-codex-pas-installe": withChat(AGENTS_A({ status: "notInstalled", detail: "Pas installé", models: [] })).concat(openModels),
+    "128-codex-erreur": withChat(AGENTS_A({ status: "error", detail: "Codex est trop ancien" })).concat(openModels),
+    "128-effort": withChat().concat(openModels, [click(".menu .mi[data-key='effort']"), wait(80)]),
+    // #129 in the new list: providers ready, no model said yet — each group names the model its agent will use
+    "128-modeles-inconnus": [st({ agents: [Object.assign({}, CLAUDE, { models: [] }), Object.assign({}, CODEX, { models: [] })], model: null, efforts: [], effort: null }),
+      { type: "thread.reset", conversationId: "new", items: [] }].concat(openModels),
+    "128-codex-choisi": withChat({ agentId: "codex", model: "gpt-5.5", efforts: [{ id: "medium", label: "Medium" }, { id: "high", label: "High" }] }).concat(openModels),
+    "c-128-bulle": [LAY({ maxWidth: 320 }), st(Object.assign(AGENTS_A(), conv("Bouton de paiement"))), { type: "thread.reset", conversationId: "c1", items: cDoneItems() }].concat(openModels),
+    "c-128-bulle-vide": [LAY({ maxWidth: 320 }), st(AGENTS_A()), { type: "thread.reset", conversationId: "new", items: [] }].concat(openModels),
+    "c-128-bulle-non-connecte": [LAY({ maxWidth: 320 }), st(Object.assign(AGENTS_A(OFF), conv("Bouton de paiement"))), { type: "thread.reset", conversationId: "c1", items: cDoneItems() }].concat(openModels),
+    "c-128-bulle-effort": [LAY({ maxWidth: 320 }), st(Object.assign(AGENTS_A(), conv("Bouton de paiement"))), { type: "thread.reset", conversationId: "c1", items: cDoneItems() }].concat(openModels, [click(".menu .mi[data-key=effort]"), wait(120)]),
+    "c-128-modeles-inconnus": [LAY({ maxWidth: 320 }), st({ agents: [Object.assign({}, CLAUDE, { models: [] }), Object.assign({}, CODEX, { models: [] })], model: null, efforts: [], effort: null }),
+      { type: "thread.reset", conversationId: "new", items: [] }].concat(openModels),
+  });
   function bigThread(n) {
     const out = [];
     for (let i = 0; i < n; i++) {

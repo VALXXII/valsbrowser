@@ -80,6 +80,12 @@ def existing_fixtures() -> None:
     default_browser_evidence.mkdir(parents=True, exist_ok=True)
     fixture('default_browser_settings_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/default_browser_settings_test.cpp', 'src/native-lottie.cpp', THORVG,
             *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt'], [ROOT, default_browser_evidence])
+    # Réglages › the version line opens « À propos de Browser » (Paper « À propos : point d'entrée » A). Windowless: the
+    # drawer is never shown. Its real-window twin (night run only): tests/e2e/about_entry_e2e.py.
+    about_evidence = ROOT / 'build/settings-about/captures'
+    about_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('settings_about_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/settings_about_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt'], [ROOT, about_evidence])
     language_evidence = ROOT / 'build/browser-languages/captures/settings'
     language_evidence.mkdir(parents=True, exist_ok=True)
     fixture('language_settings_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/language_settings_test.cpp', 'src/native-lottie.cpp', THORVG,
@@ -95,6 +101,11 @@ def existing_fixtures() -> None:
     import_work = OUT / 'browser-import-work'
     import_work.mkdir(parents=True, exist_ok=True)
     fixture('browser_import_test', [*STRICT, '-Isrc', 'tests/browser-import/browser_import_test.cpp', '-lshell32', '-lole32', '-ladvapi32'], [import_work])
+    # Imported bookmarks' site icons (src/import-icons.h): the source's own (synthetic Chromium / Firefox / HTML), saved
+    # without replacing any, the missing ones fetched from loopback servers only (127.0.0.1, ephemeral ports)
+    icons_work = OUT / 'import-icons-work'
+    icons_work.mkdir(parents=True, exist_ok=True)
+    fixture('import_icons_test', [*STRICT, '-Isrc', 'tests/browser-import/import_icons_test.cpp', '-lshell32', '-lole32', '-ladvapi32', '-lws2_32'], [icons_work])   # WinHTTP: loaded at run time, as in the browser
     # Settings wiring of the import row and the password manager row (main.cpp hooks + real drawer, synthetic hooks)
     fixture('import_settings_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/browser-import/import_settings_test.cpp', 'src/native-lottie.cpp', THORVG,
             *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt'], [ROOT])
@@ -129,6 +140,9 @@ def existing_fixtures() -> None:
     fixture('split_view_test', [*STRICT, 'tests/split-view/split_view_test.cpp'])
     fixture('site_name_test', [*STRICT, 'tests/split-view/site_name_test.cpp'])
     fixture('split_ui_test', [*LOOSE, *TVG, WV2, 'tests/ui/split_ui_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
+    # Window title / icon changes never hide the page, even for an instant (the canvas flashed in place of the page on
+    # clicks in a site); the same title is not sent again on each page event. Screen-free: a DWM-cloaked window.
+    fixture('window_title_test', [*LOOSE, '-Werror', *TVG, WV2, 'tests/ui/window_title_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
     # Screen-reader view of the chrome through a real UI Automation client (issue #2)
     # Native menus: a submenu's row hover follows the pointer mid-entrance (cascade, keyboard, reduced motion)
     fixture('context_menu_hover_test', [*LOOSE, '-municode', *TVG, 'tests/ui/context_menu_hover_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS, '-lshell32', '-loleaut32'], [ROOT])
@@ -173,6 +187,16 @@ def existing_fixtures() -> None:
     onboarding_evidence.mkdir(parents=True, exist_ok=True)
     fixture('onboarding_render_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/onboarding/onboarding_render_test.cpp', 'src/native-lottie.cpp', THORVG,
             *UI_LIBS, '-loleaut32', '-lshell32'], [ROOT, onboarding_evidence])
+    # Where « Annoter » is on (#125): local projects and files, normal or private window; live sites off (src/annotation-sites.h)
+    fixture('annotation_sites_test', [*STRICT, 'tests/annotations/annotation_sites_test.cpp'])
+    # A private window's notes are erased when it closes; a crashed one's at the next start; normal notes untouched (src/annotation-private.h)
+    fixture('annotation_private_test', [*STRICT, '-O2', 'tests/annotations/annotation_private_test.cpp', 'src/annotations.cpp', '-lbcrypt'])
+    # The annotation mode's onboarding (#125, Paper « MCP - Design UI UX » A1 – A4): flow, first-time rule and its setting,
+    # the four boards drawn off screen by the production window, Paper geometry, buttons, keys, A3's connected state.
+    annotation_onboarding_evidence = ROOT / 'build/annotation-onboarding-render'
+    annotation_onboarding_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('annotation_onboarding_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/onboarding/annotation_onboarding_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32'], [ROOT, annotation_onboarding_evidence])
 
 
 def peer_suites() -> None:

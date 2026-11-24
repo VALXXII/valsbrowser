@@ -164,7 +164,8 @@ public:
 struct Type { float size = 14, lineHeight = 20, tracking = 0; bool medium = false; bool tabular = false; };
 // CSS half-leading baseline for Inter (ascender .96875 em, descender .2412 em).
 inline float Baseline(const Type& type) { return (type.lineHeight - (0.96875f + 0.2412f) * type.size) / 2 + 0.96875f * type.size; }
-inline IDWriteTextLayout* MakeLayout(Chrome& chrome, const std::wstring& text, float width, const Type& type, bool wrap, DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING) {
+// `emoji` (optional) receives how to draw it (src/emoji-text.h).
+inline IDWriteTextLayout* MakeLayout(Chrome& chrome, const std::wstring& text, float width, const Type& type, bool wrap, DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING, EmojiText::Style* emoji = nullptr) {
     auto* write = chrome.WriteFactory(); if (!write || text.empty()) return nullptr;
     IDWriteTextFormat* format = nullptr;
     if (FAILED(write->CreateTextFormat(L"Inter Display", chrome.FontCollection(), type.medium ? DWRITE_FONT_WEIGHT_MEDIUM : DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, type.size, L"fr-FR", &format))) return nullptr;
@@ -183,6 +184,7 @@ inline IDWriteTextLayout* MakeLayout(Chrome& chrome, const std::wstring& text, f
         if (type.tabular) typo->AddFontFeature({DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES, 1});
         layout->SetTypography(typo, all); typo->Release();
     }
+    const auto style = EmojiText::Prepare(write, layout, text, chrome.FontCollection(), L"Inter Display"); if (emoji) *emoji = style;
     if (!wrap) { DWRITE_TRIMMING trim{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0}; IDWriteInlineObject* ellipsis = nullptr; write->CreateEllipsisTrimmingSign(layout, &ellipsis); layout->SetTrimming(&trim, ellipsis); if (ellipsis) ellipsis->Release(); }
     return layout;
 }
@@ -196,19 +198,25 @@ inline TextSize Measure(Chrome& chrome, const std::wstring& text, float width, c
 // Draws `text` with its first line box at `box.top`; one line (ellipsis) unless `wrap`.
 inline void DrawText(Chrome& chrome, const std::wstring& text, D2D1_RECT_F box, const Type& type, D2D1_COLOR_F color, bool wrap = false, DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING) {
     auto* t = chrome.RenderTarget(); auto* b = chrome.SolidBrush(); if (!t || !b || text.empty()) return;
-    auto* layout = MakeLayout(chrome, text, box.right - box.left, type, wrap, align); if (!layout) return;
-    b->SetColor(color); t->DrawTextLayout(D2D1::Point2F(box.left, box.top), layout, b, D2D1_DRAW_TEXT_OPTIONS_NONE); layout->Release();
+    EmojiText::Style emoji; auto* layout = MakeLayout(chrome, text, box.right - box.left, type, wrap, align, &emoji); if (!layout) return;
+    EmojiText::Draw(t, D2D1::Point2F(box.left, box.top), layout, b, color, emoji); layout->Release();
 }
 // A text run with one emphasised range (Paper: « <b>youtube.com</b> est en plein écran »).
 inline void DrawRich(Chrome& chrome, const std::wstring& text, size_t strongBegin, size_t strongLength, D2D1_RECT_F box, const Type& type, D2D1_COLOR_F color, D2D1_COLOR_F strong, bool wrap = false, DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING) {
     auto* t = chrome.RenderTarget(); auto* b = chrome.SolidBrush(); if (!t || !b || text.empty()) return;
-    auto* layout = MakeLayout(chrome, text, box.right - box.left, type, wrap, align); if (!layout) return;
+    EmojiText::Style emoji; auto* layout = MakeLayout(chrome, text, box.right - box.left, type, wrap, align, &emoji); if (!layout) return;
+    // Colour glyphs ignore brush alpha: one layer at the larger alpha, both brushes scaled to it,
+    // so each run keeps its exact alpha (emoji take the layer's).
+    float layer = 1;
+    if (emoji.layered) { emoji.layered = false; layer = std::max(color.a, strongLength ? strong.a : 0.f); if (layer <= 0) { layout->Release(); return; } if (layer < 1) { color.a /= layer; strong.a /= layer; } }
     ID2D1SolidColorBrush* emphasis = nullptr;
     if (strongLength && SUCCEEDED(t->CreateSolidColorBrush(strong, &emphasis))) {
         const DWRITE_TEXT_RANGE r{static_cast<UINT32>(strongBegin), static_cast<UINT32>(strongLength)};
         layout->SetFontWeight(DWRITE_FONT_WEIGHT_MEDIUM, r); layout->SetDrawingEffect(emphasis, r);
     }
-    b->SetColor(color); t->DrawTextLayout(D2D1::Point2F(box.left, box.top), layout, b, D2D1_DRAW_TEXT_OPTIONS_NONE);
+    if (layer < 1) t->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(), layer), nullptr);
+    EmojiText::Draw(t, D2D1::Point2F(box.left, box.top), layout, b, color, emoji);
+    if (layer < 1) t->PopLayer();
     if (emphasis) emphasis->Release();
     layout->Release();
 }
@@ -256,7 +264,7 @@ struct Hooks { std::function<void()> wake; };
 
 class Tip {
     HWND hwnd_ = nullptr, owner_ = nullptr; Chrome chrome_; Chrome* surface_ = &chrome_; PopupKit::Pump pump_; Accessibility::Bridge uia_;
-    Content content_; RECT target_{}, bounds_{}; bool hasBounds_ = false; bool shown_ = false, hiding_ = false, pending_ = false, reduced_ = false;
+    Content content_; RECT target_{}, bounds_{}; bool hasBounds_ = false; bool shown_ = false, hiding_ = false, pending_ = false, reduced_ = false, blocked_ = false;
     Motion::Tween alpha_; Motion::Time showAt_{}; ULONGLONG hiddenTick_ = 0;
     float width_ = 0, height_ = 0;
     bool Multi() const { return !content_.detail.empty() || wrapped_; }
@@ -372,7 +380,7 @@ public:
     // Pointer rest on a target: after 600 ms, or at once if a tip showed less than 300 ms ago.
     // `bounds` (optional, screen px) narrows the monitor work area the tip is clamped to.
     void Hover(const Content& content, RECT targetScreen, const RECT* bounds = nullptr) {
-        if (!hwnd_ || content.label.empty()) return;
+        if (!hwnd_ || blocked_ || content.label.empty()) return;
         SetBounds(bounds);
         const bool same = shown_ && !hiding_ && content == content_ && EqualRect(&target_, &targetScreen);
         content_ = content; target_ = targetScreen; if (same) return;
@@ -382,7 +390,11 @@ public:
     }
     // Keyboard focus (or an explicit request): shows at once, with the 120 ms fade.
     void Show(const std::wstring& text, const std::wstring& shortcut, RECT targetScreen) { Show(Content{text, shortcut, L""}, targetScreen); }
-    void Show(const Content& content, RECT targetScreen, const RECT* bounds = nullptr) { if (!hwnd_ || content.label.empty()) return; SetBounds(bounds); content_ = content; target_ = targetScreen; Appear(!shown_ || hiding_); }
+    void Show(const Content& content, RECT targetScreen, const RECT* bounds = nullptr) { if (!hwnd_ || blocked_ || content.label.empty()) return; SetBounds(bounds); content_ = content; target_ = targetScreen; Appear(!shown_ || hiding_); }
+    // A popover hangs from the toolbar (#125 E1b card): the tip showing (or about to) goes at once, no other one shows
+    // over it until it is gone — as under the modal menus, which get every pointer move while they are open.
+    void Block(bool on) { blocked_ = on; if (on) HideNow(); }
+    bool Blocked() const { return blocked_; }
     // Pointer left before the delay, a click, Échap, a menu opening: never shows / fades out.
     void Hide() {
         pending_ = false; if (!hwnd_ || !shown_ || hiding_) return;
@@ -463,6 +475,7 @@ public:
     Tip& TipForTest() { return tip_; }
     UINT_PTR CurrentForTest() const { return current_; }
     size_t CountForTest() const { return tools_.size(); }
+    const Tool* ToolForTest(UINT_PTR id) const { for (const auto& t : tools_) if (t.id == id) return &t; return nullptr; }
 };
 } // namespace Tooltip
 } // namespace NativeChrome

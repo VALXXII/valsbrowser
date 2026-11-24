@@ -217,7 +217,8 @@ inline void PaintBanner(Ink& ink, float w, float h, const BannerVisual& v, const
 // Toolbar « Annoter » for the browser's own chrome renderer (T3 calls it from its paint pass
 // with the Chrome's target, factory and brush). box = the 24x24 button. No allocation per
 // frame after the first (geometry cached per factory).
-struct ToolbarVisual { bool active = false; float hover = 0, press = 0; bool focus = false, keyboard = false, reduced = false; };
+// off (#125 v2 E1a): on a live site the button is greyed (its glyph at 32 %, no hover) but still clickable (E1b's card).
+struct ToolbarVisual { bool active = false; float hover = 0, press = 0; bool focus = false, keyboard = false, reduced = false, off = false; };
 inline void PaintToolbarButton(ID2D1RenderTarget* t, ID2D1Factory* factory, ID2D1SolidColorBrush* brush, D2D1_RECT_F box, const ToolbarVisual& v) {
     if (!t || !factory || !brush) return;
     static std::map<ID2D1Factory*, ID2D1PathGeometry*> cache;
@@ -227,12 +228,12 @@ inline void PaintToolbarButton(ID2D1RenderTarget* t, ID2D1Factory* factory, ID2D
     if (s != 1) t->SetTransform(D2D1::Matrix3x2F::Scale(s, s, {(box.left + box.right) / 2, (box.top + box.bottom) / 2}) * base);
     const auto a = Design::Accent::Get();
     if (v.active) { brush->SetColor(D2D1::ColorF(a.r, a.g, a.b, .16f)); t->FillRoundedRectangle(D2D1::RoundedRect(box, 6, 6), brush); }
-    else if (v.hover > 0 || v.press > 0) { brush->SetColor(D2D1::ColorF(1, 1, 1, (20 / 255.f) * std::max(v.hover, v.press))); t->FillRoundedRectangle(D2D1::RoundedRect(box, 6, 6), brush); }
+    else if (!v.off && (v.hover > 0 || v.press > 0)) { brush->SetColor(D2D1::ColorF(1, 1, 1, (20 / 255.f) * std::max(v.hover, v.press))); t->FillRoundedRectangle(D2D1::RoundedRect(box, 6, 6), brush); }
     if (g) {
         const float w = 13, h = 12.25f, x = (box.left + box.right - w) / 2, y = (box.top + box.bottom - h) / 2;
         D2D1_MATRIX_3X2_F now; t->GetTransform(&now);
         t->SetTransform(D2D1::Matrix3x2F::Translation(-Glyphs::mark.x, -Glyphs::mark.y) * D2D1::Matrix3x2F::Scale(w / Glyphs::mark.w, h / Glyphs::mark.h) * D2D1::Matrix3x2F::Translation(x, y) * now);
-        brush->SetColor(v.active ? D2D1::ColorF(a.r, a.g, a.b, 1) : D2D1::ColorF(1, 1, 1, .5f));
+        brush->SetColor(v.active ? D2D1::ColorF(a.r, a.g, a.b, 1) : D2D1::ColorF(1, 1, 1, v.off ? Design::Text::disabled : .5f));
         t->FillGeometry(g, brush); t->SetTransform(now);
     }
     if (v.active) { brush->SetColor(D2D1::ColorF(a.r, a.g, a.b, 1)); t->FillRoundedRectangle(D2D1::RoundedRect({box.left + 7, box.bottom + 2, box.left + 17, box.bottom + 4}, 1, 1), brush); }
