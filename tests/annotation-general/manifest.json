@@ -38,6 +38,13 @@
       "value": "la bulle suit son élément à ± 2 px pendant un défilement",
       "decision": "décision 5 du 24/11 : objectif, pas condition de sortie",
       "where": "chat_qa.objective() dans chat_qa_comment_v5.py et monkey.py"
+    },
+    {
+      "id": "accuse-ouverture-16ms",
+      "kind": "objectif",
+      "value": "la page du chat accuse l'ouverture d'une bulle en moins de 8 ms (bulle neuve) ou 16 ms (avec une conversation), première image moins de 8 ms après",
+      "decision": "coordinateur, 24/11, dans l'esprit de la décision 5 : un seuil de temps est mesuré et rapporté, jamais bloquant (16,3 ms mesurés sur machine chargée, 12,6 ms seule)",
+      "where": "tests/chat-panel/run.py, « Q's journeys » (ligne OBJECTIF)"
     }
   ],
   "suites": [

@@ -692,8 +692,8 @@ try:
         click(".bq-more"); time.sleep(.25)
         q6 = cdp.js(QL_JS)
         check(q6["n"] == 2 and q6["exp"] == "false" and sizes()[-1] == h4, "bubble (queue, lot R): a second click closes it (back to 2 messages, same size as before)", f"{q6['n']} {sizes()[-1]} {h4}")
-        host({"type": "queue", "more": "+{n} waiting", "items": [{"id": "q1", "text": "Premier", "after": "button.btn-primary"}, {"id": "q2", "text": "Deuxième", "after": "button.btn-primary"}, {"id": "q3", "text": "Troisième", "after": "button.btn-primary"}]})
-        check(cdp.js("document.querySelector('.bq-more').innerText.trim()") == "+1 waiting" and cdp.js("document.querySelectorAll('.bq').length") == 2, "bubble (queue, lot R): the count line is worded by the host (interface language): « +1 waiting »")
+        host({"type": "queue", "more": "+{n} queued", "items": [{"id": "q1", "text": "Premier", "after": "button.btn-primary"}, {"id": "q2", "text": "Deuxième", "after": "button.btn-primary"}, {"id": "q3", "text": "Troisième", "after": "button.btn-primary"}]})
+        check(cdp.js("document.querySelector('.bq-more').innerText.trim()") == "+1 queued" and cdp.js("document.querySelectorAll('.bq').length") == 2, "bubble (queue, lot R): the count line is worded by the host (interface language): « +1 queued »")
         host({"type": "queue", "items": [{"id": "q1", "text": "Premier", "after": "button.btn-primary"}, {"id": "q2", "text": "Deuxième", "after": "button.btn-primary"}]})
         check(cdp.js("!document.querySelector('.bq-more') && document.querySelectorAll('.bq').length") == 2, "bubble (queue, lot R): 2 waiting messages or fewer: no « +N en attente » line")
         # monkey seed 3 #63/#70: in the bubble of an element that already has an exchange, the user writes and presses Entrée while
@@ -1133,8 +1133,13 @@ try:
             opening[kind]["jump"] = max(x["jump"] for x in rows)   # every later bubble.size and the height drawn in the end vs the acknowledged one
         report["perf"]["opening"] = opening
         print("     opening (page share, ms):", json.dumps(opening))
-        check(all(0 <= v["ack"] < (8 if k == "neuve" else 16) and v["image"] < 8 and v["jump"] == 0 for k, v in opening.items()),
-              "Q's journeys: the page acknowledges an opening (layout + thread, as H1 sends it) in < 8 ms for a new bubble, < 16 ms with a conversation (also from the panel, M5), its first image right after; the acknowledged height is the one the bubble keeps (no jump)", json.dumps(opening))
+        # The times are an OBJECTIVE (coordinator, 24 Nov 2026, in the spirit of the owner's decision 5: a timing threshold is
+        # measured and said at every pass, never a failed check — 16.3 ms for 16 on a loaded machine, 12.6 ms alone). What
+        # stays a check: the page answered, and the acknowledged height is the one the bubble keeps (no jump).
+        fast = all(0 <= v["ack"] < (8 if k == "neuve" else 16) and v["image"] < 8 for k, v in opening.items())
+        print(f"OBJECTIF accuse-ouverture-16ms {'atteint' if fast else 'manque'} | the page acknowledges an opening in < 8 ms (new bubble) / < 16 ms (with a conversation, also from the panel), first image < 8 ms after | {json.dumps(opening)}", flush=True)
+        check(all(v["ack"] >= 0 and v["jump"] == 0 for v in opening.values()),
+              "Q's journeys: the page acknowledges an opening (layout + thread, as H1 sends it) and the acknowledged height is the one the bubble keeps (no jump); its times are the objective « accuse-ouverture-16ms »", json.dumps(opening))
         load("c-1-vide")
         lat = cdp.js("(" + LAT_JS + ")(40)")
         check(lat["ack"] >= 0 and lat["ack"] < 16, "H1 latency: the opening layout is acknowledged (one bubble.size) with the thread that follows it, within one image, even with a 40-turn thread still drawn and another coming", json.dumps(lat))

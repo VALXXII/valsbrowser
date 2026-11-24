@@ -432,7 +432,7 @@ tg = block_after(ui, 'void Toggle(bool keyboard) {')
 check(0 <= tg.find('if (Open() && openedByMode) {') < tg.find('if (Open()) { ClosePanel(); return; }') and 'view.Focus()' in tg[:tg.find('if (Open()) { ClosePanel(); return; }')],
       'lot R: Ctrl+Maj+D on the panel opened with the mode gives it the keyboard; only the next one closes it')
 sq = block_after(host, 'void SendQueue() {')
-check('m.Set("more", Str(TRF(chat_queue_more, L"{n}")))' in sq and 'I18N(chat_queue_more, L"+{0} en attente", L"+{0} waiting")' in cat,
+check('m.Set("more", Str(TRF(chat_queue_more, L"{n}")))' in sq and 'I18N(chat_queue_more, L"+{0} en attente", L"+{0} queued")' in cat,
       'lot R (O5): the queue message carries the « +N en attente » line in the interface language')
 
 ok = all(checks)
