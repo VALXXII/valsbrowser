@@ -138,6 +138,22 @@ int wmain(int argc, wchar_t** argv) {
     }
     shot(L"focus-1-panneau-annotation", [&](Chrome& c) { c.address = AddressBar::Describe(L"http://localhost:5173/", false); c.annotateActive = true; c.annotationBand = 32; c.sideHidden = true; c.sideShown = true; });
     shot(L"focus-2-compact-annotation", [&](Chrome& c) { c.address = AddressBar::Describe(L"http://localhost:5173/checkout", false); c.annotateActive = true; c.annotationBand = 32; c.sideHidden = true; c.sideShown = true; c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.sidebarTitles = 0; });
+    // #139 « Local » pill (Paper « Adresse · pastille « Local » (validée) » 1ZWP-0, profile Travail): the column's field
+    // takes the field colours (#303A32, 6 DIP in), the compact bar the « no field » ones (#202A22, at the lock's place).
+    for (int compact = 0; compact < 2; ++compact) {
+        Chrome c; Check(SUCCEEDED(c.InitOffscreen(root, 96, 1178, 738)), "offscreen chrome (local pill)");
+        c.sidebar = true; Design::Accent::Set(0x1A8641); Design::Accent::SetInk(0x6FD087);
+        c.SetProfileButton(L"Travail", ProfileIcons::Fill(L"briefcase"), D2D1::ColorF(0x6F / 255.f, 0xD0 / 255.f, 0x87 / 255.f), false);
+        c.address = AddressBar::Describe(L"http://localhost:5173/checkout", false);
+        if (compact) { c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.sidebarTitles = 0; }
+        c.Paint(titles, 0, L"", false, 0, 0);
+        const auto b = c.LocalPillBox(); const UINT32 px = c.SurfacePixel(b.left + 2, (b.top + b.bottom) / 2);
+        const int r = (px >> 16) & 255, g = (px >> 8) & 255, bl = px & 255;
+        const int er = compact ? 0x20 : 0x30, eg = compact ? 0x2A : 0x3A, eb = compact ? 0x22 : 0x32;
+        const float lead = b.left - c.bar.left, expectLead = compact ? c.sideChipInset : 6.f;
+        char msg[200]; std::snprintf(msg, sizeof msg, "%s: « Local » pill #%02X%02X%02X (Paper #%02X%02X%02X), %.1f in (%.1f)", compact ? "compact bar" : "column", r, g, bl, er, eg, eb, lead, expectLead);
+        Check(c.address.security == AddressBar::Security::Local && std::abs(r - er) <= 3 && std::abs(g - eg) <= 3 && std::abs(bl - eb) <= 3 && Near(lead, expectLead, .5f) && Near(b.bottom - b.top, 20), msg);
+    }
     shot(L"x-annoter-grise", [](Chrome& c) { c.annotateDimmed = true; });
     {   // Tools in both layouts, Annoter first.
         Chrome c; Check(SUCCEEDED(c.InitOffscreen(root, 96, 1178, 738)), "offscreen chrome (tools)");
