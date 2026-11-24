@@ -205,6 +205,79 @@ int main() {
         // A presented row is clipped to its presence (an opening row is a sliver first).
         Check(Near(S::ShownRow(L, 0, .25f, 0).Height(), 8) && Near(S::ShownRow(L, 0, 2, 0).Height(), 32), "presence scales the row's height (clamped to 1)");
     }
+    // ---- Vue partagée dans la colonne (Paper « Proposition — Vue partagée dans la colonne (panneau + compact) » 2473-0).
+    // Membership: the top bar's groups (Chrome::tabGroups; tab n joins n + 1 when both share a non-zero group).
+    {
+        using P = S::SplitPos;
+        const auto pos = [](const std::vector<int>& g, int n) { std::vector<P> p; for (const auto& r : S::SplitRows(g, n)) p.push_back(r.pos); return p; };
+        // Two groups and more: a pair (1-2) and three (4-5-6), tabs 0 and 3 outside.
+        const std::vector<int> two{0, 7, 7, 0, 9, 9, 9};
+        Check(pos(two, 7) == std::vector<P>{P::None, P::First, P::Last, P::None, P::First, P::Middle, P::Last}, "two groups: first / last and first / middle / last");
+        const auto rows = S::SplitRows(two, 7);
+        Check(rows[1].group == 7 && rows[2].group == 7 && rows[5].group == 9 && !rows[0].Member() && !rows[3].Member(), "each row knows its group");
+        Check(rows[1].JoinsNext() && !rows[1].JoinsPrevious() && rows[5].JoinsPrevious() && rows[5].JoinsNext() && !rows[6].JoinsNext(), "joins");
+        Check(S::BlockOf(rows, 2).first == 1 && S::BlockOf(rows, 2).count == 2 && S::BlockOf(rows, 4).first == 4 && S::BlockOf(rows, 6).count == 3 && S::BlockOf(rows, 3).first == 3 && S::BlockOf(rows, 3).count == 1, "blocks");
+        Check(pos({3, 3, 4, 4}, 4) == std::vector<P>{P::First, P::Last, P::First, P::Last}, "two groups side by side: two blocks");
+        Check(pos({0, 7, 7, 0, 9, 9, 9}, 7) == pos(two, 7) && pos({7, 7}, 3) == std::vector<P>{P::First, P::Last, P::None} && pos({}, 2) == std::vector<P>{P::None, P::None}, "groups shorter than the tabs (a tab just opened): outside");
+        // Reordering: the tabs move, their groups with them.
+        std::vector<int> g = two; S::MoveRange(g, 4, 3, 0);
+        Check(g == std::vector<int>{9, 9, 9, 0, 7, 7, 0} && pos(g, 7) == std::vector<P>{P::First, P::Middle, P::Last, P::None, P::First, P::Last, P::None}, "reordering: a block moved to the top");
+        g = {7, 7, 0}; S::MoveRange(g, 2, 1, 1);
+        Check(g == std::vector<int>{7, 0, 7} && pos(g, 3) == std::vector<P>{P::Single, P::None, P::Single}, "a tab dropped between two members (top bar): two blocks of one");
+        // Closing a member: three keep two, joined again; a pair dissolves (the host's DissolveSmallGroups: its tabGroups go to 0).
+        g = {0, 9, 9, 9}; g.erase(g.begin() + 2);
+        Check(pos(g, 3) == std::vector<P>{P::None, P::First, P::Last}, "closing the middle one of three: the other two stay joined");
+        Check(pos({0, 0, 0}, 3) == std::vector<P>{P::None, P::None, P::None}, "closing a member of a pair: no block left");
+        // Leaving the split view (Quitter / the last member away): back to no group.
+        Check(pos({0, 0, 0, 9, 9}, 5) == std::vector<P>{P::None, P::None, P::None, P::First, P::Last}, "leaving one split view keeps the other");
+    }
+    // The block's geometry: panel (247H-0) and compact (248B-0).
+    {
+        auto in = Complete(5); const auto plain = S::Compute(in); in.groups = {0, 7, 7, 0, 0}; const auto L = S::Compute(in);
+        Check(plain.blocks.empty() && plain.joints.empty() && L.split.size() == 5, "no group, no block");
+        Check(Same(L.tabs[0], 8, 153, 240, 185), "the row above the block is where it was");
+        Check(L.blocks.size() == 1 && Same(L.blocks[0], 8, 187, 240, 256), "panel: one background #262626, the rows + 2 (69 high)");
+        Check(Same(L.tabs[1], 10, 189, 238, 221) && Same(L.tabs[2], 10, 222, 238, 254), "its rows 2 inside, 32 high, 1 apart (no gap)");
+        Check(L.joints.size() == 1 && Same(L.joints[0], 21, 221, 31, 222), "the 10 x 1 line 13 from the background's left, centred on the favicons (247N-0)");
+        const auto f = S::FaviconIn(L.tabs[2], S::Mode::Complete); Check(Near((f.left + f.right) / 2, 26) && Near(f.left, 18), "favicons 8 into the row, 10 into the background");
+        Check(Near(L.tabs[3].top, 258) && Near(L.newTab.top, plain.newTab.top + 3) && Near(L.content, plain.content + 3), "after the block: 2, the list 3 taller");
+        Check(S::RowAt(L, 30, 200) == 1 && S::RowAt(L, 30, 230) == 2 && S::RowAt(L, 30, 221.5f) == -1, "rows hit-test inside the block (the line is no row)");
+        in.groups = {5, 5, 5, 0, 0}; const auto T = S::Compute(in);
+        Check(Same(T.blocks[0], 8, 153, 240, 255) && Near(T.tabs[0].top, 155) && Near(T.tabs[1].top, 188) && Near(T.tabs[2].top, 221) && T.joints.size() == 2, "three at the top: one background from the list's first row");
+        in.groups = {0, 7, 7, 0, 0}; in.mode = S::Mode::Compact; const auto K0 = S::Compute(Compact(5)); const auto K = S::Compute(in);
+        const float t0 = K0.tabs[0].top;
+        Check(Same(K.tabs[0], 0, t0, 40, t0 + 36) && K.blocks.size() == 1 && Same(K.blocks[0], 0, t0 + 38, 40, t0 + 38 + 77), "compact: the background across the column's 40, around its rows + 2");
+        Check(Same(K.tabs[1], 2, t0 + 40, 38, t0 + 76) && Same(K.tabs[2], 2, t0 + 77, 38, t0 + 113), "compact: the icons' rows 2 inside, 1 apart");
+        Check(K.joints.size() == 1 && Same(K.joints[0], 15, t0 + 76, 25, t0 + 77), "compact: the line centred (248F-0)");
+        Check(Near(K.tabs[3].top, K0.tabs[3].top + 3), "compact: after the block, 2");
+    }
+    // Reorder (« la paire se déplace d'un bloc »): a member drags its block; nothing lands inside a block.
+    {
+        const auto rows = S::SplitRows({0, 7, 7, 0, 9, 9, 9}, 7);
+        const auto mv = [&](int from, int slot) { return S::BlockMove(rows, from, slot); };
+        Check(mv(0, 3).Moves() && mv(0, 3).first == 0 && mv(0, 3).count == 1 && mv(0, 3).dest == 3 && mv(0, 3).insert == 3, "a free tab moves as before");
+        Check(mv(0, 4).dest == 3 && mv(0, 5).dest == 6 && mv(0, 6).dest == 6, "a free tab never lands inside the block of three: it snaps to its nearer edge");
+        Check(mv(2, 0).first == 1 && mv(2, 0).count == 2 && mv(2, 0).dest == 0 && mv(2, 0).insert == 0, "a member drags its pair up");
+        Check(mv(1, 3).dest == 2 && mv(1, 3).insert == 3, "and down");
+        Check(mv(5, 2).first == 4 && mv(5, 2).count == 3 && mv(5, 2).dest == 3 && mv(5, 2).insert == 3, "halfway into the pair from below: it stays below it");
+        Check(mv(5, 1).dest == 1 && mv(5, 1).insert == 1, "past the pair's top: above it");
+        Check(!mv(4, 6).Moves() && mv(4, 6).insert == 4 && !mv(1, 2).Moves(), "inside its own block: nothing moves, no drop line");
+        bool again = true;
+        for (int from = 0; from < 7; ++from) for (int slot = 0; slot < 7; ++slot) { const auto m = mv(from, slot), r = mv(from, m.insert); again = again && r.dest == m.dest && r.first == m.first && r.insert == m.insert; }
+        Check(again, "the drop line's row gives the same move at the release");
+        std::vector<int> tabs{10, 11, 12, 13, 14, 15, 16}; const auto m = mv(5, 1); S::MoveRange(tabs, m.first, m.count, m.dest);
+        Check(tabs == std::vector<int>{10, 14, 15, 16, 11, 12, 13}, "the block's tabs move together, in order");
+        const auto free = S::SplitRows({}, 5); bool plainMoves = true;
+        for (int from = 0; from < 5; ++from) for (int slot = 0; slot < 5; ++slot) if (slot != from) { const auto p = S::BlockMove(free, from, slot); plainMoves = plainMoves && p.dest == slot && p.count == 1; }
+        Check(plainMoves, "without split view: MoveTab(from, slot) as before");
+    }
+    // « 2 · Survol du menu »: the designated tabs and the right-clicked one.
+    {
+        Check(S::Designated({}, 2, 5).empty(), "no designation: no outline (the source alone is not outlined)");
+        Check(S::Designated({1}, 3, 5) == std::vector<int>{1, 3}, "the target and the right-clicked tab (2492-0, 249C-0)");
+        Check(S::Designated({3, 4}, 0, 5) == std::vector<int>{0, 3, 4} && S::Designated({3}, 3, 5) == std::vector<int>{3} && S::Designated({1}, -1, 5) == std::vector<int>{1}, "a group's members, once each");
+        Check(S::Designated({7}, 1, 5).empty() && S::Designated({2, 9}, 8, 5) == std::vector<int>{2}, "out of range: dropped");
+    }
     if (failures) { std::printf("%d failure(s)\n", failures); return 1; }
     std::printf("sidebar_test: ok\n");
     return 0;

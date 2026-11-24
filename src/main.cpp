@@ -3453,11 +3453,14 @@ void RunSplitMenuAction(const std::shared_ptr<Tab>& source,const SplitMenuAction
     auto v=GroupView(a.group);if(!v.group)return;t.orientation=v.a.orientation;ApplySplitTarget(source,t,nullptr,v);
 }
 // Highlighting a row designates its target in the strip (1 DIP white 50 %) and reads it out.
+// #127: the side column outlines the right-clicked tab too (Paper 2473-0 « 2 · Survol du menu »): `splitMenuSource`.
+std::shared_ptr<Tab> splitMenuSource;
 void SplitMenuHighlight(const CM::Item* item){
     std::vector<int> targets;
     if(item&&item->tag>0&&item->tag-1<(int)pages.size())targets.push_back(item->tag-1);
     else if(item&&item->tag<0)for(auto& t:Members(-item->tag))targets.push_back(TabIndexOf(t));
-    if(targets!=chrome.menuTargets){chrome.menuTargets=targets;InvalidateRect(window,nullptr,FALSE);}
+    const int source=targets.empty()?-1:TabIndexOf(splitMenuSource);
+    if(targets!=chrome.menuTargets||source!=chrome.menuSource){chrome.menuTargets=targets;chrome.menuSource=source;InvalidateRect(window,nullptr,FALSE);}
     if(item&&!item->accessible.empty())AnnounceSplit(item->accessible);
 }
 // Tab right click (Paper "Clic droit menu — poli"): acts on the tab that was clicked.
@@ -3513,7 +3516,7 @@ void TabContextMenu(int tabIndex,int anchor){
     items.insert(items.end(),rest.begin(),rest.end());
     items.push_back(CM::Separator());items.push_back(TabsPositionMenu(TabsPositionItem));
     contextMenu.onSegment=[](RECT r,const std::wstring& tip,bool keyboard){if(tip.empty()){ChromeTipHide();return;}RECT bounds=NativeChrome::TooltipPlacement::VisibleRect(window);if(keyboard)chromeTip.Show(TipContent(tip.c_str()),r,&bounds);else chromeTip.Hover(TipContent(tip.c_str()),r,&bounds);};
-    contextMenu.onHighlight=SplitMenuHighlight;const int chosen=ShowMenu(items,anchor);contextMenu.onHighlight=nullptr;contextMenu.onSegment=nullptr;ChromeTipHide();SplitMenuHighlight(nullptr);
+    splitMenuSource=tab;contextMenu.onHighlight=SplitMenuHighlight;const int chosen=ShowMenu(items,anchor);contextMenu.onHighlight=nullptr;contextMenu.onSegment=nullptr;ChromeTipHide();SplitMenuHighlight(nullptr);splitMenuSource=nullptr;
     if(chosen>=SplitMenuBase&&chosen-SplitMenuBase<(int)block.actions.size()){RunSplitMenuAction(tab,block.actions[chosen-SplitMenuBase]);return;}
     switch(chosen){
     case PlaceRight:PlaceFromMenu(tab,SV::Side::Right);break;
@@ -4910,7 +4913,7 @@ bool SidebarDragMove(POINT point){
     const auto& L=chrome.SideColumn();if(from>=(int)L.tabs.size())return true;
     const float h=L.tabs[from].Height();
     chrome.sidebarDrag=from;chrome.sidebarDragY=std::clamp(y-tabDrag.grabY,L.tabsView.top-h/2,L.tabsView.bottom-h/2);
-    chrome.sidebarInsert=SBar::DropSlot(L,y);
+    chrome.sidebarInsert=SBar::BlockMove(L.split,from,SBar::DropSlot(L,y)).insert;   // a split view block moves whole, never lands inside another
     if(y<L.tabsView.top+16&&L.scroll>0)chrome.sidebarScroll=std::max(0.f,L.scroll-8);else if(y>L.tabsView.bottom-16&&L.scroll<L.maxScroll)chrome.sidebarScroll=std::min(L.maxScroll,L.scroll+8);
     InvalidateChrome();return true;
 }
@@ -4920,6 +4923,14 @@ bool SidebarTearOff(){
     auto t=tabDrag.tab;CancelTabDrag(true);
     if(!t->home&&!t->uri.empty()&&pages.size()>1&&!privateWindow){OpenWindowWith({t->uri});CloseAt(TabIndexOf(t));Log(L"SIDEBAR tab moved to a new window");}
     return true;
+}
+// A split view block dropped in the list (Paper 2473-0 « la paire se déplace d'un bloc »): its tabs move together, as MoveTab moves one.
+void SidebarMoveBlock(int first,int count,int dest){
+    if(count==1){MoveTab(first,dest);return;}
+    if(halted||first<0||count<=0||first+count>(int)pages.size()||dest<0||dest+count>(int)pages.size()||dest==first)return;
+    auto active=Active();SBar::MoveRange(pages,first,count,dest);
+    current=(int)(std::find(pages.begin(),pages.end(),active)-pages.begin());
+    motion.ClearInteractions();hover=pressed=keyboardFocus=0;Update();
 }
 void SidebarDragEnd(bool commit){
     const int from=chrome.sidebarDrag,to=chrome.sidebarInsert;chrome.sidebarDrag=-1;chrome.sidebarInsert=-1;
@@ -4931,7 +4942,7 @@ void SidebarDragEnd(bool commit){
         const BM::Id id=bookmarks.Add(BM::BarRoot,BM::End,t->title==TR(tab_new)?L"":t->title,t->uri,NativeChrome::DownloadsUI::UnixNowMs());
         if(id){PushUndo({{BookmarkStep::Created,id}},TR(bookmark_undo_add));SaveBookmarks();BookmarksChanged();AnnounceBookmark(TRF(bookmark_added_to,bookmarks.Find(BM::BarRoot)->title));}
         return;}
-    if(to>=0&&to!=from)MoveTab(from,to);
+    if(to>=0&&to!=from){const auto m=SBar::BlockMove(L.split,from,to);if(m.Moves())SidebarMoveBlock(m.first,m.count,m.dest);}
 }
 void UpdateFont(){if(font)DeleteObject(font);font=CreateFontW(-S(chrome.addressFont),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,0,0,ANTIALIASED_QUALITY,0,L"Inter Display");SendMessageW(address,WM_SETFONT,(WPARAM)font,TRUE);}
 // WebView2 startup recovery (defined before wWinMain): installer worker notifications, shutdown.

@@ -169,6 +169,96 @@ inline constexpr const char* caretUp = "M213.66,165.66a8,8,0,0,1-11.32,0L128,91.
 inline constexpr const char* more = "M141.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L124.69,128,50.34,53.66A8,8,0,0,1,61.66,42.34l80,80A8,8,0,0,1,141.66,133.66Zm80-11.32-80-80a8,8,0,0,0-11.32,11.32L204.69,128l-74.35,74.34a8,8,0,0,0,11.32,11.32l80-80A8,8,0,0,0,221.66,122.34Z";
 }
 
+// ---- Vue partagée dans la colonne (Paper « Proposition — Vue partagée dans la colonne (panneau + compact) » 2473-0) ----
+// 1 « Repos » (247H-0 panel, 248B-0 compact): tabs together in a split view stick together under one shared background
+// #262626, radius 8, padding 2, no gap between them: a 1 DIP row holds a 10 x 1 #545454 line centred on the favicons
+// (247N-0: 2 + 11 from the background's left; the favicon at 2 + 8: both centred 18 in). The displayed tab keeps the
+// active row (#3E3E3E, title 500 white), the others stay normal (#B3B3B3). Compact: the same background around the icons,
+// the line centred (the board draws 32 DIP cells; here the column's 40 x 36 rows, 2 inside the background, which keeps
+// the column's 40). The block moves as one when a member is dragged (« la paire se déplace d'un bloc »).
+// 2 « Survol du menu » (2492-0 panel, 24AJ-0 compact): hovering a row of the split menu outlines the tabs it designates
+// (the right-clicked tab and its target) with a 1 DIP inner #8C8C8C stroke on their row.
+// Membership is the top bar's (Chrome::tabGroups; Chrome::DrawTabs): tab n joins tab n + 1 when both have the same non-zero
+// group; a run of joined tabs is one block (a member away from the others is a block of one).
+namespace Split {
+inline constexpr float pad = 2, radius = 8, joint = 1, lineW = 10, lineH = 1, outlineW = 1;
+inline constexpr float fill = 0x26 / 255.f, line = 0x54 / 255.f, outline = 0x8C / 255.f;   // #262626, #545454, #8C8C8C
+}
+enum class SplitPos { None, Single, First, Middle, Last };
+struct SplitRow {
+    int group = 0; SplitPos pos = SplitPos::None;
+    bool Member() const { return group != 0; }
+    bool JoinsPrevious() const { return pos == SplitPos::Middle || pos == SplitPos::Last; }
+    bool JoinsNext() const { return pos == SplitPos::First || pos == SplitPos::Middle; }
+};
+// Per tab: its group (0 = none) and its place in its block, from the top bar's `tabGroups` (missing entries: no group).
+inline std::vector<SplitRow> SplitRows(const std::vector<int>& groups, int count) {
+    std::vector<SplitRow> rows(static_cast<size_t>(std::max(0, count)));
+    const auto g = [&](int i) { return i >= 0 && i < count && i < static_cast<int>(groups.size()) ? groups[i] : 0; };
+    for (int i = 0; i < count; ++i) {
+        const int k = g(i); if (!k) continue;
+        const bool prev = g(i - 1) == k, next = g(i + 1) == k;
+        rows[i] = {k, prev ? (next ? SplitPos::Middle : SplitPos::Last) : (next ? SplitPos::First : SplitPos::Single)};
+    }
+    return rows;
+}
+// The block holding row `i`: [first, first + count) (a row outside any group is a block of one).
+struct Block { int first = -1, count = 0; };
+inline Block BlockOf(const std::vector<SplitRow>& rows, int i) {
+    const int n = static_cast<int>(rows.size()); if (i < 0 || i >= n) return {};
+    int a = i, b = i; while (a > 0 && rows[a].JoinsPrevious()) --a; while (b + 1 < n && rows[b].JoinsNext()) ++b;
+    return {a, b - a + 1};
+}
+// Extra height before each row (and, at [n], before the « + » row) that the blocks add to the plain list (rows `gap`
+// apart): the padding above a block, 1 instead of `gap` between joined rows, the padding under it.
+inline std::vector<float> SplitShift(const std::vector<SplitRow>& rows, float gap) {
+    std::vector<float> s(rows.size() + 1, 0.f); float y = 0;
+    for (size_t i = 0; i <= rows.size(); ++i) {
+        if (i > 0 && rows[i - 1].Member() && !rows[i - 1].JoinsNext()) y += Split::pad;
+        if (i < rows.size()) { if (rows[i].JoinsPrevious()) y += Split::joint - gap; else if (rows[i].Member()) y += Split::pad; }
+        s[i] = y;
+    }
+    return s;
+}
+// Reorder with blocks: dragging row `from` to DropSlot's `slot` moves its whole block, and never lands inside another block
+// (it snaps to that block's nearer edge; halfway, the edge it comes from). `dest`: where the block's first row lands in the
+// new order. `insert`: the row the drop line is drawn against (Chrome::sidebarInsert: below it when it is after `from`,
+// above it otherwise; `from` itself when nothing moves). BlockMove(rows, from, m.insert) gives the same move again.
+struct Move { int first = -1, count = 0, dest = -1, insert = -1; bool Moves() const { return count > 0 && dest >= 0 && dest != first; } };
+inline Move BlockMove(const std::vector<SplitRow>& rows, int from, int slot) {
+    const int n = static_cast<int>(rows.size()); Move m; if (from < 0 || from >= n) return m;
+    const Block b = BlockOf(rows, from); m.first = b.first; m.count = b.count; m.dest = b.first; m.insert = from;
+    if (slot < 0 || slot >= n || (slot >= b.first && slot < b.first + b.count)) return m;
+    const bool down = slot >= b.first + b.count;
+    int gap = down ? slot + 1 : slot;   // the boundary the block goes to: before old row `gap`
+    if (gap > 0 && gap < n && rows[gap].JoinsPrevious()) {
+        const Block o = BlockOf(rows, gap); const int top = o.first, bottom = o.first + o.count;
+        const int toTop = gap - top, toBottom = bottom - gap;
+        gap = toTop < toBottom ? top : toBottom < toTop ? bottom : (down ? top : bottom);
+    }
+    const int dest = gap <= b.first ? gap : gap - b.count;
+    if (dest == b.first) return m;
+    m.dest = dest; m.insert = down ? gap - 1 : gap;
+    return m;
+}
+// Moves [first, first + count) so that it starts at `dest` in the new order (the host's tabs; Move::dest).
+template <class T> void MoveRange(std::vector<T>& v, int first, int count, int dest) {
+    const int n = static_cast<int>(v.size());
+    if (first < 0 || count <= 0 || first + count > n || dest < 0 || dest + count > n || dest == first) return;
+    if (dest < first) std::rotate(v.begin() + dest, v.begin() + first, v.begin() + first + count);
+    else std::rotate(v.begin() + first, v.begin() + first + count, v.begin() + dest + count);
+}
+// The rows a highlighted split-menu row designates (Chrome::menuTargets) plus the right-clicked tab (`source`, -1 none):
+// both are outlined while a target is designated; sorted, in range, once each.
+inline std::vector<int> Designated(const std::vector<int>& targets, int source, int count) {
+    std::vector<int> d; if (targets.empty()) return d;
+    for (int i : targets) if (i >= 0 && i < count) d.push_back(i);
+    if (d.empty()) return d;
+    if (source >= 0 && source < count) d.push_back(source);
+    std::sort(d.begin(), d.end()); d.erase(std::unique(d.begin(), d.end()), d.end());
+    return d;
+}
+
 // ---- Geometry ------------------------------------------------------------------------------------------------
 struct Input {
     Mode mode = Mode::Complete;   // the column's layout (complete also for the column opened over the page)
@@ -186,6 +276,7 @@ struct Input {
     float band = 0;               // annotation band at the top of the page zone (answer 6)
     float reserve = 0;            // an open drawer's column: the page stops `inset` before it
     float panel = Complete::width; // the complete column's width (Resize: 220 .. 360)
+    std::vector<int> groups;      // per tab, its split view group (0 = none): the top bar's Chrome::tabGroups
 };
 // A grid of tiles in a scrolling viewport (the complete column's, the compact popover's).
 struct Grid {
@@ -236,6 +327,8 @@ struct Layout {
     Box line;                     // the line above the tabs (complete: inset; compact: the section's border)
     Box tabsView;                 // tab rows are clipped to it and scroll under it
     std::vector<Box> tabs;        // at the current scroll
+    std::vector<SplitRow> split;  // per tab: its split view group and place in its block (Split)
+    std::vector<Box> blocks, joints;   // split view: each block's shared background, the 10 x 1 lines between joined rows
     Box newTab;
     float content = 0, maxScroll = 0, scroll = 0;
     Box footerLine;
@@ -257,6 +350,19 @@ inline Box TitleIn(const Box& row, bool closeShown) {
     const float l = row.left + Complete::tabPad + Complete::favicon + Complete::tabIconGap;
     const float r = closeShown ? CloseIn(row).left - Complete::tabIconGap : row.right - Complete::tabPad;
     return {l, row.top, std::max(l, r), row.bottom};
+}
+// Split view blocks of a laid-out list: each block's shared background (its rows + `pad`), and a 10 x 1 line under each
+// row joined to the next, centred on the favicon (Split; Paper 247N-0 / 248F-0).
+inline void PlaceSplit(Layout& L) {
+    L.blocks.clear(); L.joints.clear();
+    const int n = std::min(static_cast<int>(L.tabs.size()), static_cast<int>(L.split.size()));
+    for (int i = 0; i < n; ++i) {
+        const SplitRow& s = L.split[i]; if (!s.Member()) continue;
+        if (!s.JoinsPrevious()) { const Block b = BlockOf(L.split, i); const Box& a = L.tabs[i]; const Box& z = L.tabs[std::min(n - 1, b.first + b.count - 1)];
+            L.blocks.push_back({a.left - Split::pad, a.top - Split::pad, z.right + Split::pad, z.bottom + Split::pad}); }
+        if (s.JoinsNext() && i + 1 < n) { const Box f = FaviconIn(L.tabs[i], L.mode); const float cx = (f.left + f.right) / 2, y = L.tabs[i].bottom;
+            L.joints.push_back({cx - Split::lineW / 2, y, cx + Split::lineW / 2, y + Split::lineH}); }
+    }
 }
 
 inline Layout Compute(const Input& in) {
@@ -330,14 +436,16 @@ inline Layout Compute(const Input& in) {
         L.line = {l + C::lineInset, y, r - C::lineInset, y + 1};
         L.tabsView = {l, y + 1 + C::lineAfter, r, std::max(y + 1 + C::lineAfter, footer - C::gap)};
         const float pitch = C::tabRow + C::tabGap, lead = C::tabGap;
-        L.content = lead + (in.tabs + 1) * pitch - C::tabGap;
+        L.split = SplitRows(in.groups, in.tabs); const auto shift = SplitShift(L.split, C::tabGap);   // split view blocks
+        L.content = lead + (in.tabs + 1) * pitch - C::tabGap + shift.back();
         L.maxScroll = std::max(0.f, L.content - L.tabsView.Height());
         L.scroll = std::clamp(in.scroll, 0.f, L.maxScroll);
         for (int i = 0; i <= in.tabs; ++i) {
-            const float t = L.tabsView.top + lead + i * pitch - L.scroll;
-            const Box row{l, t, r, t + C::tabRow};
+            const float t = L.tabsView.top + lead + i * pitch + shift[i] - L.scroll, x = i < in.tabs && L.split[i].Member() ? Split::pad : 0;
+            const Box row{l + x, t, r - x, t + C::tabRow};
             if (i < in.tabs) L.tabs.push_back(row); else L.newTab = row;
         }
+        PlaceSplit(L);
     } else {
         namespace K = Compact;
         const float cx = K::width / 2, l = cx - K::item / 2, r = cx + K::item / 2; float y = K::pad;
@@ -360,14 +468,16 @@ inline Layout Compute(const Input& in) {
         L.line = {l, y, r, y + 1};
         L.tabsView = {l, y + 1, r, std::max(y + 1, footer - K::gap)};
         const float pitch = K::tabRow + K::tabGap, lead = K::tabsLead - 1;
-        L.content = lead + (in.tabs + 1) * pitch - K::tabGap;
+        L.split = SplitRows(in.groups, in.tabs); const auto shift = SplitShift(L.split, K::tabGap);   // split view blocks
+        L.content = lead + (in.tabs + 1) * pitch - K::tabGap + shift.back();
         L.maxScroll = std::max(0.f, L.content - L.tabsView.Height());
         L.scroll = std::clamp(in.scroll, 0.f, L.maxScroll);
         for (int i = 0; i <= in.tabs; ++i) {
-            const float t = L.tabsView.top + lead + i * pitch - L.scroll;
-            const Box row{l, t, r, t + K::tabRow};
+            const float t = L.tabsView.top + lead + i * pitch + shift[i] - L.scroll, x = i < in.tabs && L.split[i].Member() ? Split::pad : 0;
+            const Box row{l + x, t, r - x, t + K::tabRow};
             if (i < in.tabs) L.tabs.push_back(row); else L.newTab = row;
         }
+        PlaceSplit(L);
     }
     if (zoneMode == Mode::Compact && !full) {
         // Window bar: the pair, Reload and the address after the zone's 4 DIP padding, 6 apart, no plates.

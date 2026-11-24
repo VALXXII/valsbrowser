@@ -184,6 +184,65 @@ int wmain(int argc, wchar_t** argv) {
         field(true, true, "compact bar");
         field(false, false, "top bar");
     }
+    // Vue partagée dans la colonne (Paper « Proposition — Vue partagée dans la colonne (panneau + compact) » 2473-0), with the
+    // board's tabs: « 1 · Repos » (YouTube and Paper under one background, YouTube displayed) and « 2 · Survol du menu »
+    // (right click on Paper, « À droite » highlighted: YouTube and Paper outlined), panel and compact. split-boxes.txt gives
+    // tools/sidebar/compose_split.py the first row (the boards' rows start 9 into the panel, 5 into the compact column).
+    {
+        std::ofstream splitBoxes(std::filesystem::path(out + L"\\split-boxes.txt"));
+        const std::vector<std::wstring> rest{L"Boutique — paiement", L"YouTube — Montage rapide", L"Browser Design — Paper", L"Boîte de réception (3)", L"Météo Paris — 12°"};
+        const std::vector<std::shared_ptr<const FaviconImage>> restIcons{Tile(0xFFFFFF), Tile(0xE5322D), Tile(0x111111), Tile(0xE24B3B), Tile(0xFFCC33)};
+        auto splitShot = [&](const wchar_t* name, bool compact, bool hovered) {
+            Chrome c; Check(SUCCEEDED(c.InitOffscreen(root, 96, 1178, 738)), "offscreen chrome (split)");
+            c.sidebar = true; c.keyboardModality = true; c.bandShown = false; c.annotateShown = true;
+            c.address = AddressBar::Describe(L"https://youtube.com/", false);
+            std::vector<std::wstring> t = rest; std::vector<std::shared_ptr<const FaviconImage>> f = restIcons;
+            if (hovered) { std::swap(t[2], t[3]); std::swap(f[2], f[3]); }   // 248W-0: Boutique, YouTube, Boîte, Paper, Météo
+            c.SetFavicons(f); c.sideHome.assign(5, false); c.sideDetails.assign(5, L"youtube.com");
+            if (compact) { c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.sidebarTitles = 0; }
+            if (hovered) { c.menuTargets = {1}; c.menuSource = 3; } else { c.tabGroups = {0, 7, 7, 0, 0}; c.visibleTabGroup = 7; }
+            c.Paint(t, 1, L"https://youtube.com/", false, 0, 0);
+            Check(SUCCEEDED(c.SavePng((out + L"\\" + name + L".png").c_str())), "snapshot (split)");
+            const auto& L = c.side; char line[200];
+            std::snprintf(line, sizeof line, "%ls %.1f %.1f %.1f %.1f\n", name, L.tabs[0].left, L.tabs[0].top, L.tabs[4].right, L.tabs[4].bottom); splitBoxes << line;
+            return L;
+        };
+        auto grey = [](Chrome& c, float x, float y) { return (int)((c.SurfacePixel(x, y) >> 8) & 255); };
+        splitShot(L"split-1-repos-panneau", false, false); splitShot(L"split-1-repos-compact", true, false);
+        splitShot(L"split-2-survol-panneau", false, true); splitShot(L"split-2-survol-compact", true, true);
+        // « 1 · Repos »: the background, the line, the displayed tab active and the other normal on the background.
+        for (int compact = 0; compact < 2; ++compact) {
+            Chrome c; Check(SUCCEEDED(c.InitOffscreen(root, 96, 1178, 738)), "offscreen chrome (split checks)");
+            c.sidebar = true; c.bandShown = false; c.tabGroups = {0, 7, 7, 0, 0};
+            if (compact) { c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.sidebarTitles = 0; }
+            c.Paint(titles, 1, L"", false, 0, 0); const auto& L = c.side;
+            Check(L.blocks.size() == 1 && L.joints.size() == 1, "split: one block, one line");
+            const auto b = L.blocks[0], j = L.joints[0]; const float mid2 = (L.tabs[2].top + L.tabs[2].bottom) / 2;
+            Check(std::abs(grey(c, b.left + 1, mid2) - 0x26) <= 1 && std::abs(grey(c, b.right - 1.5f, mid2) - 0x26) <= 1, compact ? "compact: background #262626 in the block's padding" : "panel: background #262626 in the block's padding");
+            Check(std::abs(grey(c, (j.left + j.right) / 2, j.top) - 0x54) <= 2 && std::abs(grey(c, j.right + 1, j.top) - 0x26) <= 1, compact ? "compact: the line #545454, the background beside it" : "panel: the line #545454, the background beside it");
+            Check(std::abs(grey(c, L.tabs[1].left + 3, (L.tabs[1].top + L.tabs[1].bottom) / 2) - 0x3E) <= 1, "the displayed tab: #3E3E3E");
+            Check(std::abs(grey(c, L.tabs[2].left + 3, mid2) - 0x26) <= 1, "the other member: normal, on the background");
+            Check(std::abs(grey(c, b.left + 1, b.bottom + 1) - 0x17) <= 1, "under the block: the canvas (the 2 DIP gap)");
+            Check(c.Hit((L.tabs[2].left + L.tabs[2].right) / 2, mid2) == TabBase + 2 && c.Hit((L.tabs[0].left + L.tabs[0].right) / 2, (L.tabs[0].top + L.tabs[0].bottom) / 2) == TabBase + 0, "rows in and out of the block still hit");
+        }
+        // « 2 · Survol du menu »: a 1 DIP inner #8C8C8C stroke on the target and on the right-clicked tab, nothing else.
+        for (int compact = 0; compact < 2; ++compact) {
+            Chrome c; Check(SUCCEEDED(c.InitOffscreen(root, 96, 1178, 738)), "offscreen chrome (split menu)");
+            c.sidebar = true; c.bandShown = false;
+            if (compact) { c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.sidebarTitles = 0; }
+            auto edge = [&](int i, float dx) { const auto& r = c.side.tabs[i]; return grey(c, r.left + dx, (r.top + r.bottom) / 2); };
+            c.Paint(titles, 1, L"", false, 0, 0);
+            Check(std::abs(edge(3, 0) - 0x17) <= 1 && std::abs(edge(1, 0) - 0x3E) <= 1, "no designation: no outline");
+            c.menuSource = 3; c.Paint(titles, 1, L"", false, 0, 0);
+            Check(std::abs(edge(3, 0) - 0x17) <= 1, "the right-clicked tab alone is not outlined");
+            c.menuTargets = {1}; c.Paint(titles, 1, L"", false, 0, 0);
+            Check(std::abs(edge(1, 0) - 0x8C) <= 2 && std::abs(edge(3, 0) - 0x8C) <= 2, compact ? "compact: target and right-clicked tab outlined #8C8C8C" : "panel: target and right-clicked tab outlined #8C8C8C");
+            Check(std::abs(edge(1, 1) - 0x3E) <= 1 && std::abs(edge(3, 1) - 0x17) <= 1, "1 DIP, inside the row");
+            Check(std::abs(edge(0, 0) - 0x17) <= 1 && std::abs(edge(2, 0) - 0x17) <= 1 && std::abs(edge(4, 0) - 0x17) <= 1, "the other rows: no outline");
+            c.menuTargets.clear(); c.menuSource = -1; c.Paint(titles, 1, L"", false, 0, 0);
+            Check(std::abs(edge(1, 0) - 0x3E) <= 1 && std::abs(edge(3, 0) - 0x17) <= 1, "the menu closed: the outline goes");
+        }
+    }
     std::printf("sidebar_render_test: %d checks passed\n", checks);
     return 0;
 }
