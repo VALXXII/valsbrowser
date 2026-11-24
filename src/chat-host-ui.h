@@ -1054,6 +1054,7 @@ void OnPanelMessage(const std::string& json) {
         else if (action == "connect") Connect(agentId, "");
         else if (action == "newChat") { if (turn.active) { queue.clear(); afterTurn = [] { NewConversation(); MaybeStartSession(); }; StopTurn(); } else { NewConversation(); MaybeStartSession(); } }   // F3: as the composer's « Nouveau chat »
         else if (action == "chooseFolder") ChooseFolder();   // « Cette page ne semble pas venir de… »
+        else if (action == "install") OpenTonAgent(TonAgentFrom::Chat);   // « Ton agent »: the screen, where the click is the consent
         else if (action == "showWork") ShowEngineWork();   // Mode Commentaire: the work under way asks for a permission
         return;
     }

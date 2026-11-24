@@ -31,4 +31,18 @@ inline View Of(const AgentStatus::Status& s) {
     return {"starting", Text::None, false, false};
 }
 
+// A turn that failed because the agent stopped answering (its CLI closed — « Query closed before response received » —,
+// the process ended, a sign-in refused): the host asks the agents' one status again, then shows ONE card for the real cause
+// with its action — never the generic « Quelque chose n'a pas fonctionné ».
+inline bool Rechecked(Acp::ErrorCode c) { return c == Acp::ErrorCode::ProcessExited || c == Acp::ErrorCode::AuthRequired || c == Acp::ErrorCode::SpawnFailed; }
+inline Acp::ErrorCode FailureCause(const AgentStatus::Status& s, Acp::ErrorCode failed) {
+    using S = AgentStatus::State; using R = AgentStatus::Reason;
+    switch (s.state) {
+    case S::NeedsSignIn: case S::SigningIn: return Acp::ErrorCode::AuthRequired;                  // « X n'est pas connecté » + Se connecter
+    case S::NotInstalled: return s.reason == R::TooOld ? Acp::ErrorCode::CliTooOld : Acp::ErrorCode::NotInstalled;   // + Installer (the screen)
+    case S::Error: return s.reason == R::SignInFailed || s.reason == R::SignInTimeout ? Acp::ErrorCode::AuthRequired : Acp::ErrorCode::NotInstalled;
+    default: return failed;   // still ready (or not known): the agent did stop — « X s'est arrêté », Réessayer
+    }
+}
+
 }  // namespace ChatAgentStatus

@@ -655,7 +655,9 @@ void OnEvent(const Acp::Event& e) {
     case T::Exited:
         Diag(L"agent exited (" + std::to_wstring(e.exitCode) + L"): " + W(ClipUtf8(e.error.detail, 300)));
         sessionReady = sessionStarting = false; modeAwaited.clear(); modeRefused = false; if (session) { disposed.push_back(std::move(session)); session.reset(); }
-        if (turn.active) { turn.failure = e.error; FinishTurn("error"); } else { info.status = "ready"; info.detail = TR(chat_agent_installed); SendState(); }
+        // idle: the agent's state is the one status again (« Ton agent »: never « Installé » by itself), checked anew
+        if (turn.active) { turn.failure = e.error; FinishTurn("error"); }
+        else if (const auto* def = AgentOf(agentId)) { ApplyStatus(agentId, AgentStatus::Get(def->rt)); AgentStatus::Refresh(def->rt); SendState(); }
         break;
     }
 }
@@ -832,6 +834,24 @@ void StartTurn(const std::string& text, const std::vector<std::string>& elementI
     EnsureSession([] { BeginSnapshotThenPrompt(); });
     Diag(L"turn " + W(turn.id) + L" started");
 }
+// « Ton agent »: a failed turn's card. When the agent stopped answering (its CLI closed — « Query closed before response
+// received » —, the process ended, a sign-in refused) the agents' one status is asked again first: ONE card then says the real
+// cause with its action (src/chat-agent-status.h FailureCause) — never the generic « Quelque chose n'a pas fonctionné ».
+void ShowTurnFailure(const Acp::Error& failure, const std::string& agent, const std::string& turnId) {
+    auto show = [agent, turnId](const Acp::Error& e) {
+        SendError(ProblemFor(e, agent), e.detail, "thread", true, turnId);
+        if (e.code == Acp::ErrorCode::AuthRequired) Strip("auth", "danger", TRF(chat_strip_disconnected, W(Agent().name)), "connect", TR(chat_action_connect));
+    };
+    const auto* def = AgentOf(agent);
+    if (!def || !ChatAgentStatus::Rechecked(failure.code)) { show(failure); return; }
+    const auto rt = def->rt;
+    Diag(L"turn failed (" + W(Acp::ErrorCodeName(failure.code)) + L"): the agent is checked again before saying why");   // i18n-exempt: log detail
+    AgentStatus::Refresh([failure, rt, show] {
+        Acp::Error e = failure; e.code = ChatAgentStatus::FailureCause(AgentStatus::Get(rt), failure.code);
+        Diag(L"turn failure shown as " + W(Acp::ErrorCodeName(e.code)) + L" (agent " + W(AgentStatus::StateName(AgentStatus::Get(rt).state)) + L")");   // i18n-exempt: log detail
+        show(e);
+    });
+}
 void CompleteTurn(const std::string& stopReason, const CS::TurnSummary* summary, const std::vector<std::pair<std::string, CS::FileDiff>>* diffs = nullptr) {
     const bool failed = stopReason == "error"; const double ms = Ann::NowMs() - turn.startedMs;
     if (stopReason == "end_turn" && !turn.lastPlan.empty() && turn.planPermission.empty() && CurrentModeKind() == "plan") SendPlan(turn.lastPlan, true);   // Paper 6.12: « Plan proposé » waits for « Lancer le plan »
@@ -850,8 +870,7 @@ void CompleteTurn(const std::string& stopReason, const CS::TurnSummary* summary,
     } else m.Set("undoable", SJ::Value::Bool(false));
     if (!turn.summaryText.empty()) m.Set("copyText", Str(ClipUtf8(turn.summaryText, 60000)));
     Keep("turn.end", m); Send("turn.end", std::move(m));
-    if (failed) { if (!turn.problem.title.empty()) SendError(turn.problem, ""); else { const auto p = ProblemFor(turn.failure, agentId); SendError(p, turn.failure.detail);
-            if (turn.failure.code == Acp::ErrorCode::AuthRequired) Strip("auth", "danger", TRF(chat_strip_disconnected, W(Agent().name)), "connect", TR(chat_action_connect)); } }
+    if (failed) { if (!turn.problem.title.empty()) SendError(turn.problem, ""); else ShowTurnFailure(turn.failure, agentId, turn.id); }
     const bool done = stopReason == "end_turn";
     const bool planned = done && !changed && CurrentModeKind() == "plan";   // a plan is not a change: the annotation goes back to waiting, with the reason
     CloseAnnotations(turn.elements, done && !planned, done && !planned ? (LastParagraph(turn.summaryText).empty() ? U8(TRF(chat_resolve_default, AgentShort(agentId))) : LastParagraph(turn.summaryText))

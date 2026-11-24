@@ -129,7 +129,8 @@ struct Element {   // an aimed element: a chip in the composer, then part of a t
 };
 struct Attachment { std::string id, name, mime, base64, thumb; };
 struct Queued { std::string id, text; std::vector<std::string> elements, attachments; std::string convId; };   // convId (Mode Commentaire): the conversation it belongs to, "" = the engine's
-struct Problem { std::wstring title, message; bool retry = true, connect = false, newChat = false, chooseFolder = false; };
+struct Problem { std::wstring title, message; bool retry = true, connect = false, newChat = false, chooseFolder = false;
+                 bool install = false; };   // « Ton agent »: « Installer » opens the agents' screen (its click there is the consent)
 struct Turn {
     bool active = false, cancelled = false, snapshot = false, promptSent = false, ending = false;
     bool planLaunched = false;   // M: « Lancer le plan » accepted the agent's plan in this turn — the mode it goes to is the user's choice (KeepModeAfterPlan)
@@ -443,8 +444,8 @@ void SaveConvo() {
 Problem ProblemFor(const Acp::Error& e, const std::string& agent) {
     const std::wstring name = W(AgentOf(agent) ? AgentOf(agent)->name : "Claude Code"); Problem p;
     switch (e.code) {
-    case Acp::ErrorCode::NotInstalled: p.title = TRF(chat_err_not_installed_title, name); p.message = TRF(chat_err_not_installed, name); break;
-    case Acp::ErrorCode::CliTooOld: p.title = TRF(chat_err_too_old_title, name); p.message = TRF(chat_err_too_old, name); break;
+    case Acp::ErrorCode::NotInstalled: p.title = TRF(chat_err_not_installed_title, name); p.message = TRF(chat_err_not_installed, name); p.install = true; p.retry = false; break;
+    case Acp::ErrorCode::CliTooOld: p.title = TRF(chat_err_too_old_title, name); p.message = TRF(chat_err_too_old, name); p.install = true; p.retry = false; break;
     case Acp::ErrorCode::NeedsPrepare: p.title = TR(chat_err_prepare_title); p.message = TR(chat_err_prepare); break;
     case Acp::ErrorCode::AuthRequired: p.title = TRF(chat_err_auth_title, name); p.message = TR(chat_err_auth); p.connect = true; p.retry = false; break;
     case Acp::ErrorCode::ProcessExited: case Acp::ErrorCode::SpawnFailed: p.title = TRF(chat_err_exited_title, name); p.message = TR(chat_err_exited); break;
@@ -456,7 +457,8 @@ Problem ProblemFor(const Acp::Error& e, const std::string& agent) {
     }
     return p;
 }
-void SendError(const Problem& p, const std::string& detail, const char* scope = "thread", bool keep = true) {
+// `turnId`: the turn the card belongs to when it is sent after that turn ended (« Ton agent »: a failure re-checked first).
+void SendError(const Problem& p, const std::string& detail, const char* scope = "thread", bool keep = true, const std::string& turnId = "") {
     SJ::Value m = SJ::Value::Obj(); m.Set("id", Str(NewId("err_"))); m.Set("scope", Str(std::string(scope))); m.Set("title", Str(p.title)); m.Set("message", Str(p.message));
     if (!detail.empty()) m.Set("detail", Str(ClipUtf8(detail, 4000)));
     SJ::Value actions = SJ::Value::Arr();
@@ -465,8 +467,9 @@ void SendError(const Problem& p, const std::string& detail, const char* scope = 
     if (p.retry) add("retry", I18n::Id::chat_action_retry, !p.connect);
     if (p.newChat) add("newChat", I18n::Id::chat_title_new, true);
     if (p.chooseFolder) add("chooseFolder", I18n::Id::chat_action_choose_folder, true);
+    if (p.install) add("install", I18n::Id::ton_agent_row_install, true);
     m.Set("actions", std::move(actions));
-    if (turn.active && !turn.id.empty()) m.Set("turnId", Str(turn.id));
+    if (!turnId.empty()) m.Set("turnId", Str(turnId)); else if (turn.active && !turn.id.empty()) m.Set("turnId", Str(turn.id));
     if (keep && std::string(scope) == "thread") Keep("error", m);
     Send("error", std::move(m));
 }

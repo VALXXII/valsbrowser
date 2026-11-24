@@ -67,6 +67,15 @@ static void ChatView() {
     Expect(std::string(v(S::Error, R::NotFoundAfterInstall).status) == "notInstalled" && !v(S::Error, R::NotFoundAfterInstall).cli, "chat (the « Installé » bug): an install that left no CLI is « Pas installé », never « Installé »");
     Expect(std::string(v(S::Error, R::SignInFailed).status) == "notConnected" && v(S::Error, R::SignInFailed).cli, "chat: a failed sign-in → still to sign in");
     Expect(!v(S::Unknown).known && std::string(v(S::Unknown).status) == "starting", "chat: before the first detection → « starting », unknown");
+    // « Query closed before response received »: the turn's card says the real cause once the agent is checked again
+    using E = Acp::ErrorCode;
+    auto st = [](S state, R reason = R::None) { AS::Status s; s.state = state; s.reason = reason; return s; };
+    Expect(ChatAgentStatus::Rechecked(E::ProcessExited) && ChatAgentStatus::Rechecked(E::AuthRequired) && !ChatAgentStatus::Rechecked(E::RateLimited), "turn failure: a stopped agent or a refused sign-in is checked again first");
+    Expect(ChatAgentStatus::FailureCause(st(S::NeedsSignIn), E::ProcessExited) == E::AuthRequired, "turn failure: CLI closed, signed out meanwhile → « pas connecté » + Se connecter");
+    Expect(ChatAgentStatus::FailureCause(st(S::NotInstalled), E::ProcessExited) == E::NotInstalled, "turn failure: CLI gone → « pas installé » + Installer (the screen)");
+    Expect(ChatAgentStatus::FailureCause(st(S::NotInstalled, R::TooOld), E::ProcessExited) == E::CliTooOld, "turn failure: CLI too old → « trop ancienne » + Installer");
+    Expect(ChatAgentStatus::FailureCause(st(S::Ready), E::ProcessExited) == E::ProcessExited, "turn failure: still ready → « X s'est arrêté » + Réessayer (never the generic card)");
+    Expect(ChatAgentStatus::FailureCause(st(S::Error, R::SignInFailed), E::AuthRequired) == E::AuthRequired, "turn failure: a failed sign-in → « pas connecté »");
 }
 
 static void Classification() {

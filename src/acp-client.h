@@ -318,6 +318,7 @@ private:
 // Classifies an agent error: AuthRequired (code -32000 or sign-in wording), a known turn failure, else AgentError.
 Error ClassifyAgentError(int rpcCode, const std::string& message, const std::string& dataDetail);
 bool LooksLikeAuthError(std::string_view text);
+bool LooksLikeCliClosed(std::string_view text);   // « Ton agent »: the agent's CLI closed before answering (→ ProcessExited)
 ErrorCode PlainFailure(std::string_view text);  // None when the text is not a failure we know
 // Environment block for CreateProcessW (UTF-16, sorted, double-NUL terminated).
 std::wstring BuildEnvironmentBlock(const LaunchSpec& spec);
