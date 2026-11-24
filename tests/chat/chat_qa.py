@@ -165,6 +165,7 @@ def enter_panel():
 # marked as seen — the product's own setting, `annotation-onboarded=1` in the profile's « settings » file. The tutorial
 # itself is tested by tests/onboarding/ (its own harness), never through this one.
 TUTORIAL_SEEN = 'annotation-onboarded=1'
+SETTINGS_HEADER = 'browser-settings 1'   # src/settings.h, Read: a settings file is read only under this first line
 TUTORIAL_OPENED = 'ANNOTATE onboarding opened'
 _tutorial_said = False
 
@@ -173,6 +174,8 @@ def mark_tutorial_seen(app):
     '''Writes `annotation-onboarded=1` in the test profile's settings (the other settings keep their value, or their default).'''
     f = pathlib.Path(app) / 'settings'
     lines = [l for l in (f.read_text(encoding='utf-8', errors='replace').splitlines() if f.exists() else []) if not l.startswith('annotation-onboarded=')]
+    if not lines or lines[0] != SETTINGS_HEADER:   # without its header line the browser takes every default: the tutorial opened anyway
+        lines = [SETTINGS_HEADER] + [l for l in lines if l != SETTINGS_HEADER]
     f.write_text('\n'.join(lines + [TUTORIAL_SEEN]) + '\n', encoding='utf-8', newline='\n')
 
 
