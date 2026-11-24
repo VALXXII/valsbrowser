@@ -242,10 +242,12 @@ int wmain(int argc, wchar_t** argv) {
             c.Paint(titles, 1, L"", false, 0, 0); const auto& L = c.side;
             Check(L.blocks.size() == 1 && L.joints.size() == 1, "split: one block, one line");
             const auto b = L.blocks[0], j = L.joints[0]; const float mid2 = (L.tabs[2].top + L.tabs[2].bottom) / 2;
-            Check(std::abs(grey(c, b.left + 1, mid2) - 0x26) <= 1 && std::abs(grey(c, b.right - 1.5f, mid2) - 0x26) <= 1, compact ? "compact: background #262626 in the block's padding" : "panel: background #262626 in the block's padding");
-            Check(std::abs(grey(c, (j.left + j.right) / 2, j.top) - 0x54) <= 2 && std::abs(grey(c, j.right + 1, j.top) - 0x26) <= 1, compact ? "compact: the line #545454, the background beside it" : "panel: the line #545454, the background beside it");
-            Check(std::abs(grey(c, L.tabs[1].left + 3, (L.tabs[1].top + L.tabs[1].bottom) / 2) - 0x3E) <= 1, "the displayed tab: #3E3E3E");
-            Check(std::abs(grey(c, L.tabs[2].left + 3, mid2) - 0x26) <= 1, "the other member: normal, on the background");
+            { char m2[200]; std::snprintf(m2, sizeof m2, "%s: the block is a 1 DIP #262626 outline (%d at %.1f), no fill (%d) (frozen 2473-0)", compact ? "compact" : "panel", grey(c, b.left + (compact ? .5f : -.5f), mid2), b.left + (compact ? .5f : -.5f), grey(c, b.left + (compact ? 1.5f : 1.f), mid2));
+              Check(std::abs(grey(c, b.left + (compact ? .5f : -.5f), mid2) - 0x26) <= 2 && std::abs(grey(c, b.left + (compact ? 1.5f : 1.f), mid2) - 0x17) <= 1, m2); }
+            Check(std::abs(grey(c, (j.left + j.right) / 2, j.top) - 0x54) <= 2, compact ? "compact: the 10 x 1 line #545454" : "panel: the 10 x 1 line #545454 on the favicons' axis");
+            { char m3[160]; std::snprintf(m3, sizeof m3, "the displayed pair: both rows on #262626 (%d, %d), no #3E3E3E of their own", grey(c, L.tabs[1].left + 3, (L.tabs[1].top + L.tabs[1].bottom) / 2), grey(c, L.tabs[2].left + 3, mid2));
+              Check(std::abs(grey(c, L.tabs[1].left + 3, (L.tabs[1].top + L.tabs[1].bottom) / 2) - 0x26) <= 1 && std::abs(grey(c, L.tabs[2].left + 3, mid2) - 0x26) <= 1, m3); }
+            c.Paint(titles, 0, L"", false, 0, 0); Check(std::abs(grey(c, c.side.tabs[2].left + 3, (c.side.tabs[2].top + c.side.tabs[2].bottom) / 2) - 0x17) <= 1 && std::abs(grey(c, c.side.blocks[0].left + (compact ? .5f : -.5f), (c.side.tabs[2].top + c.side.tabs[2].bottom) / 2) - 0x26) <= 2, "at rest (the pair not displayed): rows normal, the outline stays");
             Check(std::abs(grey(c, b.left + 1, b.bottom + 1) - 0x17) <= 1, "under the block: the canvas (the 2 DIP gap)");
             Check(c.Hit((L.tabs[2].left + L.tabs[2].right) / 2, mid2) == TabBase + 2 && c.Hit((L.tabs[0].left + L.tabs[0].right) / 2, (L.tabs[0].top + L.tabs[0].bottom) / 2) == TabBase + 0, "rows in and out of the block still hit");
         }

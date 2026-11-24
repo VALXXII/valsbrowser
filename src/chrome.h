@@ -143,10 +143,10 @@ public:
             if(i==split.focusedHandle){Color(1,Design::Focus::keyboardOpacity);target->DrawRoundedRectangle(D2D1::RoundedRect({pill.left-2,pill.top-2,pill.right+2,pill.bottom+2},6,6),brush,2);}}
     }
     // Rectangle with a radius per corner (top-left, top-right, bottom-right, bottom-left).
-    ID2D1PathGeometry* CornerBox(D2D1_RECT_F r,float tl,float tr,float br,float bl){
+    ID2D1PathGeometry* CornerBox(D2D1_RECT_F r,float tl,float tr,float br,float bl,bool filled=false){
         ID2D1PathGeometry* g=nullptr;if(!factory||FAILED(factory->CreatePathGeometry(&g)))return nullptr;ID2D1GeometrySink* s=nullptr;if(FAILED(g->Open(&s))){g->Release();return nullptr;}
         auto arc=[&](D2D1_POINT_2F to,float radius){if(radius>0)s->AddArc(D2D1::ArcSegment(to,{radius,radius},0,D2D1_SWEEP_DIRECTION_CLOCKWISE,D2D1_ARC_SIZE_SMALL));else s->AddLine(to);};
-        s->BeginFigure({r.left+tl,r.top},D2D1_FIGURE_BEGIN_HOLLOW);s->AddLine({r.right-tr,r.top});arc({r.right,r.top+tr},tr);s->AddLine({r.right,r.bottom-br});arc({r.right-br,r.bottom},br);
+        s->BeginFigure({r.left+tl,r.top},filled?D2D1_FIGURE_BEGIN_FILLED:D2D1_FIGURE_BEGIN_HOLLOW);s->AddLine({r.right-tr,r.top});arc({r.right,r.top+tr},tr);s->AddLine({r.right,r.bottom-br});arc({r.right-br,r.bottom},br);
         s->AddLine({r.left+bl,r.bottom});arc({r.left,r.bottom-bl},bl);s->AddLine({r.left,r.top+tl});arc({r.left+tl,r.top},tl);s->EndFigure(D2D1_FIGURE_END_CLOSED);s->Close();s->Release();return g;
     }
     // Tab outline with different left/right corner radii (split group members).
@@ -1215,11 +1215,12 @@ public:
     // the surface goes from the hover white to #3E3E3E, the title to full white. Returns the surface grey (ghosts).
     float DrawSideTab(const Sidebar::Layout& L,int i,const std::wstring& title,int selected,int hover,int focus,Motion::Time now,D2D1_RECT_F row,float alpha,float labels,const D2D1_RECT_F* shown=nullptr,float content=1,float fillFactor=1,bool plate=false){
         namespace K=Sidebar::Look;const bool full=L.mode==Sidebar::Mode::Complete;
-        const float emphasis=sidebarDrag<0&&motion&&animateSelection&&i<(int)tabKeys.size()?Motion::Clamp(motion->selection.Visual((int)TabKey(i),now)):(i==selected?1.f:0.f);
+        const bool member=i<(int)L.split.size()&&L.split[i].Member(),pair=member&&PairShown(L,i,selected);
+        const float emphasis=pair?1.f:member?0.f:sidebarDrag<0&&motion&&animateSelection&&i<(int)tabKeys.size()?Motion::Clamp(motion->selection.Visual((int)TabKey(i),now)):(i==selected?1.f:0.f);
         const bool active=emphasis>.5f;
         const float h=std::max(Hovered(TabBase+i,hover,now),Hovered(CloseBase+i,hover,now));
         const D2D1_RECT_F surface=shown?*shown:row;const float c=Design::Surface::canvas,base=c+(1-c)*K::tabHover*std::clamp(h,0.f,1.f);
-        const float fill=plate?(i==selected?c:c+(base-c)*fillFactor):c+((base+(K::tabActive-base)*emphasis)-c)*fillFactor;   // plate: the selection is the sliding object
+        const float fill=pair?c:member?c+(base-c)*fillFactor:plate?(i==selected?c:c+(base-c)*fillFactor):c+((base+(K::tabActive-base)*emphasis)-c)*fillFactor;   // plate: the selection is the sliding object; a pair: its #262626 (PaintSideSplit)
         if(fill>c+.001f&&surface.bottom-surface.top>.5f)Round(surface,std::min(Design::Radius::control,(surface.bottom-surface.top)/2),fill);
         if(shown)target->PushAxisAlignedClip(surface,D2D1_ANTIALIAS_MODE_ALIASED);
         alpha*=content;
@@ -1238,7 +1239,7 @@ public:
             SideGlyph(Sidebar::Glyph::close,cb,Sidebar::Complete::closeGlyph*Motion::PressScale(press,motion&&motion->ReducedMotion()),K::glyph*std::max(h,focus==CloseBase+i?1.f:0.f)*labels*alpha);
             if(focus==CloseBase+i)FocusRing(cb,Design::Radius::button);}
         if(shown)target->PopAxisAlignedClip();
-        return plate&&i==selected?K::tabActive:fill;   // the ghost keeps what the row looked like
+        return pair?Sidebar::Split::fill:plate&&i==selected?K::tabActive:fill;   // the ghost keeps what the row looked like
     }
     // The selection plate at the selected row's presented box: a new selection slides it there from where it is (spring);
     // the same row moving with the list keeps it glued (snapped) unless a slide is under way (retargeted from the presented
@@ -1277,8 +1278,16 @@ public:
     }
     // Vue partagée dans la colonne (Sidebar::Split; Paper 2473-0 « 1 · Repos » 247H-0 / 248B-0): each block's shared background
     // #262626 (radius 8) under its rows, the 10 x 1 #545454 line between joined rows. The rows paint over it (DrawSideTab).
-    void PaintSideSplit(const Sidebar::Layout& L){namespace S=Sidebar::Split;
-        for(const auto& b:L.blocks)Round(R(b),S::radius,S::fill);
+    // Frozen look (2473-0, Val's retouch): every block is a 1 DIP #262626 outline (no fill, radius 8) around its rows;
+    // the displayed pair's rows take #262626 with corners 6 outside / 3 inside; the 10 x 1 #545454 line on the favicons'
+    // axis between joined rows.
+    static bool PairShown(const Sidebar::Layout& L,int i,int selected){if(i<0||i>=(int)L.split.size()||!L.split[i].Member()||selected<0)return false;const auto b=Sidebar::BlockOf(L.split,i);return selected>=b.first&&selected<b.first+b.count;}
+    void PaintSideSplit(const Sidebar::Layout& L,int selected=-1){namespace S=Sidebar::Split;
+        const int n=std::min((int)L.tabs.size(),(int)L.split.size());
+        for(int i=0;i<n;++i){if(!PairShown(L,i,selected))continue;const auto b=Sidebar::BlockOf(L.split,i);const bool first=i==b.first,last=i==b.first+b.count-1;
+            if(auto g=CornerBox(R(L.tabs[i]),first?S::outer:S::inner,first?S::outer:S::inner,last?S::outer:S::inner,last?S::outer:S::inner,true)){Color(S::fill);target->FillGeometry(g,brush);g->Release();}}
+        // The outline: outside the padding in the panel (Paper's CSS outline), inside the 40 in compact (the frame spans the column).
+        Color(S::frame);for(const auto& b:L.blocks){const float k=(L.mode==Sidebar::Mode::Complete?1:-1)*S::frameW/2;target->DrawRoundedRectangle(D2D1::RoundedRect({b.left-k,b.top-k,b.right+k,b.bottom+k},S::radius+k,S::radius+k),brush,S::frameW);}
         Color(S::line);for(const auto& j:L.joints)target->FillRectangle(R(j),brush);}
     // « 2 · Survol du menu » (2492-0 / 24AJ-0): the tabs a highlighted split-menu row designates and the right-clicked tab,
     // a 1 DIP inner #8C8C8C stroke on each row (its radius 6), over the row.
@@ -1303,8 +1312,8 @@ public:
         PaintSideGrid(L,hover,focus,now,labels);
         // Tabs.
         Color(1,K::line);target->FillRectangle(R(L.line),brush);
-        target->PushAxisAlignedClip(R(L.tabsView),D2D1_ANTIALIAS_MODE_ALIASED);
-        PaintSideSplit(L);
+        target->PushAxisAlignedClip({L.tabsView.left-Sidebar::Split::frameW,L.tabsView.top,L.tabsView.right+Sidebar::Split::frameW,L.tabsView.bottom},D2D1_ANTIALIAS_MODE_ALIASED);   // the split frame's outline sits 1 DIP outside the rows
+        PaintSideSplit(L,selected);
         const int n=std::min((int)titles.size(),(int)L.tabs.size());
         auto titleOf=[&](int i){return titles[i].empty()?std::wstring(i<(int)sideHome.size()&&sideHome[i]?TR(tab_new):TR(chrome_tab_untitled_tip)):titles[i];};
         const bool moving=!overlay&&sidebarDrag<0&&&L==&side&&!sideFrame.items.empty();
@@ -1312,7 +1321,7 @@ public:
         if(moving){   // the strip's model on rows: ghosts under, live rows at their presented slots, « + » after them
             const float pitch=SB::Rows(L.mode).row+SB::Rows(L.mode).gap;
             for(auto& it:sideFrame.items)if(it.index<0)DrawSideGhost(L,it,labels);
-            for(auto& it:sideFrame.items){const int i=it.index;if(i!=selected||i<0||i>=n)continue;   // the plate first, under every row
+            for(auto& it:sideFrame.items){const int i=it.index;if(i!=selected||i<0||i>=n||PairShown(L,i,selected))continue;   // the plate first, under every row (not a displayed pair: its own #262626)
                 const float dy=(it.slot-i*pitch)-(sideFrame.scroll-L.scroll);auto r=L.tabs[i];r.top+=dy;r.bottom=r.top+L.tabs[i].Height()*std::clamp(it.presence,0.f,1.f);PaintSelectionPlate(R(r),it.key,now);}
             for(auto& it:sideFrame.items){const int i=it.index;if(i<0||i>=n)continue;
                 // The laid-out row (split blocks keep their offsets and insets), moved by what the motion adds: its slot's

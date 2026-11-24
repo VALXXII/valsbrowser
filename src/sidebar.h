@@ -185,6 +185,10 @@ namespace Split {
 inline constexpr float pad = 2, radius = 8, joint = 1, lineW = 10, lineH = 1, outlineW = 1;
 inline constexpr float compactMember = 34;   // a compact member tab: 36 x 34 (radius 6) inside the 40-wide block
 inline constexpr float fill = 0x26 / 255.f, line = 0x54 / 255.f, outline = 0x8C / 255.f;   // #262626, #545454, #8C8C8C
+// Frozen (Val's retouch, 2473-0 « Repos » / « Sélectionné »): the block is a 1 DIP #262626 outline without fill around its
+// rows (radius 8, padding 2); when the pair is displayed both rows take #262626, corners 6 outside and 3 inside (like
+// Précédent / Suivant), titles white 500; the displayed tab has no #3E3E3E of its own.
+inline constexpr float frame = 0x26 / 255.f, frameW = 1, outer = 6, inner = 3;
 }
 enum class SplitPos { None, Single, First, Middle, Last };
 struct SplitRow {
