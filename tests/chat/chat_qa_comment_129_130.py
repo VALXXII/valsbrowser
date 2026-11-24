@@ -103,8 +103,18 @@ def on_top(h, r):
     return all(x == h for x in roots), roots
 
 
+def region(h):
+    """V5.region_box, read again when the window moved between its two reads (it returns None then, not a wrong box)."""
+    for _ in range(10):
+        rb = V5.region_box(h) if h else None
+        if rb:
+            return rb
+        time.sleep(0.05)
+    return None
+
+
 def menu_check(label, expect_rows=None):
-    h = bubble(); rb = V5.region_box(h) if h else None; pg = CC.page_widget()
+    h = bubble(); rb = region(h); pg = CC.page_widget()
     m = rect_of("document.querySelector('.menu:not(.menu-ghost)')")
     rows = C.panel("Array.from(document.querySelectorAll('.menu:not(.menu-ghost) .mi .lb')).map(function(n){return n.textContent})") or []
     sm = to_screen(h, m) if h and m else None
@@ -170,7 +180,7 @@ def run_main():
         i_model = fl.find('"value":"haiku"'); i_effort = fl.find('"value":"low"'); i_prompt = fl.find('session/prompt')
         step('#129 · the model and the effort chosen in the bubble reached the session (set_config_option) before the comment was sent',
              0 <= i_model < i_prompt and 0 <= i_effort < i_prompt, {'model': i_model, 'effort': i_effort, 'prompt': i_prompt})
-        h = bubble(); rb = V5.region_box(h) if h else None; pg = CC.page_widget()
+        h = bubble(); rb = region(h); pg = CC.page_widget()
         auto = rect_of("Array.from(document.querySelectorAll('button')).find(function(b){return b.textContent.trim()==='Autoriser'})")
         refuse = rect_of("Array.from(document.querySelectorAll('button')).find(function(b){return b.textContent.trim()==='Refuser'})")
         sa = to_screen(h, auto) if h and auto else None; sr = to_screen(h, refuse) if h and refuse else None
@@ -194,16 +204,27 @@ def run_main():
         report['measures']['replacedLogged'] = any('#130' in l for l in lines)
         capture('130-autorisation')
         # the model menu with the bubble placed again (above its element, or slid)
-        C.click_panel('button.m'); time.sleep(0.6)
-        menu_check('#129 / #130 · the bubble placed again: the model menu still opens whole, on top of everything')
-        capture('130-menu-modele')
-        C.key_panel('Escape', 'Escape', 27); time.sleep(0.5)
+        # While an authorization waits, its card takes the dock's place (panel.js dockBubble, since 18/11): no input, no
+        # model button until it is answered — the menu is checked again after « Autoriser ».
+        if C.panel("!!document.querySelector('button.m')"):
+            C.click_panel('button.m'); time.sleep(0.6)
+            menu_check('#129 / #130 · the bubble placed again: the model menu still opens whole, on top of everything')
+            capture('130-menu-modele')
+            C.key_panel('Escape', 'Escape', 27); time.sleep(0.5)
+        else:
+            report['measures']['modelButtonDuringPermission'] = 'absent (the authorization card replaces the input)'
         # a REAL click on Autoriser (what the user does)
         sa = to_screen(h, rect_of("Array.from(document.querySelectorAll('button')).find(function(b){return b.textContent.trim()==='Autoriser'})"))
         m = mark(); time.sleep(0.8)   # SEC-23: no « Autoriser » in a card's first 600 ms
         u32.SetCursorPos((sa[0] + sa[2]) // 2, (sa[1] + sa[3]) // 2); time.sleep(0.1); V5.mouse(0x0002); time.sleep(0.03); V5.mouse(0x0004)
         step('#130 · a real click on Autoriser answers the authorization', C.wait_log(r'permission answered', 8, m))
         capture('130-apres-autoriser')
+        if 'modelButtonDuringPermission' in report['measures']:
+            C.wait_for(lambda: C.panel("!!document.querySelector('button.m')"), timeout=10)
+            C.click_panel('button.m'); time.sleep(0.6)
+            menu_check('#129 / #130 · the bubble placed again, authorization answered: the model menu opens whole, on top of everything')
+            capture('130-menu-modele')
+            C.key_panel('Escape', 'Escape', 27); time.sleep(0.5)
     except Exception:
         traceback.print_exc()
         step('run without exception', False, traceback.format_exc()[-600:])
