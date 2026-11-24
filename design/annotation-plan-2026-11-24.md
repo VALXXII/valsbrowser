@@ -650,3 +650,147 @@ Durée (ce sont des **estimations**). **Décidé le 24/11 : le choix « retenu �
 | Écarté | Toutes les suites en vraie fenêtre dans les trois dispositions (≈ 1 h de plus par disposition) | ≈ 3 h 45, prévoir 4 h 30 |
 
 Le choix retenu tient dans une tournée de nuit de 3 h, sans marge.
+
+## 10. Lot R — retrait de l'ancien système (24/11, branche `VALXXII/annotation-lotR`)
+
+État : **codé et vérifié sans fenêtre ; pas encore prouvé en vraie fenêtre.** Le lot ne sort qu'après la nuit commune
+(lots 1, 2, R et 5 ensemble) verte sur le commit final. Le lot R contient le lot 1 et fusionne après lui et après le Mode
+Focus.
+
+### Ce qui est retiré
+
+| Élément | Où | Preuve sans fenêtre |
+|---|---|---|
+| Lanceur (bouton en bas à droite de la page, pastille, anneau) et ses cartes (« Annotation ajoutée », « Lue par… », « … n'a pas pu la traiter », « … s'en occupe », « … a terminé ») | `src/annotation-launcher.h` supprimé ; état et suivi du magasin retirés de `src/annotation-mode.h` | Contrat « lot R » ; `annotations-ui` |
+| Historique des annotations et Ctrl+Maj+H (filtres, détail, « Rouvrir », « Copier en Markdown », suppression et son annulation) | `src/annotation-history.h` supprimé ; commande retirée de `src/main.cpp` | Contrat « Ctrl+Maj+H is no longer a shortcut » |
+| Ancienne note (« Ajouter », « Ce que l'agent verra », « Demander à l'agent » de la note, « Capture impossible ») | `src/annotation-note.h` supprimé ; `OnSubmit`, la capture « en retard » et le panneau différé retirés | Contrat « a selection goes to the chat or nowhere » |
+| « Garder en annotation » (Ctrl+Entrée dans le chat) et sa ligne « Gardé en annotation » | hôte (`KeepAnnotation`) et page (`panel.js`, `panel.css`) | Page : « lot R: Ctrl+Entrée keeps no annotation » |
+| Le « lot » « Traiter les annotations » (O7) | `src/chat-batch.h`, `src/chat-host-batch.h` supprimés ; page, scénarios de démonstration, tests | Contrat et page « no batch » |
+| Clic droit « Copier la dernière annotation en Markdown » | `src/annotation-mode.h` | Contrat |
+| Réglages › Annotations : « Conserver les terminées », « Ouvrir le dossier des annotations », « Ctrl+Maj+H ouvre l'historique » | `src/settings-panel.h`, `src/annotation-settings.h` | `tests/annotation_settings_test.cpp` (nuit), `settings_test` |
+| 156 textes français / anglais sans usage, les aides d'affichage et `src/annotation-problem.h` | `src/i18n-catalog.inc`, `src/annotation-host.h`, `src/annotation-kit.h`, `src/annotation-capture.h` | Barrière de traduction : 0 constat |
+| 7 scripts de promenade de l'ancienne note et de l'ancien historique (hors test général) | `tests/annotations/sandbox_qa_v2.py`, `…_v3b.py`, `capture_timing.py`, `flash_only.py`, `global_store_walk.py`, `settings_walk.py`, `idle_measure.py` | — |
+
+Gardés : le bandeau, l'interrupteur Commentaire / Panneau, la bulle, le chat et son historique de conversations, la
+capture et le cadre natif, « Connecter un agent », le tutoriel #125, le magasin et le pont MCP avec ses 5 outils. Dans
+Réglages › Annotations : les agents, « Proposer de connecter un agent », « Ctrl+Maj+A lance le mode Annotation. » et
+« Effacer toutes les annotations… » (avec sa confirmation).
+
+### Ce qui change (décisions du propriétaire, 24/11)
+
+| Sujet | Comportement | Preuve sans fenêtre |
+|---|---|---|
+| **A — Fichier local (`file://`)** | Le chat y est allumé, en Commentaire comme en Panneau. Le « site » d'un fichier est le **dossier qui le contient** : ses conversations, ses choix et son dossier de projet sont ceux de ce dossier, pas ceux de tous les fichiers du disque | Unités « file site », « SiteOf » ; contrats « decision A » |
+| **A — Fenêtre privée** | Le chat y est allumé. Ce qu'il garde (conversations, mémoire site → dossier, copies des fichiers prises avant un tour) va dans un dossier propre à la fenêtre, à côté de son registre : `annotations-private\<aléa>.data`. Tout est effacé à la fermeture, et au démarrage suivant si la fenêtre a été tuée. Les éléments envoyés sont inscrits au registre avant d'être écrits au magasin | `annotation_private_test` : 3 cas ajoutés (fermeture, arrêt brutal, écriture tardive ; un lien dans le dossier n'est jamais suivi) |
+| **B — Conversation dont l'élément a disparu** | Plus d'entrée dans Commentaire : on la retrouve dans l'historique du chat, en Panneau | — |
+| **C / F — Pont MCP** | Option (a) : le pont et ses 5 outils sont gardés tels quels, « Connecter un agent » aussi. Fait vérifié dans le code : les 5 outils ne font que lire et traiter des annotations stockées ; **aucun n'agit dans le navigateur** | — |
+| **D — Réglages** | « Effacer toutes les annotations… » est gardé, dernière ligne du groupe « Mode Annotation ». Le nettoyage automatique reste, à la durée déjà enregistrée (30 jours par défaut), sans réglage | `settings_test` |
+| **Chat ouvert au lancement** | En Panneau, le chat s'ouvre dès que le mode démarre (vue vide et suggestions), sans prendre le clavier. La page ne bouge donc plus au premier élément choisi. Commentaire : inchangé | Contrats « opens with the mode », « takes no keyboard focus » |
+| **Ctrl+Maj+D** | Sur le chat ouvert par le lancement : le premier appui met le curseur dans la saisie, le suivant le ferme | Contrat |
+| **Messages en attente dans la bulle (O5)** | La bulle montre au plus les 2 messages en attente les plus récents, chacun coupé à 2 lignes sous un fondu (jamais « … »). Au-delà de 2, une ligne « +N en attente » (13 px, gris #A6A6A6, chevron) au-dessus d'eux ouvre toute la liste (160 px au plus, défilement propre, fondu en haut) et la referme. La saisie reste toujours entière : c'est la file qui rétrécit. C'est la cause de O5 #110 (4 messages = 532 px pour 428) | Page : 8 vérifications « bubble (queue, lot R) » ; contrat |
+| **10 éléments** | Un 11ᵉ clic en Panneau n'ajoute rien, ne dessine ni cadre ni capture, et le bandeau neutre au-dessus de la saisie dit « 10 éléments au maximum. Envoyez la demande ou retirez-en un. » pendant 4 s, à chaque clic en trop | Contrats « 11th element » ; test de langue |
+
+### Sécurité d'un fichier local
+
+- Le dossier donné à l'agent est **celui du fichier ouvert, jamais un dossier au-dessus**. L'utilisateur peut en choisir un
+  autre lui-même, avec l'écran existant.
+- Un dossier large (Bureau, Documents, Téléchargements, racine OneDrive) n'est que **proposé** : l'écran existant « Où est
+  le code de ce site ? » demande. Un dossier refusé (racine d'un disque, dossier du profil, Windows, Program Files)
+  n'est même pas proposé. Ce sont les règles déjà appliquées aux projets locaux.
+- Un partage réseau (`file://serveur/…`) reste éteint (règle de #125).
+- Le pont des annotations **n'est pas donné** à la session d'un fichier local : le magasin n'a pas de « site » pour un
+  fichier, le pont n'aurait pas pu être limité à ce dossier.
+- Les autorisations (Demander / Auto / Planifier), les cartes Refuser / Autoriser et « Tout annuler » sont les mêmes
+  que sur un projet local. Rien de nouveau n'est accordé.
+- Comme sur un projet local, le texte d'un élément de la page part dans la demande à l'agent : un fichier HTML reçu
+  d'ailleurs peut contenir un texte piégé. Rien de nouveau, mais un fichier téléchargé est un cas plus courant.
+
+### Limites à connaître en fenêtre privée
+
+- L'agent lui-même (Claude Code, Codex) garde ses propres traces de session sur le PC, comme pour tout usage hors du
+  navigateur. Le navigateur ne les écrit pas et ne peut pas les effacer.
+- La liste des modèles des agents (`annotations-chat\agent-options.json`) reste commune : ce n'est pas une trace de
+  navigation. La préférence Commentaire / Panneau est lue depuis les fenêtres normales.
+- Si l'effacement ne peut pas finir à la fermeture (un fichier encore ouvert), le registre reste et le démarrage suivant
+  finit le travail.
+
+### Conséquences visibles, sans nouveau design
+
+1. En Panneau, le rappel du bandeau « Aucun agent connecté · Connecter » ne se montre plus : il se cachait déjà quand le
+   chat est ouvert, et le chat est ouvert dès le lancement. Il se montre toujours en Commentaire, et quand le panneau est
+   fermé. La fenêtre « Connecter un agent » au lancement et le tutoriel s'ouvrent comme avant.
+2. En Panneau, le mode survit à un rechargement de la page (comme en Commentaire).
+3. Ctrl+Entrée dans le chat envoie comme Entrée.
+4. L'infobulle du bouton d'envoi n'a plus qu'une ligne (« Demander à l'agent ») ; la rangée de touches sous la saisie n'a
+   plus « Ctrl ↵ Annotation ».
+5. Une conversation enregistrée qui contenait une ligne « Gardé en annotation » la perd à la réouverture.
+
+### À montrer à Designer
+
+- Réglages › Annotations : la place de « Effacer toutes les annotations… » (dernière ligne de « Mode Annotation », sous
+  l'interrupteur, au-dessus du rappel du raccourci).
+- L'infobulle d'envoi sur une ligne et la rangée de touches à deux entrées.
+- Textes qui parlent encore de « notes » lues par un agent extérieur : « Vos notes et captures… » (fenêtre « Connecter
+  un agent » et tutoriel), « Connecté · a lu vos annotations … » (Réglages).
+- Le message « 10 éléments » réutilise le bandeau neutre existant, sans valeur nouvelle ; Paper n'a pas été ouvert.
+
+### Laissé tel quel et listé, sans deviner
+
+- Le chat écrit toujours chaque élément envoyé dans le magasin (pris puis terminé par son agent) et donne toujours le pont
+  à sa session sur un projet local. Plus rien dans le navigateur ne lit ces entrées ; seul un agent extérieur connecté le
+  peut. À décider dans un lot à part (option b du pont).
+- Fonctions du magasin sans appelant dans le navigateur ni dans le pont, gardées avec leurs tests : mise à la corbeille
+  et restauration, réouverture, comptage des annotations prises, libération forcée, chemin d'une capture.
+- Un fichier dans un dossier large (Bureau, Téléchargements) : la question « Où est le code de ce site ? » est prouvée
+  par contrat seulement, pas par un essai (il faudrait écrire dans le vrai Bureau de l'utilisateur).
+
+### Fichiers du lot 1 touchés (accord du coordinateur)
+
+`src/chat-comment.h` (code du lanceur et de son historique, drapeau « annotate » de l'envoi retenu, tests « fenêtre
+privée » et « fichier » remplacés par la règle commune, drapeau `noFollow`), `src/chat-bubble.h` (une ligne),
+`tests/chat-panel/run.py`, `tests/chat/final/journeys.py` (parcours `c3_historique_du_lanceur` retiré),
+`tests/annotation-general/manifest.json` et `coverage.json` (une suite et 5 lignes de plus, O7 et O12 prouvés). La
+fonction `CloseStaleNote` du lot 1 (elle fermait l'ancienne note) est retirée à la fusion : il n'y a plus de note.
+
+### Vérifications sans fenêtre
+
+Passage complet de la partie sans fenêtre (`python tests/annotation-general/run.py --day`), 24/11, commit `ea7f36e`,
+arbre propre : **ROUGE, 10 suites sur 11.** Aucune relance.
+
+| Suite | Résultat |
+|---|---|
+| `i18n` | réussi (0 constat) |
+| `chat-units` | réussi (unités + 129 contrats sur 129) |
+| `model-switch-128` | réussi |
+| `annotation-units` | réussi (dont `annotation_private_test` : 68 vérifications) |
+| `chat-panel` | **échec : 1 vérification sur 830** |
+| `page-v4`, `fake-agent`, `snapshots` | réussi |
+| `annotations` | réussi (magasin, pont, connexion Claude / Codex sur dossiers redirigés) |
+| `annotations-ui` (hors écran) | réussi (985 vérifications) |
+| `acp` (sans console) | réussi |
+
+La vérification en échec est une **mesure de vitesse** : la page doit accuser l'ouverture d'une bulle en moins de 16 ms ;
+mesuré 16,3 ms puis 16,4 ms sur deux passages faits pendant que d'autres agents compilaient et jouaient leurs tests sur
+la même machine, 12,6 ms sur un passage fait seul. Elle ne touche à rien de ce que le lot R change. À rejouer machine
+au calme ; si elle échoue encore, c'est un sujet pour le lot 4 (vitesse).
+
+Aussi vérifié : le produit entier compile sans avertissement (vérification de syntaxe de `src/main.cpp` avec le mode
+annotation et le chat) ; `settings_test`, `i18n_test` (78 vérifications) ; la page du chat seule : 843 sur 844 (les 9
+vérifications de la file d'attente de la bulle réussies, la même mesure de vitesse en échec).
+
+### Ce qui n'est pas prouvé (nuit)
+
+- Tout ce qui demande une vraie fenêtre : `tests/chat/chat_qa_lot_r.py` (suite `lot-r`, jamais lancée), et les scripts
+  adaptés sans pouvoir être rejoués : `chat_qa_run.py` (étapes du lot et de « Garder en annotation » remplacées, chat
+  ouvert au lancement), `chat_qa_v12.py`, `chat_qa_comment.py`, `chat_qa_comment_v4b.py`, `journeys.py`,
+  `tests/annotation_settings_test.cpp` (il affiche le tiroir des Réglages).
+- Le chat ouvert au lancement change le début de presque tous les scripts qui démarrent en Panneau : des attentes
+  « le chat s'ouvre au premier clic » peuvent rester dans des scripts que je n'ai pas le droit de réécrire en entier
+  (`tests/chat/final/`). La première nuit le dira, script par script.
+- En fenêtre privée le navigateur n'écrit pas de journal : le script de nuit lit les fichiers sur le disque et la page
+  du chat, pas le journal.
+- L'adresse du réseau local et les sites en ligne du parcours `local_en_ligne` sont des noms renvoyés vers 127.0.0.1
+  par une règle du moteur ; si le moteur n'applique pas cette règle à une adresse IP, l'étape « la page se charge »
+  échouera et il faudra un autre moyen.
+- Les trois dispositions des onglets (#127) : le script du lot R ne joue que la disposition par défaut. À étendre
+  (`--tab-layout`) quand #127 sera fusionné.
