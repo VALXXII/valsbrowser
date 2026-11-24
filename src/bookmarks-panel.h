@@ -14,6 +14,7 @@
 // search then closes.
 #include <windowsx.h>
 #include <dwmapi.h>
+#include "drawer-corners.h"   // Mode Focus: the docked drawer's antialiased top corners
 #include <commctrl.h>
 #include <functional>
 #include <set>
@@ -316,30 +317,44 @@ private:
         t->PopAxisAlignedClip();
         const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width));
         chrome_.Color(1, DownloadsUI::Popup::border); t->FillRectangle(D2D1::RectF(0, 0, px, h), chrome_.SolidBrush());
-        t->SetTransform(D2D1::Matrix3x2F::Identity()); chrome_.KeyOut(LeadDip());
+        t->SetTransform(D2D1::Matrix3x2F::Identity()); chrome_.KeyOut(LeadDip()); KeyCorners();
         if (t->EndDraw() == D2DERR_RECREATE_TARGET) chrome_.RecreateTarget();
     }
     // The window never moves while sliding (NativeUI::KeyedDrawer): a slide step is one present, the content drawn
     // `lead_` pixels right of its place and the strip it has not entered keyed out. The region rounds the corner shared
     // with the owner (empty while nothing has entered). Returns true when it painted.
+    // Mode Focus (src/focus-mode.h): the column starts 4 DIP under the floating panel (DrawerLayout::liveTop), its right
+    // edge on the panel's (liveRight) and its two top corners round (liveRadius): keyed out by Paint with the slide, laid
+    // back antialiased by the corner windows (src/drawer-corners.h). A change of those moves the window and repaints it.
     bool ApplyGeometry(Motion::Time now, bool force = false) {
         if (!hwnd_) return false;
-        const RECT owner = OwnerClient(); const int column = OwnerPx(Layout::width), top = owner.top + OwnerPx(Design::Vertical::DrawerTop()), height = std::max(1, static_cast<int>(owner.bottom - top));
+        namespace DL = Downloads::DrawerLayout;
+        const RECT owner = OwnerClient(); const int column = OwnerPx(Layout::width), top = owner.top + OwnerPx(DL::liveTop), height = std::max(1, static_cast<int>(owner.bottom - OwnerPx(DL::liveBottom) - top));
         const int shown = static_cast<int>(std::lround(column * Motion::Clamp(slide_.Value(now))));
-        if (!force && shown == appliedVisible_ && EqualRect(&owner, &appliedOwner_)) return false;
-        const bool moved = force || !EqualRect(&owner, &appliedOwner_), slid = shown != appliedVisible_;
-        appliedVisible_ = shown; appliedOwner_ = owner; lead_ = column - shown;
-        if (moved) SetWindowPos(hwnd_, nullptr, owner.right - column, top, column, height, SWP_NOACTIVATE | SWP_NOZORDER);
+        const int inset = OwnerPx(DL::liveRight); const RECT window{owner.right - inset - column, top, owner.right - inset, top + height};
+        const float radius = DL::liveRadius * GetDpiForWindow(owner_) / 96.f;
+        const bool restyled = !EqualRect(&window, &cornerWindow_) || radius != corners_.Radius();
+        if (!force && !restyled && shown == appliedVisible_ && EqualRect(&owner, &appliedOwner_)) return false;
+        const bool moved = force || restyled || !EqualRect(&owner, &appliedOwner_), slid = shown != appliedVisible_;
+        appliedVisible_ = shown; appliedOwner_ = owner; lead_ = column - shown; cornerWindow_ = window; corners_.SetRadius(radius);
+        if (moved) SetWindowPos(hwnd_, nullptr, window.left, window.top, column, height, SWP_NOACTIVATE | SWP_NOZORDER);
         const int entered = shown > 0;
-        if (force || moved || entered != appliedEntered_) { SetWindowRgn(hwnd_, NativeUI::DrawerRegion(entered, column, height, OwnerPx(20), IsZoomed(owner_)), FALSE); appliedEntered_ = entered; }
-        if (force || !slid || shown == 0 || !IsWindowVisible(hwnd_)) return false;
-        Paint(); ValidateRect(hwnd_, nullptr);
+        if (force || moved || entered != appliedEntered_) { SetWindowRgn(hwnd_, NativeUI::DrawerRegion(entered, column, height, OwnerPx(20), IsZoomed(owner_) || inset > 0), FALSE); appliedEntered_ = entered; }   // Mode Focus: off the window's corner, square
+        if (lead_ > 0) corners_.HideLeading();   // it moves with the content: back at rest
+        if (restyled && !force) Invalidate();    // the corners keyed out (or no longer) by the next paint
+        if (force || !slid || shown == 0 || !IsWindowVisible(hwnd_)) { SyncCorners(); return false; }
+        Paint(); ValidateRect(hwnd_, nullptr); SyncCorners();
         if (renaming_ && hooks_.relayout) hooks_.relayout();
         return true;
     }
     // Slide offset in DIP (content drawn right of its docked place while it enters or leaves).
     float LeadDip() const { return lead_ * 96.f / std::max(1.f, Dpi()); }
-    void Finish() { closing_ = false; visible_ = false; appliedVisible_ = -1; ShowWindow(hwnd_, SW_HIDE); }
+    // Mode Focus: the antialiased top corners as presented (src/drawer-corners.h): the trailing one whenever the column is
+    // in, the leading one at rest only (it moves with the content while sliding). KeyCorners: Paint's part of them.
+    DrawerCorners::Pair corners_; RECT cornerWindow_{};
+    void SyncCorners() { if (!visible_ || appliedVisible_ <= 0 || !IsWindowVisible(hwnd_)) { corners_.Hide(); return; } const float c = Design::Surface::canvas; corners_.Place(hwnd_, cornerWindow_, lead_, cornerWindow_.right - cornerWindow_.left, c + (1 - c) * DownloadsUI::Popup::border, c, lead_ == 0); }
+    void KeyCorners() { if (corners_.Radius() <= 0) return; HRGN cut = corners_.CutRegion(lead_, cornerWindow_.right - cornerWindow_.left); chrome_.KeyOutRegion(cut); DeleteObject(cut); }
+    void Finish() { closing_ = false; visible_ = false; appliedVisible_ = -1; corners_.Hide(); ShowWindow(hwnd_, SW_HIDE); }
     // ---- UI Automation -----------------------------------------------------------------
     static constexpr long long SearchKey = 2, CloseKey = 1, ListKey = 3;
     long long Key(int hit) const { if (hit == SearchHit) return SearchKey; if (hit == CloseHit) return CloseKey; if (hit == ClearHit) return 4; if (IsRowPart(hit) && HitIndex(hit) < static_cast<int>(rows_.size())) { const auto id = rows_[HitIndex(hit)].id; return (static_cast<long long>(1 + HitPart(hit)) << 32) | id; } return 0; }
@@ -458,7 +473,7 @@ public:
         slide_.Set(1, now, Motion::Milliseconds(0), Reduced() ? Motion::Milliseconds(0) : DrawerMotion::enter, DrawerMotion::enterSpring);
         closing_ = false; visible_ = true; ApplyGeometry(now, true);
         SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        Paint(); ValidateRect(hwnd_, nullptr); SetForegroundWindow(hwnd_); SetFocus(hwnd_);
+        Paint(); ValidateRect(hwnd_, nullptr); SyncCorners(); SetForegroundWindow(hwnd_); SetFocus(hwnd_);
         if (uia_.Listening()) { uia_.ChildrenChanged(ListKey); uia_.Raise(SearchKey, UIA_AutomationFocusChangedEventId); }
         std::size_t links = 0; if (store_) links = store_->CountLinks(Bookmarks::BarRoot) + store_->CountLinks(Bookmarks::OtherRoot);
         if (hooks_.announce) hooks_.announce(links ? TRP(bookmarks_announce_count, links) : std::wstring(TR(bookmarks_announce_none)));
@@ -473,7 +488,7 @@ public:
         if (hooks_.closed) hooks_.closed(keyboard);
         if (visible_ && hooks_.schedule) hooks_.schedule(now);
     }
-    void Reposition() { if (visible_) ApplyGeometry(Motion::Now()); }
+    void Reposition() { if (visible_) ApplyGeometry(Motion::Now()); }   // Mode Focus: a new live top / right / radius counts as a move (ApplyGeometry)
     // The store changed (add, remove, move, rename, undo).
     // In-place rename: the title box of the (non-root) row `id`, in drawer client pixels, when the whole
     // title line is inside the list's visible area; false otherwise (folded away, filtered, scrolled out).

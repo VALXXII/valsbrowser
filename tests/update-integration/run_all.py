@@ -58,6 +58,10 @@ def existing_fixtures() -> None:
     # test-lottie.py: loading, frame clock, lottie, clipboard gate, design system, hover, ui
     run('test-lottie.py (native lottie/ui fixtures)', [sys.executable, ROOT / 'test-lottie.py'])
     fixture('session_test', [*STRICT, 'tests/session_test.cpp'])
+    # Mode Focus (src/focus-mode.h, design/focus-mode-plan.md): panel geometry, hit box, slide timing, easing, hole spans.
+    fixture('focus_mode_test', [*STRICT, 'tests/focus_mode_test.cpp'])
+    # Its drawers' antialiased top corners (src/drawer-corners.h): coverage, region cut, layered corner windows.
+    fixture('drawer_corners_test', [*STRICT, '-municode', 'tests/drawer_corners_test.cpp', '-lgdi32', '-luser32'])
     # Address field model: display, suggestions, and what a typed text opens (links, local paths and file: URLs, searches).
     fixture('address_test', [*STRICT, 'tests/address_test.cpp'])
     fixture('history_index_test', ['-O2', *STRICT, 'tests/history_index_test.cpp'])

@@ -301,6 +301,8 @@ struct Input {
     float reserve = 0;            // an open drawer's column: the page stops `inset` before it
     float panel = Complete::width; // the complete column's width (Resize: 220 .. 360)
     std::vector<int> groups;      // per tab, its split view group (0 = none): the top bar's Chrome::tabGroups
+    bool hidden = false;          // Mode Focus: the column hides, the page takes the window (FocusSide)
+    float top = 0;                // hidden: where the column starts when it comes back (under the annotation banner)
 };
 // A grid of tiles in a scrolling viewport (the complete column's, the compact popover's).
 struct Grid {
@@ -360,6 +362,8 @@ struct Layout {
     Box minimize, maximize, close;
     Box zone, band, page;
     float drawerTop = Zone::drawerTop;   // the real drawers dock at the right from here
+    bool hidden = false;          // Mode Focus: the column is not docked (it comes back over the page, FocusSide)
+    float top = 0;                // the column's top (hidden: under the annotation banner, else 0)
 };
 // The close target in a complete tab row (1Q1D-0: 24 x 24, 4 from the row's right edge).
 inline Box CloseIn(const Box& row) { const float r = row.right - Complete::closePadRight, cy = (row.top + row.bottom) / 2; return {r - Complete::close, cy - Complete::close / 2, r, cy + Complete::close / 2}; }
@@ -389,7 +393,9 @@ inline void PlaceSplit(Layout& L) {
     }
 }
 
+inline Layout ComputeHidden(const Input& in);
 inline Layout Compute(const Input& in) {
+    if (in.hidden) return ComputeHidden(in);
     Layout L; L.mode = in.mode; const bool full = in.mode == Mode::Complete;
     const Mode zoneMode = in.zoneSet ? in.zoneMode : in.mode;
     const float W = std::max(in.width, 1.f), H = std::max(in.height, 1.f);
@@ -522,6 +528,77 @@ inline Layout Compute(const Input& in) {
     }
     return L;
 }
+// ---- Mode Focus in the side layouts (Designer 24 nov.: Paper « Annotation + Focus · panneau (bord survolé) » 2091-0,
+// « … · compact » 20EJ-0; the older boards 13 / 14 / 15 follow this code) -------------------------------------------------
+// The column hides: the page takes the window minus 4 DIP on every side (radius 8), no window bar, no window buttons; with
+// the annotation mode its banner spans the top (x 4 .. W - 4, y 0 .. 32) and the page starts under it. An 8 DIP band on
+// the window's left edge recalls the column: after 400 ms (Timing::hoverMs) it slides over the page from the left, under
+// the banner, square, a 1 DIP #262626 right border (outside its 248 / 40); it leaves to the left as soon as the pointer
+// leaves it, unless something holds it (a drawer opened from it, a menu, a drag, the address being typed in). Ctrl+Maj+,
+// slides it in (it stays: the shortcut again or Échap). Drawers start at the page's top, anchored right, the page stops
+// 4 DIP before them. Motion (the drawers' spec): in on a critically damped 0.3 s spring, out 0.2 s, always from the
+// displayed position; reduced motion: a 120 ms fade.
+namespace FocusSide {
+inline constexpr float edge = 8;                              // the left band that recalls the column (board 13)
+inline constexpr float border = 1;                            // its right border, outside the column
+inline constexpr unsigned borderRgb = 0x262626;
+inline constexpr float enterResponse = .30f, exitResponse = .20f;
+inline constexpr double reducedFadeMs = 120;
+}
+// Moves the column's boxes down by `dy` (the window bar's, compact, move too: the hidden layout has none).
+inline void ShiftColumn(Layout& L, float dy) {
+    if (dy == 0) return;
+    auto mv = [dy](Box& b) { b.top += dy; b.bottom += dy; };
+    auto all = [&](std::vector<Box>& v) { for (auto& b : v) mv(b); };
+    for (Box* b : {&L.profile, &L.back, &L.forward, &L.hairline, &L.reload, &L.toggle, &L.address, &L.lock, &L.text, &L.copy,
+                   &L.star, &L.gridBlock, &L.grid.view, &L.grid.bar, &L.gridToggle, &L.manage, &L.line, &L.tabsView, &L.newTab,
+                   &L.footerLine}) mv(*b);
+    all(L.grid.tiles); all(L.tiles); all(L.tabs); all(L.blocks); all(L.joints); all(L.tools);
+}
+// The column laid out from `in.top` to the window's bottom (where it comes back), the page zone as above.
+inline Layout ComputeHidden(const Input& in) {
+    namespace Z = Zone;
+    Input c = in; c.hidden = false; c.top = 0; c.zoneLeft = -1; c.zoneSet = false; c.height = std::max(1.f, in.height - in.top);
+    Layout L = Compute(c); ShiftColumn(L, in.top);
+    L.hidden = true; L.top = in.top;
+    const float W = std::max(in.width, 1.f), H = std::max(in.height, 1.f);
+    const float top = std::max(in.band, Z::inset);            // under the banner, else the 4 DIP inset
+    L.bar = std::max(0.f, Z::inset - in.band);                // the chrome's ContentTop is bar + band (continuous while the banner slides)
+    L.minimize = L.maximize = L.close = Box{};
+    float pageRight = std::max(Z::inset, W - Z::inset);
+    if (in.reserve > 0) pageRight = std::max(Z::inset, std::min(pageRight, W - in.reserve - Z::inset));
+    L.zone = {0, 0, W, H};
+    L.band = in.band > 0 ? Box{Z::inset, 0, std::max(Z::inset, W - Z::inset), in.band} : Box{};
+    L.page = {Z::inset, top, pageRight, std::max(top, H - Z::inset)};
+    L.drawerTop = top;
+    return L;
+}
+// The column over the page in Focus: shown or not, and how. Pure (the host samples the pointer every ~30 ms).
+struct FocusReveal {
+    bool open = false;
+    bool pinned = false;          // opened by Ctrl+Maj+, (or for the address): stays until the shortcut again or Échap
+    bool wide = false;            // opened for the address in the compact layout: the complete column (it has the field)
+    double edgeSinceMs = -1;      // the pointer in the left band since (-1: not there)
+    // One pointer sample: `inBand` the left band (window in front, no button down), `overColumn` the shown column,
+    // `hold` something keeps it. True when `open` changed.
+    bool Pointer(double now, bool inBand, bool overColumn, bool hold) {
+        if (!open) {
+            if (!inBand) { edgeSinceMs = -1; return false; }
+            if (edgeSinceMs < 0) edgeSinceMs = now;
+            if (now - edgeSinceMs < Timing::hoverMs) return false;
+            open = true; pinned = wide = false; edgeSinceMs = -1; return true;
+        }
+        edgeSinceMs = -1;
+        if (pinned || overColumn || inBand || hold) return false;
+        open = wide = false; return true;
+    }
+    double Remaining(double now) const { return open || edgeSinceMs < 0 ? -1 : std::max(0.0, Timing::hoverMs - (now - edgeSinceMs)); }
+    // The shortcut: in (pinned) / out.
+    void Toggle() { if (open) Close(); else { open = pinned = true; wide = false; edgeSinceMs = -1; } }
+    // The address needs the field: in, pinned; `compact`: the complete column.
+    void ForAddress(bool compact) { if (!open) { open = pinned = true; edgeSinceMs = -1; } else pinned = true; wide = wide || compact; }
+    void Close() { open = pinned = wide = false; edgeSinceMs = -1; }
+};
 // The compact « » » popover (« compact, 40 » 1WSC-0): all the bookmarks, 4 right of the column, top on the « » » tile
 // (moved up to stay in the window), the unfolded grid inside (5 rows, then scrolling).
 struct PopoverLayout { Box box; Grid grid; Box divider, manage; };

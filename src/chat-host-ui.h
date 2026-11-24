@@ -580,6 +580,11 @@ bool EnsurePost() {
 }
 RECT PanelRect(float shown) {   // client pixels; shown 0 (off the right edge) .. 1 (in place)
     RECT c{}; GetClientRect(window, &c); const int w = S(PanelDip());
+    if (chrome.floating) {   // Mode Focus (Paper 203J-0): the card, 4 DIP from the window's right and bottom edges, under the banner
+        const auto card = FocusChatCard(PanelDip()); const int in = S(NativeChrome::FocusMode::chatInset), right = c.right - in;
+        const int left = right - w + int(std::lround((1 - shown) * (w + in)));
+        return {left, S(card.top), left + w, S(card.bottom)};
+    }
     if (chrome.sidebar) {   // #127: the card (CardInset from the right and bottom; left of an open drawer unless DrawerOverChat)
         const int in = S(CardInset), right = c.right - in - (DrawerOverChat || chrome.sidebarReserve <= 0 ? 0 : S(chrome.sidebarReserve + CardInset));
         const int left = right - w + int(std::lround((1 - shown) * (w + in)));
@@ -588,39 +593,52 @@ RECT PanelRect(float shown) {   // client pixels; shown 0 (off the right edge) .
     const int left = c.right - w + int(std::lround((1 - shown) * w));
     return {left, S(chrome.ContentTop()), left + w, c.bottom + (AnnotationBandSliding() ? S(chrome.annotationBand) : 0)};
 }
-// #127 chat card (src/chat-host.h CardRadius / CardBorder; Paper 1YJQ-0): four layered masks over the card's corners, like
-// the page's: the canvas outside the radius-8 arc and the 1 DIP #262626 ring, antialiased (no window region); the chat's
-// WebView sits 1 DIP inside the frame, the chrome painting the ring's straight sides (Chrome::chatFrame).
-std::vector<HWND> chatMasks;int chatMaskSize=0;UINT chatMaskDpi=0;
-void RenderChatCorner(HWND g,int k,int size,UINT dpi){
-    BITMAPINFO bi{};bi.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);bi.bmiHeader.biWidth=size;bi.bmiHeader.biHeight=-size;bi.bmiHeader.biPlanes=1;bi.bmiHeader.biBitCount=32;bi.bmiHeader.biCompression=BI_RGB;
-    HDC screen=GetDC(nullptr);HDC mem=CreateCompatibleDC(screen);void* bits=nullptr;HBITMAP bmp=CreateDIBSection(mem,&bi,DIB_RGB_COLORS,&bits,nullptr,0);if(!bmp||!bits){if(bmp)DeleteObject(bmp);DeleteDC(mem);ReleaseDC(nullptr,screen);return;}
-    HGDIOBJ old=SelectObject(mem,bmp);auto* px=(std::uint32_t*)bits;const float s=dpi/96.f,r=CardRadius*s,b=CardBorder*s;const float canvas=GetRValue(BG),ring=(CardBorderRgb>>16)&255;
-    const bool right=(k&1)!=0,bottom=(k&2)!=0;
-    for(int y=0;y<size;++y)for(int x=0;x<size;++x){const float ex=right?size-(x+.5f):x+.5f,ey=bottom?size-(y+.5f):y+.5f;
-        const float dx=std::max(r-ex,0.f),dy=std::max(r-ey,0.f),sd=std::hypot(dx,dy)-r;   // signed distance to the card's rounded edge (< 0 inside)
-        const float out=std::clamp(sd+.5f,0.f,1.f),in=std::clamp(-(sd+b)+.5f,0.f,1.f),rc=std::clamp(1-out-in,0.f,1.f);
-        const auto A=(std::uint32_t)std::lround((out+rc)*255),C=(std::uint32_t)std::lround(canvas*out+ring*rc);px[y*size+x]=(A<<24)|(C<<16)|(C<<8)|C;}
-    POINT src{0,0};SIZE sz{size,size};BLENDFUNCTION blend{AC_SRC_OVER,0,255,AC_SRC_ALPHA};UpdateLayeredWindow(g,screen,nullptr,&sz,mem,&src,0,&blend,ULW_ALPHA);
-    SelectObject(mem,old);DeleteObject(bmp);DeleteDC(mem);ReleaseDC(nullptr,screen);
+// The chat card, one helper for Mode Focus (src/focus-mode.h chatRadius / chatBorder / chatBorderRgb; Paper 203J-0 /
+// 20MM-0: radius 6) and the side panel layouts (#127, Paper 1YJQ-0: radius 8, src/chat-host.h CardRadius): four layered
+// masks over the card's corners, like the page's: the canvas outside the arc and the 1 DIP #262626 ring, antialiased (no
+// window region); the chat's WebView sits 1 DIP inside the frame, the chrome painting the ring's straight sides
+// (Chrome::chatFrame / DrawChatFrame).
+bool CardOn() { return chrome.floating || chrome.sidebar; }
+float CardRadiusDip() { return chrome.floating ? NativeChrome::FocusMode::chatRadius : CardRadius; }
+std::vector<HWND> chatMasks; int chatMaskSize = 0; UINT chatMaskDpi = 0; float chatMaskRadius = 0;
+void RenderChatCorner(HWND g, int k, int size, UINT dpi) {
+    namespace FM = NativeChrome::FocusMode;
+    BITMAPINFO bi{}; bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER); bi.bmiHeader.biWidth = size; bi.bmiHeader.biHeight = -size; bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
+    HDC screen = GetDC(nullptr); HDC mem = CreateCompatibleDC(screen); void* bits = nullptr; HBITMAP bmp = CreateDIBSection(mem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!bmp || !bits) { if (bmp) DeleteObject(bmp); DeleteDC(mem); ReleaseDC(nullptr, screen); return; }
+    HGDIOBJ old = SelectObject(mem, bmp); auto* px = static_cast<std::uint32_t*>(bits); const float s = dpi / 96.f, r = CardRadiusDip() * s, b = FM::chatBorder * s;
+    const float canvas = GetRValue(BG), ring = (FM::chatBorderRgb >> 16) & 255; const bool right = (k & 1) != 0, bottom = (k & 2) != 0;
+    for (int y = 0; y < size; ++y) for (int x = 0; x < size; ++x) {
+        const float ex = right ? size - (x + .5f) : x + .5f, ey = bottom ? size - (y + .5f) : y + .5f;
+        const float dx = std::max(r - ex, 0.f), dy = std::max(r - ey, 0.f), sd = std::hypot(dx, dy) - r;   // signed distance to the card's rounded edge (< 0 inside)
+        const float out = std::clamp(sd + .5f, 0.f, 1.f), in = std::clamp(-(sd + b) + .5f, 0.f, 1.f), rc = std::clamp(1 - out - in, 0.f, 1.f);
+        const auto A = static_cast<std::uint32_t>(std::lround((out + rc) * 255)), C = static_cast<std::uint32_t>(std::lround(canvas * out + ring * rc)); px[y * size + x] = (A << 24) | (C << 16) | (C << 8) | C;
+    }
+    POINT src{0, 0}; SIZE sz{size, size}; BLENDFUNCTION blend{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA}; UpdateLayeredWindow(g, screen, nullptr, &sz, mem, &src, 0, &blend, ULW_ALPHA);
+    SelectObject(mem, old); DeleteObject(bmp); DeleteDC(mem); ReleaseDC(nullptr, screen);
 }
-void SyncChatCorners(){
-    const auto f=chrome.chatFrame;const bool on=window&&!halted&&chrome.sidebar&&f.right>f.left&&f.bottom>f.top;
-    if(!on){for(HWND g:chatMasks)if(GetWindowLongW(g,GWL_STYLE)&WS_VISIBLE)ShowWindow(g,SW_HIDE);return;}
-    const UINT dpi=GetDpiForWindow(window);const int size=(int)std::ceil(CardRadius*dpi/96.f)+1;
-    while(chatMasks.size()<4){WNDCLASSW wc{};wc.lpfnWndProc=CornerProc;wc.hInstance=instance?instance:GetModuleHandleW(nullptr);wc.lpszClassName=L"BrowserPageCorner";RegisterClassW(&wc);
-        HWND g=CreateWindowExW(WS_EX_LAYERED|WS_EX_NOACTIVATE,L"BrowserPageCorner",L"",WS_CHILD,0,0,1,1,window,nullptr,wc.hInstance,nullptr);if(!g)return;chatMasks.push_back(g);chatMaskSize=0;}
-    const bool fresh=size!=chatMaskSize||dpi!=chatMaskDpi;chatMaskSize=size;chatMaskDpi=dpi;
-    for(int k=0;k<4;++k){const int x=(k&1)?S(f.right)-size:S(f.left),y=(k&2)?S(f.bottom)-size:S(f.top);
-        SetWindowPos(chatMasks[k],HWND_TOP,x,y,size,size,SWP_NOACTIVATE|SWP_SHOWWINDOW);if(fresh)RenderChatCorner(chatMasks[k],k,size,dpi);}
+void SyncChatCorners() {
+    const auto f = chrome.chatFrame; const bool on = window && !halted && CardOn() && f.right > f.left && f.bottom > f.top;
+    if (!on) { for (HWND g : chatMasks) if (GetWindowLongW(g, GWL_STYLE) & WS_VISIBLE) ShowWindow(g, SW_HIDE); return; }
+    const UINT dpi = GetDpiForWindow(window); const int size = int(std::ceil(CardRadiusDip() * dpi / 96.f)) + 1;
+    while (chatMasks.size() < 4) {
+        WNDCLASSW wc{}; wc.lpfnWndProc = CornerProc; wc.hInstance = instance ? instance : GetModuleHandleW(nullptr); wc.lpszClassName = L"BrowserPageCorner"; RegisterClassW(&wc);   // fails harmlessly once registered
+        HWND g = CreateWindowExW(WS_EX_LAYERED | WS_EX_NOACTIVATE, L"BrowserPageCorner", L"", WS_CHILD, 0, 0, 1, 1, window, nullptr, wc.hInstance, nullptr); if (!g) return; chatMasks.push_back(g); chatMaskSize = 0;
+    }
+    const bool fresh = size != chatMaskSize || dpi != chatMaskDpi || CardRadiusDip() != chatMaskRadius; chatMaskSize = size; chatMaskDpi = dpi; chatMaskRadius = CardRadiusDip();
+    for (int k = 0; k < 4; ++k) {
+        const int x = (k & 1) ? S(f.right) - size : S(f.left), y = (k & 2) ? S(f.bottom) - size : S(f.top);
+        SetWindowPos(chatMasks[k], HWND_TOP, x, y, size, size, SWP_NOACTIVATE | SWP_SHOWWINDOW); if (fresh) RenderChatCorner(chatMasks[k], k, size, dpi);
+    }
 }
-// #127: the WebView's place inside the card (1 DIP in from its frame, for the ring) — the frame itself in the top bar.
-RECT CardView(RECT r) { if (!chrome.sidebar) return r; const int b = S(CardBorder); return {r.left + b, r.top + b, r.right - b, r.bottom - b}; }
-// #127: the card's frame for the chrome painter (the ring) and its corner masks (src/main.cpp SyncChatCorners) — empty in
-// the top bar. Called after the WebView is placed: the masks go back above it.
+// The WebView's place inside the card (1 DIP in from its frame, for the ring); the frame itself without a card (top bar).
+RECT CardView(RECT r) { if (!CardOn()) return r; const int b = S(NativeChrome::FocusMode::chatBorder); return {r.left + b, r.top + b, r.right - b, r.bottom - b}; }
+// The card's frame and radius for the chrome painter (the ring) and its corner masks; empty without a card. Called after the
+// WebView is placed: the masks go back above it.
 void SyncCardFrame(RECT r) {
     D2D1_RECT_F f{};
-    if (chrome.sidebar && Shown()) { const float d = GetDpiForWindow(window) / 96.f; f = {r.left / d, r.top / d, r.right / d, r.bottom / d}; }
+    if (CardOn() && Shown() && r.right > r.left) { const float d = GetDpiForWindow(window) / 96.f; f = {r.left / d, r.top / d, r.right / d, r.bottom / d}; }
+    chrome.chatRadius = CardRadiusDip();
     if (f.left != chrome.chatFrame.left || f.top != chrome.chatFrame.top || f.right != chrome.chatFrame.right || f.bottom != chrome.chatFrame.bottom) { chrome.chatFrame = f; InvalidateRect(window, nullptr, FALSE); }
     SyncChatCorners();
 }

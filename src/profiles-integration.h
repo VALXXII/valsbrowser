@@ -160,7 +160,7 @@ PM::Model ProfileMenuModel(){
     }
     return m;
 }
-RECT ProfileButtonScreen(){const auto p=NativeChrome::Design::ProfileButton::Plate();RECT r{S(p.left),S(p.top),S(p.right),S(p.bottom)};MapWindowPoints(window,nullptr,(POINT*)&r,2);return r;}
+RECT ProfileButtonScreen(){FocusAnchor(L"profile menu"); /* i18n-exempt: log tag. Mode Focus: the profile menu (Ctrl+Maj+M too) opens under the panel at rest */const auto p=NativeChrome::Design::ProfileButton::Plate();RECT r=ChromePx({p.left,p.top,p.right,p.bottom});MapWindowPoints(window,nullptr,(POINT*)&r,2);return r;}
 void OpenProfileDialog(bool keyboard);
 void OpenTabIn(const std::wstring& id,const std::wstring& session,int tab){
     if(id==profileId&&session==windowId){Select(tab);return;}

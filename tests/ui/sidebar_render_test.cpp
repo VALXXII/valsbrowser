@@ -122,6 +122,22 @@ int wmain(int argc, wchar_t** argv) {
     // under the band (the band, the frame and the bubble are their own windows: not in this render).
     shot(L"annot-1-panneau", [&](Chrome& c) { c.address = AddressBar::Describe(L"http://localhost:5173/", false); c.annotateActive = true; c.annotationBand = 32; });
     shot(L"annot-5-compact", [&](Chrome& c) { c.address = AddressBar::Describe(L"http://localhost:5173/checkout", false); c.annotateActive = true; c.annotationBand = 32; c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.sidebarTitles = 0; });
+    // #127 × Mode Focus (Paper « Annotation + Focus · panneau (bord survolé) » 2091-0, « … · compact » 20EJ-0; Designer 24 nov.):
+    // the column hidden draws nothing and has nothing to hit; back over the page it is square, from under the banner (32),
+    // with a 1 DIP #262626 right border outside its 248 / 40.
+    {
+        const UINT32 rest = shot(L"focus-0-repos", [&](Chrome& c) { c.sideHidden = true; });
+        (void)rest;
+        Chrome c; Check(SUCCEEDED(c.InitOffscreen(root, 96, 1178, 738)), "offscreen chrome (focus)");
+        c.sidebar = true; c.sideHidden = true; c.Paint(titles, 0, L"", false, 0, 0);
+        Check(c.regions.empty() && c.side.close.Empty() && Near(c.side.page.left, 4) && Near(c.side.page.top, 4) && (c.SurfacePixel(120, 300) & 255) == 0x17, "Focus at rest: nothing drawn, nothing to hit, the page 4 from the edges");
+        c.annotationBand = 32; c.sideShown = true; c.Paint(titles, 0, L"", false, 0, 0);
+        Check(!c.regions.empty() && Near(c.side.top, 32) && Near(c.side.profile.top, 40) && (c.SurfacePixel(248, 400) & 255) == 0x26 && (c.SurfacePixel(250, 400) & 255) == 0x17, "Focus + annotation, the column back: from 32, the #262626 border at 248 (2091-0)");
+        c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.sidebarTitles = 0; c.Paint(titles, 0, L"", false, 0, 0);
+        Check(Near(c.side.column, 40) && (c.SurfacePixel(40, 400) & 255) == 0x26 && (c.SurfacePixel(42, 400) & 255) == 0x17, "Focus compact, the column back: 40 + its border (20EJ-0)");
+    }
+    shot(L"focus-1-panneau-annotation", [&](Chrome& c) { c.address = AddressBar::Describe(L"http://localhost:5173/", false); c.annotateActive = true; c.annotationBand = 32; c.sideHidden = true; c.sideShown = true; });
+    shot(L"focus-2-compact-annotation", [&](Chrome& c) { c.address = AddressBar::Describe(L"http://localhost:5173/checkout", false); c.annotateActive = true; c.annotationBand = 32; c.sideHidden = true; c.sideShown = true; c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.sidebarTitles = 0; });
     shot(L"x-annoter-grise", [](Chrome& c) { c.annotateDimmed = true; });
     {   // Tools in both layouts, Annoter first.
         Chrome c; Check(SUCCEEDED(c.InitOffscreen(root, 96, 1178, 738)), "offscreen chrome (tools)");

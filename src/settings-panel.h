@@ -23,6 +23,7 @@
 // Reduced motion keeps every state change and drops the travel.
 #include <windowsx.h>
 #include <dwmapi.h>
+#include "drawer-corners.h"   // Mode Focus: the docked drawer's antialiased top corners
 #include <commctrl.h>
 #include <array>
 #include <ctime>
@@ -67,6 +68,7 @@ enum Hit : int {
     CatProfiles = 85, ProfileDelete = 86, ProfileEditorHit = 87, ProfileClearData = 88, ProfileRowBase = 700,   // Réglages › Profils (Paper p-I-0 P02)
     CatAnnotations = 89,   // « Annotations » (85..88 are Profils)
     LanguageHit = 66,      // « Langue » (root, under Profils): browser-wide interface language, applied at next start
+    FocusModeHit = 68,     // Affichage › « Mode Focus » (src/focus-mode.h), right after « Réduire les animations »
     // « Annotations »: one button per agent row, the manual fallback, the prompt switch, retention, folder, clear all.
     // « Position des onglets » (#127): one hit per segment (En haut, Panneau latéral, Panneau compact).
     TabsLayoutBase = 93,
@@ -84,8 +86,9 @@ inline bool IsPermission(int hit) { return hit >= PermissionBase && hit < Permis
 inline bool IsProfileRow(int hit) { return hit >= ProfileRowBase && hit < ProfileRowBase + 64; }
 constexpr int SwitchHits[] = {RestoreTabs, AskWhere, ReduceMotion, Suggestions, Passwords, Autofill, ClearOnExit,
                               ConfirmClose, CloseWithLastTab, AdBlock, HttpsOnly, ThirdPartyCookies, MemorySaver, MuteBackground,
-                              GrayscaleText, AnnotationPrompt};
-constexpr int SwitchCount = 16;
+                              GrayscaleText, AnnotationPrompt, FocusModeHit};
+constexpr int SwitchCount = 17;
+static_assert(sizeof(SwitchHits) / sizeof(SwitchHits[0]) == SwitchCount, "one animated switch per entry");
 inline int SwitchIndex(int hit) { for (int i = 0; i < SwitchCount; ++i) if (SwitchHits[i] == hit) return i; return -1; }
 
 // ---- Geometry (DIP, panel-local; x = 0 is the drawer's leading edge) -----------
@@ -338,6 +341,7 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
         add(Kind::Value, Zoom, row, TR(settings_zoom), st ? BrowserSettings::ZoomLabel(st->zoomPercent) : L"");
         add(Kind::Value, BookmarksBarHit, row, TR(settings_bookmarks_bar), st ? BrowserSettings::ShortLabel(st->bookmarksBar) : L"");
         twoLine(ReduceMotion, TR(settings_reduce_motion));
+        twoLine(FocusModeHit, TR(settings_focus_mode));
         { auto lines = pending(GrayscaleText, in.grayscalePending); auto* s = add(Kind::Switch, GrayscaleText, TwoLine(lines.size()), TR(settings_grayscale_text)); s->lines = std::move(lines); }
         endGroup();
         labelAt(TR(settings_group_sound));
@@ -430,6 +434,7 @@ inline const std::pair<int, I18n::Text> Descriptions[] = {
     {ClearOnExit, {I18n::Id::settings_clear_on_exit_note}},
     {AskWhere, {I18n::Id::settings_ask_where_note}},
     {ReduceMotion, {I18n::Id::settings_reduce_motion_note}},
+    {FocusModeHit, {I18n::Id::settings_focus_mode_note}},
     {MuteBackground, {I18n::Id::settings_mute_background_note}},
     {GrayscaleText, {I18n::Id::settings_grayscale_text_note}},
     {AnnotationPrompt, {I18n::Id::settings_connect_prompt_note}},
@@ -465,6 +470,7 @@ inline const Searchable SearchIndex[] = {
     {Zoom, {I::settings_zoom}, {I::settings_path_display_pages}, View::Display, {I::search_kw_zoom}},
     {BookmarksBarHit, {I::settings_bookmarks_bar}, {I::settings_path_display_pages}, View::Display, {I::search_kw_bookmarks_bar}},
     {ReduceMotion, {I::settings_reduce_motion}, {I::settings_path_display_pages}, View::Display, {I::search_kw_reduce_motion}},
+    {FocusModeHit, {I::settings_focus_mode}, {I::settings_path_display_pages}, View::Display, {I::search_kw_focus_mode}},
     {GrayscaleText, {I::settings_grayscale_text}, {I::settings_path_display_pages}, View::Display, {I::search_kw_grayscale_text}},
     {AutoplayHit, {I::settings_autoplay}, {I::settings_path_display_sound}, View::Display, {I::search_kw_autoplay}},
     {MuteBackground, {I::settings_mute_background}, {I::settings_path_display_sound}, View::Display, {I::search_kw_mute_background}},
@@ -657,7 +663,7 @@ private:
         case ClearOnExit: return &state_->clearOnExit; case ConfirmClose: return &state_->confirmCloseTabs; case CloseWithLastTab: return &state_->closeWithLastTab;
         case AdBlock: return &state_->adBlock; case HttpsOnly: return &state_->httpsOnly; case ThirdPartyCookies: return &state_->blockThirdPartyCookies;
         case MemorySaver: return &state_->memorySaver; case MuteBackground: return &state_->muteBackground;
-        case GrayscaleText: return &state_->grayscaleText; default: return nullptr;
+        case GrayscaleText: return &state_->grayscaleText; case FocusModeHit: return &state_->focusMode; default: return nullptr;
         }
     }
     static BrowserSettings::Change SwitchChange(int hit) {
@@ -668,7 +674,7 @@ private:
         case ConfirmClose: return C::ConfirmCloseTabs; case CloseWithLastTab: return C::CloseWithLastTab; case AdBlock: return C::AdBlock;
         case HttpsOnly: return C::HttpsOnly; case ThirdPartyCookies: return C::ThirdPartyCookies; case MemorySaver: return C::MemorySaver;
         case MuteBackground: return C::MuteBackground; case GrayscaleText: return C::GrayscaleText;
-        case AnnotationPrompt: return C::AnnotationConnectPrompt; default: return C::ClearOnExit;
+        case AnnotationPrompt: return C::AnnotationConnectPrompt; case FocusModeHit: return C::FocusMode; default: return C::ClearOnExit;
         }
     }
     // « Proposer de connecter un agent » shows whether the modal would still open by itself (BrowserSettings::ConnectPromptActive).
@@ -1383,7 +1389,7 @@ private:
     void PaintNow() {
         if (!pc_->RenderTarget()) pc_->Resize();
         auto* target = pc_->RenderTarget(); if (!target) return;
-        target->BeginDraw(); target->SetTransform(D2D1::Matrix3x2F::Translation(LeadDip(), 0)); Paint(Motion::Now()); target->SetTransform(D2D1::Matrix3x2F::Identity()); chrome_.KeyOut(LeadDip());
+        target->BeginDraw(); target->SetTransform(D2D1::Matrix3x2F::Translation(LeadDip(), 0)); Paint(Motion::Now()); target->SetTransform(D2D1::Matrix3x2F::Identity()); chrome_.KeyOut(LeadDip()); KeyCorners();
         if (target->EndDraw() == D2DERR_RECREATE_TARGET) { Drop(fade_); Drop(stops_); DropCard(); pc_->RecreateTarget(); }
     }
 
@@ -2071,26 +2077,35 @@ private:
     bool ApplyGeometry(Motion::Time now, bool force = false) {
         if (!hwnd_) return false;
         const RECT owner = OwnerClient();
-        const int column = OwnerPx(Layout::width), top = owner.top + OwnerPx(Design::Vertical::DrawerTop()), height = std::max(1, static_cast<int>(owner.bottom - top));
+        const int column = OwnerPx(Layout::width), top = owner.top + OwnerPx(Downloads::DrawerLayout::liveTop), height = std::max(1, static_cast<int>(owner.bottom - OwnerPx(Downloads::DrawerLayout::liveBottom) - top));
         const int shown = static_cast<int>(std::lround(column * Motion::Clamp(slide_.Value(now))));
-        if (!force && shown == appliedVisible_ && EqualRect(&owner, &appliedOwner_)) return false;
-        const bool resized = !EqualRect(&owner, &appliedOwner_), slid = shown != appliedVisible_;
-        appliedVisible_ = shown; appliedOwner_ = owner; lead_ = column - shown;
-        const RECT window{owner.right - column, top, owner.right, top + height};
+        const int inset = OwnerPx(Downloads::DrawerLayout::liveRight); const RECT window{owner.right - inset - column, top, owner.right - inset, top + height};   // Mode Focus: the floating panel's right edge (0 otherwise)
+        const float radius = Downloads::DrawerLayout::liveRadius * GetDpiForWindow(owner_) / 96.f;   // Mode Focus: round top corners (src/drawer-corners.h)
+        const bool restyled = !EqualRect(&window, &appliedWindow_) || radius != corners_.Radius();
+        if (!force && !restyled && shown == appliedVisible_ && EqualRect(&owner, &appliedOwner_)) return false;
+        const bool resized = !EqualRect(&owner, &appliedOwner_) || !EqualRect(&window, &appliedWindow_), slid = shown != appliedVisible_;
+        appliedVisible_ = shown; appliedOwner_ = owner; lead_ = column - shown; corners_.SetRadius(radius);
         if (force || !EqualRect(&window, &appliedWindow_)) { SetWindowPos(hwnd_, nullptr, window.left, window.top, column, height, SWP_NOACTIVATE | SWP_NOZORDER); appliedWindow_ = window; }
         const int entered = shown > 0;
-        if (force || resized || entered != appliedEntered_) { SetWindowRgn(hwnd_, NativeUI::DrawerRegion(entered, column, height, OwnerPx(20), IsZoomed(owner_)), FALSE); appliedEntered_ = entered; }
+        if (force || resized || entered != appliedEntered_) { SetWindowRgn(hwnd_, NativeUI::DrawerRegion(entered, column, height, OwnerPx(20), IsZoomed(owner_) || inset > 0), FALSE); appliedEntered_ = entered; }   // Mode Focus: off the window's corner, square
+        if (lead_ > 0) corners_.HideLeading();   // Mode Focus: it moves with the content: back at rest
+        if (restyled && !force) InvalidateRect(hwnd_, nullptr, FALSE);   // the corners keyed out (or no longer) by the next paint
         if (resized) { for (int d = 0; d <= depth_; ++d) scrolls_[d].Snap(std::clamp(scrolls_[d].Target(), 0.f, MaxScroll(views_[d], now, true))); RefreshTips(); Invalidate(); }
-        if (force || !slid || shown == 0 || !IsWindowVisible(hwnd_)) return false;
-        PaintNow(); ValidateRect(hwnd_, nullptr);
+        if (force || !slid || shown == 0 || !IsWindowVisible(hwnd_)) { SyncCorners(); return false; }
+        PaintNow(); ValidateRect(hwnd_, nullptr); SyncCorners();
         return true;
     }
     // Slide offset in DIP (content drawn right of its docked place while it enters or leaves).
     float LeadDip() const { return lead_ * 96.f / std::max(1.f, Dpi()); }
+    // Mode Focus: the antialiased top corners as presented (src/drawer-corners.h): the trailing one whenever the column is
+    // in, the leading one at rest only (it moves with the content while sliding). KeyCorners: the paint's part of them.
+    void SyncCorners() { if (!visible_ || appliedVisible_ <= 0 || !IsWindowVisible(hwnd_)) { corners_.Hide(); return; } const float c = Design::Surface::canvas; corners_.Place(hwnd_, appliedWindow_, lead_, appliedWindow_.right - appliedWindow_.left, c + (1 - c) * .02f, c, lead_ == 0); }
+    void KeyCorners() { if (corners_.Radius() <= 0) return; HRGN cut = corners_.CutRegion(lead_, appliedWindow_.right - appliedWindow_.left); chrome_.KeyOutRegion(cut); DeleteObject(cut); }
     void Finish() {
         closing_ = false; visible_ = false; appliedVisible_ = -1; appliedWindow_ = {};
-        ShowWindow(hwnd_, SW_HIDE);
+        corners_.Hide(); ShowWindow(hwnd_, SW_HIDE);
     }
+    DrawerCorners::Pair corners_;   // Mode Focus: the antialiased top corners
     static LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM w, LPARAM l) {
         auto* self = reinterpret_cast<Drawer*>(GetWindowLongPtrW(h, GWLP_USERDATA));
         if (msg == WM_NCCREATE) { self = static_cast<Drawer*>(reinterpret_cast<CREATESTRUCTW*>(l)->lpCreateParams); SetWindowLongPtrW(h, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self)); self->hwnd_ = h; }
@@ -2293,7 +2308,7 @@ public:
         closing_ = false; visible_ = true;
         ApplyGeometry(now, true);
         SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        PaintNow(); ValidateRect(hwnd_, nullptr); Activated();
+        PaintNow(); ValidateRect(hwnd_, nullptr); SyncCorners(); Activated();
         now = Motion::Now();
         slide_.Set(1, now, Motion::Milliseconds(0), reduced ? Motion::Milliseconds(0) : Downloads::DrawerMotion::enter, Downloads::DrawerMotion::enterSpring);
         ApplyGeometry(now); Invalidate();
@@ -2322,7 +2337,7 @@ public:
         if (visible_) Schedule(now);
     }
     void Toggle() { if (Open()) Hide(false, true); else Show(); }
-    void Reposition() { if (visible_) ApplyGeometry(Motion::Now()); }
+    void Reposition() { if (visible_) ApplyGeometry(Motion::Now()); }   // Mode Focus: a new live top / right / radius counts as a move (ApplyGeometry)
     // The state or the version status changed outside the drawer: follow it.
     void Changed() {
         if (!hwnd_ || !visible_ || !state_) return;

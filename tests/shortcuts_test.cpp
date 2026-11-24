@@ -20,7 +20,7 @@ int main(){
     Modifiers(true);for(UINT k='1';k<='9';++k)Assert(Key(k)==SelectTabBase+int(k-'1'));
     Assert(Key('L')=='L');Assert(Key(VK_TAB)==']');
     Modifiers(true,true);Assert(Key(VK_PRIOR)==MoveTabLeft);Assert(Key(VK_NEXT)==MoveTabRight);Assert(Key(VK_TAB)=='[');Assert(Key('1')==0);Assert(Key('T')=='U');
-    Assert(Key('N')=='P');Assert(chrome.Enabled('P'));
+    Assert(Key('N')=='P');Assert(chrome.Enabled('P'));   // Ctrl+Maj+N: nouvelle fenêtre privée, without any toolbar button
     // #127 layout: the top bar by default; Ctrl+Maj+, folds the side panel only while it is the layout (else the page
     // gets the key); turning the panel on and off keeps its complete / compact choice; --side-panel is not saved.
     {using P=BrowserSettings::TabsPosition;wchar_t tmp[MAX_PATH]{};GetTempPathW(MAX_PATH,tmp);dataDir=std::wstring(tmp)+L"browser-shortcuts-test-"+std::to_wstring(GetCurrentProcessId());CreateDirectoryW(dataDir.c_str(),nullptr);settingsFile=dataDir+L"\\settings";   // hermetic: SaveSettings writes here
@@ -71,9 +71,26 @@ int main(){
       SetTabsPosition(P::Compact);chrome.side=SBar::Compute(chrome.SideInput(SBar::Mode::Compact,3));Assert(EmptyAreaMenuAt(0,20,chrome.side.tabsView.bottom-4)&&!EmptyAreaMenuAt(0,60,300));
       SetTabsPosition(P::Top);Assert(EmptyAreaMenuAt(0,600,20)&&EmptyAreaMenuAt('T',300,20)&&!EmptyAreaMenuAt(NativeChrome::TabBase,100,20)&&!EmptyAreaMenuAt(0,600,60));   // the top bar's tab row only
       Assert(EmptyAreaMenuItems()[3].segments[0].active);}
+     // #127 × Mode Focus (Designer 24 nov., Paper 2091-0 / 20EJ-0): in a side layout Focus hides the column (no floating top
+     // panel): the page 4 DIP from every edge, no window buttons, nothing to hit; Ctrl+Maj+, brings the column (pinned) and
+     // sends it away, Échap too; the drawers start at the page's top.
+     {SetTabsPosition(P::Side);const bool wasSmoke=smoke;smoke=true;settings.focusMode=true;BuildChrome();
+      Assert(!FocusWanted()&&SideFocusWanted()&&chrome.sideHidden&&!chrome.floating&&!chrome.sideShown);
+      {const auto c=ContentBox();Assert(c.left==4&&c.top==4&&c.right==chrome.width-4&&c.bottom==chrome.height-4);}
+      Assert(chrome.regions.empty()&&chrome.side.close.Empty()&&NativeChrome::Design::Vertical::DrawerTop()==4&&!chrome.sidebarResizable);
+      Assert(Key(VK_OEM_COMMA)==SidebarToggleCommand);Command(SidebarToggleCommand);Assert(sideReveal.open&&sideReveal.pinned);
+      Command(SidebarToggleCommand);Assert(!sideReveal.open);
+      ToggleSidebar();Assert(sideReveal.open&&SideFocusEscape()&&!sideReveal.open&&!SideFocusEscape());
+      chrome.annotationBand=32;BuildChrome();{const auto c=ContentBox();Assert(c.top==32&&chrome.side.top==32&&chrome.side.profile.top==40&&NativeChrome::Design::Vertical::DrawerTop()==32);}
+      chrome.annotationBand=0;settings.focusMode=false;BuildChrome();Assert(!chrome.sideHidden&&ContentBox().left==chrome.SidebarZoneLeft()&&!chrome.regions.empty());
+      smoke=wasSmoke;}
      SetTabsPosition(P::Top);Assert(!chrome.sidebar&&LayoutLine()==L"layout: top");
      // Files written by the trial builds migrate (layout + sidebar keys).
      {std::istringstream older("browser-settings 1\nlayout=side-panel\nsidebar=compact\n");settings=BrowserSettings::Read(older);ApplyLayout();Assert(chrome.sidebar&&settings.tabsPosition==P::Compact);settings=BrowserSettings::State{};ApplyLayout();Assert(!chrome.sidebar);}}   // Ctrl+Maj+N: nouvelle fenêtre privée, without any toolbar button
+    Modifiers(true,true);
+    // Ctrl+Maj+F: Mode Focus (toggle); Ctrl+F stays the find bar. The command flips the setting both ways (smoke: never written to disk).
+    Assert(Key('F')==FocusModeCommand);Modifiers(true);Assert(Key('F')==FindPage);Modifiers(true,true,true);Assert(Key('F')==0);
+    {const bool wasSmoke=smoke;smoke=true;settings.focusMode=false;Command(FocusModeCommand);Assert(settings.focusMode);Command(FocusModeCommand);Assert(!settings.focusMode);smoke=wasSmoke;}
     Modifiers(false,false,true);Assert(Key('D')=='L');
     Modifiers();Assert(Key(VK_F6)==FocusChrome);Assert(Key('1')==0);
     for(int i=0;i<10;++i)pages.push_back(std::make_shared<Tab>());
@@ -86,5 +103,18 @@ int main(){
     // Keyboard-opened menus sit under their control: the flower's opens rightward, the gear's leftward, in device pixels.
     {auto flower=PlaceMenu({8,6,40,38},1180,144);Assert(!flower.alignRight&&flower.control.left==12&&flower.control.top==9&&flower.control.right==60&&flower.control.bottom==57);
      auto gear=PlaceMenu({1150,48,1174,72},1180,96);Assert(gear.alignRight&&gear.control.right==1174&&gear.control.bottom==72);}
+    // Échap while a drawer has the keyboard (Mode Focus + Annotation, release run 2026-11-25: Échap in Historique also left the
+    // annotation mode): the drawer's own Échap first (the top-most layer), the mode only from the window. The real drawer,
+    // created hidden on a hidden owner (never shown); Key() uses EscapeLeavesAnnotation(AnnotationModeActive(), GetFocus()).
+    {   instance=GetModuleHandleW(nullptr);window=CreateWindowExW(0,L"STATIC",L"escape test",WS_POPUP,0,0,1180,815,nullptr,nullptr,instance,nullptr);Assert(window!=nullptr);
+        wchar_t cwd[MAX_PATH]{};GetCurrentDirectoryW(MAX_PATH,cwd);base=cwd;CreateHistoryPanel();HWND drawer=historyDrawer.Window();Assert(drawer!=nullptr);
+        HWND inner=CreateWindowExW(0,L"STATIC",L"",WS_CHILD,0,0,10,10,drawer,nullptr,instance,nullptr),page=CreateWindowExW(0,L"STATIC",L"",WS_CHILD,0,0,10,10,window,nullptr,instance,nullptr);
+        address=CreateWindowExW(0,L"EDIT",L"",WS_CHILD,0,0,10,10,window,nullptr,instance,nullptr);Assert(address!=nullptr);   // the field exists in the product
+        std::printf("escape: owned %d %d, leaves drawer %d inner %d window %d page %d field %d\n",(int)EscapeOwnedBySurface(drawer),(int)EscapeOwnedBySurface(inner),(int)EscapeLeavesAnnotation(true,drawer),(int)EscapeLeavesAnnotation(true,inner),(int)EscapeLeavesAnnotation(true,window),(int)EscapeLeavesAnnotation(true,page),(int)EscapeLeavesAnnotation(true,address));
+        Assert(EscapeOwnedBySurface(drawer)&&EscapeOwnedBySurface(inner));                       // the drawer, or a field in it: its Échap
+        Assert(!EscapeLeavesAnnotation(true,drawer)&&!EscapeLeavesAnnotation(true,inner));       // the mode stays while the drawer closes
+        Assert(EscapeLeavesAnnotation(true,window)&&EscapeLeavesAnnotation(true,page)&&!EscapeLeavesAnnotation(true,address));   // from the window (a page, the chat panel): the mode leaves, as before; the address field keeps it
+        Assert(!EscapeLeavesAnnotation(false,window)&&!EscapeOwnedBySurface(window)&&!EscapeOwnedBySurface(nullptr));
+        DestroyWindow(inner);DestroyWindow(page);}
     Modifiers();pages.clear();std::puts("Keyboard shortcut checks passed");
 }
