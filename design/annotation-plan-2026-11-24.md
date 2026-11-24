@@ -23,24 +23,27 @@ document. Rien n'a été lancé en vraie fenêtre ; seules des suites sans fenê
   corrections. Chaque lot doit passer le test général en entier avant de sortir.
 - **Le test général** (§4) : une partie sans fenêtre (≈ 15 min, faisable en journée) et une partie en vraie fenêtre pour la
   nuit (≈ 1 h 45 à 2 h 15). Il refuse de dire « vert » si une seule suite est sautée, filtrée ou relancée.
-- **Décisions** (§5) : 2 sont prises depuis le 24 novembre. #130 l'emporte sur R29 : la bulle reste toujours entière
-  dans la fenêtre (variante C choisie : elle remonte le long du côté de l'élément). Builder code l'extinction d'Annoter hors projet local, avec l'onboarding #125. **4 restent à prendre.**
+- **Décisions** (§5) : les 6 sont prises (24 novembre). #130 l'emporte sur R29, variante C. Annoter reste allumé sur les
+  fichiers locaux et en fenêtre privée. Le « lot » est retiré en entier. Un essai réel par agent est autorisé. 150 ms et
+  ± 2 px sont des objectifs, pas des conditions de sortie. Builder code l'extinction hors projet local.
+- **Lot 0 fait** (§7) : documents de retours commités, diagnostics fusionnés, test général écrit dans
+  `tests/annotation-general/`.
 
 ## 1. Sources et versions
 
 | Source | Où |
 |---|---|
 | Revue indépendante du 21/11 (les « 35 bugs » : C1–C3, E1–E5, M1–M16, F1–F11) | `design/chat-final-review.md` |
-| Retours de test R1 à R48, décisions D1 à D8 | branche `VALXXII/plan-annotations-mcp-local`, `design/chat-comment-v2-retours.md` (non commité) |
-| Retours annotations V2 (11 points) et chat V1.2 (7 points) | même branche, `design/annotations-v2-retours.md` (non commité) |
-| Plan de la version finale et invariants | même branche, `design/chat-comment-final-plan.md` (non commité) |
-| Rapport de QA du 22/11 (build 0.3.611, commit `805f349`) | worktree `annotations-chat`, `build/chat-qa/final/report.md`, `defauts-passe1.md`, `journeys.json`, `runs/` (non commités) |
+| Retours de test R1 à R48, décisions D1 à D8 | `design/annotation-feedback/chat-comment-v2-retours.md`, `chat-comment-mode-brief.md`, `chat-v12-model-picker.md` |
+| Retours annotations V2 (11 points) et chat V1.2 (7 points) | `design/annotation-feedback/annotations-v2-retours.md` |
+| Plan de la version finale et invariants | `design/annotation-feedback/chat-comment-final-plan.md` |
+| Rapport de QA du 22/11 (build 0.3.611, commit `805f349`) | `design/annotation-feedback/qa-final-2026-11-22-report.md`, `qa-final-2026-11-22-defauts-passe1.md` ; les journaux (`journeys.json`, `runs/`) restent dans le worktree `annotations-chat`, non commités |
 | Validations | `design/chat-v1-validation.md`, `design/annotations-v2-validation.md` |
 | Tickets | #125, #128, #129, #130 ; PR #99, #100, #106, #111, #113 |
 | Code | `src/chat-*.h`, `src/annotation-*.h`, `assets/chat-panel/`, `tests/chat*`, `tests/annotations*`, `tests/acp` |
 
-Les quatre documents « non commités » ne sont dans aucun dépôt distant : ils n'existent que sur le poste. **À commiter**
-(lot 0), sinon l'historique des décisions R1–R48 peut se perdre.
+Ces documents n'étaient dans aucun dépôt. Ils sont commités depuis le lot 0 dans `design/annotation-feedback/` (chemins
+personnels remplacés par des chemins neutres, contenu inchangé).
 
 Versions publiques qui comptent pour le mode annotation (dépôt `browser-releases`) :
 
@@ -84,13 +87,13 @@ Niveaux de preuve utilisés dans les tableaux :
 | O3 | **Clic sans bulle** (« H1 » du rapport de QA) : en Commentaire, un clic sur `section.hero` ou `a.btn-primary` n'ouvre rien, ou ouvre l'ancienne note | sélection, bulle | ≤ 0.3.611 ; sorti en connaissance de cause (PR #100) | Rapport QA 22/11, défaut 1 : monkey graine 1, pas #116, #144, #146, #159. Diagnostic `c419d92` écrit mais **jamais fusionné**. Trois pistes lues dans le code : le clic est refusé parce que la sélection est en pause (`src/chat-host-ui.h:156`), d'où la note ; 400 ms sans effet après une fermeture (`src/chat-comment.h:1025`, `:1107`) ; bulle retenue en attendant une mesure de la page (`:673`) | Ouvert, cause non prouvée |
 | O4 | **R39 / R39b** — la bulle suit son élément en retard au défilement, et sa coupe est visible au bord de la zone de page | bulle | régression du 20/11 (correctif de R37), jamais fermée | QA 22/11, défaut 3 : molette 10 px, molette rapide 62 px, clavier 70 px, bords 9 et 16 px, pour ± 2 px visés. La fenêtre est déplacée « tout de suite », sans attendre l'image de la page (`src/chat-comment.h:351`, `FollowFrames` = 0) | Ouvert |
 | O5 | **Bulle mal placée après un redimensionnement ou un menu** : la saisie sort de la bulle après une zone réduite à 1458 × 444 ; la bulle de `h2.section-title` bouge après un menu | bulle | ≤ 0.3.611 | QA 22/11, défaut 4 : monkey #110 (variante de M15) et #82 (variante de E4) | Ouvert |
-| O6 | **Ouverture de la bulle en 151–216 ms** au lieu de 150 | bulle | ≤ 0.3.611 | QA 22/11, défaut 2 ; parcours `m5_bascule_puis_clic` : 178 ms | Ouvert, gêne faible |
-| O7 | **Le « lot » (Traiter les annotations) à moitié retiré** : la suggestion a été supprimée (R24), le reste du code et ses tests sont toujours là ; des échecs du lot vus le 23/11 n'ont jamais été confirmés | chat | 20/11 (R24) | `src/chat-host-batch.h`, 44 mentions dans `panel.js`, `tests/chat/chat_qa_run.py:509-547` ; PR #113 : « batch-panel failures that look unrelated », vérification arrêtée | État inconnu |
+| O6 | **Ouverture de la bulle en 151–216 ms** au lieu de 150 | bulle | ≤ 0.3.611 | QA 22/11, défaut 2 ; parcours `m5_bascule_puis_clic` : 178 ms | Ouvert, gêne faible. **Objectif, pas condition de sortie** (décision 5) |
+| O7 | **Le « lot » (Traiter les annotations) à moitié retiré** : la suggestion a été supprimée (R24), le reste du code et ses tests sont toujours là ; des échecs du lot vus le 23/11 n'ont jamais été confirmés | chat | 20/11 (R24) | `src/chat-host-batch.h`, 44 mentions dans `panel.js`, `tests/chat/chat_qa_run.py:509-547` ; PR #113 : « batch-panel failures that look unrelated », vérification arrêtée | **Décision 3 : à retirer en entier** (lot 5) |
 | O8 | **Chemin « profil neuf » jamais testé** : pas de cache des modèles, agent pas installé, pas connecté, Node.js à télécharger | menu des modèles, connexion | 0.3.630 | C'est la cause commune du bug « Claude Code » (PR #111) et de #129 : tous les tests partent d'un faux agent qui donne ses modèles | Trou de test |
 | O9 | **Vrais agents jamais prouvés** : Claude lit une annotation mais ne la « prend » ni ne la « termine » ; Codex n'a jamais eu d'essai réel dans le chat | MCP, connexion | V2 (14/11) | `design/annotations-v2-validation.md` §6 : « Que Claude appelle désormais claim / resolve n'est pas démontré » ; `design/chat-v1-validation.md` : « Codex n'a pas eu d'essai réel » | À prouver |
 | O10 | **Autorisations après 0.3.690** : la carte ne prend plus le focus sur « Autoriser » et attend 600 ms avant d'accepter une touche (SEC-23) ; jamais rejoué en vraie fenêtre en entier | autorisations | 0.3.690 (commit `c9e91cf`) | `assets/chat-panel/panel.js:1149-1195`, `:1512-1516` ; PR #106 : seuls 3 parcours rejoués (r02, r38, r47) | À revalider |
 | O11 | **Diagnostic resté dans la version publiée** : tant qu'une bulle est ouverte, un fil envoie un message toutes les 10 ms à la fenêtre | bulle (performance) | 0.3.630 | `src/chat-comment.h:180-190` (`UiWatchStart`), lancé à chaque clic (`:1037`), sans condition de mode test | Ouvert, gêne faible |
-| O12 | **Fichiers locaux (`file://`) et fenêtre privée** : le chat y est coupé et l'ancienne note s'ouvre à la place | local / en ligne | V1 du chat | `src/chat-host-ui.h:150-156` (`AskAvailable`, `CommentFirst`) | Décision #125 (§5) |
+| O12 | **Fichiers locaux (`file://`) et fenêtre privée** : le chat y est coupé et l'ancienne note s'ouvre à la place | local / en ligne | V1 du chat | `src/chat-host-ui.h:150-156` (`AskAvailable`, `CommentFirst`) | **Décision 2 : Annoter y reste allumé.** Le comportement d'aujourd'hui est gardé ; il reste à le tester (lot 3) |
 
 Aussi ouverts, côté tests et non côté produit :
 
@@ -238,7 +241,8 @@ pour un agent extérieur (une annotation gardée par Ctrl + Entrée part toujour
 et le nouveau bouton éteint avec son explication.
 
 Je n'ai trouvé dans les sources **aucun bug ouvert qui n'existe que sur un site en ligne**. #125 retire donc des chemins à
-tester, pas des lignes de l'inventaire. O12 (fichiers locaux, fenêtre privée) dépend de la réponse à la décision 2.
+tester, pas des lignes de l'inventaire. Décision 2 : Annoter reste allumé sur les fichiers locaux et en fenêtre privée ;
+la note native n'est donc pas retirée, elle reste le chemin de ces deux cas et doit rester testée.
 
 ## 3. Plan
 
@@ -252,7 +256,7 @@ tester, pas des lignes de l'inventaire. O12 (fichiers locaux, fenêtre privée) 
 6. **O8** : premier lancement d'un nouvel utilisateur, jamais testé.
 7. **O4** : gêne visuelle à chaque défilement.
 8. **O9** : vrais agents.
-9. **O7**, **O12** : décisions d'abord.
+9. **O7** (retrait décidé), **O12** (reste allumé : tests à écrire).
 10. **O6**, **O11** : finitions.
 
 ### 3.2 Par zone
@@ -262,15 +266,15 @@ tester, pas des lignes de l'inventaire. O12 (fichiers locaux, fenêtre privée) 
 | Bulle | O1 | Suivre la branche en cours. Règle décidée le 24/11 : la bulle reste toujours entière dans la fenêtre (#130 remplace R29). **Variante C choisie** (planche « #130 Bulle sans place dessous · C remonte le long du côté (validée) », page Paper « MCP - Design UI UX »). Ses règles 1 à 4 partent sur la branche en cours ; la règle 5 (recalcul pendant le défilement) est au lot 4. Refaire le calcul à chaque nouvelle hauteur, pas une fois par ouverture | Attentes du §4.4. Nouveau parcours `o1_bulle_bas_de_fenetre` : élément en bas d'une page qui ne défile pas, autorisation, clic réel sur Autoriser et sur Refuser, à 100 / 125 / 150 % et 3 tailles de fenêtre. Test de propriété sans fenêtre sur `ChatBubble` : pour toute position et toute hauteur, la surface est dans la zone |
 | Bulle | O5 | Rejouer monkey graine 1 jusqu'à #82 et #110, lire le journal, corriger le calcul de la place offerte après redimensionnement et le cadre gardé après un menu | Parcours `o5_redimensionnement_saisie` et `o5_menu_ne_bouge_pas` ; invariant « la saisie est dans la surface » après chaque action du monkey |
 | Bulle | O4 + **règle 5 de #130** | Deux choses dans le même code de suivi. (a) Suivi : mesurer d'abord, image par image, les trois réglages déjà dans le code (tout de suite, une image plus tard, prédiction) ; si aucun ne tient ± 2 px, c'est une limite de la fenêtre séparée : proposer une alternative au propriétaire, sans l'appliquer. (b) Règle 5 de la variante C : la position de la bulle est recalculée **pendant** le défilement selon les règles 1 à 4, et la bulle rejoint sa nouvelle place par un glissement animé de 120 ms au plus, sans saut (mouvement réduit : question 6 du §5). Même chose quand la fenêtre change de taille | (a) `tests/chat/chat_qa_comment_v5.py` (`follow`, `edge_frames`), seuil inchangé tant que la bulle est à sa place normale. (b) Nouveau parcours `o1_regle5_defilement` : faire défiler jusqu'à ce que la place manque sous l'élément, puis revenir ; image par image : bulle entière à la fin de chaque glissement, glissement ≤ 120 ms, aucun saut, jamais sur l'élément ni à moins de 8 px du bandeau ; molette, barre et clavier |
-| Bulle | O6 | Lire les temps par phase déjà écrits dans le journal (`src/chat-comment.h:681-683`), traiter la phase la plus lente | Invariant « ouverture < 150 ms » sur chaque parcours |
+| Bulle | O6 | Lire les temps par phase déjà écrits dans le journal (`src/chat-comment.h:681-683`), traiter la phase la plus lente | Mesure « ouverture < 150 ms » sur chaque parcours, **rapportée comme objectif** : elle ne fait pas échouer le test général (décision 5) |
 | Bulle | O11 | Ne lancer le fil de surveillance qu'en mode test | Contrat + mesure du processeur au repos, bulle ouverte |
 | Sélection | O3 | Fusionner le diagnostic `c419d92`, rejouer `monkey.py --seed 1 --until 116` (puis 144, 146, 159), lire la raison du refus, corriger. Règle visée : en Commentaire sur un projet local, un clic ouvre toujours une bulle, jamais l'ancienne note | 4 parcours `o3_…`, un par enchaînement ; invariant monkey « clic = bulle visible en 3 s » sur 3 graines |
 | Menu des modèles | O2 | Suivre la branche en cours | Scénario de page « aucun modèle connu » ; parcours « profil neuf, clic sur le bouton modèle » |
 | Menu des modèles, connexion | O8 | Pas de correctif connu : écrire les scénarios, corriger ce qu'ils trouvent | 4 parcours sur profil neuf : agent absent, agent pas connecté, Node.js à télécharger, cache vide puis liste reçue |
 | Autorisations | O10 | Rien à corriger a priori | Parcours clavier : Tab, Entrée, Échap sur la carte, délai de 600 ms, touche maintenue, deux cartes de suite ; bulle et panneau |
-| Chat | O7 | Selon la décision 3 : retirer tout le lot (hôte, page, tests), ou le réparer | Si retiré : le contrat vérifie qu'il ne reste rien. Si gardé : `chat_qa.py run`, étapes 6.15 à 6.17 |
-| Local / en ligne | #125, O12 | L'extinction d'Annoter hors projet local (bouton éteint, explication) est codée par **Builder**, avec l'onboarding #125 (décision 6, même fichier `src/annotation-mode.h`). De notre côté : les tests, et ce qui reste de O12 une fois la décision 2 prise (fichiers locaux, fenêtre privée) | Parcours `local_en_ligne` : localhost, 127.0.0.1, `*.localhost`, site en ligne, faux localhost (`localhost.example.com`), `file://`, fenêtre privée. `ChatLocal::Classify` est déjà couvert en unité |
-| MCP, agents | O9 | Rien à corriger avant d'avoir vu | Sans fenêtre : annotation gardée, lue, prise, terminée par le client de test du pont (`tests/annotations`). En vrai : un essai Claude Code et un essai Codex dans le bac à sable, avec accord (décision 4) |
+| Chat | O7 | Décision 3 : retirer « Traiter les annotations ensemble » en entier — hôte (`src/chat-host-batch.h`, `src/chat-batch.h`, appels), page (`panel.js`, `panel.css`, `dev-host.js`), tests (`chat_qa_run.py` étapes 6.15 à 6.17, unités, scénarios de page), textes | Contrat : plus aucune mention du lot dans l'hôte ni dans la page ; test général vert sans les étapes du lot |
+| Local / en ligne | #125, O12 | L'extinction d'Annoter hors projet local (bouton éteint, explication) est codée par **Builder**, avec l'onboarding #125 (décision 6, même fichier `src/annotation-mode.h`). Décision 2 : Annoter reste **allumé** sur `file://` et en fenêtre privée, comme aujourd'hui (note native et pont MCP, sans chat). De notre côté : les tests | Parcours `local_en_ligne` : localhost, 127.0.0.1, `*.localhost` = allumé avec chat ; `file://` et fenêtre privée = allumé avec la note ; site en ligne et faux localhost (`localhost.example.com`) = éteint. `ChatLocal::Classify` est déjà couvert en unité |
+| MCP, agents | O9 | Rien à corriger avant d'avoir vu | Sans fenêtre : annotation gardée, lue, prise, terminée par le client de test du pont (`tests/annotations`). En vrai (décision 4, accordée) : **un** essai avec Claude Code et **un** avec Codex, une petite demande chacun, sur une copie de test seulement, avec les comptes du propriétaire ; rien d'autre que cette copie n'est touché, empreintes des configurations vérifiées avant et après |
 
 ### 3.3 Lots
 
@@ -278,14 +282,14 @@ Les durées sont des **estimations**. Elles comptent le travail et une nuit de t
 
 | Lot | Contenu | Estimation | Dépend de |
 |---|---|---|---|
-| **0 — Filet de sécurité** | Aucun changement du produit. Commiter les 4 documents de retours. Fusionner les 2 commits de diagnostic. Écrire le lanceur du test général (§4), le Job Object, la table de couverture. Première nuit complète sur main : c'est la vraie liste des échecs. Trier les 7 anciennes suites : test périmé ou vrai bug | 1 jour + 1 nuit | Fusion de `fix-129-bubble-model-menu` |
+| **0 — Filet de sécurité** | **Fait le 24/11** (§7). Aucun changement de comportement du produit. Documents de retours commités, 2 commits de diagnostic fusionnés, test général écrit, option « sans console » du test ACP, tests de R29 mis à jour. Reste : la première nuit complète, qui donnera la vraie liste des échecs | 1 jour + 1 nuit | Fusion de `fix-129-bubble-model-menu` pour la nuit |
 | **1 — Bulle et clic** | O1 (règles 1 à 4 de la variante C) et O2 revérifiés par le test général, O3, O5 | 1 à 1,5 jour + 1 nuit | Lot 0 ; règles 1 à 4 fusionnées depuis `fix-129-bubble-model-menu` |
 | **2 — Premier lancement et autorisations** | O8, O10 | 1 jour + 1 nuit | Lot 0 |
-| **3 — Projets locaux seulement** | Pas l'extinction elle-même (Builder). Le parcours `local_en_ligne`, le retrait des tests des chemins « site en ligne », et ce qui reste de O12 | 0,5 jour + 1 nuit | Travail #125 de Builder fusionné ; décision 2 |
+| **3 — Projets locaux seulement** | Pas l'extinction elle-même (Builder). Le parcours `local_en_ligne` (dont `file://` et fenêtre privée, qui restent allumés), le retrait des tests des chemins « site en ligne » | 0,5 jour + 1 nuit | Travail #125 de Builder fusionné |
 | **4 — Défilement et vitesse** | O4, **règle 5 de #130** (recalcul pendant le défilement, glissement de 120 ms), O6 | 1,5 à 2,5 jours + 1 nuit. Incertain : O4 peut finir en décision de design | Lot 1 |
-| **5 — Agents réels, nettoyage** | O9, O7, O11 ; passage avec le Narrateur | 1 jour + 1 nuit | Décisions 3 et 4 |
+| **5 — Agents réels, nettoyage** | O9 : un essai réel Claude Code et un essai réel Codex sur une copie de test. O7 : retrait complet du lot. O11 ; passage avec le Narrateur | 1,5 jour + 1 nuit | — |
 
-Total estimé : 6 à 7,5 jours de travail et 6 nuits. Règle de sortie : un lot ne part que si le test général est vert **en
+Total estimé : 6,5 à 8 jours de travail et 6 nuits. Règle de sortie : un lot ne part que si le test général est vert **en
 entier** sur le commit exact qui sort.
 
 ## 4. Test général
@@ -303,8 +307,10 @@ entrée, la liste complète, et l'interdiction des raccourcis. À écrire au lot
    qui part.
 5. **Table de couverture** (`coverage.json`) : chaque ligne de l'inventaire (C1 … F11, R1 … R48, O1 … O12, #129, #130)
    pointe vers au moins un test. Une ligne sans test, ou dont le test n'a pas tourné, = rouge.
-6. **Les seuils sont dans la liste** (ouverture < 150 ms, suivi ± 2 px, clic = bulle en 3 s) avec la décision qui les
-   fixe. Les changer est une décision du propriétaire.
+6. **Les seuils sont dans la liste**, chacun avec la décision qui le fixe. Deux sortes. **Bloquant** : clic = bulle en
+   3 s, bulle entière, boutons atteignables. **Objectif** (décision 5) : ouverture < 150 ms, suivi ± 2 px ; mesurés et
+   écrits dans le rapport à chaque passage, ils ne font pas échouer le test. Changer un seuil ou sa sorte est une
+   décision du propriétaire.
 7. **Les attentes modifiées sont affichées** : le rapport liste les fichiers de test changés depuis le dernier vert.
 8. **Sécurité** : copie du build et profil temporaire sous `build/`, jamais `%LOCALAPPDATA%\browser` ; pages locales
    sur 127.0.0.1 ; faux agent ; `BROWSER_ANNOTATIONS_TEST=1` ; configurations Claude / Codex redirigées et empreintes
@@ -424,10 +430,10 @@ main `86697e0` et seront à relire après sa fusion.
 | # | Décision | Pourquoi |
 |---|---|---|
 | 1 | ~~#130 remplace-t-il R29 ?~~ **Tranchée le 24/11 : oui.** La bulle reste toujours entièrement dans la fenêtre. **Variante C choisie** : elle remonte le long du côté de l'élément | Attentes du test au §4.4 ; règles 1 à 4 sur la branche en cours, règle 5 (défilement, redimensionnement) au lot 4 ; 6 questions pour Designer ci-dessous |
-| 2 | **Fichiers locaux (`file://`) et fenêtre privée après #125 : Annoter allumé ou éteint ?** | Aujourd'hui le chat y est coupé et la vieille note s'ouvre |
-| 3 | **Le « lot » (Traiter les annotations) : on le retire en entier ?** | R24 a retiré la suggestion, le reste traîne ; le bouton « Traiter avec l'agent » de l'historique n'a jamais été dessiné |
-| 4 | **Un essai réel avec Claude Code et un avec Codex** (une petite demande chacun, dans la copie du bac à sable) | Seule façon de prouver O9 ; utilise les comptes du propriétaire |
-| 5 | **150 ms et ± 2 px : obligatoires pour sortir, ou objectifs ?** | O4 peut être une limite technique de la bulle en fenêtre séparée |
+| 2 | ~~Fichiers locaux (`file://`) et fenêtre privée après #125 ?~~ **Tranchée le 24/11 : Annoter reste allumé** sur les deux | Comportement d'aujourd'hui gardé (note native, pas de chat) ; à tester au lot 3 |
+| 3 | ~~Le « lot » (Traiter les annotations ensemble) ?~~ **Tranchée le 24/11 : retiré en entier**, hôte, page et tests | Lot 5 |
+| 4 | ~~Un essai réel avec Claude Code et un avec Codex ?~~ **Tranchée le 24/11 : oui**, une petite demande chacun, sur une copie de test seulement | Lot 5 ; comptes du propriétaire, rien d'autre que la copie |
+| 5 | ~~150 ms et ± 2 px : obligatoires ou objectifs ?~~ **Tranchée le 24/11 : objectifs.** Rapportés, jamais bloquants | Marqués « objectif » dans `tests/annotation-general/manifest.json` |
 | 6 | ~~Qui code l'extinction hors projet local ?~~ **Tranchée le 24/11 : Builder**, avec l'onboarding #125 | Même fichier (`src/annotation-mode.h`). Notre lot 3 ne garde que les tests et le reste de O12 |
 
 Maquettes : je n'ai **pas ouvert Paper** pour ce document. Points à confirmer avec Designer avant de coder :
