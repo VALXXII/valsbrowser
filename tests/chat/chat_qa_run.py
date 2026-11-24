@@ -166,12 +166,12 @@ def run_main():
         step('band button invoked', C.invoke('AnnotationAskAgent'))
         # final QA: O1 — the panel's page is created and made ready IN ADVANCE when the mode starts (its « ready » comes before
         # the band button); opening it is then « panel in place »
-        ready = logged(r'CHAT panel ready (\d+) ms after the request', 0, 15)
+        ready = logged(r'CHAT panel ready(?: (\d+) ms after the request| in advance)', 0, 15)   # a page made in advance has no opening to time (it logged ~68 h)
         step('panel opens', ready is not None and logged(r'CHAT panel in place (\d+) ms', m0, 10) is not None)
         created = logged(r'CHAT panel WebView created in (\d+) ms', m0, 5)
         inplace = logged(r'CHAT panel in place (\d+) ms', m0, 5)
         if ready:
-            report['measures']['firstOpen'] = {'webviewCreatedMs': int(created.group(1)) if created else None, 'panelInPlaceMs': int(inplace.group(1)) if inplace else None, 'panelReadyMs': int(ready.group(1))}
+            report['measures']['firstOpen'] = {'webviewCreatedMs': int(created.group(1)) if created else None, 'panelInPlaceMs': int(inplace.group(1)) if inplace else None, 'panelReadyMs': int(ready.group(1)) if ready.group(1) else None}
         time.sleep(0.8)
         narrow = page_width()
         step('the page shrinks, it is not covered', narrow is not None and wide - narrow >= 370, f'page width {wide} -> {narrow} CSS px')
@@ -600,20 +600,13 @@ def run_main():
         C.ws_for(C.URL).call('Page.navigate', {'url': f'http://exemple.test:{C.PORT_PAGE}/'})
         step('leaving the site ends the mode', logged(r'ANNOTATE mode off \(navigation\)', m16, 8))
         time.sleep(1.0)
-        m17 = mark(); C.shortcut('D')
-        opened = logged(r'CHAT panel opened on (\S+)( \(not local: disabled\))?', m17, 8)
-        step('not a local site: the panel opens disabled', opened is not None and opened.group(2) is not None, opened.group(0)[5:] if opened else '')
-        C.wait_for(lambda: C.panel_exists() and 'sites locaux' in C.panel_text(), 8)
-        step('…and says why', 'sites locaux' in C.panel_text())
+        # #125 (the owner, 24 Nov 2026; src/annotation-sites.h): « Annoter » is off on a site that is not local — the chat's
+        # shortcut starts neither the mode nor the panel there (before: the panel opened disabled, « sites locaux seulement »)
+        m17 = mark(); C.shortcut('D'); time.sleep(2.0)
+        seg = C.log_text()[m17:]
+        step('#125 · not a local site: the chat shortcut starts neither the mode nor the panel', 'ANNOTATE mode on' not in seg and 'CHAT panel opened' not in seg, seg[-300:])
+        step('#125 · …and nothing is sent to an agent from there', 'turn t' not in seg)
         capture('6.x-site-non-local')
-        m18 = mark()
-        try:
-            send('echo interdit')
-        except Exception:
-            pass
-        time.sleep(1.0)
-        step('…and nothing can be sent', 'turn t' not in C.log_text()[m18:])
-        C.shortcut('A'); time.sleep(0.8)   # leave the mode (the panel closes with it)
     finally:
         C.quit_all()
         time.sleep(1.0)
