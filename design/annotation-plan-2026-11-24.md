@@ -28,6 +28,11 @@ document. Rien n'a été lancé en vraie fenêtre ; seules des suites sans fenê
   ± 2 px sont des objectifs, pas des conditions de sortie. Builder code l'extinction hors projet local.
 - **Lot 0 fait** (§7) : documents de retours commités, diagnostics fusionnés, test général écrit dans
   `tests/annotation-general/`.
+- **Lot R (§10), 24 novembre : l'ancien système d'annotation est retiré.** Il ne reste que deux modes, choisis avec
+  l'interrupteur du bandeau : Commentaire (bulle) et Panneau (chat à droite). Le lanceur, l'historique des annotations
+  (Ctrl+Maj+H), les cartes, l'ancienne note « Ajouter », « Garder en annotation » (Ctrl+Entrée) et le « lot » ont
+  disparu. Le chat est maintenant allumé sur les fichiers locaux et en fenêtre privée, et s'ouvre dès le lancement du
+  mode en Panneau. Les lignes de l'inventaire qui ne concernaient que l'ancien système sont marquées « retiré ».
 
 ## 1. Sources et versions
 
@@ -88,12 +93,12 @@ Niveaux de preuve utilisés dans les tableaux :
 | O4 | **R39 / R39b** — la bulle suit son élément en retard au défilement, et sa coupe est visible au bord de la zone de page | bulle | régression du 20/11 (correctif de R37), jamais fermée | QA 22/11, défaut 3 : molette 10 px, molette rapide 62 px, clavier 70 px, bords 9 et 16 px, pour ± 2 px visés. La fenêtre est déplacée « tout de suite », sans attendre l'image de la page (`src/chat-comment.h:351`, `FollowFrames` = 0) | Ouvert |
 | O5 | **Bulle mal placée après un redimensionnement ou un menu** : la saisie sort de la bulle après une zone réduite à 1458 × 444 ; la bulle de `h2.section-title` bouge après un menu | bulle | ≤ 0.3.611 | QA 22/11, défaut 4 : monkey #110 (variante de M15) et #82 (variante de E4) | Ouvert |
 | O6 | **Ouverture de la bulle en 151–216 ms** au lieu de 150 | bulle | ≤ 0.3.611 | QA 22/11, défaut 2 ; parcours `m5_bascule_puis_clic` : 178 ms | Ouvert, gêne faible. **Objectif, pas condition de sortie** (décision 5) |
-| O7 | **Le « lot » (Traiter les annotations) à moitié retiré** : la suggestion a été supprimée (R24), le reste du code et ses tests sont toujours là ; des échecs du lot vus le 23/11 n'ont jamais été confirmés | chat | 20/11 (R24) | `src/chat-host-batch.h`, 44 mentions dans `panel.js`, `tests/chat/chat_qa_run.py:509-547` ; PR #113 : « batch-panel failures that look unrelated », vérification arrêtée | **Décision 3 : à retirer en entier** (lot 5) |
+| O7 | **Le « lot » (Traiter les annotations) à moitié retiré** : la suggestion a été supprimée (R24), le reste du code et ses tests sont toujours là ; des échecs du lot vus le 23/11 n'ont jamais été confirmés | chat | 20/11 (R24) | `src/chat-host-batch.h`, 44 mentions dans `panel.js`, `tests/chat/chat_qa_run.py:509-547` ; PR #113 : « batch-panel failures that look unrelated », vérification arrêtée | **Retiré au lot R** (§10) : hôte, page, tests, textes |
 | O8 | **Chemin « profil neuf » jamais testé** : pas de cache des modèles, agent pas installé, pas connecté, Node.js à télécharger | menu des modèles, connexion | 0.3.630 | C'est la cause commune du bug « Claude Code » (PR #111) et de #129 : tous les tests partent d'un faux agent qui donne ses modèles | Trou de test |
 | O9 | **Vrais agents jamais prouvés** : Claude lit une annotation mais ne la « prend » ni ne la « termine » ; Codex n'a jamais eu d'essai réel dans le chat | MCP, connexion | V2 (14/11) | `design/annotations-v2-validation.md` §6 : « Que Claude appelle désormais claim / resolve n'est pas démontré » ; `design/chat-v1-validation.md` : « Codex n'a pas eu d'essai réel » | À prouver |
 | O10 | **Autorisations après 0.3.690** : la carte ne prend plus le focus sur « Autoriser » et attend 600 ms avant d'accepter une touche (SEC-23) ; jamais rejoué en vraie fenêtre en entier | autorisations | 0.3.690 (commit `c9e91cf`) | `assets/chat-panel/panel.js:1149-1195`, `:1512-1516` ; PR #106 : seuls 3 parcours rejoués (r02, r38, r47) | À revalider |
 | O11 | **Diagnostic resté dans la version publiée** : tant qu'une bulle est ouverte, un fil envoie un message toutes les 10 ms à la fenêtre | bulle (performance) | 0.3.630 | `src/chat-comment.h:180-190` (`UiWatchStart`), lancé à chaque clic (`:1037`), sans condition de mode test | Ouvert, gêne faible |
-| O12 | **Fichiers locaux (`file://`) et fenêtre privée** : le chat y est coupé et l'ancienne note s'ouvre à la place | local / en ligne | V1 du chat | `src/chat-host-ui.h:150-156` (`AskAvailable`, `CommentFirst`) | **Décision 2 : Annoter y reste allumé.** Le comportement d'aujourd'hui est gardé ; il reste à le tester (lot 3) |
+| O12 | **Fichiers locaux (`file://`) et fenêtre privée** : le chat y est coupé et l'ancienne note s'ouvre à la place | local / en ligne | V1 du chat | `src/chat-host-ui.h:150-156` (`AskAvailable`, `CommentFirst`) | **Changé au lot R** (décision A du 24/11, §10) : le chat est allumé sur les fichiers locaux et en fenêtre privée ; l'ancienne note n'existe plus |
 
 Aussi ouverts, côté tests et non côté produit :
 
@@ -212,12 +217,12 @@ D'après `design/annotations-v2-validation.md` et `design/chat-v1-validation.md`
 | V2-1 « Redémarrez Claude » après la connexion | Corrigé (0.3.294) | Validation V3-A, planche 5.6 |
 | V2-2, V2-3 Flashs à la capture et dans l'interface | Corrigé | Validation V3-A §4 |
 | V2-4 Curseur viseur | Corrigé | Validation V3-B |
-| V2-5 L'historique ne dit pas que l'agent s'en occupe | Corrigé côté navigateur ; **comportement du vrai agent non prouvé** | O9 |
-| V2-6 Lanceur seulement en mode annotation | Corrigé | Validation V3-A, planche 5.8 |
+| V2-5 L'historique ne dit pas que l'agent s'en occupe | **Retiré au lot R** : l'historique des annotations n'existe plus | — |
+| V2-6 Lanceur seulement en mode annotation | **Retiré au lot R** : le lanceur n'existe plus | — |
 | V2-7 Connexion en un clic pour Claude Code | Remplacé par le chat intégré | PR #99 |
 | V2-8, V2-9, V2-10 Espacements, entrée animée, trame vivante | Corrigé | Validation V3-B, planches 5.1 à 5.3 |
-| V2-11 Aperçu « Ce que l'agent verra » coupé | Corrigé ; ne concerne que l'ancienne note | Validation V3-A, planche 5.7 |
-| V1.2-1 à V1.2-7 (texte de la note perdu, effort, puce dossier, jauge, cadre décalé, curseur, clic = chat) | Corrigés (0.3.630) | `tests/chat/chat_qa_v12.py`, en échec puis adaptée le 22/11, pas rejouée |
+| V2-11 Aperçu « Ce que l'agent verra » coupé | **Retiré au lot R** : l'ancienne note n'existe plus | — |
+| V1.2-1 à V1.2-7 (texte de la note perdu, effort, puce dossier, jauge, cadre décalé, curseur, clic = chat) | Corrigés (0.3.630) ; les points qui passaient par la note (texte perdu, « Garder en annotation ») sont **retirés au lot R** | `tests/chat/chat_qa_v12.py`, adaptée au lot R, à rejouer la nuit |
 | Mauvais dossier de projet | Corrigé en 0.3.715 | §2.3 |
 | Compteur et « Tout annuler » comptaient les fichiers d'autres programmes | Corrigé en 0.3.715 | `fb45f8a`, `tests/snapshots` (vert aujourd'hui) |
 | Bandeau gris « Préparation » vide | Corrigé en 0.3.715 | `b6d5dd3` ; essai en vraie fenêtre d'un seul cas |
@@ -241,8 +246,11 @@ pour un agent extérieur (une annotation gardée par Ctrl + Entrée part toujour
 et le nouveau bouton éteint avec son explication.
 
 Je n'ai trouvé dans les sources **aucun bug ouvert qui n'existe que sur un site en ligne**. #125 retire donc des chemins à
-tester, pas des lignes de l'inventaire. Décision 2 : Annoter reste allumé sur les fichiers locaux et en fenêtre privée ;
-la note native n'est donc pas retirée, elle reste le chemin de ces deux cas et doit rester testée.
+tester, pas des lignes de l'inventaire. Décision 2 : Annoter reste allumé sur les fichiers locaux et en fenêtre privée.
+
+**Mise à jour du lot R (24/11).** La note native est retirée partout. Sur un fichier local et en fenêtre privée, c'est
+le chat qui prend sa place (décision A, §10). Le pont MCP et « Connecter un agent » sont gardés tels quels (option a du
+§10) ; « une annotation gardée par Ctrl + Entrée » n'existe plus.
 
 ## 3. Plan
 
@@ -272,8 +280,8 @@ la note native n'est donc pas retirée, elle reste le chemin de ces deux cas et 
 | Menu des modèles | O2 | Suivre la branche en cours | Scénario de page « aucun modèle connu » ; parcours « profil neuf, clic sur le bouton modèle » |
 | Menu des modèles, connexion | O8 | Pas de correctif connu : écrire les scénarios, corriger ce qu'ils trouvent | 4 parcours sur profil neuf : agent absent, agent pas connecté, Node.js à télécharger, cache vide puis liste reçue |
 | Autorisations | O10 | Rien à corriger a priori | Parcours clavier : Tab, Entrée, Échap sur la carte, délai de 600 ms, touche maintenue, deux cartes de suite ; bulle et panneau |
-| Chat | O7 | Décision 3 : retirer « Traiter les annotations ensemble » en entier — hôte (`src/chat-host-batch.h`, `src/chat-batch.h`, appels), page (`panel.js`, `panel.css`, `dev-host.js`), tests (`chat_qa_run.py` étapes 6.15 à 6.17, unités, scénarios de page), textes | Contrat : plus aucune mention du lot dans l'hôte ni dans la page ; test général vert sans les étapes du lot |
-| Local / en ligne | #125, O12 | L'extinction d'Annoter hors projet local est codée par **Builder** sur `VALXXII/125-annotation-onboarding` (commit `a65f50b`, pas encore fusionné), dans `src/annotation-sites.h`, avec la même règle que le chat (`ChatLocal::Classify`). **Allumé** : `localhost`, `*.localhost`, `127.x`, `[::1]`, fichier local `file://`. **Éteint** : tout le reste, y compris une adresse du réseau local (192.168.x, nom de machine) et un partage réseau `file://serveur/…`. Une fenêtre privée suit la même règle (décision 2). Sur un site éteint : bouton Annoter en état indisponible, la note native ne s'ouvre plus. De notre côté, après la fusion de #125 : les tests, et O12 (protections du chat sur `file://` et en fenêtre privée, non touchées par Builder) | Parcours `local_en_ligne` : `localhost`, `127.0.0.1`, `*.localhost`, `[::1]` = allumé avec chat ; `file://` local = allumé avec la note ; fenêtre privée = même règle ; site en ligne, **adresse du réseau local**, faux localhost (`localhost.example.com`), partage réseau = éteint, aucune note. Deux tests en vraie fenêtre vont sur un site non local et attendent l'ancien état « site pas local » du chat : `tests/chat/chat_qa_run.py:600` et `tests/chat/chat_qa_v12.py:220` — à réécrire (le mode s'arrête). Unités de Builder : `tests/annotations/annotation_sites_test.cpp` |
+| Chat | O7 | **Fait au lot R** : « Traiter les annotations ensemble » retiré en entier — hôte (`src/chat-host-batch.h`, `src/chat-batch.h`, appels), page (`panel.js`, `panel.css`, `dev-host.js`), tests (`chat_qa_run.py` étapes 6.15 à 6.18, unités, scénarios de page), textes | Contrat « lot R (O7 and the removal) » : plus aucune mention du lot dans l'hôte ni dans la page ; test de page « no batch in the input, no batch card » |
+| Local / en ligne | #125, O12 | L'extinction d'Annoter hors projet local est codée par **Builder** sur `VALXXII/125-annotation-onboarding` (commit `a65f50b`, pas encore fusionné), dans `src/annotation-sites.h`, avec la même règle que le chat (`ChatLocal::Classify`). **Allumé** : `localhost`, `*.localhost`, `127.x`, `[::1]`, fichier local `file://`. **Éteint** : tout le reste, y compris une adresse du réseau local (192.168.x, nom de machine) et un partage réseau `file://serveur/…`. Une fenêtre privée suit la même règle (décision 2). Sur un site éteint : bouton Annoter en état indisponible, la note native ne s'ouvre plus. De notre côté : les tests, et O12. **Lot R** : le chat est allumé sur `file://` (son site est le dossier du fichier) et en fenêtre privée (ce qu'il garde est effacé avec la fenêtre) ; plus aucune note native | **Écrit au lot R** (`tests/chat/chat_qa_lot_r.py`, suite `lot-r`, à prouver la nuit) : parcours `local_en_ligne` : `localhost`, `127.0.0.1`, `*.localhost`, `[::1]` = allumé avec chat ; `file://` local = allumé **avec le chat** ; fenêtre privée = allumé avec le chat, tout effacé à la fermeture ; site en ligne, **adresse du réseau local**, faux localhost (`localhost.example.com`), partage réseau = éteint, aucune note. Deux tests en vraie fenêtre vont sur un site non local et attendent l'ancien état « site pas local » du chat : `tests/chat/chat_qa_run.py:600` et `tests/chat/chat_qa_v12.py:220` — à réécrire (le mode s'arrête). Unités de Builder : `tests/annotations/annotation_sites_test.cpp` |
 | MCP, agents | O9 | Rien à corriger avant d'avoir vu | Sans fenêtre : annotation gardée, lue, prise, terminée par le client de test du pont (`tests/annotations`). En vrai (décision 4, accordée) : **un** essai avec Claude Code et **un** avec Codex, une petite demande chacun, sur une copie de test seulement, avec les comptes du propriétaire ; rien d'autre que cette copie n'est touché, empreintes des configurations vérifiées avant et après |
 
 ### 3.3 Lots
@@ -285,9 +293,10 @@ Les durées sont des **estimations**. Elles comptent le travail et une nuit de t
 | **0 — Filet de sécurité** | **Fait le 24/11** (§7). Aucun changement de comportement du produit. Documents de retours commités, 2 commits de diagnostic fusionnés, test général écrit, option « sans console » du test ACP, tests de R29 mis à jour. Reste : la première nuit complète, qui donnera la vraie liste des échecs | 1 jour + 1 nuit | Fusion de `fix-129-bubble-model-menu` pour la nuit |
 | **1 — Bulle et clic** | O1 (règles 1 à 4 de la variante C) et O2 revérifiés par le test général, O3, O5 | 1 à 1,5 jour + 1 nuit | Lot 0 ; règles 1 à 4 fusionnées depuis `fix-129-bubble-model-menu` |
 | **2 — Premier lancement et autorisations** | O8, O10 | 1 jour + 1 nuit | Lot 0 |
-| **3 — Projets locaux seulement** | Pas l'extinction elle-même (Builder, `a65f50b`). Le parcours `local_en_ligne` (adresse du réseau local = éteint ; `file://` et fenêtre privée selon la règle), la réécriture de `chat_qa_run.py:600` et `chat_qa_v12.py:220`, le retrait des tests des chemins « site en ligne », O12 | 0,5 à 1 jour + 1 nuit | `VALXXII/125-annotation-onboarding` fusionnée dans main |
+| **3 — Projets locaux seulement** | **Rattaché au lot R le 24/11** (décision du propriétaire) : le parcours `local_en_ligne` et O12 sont dans le lot R | — | — |
 | **4 — Défilement et vitesse** | O4, **règle 5 de #130** (recalcul pendant le défilement, glissement de 120 ms), O6 | 1,5 à 2,5 jours + 1 nuit. Incertain : O4 peut finir en décision de design | Lot 1 |
-| **5 — Agents réels, nettoyage** | O9 : un essai réel Claude Code et un essai réel Codex sur une copie de test. O7 : retrait complet du lot. O11 ; passage avec le Narrateur | 1,5 jour + 1 nuit | — |
+| **5 — Agents réels, nettoyage** | O9 : un essai réel Claude Code et un essai réel Codex sur une copie de test. O11 ; passage avec le Narrateur. (O7 est fait au lot R.) | 1,5 jour + 1 nuit | — |
+| **R — Retrait de l'ancien système** | §10 : lanceur, historique, cartes, ancienne note, « Garder en annotation », lot (O7) retirés ; Réglages › Annotations allégés ; chat sur fichier local et en fenêtre privée (O12, décision A) ; chat ouvert au lancement en Panneau ; message « 10 éléments » ; parcours `local_en_ligne` (ancien lot 3) | 1 jour + la nuit commune | Lot 1 (fusionne après lui et après le Mode Focus) |
 
 Total estimé : 6,5 à 8 jours de travail et 6 nuits. Règle de sortie : un lot ne part que si le test général est vert **en
 entier** sur le commit exact qui sort.
@@ -323,7 +332,7 @@ entrée, la liste complète, et l'interdiction des raccourcis. À écrire au lot
 python tests/annotation-general/run.py --day
 ```
 
-Durée mesurée le 24/11 : **13 min 10 s** (11 suites). Aucune fenêtre à l'écran.
+Durée mesurée le 24/11 : **13 min 10 s** (11 suites). Aucune fenêtre à l'écran. Lot R : mêmes 11 suites, mesure au §10.
 
 | Suite (id du manifeste) | Commande | Couvre |
 |---|---|---|
@@ -335,8 +344,8 @@ Durée mesurée le 24/11 : **13 min 10 s** (11 suites). Aucune fenêtre à l'éc
 | `page-v4` | `python tests/annotations-ui/page_v4.py` | Script de la page : cadres, étiquettes, inspecteur, Ctrl maintenu. N'était dans aucun ancien lanceur |
 | `fake-agent` | `python -I tests/chat/final/fake_agent_scenarios.py` | Le faux agent se comporte comme un vrai (annonces, autorisation, erreurs) |
 | `snapshots` | `python -I tests/snapshots/run_tests.py` | « Tout annuler », compteur de fichiers |
-| `annotations` | `python -I tests/annotations/run_tests.py` | Magasin et pont MCP : annotation gardée, lue, prise, terminée ; connexion Claude / Codex sur dossiers redirigés |
-| `annotations-ui` | `python tests/annotations-ui/run.py --no-window` | Bandeau, lanceur, historique, note. La nuit : avec ses fenêtres |
+| `annotations` | `python -I tests/annotations/run_tests.py` | Magasin et pont MCP (gardés au lot R, option a) : annotation écrite, lue, prise, terminée ; connexion Claude / Codex sur dossiers redirigés |
+| `annotations-ui` | `python tests/annotations-ui/run.py --no-window` | Bandeau, « Connecter un agent », cadre natif, voile d'entrée (lot R : plus de lanceur, d'historique ni de note). La nuit : avec ses fenêtres |
 | `acp` | `python -I tests/acp/run_tests.py --quick --no-console` | Client ACP, runtime des agents. La nuit : avec la connexion en console et les vrais téléchargements |
 
 ### 4.3 Partie en vraie fenêtre (nuit)
@@ -353,15 +362,16 @@ Durée estimée : **1 h 45, à prévoir 2 h 15**. Base : build neuf ≈ 15 min ;
 ≈ 17 min (13 min mesurées, plus les téléchargements et la console du test ACP) ; suites du dépôt ≈ 13 min ; 12 suites du
 chat en vraie fenêtre ≈ 14 min ; parcours ≈ 21 min ; monkey 3 graines ≈ 25 min (durées du 22/11).
 
-Ordre (celui de `manifest.json`, 32 suites) :
+Ordre (celui de `manifest.json`, 33 suites depuis le lot R) :
 
 1. Build neuf du commit exact dans `build/annotation-general-app` (`tools/release/build.py … --channel dev --preview`).
    Si le build n'est pas celui du commit testé, les suites en vraie fenêtre ne sont pas lancées et le passage est rouge.
 2. Les 11 suites de la partie sans fenêtre, dans leur version complète.
 3. `smoke` (`test.ps1`), `shortcuts`, `annotation-settings`, `accessibility`, `uia-offscreen`.
 4. Chat en vraie fenêtre : `chat-v1`, `v12`, `comment`, `comment-switch`, `comment-v2`, `v3`, `v4`, `v4b`, `v5`, `v5b`,
-   `r43`, `comment-129-130`.
-5. `journeys` : les 39 parcours (R1 à R48 et la revue).
+   `r43`, `comment-129-130`, `lot-r` (lot R : chat au lancement, 10 éléments, `local_en_ligne`, fichier local, fenêtre
+   privée).
+5. `journeys` : les 38 parcours (R1 à R48 et la revue ; `c3_historique_du_lanceur` est retiré avec le lanceur).
 6. `monkey-1`, `monkey-2`, `monkey-3` : 320 actions chacun, invariants après chaque action.
 7. Rapport : `build/annotation-general/night/report.md` ; pour chaque échec, la suite, son journal, ses lignes en échec.
 
@@ -455,6 +465,7 @@ main `86697e0` et seront à relire après sa fusion.
 | 4 | ~~Un essai réel avec Claude Code et un avec Codex ?~~ **Tranchée le 24/11 : oui**, une petite demande chacun, sur une copie de test seulement | Lot 5 ; comptes du propriétaire, rien d'autre que la copie |
 | 5 | ~~150 ms et ± 2 px : obligatoires ou objectifs ?~~ **Tranchée le 24/11 : objectifs.** Rapportés, jamais bloquants | Marqués « objectif » dans `tests/annotation-general/manifest.json` |
 | 6 | ~~Qui code l'extinction hors projet local ?~~ **Tranchée le 24/11 : Builder**, avec l'onboarding #125 | Même fichier (`src/annotation-mode.h`). Notre lot 3 ne garde que les tests et le reste de O12 |
+| 7 | **Lot R, tranchées le 24/11** : l'ancien système est retiré ; chat allumé sur `file://` et en fenêtre privée (A) ; conversation orpheline retrouvée dans l'historique du chat en Panneau, sans nouvelle entrée (B) ; « Garder en annotation » retiré, pont MCP et « Connecter un agent » gardés tels quels (C / F, option a) ; Réglages › Annotations : lignes d'historique retirées, « Effacer toutes les annotations… » gardé (D) ; code du magasin sans appelant seulement listé (E) ; chat ouvert au lancement en Panneau ; message « 10 éléments au maximum… » | §10 |
 
 Maquettes : je n'ai **pas ouvert Paper** pour ce document. Points à confirmer avec Designer avant de coder :
 
