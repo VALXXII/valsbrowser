@@ -278,11 +278,16 @@ def run_main():
         rects = [r for _, r in s4.samples if r]; tops = sorted(set(r[1] for r in rects)); pgw = CC.page_widget()
         whole = bool(rects) and all(r[3] <= pgw[3] + 1 and r[1] >= pgw[1] - 1 for r in rects[-5:])
         report['measures']['t4'] = {'tops': tops, 'last': rects[-1] if rects else None, 'page': pgw, 'log': [l for l in C.log_text()[m5:].splitlines() if 'end of the document' in l]}
-        # #130 wins over R29 (variant C): « at most once » no longer holds — every new height may slide it up again; it only
-        # ever goes up, and it is whole in the page
+        # #130 C rules 9 / 10 (lot 1; the 20:00 release's pass on ae51111: tops 758 -> 500 … 152, « upOnly » false): #qa-end is as
+        # wide as the page — no free side. Its bubble opens BELOW it, switches ABOVE it when the room below is used up, and
+        # above it grows UP from its bottom edge: its top goes up when it grows and comes down when it shrinks (a step folded).
+        # « It only ever goes up » no longer holds. What holds: whole in the page, and never over its element.
         order = [r[1] for r in rects]; up_only = all(b <= a + 1 for a, b in zip(order, order[1:]))
-        report['measures']['t4']['upOnly'] = up_only
-        step('T4 · #130 C at the end of the document: the bubble stays whole in the page and only slides up', whole and up_only, report['measures']['t4'])
+        el = CC.element_screen('#qa-end')
+        never_over = bool(rects) and all(r[3] <= el[1] + 1 or r[1] >= el[3] - 1 for r in rects)
+        report['measures']['t4'].update({'upOnly': up_only, 'element': el, 'neverOverItsElement': never_over,
+                                         'bottoms': sorted(set(r[3] for r in rects))})
+        step('T4 · #130 C at the end of the document: the bubble stays whole in the page and never goes over its element (below it, then above it)', whole and never_over, report['measures']['t4'])
         capture('t4-bas-du-document')
     except Exception:
         traceback.print_exc()

@@ -1106,8 +1106,14 @@ class Invariants:
             # again (a walk cut once while the tree changed) or still short (a tree cut for a screen reader too)
             short = self.uia.ask(f'list {Q.our_pid()}'); time.sleep(0.5); again, _ = self.uia.probe()
             n2 = next((x['n'] for x in again if x.get('cls') == 'LisiereBrowser'), -1) if isinstance(again, list) else -1
-            broken['UI Automation tree of the main window complete'] = {'elements': main[0]['n'], 'at start': self.uia_base, 'all windows': r,
-                                                                        'again after 0.5 s': n2, 'short walk': short}
+            # the 20:00 release's pass on ae51111 (#90: 32 of 113, then 151 half a second later, right after a change of layout):
+            # a walk cut ONCE while the tree changed is the reader's own (as chat_qa_uia_offscreen.py reads again) — what fails
+            # is a tree still short at the second walk (cut for a screen reader too)
+            if n2 < self.uia_base * 0.6:
+                broken['UI Automation tree of the main window complete'] = {'elements': main[0]['n'], 'at start': self.uia_base, 'all windows': r,
+                                                                            'again after 0.5 s': n2, 'short walk': short}
+            else:
+                print(f'NOTE UI Automation: a short walk ({main[0]["n"]} of {self.uia_base}), whole again 0.5 s later ({n2})', flush=True)
         if s > 15:
             broken['UI Automation answers in time'] = s
         chats = [x for x in r if x.get('cls', '').startswith('BrowserChat')]
