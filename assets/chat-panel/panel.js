@@ -215,7 +215,8 @@
   const log = h("div", { class: "log", role: "log", "aria-label": "Conversation", "aria-live": "off", id: "log" });
   const first = h("div", { class: "first", hidden: true });
   const empty = h("div", { class: "empty", hidden: true });
-  const scroller = h("div", { class: "scroller", tabindex: "-1" }, first, empty, log);
+  const tasEl = h("section", { class: "tas", hidden: true });   // « Ton agent »: the first message's block
+  const scroller = h("div", { class: "scroller", tabindex: "-1" }, first, empty, tasEl, log);
   const newSteps = h("button", { class: "newsteps", type: "button", hidden: true, onclick: () => scrollToEnd(true) }, icon("arrowDown"), h("span"));
   const historyEl = h("div", { class: "history", id: "history", role: "dialog", "aria-label": "Historique des conversations", hidden: true });
   const dock = h("div", { class: "dock" });
@@ -929,7 +930,7 @@
   }
   function agentAction(a) {
     if (a.status === "notConnected") return { label: "Se connecter", run: () => post("agent.connect", { agentId: a.id, methodId: a.authMethods && a.authMethods[0] ? a.authMethods[0].id : undefined }) };
-    if (a.status === "notInstalled") return { label: "Installer", run: () => post("agent.prepare", { agentId: a.id }) };
+    if (a.status === "notInstalled") return { label: "Installer", run: () => post("agents.setup.open") };   // « Ton agent »: the screen, where the click is the consent
     if (a.status === "error") return { label: "Réessayer", run: () => post("agent.prepare", { agentId: a.id }) };
     return null;
   }
@@ -1044,7 +1045,7 @@
     // bubble: there is no « Où est le code de ce site ? » screen — one line says what is missing, with its action
     else if (BUB() && S.st.folder === null) out.push({ id: "folder", tone: "neutral", text: "Choisissez le dossier du projet pour commencer.", action: { id: "choose", label: "Choisir le dossier…" } });
     const a = curAgent();
-    if (a && S.st.folder) {
+    if (a && S.st.folder && !(tasShown() && !log.firstChild)) {   // « Ton agent »: the block (empty chat) already says it
       if (a.status === "notConnected") out.push({ id: "agent", tone: "danger", text: "Vous n'êtes plus connecté à " + a.name + ".", action: { id: "connect", label: "Se connecter" } });
       else if (a.status === "notInstalled") out.push({ id: "agent", tone: "neutral", text: a.name + " n'est pas installé sur cet ordinateur.", action: { id: "prepare", label: "Installer" } });
       else if (a.status === "preparing") out.push({ id: "agent", tone: "neutral", text: (a.detail || "Préparation de " + a.name + "…"), progress: a.progress });
@@ -1239,7 +1240,7 @@
     }
     let hgt = 24, n = 0;                                     // 12 px of padding above and under
     const part = (x) => { if (x > 0) { hgt += x; n++; } };
-    if (!body.hidden) part(log.offsetHeight);                // measured on the content: independent of the window's size
+    if (!body.hidden) part(log.offsetHeight + tasEl.offsetHeight);   // measured on the content: independent of the window's size (« Ton agent »: the block)
     if (!ruleEl.hidden) part(1);
     part(dock.offsetHeight);
     return hgt + Math.max(0, n - 1) * 12;
@@ -1839,19 +1840,22 @@
   // ---------------------------------------------------------------- thread
   function updateView() {
     if (BUB()) {   // no first-run screen, no suggestions: the input, and the thread once there is one
-      const none = !log.firstChild;
-      first.hidden = true; empty.hidden = true; log.hidden = none; body.hidden = none || !!S.bview;
+      const none = !log.firstChild, ta = none && tasShown();   // « Ton agent »: the block until an agent is ready
+      first.hidden = true; empty.hidden = true; log.hidden = none; body.hidden = (none && !ta) || !!S.bview;
+      tasEl.hidden = !ta; if (ta) renderTas();
       app.classList.toggle("has-thread", !none);
       renderDock();
       return;
     }
     body.hidden = false;
     const firstRun = S.st.askFolder === true || (S.st.askFolder === undefined && S.st.folder === null);
-    const isEmpty = !log.firstChild;
+    const isEmpty = !log.firstChild, ta = !firstRun && isEmpty && tasShown();   // « Ton agent »: in the place of « Que voulez-vous changer ? »
     first.hidden = !firstRun;
-    empty.hidden = firstRun || !isEmpty;
+    empty.hidden = firstRun || !isEmpty || ta;
+    tasEl.hidden = !ta;
     log.hidden = firstRun || isEmpty;
     if (firstRun) renderFirst();
+    else if (ta) renderTas();
     else if (isEmpty) renderEmpty();
   }
   function add(node, liveItem) {
@@ -3071,6 +3075,81 @@
     try { fn(m); } catch (e) { post("panel.log", { level: "error", message: (m.type + ": " + (e && e.stack || e)).slice(0, 2000) }); }
     if (!S.replay) publishSize();   // bubble: the height follows the content (no-op in the panel)
   }
+
+  // ---------------------------------------------------------------- « Ton agent » (worker B): the first message's block
+  // Paper « Onboarding agents — Ton agent (maquette prête) » › 22N3-0 « Chat — premier message, rien n'est prêt », its rows'
+  // states as the Designer set them for Réglages › Agents (an icon and the words, no coloured dot; one strong button on the
+  // missing action). The host (src/chat-ton-agent.h) sends `agents.setup` from the agents' one status — every word from its
+  // catalogue — and the block shows on an empty chat while no agent is ready, in the panel and in the bubble. A row's
+  // strong button is that agent's: install (its click is the consent), sign in; « Réessayer » and « Installer moi-même ↗ »
+  // after a failure.
+  let TA = null, taIcons = 0;
+  const TA_INKS = ["grey", "accent", "danger"], TA_ACTS = ["install", "signIn", "retry"], TA_ICONS = ["download", "wifi", "error", "check"];
+  function tasShown() { return !!(TA && TA.show) && !S.st.disabledReason; }
+  function validTa(m) {
+    if (typeof m.show !== "boolean" || !Array.isArray(m.rows) || m.rows.length > 4 || !isStr(m.title, 200) || !isStr(m.body, 400) || !isStr(m.note, 400)) return null;
+    const rows = [];
+    for (const r of m.rows) {
+      if (!r || !["claude", "codex"].includes(r.id) || !isStr(r.name, 60) || !TA_INKS.includes(r.ink) || !isStr(r.status, 200)) return null;
+      const a = r.action && TA_ACTS.includes(r.action.id) && isStr(r.action.label, 60) ? { id: r.action.id, label: r.action.label, strong: !!r.action.strong } : null;
+      rows.push({ id: r.id, name: r.name, icon: TA_ICONS.includes(r.icon) ? r.icon : "", ink: r.ink, status: r.status, animate: r.animate === true,
+                  note: isStr(r.note, 300) ? r.note : "", manual: isStr(r.manual, 80) ? r.manual : "", action: a });
+    }
+    return { show: m.show, title: m.title, body: m.body, note: m.note, accent: /^#[0-9A-Fa-f]{6}$/.test(m.accent || "") ? m.accent : "", rows };
+  }
+  // « Installation… »: the Downloads button's morph (design/lottie/download-progress.py: the same strokes, frames and loop —
+  // the tray's arms curl into a ring in 233 ms while the arrow drops in, then the arrow bobs 12 units in 1.3 s), drawn in
+  // SVG in the row's ink; a clear band is cut around the arrow where it crosses the ring. Reduced motion: the still icon.
+  function installingIcon() {
+    if (isReduced()) return icon("ta-download", "tas-i");
+    const id = "tas-cut-" + (++taIcons);
+    const el = (tag, attrs, ...kids) => { const n = document.createElementNS(SVGNS, tag); for (const k in attrs) n.setAttribute(k, attrs[k]); for (const c of kids) n.appendChild(c); return n; };
+    const TRAY = "M216 144C216 144 216 208 216 208C216 208 128 208 128 208C128 208 40 208 40 208C40 208 40 144 40 144";
+    const RING = "M128 40C176.601 40 216 79.399 216 128C216 176.601 176.601 216 128 216C79.399 216 40 176.601 40 128C40 79.399 79.399 40 128 40";
+    const SETTLE = ".45 0 .15 1", SINE = ".45 0 .55 1";
+    const arrow = (w, tag) => el("g", {}, el("path", { d: "M128 32L128 140", "stroke-width": w }), el("path", { d: "M88 100L128 140L168 100", "stroke-width": w }),
+      el("animateTransform", { attributeName: "transform", type: "translate", values: "0 0;0 30", dur: "0.2333s", fill: "freeze", calcMode: "spline", keyTimes: "0;1", keySplines: SETTLE, id: id + tag }),
+      el("animateTransform", { attributeName: "transform", type: "translate", values: "0 30;0 42;0 30", keyTimes: "0;0.5;1", dur: "1.3s", begin: id + tag + ".end", repeatCount: "indefinite", calcMode: "spline", keySplines: SINE + ";" + SINE }));
+    const mask = el("mask", { id, maskUnits: "userSpaceOnUse", x: "0", y: "0", width: "256", height: "256" }, el("rect", { width: "256", height: "256", fill: "#FFFFFF" }),
+      el("g", { stroke: "#000000", fill: "none", "stroke-linecap": "round", "stroke-linejoin": "round" }, arrow("46", "-m")));
+    return el("svg", { viewBox: "0 0 256 256", class: "i tas-i tas-anim", "aria-hidden": "true", focusable: "false" }, el("defs", {}, mask),
+      el("g", { mask: "url(#" + id + ")", fill: "none", stroke: "currentColor", "stroke-width": "24", "stroke-linecap": "round", "stroke-linejoin": "round" },
+        el("path", { d: TRAY }, el("animate", { attributeName: "d", values: TRAY + ";" + RING, dur: "0.2333s", fill: "freeze", calcMode: "spline", keyTimes: "0;1", keySplines: SETTLE }))),
+      el("g", { fill: "none", stroke: "currentColor", "stroke-linecap": "round", "stroke-linejoin": "round" }, arrow("24", "-a")));
+  }
+  function stateIcon(r) {
+    if (!r.icon) return null;
+    if (r.animate) return installingIcon();
+    return icon(r.icon === "check" ? "check" : "ta-" + r.icon, "tas-i");
+  }
+  function renderTas() {
+    const keep = tasEl.contains(document.activeElement) ? document.activeElement.dataset.tas : "";   // a click keeps its place
+    const was = new Map(Array.from(tasEl.querySelectorAll("[data-row]")).map((n) => [n.dataset.row, { key: n.dataset.st, icon: n.querySelector("svg.tas-anim") }]));
+    clear(tasEl); const t = TA; if (!t) return;
+    if (t.accent) tasEl.style.setProperty("--ta-accent", t.accent); else tasEl.style.removeProperty("--ta-accent");
+    const rows = t.rows.map((r) => {
+      const key = r.icon + "|" + r.animate + "|" + r.ink, before = was.get(r.id);
+      // the morph keeps running when the same state is sent again (the host resends the whole block on every change)
+      const ic = r.animate && before && before.key === key && before.icon ? before.icon : stateIcon(r);
+      return h("div", { class: "tas-row", role: "listitem", "data-row": r.id, "data-st": key },
+        h("span", { class: "tas-logo" }, icon(r.id, "tas-l")),
+        h("span", { class: "tas-tx" }, h("span", { class: "tas-nm", text: r.name }),
+          h("span", { class: "tas-st " + r.ink }, ic, h("span", { text: r.status })),
+          r.note ? h("span", { class: "tas-rn", text: r.note }) : null,
+          r.manual ? h("button", { class: "tas-link", type: "button", "data-tas": "manual-" + r.id, onclick: () => post("agents.setup.manual", { agentId: r.id }) }, r.manual) : null),
+        r.action ? h("button", { class: "tas-btn" + (r.action.strong ? " strong" : ""), type: "button", "data-tas": r.id, "aria-label": r.action.label + " " + r.name,
+                                 onclick: () => post("agents.setup.act", { agentId: r.id, action: r.action.id }) }, r.action.label) : null);
+    });
+    tasEl.append(h("h2", { class: "tas-h", id: "tas-h", text: t.title }), h("p", { class: "tas-sub", text: t.body }), h("div", { class: "tas-card", role: "list" }, rows));
+    tasEl.setAttribute("aria-labelledby", "tas-h");   // only once its title is there (the audit: no label pointing at nothing)
+    tasEl.append(h("p", { class: "tas-note", text: t.note }));
+    if (keep) { const b = tasEl.querySelector("[data-tas='" + keep + "']"); if (b) b.focus({ preventScroll: true }); }
+  }
+  REQ["agents.setup"] = (m) => !!validTa(m);
+  H["agents.setup"] = (m) => {
+    TA = validTa(m);   // the block leaves once an agent is ready: the empty chat follows
+    updateView(); renderDock();
+  };
 
   // ---------------------------------------------------------------- global keys
   document.addEventListener("keydown", (e) => {

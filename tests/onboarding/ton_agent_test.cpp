@@ -175,6 +175,8 @@ static void Screens(Fixture& f) {
         Expect(f.Shot(L"claude-4-erreur"), "render: Claude Code 4 Erreur (233O-0)");
         f.Click(UI::Window::Manual);
         Expect(f.pages == 1 && f.page == AS::ManualInstall(C).url && f.window.ManualClicksForTest() == 1 && AS::Get(C).state == S::Error, "« Installer moi-même ↗ »: the official page (the command copied), nothing installed by us");
+        Expect(f.closed == 1 && f.ending == AO::Ending::Skipped && f.chats == 0, "« Installer moi-même ↗ »: the screen goes first (the page would be hidden behind it)");
+        f.Setup(); Expect(f.window.TargetForTest() == C && f.window.PrimaryForTest() == L"Réessayer", "opened again: the failure is still the target, « Réessayer »");
         Mode(L"policy"); f.Click(UI::Window::Primary); Expect(AS::Get(C).state == S::Installing, "« Réessayer » (consent): the install again"); Pump();
         Expect(AS::Get(C).state == S::Error && AS::Get(C).reason == R::ExecutionPolicy, "retry: PowerShell's policy → error again");
         Mode(L"ok"); f.Click(UI::Window::Primary); Pump();
@@ -248,7 +250,7 @@ static void Screens(Fixture& f) {
         Expect(AS::Get(X).state == S::Error && f.window.ManualOfferedForTest(), "keys: Entrée on « Installer Codex » installs (fails here): the link is offered");
         for (int i = 0; i < 5; ++i) f.window.KeyForTest(VK_TAB);   // « Réessayer » → language → close → Claude Code → Codex → the link
         Expect(f.window.FocusForTest() == UI::Window::Manual, "keys: the link comes after the tiles");
-        f.window.KeyForTest(VK_RETURN); Expect(f.pages == 1, "keys: Entrée on the link opens the official page");
+        f.window.KeyForTest(VK_RETURN); Expect(f.pages == 1 && f.closed == 1, "keys: Entrée on the link: the screen goes, the official page opens");
     }
     queued.clear();
 }

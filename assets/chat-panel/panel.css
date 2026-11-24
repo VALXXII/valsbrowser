@@ -315,6 +315,31 @@ svg.i { display: block; flex-shrink: 0; }
 .sug .ct { display: flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 4px; background: #3E67FF33; color: var(--accent-ink); font-size: 11px; font-weight: 500; line-height: 14px; }
 @media (hover: hover) { .sug:hover { background: var(--fill4); border-color: var(--line2); } }
 
+/* « Ton agent » (worker B): the first message's block while no agent is ready (Paper 22N3-0) — at the bottom, right above the
+   input, like the empty chat. Rows: the state as an icon and its words (the Designer's rule for Réglages › Agents: no coloured
+   dot); ONE strong button on the missing action in the profile's accent (--ta-accent, sent by the host; #0099A0 on the board). */
+.tas { display: flex; flex-direction: column; justify-content: flex-end; gap: 12px; padding: 16px 12px; flex: 1; min-height: 100%; }
+.tas-h { margin: 0; font-size: 16px; font-weight: 600; line-height: 22px; color: #FFFFFF; }
+.tas-sub, .tas-note { margin: 0; font-size: 12px; line-height: 17px; color: #A6A6A6; }
+.tas-note { color: #8C8C8C; }
+.tas-card { display: flex; flex-direction: column; gap: 2px; padding: 4px; border: 1px solid #262626; border-radius: 12px; background: #1C1C1C; }
+.tas-row { display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 10px; }
+.tas-logo { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 32px; height: 32px; border-radius: 8px; background: #262626; }
+.tas-logo .tas-l { width: 16px; height: 16px; color: #FFFFFF; }
+.tas-tx { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; flex: 1; min-width: 0; }
+.tas-nm { font-size: 14px; font-weight: 500; line-height: 18px; color: #FFFFFF; }
+.tas-st { display: flex; align-items: center; gap: 4px; font-size: 12px; line-height: 16px; color: #A6A6A6; }
+.tas-st.accent { color: #2FD1D9; }
+.tas-st.danger { color: var(--danger); }
+.tas-st .tas-i { width: 14px; height: 14px; }
+.tas-rn { font-size: 13px; line-height: 17px; color: #8C8C8C; }
+.tas-btn { display: flex; align-items: center; flex-shrink: 0; height: 28px; padding: 0 10px; border-radius: 6px; background: #2A2A2A; color: #FFFFFF; font-size: 13px; font-weight: 500; line-height: 16px; white-space: pre; }
+.tas-btn.strong { background: var(--ta-accent, var(--accent)); }
+@media (hover: hover) { .tas-btn:not(.strong):hover { background: var(--hover); } .tas-btn.strong:hover { filter: brightness(1.08); } }
+.tas-link { color: #E6E6E6; font-size: 13px; font-weight: 500; line-height: 17px; text-decoration: underline 1px; text-underline-position: from-font; border-radius: 4px; }
+@media (hover: hover) { .tas-link:hover { color: #FFFFFF; } }
+.bub .tas { min-height: 0; padding: 0; flex: 0 0 auto; }
+
 /* new steps pill */
 .newsteps { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px;
   border-radius: 14px; background: #2A2A2A; color: var(--w90); font-size: 12px; font-weight: 500; line-height: 16px; white-space: pre; box-shadow: 0 4px 16px #00000066; z-index: 2; }

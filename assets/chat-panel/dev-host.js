@@ -491,6 +491,35 @@
     "stream": [st(Object.assign({ running: true }, conv("Texte en flux", { running: true }))), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Explique tout en détail.", null, []), { type: "turn.start", turnId: "t1", model: "Sonnet 5.5", effort: "Élevé" }] }],
   };
   Object.assign(SC, C_SCENARIOS);
+  // « Ton agent » (worker B): the first message's block while no agent is ready (Paper 22N3-0), from `agents.setup` as
+  // src/chat-ton-agent.h sends it (the words are the host's catalogue). `ta(...)` builds one; the rows from the agents' one status.
+  const TA_ROW = {
+    absent: () => ({ icon: "download", ink: "grey", status: "Pas installé", action: { id: "install", label: "Installer", strong: true } }),
+    desktop: () => ({ icon: "download", ink: "grey", status: "Pas installé", note: "L'appli Claude est installée, mais le chat a besoin de Claude Code (même compte).", action: { id: "install", label: "Installer", strong: true } }),
+    old: () => ({ icon: "download", ink: "grey", status: "Version trop ancienne", action: { id: "install", label: "Mettre à jour", strong: true } }),
+    installing: () => ({ icon: "download", ink: "accent", animate: true, status: "Installation…" }),
+    signedOut: () => ({ icon: "wifi", ink: "grey", status: "Pas connecté", action: { id: "signIn", label: "Se connecter", strong: true } }),
+    signingIn: () => ({ icon: "wifi", ink: "accent", status: "Connexion…" }),
+    failed: () => ({ icon: "error", ink: "danger", status: "Échec de l'installation", manual: "Installer moi-même ↗", action: { id: "retry", label: "Réessayer", strong: false } }),
+    signInFailed: () => ({ icon: "error", ink: "danger", status: "Échec de la connexion", action: { id: "retry", label: "Réessayer", strong: false } }),
+  };
+  const ta = (claude, codex, over) => Object.assign({ type: "agents.setup", show: true, title: "Choisissez votre agent", body: "Le chat utilise Claude Code ou Codex, installés sur cet ordinateur.",
+    note: "Claude Code demande un compte Claude payant (Pro, Max, Team ou Enterprise).", accent: "#0099A0",
+    rows: [Object.assign({ id: "claude", name: "Claude Code" }, TA_ROW[claude]()), Object.assign({ id: "codex", name: "Codex" }, TA_ROW[codex]())] }, over || {});
+  // the chat's own view of the same status (A's src/chat-agent-status.h)
+  const TA_AGENTS = { agents: [Object.assign({}, CLAUDE, { status: "notInstalled", detail: "Pas installé", models: [] }), Object.assign({}, CODEX, { status: "notConnected", detail: "Pas connecté", models: [] })], agentId: "claude-code" };
+  Object.assign(SC, {
+    "ta-premier-message": [st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("absent", "signedOut")],
+    "ta-installation": [st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("installing", "signedOut")],
+    "ta-erreur": [st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("failed", "signedOut")],
+    "ta-desktop": [st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("desktop", "absent")],
+    "ta-connexion": [st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("old", "signingIn")],
+    "ta-connexion-echec": [st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("absent", "signInFailed")],
+    "ta-pret": [st(), { type: "thread.reset", conversationId: "new", items: [] }, ta("absent", "signedOut", { show: false })],
+    "ta-fil": [st(TA_AGENTS), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Plus grand")] }, ta("absent", "signedOut")],
+    "c-ta-premier-message": [LAY(), st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("absent", "signedOut")],
+    "c-ta-erreur": [LAY(), st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("failed", "signedOut")],
+  });
 
   // #128 (Paper « #128 Menu des modèles · A liste groupée (validée) »): the model menu as one list grouped by provider, in
   // the panel and in the comment bubble. The model names are this fake host's agents' (the board's Codex names are only

@@ -212,7 +212,7 @@ private:
     double secondsForTest_ = -1;
     // ---- A6 « Ton agent » ----
     using Agent = AgentStatus::Agent; using AState = AgentStatus::State;
-    TonAgent::Screen pick_; int listener_ = 0; AgentStatus::Status seen_[2]; Agent chatAgent_ = Agent::Claude; int manualForTest_ = 0;
+    TonAgent::Screen pick_; int listener_ = 0; AgentStatus::Status seen_[2]; Agent chatAgent_ = Agent::Claude; int manualForTest_ = 0; std::wstring page_;
     DownloadIcon::Model install_[2]; Motion::Time ended_[2]{}; int endKind_[2] = {0, 0}; AState endTo_[2] = {AState::Unknown, AState::Unknown};   // the install's end: 1 the success morph, 2 the fade to the error icon
     float cardFrom_ = -1, cardTo_ = -1; Motion::Time cardAt_{};   // the card glides between its places (Paper: one per state)
     InstallGlyph installGlyph_;
@@ -484,8 +484,10 @@ private:
         Dispose();
         const AO::Ending ending = flow_.ending(); const bool manual = manual_, silent = silent_, chat = flow_.chat(); const Agent who = chatAgent_;
         const auto openChat = options_.hooks.openChat ? options_.hooks.openChat : Fallbacks().openChat;   // copied: `closed` may reopen this window
+        const auto openPage = options_.hooks.openPage ? options_.hooks.openPage : Fallbacks().openPage; const std::wstring page = page_; page_.clear();
         if (!silent && options_.hooks.closed) options_.hooks.closed(ending, manual);
         if (!silent && chat && openChat) openChat(who);   // A6 « Ouvrir le chat »: once the window is gone and the host knows
+        if (!silent && !page.empty()) { if (openPage) openPage(page); else if (!offscreen_) ShellExecuteW(nullptr, L"open", page.c_str(), nullptr, nullptr, SW_SHOWNORMAL); }   // « Installer moi-même ↗ »
     }
     void Dispose() {
         Unlisten(); installGlyph_.Drop();
@@ -529,7 +531,7 @@ private:
         case Field: focus_ = Field; Invalidate(); return;
         case Send: flow_.Send(); break;
         case ClaudeRow: case CodexRow: if (before == Step::Connect) PickTile(id == ClaudeRow ? Agent::Claude : Agent::Codex); return;
-        case Manual: if (before == Step::Connect) InstallMyself(); return;
+        case Manual: if (before != Step::Connect) return; InstallMyself(); break;   // the screen goes, the official page shows
         default: return;
         }
         Changed(before);
@@ -556,17 +558,17 @@ private:
         if (uia_.Attached()) uia_.ChildrenChanged(500);
         if (Target() != was) Announce(TonTitle() + L". " + TonBody() + L". " + TonButton());
     }
-    // « Installer moi-même ↗ »: the official command to the clipboard (to paste in PowerShell), the official page opens.
+    // « Installer moi-même ↗ »: the official command to the clipboard (to paste in PowerShell); the screen closes (skipped)
+    // and the official page opens once it is gone (in a tab of the browser: the modal would hide it).
     void InstallMyself() {
-        const auto m = AgentStatus::ManualInstall(Target()); ++manualForTest_;
+        const auto m = AgentStatus::ManualInstall(Target()); ++manualForTest_; page_ = m.url;
         if (hwnd_ && !offscreen_ && OpenClipboard(hwnd_)) {
             EmptyClipboard(); const std::wstring text = m.command; const SIZE_T bytes = (text.size() + 1) * sizeof(wchar_t);
             if (HGLOBAL g = GlobalAlloc(GMEM_MOVEABLE, bytes)) { if (void* p = GlobalLock(g)) { memcpy(p, text.c_str(), bytes); GlobalUnlock(g); if (!SetClipboardData(CF_UNICODETEXT, g)) GlobalFree(g); } else GlobalFree(g); }
             CloseClipboard();
         }
-        const auto open = options_.hooks.openPage ? options_.hooks.openPage : Fallbacks().openPage;
-        if (open) open(m.url); else if (!offscreen_) ShellExecuteW(nullptr, L"open", m.url, nullptr, nullptr, SW_SHOWNORMAL);
         Announce(TR(ton_agent_manual_done));
+        flow_.Skip();
     }
     // The agents' status changed (a listener, UI thread): the tiles, the text, the button and the card's place follow;
     // an install that began starts the morph, one that ended plays its end.
@@ -1059,7 +1061,7 @@ private:
     }
     // A new opening: no tile picked, nothing moving; the statuses as they are now, followed from here on.
     void ResetTon() {
-        pick_.Reset(); chatAgent_ = Agent::Claude; manualForTest_ = 0; cardFrom_ = cardTo_ = -1;
+        pick_.Reset(); chatAgent_ = Agent::Claude; manualForTest_ = 0; page_.clear(); cardFrom_ = cardTo_ = -1;
         for (int i = 0; i < 2; ++i) { install_[i] = DownloadIcon::Model{}; endKind_[i] = 0; endTo_[i] = AState::Unknown; }
         Listen();
         for (Agent a : AgentStatus::AllAgents) if (St(a).state == AState::Installing) install_[TonAgent::Index(a)].Update(true, 0, false, Motion::Now(), options_.reduced || offscreen_);   // already installing (opened again)

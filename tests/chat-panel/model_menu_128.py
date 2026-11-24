@@ -270,10 +270,12 @@ try:
     n0 = len(posted(["agent.connect"])); cdp.js("document.querySelector('.mm-act').click()"); time.sleep(.1)
     check(posted(["agent.connect"])[n0:] == [{"type": "agent.connect", "agentId": "codex", "methodId": "chatgpt"}] and cdp.js("!document.querySelector('.menu')"),
           "not connected: Connecter = the existing sign-in flow (agent.connect), the menu closes", posted(["agent.connect"])[n0:])
-    for scen, word, act, msg in (("128-codex-pas-installe", "Codex · pas installé", "Installer", "agent.prepare"), ("128-codex-erreur", "Codex · erreur", "Réessayer", "agent.prepare")):
+    # « Ton agent » (worker B): « Installer » opens the « Ton agent » screen (its strong button is the install's consent)
+    for scen, word, act, msg, sent in (("128-codex-pas-installe", "Codex · pas installé", "Installer", "agents.setup.open", {"type": "agents.setup.open"}),
+                                       ("128-codex-erreur", "Codex · erreur", "Réessayer", "agent.prepare", {"type": "agent.prepare", "agentId": "codex"})):
         load(scen); m = menu(); hd = [r for r in m["rows"] if r["k"] == "head"][1]
         n0 = len(posted([msg])); cdp.js("document.querySelector('.mm-act').click()"); time.sleep(.1)
-        check(hd["t"] == word and hd["act"] == act and posted([msg])[n0:] == [{"type": msg, "agentId": "codex"}], f"{scen}: « {word} » + « {act} » ({msg})", [hd, posted([msg])[n0:]])
+        check(hd["t"] == word and hd["act"] == act and posted([msg])[n0:] == [sent], f"{scen}: « {word} » + « {act} » ({msg})", [hd, posted([msg])[n0:]])
     load("128-codex-pas-installe"); m = menu()
     check(labels(m)[4:7] == ["·", "#Codex · pas installé", "·"], "not installed, no model known: its header only, no model invented", labels(m))
 
