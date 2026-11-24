@@ -173,6 +173,24 @@ glisser, survol par-dessus la page, tiroirs) : liste pour la tournée de nuit de
   (fenêtre plus étroite : le chat passe par-dessus la page). La carte « Découvrir en 1 minute » (site en ligne) s'ouvre
   à la place des popovers de la colonne (au-dessus des outils, ou à droite de la colonne compacte).
 
+### Mouvement (spec du Designer, 24 nov.) et retours de Val après l'essai 0.3.852
+
+- Ressorts « à la Apple » (amortissement 1, réponse en s ; 0,85 avec l'élan d'un geste), toujours repris depuis la valeur
+  affichée : onglets de la colonne (ouverture .25 s, contenu en fondu 120 ms après 40 ms ; fermeture : contenu 80 ms puis
+  repli .22 s), onglets de la barre du haut (ouverture .25 s, réajustement .3 s), fond de sélection qui glisse (.25 s),
+  réordonner (soulevé ×1,02 sur #2A2A2A, les autres s'écartent .2 s, lâcher avec l'élan .85 / .3 s, élastique aux bouts),
+  panneau ↔ compact (.35 s, titres 80 ms / 120 ms à 70 %, tuiles et boutons qui glissent), redimensionnement (élastique,
+  largeur projetée au lâcher, repli lancé, retour à la borne), tiroirs .30 / .25 s. Animations réduites : géométrie
+  immédiate, opacité seule.
+- Pas fait (fenêtres de tiroirs non « layered », à vérifier en vraie fenêtre) : fondu des tiroirs sur les premiers 60 %,
+  fondu croisé et largeur morphée entre deux tiroirs, popovers qui grandissent depuis leur bouton (×0,96 → 1), fondu de
+  120 ms des tiroirs en animations réduites.
+- Retours de Val : champ d'adresse d'une seule couleur pendant la saisie ; contour de focus 5 % au clic (50 % au clavier) ;
+  bouton de pliage à 50 % ; compact toujours en icônes (titres en info-bulles, aussi au clavier) ; tiroirs du compact au
+  niveau de la page (32) ; coins arrondis aussi en fenêtre agrandie (F11 reste carré ; un seul interrupteur).
+- Clic droit sur une zone vide (barre du haut, panneau, compact) : « Nouvel onglet », « Rouvrir l'onglet fermé », les 3 vues.
+- Vue partagée dans la colonne (branches fusionnées 127-split-mark et 127-split-drag) : cadre figé selon 2473-0.
+
 ## 7. Écarts connus avec la maquette (version d'essai)
 
 - Glisser (05) : la ligne suit la souris verticalement seulement (Paper la décale aussi de 14 DIP vers la droite) ;
