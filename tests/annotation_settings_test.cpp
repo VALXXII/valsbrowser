@@ -112,15 +112,13 @@ int wmain(int argc, wchar_t** argv) {
     Modal::Dialog confirm; Check(confirm.Create(hi, owner, root, {}), "confirmation dialog created");
 
     BrowserSettings::State st;
-    std::vector<BrowserSettings::Change> changes; int folders = 0; std::size_t count = 3, clearAsked = 0; int clears = 0;
+    std::vector<BrowserSettings::Change> changes; std::size_t count = 3, clearAsked = 0; int clears = 0;
     std::vector<ContextMenu::Item> menu; int choice = 0;
     Modal::Result confirmResult; std::wstring confirmTitle; int confirmFocus = -9; bool confirmShot = false;
     SettingsUI::Drawer::Hooks h;
     h.annotations = [] { return true; };
     h.changed = [&](BrowserSettings::Change c) { changes.push_back(c); };
     h.now = [&] { return e.now; };
-    h.annotationFolder = [&] { return e.target.storeRoot; };
-    h.openAnnotationFolder = [&] { ++folders; };
     h.countAnnotations = [&](std::function<void(std::size_t)> done) { done(count); };
     h.clearAnnotations = [&](std::size_t n, bool) {
         ++clears; clearAsked = n;
@@ -190,12 +188,13 @@ int wmain(int argc, wchar_t** argv) {
     {
         bool agentRows = false; for (auto& s : slots) agentRows = agentRows || s.kind == Kind::Agent || s.kind == Kind::Switch;
         Check(!agentRows && !Find(slots, Kind::Nav, L"Autre app ou réglage manuel"), "« Ton agent »: no agent rows, no switch, no « Autre app ou réglage manuel » (Réglages › Agents has them)");
-        const auto* note = Find(slots, Kind::Note, AS::ShortcutsNote()); Check(note && note->hit == 0, "shortcut reminder: Ctrl+Maj+A, Ctrl+Maj+H (text, not focusable)");
-        const auto* retention = Find(slots, Kind::Value, L"Conserver les terminées"); Check(retention && retention->value == L"30 jours", "retention: « 30 jours » by default");
-        const auto* folder = Find(slots, Kind::Folder, L"Ouvrir le dossier des annotations"); Check(folder && folder->value == L"…\\annotations", "folder row: the store's folder name");
+        const auto* note = Find(slots, Kind::Note, AS::ShortcutsNote()); Check(note && note->hit == 0, "shortcut reminder: Ctrl+Maj+A (text, not focusable)");
+        Check(std::wstring(AS::ShortcutsNote()) == L"Ctrl+Maj+A lance le mode Annotation.", "lot R: the reminder no longer names Ctrl+Maj+H nor the history");
+        Check(!Find(slots, Kind::Value, L"Conserver les terminées") && !Find(slots, Kind::Folder, L"Ouvrir le dossier des annotations"), "lot R: no « Conserver les terminées », no « Ouvrir le dossier des annotations » (the history rows are gone)");
         const auto* clear = Find(slots, Kind::Danger, L"Effacer toutes les annotations…"); Check(clear && !clear->disabled, "« Effacer toutes les annotations… » enabled (3 annotations)");
         std::vector<std::wstring> labels; for (auto& s : slots) if (s.kind == Kind::Label) labels.push_back(s.text);
-        Check(labels == std::vector<std::wstring>{L"Mode Annotation", L"Historique"}, "groups: Mode Annotation, Historique (« Ton agent »: no Agents group)");
+        Check(labels == std::vector<std::wstring>{L"Mode Annotation"}, "groups: Mode Annotation (« Ton agent »: no Agents group; lot R: no « Historique »)");
+        Check(clear && note && clear->top < note->top, "lot R: « Effacer toutes les annotations… » kept, above the reminder");
         // Every label fits its box (no clipped text): 16 DIP labels before their trailing control.
         using namespace SettingsUI::Layout; bool fit = true;
         for (auto& s : slots) {
@@ -214,8 +213,8 @@ int wmain(int argc, wchar_t** argv) {
     }
     {
         using namespace SettingsUI;
-        const std::vector<int> want{Back, Close, AnnotationRetention, AnnotationFolder, AnnotationClear};
-        Check(dr.FocusOrderForTest() == want, "Tab order: Retour, Fermer, conservation, dossier, effacer");
+        const std::vector<int> want{Back, Close, AnnotationClear};
+        Check(dr.FocusOrderForTest() == want, "Tab order: Retour, Fermer, effacer");
         bool walked = true; for (size_t i = 0; i < want.size(); ++i) { dr.KeyForTest(VK_TAB); walked = walked && dr.FocusForTest() == want[i]; }
         dr.KeyForTest(VK_TAB); walked = walked && dr.FocusForTest() == want[0];
         Check(walked, "Tab walks that order and wraps");
@@ -227,8 +226,6 @@ int wmain(int argc, wchar_t** argv) {
         Check(close && close->role == Role::Button && close->name == L"Fermer les réglages" && close->accelerator == L"Échap" && back && back->name == L"Retour", "UIA: Retour, Fermer les réglages (Échap)");
         Check(NodeNamed(nodes, L"Annotations") && NodeNamed(nodes, L"Annotations")->role == Role::Group && NodeNamed(nodes, L"Annotations")->automationId == L"SettingsDrawer", "UIA: the drawer pane is named after the view");
         Check(!Node(nodes, SettingsUI::AgentBase) && !NodeNamed(nodes, L"Proposer de connecter un agent") && !NodeNamed(nodes, L"Afficher le lanceur d'annotations"), "UIA: no agent button, no toggle");
-        const auto* retention = Node(nodes, SettingsUI::AnnotationRetention); Check(retention && retention->expand == 1 && retention->status == L"30 jours", "UIA: retention opens a list, value « 30 jours »");
-        const auto* folder = Node(nodes, SettingsUI::AnnotationFolder); Check(folder && folder->help == e.target.storeRoot, "UIA: folder button, full path as help");
         const auto* clear = Node(nodes, SettingsUI::AnnotationClear); Check(clear && clear->enabled && clear->help == L"Effacer 3 annotations", "UIA: clear names the count");
         Check(NodeNamed(nodes, AS::ShortcutsNote()) != nullptr, "UIA: the shortcut reminder is readable");
         std::vector<long long> focusables; for (auto& n : nodes) if (n.focusable && n.role != Role::Text && n.role != Role::Group) focusables.push_back(n.key);
@@ -236,14 +233,7 @@ int wmain(int argc, wchar_t** argv) {
         Check(focusables == order, "UIA reading order of the controls = the Tab order");
     }
 
-    // ---- Retention menu -------------------------------------------------------------------------------
-    changes.clear(); choice = 3; dr.ActivateForTest(SettingsUI::AnnotationRetention, true);
-    Check(menu.size() == 3 && menu[0].label == L"7 jours" && menu[1].label == L"30 jours" && menu[1].checked && menu[1].description == L"Recommandé." && menu[2].label == L"90 jours", "retention menu: 7 / 30 (checked, recommended) / 90 jours");
-    Check(st.annotationRetentionDays == 90 && changes == std::vector<BrowserSettings::Change>{BrowserSettings::Change::AnnotationRetention}, "90 jours chosen: state + Change::AnnotationRetention");
-    choice = 0; changes.clear(); dr.ActivateForTest(SettingsUI::AnnotationRetention, true); Check(st.annotationRetentionDays == 90 && changes.empty(), "menu dismissed: nothing changes");
-
-    // ---- Folder, clear all ---------------------------------------------------------------------------
-    dr.ActivateForTest(SettingsUI::AnnotationFolder, false); Check(folders == 1, "« Ouvrir le dossier des annotations » asks the host");
+    // ---- Clear all ---------------------------------------------------------------------------------
     dr.ActivateForTest(SettingsUI::AnnotationClear, true);
     Check(clears == 1 && clearAsked == 3, "« Effacer toutes les annotations… »: the host confirms 3");
     Check(confirmFocus == Modal::Dialog::ButtonHit(0), "confirmation: focus starts on Annuler");
@@ -262,8 +252,8 @@ int wmain(int argc, wchar_t** argv) {
     }
     // Keyboard focus ring on a button, for the capture.
     count = 3; dr.AnnotationsChanged(); dr.Show(V::Annotations);
-    for (int guard = 0; guard < 40 && dr.FocusForTest() != SettingsUI::AnnotationRetention; ++guard) dr.KeyForTest(VK_TAB);
-    shot(L"focus-retention");
+    for (int guard = 0; guard < 40 && dr.FocusForTest() != SettingsUI::AnnotationClear; ++guard) dr.KeyForTest(VK_TAB);
+    shot(L"focus-clear");
     // Escape / Retour pops back to the root with the focus on the row that opened the section.
     dr.KeyForTest(VK_ESCAPE); dr.SettleForTest();
     Check(dr.CurrentViewForTest() == V::Main && dr.FocusForTest() == SettingsUI::CatAnnotations, "Échap: back to Réglages, focus on « Annotations »");

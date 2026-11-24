@@ -198,7 +198,7 @@ struct State {
     // Annotations (dev/preview builds with the annotation mode; read by src/annotation-mode.h).
     bool annotationConnectPrompt = true; // « Connecter un agent » opens at the mode's launch while no agent is connected
     int annotationConnectDeclines = 0;   // « Plus tard » answers, 0..MaxConnectDeclines (at the max the modal stops opening)
-    int annotationRetentionDays = 30;    // done annotations kept that long: one of RetentionChoices
+    int annotationRetentionDays = 30;    // done annotations kept that long: one of RetentionChoices (no settings row since lot R: the saved value, 30 by default)
     bool annotationOnboarded = false;    // the mode's onboarding (#125, src/annotation-onboarding.h) was finished or skipped: never shown again
     // « Plus tard » on the Réglages card « Voulez-vous avoir Browser comme navigateur par défaut ? »: when (UTC seconds,
     // 0 = never). The card stays away DefaultBrowserLaterDays from then (DefaultBrowserCardDue).
@@ -222,12 +222,10 @@ enum class Change { Engine, RestoreTabs, DownloadFolder, AskWhereToSave, ReduceM
                     SearchSuggestions, Tracking, Passwords, Autofill, ClearOnExit, Sleep, Zoom,
                     CustomSearch, NewTabPage, Homepage, TabPosition, ConfirmCloseTabs, CloseWithLastTab,
                     AdBlock, HttpsOnly, ThirdPartyCookies, MemorySaver, MuteBackground, Autoplay, BookmarksBar, GrayscaleText,
-                    AnnotationConnectPrompt, AnnotationRetention, DefaultBrowserLater, FocusMode };
+                    AnnotationConnectPrompt, DefaultBrowserLater, FocusMode };
 // Annotations: the connect modal stops opening by itself after this many « Plus tard » (src/annotation-mode.h).
 inline constexpr int MaxConnectDeclines = 3;
 inline constexpr int RetentionChoices[] = {7, 30, 90};
-inline constexpr int RetentionCount = 3;
-inline std::wstring RetentionLabel(int days) { return TRP(retention_days, days); }
 // « Proposer de connecter un agent au lancement du mode » as the switch shows it: on while the modal would
 // still open by itself (not turned off, and fewer than MaxConnectDeclines « Plus tard »).
 inline bool ConnectPromptActive(const State& s) { return s.annotationConnectPrompt && s.annotationConnectDeclines < MaxConnectDeclines; }

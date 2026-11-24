@@ -720,10 +720,8 @@ def leftover_from_app():
 def holds(text, token):
     '''The token is in the text AS A WHOLE: « jt1x1 » is not in « … jt1x13 … ». The monkey numbers its messages (jt<seed>x<n>): from
     the 10th on, a plain `in` found the 1st one's token in every conversation (real-window monkey of 24 Nov 2026, seed 1: 8
-    openings said to show « another conversation's message » — the test's, not the product's).
-    Only a DIGIT right after the token is refused: chat_state() reads document.body.textContent, where neighbouring elements
-    are glued without a space (« …jeton1x435Revenir »), so a letter on either side is normal (20:00 release, 24 Nov).'''
-    return bool(token) and re.search(re.escape(token) + r'(?![0-9])', text or '') is not None
+    openings said to show « another conversation's message » — the test's, not the product's).'''
+    return bool(token) and re.search(r'(?<![0-9A-Za-z])' + re.escape(token) + r'(?![0-9A-Za-z])', text or '') is not None
 
 
 assert holds('vrai-lent jt1x13 et jt1x14', 'jt1x13') and not holds('vrai-lent jt1x13 et jt1x14', 'jt1x1') and holds('« jt1x1 »', 'jt1x1')

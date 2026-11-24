@@ -609,34 +609,11 @@ void Prompt(const SJ::Value& id, const SJ::Value* params) {
     const auto has = [&](const char* word) { return text.find(word) != std::string::npos; };
     const auto end = [&](const char* reason) { Result(id, Obj({{"stopReason", S(cancelled ? "cancelled" : reason)}})); };
 
-    const bool batch = !has("mcptool ") && has("browser_annotation_claim");
-    if (has("mcptool ") || batch) {   // first: its title, arguments and result are free text and must not pick another scenario
+    if (has("mcptool ")) {   // first: its title, arguments and result are free text and must not pick another scenario
         // "mcptool <title>|<arguments as JSON>[|<result text>]": an MCP tool asked for by its raw name, as the real adapters
         // title it (Claude Code "mcp__<server>__<tool>", Codex "mcp.<server>.<tool>"), with its arguments in rawInput.
         // Several calls in one turn: specs separated by ";;" (a part "wait <ms>" pauses between two calls).
-        std::string all;
-        if (!batch) { const std::size_t at = text.find("mcptool "); all = text.substr(at + 8, text.find('\n', at) - at - 8); }
-        else {
-            // « annotations »: a message that names browser_annotation_claim is the browser's batch instruction (« Traiter les
-            // annotations »). Like a well-mannered agent, for each line "- ann_<id> : "<note>"": get, claim, a pause, then
-            // resolve with a one-sentence summary — or release with a reason when the note says « impossible »; a note that
-            // says « oublie » is skipped altogether (the browser then says what was left). The calls go to no real server:
-            // the client sees them exactly as a real adapter would report them.
-            const std::string server = mcpServer.empty() ? std::string("browser-annotations") : mcpServer;
-            const auto tool = [&](const char* name) { return "mcp__" + server + "__" + name; };
-            for (std::size_t line = 0; line < text.size();) {
-                std::size_t eol = text.find('\n', line); if (eol == std::string::npos) eol = text.size();
-                const std::string row = text.substr(line, eol - line); line = eol + 1;
-                if (row.rfind("- ann_", 0) != 0) continue;
-                const std::string annotation = row.substr(2, row.find(' ', 2) == std::string::npos ? std::string::npos : row.find(' ', 2) - 2);
-                if (row.find("oublie") != std::string::npos) continue;
-                const std::string idArg = "{\"id\":\"" + annotation + "\"";
-                all += tool("browser_annotation_get") + "|" + idArg + "}|" + idArg + "};;";
-                all += tool("browser_annotation_claim") + "|" + idArg + "}|" + idArg + ",\"claim_token\":\"tok\"};;wait 1200;;";
-                if (row.find("impossible") != std::string::npos) all += tool("browser_annotation_release") + "|" + idArg + ",\"claim_token\":\"tok\",\"reason\":\"Je n'ai pas trouvé cet élément dans le code.\"};;";
-                else all += tool("browser_annotation_resolve") + "|" + idArg + ",\"claim_token\":\"tok\",\"outcome\":\"resolved\",\"summary\":\"C'est corrigé dans le code (faux agent).\"};;";
-            }
-        }
+        const std::size_t at = text.find("mcptool "); const std::string all = text.substr(at + 8, text.find('\n', at) - at - 8);
         std::string option;
         for (std::size_t from = 0; from <= all.size();) {
             const std::size_t sep = all.find(";;", from);
@@ -686,7 +663,7 @@ void Prompt(const SJ::Value& id, const SJ::Value* params) {
                         {"content", Arr({Obj({{"type", S("content")}, {"content", Obj({{"type", S("text")}, {"text", S(result)}})}})})}}));
             if (cancelled) return end("cancelled");
         }
-        Chunk("agent_message_chunk", batch ? std::string("J'ai traité les annotations que j'ai pu traiter.") : "mcptool:" + option);
+        Chunk("agent_message_chunk", "mcptool:" + option);
         return end("end_turn");
     }
     if (has("vrai-")) return Realistic(id, text, end);

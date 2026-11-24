@@ -96,13 +96,6 @@ svg.i { display: block; flex-shrink: 0; }
 .sendw.tip-on:not(.no-tip) .tip, .sendw:not(.no-tip):has(.send:focus-visible) .tip { opacity: 1; transform: none; }
 @media (prefers-reduced-motion: reduce) { .sendw .tip { transform: none; } }
 :root.reduce-motion .sendw .tip { transform: none; }
-/* « Gardé en annotation » (B 1.6): the user's side, quieter than a bubble — dashed hairline, no fill */
-.kept { align-self: flex-end; max-width: 88%; display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; border-radius: 12px; border: 1px dashed var(--line2); }
-.kept-note { color: var(--w90); font-size: 14px; line-height: 20px; overflow-wrap: anywhere; }
-.kept-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--w60); font-size: 12px; line-height: 16px; }
-.kept-meta .ck { width: 12px; height: 12px; color: var(--ok); flex-shrink: 0; }
-.kept-els { display: inline-flex; flex-wrap: wrap; gap: 4px; }
-.kept-sub { color: var(--w40); font-size: 11px; line-height: 14px; }
 @media (prefers-reduced-motion: reduce) { .gauge .tip, .gauge:focus-visible .tip { transform: translate(-50%, 0); } .gauge .arc { transition: none; } }
 .hd-btn { width: 28px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .hd-btn svg { opacity: .7; width: 15px; height: 15px; }
@@ -256,7 +249,9 @@ svg.i { display: block; flex-shrink: 0; }
 .btn.l { height: 30px; padding: 0 12px; }
 .btn.primary { background: var(--accent); }
 .btn.ghost { background: transparent; color: var(--w80); padding: 0 10px; }
-.btn .kbd { color: #FFFFFF80; font-size: 12px; font-weight: 400; }
+/* the key on « Autoriser » (Paper, « carte d'autorisation · la carte a le clavier »): 16 high, radius 3, white 16 % on the accent (#3F995F on #1A8641), 11 / 14 white */
+.btn .kbd { display: flex; align-items: center; flex-shrink: 0; height: 16px; padding: 0 4px; border-radius: 3px; background: rgb(255 255 255 / 16%); color: #FFFFFF; font-size: 11px; line-height: 14px; font-weight: 400; }
+.perm:not(.keys) .btn.primary .kbd { display: none; }   /* « ↵ » only while Entrée really allows (the keyboard is in the card) */
 @media (hover: hover) { .btn:hover { background: var(--hover); } .btn.primary:hover { background: #5579FF; } .btn.ghost:hover { background: var(--fill6); color: #FFFFFF; } }
 
 /* error card (6.7 D) */
@@ -438,7 +433,8 @@ svg.i { display: block; flex-shrink: 0; }
 .instead::placeholder { color: var(--w40); }
 .perm-ft { display: flex; align-items: center; gap: 8px; padding-left: 2px; }
 .always { flex: 1; display: flex; align-items: center; gap: 6px; color: var(--w70); font-size: 12px; line-height: 16px; white-space: pre; border-radius: 6px; align-self: stretch; }
-.sw { width: 28px; height: 16px; border-radius: 8px; padding: 2px; background: #FFFFFF26; display: flex; justify-content: flex-start; flex-shrink: 0; transition: background-color 150ms ease; }
+/* off: white 12 % — #3A3A3A on the card (Paper, the permission card's boards of 24 Nov 2026; the white knob carries the control's boundary and state: 16.5:1 on the card) */
+.sw { width: 28px; height: 16px; border-radius: 8px; padding: 2px; background: rgb(255 255 255 / 12%); display: flex; justify-content: flex-start; flex-shrink: 0; transition: background-color 150ms ease; }
 .sw i { width: 12px; height: 12px; border-radius: 6px; background: #FFFFFF; transition: transform 150ms var(--ease-ui); }
 .always[aria-checked="true"] .sw { background: var(--accent); }
 .always[aria-checked="true"] .sw i { transform: translateX(12px); }
@@ -616,57 +612,6 @@ svg.i { display: block; flex-shrink: 0; }
 .menu .btn-s.primary { background: var(--accent); }
 @media (hover: hover) { .menu .btn-s.primary:hover { background: #5579FF; } }
 
-/* « Traiter les annotations » — composer block (Paper 186S-0) */
-.batch { display: flex; flex-direction: column; gap: 2px; padding: 4px; border-radius: 10px; background: #FFFFFF08; border: 1px solid var(--line); max-height: 300px; overflow-y: auto; overscroll-behavior: contain; }
-.batch-hd { display: flex; align-items: center; gap: 8px; padding: 6px 4px 6px 8px; }
-.batch-hd .ic, .ann-hd .ic { width: 14px; height: 14px; opacity: .8; flex-shrink: 0; }
-.batch-hd .t, .ann-hd .t { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; line-height: 18px; color: #FFFFFF; }
-.batch-hd .site { color: var(--w50); font-size: 12px; line-height: 16px; white-space: pre; }
-.batch-hd .icon-btn svg { width: 10px; height: 10px; }
-.batch-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px; border-radius: 8px; text-align: left; width: 100%; }
-@media (hover: hover) { .batch-row:hover { background: var(--fill4); } }
-.batch-row .box { width: 16px; height: 16px; margin-top: 8px; border-radius: 4px; background: var(--accent); display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: background-color 120ms ease; }
-.batch-row .box svg { width: 10px; height: 10px; color: #FFFFFF; }
-.batch-row.off .box { background: transparent; box-shadow: inset 0 0 0 1.5px #FFFFFF4D; }
-.batch-row.off .note { color: var(--w50); }
-.batch-row.off .ann-thumb { opacity: .45; }
-.ann-thumb { width: 44px; height: 32px; border-radius: 5px; object-fit: cover; flex-shrink: 0; display: block; background: #2A2A2A; outline: 1px solid #FFFFFF14; outline-offset: -1px; }
-.ann-thumb.blank { background: linear-gradient(#FFFFFF14, #FFFFFF0A); }
-.batch-row .tx, .ann-row .tx { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.batch-row .note, .ann-row .note { color: #FFFFFF; font-size: 13px; line-height: 18px; }
-.batch-row .meta { color: var(--w50); font-family: var(--mono); font-size: 11px; line-height: 14px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
-.batch-more { align-self: flex-start; margin: 0 0 4px 34px; padding: 2px 6px; border-radius: 4px; color: var(--accent-ink); font-size: 12px; font-weight: 500; line-height: 16px; }
-@media (hover: hover) { .batch-more:hover { background: var(--fill6); } }
-
-/* « Traiter les annotations » — live card in the thread (Paper 188L-0, 18B2-0) */
-.um.ann { align-items: flex-end; }
-.ann-card { width: 320px; max-width: 100%; background: var(--raised); border-radius: 16px; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
-.ann-hd { display: flex; align-items: center; gap: 8px; padding: 6px 8px 4px; }
-.ann-prog { display: flex; align-items: center; gap: 4px; color: var(--w50); font-size: 12px; line-height: 16px; white-space: pre; font-variant-numeric: tabular-nums; }
-.ann-prog svg { width: 12px; height: 12px; }
-.ann-prog.ok { color: var(--plus); }
-.ann-prog.mixed { color: #E6AC3D; }
-.ann-extra { padding: 0 8px 4px 30px; color: var(--w80); font-size: 13px; line-height: 18px; white-space: pre-wrap; }
-.ann-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px; border-radius: 10px; text-align: left; width: 100%; transition: background-color 150ms ease; }
-.ann-row .note { color: var(--w80); }
-.ann-row.is-working { background: var(--fill4); }
-.ann-row.is-working .note { color: #FFFFFF; }
-@media (hover: hover) { .ann-row:hover { background: var(--fill6); } }
-.ann-st { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; line-height: 16px; }
-.ann-st svg { width: 12px; height: 12px; flex-shrink: 0; margin-top: 2px; }
-.ann-st.is-working { color: var(--accent-ink); font-weight: 500; align-items: center; }
-.ann-st.is-working svg { margin-top: 0; }
-.ann-st.is-pending { color: var(--w50); align-items: center; }
-.ann-st.is-pending i { width: 6px; height: 6px; margin: 0 2px; border-radius: 3px; background: #FFFFFF4D; flex-shrink: 0; }
-.ann-st.is-done { color: var(--w60); }
-.ann-st.is-done svg { color: var(--ok); }
-.ann-st.is-skipped { color: #E6AC3D; }
-.ann-inst { display: flex; align-items: center; gap: 6px; align-self: flex-start; padding: 6px 8px 4px; border-radius: 6px; color: var(--w40); font-size: 12px; line-height: 16px; }
-.ann-inst .cv { width: 11px; height: 11px; opacity: .6; transform: rotate(-90deg); transition: transform 150ms var(--ease-out); }
-.ann-inst[aria-expanded="true"] .cv { transform: none; }
-@media (hover: hover) { .ann-inst:hover { color: var(--w80); } }
-.ann-card .detail { margin: 2px 6px 4px; }
-
 /* ---------- comment-mode bubble (B 1.8) — Paper 18NS-0, 1B30-0, 1AIE-0, 1AE7-0, 1ANU-0, 19ON-0, 1AAE-0, 1A6L-0, 1AWI-0, 19IO-0 ----------
    Same page, another layout: `:root.bub`. The surface fills the window the host sizes from `bubble.size`; around it the
    page is transparent. Content sits on the edge the host keeps fixed (top; bottom when the bubble is above its element). */
@@ -719,9 +664,6 @@ svg.i { display: block; flex-shrink: 0; }
 .bub .bubble { background: var(--accent); border-radius: 12px 12px 4px 12px; max-width: 210px; padding: 6px 10px; color: var(--w90); font-size: 13px; font-weight: 500; line-height: 20px; }
 .bub .bubble .chip { border-color: #FFFFFF80; background: #FFFFFF1F; color: #FFFFFF; font-size: 13px; }
 .bub .um-attach { max-width: 210px; }
-.bub .kept { max-width: 100%; padding: 6px 10px; }
-.bub .kept-note { font-size: 13px; }
-.bub .ann-card { width: 100%; }
 /* agent turn (1B64-0): « modèle · effort » + status on one line, the words in one block */
 .bub .turn.bt { gap: 2px; }
 .bt-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 24px; }
@@ -797,7 +739,6 @@ button.bt-st[aria-describedby="b-tip"] { background: #FFFFFF1A; border-radius: 4
 .bub .model .m { gap: 4px; }
 /* cv4 R28 (user's decision): the chevron of the model button never disappears, in the bubble too */
 .bub .model .mcv { margin-left: 0; }
-.bub .batch { max-height: 170px; }
 .bub .strip { border-radius: 10px; padding: 8px 8px 8px 10px; }
 .bub .strip + .composer, .bub .strip.danger + .composer { margin-top: 0; }
 .bub .strip.danger { padding-bottom: 8px; }
@@ -807,7 +748,22 @@ button.bt-st[aria-describedby="b-tip"] { background: #FFFFFF1A; border-radius: 4
 .bub .send.stop { background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); }
 @media (hover: hover) { .bub .send.stop:hover { background: color-mix(in srgb, var(--danger) 18%, transparent); } }
 /* a request waiting for the agent's current work on another element */
-.bq { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.bq { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
+/* lot R (2026-11-24): 2 waiting messages at most, 2 lines each under a fade; « +N en attente » opens the whole list */
+.bqs { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.bq-list { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.bqs.open .bq-list { max-height: 160px; }
+.bqs.open .bq-list, .bqs.tight .bq-list { overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; }   /* tight: little height offered — the list takes what is left (bQueueRoom) */
+.bqs[hidden], .bq-list[hidden] { display: none; }
+.bq-more:disabled { cursor: default; }
+.bq-more:disabled .cv { display: none; }
+.bqs.open .bq-list.scrolled, .bqs.tight .bq-list.scrolled { -webkit-mask-image: linear-gradient(transparent, #000 20px); mask-image: linear-gradient(transparent, #000 20px); }
+.bq-tx { display: block; max-height: 40px; overflow: hidden; }
+.bq-tx.cut { -webkit-mask-image: linear-gradient(#000 calc(100% - 18px), transparent); mask-image: linear-gradient(#000 calc(100% - 18px), transparent); }
+.bq-more { display: flex; align-items: center; gap: 4px; padding: 0 2px; border-radius: 4px; color: #A6A6A6; font-size: 13px; line-height: 18px; }
+.bq-more .cv { width: 11px; height: 11px; transform: rotate(-90deg); transition: transform 150ms var(--ease-out); }
+.bq-more[aria-expanded="true"] .cv { transform: none; }
+@media (hover: hover) { .bq-more:hover { color: var(--w80); } }
 .bq .bubble.pending { opacity: .55; }
 .bq-cap { display: flex; align-items: center; gap: 2px; max-width: 100%; color: var(--w50); font-size: 12px; line-height: 16px; text-align: right; }
 .bq-cap .tx { min-width: 0; text-wrap: balance; }

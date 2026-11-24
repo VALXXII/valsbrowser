@@ -2,7 +2,7 @@
 # Réglages › « Annotations » (src/annotation-settings.h, src/settings-panel.h, src/settings.h):
 #  1. tests/settings_test.cpp (new keys: defaults, round trip, tolerant read), -Werror like test.ps1;
 #  2. tests/annotation_settings_test.cpp: pure model, the real drawer off screen (rows, Tab order, UIA tree,
-#     retention, folder, clear-all confirmation; « Ton agent »: no agent rows nor switch any more), PNG captures in
+#     clear-all confirmation; « Ton agent »: no agent rows nor switch any more; lot R: no history rows), PNG captures in
 #     build/annotations-v2-qa/settings;
 #  3. the user's REAL Claude Desktop / Codex configurations fingerprinted before and after: any change fails.
 $ErrorActionPreference = 'Stop'
@@ -77,7 +77,8 @@ function Need($ok, $what) { if (-not $ok) { $p.Kill(); throw "UIA: $what" } ; Wr
 Need (-not ($rows | Where-Object { $_.Name -eq 'Connecter Claude Desktop' -or $_.Name -like 'Codex : *' })) '« Ton agent »: no MCP agent rows'
 Need (-not ($rows | Where-Object { $_.Name -eq "Afficher le lanceur d'annotations" })) 'no launcher switch (V3: the launcher only exists in the mode)'
 Need (-not ($rows | Where-Object { $_.Name -eq 'Proposer de connecter un agent' })) '« Ton agent »: no « Proposer de connecter un agent » switch'
-Need ($rows | Where-Object { $_.Name -eq 'Conserver les terminées' -and $_.Status -eq '30 jours' -and "$($_.Expand)" -eq 'Collapsed' }) 'retention: value « 30 jours », ExpandCollapse'
+Need (-not ($rows | Where-Object { $_.Name -eq 'Conserver les terminées' -or $_.Name -eq 'Ouvrir le dossier des annotations' })) 'lot R: no retention row, no folder row (the annotation history is gone)'
+Need (-not ($rows | Where-Object { $_.Name -like '*Ctrl+Maj+H*' })) 'lot R: nothing names Ctrl+Maj+H'
 Need ($rows | Where-Object { $_.Name -eq 'Effacer toutes les annotations…' -and $_.Enabled }) 'clear-all button'
 Need ($rows | Where-Object { $_.Name -eq 'Fermer les réglages' }) 'close button'
 $p.WaitForExit(30000) | Out-Null

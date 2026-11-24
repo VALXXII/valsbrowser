@@ -249,8 +249,8 @@ std::map<int,SV::Orientation> splitGroups; int nextSplitGroup=1; std::uint64_t u
 NativeChrome::SplitUI::Overlay splitOverlay;NativeChrome::StatusBubble::Bubble statusBubble;unsigned statusSerial=0;
 struct SeparatorDrag { bool active=false; int handle=-1,slot=-1; float grab=0; std::vector<float> extents; float last=0; DWORD lastTime=0; float velocity=0; } sepDrag; int lastSeparator=-1; DWORD lastSeparatorClick=0;
 // Annotation mode entry points (src/annotation-mode.h; no-op stubs when the feature is compiled out).
-constexpr int AnnotateCommand=3060,AnnotateExitCommand=3061,AnnotateHistoryCommand=3062,ChatCommand=3063; /* chat intégré (src/chat-host.h): Ctrl+Maj+D, the panel's width taken from the page area, the reload hook, shutdown */ float ChatInsetDip(); void ChatNavigationCompleted(const std::shared_ptr<Tab>& t); void ChatShutdown(); void ChatAgentsStartup(); void ChatAgentsShutdown(); /* « Ton agent »: the agents' one status (src/agent-status.h) */ void AnnotationStartup(); void AnnotationShutdown(); /* #125: a private window's notes erased at its close, leftovers at the next start */ bool AnnotationHistoryAvailable(); bool AnnotationsCompiled(); bool AnnotationModeActive(); bool AnnotationBandSliding(); bool AnnotationSurfaceFocus(); void AnnotationSyncChrome(); void AnnotationLayout(); void AnnotationWindowState(); void AnnotationNavigation(const std::shared_ptr<Tab>& t); void AnnotationTabChanged(); void AnnotationTabSleeping(const std::shared_ptr<Tab>& t); bool AnnotationPageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceivedEventArgs* a); bool AnnotationCommand(int cmd);
-#include "annotation-entry.h" // settings section « Annotations » and menus: connect/disconnect, status, folder, clear all
+constexpr int AnnotateCommand=3060,AnnotateExitCommand=3061,ChatCommand=3063; /* chat intégré (src/chat-host.h): Ctrl+Maj+D, the panel's width taken from the page area, the reload hook, shutdown */ float ChatInsetDip(); void ChatNavigationCompleted(const std::shared_ptr<Tab>& t); void ChatShutdown(); void ChatAgentsStartup(); void ChatAgentsShutdown(); /* « Ton agent »: the agents' one status (src/agent-status.h) */ void AnnotationStartup(); void AnnotationShutdown(); /* #125: a private window's notes erased at its close, leftovers at the next start */ bool AnnotationChatShortcut(); bool AnnotationSettingsAvailable(); bool AnnotationsCompiled(); bool AnnotationModeActive(); bool AnnotationBandSliding(); bool AnnotationSurfaceFocus(); void AnnotationSyncChrome(); void AnnotationLayout(); void AnnotationWindowState(); void AnnotationNavigation(const std::shared_ptr<Tab>& t); void AnnotationTabChanged(); void AnnotationTabSleeping(const std::shared_ptr<Tab>& t); bool AnnotationPageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceivedEventArgs* a); bool AnnotationCommand(int cmd);
+#include "annotation-entry.h" // settings section « Annotations » and menus: connect/disconnect, status, clear all
 namespace CM=NativeChrome::ContextMenu; extern std::vector<CM::Item> lastSplitMenu; void TabContextMenu(int tabIndex,int anchor); void AnnotationMenuItems(const std::shared_ptr<Tab>& tab,ICoreWebView2ContextMenuRequestedEventArgs* args,std::vector<CM::Item>& items); void AnnotationMenuChoice(const std::shared_ptr<Tab>& tab,int choice); bool ResizePlaceholdersUp(); extern std::vector<HWND> splitGrips; void SyncGripLooks(); bool PointerOnGrip(); bool GripsAnimating(); void GripFrame(NativeChrome::Motion::Time now); void Select(int n); void EndSplitDrag(bool restore); void SyncSplitDecor(); void ApplyPages(); bool SplitDragMove(POINT point); bool SplitAnimating(); void SplitFrame(NativeChrome::Motion::Time now);
 // Address bar (issue #20): visited-sites history, the suggestion list and the text the
 // user typed (the field may also show an inline completion or an arrowed row).
@@ -1222,7 +1222,7 @@ int Key(UINT key){
         if(!shift&&key=='D')return 'K';
         if(shift&&key=='B')return BookmarkBarCommand;
         if(shift&&key=='A')return AnnotateCommand; // Ctrl+Maj+A: mode Annotation (toggle)
-        if(shift&&key=='D'&&AnnotationHistoryAvailable())return ChatCommand; // Ctrl+Maj+D: « Demander à l'agent » (chat intégré; starts the mode if needed)
+        if(shift&&key=='D'&&AnnotationChatShortcut())return ChatCommand; // Ctrl+Maj+D: « Demander à l'agent » (chat intégré; starts the mode if needed)
         if(shift&&key=='O')return BookmarksDrawerCommand;
         // Ctrl+Z undoes a bookmark change only from the chrome, the toast or the Favoris drawer, never in a text field or the page.
         if(!shift&&key=='Z'){HWND f=GetFocus();return f&&(f==window||f==bookmarkToast.Window()||f==bookmarksDrawer.Window())?BookmarkUndoCommand:0;}
@@ -1242,7 +1242,6 @@ int Key(UINT key){
         // Ctrl+P likewise: the page opens the same browser print preview itself (no double dialog).
         if(!shift&&key=='P')return GetFocus()==window||GetFocus()==address||(Active()&&Active()->home)?PrintActive:0; // a home tab (frequent sites shown) never prints
         if(!shift&&(key=='L'||key=='T'||key=='W'||key=='R'))return key;
-        if(shift&&key=='H'&&AnnotationHistoryAvailable())return AnnotateHistoryCommand; // Ctrl+Maj+H: historique des annotations
         if(!shift&&key=='H')return 'Y'; // history, as in every desktop browser
     }
     if(!ctrl&&!alt&&!shift&&key==VK_F6)return FocusChrome;
@@ -2452,10 +2451,8 @@ void SettingChanged(BrowserSettings::Change change){
     case Change::TabPosition:case Change::ConfirmCloseTabs:case Change::CloseWithLastTab:case Change::MuteBackground:ApplyTabSettings();break;
     case Change::Autoplay:ApplyMediaSettings();break;
     case Change::GrayscaleText:Log(settings.grayscaleText?L"SETTINGS grayscale text on: applies at next launch":L"SETTINGS grayscale text off: applies at next launch");break;
-    // Réglages › « Annotations »: the launcher shows / hides at once; the launch prompt and the
-    // retention are read by the mode when it next needs them (src/annotation-mode.h, Prefs).
-    case Change::AnnotationConnectPrompt:Log(BrowserSettings::ConnectPromptActive(settings)?L"SETTINGS annotation connect prompt on (« Plus tard » count reset)":L"SETTINGS annotation connect prompt off");AnnotationSettingsChanged();break;
-    case Change::AnnotationRetention:Log(L"SETTINGS annotation retention "+std::to_wstring(settings.annotationRetentionDays)+L" days");AnnotationSettingsChanged();break;
+    // Réglages › « Annotations »: the launch prompt is read by the mode when it next needs it (src/annotation-mode.h, Prefs).
+    case Change::AnnotationConnectPrompt:Log(BrowserSettings::ConnectPromptActive(settings)?L"SETTINGS annotation connect prompt on (« Plus tard » count reset)":L"SETTINGS annotation connect prompt off");break;
     case Change::DefaultBrowserLater:Log(L"SETTINGS default browser card: later (30 days)");break;
     case Change::FocusMode:Log(settings.focusMode?L"SETTINGS focus mode on":L"SETTINGS focus mode off");Layout();break; // instant relayout, like the bookmarks bar
     case Change::HttpsOnly:case Change::ThirdPartyCookies:ApplySecuritySettings();break;
@@ -2524,7 +2521,7 @@ void CreateSettingsPanel(){
     // « Annotations » (design/annotations-settings.md): dev / preview builds with the mode, never in a
     // private window. The drawer only asks; every disk / other-app access runs in src/annotation-mode.h, off the UI thread.
     namespace AS=AnnotationSettings;
-    hooks.annotations=[]{return AnnotationsCompiled()&&AnnotationHistoryAvailable();};
+    hooks.annotations=[]{return AnnotationsCompiled()&&AnnotationSettingsAvailable();};
     // « Agents » (« Ton agent », Paper « Réglages › Agents »): the chat agents' one status (src/agent-status.h, worker A);
     // the row's button acts on its click only (ChatAgentAct takes the install's consent there). « Connecter un agent
     // externe »: the MCP « Connecter un agent » window, its only way in besides the tutorial (it never opens by itself).
@@ -2535,8 +2532,6 @@ void CreateSettingsPanel(){
         hooks.openExternalAgents=[]{settingsDrawer.Hide(false,true);AnnotationOpenConnect(false);};
         ChatAgentsWatch([]{settingsDrawer.ChatAgentsChanged();});
     }
-    hooks.annotationFolder=[]{return AnnotationStoreRoot();};
-    hooks.openAnnotationFolder=[]{AnnotationOpenFolder();};
     hooks.countAnnotations=[](std::function<void(std::size_t)> done){AnnotationCount(std::move(done));};
     hooks.clearAnnotations=[](std::size_t n,bool keyboard){
         keyboardModality=keyboard;   // the confirmation's focus ring follows how the row was activated (as « Effacer les données… »)

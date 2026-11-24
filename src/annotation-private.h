@@ -11,6 +11,10 @@
 // process that is gone. Its annotations are deleted (published, draft and trash copies), then the ledger.
 // The line is written BEFORE the annotation (a crash between the two leaves a line for nothing, never a note without
 // its line). No Win32 window, no thread: the host calls Add / Erase on its UI thread and CleanOrphans off it.
+// Lot R (decision A, 2026-11-24): the chat works in a private window too. What it keeps there — its conversations,
+// the site -> folder memory, the copies of the project's files taken before each turn (« Tout annuler ») — goes into
+// ONE folder beside the ledger, erased with it, at the close as after a crash:
+//   <data root>\annotations-private\<random>.data\      (same <random> as the window's ledger)
 // Tests: tests/annotations/annotation_private_test.cpp.
 #include <windows.h>
 #include <cstdint>
@@ -56,6 +60,32 @@ inline void DeleteEntry(const BrowserAnnotations::Store& store, const std::strin
     if (failed) ++r.failed; else if (any) ++r.deleted; else ++r.missing;
     if (failed) r.complete = false;
 }
+// A folder and everything under it. A link (junction, symbolic link) met on the way is removed as a link: what it
+// points to is never entered nor deleted. True when nothing is left.
+inline bool RemoveTree(const std::wstring& dir) {
+    const DWORD attrs = GetFileAttributesW(dir.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES) return true;
+    if (!(attrs & FILE_ATTRIBUTE_DIRECTORY)) { SetFileAttributesW(dir.c_str(), FILE_ATTRIBUTE_NORMAL); return DeleteFileW(dir.c_str()) != 0; }
+    if (attrs & FILE_ATTRIBUTE_REPARSE_POINT) return RemoveDirectoryW(dir.c_str()) != 0;
+    bool ok = true; std::vector<std::pair<std::wstring, DWORD>> entries;
+    WIN32_FIND_DATAW fd{}; HANDLE find = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (find != INVALID_HANDLE_VALUE) {
+        do { const std::wstring name = fd.cFileName; if (name != L"." && name != L"..") entries.push_back({name, fd.dwFileAttributes}); } while (FindNextFileW(find, &fd));
+        FindClose(find);
+    }
+    for (const auto& e : entries) {
+        const std::wstring path = dir + L"\\" + e.first;
+        if (e.second & FILE_ATTRIBUTE_DIRECTORY) { if (!RemoveTree(path)) ok = false; }
+        else { if (e.second & FILE_ATTRIBUTE_READONLY) SetFileAttributesW(path.c_str(), FILE_ATTRIBUTE_NORMAL); if (!DeleteFileW(path.c_str())) ok = false; }
+    }
+    return RemoveDirectoryW(dir.c_str()) != 0 && ok;
+}
+// <dir>\<random>.ledger -> <dir>\<random>.data
+inline std::wstring DataDirOf(const std::wstring& ledgerPath) {
+    const std::wstring ext = L".ledger";
+    if (ledgerPath.size() <= ext.size() || ledgerPath.compare(ledgerPath.size() - ext.size(), ext.size(), ext) != 0) return L"";
+    return ledgerPath.substr(0, ledgerPath.size() - ext.size()) + L".data";
+}
 inline std::wstring RandomName() {
     const std::string id = BrowserAnnotations::NewAnnotationId();   // 130 random bits, [a-z0-9_]
     return std::wstring(id.begin(), id.end()) + L".ledger";
@@ -70,6 +100,14 @@ public:
     ~Ledger() { Close(); }
     bool Opened() const { return file_ != INVALID_HANDLE_VALUE; }
     const std::wstring& Path() const { return path_; }
+    // This window's own folder for what its chat keeps (created at the first call). Empty: no ledger, or no folder.
+    std::wstring DataDir() const {
+        if (!Opened()) return L"";
+        const std::wstring dir = detail::DataDirOf(path_); if (dir.empty()) return L"";
+        CreateDirectoryW(dir.c_str(), nullptr);
+        const DWORD attrs = GetFileAttributesW(dir.c_str());
+        return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) && !(attrs & FILE_ATTRIBUTE_REPARSE_POINT) ? dir : std::wstring();
+    }
     // Creates <dir>\<random>.ledger (and <dir>). False: no ledger (the caller then refuses to write the note).
     bool Open(const std::wstring& dir) {
         if (Opened()) return true;
@@ -99,6 +137,7 @@ public:
         Report r; if (!Opened()) return r;
         r.ledgers = 1;
         for (const auto& e : Entries()) detail::DeleteEntry(store, e.first, e.second, r);
+        if (!keepLedger && !detail::RemoveTree(detail::DataDirOf(path_))) { r.complete = false; ++r.failed; }   // the chat's folder of this window
         CloseHandle(file_); file_ = INVALID_HANDLE_VALUE;
         if (keepLedger) r.complete = false;
         if (r.complete) DeleteFileW(path_.c_str());
@@ -123,6 +162,7 @@ inline Report CleanOrphans(const std::wstring& dir, const BrowserAnnotations::St
         if (h == INVALID_HANDLE_VALUE) continue;   // its private window is still open (or the file is busy): next time
         ++r.ledgers; Report one;
         for (const auto& e : detail::Parse(detail::ReadAll(h))) detail::DeleteEntry(store, e.first, e.second, one);
+        if (!detail::RemoveTree(detail::DataDirOf(path))) { one.complete = false; ++one.failed; }   // what that window's chat kept
         CloseHandle(h);
         r.deleted += one.deleted; r.missing += one.missing; r.failed += one.failed;
         if (one.complete) DeleteFileW(path.c_str()); else r.complete = false;

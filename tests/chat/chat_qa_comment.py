@@ -216,11 +216,6 @@ def run_main():
         time.sleep(3.0)
         step('5 · on another page of the site the mode stays (re-armed)', logged(r'ANNOTATE mode re-armed after a reload', m9, 10) is not None)
         step('5 · …no frame there (their elements are not in this page)', not conv_marks(C.URL))
-        C.invoke('AnnotationLauncher'); time.sleep(1.2)
-        hist = C.uia('-List')
-        report['measures']['historyIds'] = hist[:400]
-        step('5 · the launcher\'s history lists the conversations whose element is gone', logged(r'CHAT history of the conversations whose element is gone: (\d+)', m9, 5) is not None)
-        capture('5-historique-conversations-disparues')
 
         # ---- 6: switching to the panel loses nothing
         m10 = mark()
