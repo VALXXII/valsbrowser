@@ -51,7 +51,7 @@ BIG = ['section.hero', 'div.plans']
 # #130, variant C (Paper « #130 Bulle sans place dessous · C règles (validées) », design/annotation-plan-2026-11-24.md §4.4).
 # Rules 1 to 4 are in the product (PR #133) and asserted. The others are asserted once their lot is done — the lot flips
 # its flag here (tests/annotation-general/coverage.json keeps a gap for each until then):
-C130_LOT1_RULES = False     # rules 7 to 10: no page auto-scroll, Refuser / Autoriser in the footer, no free side, never over the element
+C130_LOT1_RULES = True      # rules 7 to 10 (lot 1, coded): no page auto-scroll, Refuser / Autoriser in the footer, no free side, never over the element
 C130_SCROLL_RULES = False   # rules 5, 6 and 11 (lot 4): the place recomputed while the page scrolls, a 120 ms slide
 
 
@@ -61,6 +61,24 @@ def scroll_y():
         return float(page('window.scrollY'))
     except Exception:
         return None
+
+
+def window_at(point):
+    '''O3 (« clic sans bulle »): the window a click at this screen point really reaches — its class, whether it is one of
+    this browser's, and the page element under it. A click that opened nothing says where it went.'''
+    try:
+        u32.WindowFromPoint.restype = W.HWND
+        h = u32.WindowFromPoint(W.POINT(int(point[0]), int(point[1])))
+        cls = ctypes.create_unicode_buffer(128); u32.GetClassNameW(h, cls, 128)
+        root_h = u32.GetAncestor(h, 2); rcls = ctypes.create_unicode_buffer(128); u32.GetClassNameW(root_h, rcls, 128)   # GA_ROOT
+        fg = u32.GetForegroundWindow(); fcls = ctypes.create_unicode_buffer(128); u32.GetClassNameW(fg, fcls, 128)
+        try:
+            el = element_at(point)
+        except Exception:
+            el = None
+        return {'window': cls.value, 'topWindow': rcls.value, 'foreground': fcls.value, 'pageElementBox': el}
+    except Exception as e:
+        return {'error': str(e)}
 
 
 def fake_agent_exe() -> pathlib.Path:
@@ -810,9 +828,9 @@ def close_menus(kind='bubble'):
 
 
 def answer_permission(label='Autoriser', kind='bubble', after=0):
-    # a card below the visible area: the site's page scrolls softly once (H1) — click after that scroll
-    if wait_log(r'a card waits for an action below the visible area', after, 1.5):
-        time.sleep(0.6)
+    # #130 C rule 7: the page is no longer scrolled to show the card (the bubble is whole, its buttons in its foot). The card
+    # only takes a click 600 ms after it appeared (SEC-23): waited for here, as a user reading it would
+    time.sleep(0.8)
     for _ in range(16):
         real_click_chat(text=label, kind=kind, tries=2)
         if wait_log(r'CHAT permission answered', after, 1):
@@ -859,6 +877,10 @@ class Invariants:
         inside = sf is not None and sf[0] >= pg[0] - 1 and sf[1] >= pg[1] - 1 and sf[2] <= pg[2] + 1 and sf[3] <= pg[3] + 1
         sc = st.get('scroller') or {}
         cap = min(520, (pg[3] - pg[1]) / st['dpr'] - 16) if st.get('dpr') else 520   # #130 C rule 4: at most the page area - 16 px
+        if mark is not None:   # #130 C rule 10: below / above an element with no free side, the height its side holds (the host says it at each opening)
+            offered = re.findall(r'CHAT bubble: height offered (\d+) CSS px', C.log_text()[mark:])
+            if offered:
+                cap = min(cap, int(offered[-1]))
         natural = bool(sc) and (sc['sh'] <= sc['ch'] + 2 or (sf and (sf[3] - sf[1]) / st['dpr'] >= cap - 2))
         token = self.m.conv.get(sel)
         others = [t for s, t in self.m.conv.items() if s != sel and t]
@@ -868,6 +890,8 @@ class Invariants:
             time.sleep(0.1); text = (chat_state('bubble').get('text') or '')
         right_conv = (token in text if token else True) and not any(t in text for t in others)
         d = {'ms': ms, 'surface': sf, 'page': pg, 'scroller': sc, 'token': token, 'othersShown': [t for t in others if t in text]}
+        if ms is None and point:   # O3: no bubble came — where the click went (the window under it, the foreground, the page element)
+            d['underPoint'] = window_at(point); d['point'] = [int(point[0]), int(point[1])]
         # decision 5 (24 Nov 2026): « in less than 150 ms » is an objective (reported); the bubble on screen within the wait,
         # whole, at its height, with the right conversation, is what fails
         self.r.step(f'{where} · click on {sel}: the bubble is entirely visible (page area), at its height (natural, or the page area - 16 px), the right conversation',
@@ -903,7 +927,7 @@ class Invariants:
         how = found[-1]; pg = page_area(); vis = intersect(el, pg) or el
         if how.startswith('inside') and re.search(r'bubble over the element slid -?\d+ px', seg):
             return   # over an element smaller than the bubble, slid to be whole in the visible area (H1, e26c39c): the whole-bubble check is what holds
-        slid = re.search(r'bubble slid -?\d+ px along its side to be fully visible', seg)   # no side holds it whole: the alignment gives way (H1)
+        slid = re.search(r'bubble slid -?\d+ px along its side to be fully visible|slid along it to be whole', seg)   # no side holds it whole: the alignment gives way (H1, #130 C)
         css = lambda v: round(v / k, 1)
         if how.startswith('right'):
             got = {'gap': css(sf[0] - el[2]), 'top': css(sf[1] - el[1])}; want = {'gap': 12, 'top': -4}
@@ -916,7 +940,7 @@ class Invariants:
         else:
             got = {'x': css(sf[0] - vis[0]) if 'left corner' in how else css(vis[2] - sf[2]),
                    'y': css(sf[1] - vis[1]) if 'top ' in how else css(vis[3] - sf[3])}
-            want = {'x': 12, 'y': 12}
+            want = {'x': 8, 'y': 8}   # #130 C rule 9: inside the element, the bottom right corner, 8 px from its edges
         bad = {key: (got[key], want[key]) for key in want if abs(got[key] - want[key]) > 2 and not (slid and key in ('top', 'left'))}
         if bad:
             frame = [l for l in seg.splitlines() if 'bubble' in l and ('placed' in l or 'frame' in l or 'shown' in l)][-6:]

@@ -906,6 +906,10 @@
         {
           "suite": "journeys",
           "what": "r44_grand_element_taille_utilisateur"
+        },
+        {
+          "suite": "chat-units",
+          "what": "chat_units_test.cpp — « #130 C rule 9 » remplace le coin le plus proche du clic"
         }
       ]
     },
@@ -934,6 +938,10 @@
         {
           "suite": "comment-129-130",
           "what": "autorisation sur un élément bas : Refuser / Autoriser à l'écran"
+        },
+        {
+          "suite": "chat-units",
+          "what": "host_contract_test.py — « #130 C rule 7 » : l'ancien correctif (défilement automatique) est retiré"
         }
       ]
     },
@@ -1012,7 +1020,7 @@
     "O3": {
       "gap": {
         "lot": 1,
-        "why": "parcours o3_… à écrire après avoir rejoué monkey --seed 1 --until 116 / 144 / 146 / 159"
+        "why": "un chemin fermé (le refus « 10 puces » qui ouvrait l'ancienne note) et les sorties silencieuses journalisées ; la cause des clics sans bulle du monkey (#116, #144, #146, #159) n'est pas prouvée sans vraie fenêtre : rejouer monkey --seed 1 la nuit, lire « underPoint » (fenêtre sous le clic) dans les échecs, corriger, puis écrire les parcours o3_…"
       }
     },
     "O4": {
@@ -1026,7 +1034,7 @@
     "O5": {
       "gap": {
         "lot": 1,
-        "why": "parcours o5_redimensionnement_saisie et o5_menu_ne_bouge_pas à écrire"
+        "why": "#82 : le clic du test est passé à travers la bulle (journal : « selecting #prix ») — à rejouer ; #110 : la saisie sort de la surface après une zone réduite à 444 px — l'échec enregistre maintenant l'état de la page et de l'hôte ; cause non prouvée sans vraie fenêtre"
       }
     },
     "O6": {
@@ -1084,10 +1092,32 @@
       ]
     },
     "#130-règles-7-10": {
-      "gap": {
-        "lot": 1,
-        "why": "règles 7 à 10 de la variante C (pas de défilement automatique de la page, Refuser / Autoriser dans le pied, élément sans côté libre, jamais par-dessus l'élément) : assertions écrites mais éteintes — tests/chat/final/qa_final.py, C130_LOT1_RULES ; à allumer quand le code y est, puis pointer ici vers leurs tests"
-      }
+      "tests": [
+        {
+          "suite": "chat-units",
+          "what": "chat_units_test.cpp — « #130 C rule 9 » (dessous, dessus, coin bas-droit à 8 px), « #130 C rule 10 » (jamais par-dessus : hauteur limitée, bascule dessus / dessous)"
+        },
+        {
+          "suite": "chat-units",
+          "what": "host_contract_test.py — « #130 C rule 7 » (plus aucun défilement automatique de la page), « #130 C rule 10 »"
+        },
+        {
+          "suite": "chat-panel",
+          "what": "règle 8 : « bubble (permission): the request is in the bubble, in place of the input », « at its maximum height the thread scrolls and its top fades »"
+        },
+        {
+          "suite": "journeys",
+          "what": "r47_autorisation_defilement — « #130 C rule 7 · the page is never scrolled by the browser » ; invariant « the bubble is whole in the page area (#130 C) »"
+        },
+        {
+          "suite": "journeys",
+          "what": "r44_grand_element_taille_utilisateur — section.hero, div.plans : distance mesurée (12 px dessous / dessus, 8 px dans l'élément)"
+        },
+        {
+          "suite": "comment-129-130",
+          "what": "autorisation sur un élément bas : boutons à l'écran sans défilement de la page"
+        }
+      ]
     },
     "#130-règles-5-6-11": {
       "gap": {

@@ -1204,7 +1204,9 @@ try:
         check(cdp.js("document.activeElement.classList.contains('perm')"), "keyboard (SEC-23): the permission card holds the focus, never « Autoriser »", active())
         load("6.1-autorisation"); cdp.js("document.querySelector('.perm').__shownAt = performance.now()"); key("Enter")
         check(not any(x.startswith("permission.respond") for x in posted()), "keyboard (SEC-23): Entrée in the card's first 600 ms answers nothing", str(posted()[-3:]))
-        cdp.js("document.querySelector('.perm').__shownAt = 0")
+        # armed for sure: « 0 » armed it only when the page was more than PERM_ARM_MS (600 ms) old — true on a busy machine, false on
+        # an idle one, where the last check below then failed (2 runs in 12 on main, 24 Nov 2026)
+        cdp.js("document.querySelector('.perm').__shownAt = -1e6")
         cdp.call("Input.dispatchKeyEvent", type="rawKeyDown", key="Enter", code="Enter", windowsVirtualKeyCode=13, modifiers=0, autoRepeat=True)
         cdp.call("Input.dispatchKeyEvent", type="keyUp", key="Enter", code="Enter", windowsVirtualKeyCode=13, modifiers=0)
         check(not any(x.startswith("permission.respond") for x in posted()), "keyboard (SEC-23): a held Entrée (auto-repeat) answers nothing", str(posted()[-3:]))
