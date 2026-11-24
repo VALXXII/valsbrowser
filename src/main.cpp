@@ -704,7 +704,10 @@ struct PageCorner{SV::Box page;bool right=false,top=false;};
 // The page card's corner (Designer, 24 nov.): 6 DIP with the top bar, 8 DIP with the side panel (the column's cards).
 float PageRadiusDip(){return chrome.sidebar?NativeChrome::Sidebar::Zone::pageRadius:NativeChrome::Sidebar::Zone::topBarPageRadius;}
 std::vector<PageCorner> PageCorners(){
-    std::vector<PageCorner> out;if(IsZoomed(window)||InFullscreen())return out; // square like the window (Paper V3)
+    // Val (24 nov.): the page card keeps its rounded corners and 4 DIP inset when the window is MAXIMIZED too; only F11
+    // fullscreen is square, edge to edge. One switch to go back to square-when-maximized: kRoundWhenMaximized = false.
+    constexpr bool kRoundWhenMaximized=true;
+    std::vector<PageCorner> out;if((!kRoundWhenMaximized&&IsZoomed(window))||InFullscreen())return out;
     const auto c=ContentBox();auto v=CurrentSplit();std::vector<SV::Box> boxes;
     if(v.group){for(auto& s:v.a.slots)if(!s.rail)boxes.push_back(s.box);}else{auto t=Active();if(t&&t->shown)boxes.push_back(c);}
     const bool leftCovered=chrome.sidebar&&chrome.sidebarOverlay;
