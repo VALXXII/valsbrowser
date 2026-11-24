@@ -204,6 +204,21 @@ int main() {
         rm.Sync(back, {m.row, 0, 600, false}, m.gap, t0 + M::Milliseconds(300)); Check(rm.Sample(t0 + M::Milliseconds(300)).items.size() == 5, "reduced motion: a closed row leaves at once (no ghost)");
         // A presented row is clipped to its presence (an opening row is a sliver first).
         Check(Near(S::ShownRow(L, 0, .25f, 0).Height(), 8) && Near(S::ShownRow(L, 0, 2, 0).Height(), 32), "presence scales the row's height (clamped to 1)");
+        // The motion spec's timings (Designer, §1): open .25 s with the content fading in over 120 ms from 40 ms; the column
+        // closes in two beats (content out in 80 ms, then the row folds at .22 s).
+        M::TabMotionParams spec; spec.openResponse = .25f; spec.contentDelay = M::Milliseconds(40); spec.contentFade = M::Milliseconds(120); spec.exit = M::Milliseconds(80); spec.exitThenCollapse = true;
+        M::TabStripMotion cm; cm.SetParams(spec); cm.Sync(five, {m.row, 0, 600, false}, m.gap, t0); cm.Sync(six, {m.row, 0, 600, false}, m.gap, t0);
+        Check(Near(cm.Sample(t0 + M::Milliseconds(30)).items[2].opacity, 0) && cm.Sample(t0 + M::Milliseconds(100)).items[2].opacity > .2f && cm.Sample(t0 + M::Milliseconds(100)).items[2].opacity < 1 && Near(cm.Sample(t0 + M::Milliseconds(170)).items[2].opacity, 1, .02f), "content: hidden 40 ms, then 120 ms of fade");
+        Check(cm.Sample(t0 + M::Milliseconds(100)).items[2].presence > cm.Sample(t0 + M::Milliseconds(60)).items[2].presence && cm.Sample(t0 + M::Milliseconds(60)).items[2].presence > .1f, "the row opens on its spring meanwhile");
+        const M::Time tc = t0 + M::Milliseconds(2000); cm.Sync(back, {m.row, 0, 600, false}, m.gap, tc);
+        auto ghostOf = [&](M::Time at) { for (auto& it : cm.Sample(at).items) if (it.key == 9) return it; return M::TabItem{}; };
+        Check(Near(ghostOf(tc + M::Milliseconds(60)).presence, 1) && ghostOf(tc + M::Milliseconds(60)).exit > .5f, "close: the content fades first (80 ms), the slot holds");
+        Check(ghostOf(tc + M::Milliseconds(160)).presence < .9f && cm.Sample(tc + M::Milliseconds(1500)).items.size() == 5, "then the row folds and leaves");
+        // Apple's spring parameters: damping 1 never overshoots; .85 with a thrown velocity overshoots a little, then settles.
+        M::Spring crit, bouncy; crit.Snap(0); bouncy.Snap(0); crit.Set(100, t0, .3f); bouncy.Throw(100, t0, .3f, .85f, 600);
+        float peakC = 0, peakB = 0; for (int ms = 0; ms <= 1200; ms += 5) { peakC = std::max(peakC, crit.Value(t0 + M::Milliseconds(ms))); peakB = std::max(peakB, bouncy.Value(t0 + M::Milliseconds(ms))); }
+        Check(peakC <= 100.01f && peakB > 100.5f && peakB < 115 && Near(bouncy.Value(t0 + M::Milliseconds(2000)), 100) && !bouncy.Moving(t0 + M::Milliseconds(2000)), "damping 1: no overshoot; .85 thrown: a slight one, then rest");
+        M::Spring held; held.Snap(10); held.Throw(10, t0, .3f, 1, 400); Check(held.Value(t0 + M::Milliseconds(50)) > 10 && Near(held.Value(t0 + M::Milliseconds(1500)), 10), "a thrown velocity carries even with the target where it is (no seam)");
     }
     // ---- Vue partagée dans la colonne (Paper « Proposition — Vue partagée dans la colonne (panneau + compact) » 2473-0).
     // Membership: the top bar's groups (Chrome::tabGroups; tab n joins n + 1 when both share a non-zero group).

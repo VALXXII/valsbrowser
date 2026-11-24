@@ -152,6 +152,17 @@ int wmain(int argc, wchar_t** argv) {
         bool ghost = false; for (auto& it : c.sideFrame.items) ghost = ghost || (it.key == 9 && it.index < 0 && it.exit > 0 && it.exit < 1);
         Check(ghost && c.ghostBlurDraws + c.ghostFadeDraws > 0, "closing: the ghost is drawn (blur, or fade without Direct2D 1.1)");
         Check(SUCCEEDED(c.SavePng((out + L"\\anim-fermeture-60ms.png").c_str())), "frame: closing");
+        // Spec §1 close: the content fades out in 80 ms, THEN the row folds (.22 s): at 60 ms the slot is still whole.
+        bool held = false; for (auto& it : c.sideFrame.items) held = held || (it.key == 9 && it.presence > .99f);
+        Check(held, "closing: the slot waits for the content's 80 ms fade before folding");
+        // Spec §1 selection: the active background slides from the old row to the new one (one object, spring .25 s).
+        const auto t2 = t1 + Motion::Milliseconds(2000); c.Paint(five, 1, L"", false, 0, 0, nullptr, t2);
+        const float from = c.selTop.Value(t2); ms.SelectTab(4, t2); c.Paint(five, 3, L"", false, 0, 0, nullptr, t2); c.Paint(five, 3, L"", false, 0, 0, nullptr, t2 + Motion::Milliseconds(70));
+        const float mid = c.selTop.Value(t2 + Motion::Milliseconds(70)), to = c.side.tabs[3].top;
+        char msg[160]; std::snprintf(msg, sizeof msg, "selection: the plate slides (%.1f -> %.1f -> %.1f)", from, mid, to);
+        Check(Near(from, c.side.tabs[1].top) && mid > from + 4 && mid < to - 4, msg);
+        Check(SUCCEEDED(c.SavePng((out + L"\\anim-selection-70ms.png").c_str())), "frame: selection");
+        c.Paint(five, 3, L"", false, 0, 0, nullptr, t2 + Motion::Milliseconds(1500)); Check(Near(c.selTop.Value(t2 + Motion::Milliseconds(1500)), to), "selection: settled on the new row");
     }
     {   // Val (24 nov.): the address field is ONE colour while typing: the native EDIT's colour (WM_CTLCOLOREDIT uses
         // Chrome::EditSurface) is the colour painted under it, in the column, the compact bar and the top bar; the EDIT spans

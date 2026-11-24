@@ -398,16 +398,27 @@ public:
     // #127 parity 3: the column's rows run the same model on the vertical axis (Sidebar::ShownRow); its own instance, its
     // own snapshots for the ghosts. The host asks both for frames (TabsNextWake) and settles / resets both.
     Motion::TabStripMotion sideMotion;Motion::TabLayoutFrame sideFrame;std::map<unsigned,TabSnapshot> sideSnapshots;
-    Motion::Wake TabsNextWake(Motion::Time now)const{return Motion::Earlier(tabMotion.NextWake(now),sideMotion.NextWake(now));}
-    void SettleTabs(){tabMotion.Settle();sideMotion.Settle();}
+    // #127 motion spec (Designer) §1: opening at .25 s, the content fading in over 120 ms from 40 ms; the reflow after
+    // closing on the bar at .3 s; reduced motion fades in 120 ms. The column also closes in two beats (content out in
+    // 80 ms, then the row folds at .22 s). The top bar keeps its ghost blur on close (validated look).
+    static Motion::TabMotionParams TopBarTabMotion(){Motion::TabMotionParams p;p.openResponse=.25f;p.reflowResponse=.30f;p.contentDelay=Motion::Milliseconds(40);p.contentFade=Motion::Milliseconds(120);p.reducedFade=Motion::Milliseconds(120);return p;}
+    static Motion::TabMotionParams ColumnTabMotion(){auto p=TopBarTabMotion();p.exit=Motion::Milliseconds(80);p.exitThenCollapse=true;return p;}
+    // The selected row's background is ONE object sliding between rows (spec §1 « Sélection »: position and size,
+    // spring 1.0 / .25 s), never off on one row and on at the other; the text's colour and weight fade (120 ms).
+    Motion::Spring selTop{.05f},selBottom{.05f},selLeft{.05f},selRight{.05f};unsigned selPlateKey=0;
+    static constexpr float selectionResponse=.25f;
+    bool PlateMoving(Motion::Time now)const{return selTop.Moving(now)||selBottom.Moving(now)||selLeft.Moving(now)||selRight.Moving(now);}
+    Motion::Wake TabsNextWake(Motion::Time now)const{auto w=Motion::Earlier(tabMotion.NextWake(now),sideMotion.NextWake(now));return PlateMoving(now)?Motion::Earlier(w,Motion::Frame()):w;}
+    void SettleTabs(){tabMotion.Settle();sideMotion.Settle();selTop.Settle();selBottom.Settle();selLeft.Settle();selRight.Settle();}
     void SetTabsReducedMotion(bool reduced){tabMotion.SetReducedMotion(reduced);sideMotion.SetReducedMotion(reduced);}
-    void ResetTabMotion(){tabMotion.Reset();sideMotion.Reset();sideFrame={};sideSnapshots.clear();}   // a layout switch: no stale open / close
+    void ResetTabMotion(){tabMotion.Reset();sideMotion.Reset();sideFrame={};sideSnapshots.clear();selPlateKey=0;}   // a layout switch: no stale open / close
     void SyncSideMotion(int count,Motion::Time now){
         const auto m=Sidebar::Rows(side.mode);const float pitch=m.row+m.gap;
         // The model's content is the rows alone: its view leaves out the lead and « + Nouvel onglet », so its scroll range
         // is the column's (Layout::maxScroll).
         const float view=side.tabsView.Height()-m.lead-m.row;
         if(!TabKeysValid(count)){sideFrame={};sideFrame.tab=m.row;sideFrame.scroll=side.scroll;sideFrame.view=view;for(int i=0;i<count;i++){Motion::TabItem it;it.key=TabKey(i);it.index=i;it.slot=pitch*i;sideFrame.items.push_back(it);}sideFrame.content=pitch*count;return;}
+        sideMotion.SetParams(ColumnTabMotion());
         if(sideMotion.ReducedMotion()!=motion->ReducedMotion())sideMotion.SetReducedMotion(motion->ReducedMotion());
         if(sideMotion.Sync(tabKeys,{m.row,side.scroll,view,true},m.gap,now,false))   /* overflow: the model honours the list's own view */tabMotionStarted=true;
         sideFrame=sideMotion.Sample(now);
@@ -429,6 +440,7 @@ public:
             for(int i=0;i<count;i++){Motion::TabItem it;it.key=TabKey(i);it.index=i;it.slot=strip.Pitch()*i;tabFrame.items.push_back(it);}
             animateTabLayout=false;return;
         }
+        tabMotion.SetParams(TopBarTabMotion());
         if(tabMotion.ReducedMotion()!=motion->ReducedMotion())tabMotion.SetReducedMotion(motion->ReducedMotion());
         if(tabMotion.Sync(tabKeys,{strip.tab,strip.scroll,strip.view,strip.Overflow()},Design::Space::tabGap,now,animateTabLayout))tabMotionStarted=true;
         animateTabLayout=false;tabFrame=tabMotion.Sample(now);
@@ -1191,13 +1203,13 @@ public:
     // surface while the row opens or the list moves (null: the row); `content` / `fillFactor`: the strip's TabItem
     // opacity and reduced-motion fill. The selection fades like the strip's (Motion::TabSelection, 120 ms ease-out):
     // the surface goes from the hover white to #3E3E3E, the title to full white. Returns the surface grey (ghosts).
-    float DrawSideTab(const Sidebar::Layout& L,int i,const std::wstring& title,int selected,int hover,int focus,Motion::Time now,D2D1_RECT_F row,float alpha,float labels,const D2D1_RECT_F* shown=nullptr,float content=1,float fillFactor=1){
+    float DrawSideTab(const Sidebar::Layout& L,int i,const std::wstring& title,int selected,int hover,int focus,Motion::Time now,D2D1_RECT_F row,float alpha,float labels,const D2D1_RECT_F* shown=nullptr,float content=1,float fillFactor=1,bool plate=false){
         namespace K=Sidebar::Look;const bool full=L.mode==Sidebar::Mode::Complete;
         const float emphasis=sidebarDrag<0&&motion&&animateSelection&&i<(int)tabKeys.size()?Motion::Clamp(motion->selection.Visual((int)TabKey(i),now)):(i==selected?1.f:0.f);
         const bool active=emphasis>.5f;
         const float h=std::max(Hovered(TabBase+i,hover,now),Hovered(CloseBase+i,hover,now));
         const D2D1_RECT_F surface=shown?*shown:row;const float c=Design::Surface::canvas,base=c+(1-c)*K::tabHover*std::clamp(h,0.f,1.f);
-        const float fill=c+((base+(K::tabActive-base)*emphasis)-c)*fillFactor;
+        const float fill=plate?(i==selected?c:c+(base-c)*fillFactor):c+((base+(K::tabActive-base)*emphasis)-c)*fillFactor;   // plate: the selection is the sliding object
         if(fill>c+.001f&&surface.bottom-surface.top>.5f)Round(surface,std::min(Design::Radius::control,(surface.bottom-surface.top)/2),fill);
         if(shown)target->PushAxisAlignedClip(surface,D2D1_ANTIALIAS_MODE_ALIASED);
         alpha*=content;
@@ -1216,7 +1228,20 @@ public:
             SideGlyph(Sidebar::Glyph::close,cb,Sidebar::Complete::closeGlyph*Motion::PressScale(press,motion&&motion->ReducedMotion()),K::glyph*std::max(h,focus==CloseBase+i?1.f:0.f)*labels*alpha);
             if(focus==CloseBase+i)FocusRing(cb,Design::Radius::button);}
         if(shown)target->PopAxisAlignedClip();
-        return fill;
+        return plate&&i==selected?K::tabActive:fill;   // the ghost keeps what the row looked like
+    }
+    // The selection plate at the selected row's presented box: a new selection slides it there from where it is (spring);
+    // the same row moving with the list keeps it glued (snapped) unless a slide is under way (retargeted from the presented
+    // value). Reduced motion: it jumps (the text's fade keeps the link).
+    void PaintSelectionPlate(D2D1_RECT_F row,unsigned key,Motion::Time now){
+        const bool reduced=motion&&motion->ReducedMotion();
+        auto to=[&](Motion::Spring& s,float v){s.Set(v,now,selectionResponse,reduced);};
+        if(!selPlateKey)selTop.Snap(row.top),selBottom.Snap(row.bottom),selLeft.Snap(row.left),selRight.Snap(row.right);
+        else if(key!=selPlateKey||PlateMoving(now)){to(selTop,row.top);to(selBottom,row.bottom);to(selLeft,row.left);to(selRight,row.right);}
+        else{selTop.Snap(row.top);selBottom.Snap(row.bottom);selLeft.Snap(row.left);selRight.Snap(row.right);}
+        selPlateKey=key;
+        const D2D1_RECT_F p{selLeft.Value(now),selTop.Value(now),selRight.Value(now),selBottom.Value(now)};
+        if(p.bottom-p.top>.5f&&p.right-p.left>.5f)Round(p,std::min(Design::Radius::control,(p.bottom-p.top)/2),Sidebar::Look::tabActive);
     }
     // A closing row's ghost (the strip's DrawGhost on a row): drawn as it last looked, at full height in its old place,
     // into the shared ghost layer, then composited with the blur (0 -> 4 DIP) and opacity (1 -> 0) of the exit.
@@ -1236,13 +1261,8 @@ public:
         HRESULT hr=ghostLayer->EndDraw();SwapTarget(main);if(FAILED(hr))return;
         ID2D1Bitmap* bitmap=nullptr;if(FAILED(ghostLayer->GetBitmap(&bitmap))||!bitmap)return;
         target->PushAxisAlignedClip(R(L.tabsView),D2D1_ANTIALIAS_MODE_ALIASED);
-        const D2D1_POINT_2F origin{rect.left-pad,rect.top-pad};
-        if(BlurReady()){
-            const float sigma=Motion::TabExitBlur*std::clamp(item.exit,0.f,1.f);
-            blurEffect->SetInput(0,bitmap);blurEffect->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION,D2D1_PROPERTY_TYPE_FLOAT,(const BYTE*)&sigma,sizeof(sigma));
-            blurContext->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(),nullptr,D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,D2D1::IdentityMatrix(),alpha),nullptr);
-            blurContext->DrawImage(blurEffect,origin);blurContext->PopLayer();blurEffect->SetInput(0,nullptr);++ghostBlurDraws;
-        }else{target->DrawBitmap(bitmap,D2D1::RectF(origin.x,origin.y,origin.x+w,origin.y+h),alpha);++ghostFadeDraws;}
+        const D2D1_POINT_2F origin{rect.left-pad,rect.top-pad};   // the spec animates opacity only: a plain fade (80 ms), no blur
+        target->DrawBitmap(bitmap,D2D1::RectF(origin.x,origin.y,origin.x+w,origin.y+h),alpha);++ghostFadeDraws;
         target->PopAxisAlignedClip();Drop(bitmap);
     }
     // Vue partagée dans la colonne (Sidebar::Split; Paper 2473-0 « 1 · Repos » 247H-0 / 248B-0): each block's shared background
@@ -1282,6 +1302,8 @@ public:
         if(moving){   // the strip's model on rows: ghosts under, live rows at their presented slots, « + » after them
             const float pitch=SB::Rows(L.mode).row+SB::Rows(L.mode).gap;
             for(auto& it:sideFrame.items)if(it.index<0)DrawSideGhost(L,it,labels);
+            for(auto& it:sideFrame.items){const int i=it.index;if(i!=selected||i<0||i>=n)continue;   // the plate first, under every row
+                const float dy=(it.slot-i*pitch)-(sideFrame.scroll-L.scroll);auto r=L.tabs[i];r.top+=dy;r.bottom=r.top+L.tabs[i].Height()*std::clamp(it.presence,0.f,1.f);PaintSelectionPlate(R(r),it.key,now);}
             for(auto& it:sideFrame.items){const int i=it.index;if(i<0||i>=n)continue;
                 // The laid-out row (split blocks keep their offsets and insets), moved by what the motion adds: its slot's
                 // distance from rest and the presented scroll; height scaled by its presence.
@@ -1289,7 +1311,7 @@ public:
                 auto rowShown=rowFull;rowShown.bottom=rowShown.top+rowFull.Height()*std::clamp(it.presence,0.f,1.f);
                 if(rowFull.bottom<=L.tabsView.top||rowFull.top>=L.tabsView.bottom)continue;
                 const auto title=titleOf(i);const auto shown=R(rowShown);
-                const float fill=DrawSideTab(L,i,title,selected,hover,focus,now,R(rowFull),1.f,labels,&shown,it.opacity,it.fill);
+                const float fill=DrawSideTab(L,i,title,selected,hover,focus,now,R(rowFull),1.f,labels,&shown,it.opacity,it.fill,true);
                 auto& snap=sideSnapshots[it.key];snap.title=title;snap.favicon=i<(int)favicons.size()?favicons[i]:nullptr;snap.fill=fill;snap.selected=i==selected;}
             for(auto s=sideSnapshots.begin();s!=sideSnapshots.end();){if(std::none_of(sideFrame.items.begin(),sideFrame.items.end(),[&](const Motion::TabItem& i){return i.key==s->first;}))s=sideSnapshots.erase(s);else ++s;}
             const float dn=(sideFrame.content-n*pitch)-(sideFrame.scroll-L.scroll);newRow.top+=dn;newRow.bottom+=dn;}
