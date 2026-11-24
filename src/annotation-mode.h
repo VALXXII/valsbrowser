@@ -47,6 +47,7 @@
 #include "annotation-problem.h"
 #include "agent-connect.h"
 #include "annotation-ui.h"
+#include "annotation-private.h"      // #125: a private window's annotations are erased when it closes
 #include "annotation-sites.h"        // #125: « Annoter » on local projects and files only (the one rule)
 #include "annotation-onboarding.h"   // #125: the mode's onboarding (variant A), in the place of « Connecter un agent » the first time
 #include "annotation-script.h"
@@ -75,6 +76,9 @@ std::uint64_t serials = 0;                    // never reset: a new session neve
 AUI::Banner banner; AUI::NotePopover note; AUI::Launcher launcher; AUI::ConnectModal connect; AUI::SelectionFrame frame; AUI::EntryVeil veil;
 // #125: the onboarding window, made when it opens (a closed one stays until the next, never deleted from its own callback).
 std::unique_ptr<NativeChrome::AnnotationOnboardingUI::Window> onboarding;
+// #125 (Val, 2026-11-24): what a private window annotates is erased when it closes (src/annotation-private.h): this
+// process's ledger (opened at its first note), and the notes still being written (the close waits for them).
+AnnotationPrivate::Ledger privateLedger; std::atomic<int> jobsInFlight{0};
 bool OnboardingOpen() { return onboarding && onboarding->Visible(); }
 // V3 capture pipeline (src/annotation-frame.h): one shot at a time; it outlives the panel (« Ajouter » / Échap before
 // the image is ready) so the page is only told to resume once the engine has its frame.
@@ -174,6 +178,7 @@ void LogOnce(const std::wstring& what) { if (loggedOnce.find(what) != std::wstri
 // (profiles-integration.h `profileRoot`: the folder holding profiles.txt and the default profile's layout),
 // never `dataDir`, which follows the profile shown in this window. Before profiles, both were the same folder.
 std::wstring DataRoot() { return profileRoot.empty() ? dataDir : profileRoot; }
+std::wstring PrivateDir() { return DataRoot() + L"\\annotations-private"; }   // the private windows' ledgers (beside the store, never in it)
 // Created on the UI thread before any job uses it (every caller of Run touches it first).
 BA::Store& Store() { if (!store) store = std::make_unique<BA::Store>(BA::GlobalStoreRoot(DataRoot())); return *store; }
 // Older builds kept one store per profile (<data root>\profiles\<id>\annotations): merged once into the global
@@ -253,6 +258,7 @@ VOID CALLBACK RunJob(PTP_CALLBACK_INSTANCE, PVOID p) {
     auto* j = static_cast<Job*>(p);
     try { MigrateOnce(); } catch (...) {}   // every job waits for the one-time merge of the old per-profile stores
     try { if (j->work) j->work(); } catch (...) {}
+    --jobsInFlight;
     if (!post) { delete j; return; }
     { std::lock_guard<std::mutex> lock(jobsMutex); jobsDone.emplace_back(j); }
     PostMessageW(post, JobDone, 0, 0);
@@ -260,14 +266,16 @@ VOID CALLBACK RunJob(PTP_CALLBACK_INSTANCE, PVOID p) {
 void Run(std::function<void()> work, std::function<void()> done) {
     Store();
     auto* j = new Job{std::move(work), std::move(done)};
-    if (!EnsurePost() || !TrySubmitThreadpoolCallback(RunJob, j, nullptr)) { Log(L"ANNOTATE thread pool unavailable"); delete j; }
+    ++jobsInFlight;
+    if (!EnsurePost() || !TrySubmitThreadpoolCallback(RunJob, j, nullptr)) { --jobsInFlight; Log(L"ANNOTATE thread pool unavailable"); delete j; }
 }
 
 // ---------------------------------------------------------------- availability, chrome, launcher
 std::shared_ptr<Tab> ModeTab() { return s.active ? s.tab.lock() : nullptr; }
 // #125: the mode starts only where src/annotation-sites.h allows it — local projects (localhost, 127.x, [::1],
 // *.localhost) and local files — in a normal window as in a private one (AnnotationSites::OnlineInPrivateWindow). Anywhere
-// else the toolbar button keeps its unavailable state: « Annoter — marche sur vos projets locaux ».
+// else the toolbar button keeps its unavailable state, with Paper E1a's tooltip as a whole (not « Annoter — {reason} »):
+// « Mode Annotation - seulement sur vos projets et fichiers locaux ».
 bool SiteAllowed(const std::wstring& url) { return AnnotationSites::Allowed(AH::Utf8(url), privateWindow); }
 bool Available(const std::shared_ptr<Tab>& t, std::wstring* why) {
     auto no = [&](const wchar_t* w) { if (why) *why = w; return false; };
@@ -283,7 +291,7 @@ void SyncChrome() {
     chrome.annotateShown = true; chrome.annotateActive = Selecting();
     std::wstring why; const bool ok = Available(Active(), &why);
     chrome.SetEnabled('N', ok || s.active);
-    chrome.annotateTip = Selecting() ? std::wstring(TR(annotate_tip_quit)) : ok ? std::wstring(TR(chrome_tip_annotate)) : TRF(annotate_tip_unavailable, why);
+    chrome.annotateTip = Selecting() ? std::wstring(TR(annotate_tip_quit)) : ok ? std::wstring(TR(chrome_tip_annotate)) : why == TR(annotate_local_only) ? why : TRF(annotate_tip_unavailable, why);   // #125 E1a: the live-site tooltip is a whole sentence
     if (!chrome.paintAnnotate) chrome.paintAnnotate = [](ID2D1RenderTarget* t, ID2D1Factory* f, ID2D1SolidColorBrush* b, D2D1_RECT_F box, NativeChrome::Motion::InteractionVisual iv, bool focus) {
         AUI::ToolbarVisual v; v.active = Selecting(); v.hover = chrome.Enabled('N') ? iv.hover : 0; v.press = iv.press; v.focus = focus; v.keyboard = keyboardModality; v.reduced = Reduced();
         AUI::PaintToolbarButton(t, f, b, box, v);
@@ -1031,6 +1039,12 @@ void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {
     if (shot.waiting && shot.serial == s.serial && EnsurePost()) SetTimer(post, PanelTimer, 60, nullptr);   // shown by OnHidden, or by the timer
     else ShowPanel();
 }
+// #125: a private window's note is listed in its ledger BEFORE it is written (same site folder as Store::WriteAnnotation).
+bool RecordPrivate(const BA::Annotation& a) {
+    if (!privateLedger.Opened() && !privateLedger.Open(PrivateDir())) return false;
+    const std::string siteKey = BA::SiteKey(BA::SiteOrigin(a.site.empty() ? BA::RedactUrl(a.source.url) : a.site));
+    return privateLedger.Add(siteKey, a.id);
+}
 void OnSubmit(const AUI::NoteSubmission& sub) {
     auto t = ModeTab(); if (!s.active || !t) { note.Close(false); return; }
     if (s.saving) return;
@@ -1041,6 +1055,10 @@ void OnSubmit(const AUI::NoteSubmission& sub) {
     a.source.profileId = AH::Utf8(profileId);
     if (const auto* p = CurrentProfile()) a.source.profileName = AH::Utf8(p->name); else a.source.profileName = AH::Utf8(DefaultProfileLook().name);
     BA::Sanitize(a);
+    if (privateWindow && !RecordPrivate(a)) {   // #125: never a private note that its window could not erase
+        s.saving = false; BA::Outcome o; o.code = BA::Code::Io; note.Failed(TRF(annotation_save_failed_reason, AnnotationProblem::Text(o)));
+        Log(L"ANNOTATE private window: the ledger could not be written, nothing saved"); return;
+    }
     auto png = s.cap == Cap::Ready && !s.png.empty() ? std::make_shared<std::string>(s.png) : nullptr;
     if (png) { a.screenshot.scale = s.shotScale; a.screenshot.crop = s.shotCrop; }
     // « Ajouter » never waits for the capture: it joins the annotation when it lands.
@@ -1184,7 +1202,7 @@ void EnsureUi() {
 }
 void Activate(const Start& st) {
     auto t = Active(); std::wstring why;
-    if (!Available(t, &why)) { Announce(L"Annoter : " + why); return; }
+    if (!Available(t, &why)) { Announce(why == TR(annotate_local_only) ? why : L"Annoter : " + why); return; }
     if (s.active) { if (ModeTab() == t) { if (st.kind) SendStart(t, st); return; } Exit(L"tab"); }
     EnsureUi(); EnsurePost(); Store();   // the store object is created here, on the UI thread, before any job uses it
     const std::wstring keepDraft = s.draft;
@@ -1348,6 +1366,24 @@ LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 } // namespace Ann
 
 // ---------------------------------------------------------------- host entry points (declared at the top of main.cpp)
+// #125: at start (every window, once the profile root is known), the notes of a private window that did not close
+// normally; nothing to do (one attribute read) when no private window ever annotated.
+void AnnotationStartup() {
+    const std::wstring dir = Ann::PrivateDir();
+    if (GetFileAttributesW(dir.c_str()) == INVALID_FILE_ATTRIBUTES) return;
+    auto r = std::make_shared<AnnotationPrivate::Report>();
+    Ann::Run([dir, r] { std::lock_guard<std::mutex> g(Ann::writeLock); *r = AnnotationPrivate::CleanOrphans(dir, Ann::Store()); },
+             [r] { if (r->ledgers) Log(L"ANNOTATE private notes left by a closed private window erased: " + std::to_wstring(r->deleted) + L" deleted, " + std::to_wstring(r->missing) + L" already gone, " + std::to_wstring(r->failed) + L" kept for next time"); });
+}
+// #125: a private window closes: what it annotated goes with it (the notes still being written are waited for, 2 s at most;
+// past that the ledger stays and the next start finishes the job).
+void AnnotationShutdown() {
+    if (!privateWindow || !Ann::privateLedger.Opened()) return;
+    for (int i = 0; i < 200 && Ann::jobsInFlight.load() > 0; ++i) Sleep(10);
+    const bool settled = Ann::jobsInFlight.load() == 0;
+    AnnotationPrivate::Report r; { std::lock_guard<std::mutex> g(Ann::writeLock); r = Ann::privateLedger.Erase(Ann::Store(), !settled); }
+    Log(L"ANNOTATE private window closed: " + std::to_wstring(r.deleted) + L" note(s) erased, " + std::to_wstring(r.missing) + L" already gone, " + std::to_wstring(r.failed) + L" left for the next start" + (settled ? L"" : L" (a write was still running)"));
+}
 bool AnnotationModeActive() { return Ann::s.active; }
 bool AnnotationBandSliding() { return Ann::s.active && Ann::bandSliding; }   // R25: the page and the chat panel only move meanwhile
 bool AnnotationSurfaceFocus() {
@@ -1507,6 +1543,8 @@ void AnnotationMenuChoice(const std::shared_ptr<Tab>& tab, int choice) {
 float ChatInsetDip() { return 0; }
 void ChatNavigationCompleted(const std::shared_ptr<Tab>&) {}
 void ChatShutdown() {}
+void AnnotationStartup() {}
+void AnnotationShutdown() {}
 bool AnnotationModeActive() { return false; }
 bool AnnotationBandSliding() { return false; }
 bool AnnotationSurfaceFocus() { return false; }
