@@ -97,10 +97,6 @@ inline std::wstring ClearAction(std::size_t n) { return TRP(annotations_clear_ac
 
 inline const wchar_t* ShortcutsNote() { return TR(annotations_shortcuts_note); }
 
-// Retention menu (« Conserver les terminées »): one line each, the recommended one marked.
-inline const wchar_t* RetentionNote(int days) {
-    return days == 7 ? TR(retention_7_note) : days == 30 ? TR(sleep_120_note) : TR(retention_90_note);
-}
 
 // Agent logos and the annotation mark: the exact Paper paths of src/annotation-kit.h (Glyphs::claude,
 // Glyphs::openai, Glyphs::mark; Simple Icons 13.21.0, CC0). tests/annotation_settings_test.cpp checks they

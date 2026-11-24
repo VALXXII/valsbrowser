@@ -97,12 +97,6 @@ svg.i { display: block; flex-shrink: 0; }
 @media (prefers-reduced-motion: reduce) { .sendw .tip { transform: none; } }
 :root.reduce-motion .sendw .tip { transform: none; }
 /* « Gardé en annotation » (B 1.6): the user's side, quieter than a bubble — dashed hairline, no fill */
-.kept { align-self: flex-end; max-width: 88%; display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; border-radius: 12px; border: 1px dashed var(--line2); }
-.kept-note { color: var(--w90); font-size: 14px; line-height: 20px; overflow-wrap: anywhere; }
-.kept-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--w60); font-size: 12px; line-height: 16px; }
-.kept-meta .ck { width: 12px; height: 12px; color: var(--ok); flex-shrink: 0; }
-.kept-els { display: inline-flex; flex-wrap: wrap; gap: 4px; }
-.kept-sub { color: var(--w40); font-size: 11px; line-height: 14px; }
 @media (prefers-reduced-motion: reduce) { .gauge .tip, .gauge:focus-visible .tip { transform: translate(-50%, 0); } .gauge .arc { transition: none; } }
 .hd-btn { width: 28px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .hd-btn svg { opacity: .7; width: 15px; height: 15px; }
@@ -643,8 +637,6 @@ svg.i { display: block; flex-shrink: 0; }
 .bub .bubble { background: var(--accent); border-radius: 12px 12px 4px 12px; max-width: 210px; padding: 6px 10px; color: var(--w90); font-size: 13px; font-weight: 500; line-height: 20px; }
 .bub .bubble .chip { border-color: #FFFFFF80; background: #FFFFFF1F; color: #FFFFFF; font-size: 13px; }
 .bub .um-attach { max-width: 210px; }
-.bub .kept { max-width: 100%; padding: 6px 10px; }
-.bub .kept-note { font-size: 13px; }
 /* agent turn (1B64-0): « modèle · effort » + status on one line, the words in one block */
 .bub .turn.bt { gap: 2px; }
 .bt-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 24px; }

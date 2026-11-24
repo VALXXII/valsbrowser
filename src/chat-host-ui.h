@@ -89,7 +89,7 @@ void DoRearm() {
     if (post) KillTimer(post, RearmTimer);
     if (!rearmOwed) return; rearmOwed = false; rearmTries = 0;
     auto t = ChatTab(); if (!t || t != Ann::ModeTab() || !Ann::s.active) return;
-    if (ChatLocal::Classify(U8(t->uri)).origin != site.origin) { Ann::Exit(L"navigation", true); return; }   // another site: the mode (and the panel) end, as before
+    if (ChatLocal::Classify(U8(t->uri)).origin != site.origin) { Ann::Exit(L"navigation"); return; }   // another site: the mode (and the panel) end, as before
     Ann::Rearm(t, [](bool ok) {
         if (!ok) return;
         if (CommentLayout()) { ScriptReady(); return; }   // D1: the marks, and the open bubble's element WITH its frame + labels (a bare follow lost them)
@@ -120,7 +120,6 @@ void MaybeAttach(std::uint64_t serial) {
     if (convo.data.head.source.empty() && e.source.known && convo.data.items.empty()) { convo.data.head.source = e.source.Display(); SendState(); }
     SJ::Value m = SJ::Value::Obj(); m.Set("element", ElementRef(e)); composerElements[id] = std::move(e); Send("element.attached", std::move(m));
     {   SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && !Ann::s.paused)); Send("pick.state", std::move(p)); }
-    if (!pendingAsk.empty() && Usable() && !turn.active) { const std::string text = U8(pendingAsk); pendingAsk.clear(); Diag(L"the note's text goes with the element (" + std::to_wstring(text.size()) + L" bytes)"); StartTurn(text, {id}, {}); return; }
     if (Open() && panelReady) { SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus(); Diag(L"chip added: the caret goes to the composer"); }
 }
 void QuerySource(const std::shared_ptr<Tab>& t, std::uint64_t serial) {
@@ -148,11 +147,10 @@ bool OnCaptured(std::uint64_t serial, const AnnotationCapture::Result& r) {
     return true;
 }
 bool AskAvailable(const std::shared_ptr<Tab>& t) { return t && !privateWindow && ChatLocal::IsLocal(U8(t->uri)) && !ChatLocal::Classify(U8(t->uri)).file; }
-// V1.3 (the user's decision after testing): in the annotation mode a click on an element of a local site ALWAYS goes
-// to the chat — the panel opens if it is closed, the element becomes a chip, the caret goes to the composer (once the
-// chip is there). The note panel never shows then; an annotation without the agent is Ctrl+Entrée in the composer
-// (KeepAnnotation). False (the note panel, as before): not a local site, a private window, the chat cannot open,
-// or 10 elements already in the composer.
+// In the annotation mode a click on an element ALWAYS goes to the chat (lot R: the note panel is gone) — in « Panneau »
+// the panel opens if it is closed, the element becomes a chip, the caret goes to the composer (once the chip is there);
+// in « Commentaire » a bubble opens on the element. False (nothing opens, the mode says why in the log): the chat
+// cannot open, or 10 elements already in the composer.
 bool CommentFirst(const std::shared_ptr<Tab>& t) {
     const bool ok = AskAvailable(t) && !halted && !Ann::s.paused && CommentLayout();
     // monkey 0.3.611 #116 (the note opened instead of a bubble, nothing said): in Commentaire, why a click is not the chat's
@@ -167,22 +165,6 @@ bool TakeSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool cap
     OnSelection(t, serial, captureImpossible);
     return true;
 }
-// « Demander à l'agent » in the note panel: the selection (and its image, ready or still coming) moves to the chat.
-void AskFromNote(const std::wstring& draft) {
-    auto t = Ann::ModeTab(); if (!t || !Ann::s.active) return;
-    const std::uint64_t serial = Ann::s.serial; const Ann::Cap cap = Ann::s.cap;
-    Element e = ElementFromMode(serial); e.captureDone = cap != Ann::Cap::Pending && cap != Ann::Cap::Ready;
-    const std::string png = cap == Ann::Cap::Ready ? Ann::s.png : std::string(); const double scale = Ann::s.shotScale; const std::string crop = Ann::s.shotCrop;
-    aiming[serial] = std::move(e);
-    QuerySource(t, serial);
-    if (!png.empty()) TakeImage(serial, png, scale, crop);
-    std::wstring text = draft; while (!text.empty() && iswspace(text.back())) text.pop_back(); while (!text.empty() && iswspace(text.front())) text.erase(0, 1);
-    Ann::s.draft.clear(); Ann::note.Close(true); Ann::Resume();
-    if (!Open()) OpenPanel(); else { SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus(); }
-    pendingAsk = text;   // after OpenPanel: a first opening on this site starts a new conversation, which clears pendingAsk (V1.2: the text was lost)
-    Diag(L"« Demander à l'agent » from the note panel" + std::wstring(text.empty() ? L" (no text: the element only)" : L" (with its text)"));
-}
-
 // ---------------------------------------------------------------- site -> folder
 void LoadProjects() { if (!projectsLoaded) { projects = ChatStore::Projects::Load(ProjectsFile()); projectsLoaded = true; } }
 void SaveProjects() {
@@ -212,7 +194,6 @@ void SetFolder(const std::wstring& path, bool byUser = true) {
     convo.data.head.folder = folder;
     Diag(L"site " + W(site.origin) + L" linked to " + folder);
     SendState(); MaybeStartSession();
-    if (!pendingAsk.empty() && !composerElements.empty() && !turn.active) { const std::string text = U8(pendingAsk); pendingAsk.clear(); Diag(L"the note's text goes with the element (" + std::to_wstring(text.size()) + L" bytes, once the folder is known)"); std::vector<std::string> ids; for (const auto& e : composerElements) ids.push_back(e.first); StartTurn(text, ids, {}); }
 }
 // The detection decided (contract B 1.4). Sure, and the page's own file marks agree: the folder is used at once, no
 // screen. Anything else: « Où est le code de ce site ? » with the folder found, if any, as a suggestion.
@@ -420,7 +401,7 @@ void RebuildTurnMaps() {
 void NewConversation() {
     DisposeSession(L"new conversation");   // i18n-exempt: log reason
     convo = Convo{}; auto& h = convo.data.head; h.id = NewId("c_"); h.origin = site.origin; h.siteLabel = site.label; h.agentId = agentId; h.folder = folder; h.createdAt = h.updatedAt = BA::SystemNow();
-    queue.clear(); pendingAsk.clear(); RebuildTurnMaps(); doneMarkSelector.clear();   // the composer (text, chips, images) is the user's draft: it stays
+    queue.clear(); RebuildTurnMaps(); doneMarkSelector.clear();   // the composer (text, chips, images) is the user's draft: it stays
     ClearStrip("auth"); ClearStrip("undo"); waitingPermissions.clear();
     SendState(); SendThread(); SendQueue();
 }
@@ -675,7 +656,7 @@ void OpenPanel() {
     view.Show(true);
     ::Layout();   // the page shrinks at once (one layout); the panel then slides over the canvas
     picking = site.local && !site.file;
-    Ann::LauncherSync(); SyncChromeBits();
+    SyncChromeBits();
     if (reduced) panelState = PanelState::Open; else AUI::Animator::Get().Request(&slideClient);
     if (panelReady) { SendLayout(false); SendThread(); SendState(); SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && !Ann::s.paused)); Send("pick.state", std::move(p)); SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus(); }
     Ann::Announce(site.local && !site.file ? std::wstring(TR(chat_announce_open)) : TRF(chat_announce_unavailable, site.file ? TR(chat_disabled_file) : TR(chat_disabled_not_local)));
@@ -684,7 +665,7 @@ void OpenPanel() {
 void WarmBubble();
 void FinishClose() {
     panelState = PanelState::Closed; if (!BubbleOpen()) view.Show(false);   // M5: the bubble may have taken the view during the slide
-    ::Layout(); Ann::LauncherSync(); SyncChromeBits();
+    ::Layout(); SyncChromeBits();
     if (post) SetTimer(post, DestroyTimer, PanelIdleMs(), nullptr);
     ArmAgentIdle();
     if (CommentLayout()) WarmBubble();   // R34 / R18: the panel is off screen: the page becomes the warm bubble now
@@ -791,49 +772,6 @@ void Mentions(const std::string& query) {
         },
         [reply, shared] { reply(std::move(*shared)); });
 }
-// « Garder en annotation » (contract B 1.6, Ctrl+Entrée in the composer): each chip becomes an OPEN annotation of the
-// store with the user's words as its note (the « Ajouter » of the note panel, which no longer shows on local sites):
-// nothing is sent to the chat's agent, nothing is claimed; MCP agents (Claude Desktop, Codex) read it. The thread gets a
-// discreet line (`annotation.kept`, kept with the conversation); a failed write is said in the composer.
-void KeepAnnotation(const std::string& text, const std::vector<std::string>& ids) {
-    if (!site.local || site.file || site.origin.empty()) return;
-    TakeShownAside();   // C2
-    std::vector<Element> els; for (const auto& id : ids) if (auto it = composerElements.find(id); it != composerElements.end()) { els.push_back(std::move(it->second)); composerElements.erase(it); }
-    if (els.empty()) return;
-    std::string words = text; for (const auto& e : els) for (auto at = words.find(e.label); !e.label.empty() && at != std::string::npos; at = words.find(e.label)) words.erase(at, e.label.size());
-    while (!words.empty() && std::isspace(static_cast<unsigned char>(words.back()))) words.pop_back();
-    while (!words.empty() && std::isspace(static_cast<unsigned char>(words.front()))) words.erase(0, 1);
-    if (words.empty()) return;   // the panel asks for the words first
-    const std::string origin = site.origin, keptId = NewId("k_"); const std::wstring pid = profileId;
-    std::wstring pname = DefaultProfileLook().name; if (const auto* p = CurrentProfile()) pname = p->name;
-    struct Left { int n = 0; bool ok = true; std::string why; std::vector<std::string> ids; };
-    auto left = std::make_shared<Left>(); left->n = int(els.size());
-    SJ::Value refs = SJ::Value::Arr(); for (const auto& e : els) refs.Push(ElementRef(e));
-    auto shared = std::make_shared<SJ::Value>(std::move(refs));
-    for (auto& e : els) {
-        BA::Annotation a = e.pending; a.note = ClipUtf8(words, 3900); a.id = BA::NewAnnotationId(); a.site = origin;
-        a.source.profileId = U8(pid); a.source.profileName = U8(pname); BA::Sanitize(a);
-        auto png = e.png.empty() ? nullptr : std::make_shared<std::string>(e.png);
-        if (png) { a.screenshot.scale = e.shotScale; a.screenshot.crop = e.shotCrop; }
-        auto out = std::make_shared<BA::Outcome>();
-        Ann::Run([a, png, out]() mutable { std::lock_guard<std::mutex> g(Ann::writeLock); *out = Ann::Store().WriteAnnotation(a, png.get(), false); },
-            [out, left, shared, keptId, text, id = a.id, note = ClipUtf8(words, 400)] {
-                Diag(L"annotation kept (Ctrl+Entrée) " + W(id) + L": write " + W(BA::CodeName(out->code)));
-                if (out->ok()) { left->ids.push_back(id); annotationNotes[id] = note; } else { left->ok = false; left->why = U8(AnnotationProblem::Text(*out)); }
-                if (--left->n > 0) return;
-                if (left->ids.empty()) { Problem p; p.title = TR(chat_err_keep_title); p.message = TRF(chat_err_keep, W(left->why)); p.retry = false; SendError(p, "", "composer", false); return; }
-                SJ::Value m = SJ::Value::Obj(); m.Set("id", Str(keptId)); m.Set("text", Str(text)); m.Set("elements", *shared);
-                SJ::Value ann = SJ::Value::Arr(); for (const auto& i : left->ids) ann.Push(Str(i)); m.Set("annotations", std::move(ann));
-                if (!left->ok) m.Set("partial", SJ::Value::Bool(true));
-                m.Set("at", Str(Iso(BA::SystemNow())));
-                if (aside.on) {   // M7: shown aside (a turn of another element runs): the line is kept in ITS conversation
-                    aside.c.data.items.push_back(Item("annotation.kept", m)); aside.c.data.head.updatedAt = BA::SystemNow();
-                    auto copy = std::make_shared<ChatStore::Conversation>(aside.c.data); Ann::Run([copy] { History().Save(*copy); }, nullptr);
-                    Send("annotation.kept", std::move(m));
-                } else { Keep("annotation.kept", m); Send("annotation.kept", std::move(m)); SaveConvo(); }
-            });
-    }
-}
 void EditMessage(const std::string& messageId, const std::string& text, bool hasRestore, bool restore) {
     if (turn.active || messageId.size() < 2 || messageId[0] != 'u') return;
     const std::string turnId = messageId.substr(1); std::size_t index = convo.data.items.size(); std::vector<std::string> files;
@@ -875,9 +813,8 @@ void OnPanelMessage(const std::string& json) {
     if (!panelReady) return;
     if (type == "send") {
         const std::string text = m.Text("text", 400000);
-        { auto ids = m.Ids("elements", 10); extern bool HoldForAnchor(const std::string&, const std::vector<std::string>&, const std::vector<std::string>&, bool); if (HoldForAnchor(text, ids, m.Ids("attachments", 10), false)) return; AddAnchorElement(ids); SendOrQueue(text, ids, m.Ids("attachments", 10)); } return;   // Mode Commentaire: + the bubble's element
+        { auto ids = m.Ids("elements", 10); extern bool HoldForAnchor(const std::string&, const std::vector<std::string>&, const std::vector<std::string>&); if (HoldForAnchor(text, ids, m.Ids("attachments", 10))) return; AddAnchorElement(ids); SendOrQueue(text, ids, m.Ids("attachments", 10)); } return;   // Mode Commentaire: + the bubble's element
     }
-    if (type == "annotate") { auto ids = m.Ids("elements", 10); extern bool HoldForAnchor(const std::string&, const std::vector<std::string>&, const std::vector<std::string>&, bool); if (HoldForAnchor(m.Text("text", 400000), ids, {}, true)) return; AddAnchorElement(ids); KeepAnnotation(m.Text("text", 400000), ids); return; }   // contract B 1.6: Ctrl+Entrée (+ the bubble's element)
     if (type == "element.hover") {   // R26 (P -> H, H2's peek): the element of a chip, shown in the page while it is hovered
         const std::string id = m.Text("id", 64); const auto* a = v.Get("active"); const bool active = a && a->IsBool() && a->boolean;
         std::string selector;

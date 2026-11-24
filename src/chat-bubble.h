@@ -124,7 +124,7 @@ inline int RoomBelow(const Rect& element, const Rect& area, int gap, int margin)
 inline int RoomAbove(const Rect& element, const Rect& area, int gap, int margin) { return (element.top - gap) - (area.top + margin); }
 // R2: an element carries its frame + icon (Paper 18IJ-0) only once a message left its bubble — sent, waiting in the
 // queue, or kept as an annotation (Ctrl+Entrée). A click on an element then closing its bubble leaves nothing on it.
-inline bool SentItem(const std::string& type) { return type == "message.user" || type == "annotation.kept"; }
+inline bool SentItem(const std::string& type) { return type == "message.user"; }
 template <class Types> bool Sent(const Types& itemTypes, bool queued) { if (queued) return true; for (const auto& t : itemTypes) if (SentItem(t)) return true; return false; }
 // R6: a click on an element that has a conversation. Its conversation opens in the bubble when it is in memory or can be
 // read from the history; when it cannot (never saved, removed), the element is NOT left without a bubble: it forgets that

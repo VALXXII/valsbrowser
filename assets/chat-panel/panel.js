@@ -326,14 +326,13 @@
   // The whole « modèle · effort » chip is one trigger for one menu (efforts live in its « Effort › » sub-view).
   const modelBtn = h("button", { class: "m", type: "button", "aria-haspopup": "menu", "aria-expanded": "false", "aria-keyshortcuts": "Control+/",
                                  onclick: (e) => openModelMenu(e.currentTarget) }, h("span", { class: "mw" }, modelLogo, modelName), effortEl, icon("chevron", "mcv"));
-  const sendBtn = h("button", { class: "send", type: "button", "aria-keyshortcuts": "Enter Control+Enter", "aria-describedby": "send-tip", onclick: () => onSendButton() });
+  const sendBtn = h("button", { class: "send", type: "button", "aria-keyshortcuts": "Enter", "aria-describedby": "send-tip", onclick: () => onSendButton() });
   const sendTip = h("span", { class: "tip", id: "send-tip", role: "tooltip" },
-    h("span", { class: "tr" }, h("span", { text: "Demander à l'agent" }), h("span", { class: "kc" }, "↵")),
-    h("span", { class: "tr" }, h("span", { text: "Garder en annotation" }), h("span", { class: "kcs" }, h("span", { class: "kc" }, "Ctrl"), h("span", { class: "kc" }, "↵"))));
+    h("span", { class: "tr" }, h("span", { text: "Demander à l'agent" }), h("span", { class: "kc" }, "↵")));
   const sendWrap = h("span", { class: "sendw" }, sendBtn, sendTip);
   withTip(sendWrap);
   // Bubble (B 1.9, R3): the send button's bubble lives in the layer and may leave the surface — above the button, right
-  // edges aligned (never cut: « Garder en annotation Ctrl ↵ » was).
+  // edges aligned (never cut).
   function sendTipFloat(on) {
     if (!BUB()) return;
     if (!on || sendWrap.classList.contains("no-tip")) { sendTip.classList.remove("on"); floatDrop(sendTip); return; }
@@ -375,8 +374,7 @@
       h("div", { class: "model" }, modelBtn), sendWrap));
   const keysRow = h("div", { class: "keys", "aria-hidden": "true", hidden: true },
     h("span", { class: "k" }, h("span", { class: "kc" }, "↵"), "Envoyer"),
-    h("span", { class: "k" }, h("span", { class: "kcs" }, h("span", { class: "kc" }, "Maj"), h("span", { class: "kc" }, "↵")), "Nouvelle ligne"),
-    h("span", { class: "k" }, h("span", { class: "kcs" }, h("span", { class: "kc" }, "Ctrl"), h("span", { class: "kc" }, "↵")), "Annotation"));
+    h("span", { class: "k" }, h("span", { class: "kcs" }, h("span", { class: "kc" }, "Maj"), h("span", { class: "kc" }, "↵")), "Nouvelle ligne"));
 
   function composerText() {
     let out = "";
@@ -432,27 +430,6 @@
     if (BUB() && text) outboxSet(text);
     S.cEls.clear(); S.cAtt.clear(); clear(cin); renderThumbs(); closeMenu();
     updateSend();
-  }
-  // « Garder en annotation » (B 1.6): the chips and the words become annotations of the store, read by the MCP agents;
-  // nothing goes to the chat's agent. Needs an element and a few words (the note of an annotation); images stay.
-  let hintTimer = 0;
-  function hint(text) {
-    clearTimeout(hintTimer);
-    S.strips.set("keep-hint", { id: "keep-hint", tone: "neutral", text, local: true }); renderDock(); say(text);
-    hintTimer = setTimeout(() => { S.strips.delete("keep-hint"); renderDock(); }, 4000);
-  }
-  function keep() {
-    if (S.st.disabledReason) return;
-    const els = chipsInComposer().filter((id) => S.cEls.has(id));
-    const text = composerText().replace(/\s+$/, "");
-    let words = text; for (const id of els) words = words.split(S.cEls.get(id).label).join("");
-    // bubble (B 1.8): the element is the one the bubble is anchored to — the host adds it, no chip is needed
-    if (!els.length && !BUB()) { hint("Cliquez un élément de la page pour le garder en annotation."); return; }
-    if (!words.trim()) { hint("Écrivez ce qu'il faut changer, puis Ctrl+Entrée."); return; }
-    clearTimeout(hintTimer); if (S.strips.delete("keep-hint")) renderDock();
-    post("annotate", { text, elements: els });
-    for (const id of els) S.cEls.delete(id);
-    clear(cin); closeMenu(); updateSend();
   }
   function placeholder() {
     let p = "Que faut-il changer ?";
@@ -535,7 +512,6 @@
   cin.addEventListener("drop", (e) => e.preventDefault());
   cin.addEventListener("keydown", (e) => {
     if (S.menu && S.menu.combo && comboKey(e)) return;
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.isComposing) { e.preventDefault(); keep(); return; }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); return; }
     if (e.key === "Enter" && e.shiftKey) { e.preventDefault(); document.execCommand("insertText", false, "\n"); return; }
     if (e.key === "Tab" && e.shiftKey && shownModes().length > 1 && !errGhost()) {   // (out of sight after an error: Maj+Tab goes back to the buttons)
@@ -1886,20 +1862,6 @@
     if (!S.replay) { scrollToEnd(false); }
     if (BUB()) { S.berr = null; renderDock(); }   // a new request: the « Annuler / Réessayer » of an earlier error goes
   }
-  function onKept(m) {
-    const els = (m.elements || []).filter(validElement);
-    const n = Array.isArray(m.annotations) ? m.annotations.length : els.length;
-    const words = (() => { let w = m.text; for (const e of els) w = w.split(e.label).join(""); return w.replace(/\s+/g, " ").trim(); })();
-    const where = h("span", { class: "kept-els" });
-    for (const e of els) where.appendChild(chipNode(Object.assign({ picked: true }, e), false));
-    const node = h("div", { class: "kept", role: "note", "data-id": m.id, "aria-label": "Gardé en annotation : " + words },
-      h("div", { class: "kept-note", text: words }),
-      h("div", { class: "kept-meta" }, icon("check", "ck"), h("span", { text: n > 1 ? plural(n, "annotation gardée", "annotations gardées") : "Gardé en annotation" }), where),
-      h("div", { class: "kept-sub", text: m.partial ? "Une partie n'a pas pu être enregistrée." : "Pour vos agents connectés · rien n'est envoyé au chat" }));
-    add(node);
-    if (!S.replay) { scrollToEnd(false); say("Gardé en annotation."); }
-  }
-
   // Chips sit where their label appears in the text (first occurrence); the rest go under the bubble.
   function fillWithChips(parent, text, els) {
     const used = new Set();
@@ -2798,7 +2760,7 @@
     "pick.state": (m) => typeof m.active === "boolean", mentions: (m) => isStr(m.query, 200), commands: (m) => Array.isArray(m.items),
     usage: (m) => Number.isFinite(m.used) && Number.isFinite(m.size) && m.used >= 0 && m.size >= 0,
     layout: (m) => m.mode === "panel" || m.mode === "bubble",
-    "changes.diff": (m) => ID.test(m.turnId) && Array.isArray(m.diffs), "edit.confirm": (m) => ID.test(m.messageId), state: (m) => true, hello: (m) => true, focus: () => true, "copy.done": () => true, "pointer.leave": () => true, "annotation.kept": (m) => ID.test(m.id) && isStr(m.text) && Array.isArray(m.elements),
+    "changes.diff": (m) => ID.test(m.turnId) && Array.isArray(m.diffs), "edit.confirm": (m) => ID.test(m.messageId), state: (m) => true, hello: (m) => true, focus: () => true, "copy.done": () => true, "pointer.leave": () => true,
   };
 
   // ---------------------------------------------------------------- dispatch
@@ -2932,7 +2894,6 @@
       lastSize = "";
     },
     "pointer.leave"() { tipHide(); chipHover(null, false); },   // B 1.5: the host saw the cursor leave the panel
-    "annotation.kept": onKept,          // B 1.6: Ctrl+Entrée wrote the annotation(s)
   };
   function receive(m) {
     if (typeof m === "string") { try { m = JSON.parse(m); } catch (e) { warn("bad json"); return; } }

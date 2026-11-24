@@ -100,7 +100,7 @@ void NoteAnchored(const ChatStore::Header& h) {
     anchored.insert(anchored.begin(), h);
     SyncMarks();   // a new conversation of an element: its frame + icon now
 }
-void SyncMarks(); void LauncherRefresh(); std::string MarkState(const std::string& id);
+void SyncMarks(); std::string MarkState(const std::string& id);
 // Monkey 0.3.561 (F6, « the right conversation »): an element's conversation not saved yet — its first message waits in the
 // queue behind another element's turn — lives only in memory (the engine's, the one shown aside, the parked ones). A click
 // on its element looked only in the saved ones: a NEW conversation each time, the waiting message never in its bubble.
@@ -676,7 +676,7 @@ void FinishOpening() {
     auto step = [&](const char* what) { const double t = Ann::NowMs(); if (t - t0 > 8) slow += L" " + W(std::string(what)) + L" " + Ann::Ms(t - t0) + L" ms"; t0 = t; uiLast = what; };   // i18n-exempt: log detail
     CheckBubbleShown(); step("check shown");
     if (panelReady && !bubble.waitingAck) view.Focus(); step("focus");   // opening time (32 ms in a real window): a bubble still waiting gets the keyboard at its reveal (WM_APP + 2)
-    ArmAgentIdle(); Ann::LauncherSync(); SyncChromeBits(); step("chrome bits");
+    ArmAgentIdle(); SyncChromeBits(); step("chrome bits");
     FollowBubbleElement(bubble.followCurrent); step("follow");   // the page follows the element (its moves become `anchor` messages)
     SyncMarks(); step("marks");
     MaybeStartSession(); step("agent start");   // R13: its agent starts now (model list, model · effort), as the panel's does
@@ -1002,32 +1002,8 @@ void SyncMarks() {
     }
     Query(t, L"cmarks", W(SJ::Serialize(list)), [found0](const std::string& json) {
         std::set<std::string> found = found0; SJ::Value v; if (SJ::Parse(json, v) && v.IsArray()) for (const auto& i : v.items) if (i.IsString()) found.insert(i.string);
-        const bool changed = found != onPage; onPage = std::move(found);
-        if (changed && Ann::uiReady && Ann::launcher.HistoryVisible()) Ann::LoadHistory(false, false);
-        LauncherRefresh();   // D3: shown, and counting, only for the conversations whose element is gone
+        onPage = std::move(found);   // a conversation whose element is gone stays in the chat's history (« Panneau »)
     });
-}
-
-// ---------------------------------------------------------------- the launcher in this layout (D3, brief rule 6)
-// D3: the mode's page decides (not `site`, which the chat only sets at its first opening: before it, the mode's own
-// launcher came back in Commentaire).
-bool ModeSiteLocal() { auto t = Ann::ModeTab(); if (!t) return false; const auto c = ChatLocal::Classify(U8(t->uri)); return c.local && !c.file; }
-std::vector<std::string> GoneIds() {
-    std::vector<std::string> ids; const std::string origin = ModeOrigin(); if (!CommentLayout() || !ModeSiteLocal() || origin.empty()) return ids;
-    if (anchoredOrigin != origin) return ids;   // not read yet: nothing is gone
-    for (const auto& h : anchored) if (h.origin == origin && !onPage.count(h.id)) ids.push_back(h.id);
-    return ids;
-}
-// -1: not in this layout (the launcher is the mode's own); else the conversations whose element is gone.
-int CommentLauncherCount(bool workingOnly) {
-    if (!CommentLayout() || !ModeSiteLocal()) return -1;
-    int n = 0; for (const auto& id : GoneIds()) if (!workingOnly || MarkState(id) == "working") ++n;
-    return n;
-}
-void LauncherRefresh() {
-    if (!Ann::uiReady) return;
-    Ann::LauncherSync();
-    if (Ann::launcher.Visible()) Ann::ShowLauncher();
 }
 
 // ---------------------------------------------------------------- a click in the page, in this layout
@@ -1141,20 +1117,19 @@ bool TakeCommentSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, b
 }
 // MaybeAttach: the bubble's own element (image, source) is kept for its messages, never a chip of the composer.
 // A message sent from the bubble before its element was ready (image, source still coming): it leaves once it is.
-struct HeldSend { bool on = false, annotate = false; std::string conv, text; std::vector<std::string> els, atts; double at = 0; } held;
+struct HeldSend { bool on = false; std::string conv, text; std::vector<std::string> els, atts; double at = 0; } held;
 void SendOrQueue(const std::string& text, const std::vector<std::string>& els, const std::vector<std::string>& atts);
-void KeepAnnotation(const std::string& text, const std::vector<std::string>& ids);
-bool HeldFor(const std::string& conv, std::string& text) { if (!held.on || held.conv != conv || held.annotate) return false; text = held.text; return true; }
+bool HeldFor(const std::string& conv, std::string& text) { if (!held.on || held.conv != conv) return false; text = held.text; return true; }
 void CancelHeld() { if (!held.on) return; if (post) KillTimer(post, HeldTimer); held = HeldSend{}; Diag(L"the held message was cancelled"); SendQueue(); }   // i18n-exempt: log detail
-bool HoldForAnchor(const std::string& text, const std::vector<std::string>& els, const std::vector<std::string>& atts, bool annotate) {
+bool HoldForAnchor(const std::string& text, const std::vector<std::string>& els, const std::vector<std::string>& atts) {
     if (!bubble.open || anchorElements.count(bubble.conv)) return false;
     // queue #63 (monkey seed 3): another element's turn runs — the message waits anyway: queued at once, visible in its bubble;
     // its element is attached when its turn starts (ProcessQueue)
-    if (turn.active && !annotate) return false;
+    if (turn.active) return false;
     bool aimingIt = false; for (const auto& a : aiming) aimingIt = aimingIt || a.second.anchorFor == bubble.conv;
     if (!aimingIt) return false;
     if (held.on) ReleaseHeld();   // M14: a second send — the first one leaves now (it was erased)
-    held = HeldSend{true, annotate, bubble.conv, text, els, atts, Ann::NowMs()};
+    held = HeldSend{true, bubble.conv, text, els, atts, Ann::NowMs()};
     if (post) SetTimer(post, HeldTimer, 2000, nullptr);   // M14: never forever — 2 s, then without the element's image
     Diag(L"message held until the bubble's element is ready");
     SendQueue();   // queue #70: shown as waiting in its bubble while held
@@ -1167,7 +1142,7 @@ void ReleaseHeld() {
     if (auto it = anchorElements.find(h.conv); it != anchorElements.end()) {
         Element e = it->second; e.id = "el" + std::to_string(++elementSeq); h.els.insert(h.els.begin(), e.id); composerElements[e.id] = std::move(e);
     }
-    if (h.annotate) KeepAnnotation(h.text, h.els); else SendOrQueue(h.text, h.els, h.atts);
+    SendOrQueue(h.text, h.els, h.atts);
     SendQueue();
 }
 bool KeepAnchorElement(Element& e) {
@@ -1195,31 +1170,6 @@ void SwitchLayout(bool comment) {
     }
     SyncChromeBits(); SyncMarks();
     if (comment) WarmBubble();   // R18 (after the panel's slide: FinishClose warms it if the panel is still on screen)
-    LauncherRefresh();   // D3: in Commentaire, only for the conversations whose element is gone
 }
 
-// ---------------------------------------------------------------- the launcher's history: conversations whose element is gone
-std::wstring PageShort(const std::string& url) { std::wstring w = W(url); if (const auto p = w.find(L"://"); p != std::wstring::npos) w = w.substr(p + 3); return w.size() > 90 ? w.substr(0, 89) + L"…" : w; }
-bool CommentHistory(bool open, bool keyboard) {
-    if (!Ann::s.active || !CommentLayout() || !site.local || site.origin.empty()) return false;
-    AUI::HistoryData d; d.currentSite = W(site.label); const auto now = BA::SystemNow();
-    for (const auto& h : anchored) {
-        if (h.origin != site.origin || onPage.count(h.id)) continue;
-        AUI::HistoryEntry e; e.id = L"conv:" + W(h.id); e.site = W(h.siteLabel.empty() ? site.label : h.siteLabel); e.page = PageShort(h.anchorPage);
-        e.note = W(h.title.empty() ? h.anchorLabel : h.title); e.status = MarkState(h.id) == "working" ? AUI::EntryStatus::Working : AUI::EntryStatus::Done;
-        e.agent = h.agentId == "codex" ? AUI::AgentKind::Codex : AUI::AgentKind::Claude; e.agentName = W(std::string(AgentOf(h.agentId) ? AgentOf(h.agentId)->name : Agent().name));
-        e.age = Ann::Age(h.updatedAt, now); e.followUp = TRF(chat_gone_followup, W(h.anchorLabel));
-        d.entries.push_back(std::move(e));
-    }
-    if (open) { if (Ann::launcher.ShowHistory(d, keyboard)) Diag(L"history of the conversations whose element is gone: " + std::to_wstring(d.entries.size())); }
-    else if (Ann::launcher.HistoryVisible()) Ann::launcher.UpdateHistory(d);
-    return true;
-}
-bool OpenFromHistory(const std::wstring& id) {
-    if (id.rfind(L"conv:", 0) != 0) return false;
-    Ann::launcher.HideHistory();
-    const std::string conv = U8(id.substr(5)); const auto* h = AnchoredOf(conv); const std::string label = h ? h->anchorLabel : std::string();
-    ShowConversation(conv, [conv, label] { if (CommentLayout()) { OpenBubble(conv, nullptr, "", false, label); bubble.noFollow = true; } else OpenPanel(); });   // C3: no element to follow (it is gone)
-    return true;
-}
 } // namespace Chat

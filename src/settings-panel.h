@@ -66,8 +66,9 @@ enum Hit : int {
     CatProfiles = 85, ProfileDelete = 86, ProfileEditorHit = 87, ProfileClearData = 88, ProfileRowBase = 700,   // Réglages › Profils (Paper p-I-0 P02)
     CatAnnotations = 89,   // « Annotations » (85..88 are Profils)
     LanguageHit = 66,      // « Langue » (root, under Profils): browser-wide interface language, applied at next start
-    // « Annotations »: one button per agent row, the manual fallback, the prompt switch, retention, folder, clear all.
-    AgentBase = 90, ManualConnect = 92, AnnotationPrompt = 67, AnnotationRetention = 58, AnnotationFolder = 59, AnnotationClear = 45,
+    // « Annotations »: one button per agent row, the manual fallback, the prompt switch, clear all (lot R: the history
+    // rows — retention, folder — went with the annotation history).
+    AgentBase = 90, ManualConnect = 92, AnnotationPrompt = 67, AnnotationClear = 45,
     SiteBase = 100, PermissionBase = 400, ResultBase = 600,
 };
 inline constexpr int AgentHit(AnnotationSettings::App a) { return AgentBase + static_cast<int>(a); }
@@ -208,7 +209,6 @@ struct LayoutInput {
     std::array<std::vector<std::wstring>, AnnotationSettings::AppCount> agentLines;   // wrapped status per app
     long long now = 0;                                          // UTC seconds (status « il y a … »)
     std::size_t annotationCount = SIZE_MAX;                     // SIZE_MAX: not counted yet
-    std::wstring annotationFolder;                              // the store root (second line of the folder row)
     bool vaultManager = false; std::size_t vaultCount = 0;   // E8: the vault is active (entry shown) and its account count
     bool importData = false;                                   // « Importer depuis un navigateur… » (not in a private window)
     int site = -1;                                             // Site view: index into sites
@@ -349,12 +349,10 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
         endGroup();
         labelAt(TR(settings_group_annotation_mode));
         twoLine(AnnotationPrompt, TR(settings_connect_prompt));
-        { auto lines = described(ShortcutsNoteKey); const size_t n = std::max<size_t>(1, lines.size()); auto* s = add(Kind::Note, None, n * 20.f, AS::ShortcutsNote()); s->lines = std::move(lines); }
-        endGroup();
-        labelAt(TR(settings_group_history));
-        add(Kind::Value, AnnotationRetention, row, TR(settings_keep_done), st ? BrowserSettings::RetentionLabel(st->annotationRetentionDays) : L"");
-        add(Kind::Folder, AnnotationFolder, folderRow, TR(settings_open_annotation_folder), in.annotationFolder);
+        // Lot R: « Effacer toutes les annotations… » is kept (privacy: the chat still stores each element sent), as the
+        // last row of this group, like « Effacer les données… » under its switch in « Confidentialité ».
         { auto* s = add(Kind::Danger, AnnotationClear, row, TR(settings_clear_annotations)); s->disabled = in.annotationCount == 0 || in.annotationCount == SIZE_MAX; }
+        { auto lines = described(ShortcutsNoteKey); const size_t n = std::max<size_t>(1, lines.size()); auto* s = add(Kind::Note, None, n * 20.f, AS::ShortcutsNote()); s->lines = std::move(lines); }
         y -= rowGap;
     } else if (view == View::Sites) {
         const size_t n = in.sites ? in.sites->size() : 0;
@@ -461,9 +459,7 @@ inline const Searchable SearchIndex[] = {
     {AgentHit(AnnotationSettings::App::Codex), {I::brand_codex}, {I::settings_path_annotations_agents}, View::Annotations, {I::search_kw_codex}},
     {ManualConnect, {I::settings_manual_connect}, {I::settings_path_annotations_agents}, View::Annotations, {I::search_kw_manual_connect}},
     {AnnotationPrompt, {I::settings_connect_prompt}, {I::settings_path_annotations_mode}, View::Annotations, {I::search_kw_connect_prompt}},
-    {AnnotationRetention, {I::settings_keep_done}, {I::settings_path_annotations_history}, View::Annotations, {I::search_kw_keep_done}},
-    {AnnotationFolder, {I::settings_open_annotation_folder}, {I::settings_path_annotations_history}, View::Annotations, {I::search_kw_annotation_folder}},
-    {AnnotationClear, {I::settings_clear_annotations}, {I::settings_path_annotations_history}, View::Annotations, {I::search_kw_clear_annotations}},
+    {AnnotationClear, {I::settings_clear_annotations}, {I::settings_path_annotations_mode}, View::Annotations, {I::search_kw_clear_annotations}},
 };
 inline bool IsAnnotationEntry(const Searchable& e) { return e.view == View::Annotations || e.hit == CatAnnotations; }
 // Case- and accent-insensitive form for matching ("Économiseur" ~ "economiseur").
@@ -551,8 +547,6 @@ public:
         std::function<void(std::function<void(AnnotationSettings::Agents)>)> loadAgents;            // detection (async)
         std::function<void(AnnotationSettings::App, bool connect, std::function<void(bool ok, std::wstring message)>)> connectAgent; // explicit click only
         std::function<void()> openConnect;                                                         // the connect modal on its manual fallback
-        std::function<std::wstring()> annotationFolder;                                            // the store root (shown, tooltip)
-        std::function<void()> openAnnotationFolder;                                                // Explorer on it
         std::function<void(std::function<void(std::size_t)>)> countAnnotations;                    // published + drafts (async)
         std::function<void(std::size_t count, bool keyboard)> clearAnnotations;                    // ClearAnnotationsSpec(count), then clear; call AnnotationsChanged()
         std::function<long long()> now;                                                            // UTC seconds (tests); default time()
@@ -692,7 +686,7 @@ private:
         in.profiles = &profiles_; in.editorHeight = editor_.Height();
         in.state = state_; in.sites = &sites_; in.sitesLoaded = sitesLoaded_; in.sitesQuiet = LoadQuiet(Motion::Now()); in.site = site_;
         in.annotations = AnnotationsOn(); in.agents = &agents_; in.agentsKnown = agentsKnown_; in.agentLines = agentLines_; in.now = NowSeconds();
-        in.annotationCount = annotationCount_; if (in.annotations && hooks_.annotationFolder) in.annotationFolder = FolderText(hooks_.annotationFolder());
+        in.annotationCount = annotationCount_;
         in.importData = static_cast<bool>(hooks_.importData);
         if (hooks_.vaultInfo) { const auto v = hooks_.vaultInfo(); in.vaultManager = v.first; in.vaultCount = v.second; } return in;
     }
@@ -1613,7 +1607,7 @@ private:
             case Kind::Nav: if (s.hit == CatProfiles) { n = &add(s.hit, Role::Button, TRF(settings_profiles_name, s.value), box); n->automationId = L"SettingsProfiles"; n->help = TR(settings_profiles_help); }
                 else if (!s.hit) { n = &add(textKey++, Role::Text, s.text + (s.lines.empty() ? L"" : L" : " + join(s.lines)), box); n->focusable = false; } else { n = &add(s.hit, Role::Button, s.text, box); n->status = s.value; if (s.hit == ImportData) n->automationId = L"SettingsImportData"; } break;
             case Kind::Folder: n = &add(s.hit, Role::Button, s.text.empty() ? std::wstring(TR(settings_save_in)) : s.text, box);
-                n->help = s.hit == Folder ? (hooks_.downloadFolder ? hooks_.downloadFolder() : L"") : (hooks_.annotationFolder ? hooks_.annotationFolder() : L""); break;
+                n->help = hooks_.downloadFolder ? hooks_.downloadFolder() : L""; break;
             case Kind::SiteRow: n = &add(s.hit, Role::Button, s.text, box); n->help = s.value; break;
             case Kind::Danger: n = &add(s.hit, Role::Button, s.text, box); n->enabled = !s.disabled; n->focusable = !s.disabled;
                 if (s.hit == AnnotationClear && annotationCount_ != SIZE_MAX) n->help = annotationCount_ == 0 ? std::wstring(TR(settings_no_annotation)) : AnnotationSettings::ClearAction(annotationCount_); break;
@@ -1796,14 +1790,8 @@ private:
         else if (hit == CatAnnotations) { LoadAnnotations(); Push(View::Annotations, now); }
         else if (IsAgent(hit)) AgentAction(static_cast<AnnotationSettings::App>(hit - AgentBase));
         else if (hit == ManualConnect) { if (hooks_.openConnect) hooks_.openConnect(); }
-        else if (hit == AnnotationFolder) { if (hooks_.openAnnotationFolder) hooks_.openAnnotationFolder(); }
         else if (hit == AnnotationClear) {
             if (hooks_.clearAnnotations && annotationCount_ != SIZE_MAX && annotationCount_ > 0) { const std::size_t n = annotationCount_; Modal([&] { hooks_.clearAnnotations(n, keyboard); }); }
-        } else if (hit == AnnotationRetention) {
-            std::vector<ContextMenu::Item> items;
-            for (int i = 0; i < RetentionCount; ++i) { const int d = RetentionChoices[i]; auto item = ContextMenu::Command(i + 1, RetentionLabel(d), L"", true, state_->annotationRetentionDays == d); item.description = AnnotationSettings::RetentionNote(d); items.push_back(item); }
-            const int chosen = Choose(items, hit, keyboard);
-            if (chosen > 0 && RetentionChoices[chosen - 1] != state_->annotationRetentionDays) { state_->annotationRetentionDays = RetentionChoices[chosen - 1]; if (hooks_.changed) hooks_.changed(Change::AnnotationRetention); }
         }
         else if (hit == Zoom) {
             std::vector<ContextMenu::Item> items;
@@ -2009,8 +1997,7 @@ private:
         add(CheckUpdates, Layout::Trailing(Height() - Layout::padBottom - Layout::slot, Layout::slot), TR(settings_check_updates));
         if (AboutOn() && VersionIn(view)) add(AboutVersion, Layout::About(VersionTop()), TR(settings_about));   // Paper 1V0O-0 « À propos de Browser »
         for (const auto& s : Slots(view, Motion::Now())) if (s.kind == Kind::Folder && s.top >= Layout::viewTop - 1 && s.top + s.height <= ViewBottom(view)) {
-            if (s.hit == Folder) add(Folder, Layout::Row(s.top, s.height), hooks_.downloadFolder ? hooks_.downloadFolder() : std::wstring(TR(settings_change_folder)));
-            else add(static_cast<UINT_PTR>(s.hit), Layout::Row(s.top, s.height), hooks_.annotationFolder ? hooks_.annotationFolder() : L"");
+            add(Folder, Layout::Row(s.top, s.height), hooks_.downloadFolder ? hooks_.downloadFolder() : std::wstring(TR(settings_change_folder)));
         }
     }
     void Invalidate() { if (hwnd_ && visible_) InvalidateRect(hwnd_, nullptr, FALSE); }

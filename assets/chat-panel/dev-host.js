@@ -303,11 +303,6 @@
       click(".model .m"), wait(30), click(".menu .mi[data-key='effort']")],
     "jauge-survol": [st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", ASK)].concat(doneTurn("t1")) },
       { type: "usage", used: 86000, size: 270000 }],
-    // V1.3 (B 1.6): a click on the page put the element in the composer; Ctrl+Entrée keeps it as an annotation
-    "garder-annotation": [st(conv("Titre de la page")), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Aligne-le à droite")].concat(doneTurn("t1")) },
-      () => send({ type: "element.attached", element: Object.assign({}, EL, { id: "el-title", label: "h1.title", kind: "heading" }) }), typeIn("Mets ce titre en gras")],
-    "garde-en-annotation": [st(conv("Titre de la page")), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Aligne-le à droite")].concat(doneTurn("t1"),
-      [{ type: "annotation.kept", id: "k1", text: "h1.title Mets ce titre en gras", elements: [Object.assign({}, EL, { id: "el-title", label: "h1.title", kind: "heading" })], annotations: ["ann_1"], at: today(15, 40) }]) }],
     // B 1.7: the selection switch, on (pressed) and off
     "selection-active": [st(conv("Titre de la page")), { type: "thread.reset", conversationId: "c1", items: [] }, { type: "pick.state", active: true }],
     "selection-coupee": [st(conv("Titre de la page")), { type: "thread.reset", conversationId: "c1", items: [] }, { type: "pick.state", active: false }],
@@ -511,7 +506,6 @@
       case "setMode": send({ type: "state", mode: m.id }); break;
       case "copy": send({ type: "copy.done", ok: true }); break;
       case "pickElement": send({ type: "pick.state", active: !!m.active }); break;
-      case "annotate": send({ type: "annotation.kept", id: "k" + Date.now(), text: m.text, elements: [Object.assign({}, EL, { id: m.elements[0], label: "h1.title", kind: "heading" })], annotations: ["ann_x"], at: new Date().toISOString() }); break;
       case "setAgent": send({ type: "state", agentId: m.id, model: m.id === "codex" ? "terra" : "sonnet", conversation: null }); send({ type: "thread.reset", conversationId: "new", items: [] }); break;
       case "checkpoint.viewChanges": send({ type: "changes.diff", turnId: m.turnId, diffs: /^c-/.test(window.__scenarioName || "") && window.__scenarioName !== "c-diff-plusieurs-fichiers" ? [C_DIFF] : FULL_DIFFS }); break;
       // bubble layout: the fake host's window follows the bubble (a real host resizes the WebView)

@@ -356,7 +356,6 @@ std::wstring NoteOf(const std::string& annotation) {
     if (annotation.empty()) return L"";
     for (const auto& e : turn.elements) if (e.annId == annotation) return W(ChatPrompt::OneLine(turn.text, 40));
     if (auto it = annotationNotes.find(annotation); it != annotationNotes.end()) return W(ChatPrompt::OneLine(it->second, 40));
-    if (auto it = Ann::historyEntries.find(annotation); it != Ann::historyEntries.end()) return W(ChatPrompt::OneLine(it->second.annotation.note, 40));
     return L"";
 }
 // What one of our annotation tools does (asked: the infinitive of the card and of a running step) or did (the step once done).
@@ -623,14 +622,12 @@ void WriteAnnotations(std::vector<Element>& elements, const std::string& note) {
             [out, elementId, turnId, id = a.id] {
                 Diag(L"annotation " + W(id) + L": write " + W(BA::CodeName(out->write.code)) + L", claim " + W(BA::CodeName(out->claim.code)));
                 if (!out->write.ok()) return;
-                Ann::sessionIds.insert(id); Ann::seenWorking.insert(id); Ann::seenDone.insert(id);   // the chat shows its own progress: no launcher card for it
                 auto settle = [&](Element& el) { el.annSite = out->siteKey; el.token = out->claim.ok() ? out->lease.token : std::string(); };
                 if (turn.active && turn.id == turnId) { for (auto& el : turn.elements) if (el.id == elementId) settle(el); }
                 else for (auto it = orphanAnnotations.begin(); it != orphanAnnotations.end(); ++it) if (it->annId == id) {   // its turn is over: close it now
                     settle(*it); const Element late = *it; orphanAnnotations.erase(it);
                     if (!late.token.empty()) CloseAnnotations({late}, late.closeResolved, late.closeSummary);
                     break; }
-                Ann::RefreshStatus();
             });
     }
 }
@@ -641,7 +638,7 @@ void CloseAnnotations(const std::vector<Element>& elements, bool resolved, const
         if (e.annSite.empty() || e.token.empty()) { Element late = e; late.closeResolved = resolved; late.closeSummary = summary; late.png.clear(); orphanAnnotations.push_back(std::move(late)); continue; }   // still being written: closed when its write comes back
         const std::string site2 = e.annSite, id = e.annId, token = e.token; auto r = std::make_shared<BA::Outcome>();
         Ann::Run([=] { std::lock_guard<std::mutex> g(Ann::writeLock); *r = resolved ? Ann::Store().Resolve(site2, id, token, "resolved", summary, actor) : Ann::Store().Release(site2, id, token, actor, summary); },
-                 [=] { Diag(L"annotation " + W(id) + (resolved ? L": resolved " : L": released ") + W(BA::CodeName(r->code))); Ann::RefreshStatus(); if (Ann::launcher.HistoryVisible()) Ann::LoadHistory(false, false); });
+                 [=] { Diag(L"annotation " + W(id) + (resolved ? L": resolved " : L": released ") + W(BA::CodeName(r->code))); });
     }
 }
 std::string LastParagraph(const std::string& text) {

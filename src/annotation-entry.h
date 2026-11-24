@@ -6,11 +6,10 @@
 //
 // Settings read by the mode (src/settings.h, owned by the settings worker; until a key exists its default
 // is used — detection at compile time in annotation-mode.h, no source dependency either way):
-//   (annotation-launcher: V2 key, read and ignored since V3 — the launcher only exists in the mode)
 //   annotationConnectPrompt   bool  true   « Proposer de connecter un agent au lancement du mode »
 //   annotationConnectDeclines int    0     « Plus tard » answers (the modal stops opening by itself at 3)
-//   annotationRetentionDays   int    30    7 / 30 / 90: done annotations kept that long (Store::Purge)
-// After changing one of them, call AnnotationSettingsChanged() (launcher shown/hidden at once).
+//   annotationRetentionDays   int    30    7 / 30 / 90: done annotations kept that long (Store::Purge); no settings
+//                                         row since lot R (the annotation history is gone): the saved value applies
 //
 // Test guard: BROWSER_ANNOTATIONS_TEST=1 (or a WebView2 remote-debugging port) makes src/agent-connect refuse any
 // write in the user's real Claude / Codex folders; BROWSER_ANNOTATIONS_CONNECT_ROOT redirects the connection to a
@@ -32,7 +31,6 @@ struct AnnotationAgentState {
 };
 enum class AnnotationApp { Claude = 0, Codex = 1 };
 
-void AnnotationSettingsChanged();
 // The « Connecter un agent » modal (not the launch variant); manual = « Autre app ou réglage manuel » unfolded.
 void AnnotationOpenConnect(bool manual);
 // #125 v2: the mode's tutorial over the browser (fromWelcome: the welcome window's « Essayer en 1 minute », it starts at
@@ -42,7 +40,5 @@ void AnnotationOpenTutorial(bool fromWelcome);
 // when present; BROWSER_ANNOTATIONS_CONNECT_ROOT redirects every write). message: French, for the UI.
 void AnnotationConnectAgent(AnnotationApp app, bool connect, std::function<void(bool ok, const std::wstring& message)> done);
 void AnnotationAgentsStatus(std::function<void(const AnnotationAgentState& claude, const AnnotationAgentState& codex)> done);
-std::wstring AnnotationStoreRoot();                                                  // the store folder (L"" when compiled out)
-void AnnotationOpenFolder();                                                        // Explorer on the store root
 void AnnotationCount(std::function<void(std::size_t annotations)> done);             // published + drafts
 void AnnotationClearAll(std::function<void(bool ok, std::size_t removed)> done);    // irreversible: confirm first

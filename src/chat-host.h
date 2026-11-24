@@ -186,7 +186,6 @@ std::map<std::uint64_t, Element> aiming;                // elements being aimed 
 std::uint64_t turnNavStamp = 0; int rearmTries = 0; std::function<void()> afterTurn; std::function<void(bool)> afterUndo;
 std::map<std::string, SJ::Value> waitingPermissions, activeStrips;   // what the panel must show again when its WebView is (re)created: cards still waiting, strips still true
 std::map<std::string, std::string> annotationNotes;   // annotation id -> its note, as seen in this session (turns, tool results): the « … » of a step line
-std::wstring pendingAsk;                               // « Demander à l'agent » from the note: the text to send once the element is attached
 std::shared_ptr<CS::Store> snapshots; std::map<std::string, std::string> checkpointOfTurn;   // panel turn id -> checkpoint id
 std::map<std::string, std::string> snapshotOfTurn;                                              // panel turn id -> snapshot turn id
 bool rearmOwed = false; std::string doneMarkSelector; int elementSeq = 0;
@@ -208,7 +207,7 @@ float InsetDip() { return Shown() && !InFullscreen() && !PageFullscreenActive() 
 void OnHiddenPermission();
 bool ThreadMessage(const char* type, const SJ::Value& msg) {
     static const char* list[] = {"message.user", "turn.start", "message.agentChunk", "thought", "toolCall", "toolCallUpdate", "plan", "permission.request", "permission.cancel",
-                                 "turn.end", "turn.undone", "annotations.status", "changes.diff", "edit.confirm", "usage", "annotation.kept"};
+                                 "turn.end", "turn.undone", "changes.diff", "edit.confirm", "usage"};
     for (const char* x : list) if (strcmp(x, type) == 0) return true;
     if (strcmp(type, "error") == 0) { const auto* sc = msg.Get("scope"); return !sc || !sc->IsString() || sc->string != "composer"; }
     return false;
