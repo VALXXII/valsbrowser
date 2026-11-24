@@ -319,6 +319,7 @@ Status FromDetection(const AgentRuntime::Detection& d, bool desktopInstalled) {
     s.path = d.cli.path;
     s.desktop = d.agent == Agent::Claude && desktopInstalled;
     s.runtimeReady = !d.NeedsPrepare();
+    s.signedIn = d.cli.state != AgentRuntime::CliState::Missing && d.cli.state != AgentRuntime::CliState::TooOld && d.login == AgentRuntime::Login::SignedIn;
     switch (d.cli.state) {
     case AgentRuntime::CliState::Missing: s.state = State::NotInstalled; s.reason = s.desktop ? Reason::DesktopOnly : Reason::None; break;
     case AgentRuntime::CliState::TooOld: s.state = State::NotInstalled; s.reason = Reason::TooOld; break;
@@ -367,7 +368,7 @@ void RunOff(std::function<void()> work, std::function<void()> done) {
 }
 void Set(Status next) {
     auto& cur = H().status[Index(next.agent)];
-    const bool changed = cur.state != next.state || cur.reason != next.reason || cur.stage != next.stage || cur.version != next.version ||
+    const bool changed = cur.state != next.state || cur.reason != next.reason || cur.stage != next.stage || cur.version != next.version || cur.signedIn != next.signedIn ||
                          cur.path != next.path || cur.desktop != next.desktop || cur.runtimeReady != next.runtimeReady;
     next.generation = cur.generation + (changed ? 1u : 0u);
     cur = std::move(next);

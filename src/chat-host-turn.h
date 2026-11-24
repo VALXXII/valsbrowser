@@ -7,6 +7,7 @@ void StartTurn(const std::string& text, const std::vector<std::string>& elementI
 void DisposeSession(const wchar_t* why);
 void SendPrompt(); void ModeSettled(); void ModeRefused(const Acp::Event& e);   // SEC-13
 void ReleaseHeldQueue(const wchar_t* why);   // « Ton agent »: the messages held behind an agent that stopped
+void MaybeReadModels();                      // #128 v2: an agent's model list read before its first chat
 
 // ---------------------------------------------------------------- « Ton agent »: the agents' one status (src/agent-status.h)
 // The chat never detects agents on its own any more: it shows AgentStatus (src/chat-agent-status.h maps it), the same
@@ -69,8 +70,57 @@ void EnsureAgentStatus() {
         ChooseInstalledAgent(); SendState();
         AfterAgentChange(s, before);
         if (s.Ready()) for (const auto& def : Agents) if (def.rt == s.agent && def.id == agentId) ReleaseHeldQueue(L"the agent is ready again");   // i18n-exempt: log detail
+        MaybeReadModels();   // #128 v2: an agent just ready (an install, a sign-in, a detection elsewhere) may have its models read
     });
     AgentStatus::Init(std::move(h));
+}
+// #128 v2 (chat-model-probe.h): the model list of an agent that never had a session here, read from the agent itself —
+// installed, prepared, signed in, models unknown, no session of it starting or running; once per launch, one at a time,
+// in a thread of its own (never the UI thread, never the annotations' pool); the answer comes back through AcpWake.
+struct ModelRead { std::set<std::string> done; std::string agent; } modelRead;   // UI thread only
+// the read's answer, handed over by its thread (never freed: a read still running when the browser exits finds it)
+struct ModelReadMail { std::mutex mu; std::shared_ptr<ChatModelProbe::Result> result; };
+ModelReadMail& ModelMail() { static auto* m = new ModelReadMail; return *m; }
+void SaveOptionsCache();   // chat-host-ui.h
+void MaybeReadModels() {
+    if (!modelRead.agent.empty() || !post) return;
+    for (const auto& def : Agents) {
+        const auto& a = agentInfo[def.id];
+        ChatModelProbe::Facts f;
+        const auto& st = AgentStatus::Get(def.rt);   // « Ton agent »: the agents' one status — signed in as its CLI says (not « unknown »)
+        f.installed = a.cli; f.prepared = a.prepared; f.signedIn = st.Ready() && st.signedIn;
+        f.modelsKnown = Acp::FindModelOption(a.options) != nullptr; f.readThisLaunch = modelRead.done.count(def.id) > 0;
+        f.sessionOfThisAgent = (session || sessionStarting) && agentId == def.id;
+        if (!ChatModelProbe::ShouldRead(f)) continue;
+        modelRead.done.insert(def.id); modelRead.agent = def.id;
+        Acp::StartOptions o; o.resolve = AgentRuntime::MakeResolver(RtEnv(), def.rt); o.clientName = "browser";
+#ifdef BROWSER_VERSION_TEXT
+        o.clientVersion = BROWSER_VERSION_TEXT;
+#endif
+        const HWND target = post;
+        Diag(L"reading the models of " + W(std::string(def.name)) + L" (installed, signed in, never started here): a session opened and closed in a temporary folder, no message");   // i18n-exempt: log detail
+        std::thread([o, target]() mutable {
+            auto r = std::make_shared<ChatModelProbe::Result>();
+            const std::wstring dir = ChatModelProbe::MakeFolder();
+            if (dir.empty()) r->why = "no temporary folder";
+            else { o.cwd = U8(dir); *r = ChatModelProbe::Read(std::move(o)); if (!ChatModelProbe::RemoveFolder(dir)) r->why += r->why.empty() ? "temporary folder left" : ", temporary folder left"; }
+            { auto& m = ModelMail(); std::lock_guard<std::mutex> g(m.mu); m.result = r; }
+            PostMessageW(target, AcpWake, 0, 0);
+        }).detach();
+        return;
+    }
+}
+void PumpModelRead() {
+    std::shared_ptr<ChatModelProbe::Result> r;
+    { auto& m = ModelMail(); std::lock_guard<std::mutex> g(m.mu); r = std::move(m.result); m.result.reset(); }
+    if (!r || modelRead.agent.empty()) return;
+    const std::string id = modelRead.agent; modelRead.agent.clear();
+    auto& a = agentInfo[id]; const auto* mo = Acp::FindModelOption(r->options);
+    if (r->ok && mo && !Acp::FindModelOption(a.options)) {   // a real session of it that started meanwhile says more: kept
+        a.options = r->options; SaveOptionsCache(); SendState();
+        Diag(L"models of " + W(id) + L" read: " + std::to_wstring(mo->choices.size()) + L" (the agent stopped)");   // i18n-exempt: log detail
+    } else Diag(L"models of " + W(id) + L" not read: " + (r->ok ? std::wstring(mo ? L"already known" : L"the agent gave no model list") : W(r->why)));   // i18n-exempt: log detail
+    MaybeReadModels();
 }
 void DetectAgents(std::function<void()> then = nullptr) {
     EnsureAgentStatus();
@@ -78,6 +128,7 @@ void DetectAgents(std::function<void()> then = nullptr) {
         ApplyAllStatuses();
         for (const auto& def : Agents) { const auto& s = AgentStatus::Get(def.rt); Diag(std::wstring(L"agent ") + W(def.id) + L": " + W(AgentStatus::StateName(s.state)) + (s.version.empty() ? L"" : L" " + W(s.version)) + L", runtime " + (s.runtimeReady ? L"ready" : L"absent")); }
         ChooseInstalledAgent(); SendState(); if (then) then();
+        MaybeReadModels();   // #128 v2: after `then` (a session it starts is not read)
     });
 }
 void StartSession();
@@ -666,6 +717,7 @@ void OnEvent(const Acp::Event& e) {
     }
 }
 void PumpEvents() {
+    PumpModelRead();   // #128 v2: the model list read in its own thread
     if (!session) return;
     std::vector<Acp::Event> events; session->Poll(events);
     for (const auto& e : events) { if (!session && e.type != Acp::Event::Type::Started) break; OnEvent(e); }

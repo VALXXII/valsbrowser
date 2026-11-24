@@ -73,6 +73,7 @@ struct Status {
                                 // chat's first message prepares it otherwise (« Préparation… »); not part of « installed »
     unsigned generation = 0;    // +1 on every change of this agent (cheap « did it change »)
     std::string detail;         // developer detail for the logs (never shown)
+    bool signedIn = false;      // the CLI's own status says signed in (Ready also covers « unknown »): #128 v2's model read
 
     bool Ready() const { return state == State::Ready; }
     bool Busy() const { return state == State::Installing || state == State::SigningIn; }

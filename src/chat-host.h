@@ -48,6 +48,7 @@
 #include "chat-agent-status.h"
 #include "ton-agent-entry.h"   // OpenTonAgent: the chat's « Installer » / « Mettre à jour » of a missing agent open the screen
 #include "change-snapshots.h"
+#include "chat-model-probe.h"   // #128 v2: an agent's model list read before its first chat
 
 namespace Chat {
 namespace SJ = StrictJson; namespace BA = BrowserAnnotations; namespace AH = AnnotationHost; namespace AUI = NativeChrome::Annotations;

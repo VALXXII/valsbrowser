@@ -48,6 +48,8 @@ static void DetectionMatrix() {
     Expect(st(Det(RT::Agent::Claude, RT::CliState::Found, RT::Login::SignedIn), true).state == S::Ready, "matrix: installed, signed in → ready (Claude Desktop too: fine)");
     Expect(st(Det(RT::Agent::Codex, RT::CliState::Untested, RT::Login::SignedIn), false).state == S::Ready, "matrix: a newer release line → ready");
     Expect(st(Det(RT::Agent::Codex, RT::CliState::Found, RT::Login::Unknown), false).state == S::Ready, "matrix: sign-in unknown → ready (the session start tells)");
+    Expect(st(Det(RT::Agent::Codex, RT::CliState::Found, RT::Login::SignedIn), false).signedIn && !st(Det(RT::Agent::Codex, RT::CliState::Found, RT::Login::Unknown), false).signedIn &&
+           !st(Det(RT::Agent::Claude, RT::CliState::TooOld, RT::Login::SignedIn, "2.0.1"), false).signedIn, "matrix: « signed in » only when the CLI says so (#128 v2's model read; never « unknown », never a CLI too old)");
     Expect(std::string(AS::StateName(S::NeedsSignIn)) == "needsSignIn" && std::string(AS::ReasonName(R::DesktopOnly)) == "desktopOnly", "names: stable identifiers");
     Expect(std::wstring(AS::ManualInstall(RT::Agent::Claude).command) == L"irm https://claude.ai/install.ps1 | iex", "manual: Claude Code's official command");
     Expect(std::wstring(AS::ManualInstall(RT::Agent::Codex).command).find(L"https://chatgpt.com/codex/install.ps1") != std::wstring::npos, "manual: Codex's official command");
