@@ -172,6 +172,7 @@ I18N(settings_profiles_help, L"Gérer les profils de ce navigateur", L"Manage th
 I18N(settings_profile_this_window, L"{0}, cette fenêtre", L"{0}, this window")
 I18N(settings_profile_open_detail, L"Ouvre le détail du profil", L"Opens the profile’s details")
 I18N(settings_check_updates, L"Rechercher une mise à jour", L"Check for updates")
+I18N(settings_about, L"À propos de Browser", L"About Browser")
 I18N(settings_choice_recommended, L"{0} · Recommandé", L"{0} · Recommended")
 I18N(sleep_never_note, L"Les onglets restent actifs en arrière-plan.", L"Tabs stay active in the background.")
 I18N(sleep_30_note, L"Libère le plus de mémoire.", L"Frees the most memory.")

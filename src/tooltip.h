@@ -463,6 +463,7 @@ public:
     Tip& TipForTest() { return tip_; }
     UINT_PTR CurrentForTest() const { return current_; }
     size_t CountForTest() const { return tools_.size(); }
+    const Tool* ToolForTest(UINT_PTR id) const { for (const auto& t : tools_) if (t.id == id) return &t; return nullptr; }
 };
 } // namespace Tooltip
 } // namespace NativeChrome

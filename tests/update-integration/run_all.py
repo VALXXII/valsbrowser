@@ -80,6 +80,12 @@ def existing_fixtures() -> None:
     default_browser_evidence.mkdir(parents=True, exist_ok=True)
     fixture('default_browser_settings_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/default_browser_settings_test.cpp', 'src/native-lottie.cpp', THORVG,
             *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt'], [ROOT, default_browser_evidence])
+    # Réglages › the version line opens « À propos de Browser » (Paper « À propos : point d'entrée » A). Windowless: the
+    # drawer is never shown. Its real-window twin (night run only): tests/e2e/about_entry_e2e.py.
+    about_evidence = ROOT / 'build/settings-about/captures'
+    about_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('settings_about_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/settings_about_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt'], [ROOT, about_evidence])
     language_evidence = ROOT / 'build/browser-languages/captures/settings'
     language_evidence.mkdir(parents=True, exist_ok=True)
     fixture('language_settings_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/language_settings_test.cpp', 'src/native-lottie.cpp', THORVG,

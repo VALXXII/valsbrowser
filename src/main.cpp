@@ -2396,6 +2396,9 @@ void CreateSettingsPanel(){
     hooks.clearOnExitNote=[]{return ClearOnExitNote();};   // owner decision B
     hooks.checkUpdates=[](){CheckForUpdates();};
     hooks.version=SettingsVersion;
+    // The version line opens « À propos de Browser » (Paper « À propos : point d'entrée » A; the A8 window): the drawer
+    // closes first and the window gets the keyboard back when the A8 window closes (as from the old menu).
+    hooks.about=[](bool keyboard){settingsDrawer.Hide(false,true);if(window)SetFocus(window);keyboardModality=keyboard;Log(std::wstring(L"ABOUT opened from Réglages")+(keyboard?L" (keyboard)":L""));ShowAboutDialog();};
     hooks.downloadFolder=EffectiveDownloadFolder;
     hooks.reducedMotion=ReducedMotionPreferred;
     hooks.loadSites=LoadSitePermissions;

@@ -31,7 +31,7 @@ Valeurs détaillées, nœuds lus et écarts : [lot A](missing-elements-A.md) (A1
 | A5 effacer les données | Réglages → vraie modale ; catégories + période → `ICoreWebView2Profile2::ClearBrowsingDataInTimeRange` + traces locales de la même période ; état « Effacement… », erreur affichée si échec |
 | A6 fermer la fenêtre, ouvrir beaucoup de favoris | `WM_CLOSE` (≥ 2 onglets, réglage existant) asynchrone ; « Ouvrir tout » > 20 favoris |
 | A7 limite de 128 onglets | `NewTab` à 128 → toast (remplace la MessageBox) |
-| A8 À propos | menu → modale ; en preview l'état dit « Mises à jour désactivées » (pas de faux « à jour ») |
+| A8 À propos | Réglages › ligne de version (survol, chevron, info-bulle « À propos de Browser » ; Paper « À propos : point d'entrée » A) → modale ; en preview l'état dit « Mises à jour désactivées » (pas de faux « à jour ») |
 | A9 navigation privée | vraie fenêtre privée (`IsInPrivateModeEnabled`, profil `browser-private`, même exécutable `--private`), puce privée ; rien d'écrit sauf actions volontaires D3 (favoris, réglages) ; voir [real-integration-plan](real-integration-plan.md) |
 | B01/B02 autorisations | `add_PermissionRequested` + `Args2::put_Handled` + `Args3::put_SavesInProfile` ; caméra + micro d'une même origine fusionnés ; rien d'accordé sans réponse (refus non mémorisé) |
 | B06 auth HTTP Basic | `ICoreWebView2_10::add_BasicAuthenticationRequested` ; mot de passe effacé (`SecureZeroMemory`) après usage, jamais journalisé |
