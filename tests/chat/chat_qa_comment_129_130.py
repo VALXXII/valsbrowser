@@ -156,7 +156,7 @@ def run_main():
         label = C.panel("(function(){var m=document.querySelector('.model .m');var e=m.querySelector('.e');return [m.querySelector('.mn').textContent, e&&!e.hidden?e.textContent.trim():'']})()")
         report['measures']['buttonBeforeModels'] = label
         C.click_panel('button.m'); time.sleep(0.6)
-        ok, rows = menu_check('#129 · before the models: the bubble\'s model menu opens with rows (the providers), whole, inside the bubble\'s region and the page area, on top of everything', ['Claude Code'])
+        ok, rows = menu_check('#129 · before the models: the bubble\'s model menu opens with rows (#128: Claude Code\'s group names the model its agent will use, « Opus 5.5 »), whole, inside the bubble\'s region and the page area, on top of everything', ['Opus 5.5'])
         report['measures']['rowsBeforeModels'] = rows
         capture('129-menu-avant-modeles')
         C.key_panel('Escape', 'Escape', 27); time.sleep(0.4)

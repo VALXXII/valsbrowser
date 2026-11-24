@@ -10,7 +10,8 @@
 //   3 Importer vos données  browser and profile selects, « Favoris et dossiers » / « Historique »
 //   4 Import en cours…    source logo → 19 ticks → GemSmoke logo; the mock shows the bookmarks bar
 //   5 Import terminé !    5.1 the error state (what failed, why, « Réessayer »)
-//   6 Mode Annotation     GrainGradient + the annotation illustration (only when the mode is compiled in)
+//   6 Mode Annotation     GrainGradient + the annotation illustration (only when the mode is compiled in); #125 v2 E2
+//                         (Paper p-Y-0 1SWL-0): « Plus tard » / « Essayer en 1 minute » opens the mode's tutorial at its trial
 //   7 the logo alone      closing transition: the window fades and the browser opens
 //
 // The flow is src/onboarding-flow.h (pure, unit-tested); this window draws it and turns input into its events.
@@ -49,6 +50,7 @@
 #include "onboarding-debug.h"
 #include "onboarding-handoff.h"
 #include "onboarding-dither.h"
+#include "onboarding-parts.h"   // header, footer buttons, board 6's gradient and illustration: shared with src/annotation-onboarding.h
 
 namespace NativeChrome {
 namespace OnboardingUI {
@@ -121,7 +123,7 @@ public:
     enum Id : int { None = 0, Lang = 1, Close = 2, Primary = 10, Back = 11, SkipAll = 12, SkipStep = 13, Cancel = 14, Decline = 15,
                     Name = 20, Hue = 21, Intensity = 22, Icons = 23, Browser = 30, Profile = 31, CheckBookmarks = 32, CheckHistory = 33, IconBase = 100 };
     static constexpr UINT FrameMessage = WM_APP + 0x4F0, HostMessage = WM_APP + 0x4F1, ReplayDoneMessage = WM_APP + 0x4F2, SourcesMessage = WM_APP + 0x4F3;
-    static constexpr float TextGamma = 2.2f, TextContrast = .5f;
+    static constexpr float TextGamma = OnboardingParts::TextGamma, TextContrast = OnboardingParts::TextContrast;
     static constexpr float WelcomeRaise = 35.5f / 721;   // (579 - 508) / 2 over the picture box
 private:
     struct Item { int id; D2D1_RECT_F r; };
@@ -145,24 +147,10 @@ private:
     std::vector<BarItem> bar_; Motion::Time barAt_{};   // the imported bookmarks bar shown in the mock (boards 4 – 5.1)
     // The end of the flow (board 7): the logo's exit inside the dot field, then the hand-off of the window.
     Motion::Time exitAt_{}; bool exitRunning_ = false, handedOff_ = false; float logoScale_ = 1, logoAlpha_ = 1;
-    // Board 6's dither (src/onboarding-dither.h): rastered on the CPU at the device's pixels, 30 pictures a second.
-    ID2D1Bitmap* trame_ = nullptr; ID2D1RenderTarget* trameOwner_ = nullptr; std::vector<std::uint32_t> trameBits_; Motion::Time trameAt_{}; double trameKey_ = -1;
-    void DropTrame() { if (trame_) { trame_->Release(); trame_ = nullptr; } trameOwner_ = nullptr; trameKey_ = -1; }
-    Onboarding::Trame::Look TrameLook() const { namespace T = Onboarding::Tuning; const auto& r = tuning_[T::Trame]; Onboarding::Trame::Look l; l.opacity = r[T::TrameOpacity]; l.cell = r[T::TramePitch]; l.base = r[T::TrameBase]; l.wave = r[T::TrameWave]; return l; }
-    void ShadeTrame(ID2D1RenderTarget* t, Motion::Time now) {
-        namespace T = Onboarding::Tuning; namespace D = NativeChrome::Annotations::Dither;
-        const auto px = t->GetPixelSize(); const auto dip = t->GetSize(); const float scale = px.width / std::max(1.f, dip.width);
-        const int w = static_cast<int>(std::lround(725 * scale)), h = static_cast<int>(std::lround(407 * scale));
-        const auto look = TrameLook(); const double phase = Onboarding::LoopPhase(ShaderSeconds(now), tuning_[T::Trame][T::TramePeriod]);
-        const double key = phase * 1000 + look.opacity * 7 + look.cell * 13 + look.base * 17 + look.wave * 19 + w;
-        const bool current = trame_ && trameOwner_ == t && static_cast<int>(trame_->GetPixelSize().width) == w && static_cast<int>(trame_->GetPixelSize().height) == h;
-        if (current && (key == trameKey_ || (trameAt_ != Motion::Time{} && Ms(trameAt_, now) < 1000.f / 15 - 3))) return;   // the wave takes 8 s to pass: 15 pictures a second
-        trameBits_.resize(static_cast<std::size_t>(w) * h);
-        Onboarding::Trame::Raster(D::Raster{trameBits_.data(), w, w, h}, scale, phase, look);
-        if (!current) { DropTrame(); if (FAILED(t->CreateBitmap(D2D1::SizeU(static_cast<UINT32>(w), static_cast<UINT32>(h)), trameBits_.data(), static_cast<UINT32>(w) * 4, D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96, 96), &trame_))) { trame_ = nullptr; return; } trameOwner_ = t; }
-        else trame_->CopyFromMemory(nullptr, trameBits_.data(), static_cast<UINT32>(w) * 4);
-        trameKey_ = key; trameAt_ = now;
-    }
+    // Board 6's dither (src/onboarding-dither.h, src/onboarding-parts.h): rastered on the CPU at the device's pixels.
+    OnboardingParts::TrameLayer trame_;
+    void DropTrame() { trame_.Drop(); }
+    void ShadeTrame(ID2D1RenderTarget* t, Motion::Time now) { trame_.Shade(t, ShaderSeconds(now), tuning_[Onboarding::Tuning::Trame], now); }
     // Review panel: a transition replayed for the eye only (the flow does not move), or the hand-off on a stand-in.
     bool replaying_ = false, exitReplay_ = false; Motion::Time replayUntil_{}; OnboardingHandoff::Stage previewStage_;
 
@@ -226,8 +214,8 @@ private:
 
     // ---- geometry of the interactive parts (items_) ----
     K::Font Label() const { return {14, 20, 500, 0}; }
-    float ButtonWidth(const std::wstring& label, int weight) { return K::Width(*c_, label, {14, 20, weight, 0}) + 2 * Layout::buttonPad; }
-    D2D1_RECT_F LangBox(Screen s) { const auto n = Nudge(s); const float w = 6 + K::Width(*c_, UiLanguage::Autonym(I18n::Current()), Label()) + 4 + 16 + 6; return Box(Layout::langLeft + n.x, Layout::headerTop + n.y, w, Layout::control); }
+    float ButtonWidth(const std::wstring& label, int weight) { return OnboardingParts::ButtonWidth(*c_, label, weight); }
+    D2D1_RECT_F LangBox(Screen s) { const auto n = Nudge(s); const float w = OnboardingParts::LanguageWidth(*c_); return Box(Layout::langLeft + n.x, Layout::headerTop + n.y, w, Layout::control); }
     D2D1_RECT_F CloseBox(Screen s) const { const auto n = Nudge(s); return Box(Layout::closeLeft + n.x - n.x * 2, Layout::headerTop + n.y, Layout::control, Layout::control); }
     D2D1_RECT_F NameField() const { return Box(Sx(Layout::rowLeft), Layout::fieldTop, Layout::fieldW, Layout::fieldH); }
     D2D1_RECT_F Strip() const { return Box(Sx(Layout::stripLeft), Layout::fieldTop, Layout::stripW, Layout::cell); }
@@ -252,7 +240,7 @@ private:
         case Screen::ImportPick: return {{Back, TR(common_back), false}, {SkipStep, TR(onboarding_skip), false}};
         case Screen::ImportRunning: return {{Cancel, TR(common_cancel), false}};
         case Screen::ImportError: return {{SkipStep, TR(onboarding_skip), false}};
-        case Screen::Annotation: return {{Decline, TR(onboarding_not_interested), false}};
+        case Screen::Annotation: return {{Decline, TR(common_later), false}};   // #125 v2 E2 (Paper 1SWL-0): « Plus tard »
         default: return {};
         }
     }
@@ -262,7 +250,7 @@ private:
         case Screen::Profile: case Screen::ImportDone: return TR(onboarding_continue);
         case Screen::ImportPick: return TR(onboarding_import_action);
         case Screen::ImportError: return TR(onboarding_retry);
-        case Screen::Annotation: return TR(onboarding_activate);
+        case Screen::Annotation: return TR(onboarding_try_minute);   // #125 v2 E2: « Essayer en 1 minute » (the tutorial, once the browser is up)
         default: return L"";
         }
     }
@@ -642,7 +630,6 @@ private:
     void Shade(LayerId id, ID2D1RenderTarget* t, Motion::Time now, bool loops) {
         namespace S = Onboarding::Shaders;
         Layer& layer = layers_[id]; EnsureGpu(); if (!gpu_.Ready()) return;
-        const auto px = t->GetPixelSize(); const auto dip = t->GetSize(); const float scale = px.width / std::max(1.f, dip.width);
         float w = 721, h = 508; S::Kind kind = S::Kind::Halftone; S::Uniforms u;
         const double seconds = ShaderSeconds(now);
         switch (id) {
@@ -651,19 +638,10 @@ private:
         case HalftoneWelcome: h = 579; u = S::Halftone(static_cast<float>(Onboarding::LoopPhase(seconds, Onboarding::HalftoneLoopSeconds)), true, WelcomeRaise); break;
         case HalftoneOutro: h = 579; u = S::Halftone(static_cast<float>(Onboarding::LoopPhase(seconds, Onboarding::HalftoneLoopSeconds)), true, 0, logoScale_, logoAlpha_); break;
         case Gem: w = Layout::gemW; h = Layout::gemH; kind = S::Kind::GemSmoke; u = S::GemSmoke(S::GemStillSeconds + static_cast<float>(std::fmod(seconds, S::GemPeriod))); break;
-        default: {
-            w = 725; h = 407; kind = S::Kind::GrainGradient; u = S::GrainGradient(S::GrainStillSeconds + static_cast<float>(std::fmod(seconds, S::GrainPeriod)));
-            const unsigned paper[3] = {0x0AF4FF, 0x0099A0, 0x01292C};   // the board's colours, at the profile's hue
-            for (int i = 0; i < 3; ++i) { const auto c = K::Rehue(paper[i], draft_); u.colors[i][0] = c.r / 255.f; u.colors[i][1] = c.g / 255.f; u.colors[i][2] = c.b / 255.f; }
-            break;
+        default: w = OnboardingParts::GrainW; h = OnboardingParts::GrainH; kind = S::Kind::GrainGradient; u = OnboardingParts::GrainUniforms(seconds, draft_); break;   // the board's colours, at the profile's hue
         }
-        }
-        const unsigned ow = static_cast<unsigned>(std::lround(w * scale)), oh = static_cast<unsigned>(std::lround(h * scale));
-        const bool current = layer.bitmap && layer.owner == t && layer.frame.width == ow && layer.frame.height == oh;
         const float key = id == HalftoneOutro ? logoScale_ * 16 + logoAlpha_ : 0;   // the logo's exit is a new picture even when nothing loops
-        if (current && key == layer.key && (!loops || !Due(id, now))) return;
-        layer.key = key;
-        if (gpu_.Render(kind, u, w, h, ow, oh, layer.frame)) { layer.Upload(t); layer.shaded = now; } else if (!current) layer.Drop();   // the whole field slides: every pixel is new
+        OnboardingParts::Shade(gpu_, layer, t, kind, u, w, h, loops, Due(id, now), key, now);
     }
     // Loop pacing: frames come at the display's rate (src/frame-clock.h); a layer is drawn again on the first
     // tick after its own period. The halftone lattice travels about 1.3 px per second and the gradient's wave
@@ -702,7 +680,7 @@ private:
         switch (s) {
         case Screen::Welcome: return {312, .003f, .6982f, 1, K::Token::canvas};
         case Screen::Profile: return {303, .0029f, .4125f, 1, K::Token::canvas};
-        case Screen::Annotation: return {249, .003f, .472f, 1, 0x000000};
+        case Screen::Annotation: return {OnboardingParts::GrainVeilTop, OnboardingParts::GrainVeilFrom, OnboardingParts::GrainVeilTo, 1, 0x000000};
         case Screen::Outro: return {312, .003f, .6982f, 0, K::Token::canvas};
         default: return {327, .0029f, .4125f, 1, K::Token::canvas};
         }
@@ -772,22 +750,13 @@ private:
             if (layers_[id].bitmap && layers_[id].owner == t) DrawLayer(id, Box(-1, 1, 721, 579), alpha);
             else if (auto* logo = c_->AssetBitmap(L"onboarding\\halftone-logo.png")) { const float side = 721 * .46f; K::DrawBitmap(t, logo, Box(-1 + (721 - side) / 2, centre - side / 2, side, side), alpha); }
         } else if (b.kind == 3) DrawMock(b.x, b.y, b.w, b.bookmarks, alpha);
-        else if (b.kind == 4) {
-            const D2D1_RECT_F box = Box(-2, -2, 725, 407);
-            K::Fill(*c_, box, 0, K::Col(K::Rehue(0xDEFDFF, draft_), alpha));
-            if (layers_[Grain].bitmap && layers_[Grain].owner == t) DrawLayer(Grain, box, alpha);
-            else K::Gradient(*c_, box, 0, {0, box.top}, {0, box.bottom}, {{.2f, K::Rehue(0x0AF4FF, draft_), 0}, {.6f, K::Rehue(0x0099A0, draft_), 1}, {1, K::Rehue(0x01292C, draft_), 1}}, alpha);
-            if (trame_ && trameOwner_ == t) t->DrawBitmap(trame_, box, alpha, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);   // the band's dither over the gradient, under everything else
-        }
+        else if (b.kind == 4) OnboardingParts::GrainBackdrop(*c_, layers_[Grain], trame_, draft_, alpha);
     }
     static bool Placed(D2D1_RECT_F r) { return r.right > r.left && r.bottom > r.top; }   // a control without a box is never drawn
     void DrawButton(int id, const std::wstring& label, unsigned raisedOrAccent, bool accent, int weight, float alpha) {
-        const auto r = Rect(id); if (!Placed(r)) return; const bool enabled = Enabled(id); const float a = alpha * (enabled ? 1.f : K::Token::disabled);
+        const auto r = Rect(id); if (!Placed(r)) return; const bool enabled = Enabled(id);
         const float glow = enabled ? glow_[id] : 0, press = enabled && pressed_ == id && hover_ == id ? 1.f : 0.f;
-        if (accent) { const auto base = K::FromHex(raisedOrAccent); const auto c = Design::Accent::StateColor({base.r / 255.f, base.g / 255.f, base.b / 255.f}, glow, press); K::Fill(*c_, r, Layout::buttonRadius, D2D1::ColorF(c.r, c.g, c.b, a)); }
-        else { const auto c = K::Lerp(K::Lerp(K::FromHex(K::Token::raised), K::FromHex(K::Token::hover), glow), K::FromHex(K::Token::pressed), press); K::Fill(*c_, r, Layout::buttonRadius, K::Col(c, a)); }
-        K::Text(*c_, label, {r.left, r.top + 6, r.right, r.bottom}, {14, 20, weight, 0}, K::Col(K::Token::text, a), DWRITE_TEXT_ALIGNMENT_CENTER);
-        if (focus_ == id && keyboard_) PopupKit::InsetRing(*c_, r, Layout::buttonRadius);
+        OnboardingParts::FooterButton(*c_, r, label, raisedOrAccent, accent, weight, glow, press, enabled, focus_ == id && keyboard_, alpha);
     }
     void DrawButtons(Screen s, float alpha) {
         const unsigned accent = s == Screen::Welcome ? K::Token::accent : 0;
@@ -798,17 +767,9 @@ private:
     }
     void DrawHeader(Screen s, float tone, float alpha) {
         if (alpha <= 0) return;
-        const auto color = K::Col(K::Lerp(K::FromHex(K::Token::secondary), K::FromHex(0x474747), tone), alpha);
-        const auto lang = LangBox(s), close = CloseBox(s);
-        for (int id : {Lang, Close}) {
-            const auto r = id == Lang ? lang : close; const float lift = .08f * glow_[id] + (pressed_ == id && hover_ == id ? .04f : 0) + (id == Lang && menuOpen_ ? .08f : 0);
-            if (lift > 0) K::Fill(*c_, r, 6, PopupKit::White(lift * alpha));
-            if (focus_ == id && keyboard_) PopupKit::InsetRing(*c_, r, 6);
-        }
-        const std::wstring name = UiLanguage::Autonym(I18n::Current());
-        K::Text(*c_, name, {lang.left + 6, lang.top + 4, lang.right, lang.bottom}, Label(), color);
-        glyphs_.Stroke(*c_, K::Path::chevron, Box(lang.right - 6 - 16, lang.top + 6, 16, 16), 24, 1.8f, color);
-        glyphs_.Stroke(*c_, K::Path::close, Box(close.left + 6, close.top + 6, 16, 16), 24, 1.8f, color);
+        auto control = [&](int id, D2D1_RECT_F r) { return OnboardingParts::Control{r, .08f * glow_[id] + (pressed_ == id && hover_ == id ? .04f : 0) + (id == Lang && menuOpen_ ? .08f : 0), focus_ == id && keyboard_}; };
+        const auto lang = control(Lang, LangBox(s)); const auto close = control(Close, CloseBox(s));
+        OnboardingParts::HeaderControls(*c_, glyphs_, lang, close, tone, alpha);
     }
     void DrawTitle(const std::wstring& text, const char* icon, float side, float vx, float vy, float alpha) {
         const K::Font f{16, 16, 600, -.56f}; const float w = K::Width(*c_, text, f), total = 16 + 4 + w, left = Sx(Layout::titleCentre - total / 2), top = Layout::titleTop;
@@ -946,42 +907,11 @@ private:
         K::Text(*c_, later, {chip.left + 26, chip.top + 6, chip.right + 8, chip.bottom}, small, PopupKit::White(.6f * alpha));
     }
     void DrawAnnotation(float alpha) {
-        auto* t = c_->RenderTarget(); auto* b = c_->SolidBrush();
         const auto accent = K::Accent(draft_);
         K::Text(*c_, TR(onboarding_annotation_title), {0, 415, 720, 453}, {32, 38, 500, -1.12f}, K::Col(K::Token::text, alpha), DWRITE_TEXT_ALIGNMENT_CENTER);
         K::Text(*c_, TR(onboarding_annotation_line1), {0, 458, 720, 478}, {14, 20, 400, 0}, K::Col(K::Token::secondary, alpha), DWRITE_TEXT_ALIGNMENT_CENTER);
         K::Text(*c_, TR(onboarding_annotation_line2), {0, 478, 720, 498}, {14, 20, 400, 0}, K::Col(K::Token::secondary, alpha), DWRITE_TEXT_ALIGNMENT_CENTER);
-        // 1CHL-0 at (81, 155): the picked button of a site, its selection frame and labels, the crosshair, the note.
-        const float x = 81, y = 155;
-        K::Fill(*c_, Box(x, y + 24, 240, 44), 8, K::Col(0x1C1C1C, alpha));
-        K::Text(*c_, TR(onboarding_demo_pay), {x, y + 36, x + 240, y + 56}, {15, 20, 600, 0}, K::Col(K::Token::text, alpha), DWRITE_TEXT_ALIGNMENT_CENTER);
-        const D2D1_RECT_F frame = Box(x - 4, y + 20, 248, 52);
-        K::Fill(*c_, frame, 0, K::Col(0x3E67FF, (0x14 / 255.f) * alpha)); K::Border(*c_, frame, 0, 2, K::Col(accent, alpha));
-        auto tag = [&](const std::wstring& text, float left, bool fromRight) {
-            const K::Font f{13, 18, 400, 0}; const float w = K::Width(*c_, text, f) + 12, l = fromRight ? left - w : left;
-            K::Fill(*c_, Box(l, y, w, 20), 3, K::Col(accent, alpha)); K::Fill(*c_, Box(l, y + 10, w, 10), 0, K::Col(accent, alpha));   // radius 3 on the top corners only
-            K::Text(*c_, text, {l + 6, y + 1, l + w + 8, y + 19}, f, PopupKit::White(.9f * alpha));
-        };
-        tag(L"button.btn-primary", x - 4, false);   // i18n-exempt: a CSS selector in the illustration
-        tag(L"240x64", x + 240 + 4, true);          // i18n-exempt: a size in the illustration
-        const D2D1_RECT_F cross = Box(x + 196, y + 30, 32, 32);
-        glyphs_.Stroke(*c_, K::Path::cross, cross, 32, 4, K::Col(K::Token::text, alpha)); glyphs_.Stroke(*c_, K::Path::cross, cross, 32, 1.6f, K::Col(0x1C1C1C, alpha));
-        b->SetColor(K::Col(accent, alpha)); t->FillEllipse(D2D1::Ellipse({cross.left + 16, cross.top + 16}, 2.6f, 2.6f), b);
-        b->SetColor(K::Col(K::Token::text, alpha)); t->DrawEllipse(D2D1::Ellipse({cross.left + 16, cross.top + 16}, 2.6f, 2.6f), b, 1.2f);
-        const float nx = x + 252, ny = y + 20;
-        K::Fill(*c_, Box(nx, ny, 305, 104), 16, K::Col(K::Token::canvas, alpha));
-        K::Text(*c_, TR(onboarding_demo_note), {nx + 12, ny + 12, nx + 293, ny + 52}, {14, 20, 400, 0}, PopupKit::White(.9f * alpha), DWRITE_TEXT_ALIGNMENT_LEADING, true);
-        const float fy = ny + 64;   // the footer row, 28 high
-        glyphs_.Fill(*c_, K::Path::plus, Box(nx + 12 + 5, fy + 2 + 5, 14, 14), 256, PopupKit::White(.5f * alpha));
-        glyphs_.Fill(*c_, K::Path::shield, Box(nx + 12 + 24 + 6, fy + 2 + 5.5f, 13, 13), 256, PopupKit::White(.45f * alpha));
-        const K::Font model{12, 16, 500, 0}, effort{12, 16, 400, 0}; const std::wstring name = L"Opus 5.5", level = TR(onboarding_demo_effort);   // i18n-exempt: a model name in the illustration
-        const float wn = K::Width(*c_, name, model), wl = K::Width(*c_, level, effort), chipW = 6 + 14 + 4 + wn + 4 + wl + 6;
-        const float send = nx + 305 - 12 - 28, chip = send - 4 - chipW;
-        glyphs_.Fill(*c_, K::Path::claude, Box(chip + 6, fy + 2 + 5, 14, 14), 18.666f, K::Col(0xD97757, alpha), .667f, 1.6f);
-        K::Text(*c_, name, {chip + 24, fy + 5, chip + 24 + wn + 8, fy + 21}, model, PopupKit::White(.9f * alpha));       // 1CIF-0 / 1CIH-0: measured one row above the 12/16 rule
-        K::Text(*c_, level, {chip + 28 + wn, fy + 5, chip + 28 + wn + wl + 8, fy + 21}, effort, PopupKit::White(.5f * alpha));
-        K::Fill(*c_, Box(send, fy, 28, 28), 8, K::Col(accent, alpha));
-        glyphs_.Fill(*c_, K::Path::arrowUp, Box(send + 7, fy + 7, 14, 14), 256, K::Col(K::Token::text, alpha));
+        OnboardingParts::AnnotationDemo(*c_, glyphs_, accent, alpha);   // 1CHL-0 at (81, 155): the picked button, its frame and tags, the crosshair, the note
         DrawButtons(Screen::Annotation, alpha);
     }
     void DrawContent(Screen s, Motion::Time now, float alpha) {
@@ -1000,16 +930,8 @@ private:
         default: break;
         }
     }
-    // Text weight: the boards were drawn by a web engine, whose light-on-dark text reads heavier than
-    // DirectWrite's default grayscale rendering (ink mass about 0.8 of the board's). These parameters bring the
-    // same glyphs to the board's weight (measured by tests/onboarding/compare.py).
-    void TextLook(ID2D1RenderTarget* t) {
-        IDWriteRenderingParams* params = nullptr; float gamma = TextGamma, contrast = TextContrast;
-        if (const wchar_t* g = _wgetenv(L"ONBOARDING_TEXT_GAMMA")) gamma = static_cast<float>(_wtof(g));
-        if (const wchar_t* k = _wgetenv(L"ONBOARDING_TEXT_CONTRAST")) contrast = static_cast<float>(_wtof(k));
-        if (c_->WriteFactory() && SUCCEEDED(c_->WriteFactory()->CreateCustomRenderingParams(gamma, contrast, 0, DWRITE_PIXEL_GEOMETRY_FLAT, DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, &params)) && params) { t->SetTextRenderingParams(params); params->Release(); }
-        t->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-    }
+    // Text weight of the boards (src/onboarding-parts.h).
+    void TextLook(ID2D1RenderTarget* t) { OnboardingParts::TextLook(*c_, t); }
     void Draw(Motion::Time now) {
         auto* t = c_->RenderTarget(); if (!t) return;
         TextLook(t);
