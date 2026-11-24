@@ -66,12 +66,17 @@ enum Hit : int {
     CatProfiles = 85, ProfileDelete = 86, ProfileEditorHit = 87, ProfileClearData = 88, ProfileRowBase = 700,   // Réglages › Profils (Paper p-I-0 P02)
     CatAnnotations = 89,   // « Annotations » (85..88 are Profils)
     LanguageHit = 66,      // « Langue » (root, under Profils): browser-wide interface language, applied at next start
-    // « Annotations »: one button per agent row, the manual fallback, the prompt switch, retention, folder, clear all.
-    AgentBase = 90, ManualConnect = 92, AnnotationPrompt = 67, AnnotationRetention = 58, AnnotationFolder = 59, AnnotationClear = 45,
+    // « Annotations »: retention, folder, clear all.
+    AnnotationRetention = 58, AnnotationFolder = 59, AnnotationClear = 45,
+    // « Agents » (« Ton agent », Paper « Réglages › Agents »): the root row, one button per chat agent, the advanced
+    // « Connecter un agent externe » (the MCP « Connecter un agent » window), the failed install's « Installer moi-même ↗ ».
+    AgentBase = 90, ExternalAgents = 92, CatAgents = 93, ManualBase = 94,
     SiteBase = 100, PermissionBase = 400, ResultBase = 600,
 };
-inline constexpr int AgentHit(AnnotationSettings::App a) { return AgentBase + static_cast<int>(a); }
-inline constexpr bool IsAgent(int hit) { return hit >= AgentBase && hit < AgentBase + AnnotationSettings::AppCount; }
+inline constexpr int AgentHit(AnnotationSettings::ChatApp a) { return AgentBase + static_cast<int>(a); }
+inline constexpr bool IsAgent(int hit) { return hit >= AgentBase && hit < AgentBase + AnnotationSettings::ChatAppCount; }
+inline constexpr int ManualHit(AnnotationSettings::ChatApp a) { return ManualBase + static_cast<int>(a); }
+inline constexpr bool IsManual(int hit) { return hit >= ManualBase && hit < ManualBase + AnnotationSettings::ChatAppCount; }
 inline bool IsField(int hit) { return hit == CustomSearchField || hit == HomepageField || hit == SearchField; }
 inline bool IsResult(int hit) { return hit >= ResultBase && hit < ResultBase + 32; }
 inline int EngineHit(int index) { return EngineBase + index; }
@@ -81,8 +86,8 @@ inline bool IsPermission(int hit) { return hit >= PermissionBase && hit < Permis
 inline bool IsProfileRow(int hit) { return hit >= ProfileRowBase && hit < ProfileRowBase + 64; }
 constexpr int SwitchHits[] = {RestoreTabs, AskWhere, ReduceMotion, Suggestions, Passwords, Autofill, ClearOnExit,
                               ConfirmClose, CloseWithLastTab, AdBlock, HttpsOnly, ThirdPartyCookies, MemorySaver, MuteBackground,
-                              GrayscaleText, AnnotationPrompt};
-constexpr int SwitchCount = 16;
+                              GrayscaleText};
+constexpr int SwitchCount = 15;
 inline int SwitchIndex(int hit) { for (int i = 0; i < SwitchCount; ++i) if (SwitchHits[i] == hit) return i; return -1; }
 
 // ---- Geometry (DIP, panel-local; x = 0 is the drawer's leading edge) -----------
@@ -139,28 +144,39 @@ inline constexpr Box AboutChevron(float y) {
 static_assert(About(0).right - About(0).left == 274 && About(0).bottom - About(0).top == 40, "Paper 1V0L-0: 274 x 40");
 // Two-line switch rows wrap their description up to 16 DIP before the switch.
 inline constexpr float descriptionWidth = slotRight - switchWidth - 16 - textLeft;
-// Agent rows (« Annotations »): logo in the icon slot, name on the first line, the action as a
-// compact raised button (the update toast's Raised button at the drawer's 24 DIP control height) on the
-// same line, the status wrapped under the name across the row (it starts where the button ends).
-inline constexpr float actionHeight = Design::Size::compact, actionPad = 8;
-inline constexpr float statusWidth = rowRight - 8 - nameLeft;
-inline constexpr Box Action(float top, float w) { return {slotRight - w, top + twoLinePad - 2, slotRight, top + twoLinePad - 2 + actionHeight}; }
+// Chat agent rows (Paper « Réglages › Agents » + Designer's answer, 2026-11-24, « Ton agent » V1): padding 8, the logo 16
+// in a 32 x 32 tile (#262626, radius 8), 10, the name 16/20 over its state — a 14 DIP icon, 4, the words 13/16 medium —
+// then, when there is one, a note (13/18 #8C8C8C) and the « Installer moi-même ↗ » link (13/18, underlined), 4 under the
+// state; 10, then the row's button (28 high, radius 6, padding 10, 13/16 medium), centred on the row.
+inline constexpr float agentPad = 8, agentTile = 32, agentTileRadius = 8, agentLogo = 16, agentGap = 10;
+inline constexpr float agentText = rowLeft + agentPad + agentTile + agentGap;                     // 62
+inline constexpr float agentRight = rowRight - agentPad;                                          // 312
+inline constexpr float agentStatus = 16, agentIcon = 14, agentIconGap = 4, agentExtraGap = 4, agentExtraLine = 18;
+inline constexpr float agentButton = 28, agentButtonPad = 10, agentButtonRadius = 6;
+inline constexpr float AgentRow(size_t lines, size_t extra = 0) {   // 54 with one state line and nothing under it
+    return 2 * agentPad + std::max(agentTile, 20 + 2 + lines * agentStatus + (extra ? agentExtraGap + extra * agentExtraLine : 0.f));
+}
+inline constexpr Box AgentButton(float top, float h, float w) { return {agentRight - w, top + (h - agentButton) / 2, agentRight, top + (h + agentButton) / 2}; }
+// The board's note under the agents: 13/18 at 50 %, 4 DIP under the last row, across the row's padding (20..312).
+inline constexpr float agentNoteTop = 4, agentNoteLine = 18, agentNoteWidth = agentRight - textLeft;
 }
 static_assert(Layout::nameLeft == Layout::rowLeft + Layout::slot + 8, "sub-view title: 8 DIP after the back button");
 static_assert(Layout::viewTop == 72, "content starts 32 DIP under the 24 DIP header");
+static_assert(Layout::AgentRow(1) == 54 && Layout::agentText == 62 && Layout::agentRight == 312, "Paper « Réglages › Agents »: 54 DIP rows, text at 62, ending at 312");
 
 namespace Timing {
 inline constexpr Spring selectSpring{.26f}, switchSpring{.2f}, pageSpring{.34f};
 inline constexpr Motion::Milliseconds select = Settle(.26f), toggle = Settle(.2f), press{120}, spin{900}, page = Settle(.34f);
 }
 
-enum class View { Main, Engine, Tabs, Privacy, Downloads, Display, Sites, Site, Profiles, Profile, Annotations };
+enum class View { Main, Engine, Tabs, Privacy, Downloads, Display, Sites, Site, Profiles, Profile, Annotations, Agents };
 inline const wchar_t* Title(View v) {
     switch (v) {
     case View::Engine: return TR(settings_engine); case View::Tabs: return TR(settings_tabs); case View::Privacy: return TR(settings_privacy);
     case View::Downloads: return TR(settings_downloads); case View::Display: return TR(settings_display); case View::Sites: return TR(settings_permissions);
     case View::Profiles: return TR(settings_profiles);
     case View::Annotations: return TR(settings_annotations);
+    case View::Agents: return TR(agents_settings_title);
     default: return TR(settings_title);
     }
 }
@@ -169,7 +185,7 @@ inline int Opener(View v) {
     switch (v) {
     case View::Engine: return CatEngine; case View::Tabs: return CatTabs; case View::Privacy: return CatPrivacy;
     case View::Downloads: return CatDownloads; case View::Display: return CatDisplay; case View::Sites: return Permissions; case View::Profiles: return CatProfiles;
-    case View::Annotations: return CatAnnotations; default: return None;
+    case View::Annotations: return CatAnnotations; case View::Agents: return CatAgents; default: return None;
     }
 }
 // One laid-out element of a view's scrolling list (content coordinates).
@@ -179,7 +195,7 @@ struct Slot {
     float top = 0, height = Layout::row, opacity = 1;
     float clipTop = -1e6f, clipBottom = 1e6f;
     std::wstring text, value;              // label; value/summary/description text (Agent: the action's label)
-    std::vector<std::wstring> lines;       // wrapped description (two-line switches; Agent: its status)
+    std::vector<std::wstring> lines;       // wrapped description (two-line switches and nav rows; Agent: its status)
     const wchar_t* icon = nullptr;         // leading 16 DIP glyph (root rows): the label moves to nameLeft
     const char* path = nullptr;            // or a 256-unit Phosphor path (Profils row, profile rows)
     const char* valueGlyph = nullptr;      // a glyph before the value (« Profils » → the current profile)
@@ -187,6 +203,9 @@ struct Slot {
     const AnnotationSettings::Glyph* glyph = nullptr; // or a vector glyph in its own viewBox (annotation mark)
     bool disabled = false;                 // shown, not actionable (no hover, not in the Tab order)
     bool error = false;                    // Agent: the status is an error (danger ink)
+    bool fine = false;                     // Note: the « Réglages › Agents » note (13/18, 4 DIP under its row)
+    std::vector<std::wstring> notes;       // Agent: the lines under its state (Claude Desktop alone: why it is not installed)
+    bool manual = false;                   // Agent: « Installer moi-même ↗ » under its state (a failed install)
 };
 // Key in LayoutInput::lines of the section's shortcut reminder (no hit: it is read, not focused).
 inline constexpr int ShortcutsNoteKey = -2;
@@ -204,9 +223,10 @@ struct LayoutInput {
     bool sitesQuiet = false;   // first load still within its grace period: no « Chargement… » flash
     // « Annotations » (only when the annotation mode is compiled in: dev / preview builds).
     bool annotations = false;
-    const AnnotationSettings::Agents* agents = nullptr; bool agentsKnown = false;
-    std::array<std::vector<std::wstring>, AnnotationSettings::AppCount> agentLines;   // wrapped status per app
-    long long now = 0;                                          // UTC seconds (status « il y a … »)
+    // « Agents » (only when the chat is compiled in): the chat agents' status, wrapped status lines, the two notes.
+    bool chat = false; const AnnotationSettings::ChatAgents* chatAgents = nullptr;
+    std::array<std::vector<std::wstring>, AnnotationSettings::ChatAppCount> chatLines, chatNotes;
+    std::vector<std::wstring> paidLines, externalLines;
     std::size_t annotationCount = SIZE_MAX;                     // SIZE_MAX: not counted yet
     std::wstring annotationFolder;                              // the store root (second line of the folder row)
     bool vaultManager = false; std::size_t vaultCount = 0;   // E8: the vault is active (entry shown) and its account count
@@ -219,6 +239,9 @@ struct LayoutInput {
 };
 // Phosphor Bold « translate » (official @phosphor-icons/core path, Paper p-K-0), drawn like the Profils glyph.
 inline constexpr const char* TranslateGlyph = "M250.73,210.63l-56-112a12,12,0,0,0-21.46,0l-20.52,41A84.2,84.2,0,0,1,114,126.22,107.48,107.48,0,0,0,139.33,68H160a12,12,0,0,0,0-24H108V32a12,12,0,0,0-24,0V44H32a12,12,0,0,0,0,24h83.13A83.69,83.69,0,0,1,96,110.35,84,84,0,0,1,83.6,91a12,12,0,1,0-21.81,10A107.55,107.55,0,0,0,78,126.24,83.54,83.54,0,0,1,32,140a12,12,0,0,0,0,24,107.47,107.47,0,0,0,64-21.07,108.4,108.4,0,0,0,45.39,19.44l-24.13,48.26a12,12,0,1,0,21.46,10.73L151.41,196h65.17l12.68,25.36a12,12,0,1,0,21.47-10.73ZM163.41,172,184,130.83,204.58,172Z";
+// Phosphor Bold « robot » (official @phosphor-icons/core 2.1.1 path): the root « Agents » row, drawn like the Profils
+// glyph. Not on the board (« Réglages › Agents » shows the view only): the Designer may swap it.
+inline constexpr const char* AgentsGlyph = "M72,104a16,16,0,1,1,16,16A16,16,0,0,1,72,104Zm96,16a16,16,0,1,0-16-16A16,16,0,0,0,168,120Zm68-40V192a36,36,0,0,1-36,36H56a36,36,0,0,1-36-36V80A36,36,0,0,1,56,44h60V16a12,12,0,0,1,24,0V44h60A36,36,0,0,1,236,80Zm-24,0a12,12,0,0,0-12-12H56A12,12,0,0,0,44,80V192a12,12,0,0,0,12,12H200a12,12,0,0,0,12-12Zm-12,82a30,30,0,0,1-30,30H86a30,30,0,0,1,0-60h84A30,30,0,0,1,200,162Zm-80-6v12h16V156ZM86,168H96V156H86a6,6,0,0,0,0,12Zm90-6a6,6,0,0,0-6-6H160v12h10A6,6,0,0,0,176,162Z";
 inline std::wstring Host(const std::wstring& origin) {
     std::wstring h = origin; const auto scheme = h.find(L"://"); if (scheme != std::wstring::npos) h = h.substr(scheme + 3);
     while (!h.empty() && h.back() == L'/') h.pop_back();
@@ -274,7 +297,8 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
         lead(Kind::Nav, CatPrivacy, L"shield-mask", TR(settings_privacy), st ? BrowserSettings::Info(st->tracking).label : L"");
         lead(Kind::Nav, CatDownloads, L"downloads-mask", TR(settings_downloads), st ? (st->askWhereToSave ? std::wstring(TR(settings_downloads_ask)) : in.folderName) : L"");
         lead(Kind::Nav, CatDisplay, L"eye-mask", TR(settings_display), st ? BrowserSettings::ZoomLabel(st->zoomPercent) : L"");
-        if (in.annotations) { auto* s = lead(Kind::Nav, CatAnnotations, nullptr, TR(settings_annotations), in.agents ? AnnotationSettings::Summary(*in.agents, in.agentsKnown) : L""); s->glyph = &AnnotationSettings::Mark; }
+        if (in.annotations) { auto* s = lead(Kind::Nav, CatAnnotations, nullptr, TR(settings_annotations), L""); s->glyph = &AnnotationSettings::Mark; }
+        if (in.chat) { auto* s = lead(Kind::Nav, CatAgents, nullptr, TR(agents_settings_title), in.chatAgents ? AnnotationSettings::ChatSummary(*in.chatAgents) : L""); s->path = AgentsGlyph; }
         y -= rowGap;
     } else if (view == View::Engine) {
         for (int i = 0; i < BrowserSettings::EngineCount; ++i) { auto* s = add(Kind::Engine, EngineHit(i), row); s->index = i; }
@@ -337,24 +361,35 @@ inline std::vector<Slot> ContentSlots(View view, const LayoutInput& in, float sc
         y -= rowGap;
     } else if (view == View::Annotations) {
         namespace AS = AnnotationSettings;
-        labelAt(TR(settings_group_agents));
-        for (int i = 0; i < AS::AppCount; ++i) {
-            const auto app = AS::AppAt(i); const AS::Agent agent = in.agents ? (*in.agents)[app] : AS::Agent{};
-            auto lines = in.agentLines[static_cast<size_t>(i)]; if (lines.empty()) lines.push_back(AS::StatusText(agent, in.now));
-            const auto action = AS::ActionFor(agent);
-            auto* s = add(Kind::Agent, action == AS::Action::None ? None : AgentHit(app), TwoLine(lines.size()), AS::AppName(app), AS::ActionLabel(action));
-            s->index = i; s->lines = std::move(lines); s->disabled = !AS::ActionEnabled(agent); s->error = AS::StatusIsError(agent);
-        }
-        add(Kind::Nav, ManualConnect, row, TR(settings_manual_connect));
-        endGroup();
+        // « Ton agent »: the agents left this view — the chat's are in « Agents », the external apps (MCP) are its advanced
+        // « Connecter un agent externe »; « Proposer de connecter un agent » went with the window's opening by itself.
         labelAt(TR(settings_group_annotation_mode));
-        twoLine(AnnotationPrompt, TR(settings_connect_prompt));
         { auto lines = described(ShortcutsNoteKey); const size_t n = std::max<size_t>(1, lines.size()); auto* s = add(Kind::Note, None, n * 20.f, AS::ShortcutsNote()); s->lines = std::move(lines); }
         endGroup();
         labelAt(TR(settings_group_history));
         add(Kind::Value, AnnotationRetention, row, TR(settings_keep_done), st ? BrowserSettings::RetentionLabel(st->annotationRetentionDays) : L"");
         add(Kind::Folder, AnnotationFolder, folderRow, TR(settings_open_annotation_folder), in.annotationFolder);
         { auto* s = add(Kind::Danger, AnnotationClear, row, TR(settings_clear_annotations)); s->disabled = in.annotationCount == 0 || in.annotationCount == SIZE_MAX; }
+        y -= rowGap;
+    } else if (view == View::Agents) {
+        // Paper « Réglages › Agents »: « Agents du chat » (Claude Code, Codex, each with its one status and its action),
+        // the paid-account note, then « Avancé » › « Connecter un agent externe » (the MCP « Connecter un agent » window).
+        namespace AS = AnnotationSettings;
+        labelAt(TR(agents_settings_group_chat));
+        for (int i = 0; i < AS::ChatAppCount; ++i) {
+            const auto app = AS::ChatAppAt(i); const AS::ChatAgent agent = in.chatAgents ? (*in.chatAgents)[app] : AS::ChatAgent{};
+            auto lines = in.chatLines[static_cast<size_t>(i)]; if (lines.empty()) lines.push_back(AS::ChatStatusText(agent));
+            auto notes = in.chatNotes[static_cast<size_t>(i)]; if (notes.empty() && !AS::ChatNote(agent).empty()) notes.push_back(AS::ChatNote(agent));
+            const bool manual = AS::ChatManualLink(agent); const auto action = AS::ChatActionFor(agent);
+            auto* s = add(Kind::Agent, action == AS::ChatAction::None ? None : AgentHit(app), AgentRow(lines.size(), notes.size() + (manual ? 1 : 0)), AS::ChatAppName(app), AS::ChatActionLabel(action));
+            s->index = i; s->lines = std::move(lines); s->notes = std::move(notes); s->manual = manual; s->disabled = !AS::ChatActionEnabled(agent); s->error = AS::ChatStatusIsError(agent);
+        }
+        {   auto lines = in.paidLines; if (lines.empty()) lines.push_back(TR(agents_settings_paid_note));
+            auto* s = add(Kind::Note, None, agentNoteTop + lines.size() * agentNoteLine, TR(agents_settings_paid_note)); s->lines = std::move(lines); s->fine = true; }
+        endGroup();
+        labelAt(TR(agents_settings_group_advanced));
+        {   auto lines = in.externalLines; if (lines.empty()) lines.push_back(TR(agents_settings_external_note));
+            auto* s = add(Kind::Nav, ExternalAgents, TwoLine(lines.size()), TR(agents_settings_external)); s->lines = std::move(lines); }
         y -= rowGap;
     } else if (view == View::Sites) {
         const size_t n = in.sites ? in.sites->size() : 0;
@@ -420,7 +455,6 @@ inline const std::pair<int, I18n::Text> Descriptions[] = {
     {ReduceMotion, {I18n::Id::settings_reduce_motion_note}},
     {MuteBackground, {I18n::Id::settings_mute_background_note}},
     {GrayscaleText, {I18n::Id::settings_grayscale_text_note}},
-    {AnnotationPrompt, {I18n::Id::settings_connect_prompt_note}},
 };
 // Settings search: every row a query can reach, with where it lives and the words it answers to.
 // Titles, paths and keywords are catalog ids (I18n::Text converts at use): the index is never frozen in one language.
@@ -457,15 +491,17 @@ inline const Searchable SearchIndex[] = {
     {MuteBackground, {I::settings_mute_background}, {I::settings_path_display_sound}, View::Display, {I::search_kw_mute_background}},
     // « Annotations » (found only when the annotation mode is compiled in).
     {CatAnnotations, {I::settings_annotations}, {I::settings_title}, View::Main, {I::search_kw_annotations}},
-    {AgentHit(AnnotationSettings::App::Claude), {I::brand_claude_desktop}, {I::settings_path_annotations_agents}, View::Annotations, {I::search_kw_claude}},
-    {AgentHit(AnnotationSettings::App::Codex), {I::brand_codex}, {I::settings_path_annotations_agents}, View::Annotations, {I::search_kw_codex}},
-    {ManualConnect, {I::settings_manual_connect}, {I::settings_path_annotations_agents}, View::Annotations, {I::search_kw_manual_connect}},
-    {AnnotationPrompt, {I::settings_connect_prompt}, {I::settings_path_annotations_mode}, View::Annotations, {I::search_kw_connect_prompt}},
     {AnnotationRetention, {I::settings_keep_done}, {I::settings_path_annotations_history}, View::Annotations, {I::search_kw_keep_done}},
     {AnnotationFolder, {I::settings_open_annotation_folder}, {I::settings_path_annotations_history}, View::Annotations, {I::search_kw_annotation_folder}},
     {AnnotationClear, {I::settings_clear_annotations}, {I::settings_path_annotations_history}, View::Annotations, {I::search_kw_clear_annotations}},
+    // « Agents » (found only when the chat is compiled in).
+    {CatAgents, {I::agents_settings_title}, {I::settings_title}, View::Main, {I::agents_search_kw_chat}},
+    {AgentHit(AnnotationSettings::ChatApp::ClaudeCode), {I::agents_brand_claude_code}, {I::agents_settings_title}, View::Agents, {I::agents_search_kw_chat}},
+    {AgentHit(AnnotationSettings::ChatApp::Codex), {I::brand_codex}, {I::agents_settings_title}, View::Agents, {I::agents_search_kw_chat}},
+    {ExternalAgents, {I::agents_settings_external}, {I::agents_settings_title}, View::Agents, {I::agents_search_kw_external}},
 };
 inline bool IsAnnotationEntry(const Searchable& e) { return e.view == View::Annotations || e.hit == CatAnnotations; }
+inline bool IsAgentsEntry(const Searchable& e) { return e.view == View::Agents || e.hit == CatAgents; }
 // Case- and accent-insensitive form for matching ("Économiseur" ~ "economiseur").
 inline std::wstring Folded(const std::wstring& text) {
     std::wstring out; out.reserve(text.size());
@@ -482,11 +518,12 @@ inline std::wstring Folded(const std::wstring& text) {
 }
 // Results: title matches first (with the matched span), then keyword matches.
 struct SearchResult { const Searchable* entry; size_t at = std::wstring::npos, length = 0; };
-inline std::vector<SearchResult> SearchSettings(const std::wstring& query, bool annotations = false, bool importData = true) {
+inline std::vector<SearchResult> SearchSettings(const std::wstring& query, bool annotations = false, bool importData = true, bool chat = false) {
     std::vector<SearchResult> titled, keyed; const std::wstring q = Folded(BrowserSettings::TrimText(query));
     if (q.empty()) return {};
     for (const auto& e : SearchIndex) {
         if (!annotations && IsAnnotationEntry(e)) continue;
+        if (!chat && IsAgentsEntry(e)) continue;
         if (!importData && e.hit == ImportData) continue;   // a private window has no import row
         const size_t at = Folded(I18n::T(e.title.id)).find(q);
         if (at != std::wstring::npos) titled.push_back({&e, at, q.size()});
@@ -548,14 +585,19 @@ public:
         // Nothing here touches the store or another app's configuration: the host does, off the UI thread,
         // and answers on the UI thread. See design/annotations-settings.md for the main.cpp wiring.
         std::function<bool()> annotations;                                                         // the annotation mode is compiled in
-        std::function<void(std::function<void(AnnotationSettings::Agents)>)> loadAgents;            // detection (async)
-        std::function<void(AnnotationSettings::App, bool connect, std::function<void(bool ok, std::wstring message)>)> connectAgent; // explicit click only
-        std::function<void()> openConnect;                                                         // the connect modal on its manual fallback
         std::function<std::wstring()> annotationFolder;                                            // the store root (shown, tooltip)
         std::function<void()> openAnnotationFolder;                                                // Explorer on it
         std::function<void(std::function<void(std::size_t)>)> countAnnotations;                    // published + drafts (async)
         std::function<void(std::size_t count, bool keyboard)> clearAnnotations;                    // ClearAnnotationsSpec(count), then clear; call AnnotationsChanged()
         std::function<long long()> now;                                                            // UTC seconds (tests); default time()
+        // ---- « Agents » (« Ton agent », src/agent-status.h through src/chat-agents-view.h; no « Agents » row without
+        // chatAgents). The host calls ChatAgentsChanged() after every change of an agent's status (its listener).
+        std::function<AnnotationSettings::ChatAgents()> chatAgents;                                // the status now (cheap, UI thread)
+        std::function<void()> refreshChatAgents;                                                    // detect again: the view was opened
+        // The row's button, from its click (mouse or keyboard) ONLY: Installer / Réessayer (an install) carry the
+        // install's consent (AgentStatus::UserClicked), Se connecter opens the CLI's own sign-in.
+        std::function<void(AnnotationSettings::ChatApp, AnnotationSettings::ChatAction)> chatAgentAction;
+        std::function<void()> openExternalAgents;                                                   // « Connecter un agent externe »: the MCP window
         // « Langue » (both optional; no row without saveLanguage). savedLanguage: the preference as stored now;
         // saveLanguage: write it (true only once it is on disk). The process keeps its language until restarted.
         std::function<I18n::Locale()> savedLanguage;
@@ -581,9 +623,13 @@ private:
     std::wstring query_; std::vector<SearchResult> results_; NativeUI::AccentCaret caret_;
     std::vector<BrowserSettings::Site> sites_; bool sitesLoaded_ = false; int site_ = -1; unsigned loadTicket_ = 0;
     // « Annotations »: what the host last said, read when the section (or the root) is shown.
-    AnnotationSettings::Agents agents_; bool agentsKnown_ = false; unsigned agentsTicket_ = 0, countTicket_ = 0;
-    std::array<std::vector<std::wstring>, AnnotationSettings::AppCount> agentLines_;
+    unsigned countTicket_ = 0;
     std::size_t annotationCount_ = SIZE_MAX;
+    // « Agents »: the chat agents' status as last read, its wrapped lines, the two notes.
+    AnnotationSettings::ChatAgents chatAgents_;
+    std::array<std::vector<std::wstring>, AnnotationSettings::ChatAppCount> chatLines_, chatNotes_;
+    std::array<DownloadIcon::Model, AnnotationSettings::ChatAppCount> installIcons_;   // « Installation… »: the Downloads button's morph
+    std::vector<std::wstring> paidLines_, externalLines_;
     std::map<const char*, ID2D1PathGeometry*> glyphs_;   // logos and the annotation mark (factory resources)
     float heightOverride_ = 0;                            // RenderForTest: the offscreen page's height (DIP)
     // A first permissions load answered within this grace shows the list (or « Aucun site ») directly.
@@ -655,12 +701,12 @@ private:
         case ConfirmClose: return C::ConfirmCloseTabs; case CloseWithLastTab: return C::CloseWithLastTab; case AdBlock: return C::AdBlock;
         case HttpsOnly: return C::HttpsOnly; case ThirdPartyCookies: return C::ThirdPartyCookies; case MemorySaver: return C::MemorySaver;
         case MuteBackground: return C::MuteBackground; case GrayscaleText: return C::GrayscaleText;
-        case AnnotationPrompt: return C::AnnotationConnectPrompt; default: return C::ClearOnExit;
+        default: return C::ClearOnExit;
         }
     }
-    // « Proposer de connecter un agent » shows whether the modal would still open by itself (BrowserSettings::ConnectPromptActive).
-    bool SwitchValue(int hit) const { if (hit == AnnotationPrompt) return state_ && BrowserSettings::ConnectPromptActive(*state_); auto* f = SwitchField(hit); return f && *f; }
+    bool SwitchValue(int hit) const { auto* f = SwitchField(hit); return f && *f; }
     bool AnnotationsOn() const { return hooks_.annotations && hooks_.annotations(); }
+    bool ChatOn() const { return static_cast<bool>(hooks_.chatAgents); }
     long long NowSeconds() const { return hooks_.now ? hooks_.now() : static_cast<long long>(std::time(nullptr)); }
     bool Reduced() const { return motion_.ReducedMotion(); }
     float Dpi() const { return static_cast<float>(GetDpiForWindow(hwnd_ ? hwnd_ : owner_)); }
@@ -691,7 +737,8 @@ private:
         in.grayscalePending = state_ && state_->grayscaleText != launchGrayscale_;
         in.profiles = &profiles_; in.editorHeight = editor_.Height();
         in.state = state_; in.sites = &sites_; in.sitesLoaded = sitesLoaded_; in.sitesQuiet = LoadQuiet(Motion::Now()); in.site = site_;
-        in.annotations = AnnotationsOn(); in.agents = &agents_; in.agentsKnown = agentsKnown_; in.agentLines = agentLines_; in.now = NowSeconds();
+        in.annotations = AnnotationsOn();
+        in.chat = ChatOn(); in.chatAgents = &chatAgents_; in.chatLines = chatLines_; in.chatNotes = chatNotes_; in.paidLines = paidLines_; in.externalLines = externalLines_;
         in.annotationCount = annotationCount_; if (in.annotations && hooks_.annotationFolder) in.annotationFolder = FolderText(hooks_.annotationFolder());
         in.importData = static_cast<bool>(hooks_.importData);
         if (hooks_.vaultInfo) { const auto v = hooks_.vaultInfo(); in.vaultManager = v.first; in.vaultCount = v.second; } return in;
@@ -732,20 +779,21 @@ private:
     Motion::InteractionVisual Interaction(int hit, Motion::Time now) const { return motion_.Visual(hit, now); }
     // Balanced wrap (CSS text-wrap: balance): the greedy line count, at the
     // narrowest width that keeps it, so lines come out even instead of a short last one.
-    std::vector<std::wstring> Wrap(const std::wstring& text, float width) {
-        auto lines = Greedy(text, width);
+    // `size`: the text's DIP size (14: descriptions, tracked -1 %; 12 / 13: the « Agents » status lines and note, untracked).
+    std::vector<std::wstring> Wrap(const std::wstring& text, float width, float size = 14, bool medium = false) {
+        auto lines = Greedy(text, width, size, medium);
         if (lines.size() < 2) return lines;
         float lo = width / lines.size(), hi = width;
-        for (int k = 0; k < 10 && hi - lo > .5f; ++k) { const float mid = (lo + hi) / 2; if (Greedy(text, mid).size() == lines.size()) hi = mid; else lo = mid; }
-        return Greedy(text, hi);
+        for (int k = 0; k < 10 && hi - lo > .5f; ++k) { const float mid = (lo + hi) / 2; if (Greedy(text, mid, size, medium).size() == lines.size()) hi = mid; else lo = mid; }
+        return Greedy(text, hi, size, medium);
     }
-    std::vector<std::wstring> Greedy(const std::wstring& text, float width) {
-        std::vector<std::wstring> lines; std::wstring line, word;
+    std::vector<std::wstring> Greedy(const std::wstring& text, float width, float size = 14, bool medium = false) {
+        std::vector<std::wstring> lines; std::wstring line, word; const float tracking = size >= 14 ? -.01f * size : 0.f;
         for (size_t i = 0; i <= text.size(); ++i) {
             if (i < text.size() && text[i] != L' ') { word += text[i]; continue; }
             if (word.empty()) continue;
             const std::wstring candidate = line.empty() ? word : line + L" " + word;
-            if (!line.empty() && pc_->TextWidth(candidate, 14, false, false, -.14f) > width) { lines.push_back(line); line = word; } else line = candidate;
+            if (!line.empty() && pc_->TextWidth(candidate, size, medium, false, tracking) > width) { lines.push_back(line); line = word; } else line = candidate;
             word.clear();
         }
         if (!line.empty()) lines.push_back(line);
@@ -761,14 +809,22 @@ private:
         profileNoteLines_ = Wrap(TR(settings_profile_delete_note), Layout::rowRight - Layout::textLeft - 4);
         lastProfileNoteLines_ = Wrap(TR(settings_last_profile_note), Layout::rowRight - Layout::textLeft - 4);
         lines_[ShortcutsNoteKey] = Wrap(AnnotationSettings::ShortcutsNote(), Layout::rowRight - Layout::textLeft);
-        MeasureAgents();
+        paidLines_ = Greedy(TR(agents_settings_paid_note), Layout::agentNoteWidth, 13);   // the board breaks it greedily (« … payant / (Pro, … »)
+        externalLines_ = Wrap(TR(agents_settings_external_note), Layout::Chevron(0).left - 8 - Layout::textLeft);
+        MeasureChat();
     }
-    // Agent status lines: re-wrapped whenever the state or the clock (« il y a … ») may have changed them.
-    void MeasureAgents() {
+    // « Agents »: the state (after its icon) and the note wrap in the text column, 10 DIP before the row's button.
+    void MeasureChat() {
         if (!pc_->RenderTarget()) pc_->Resize();
-        const long long now = NowSeconds();
-        for (int i = 0; i < AnnotationSettings::AppCount; ++i)
-            agentLines_[static_cast<size_t>(i)] = Wrap(AnnotationSettings::StatusText(agents_[AnnotationSettings::AppAt(i)], now), Layout::statusWidth);
+        namespace AS = AnnotationSettings;
+        for (int i = 0; i < AS::ChatAppCount; ++i) {
+            const auto& a = chatAgents_[AS::ChatAppAt(i)]; const auto action = AS::ChatActionFor(a);
+            const float right = Layout::agentRight - (action == AS::ChatAction::None ? 0.f : ChatButtonWidth(AS::ChatActionLabel(action)) + Layout::agentGap);
+            const float icon = AS::ChatIconFor(a) == AS::ChatIcon::None ? 0.f : Layout::agentIcon + Layout::agentIconGap;
+            chatLines_[static_cast<size_t>(i)] = Wrap(AS::ChatStatusText(a), right - Layout::agentText - icon, 13, true);
+            const auto note = AS::ChatNote(a);
+            chatNotes_[static_cast<size_t>(i)] = note.empty() ? std::vector<std::wstring>{} : Greedy(note, right - Layout::agentText, 13);
+        }
     }
     // A vector glyph (Paper path, its own viewBox) fitted in `box` at `size` DIP.
     void PaintGlyph(const AnnotationSettings::Glyph& g, Design::Box box, float size, D2D1_COLOR_F color) {
@@ -834,28 +890,76 @@ private:
         else if (s.path) pc_->PathGlyph(s.path, R(Layout::Icon(s.top)), 16, D2D1::ColorF(1, 1, 1, .7f + .2f * hover));
         else if (s.glyph) PaintGlyph(*s.glyph, Layout::Icon(s.top), 14, D2D1::ColorF(1, 1, 1, .7f + .2f * hover)); // the mark at the masks' optical size
     }
-    // « Annotations » › Agents: logo, name, status; the action as a compact raised button.
-    float ActionWidth(const std::wstring& label) const { return std::ceil(pc_->TextWidth(label, 14, false, false, -.14f)) + 2 * Layout::actionPad; }
-    Design::Box AgentAction(const Slot& s) const { return Layout::Action(s.top, ActionWidth(s.value)); }
+    // « Agents » › a chat agent (Paper « Réglages › Agents », Designer's answer): logo tile, name over its state (icon +
+    // words), the note / « Installer moi-même ↗ » under it, then the row's one button.
+    static D2D1_COLOR_F Rgb(unsigned c, float a = 1) { return D2D1::ColorF(((c >> 16) & 255) / 255.f, ((c >> 8) & 255) / 255.f, (c & 255) / 255.f, a); }
+    static D2D1_COLOR_F Of(Design::Rgb c, float a = 1) { return D2D1::ColorF(c.r, c.g, c.b, a); }
+    float ChatButtonWidth(const std::wstring& label) const { return std::ceil(pc_->TextWidth(label, 13, true)) + 2 * Layout::agentButtonPad; }
+    Design::Box AgentAction(const Slot& s) const { return Layout::AgentButton(s.top, s.height, ChatButtonWidth(s.value)); }
+    float AgentTextTop(const Slot& s) const { const float extra = s.notes.size() + (s.manual ? 1.f : 0.f); return s.top + s.height / 2 - (20 + 2 + s.lines.size() * Layout::agentStatus + (extra > 0 ? Layout::agentExtraGap + extra * Layout::agentExtraLine : 0.f)) / 2; }
+    // The link's box: its own words (13 medium), on the last line under the state.
+    Design::Box ManualLink(const Slot& s) const {
+        const float y = AgentTextTop(s) + 22 + s.lines.size() * Layout::agentStatus + Layout::agentExtraGap + s.notes.size() * Layout::agentExtraLine;
+        return {Layout::agentText, y, Layout::agentText + std::ceil(pc_->TextWidth(TR(agents_manual_install), 13, true)), y + Layout::agentExtraLine};
+    }
+    bool InstallAnimating() const {
+        if (Reduced() || DepthOf(View::Agents) < 0) return false;
+        for (int i = 0; i < AnnotationSettings::ChatAppCount; ++i) if (AnnotationSettings::ChatIconAnimated(chatAgents_[AnnotationSettings::ChatAppAt(i)])) return true;
+        return false;
+    }
     void AgentRow(const Slot& s, Motion::Time now) {
-        namespace AS = AnnotationSettings; const auto app = AS::AppAt(s.index);
-        const auto& logo = AS::Logo(app); const Design::Box icon = Layout::Icon(s.top + Layout::twoLinePad, 20);
-        if (app == AS::App::Claude) PaintGlyph(logo, icon, 16, D2D1::ColorF(AS::ClaudeRgb));
-        else PaintGlyph(logo, icon, 16, D2D1::ColorF(1, 1, 1, .9f));
-        const bool action = !s.value.empty(); const auto box = action ? AgentAction(s) : Design::Box{Layout::slotRight, 0, Layout::slotRight, 0};
-        Label16(s.text, Layout::nameLeft, s.top + Layout::twoLinePad, box.left - 8, .9f);
-        if (s.error) pc_->ink = D2D1::ColorF(Design::Danger::r, Design::Danger::g, Design::Danger::b, 1);
-        for (size_t k = 0; k < s.lines.size(); ++k) Label14(s.lines[k], Layout::nameLeft, s.top + Layout::twoLinePad + 22 + k * Layout::descriptionLine, Layout::rowRight - 8, s.error ? 1.f : .5f);
+        namespace AS = AnnotationSettings; namespace Ink = AS::ChatInk; const auto app = AS::ChatAppAt(s.index); const auto& agent = chatAgents_[app];
+        const float cy = s.top + s.height / 2;
+        const Design::Box tile{Layout::rowLeft + Layout::agentPad, cy - Layout::agentTile / 2, Layout::rowLeft + Layout::agentPad + Layout::agentTile, cy + Layout::agentTile / 2};
+        Fill(tile, Layout::agentTileRadius, ((Ink::tile >> 16) & 255) / 255.f, ((Ink::tile >> 8) & 255) / 255.f, (Ink::tile & 255) / 255.f, 1);
+        PaintGlyph(AS::Logo(app), tile, Layout::agentLogo, app == AS::ChatApp::ClaudeCode ? Rgb(AS::ClaudeRgb) : D2D1::ColorF(1, 1, 1, 1));
+        const bool action = !s.value.empty();
+        const Design::Box box = action ? AgentAction(s) : Design::Box{Layout::agentRight, cy, Layout::agentRight, cy};
+        const float textRight = action ? box.left - Layout::agentGap : Layout::agentRight, top = AgentTextTop(s);
+        Label16(s.text, Layout::agentText, top, textRight, Ink::nameAlpha);
+        // The state: its icon (the Downloads morph while installing), then its words, in its tone.
+        const auto tone = AS::ChatToneFor(agent);
+        const D2D1_COLOR_F ink = tone == AS::ChatTone::Accent ? Of(Design::Accent::Ink()) : Rgb(tone == AS::ChatTone::Danger ? Ink::danger : Ink::status);
+        float x = Layout::agentText; const float y = top + 22;
+        const auto icon = AS::ChatIconFor(agent);
+        if (icon != AS::ChatIcon::None) {
+            const D2D1_RECT_F iconBox{x, y + (Layout::agentStatus - Layout::agentIcon) / 2, x + Layout::agentIcon, y + (Layout::agentStatus + Layout::agentIcon) / 2};
+            bool drawn = false;
+            if (AS::ChatIconAnimated(agent) && !Reduced()) { const auto pose = installIcons_[static_cast<size_t>(s.index)].At(now); drawn = !pose.idle && pc_->DrawDownloadIcon(pose, iconBox, Layout::agentIcon, 1); }
+            if (!drawn) pc_->PathGlyph(AS::ChatGlyphs::For(icon), iconBox, Layout::agentIcon, ink);
+            x += Layout::agentIcon + Layout::agentIconGap;
+        }
+        pc_->ink = ink;
+        for (size_t k = 0; k < s.lines.size(); ++k) { const float ly = y + k * Layout::agentStatus; pc_->Text(s.lines[k], {x, ly, textRight, ly + Layout::agentStatus}, 13, 1, false, true); }
+        // Under the state: the note (Claude Desktop alone), then « Installer moi-même ↗ » (underlined, brighter on hover).
+        float ny = y + s.lines.size() * Layout::agentStatus + Layout::agentExtraGap;
+        pc_->ink = Rgb(Ink::note);
+        for (const auto& line : s.notes) { pc_->Text(line, {Layout::agentText, ny, textRight, ny + Layout::agentExtraLine}, 13, 1); ny += Layout::agentExtraLine; }
+        if (s.manual) {
+            const auto link = ManualLink(s); const auto v = Interaction(ManualHit(app), now);
+            const auto c = Rgb(Ink::link); const float lift = .5f * v.hover;
+            pc_->ink = D2D1::ColorF(c.r + (1 - c.r) * lift, c.g + (1 - c.g) * lift, c.b + (1 - c.b) * lift, 1);
+            pc_->Text(TR(agents_manual_install), {link.left, link.top, link.right + 1, link.bottom}, 13, 1, false, true);
+            auto* t = pc_->RenderTarget(); auto* brush = pc_->SolidBrush();
+            const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width));
+            brush->SetColor(pc_->ink); t->FillRectangle(D2D1::RectF(link.left, link.bottom - 3 - px, link.right, link.bottom - 3), brush);   // 1 px underline
+            if (focus_ == ManualHit(app)) pc_->FocusRing({link.left - 4, link.top, link.right + 4, link.bottom}, Design::Radius::control);
+        }
         pc_->ink = D2D1::ColorF(1, 1, 1, 1);
         if (!action) return;
-        const auto v = Interaction(s.hit, now); const bool enabled = !s.disabled;
-        const auto style = Design::Resolve(Design::ButtonVariant::Raised, {enabled ? v.hover : 0, enabled ? v.press : 0, !enabled, focus_ == s.hit});
+        // The row's button: the missing action in the profile accent (its click is the consent), Annuler / Réessayer
+        // neutral; dimmed when it cannot act (« Annuler » until the host can stop a sign-in).
+        const auto v = Interaction(s.hit, now); const bool enabled = !s.disabled, strong = AS::ChatActionStrong(agent);
         auto* t = pc_->RenderTarget(); D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
         const float scale = Motion::PressScale(enabled ? v.press : 0, Reduced(), enabled);
         if (scale != 1) t->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale, {(box.left + box.right) / 2, (box.top + box.bottom) / 2}) * base);
-        pc_->Round(R(box), style.radius, style.surface);
-        pc_->Text(s.value, {box.left + Layout::actionPad - 1, box.top + 2, box.right - Layout::actionPad + 1, box.top + 22}, 14, enabled ? .9f : Design::Text::disabled, false, false, -.14f);
-        if (focus_ == s.hit) pc_->FocusRing(R(box), Design::Radius::button);
+        const bool dim = !enabled; if (dim) PushOpacity(Design::Text::disabled);
+        const float hover = enabled ? v.hover : 0, press = enabled ? v.press : 0;
+        if (strong) { const auto c = Design::Accent::StateColor(Design::Accent::Get(), hover, press); Fill(box, Layout::agentButtonRadius, c.r, c.g, c.b, 1); }
+        else { const auto rest = Rgb(Ink::neutral); const float lift = .06f * hover + .04f * press; Fill(box, Layout::agentButtonRadius, rest.r + (1 - rest.r) * lift, rest.g + (1 - rest.g) * lift, rest.b + (1 - rest.b) * lift, 1); }
+        pc_->Text(s.value, {box.left + Layout::agentButtonPad - 1, box.top + 6, box.right - Layout::agentButtonPad + 1, box.top + 22}, 13, 1, false, true);
+        if (dim) t->PopLayer();
+        if (focus_ == s.hit) pc_->FocusRing(R(box), Layout::agentButtonRadius);
         t->SetTransform(base);
     }
     void SwitchRow(const Slot& s, Motion::Time now) {
@@ -1000,6 +1104,17 @@ private:
         if (!s.hit) { // inert: label + why, no chevron, no hover
             Label16(s.text, Layout::textLeft, s.top + Layout::twoLinePad, Layout::rowRight - 8, .5f);
             for (size_t k = 0; k < s.lines.size(); ++k) Label14(s.lines[k], Layout::textLeft, s.top + Layout::twoLinePad + 22 + k * Layout::descriptionLine, Layout::rowRight - 8, .4f);
+            return;
+        }
+        if (!s.lines.empty()) {   // a described entry (« Connecter un agent externe »): label over its description, the chevron centred
+            RowFocus(Layout::Row(s.top, s.height), s.hit);
+            auto* t = pc_->RenderTarget(); const auto v = Interaction(s.hit, now); const auto chevron = Layout::Chevron(s.top, s.height);
+            Label16(s.text, Layout::textLeft, s.top + Layout::twoLinePad, chevron.left - 8, .7f + .3f * v.hover);
+            for (size_t k = 0; k < s.lines.size(); ++k) Label14(s.lines[k], Layout::textLeft, s.top + Layout::twoLinePad + 22 + k * Layout::descriptionLine, chevron.left - 8, .5f);
+            D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
+            t->SetTransform(D2D1::Matrix3x2F::Rotation(-90, {(chevron.left + chevron.right) / 2, (chevron.top + chevron.bottom) / 2}) * base);
+            pc_->Icon(L"caret", R(chevron), 14, .5f + .3f * v.hover);
+            t->SetTransform(base);
             return;
         }
         RowFocus(Layout::Row(s.top), s.hit);
@@ -1279,7 +1394,9 @@ private:
             if (surfaces) RowSurface(Layout::Row(s.top, s.height), s.hit, now);
             else switch (s.kind) {
             case Kind::Label: pc_->Text(s.text, {Layout::textLeft, s.top, Layout::rowRight, s.top + 20}, 14, .5f, false, true, -.14f); break;
-            case Kind::Note: { const auto lines = s.lines.empty() ? Wrap(s.text, Layout::rowRight - Layout::textLeft) : s.lines; for (size_t k = 0; k < lines.size(); ++k) Label14(lines[k], Layout::textLeft, s.top + k * 20, Layout::rowRight, .5f, 20); break; }
+            case Kind::Note:
+                if (s.fine) { for (size_t k = 0; k < s.lines.size(); ++k) { const float y = s.top + Layout::agentNoteTop + k * Layout::agentNoteLine; pc_->Text(s.lines[k], {Layout::textLeft, y, Layout::agentRight, y + Layout::agentNoteLine}, 13, AnnotationSettings::ChatInk::noteAlpha); } break; }
+                { const auto lines = s.lines.empty() ? Wrap(s.text, Layout::rowRight - Layout::textLeft) : s.lines; for (size_t k = 0; k < lines.size(); ++k) Label14(lines[k], Layout::textLeft, s.top + k * 20, Layout::rowRight, .5f, 20); break; }
             case Kind::Engine: EngineRow(s, now); break;
             case Kind::Search: SearchRow(s, now); break;
             case Kind::Danger: DangerContent(s, now); break;
@@ -1377,6 +1494,7 @@ private:
             return SearchDismiss;
         }
         for (const auto& s : Slots(view, Motion::Now())) {
+            if (s.kind == Kind::Agent && s.manual && s.opacity >= .5f && in(ManualLink(s))) return ManualHit(AnnotationSettings::ChatAppAt(s.index));   // the link, whatever its button does
             if (!s.hit || s.opacity < .5f || s.disabled) continue;
             if (s.kind == Kind::Agent) { if (in(AgentAction(s))) return s.hit; continue; }   // only the button answers
             if (in(Layout::Row(s.top, s.height)) && y >= s.clipTop && y < s.clipBottom) return s.hit;
@@ -1388,7 +1506,10 @@ private:
         if (view != View::Main) order.push_back(Back);
         order.push_back(Close);
         if (view == View::Main && Searching()) { order.push_back(SearchField); for (size_t i = 0; i < results_.size(); ++i) order.push_back(ResultBase + static_cast<int>(i)); return order; }
-        for (const auto& s : Slots(view, Motion::Now())) if (s.hit && s.opacity > .5f && (!s.disabled || s.kind == Kind::Agent)) order.push_back(s.hit);   // a busy agent button keeps the focus
+        for (const auto& s : Slots(view, Motion::Now())) {
+            if (s.hit && s.opacity > .5f && (!s.disabled || s.kind == Kind::Agent)) order.push_back(s.hit);   // a busy agent button keeps the focus
+            if (s.kind == Kind::Agent && s.manual && s.opacity > .5f) order.push_back(ManualHit(AnnotationSettings::ChatAppAt(s.index)));   // then its link
+        }
         if (view == View::Profile) { if (LastProfile()) order.push_back(ProfileClearData); else if (!ProfilesReadOnly()) order.push_back(ProfileDelete); }
         else if (view != View::Sites && view != View::Site) {
             if (CardIn(view)) { order.push_back(DefaultLater); order.push_back(DefaultMake); }
@@ -1457,11 +1578,12 @@ private:
         if (depth_ + 1 >= MaxDepth) return;
         views_[depth_ + 1] = v;
         if (v == View::Engine) plate_.Snap(EngineTop(SelectedIndex()));
+        if (v == View::Agents) LoadChat(true);   // from its row or a search result: detected again as it opens
         Navigate(depth_ + 1, now);
     }
     // Search ---------------------------------------------------------------------------
     void SetQuery(std::wstring q) {
-        query_ = std::move(q); results_ = SearchSettings(query_, AnnotationsOn(), static_cast<bool>(hooks_.importData));
+        query_ = std::move(q); results_ = SearchSettings(query_, AnnotationsOn(), static_cast<bool>(hooks_.importData), ChatOn());
         motion_.ClearInteractions(); if (IsResult(focus_)) focus_ = 0;
         Invalidate(); Schedule(Motion::Now());
     }
@@ -1488,51 +1610,51 @@ private:
         });
     }
     // ---- « Annotations » ---------------------------------------------------
-    // Asks the host for the agents' state and the annotation count (both async, off the UI thread there).
+    // Asks the host for the annotation count (async, off the UI thread there).
     void LoadAnnotations() {
         if (!AnnotationsOn()) return;
-        if (hooks_.loadAgents) {
-            const unsigned ticket = ++agentsTicket_;
-            hooks_.loadAgents([this, ticket](AnnotationSettings::Agents agents) { if (ticket == agentsTicket_ && hwnd_) ApplyAgents(agents); });
-        }
         if (hooks_.countAnnotations) {
             const unsigned ticket = ++countTicket_;
             hooks_.countAnnotations([this, ticket](std::size_t n) { if (ticket == countTicket_ && hwnd_) { annotationCount_ = n; AnnotationsRelaid(); } });
         }
     }
-    // The host's detection; what the drawer owns (a running action, the last result) stays.
-    void ApplyAgents(const AnnotationSettings::Agents& from) {
-        for (int i = 0; i < AnnotationSettings::AppCount; ++i) {
-            const auto app = AnnotationSettings::AppAt(i); auto& mine = agents_[app]; AnnotationSettings::Agent next = from[app];
-            next.known = true; next.activity = mine.activity; next.failed = mine.failed; next.message = mine.message;
-            if (next.connected && !next.failed) next.message.clear();   // the step it waited for is done (« Cliquez sur Installer »)
-            mine = next;
-        }
-        agentsKnown_ = true; AnnotationsRelaid();
-    }
     void AnnotationsRelaid() {
-        MeasureAgents();
         if (!visible_) return;
         auto order = FocusOrder(); if (focus_ && std::find(order.begin(), order.end(), focus_) == order.end()) focus_ = 0;
         RefreshTips(); Invalidate(); Schedule(Motion::Now());
     }
     void Announce(const std::wstring& text) { if (uia_.Listening()) uia_.Notify(HitBase + Close, text.c_str(), L"Reglages"); }   // i18n-exempt: UIA activity id
-    // Connecter / Déconnecter / Reconnecter: only on this explicit click; the host does the work (same path,
-    // backups and atomic writes as the connect modal) and answers once.
-    void AgentAction(AnnotationSettings::App app) {
-        namespace AS = AnnotationSettings; auto& a = agents_[app];
-        if (!AS::ActionEnabled(a) || !hooks_.connectAgent) return;
-        const bool connect = AS::ActionFor(a) != AS::Action::Disconnect;
-        a.activity = connect ? AS::Activity::Connecting : AS::Activity::Disconnecting; a.failed = false; a.message.clear();
+    // ---- « Agents » ------------------------------------------------------------
+    // Reads the chat agents' status (cheap: the host keeps it); `detect`: also asks for a new detection (the view opens),
+    // whose answer comes back through ChatAgentsChanged().
+    void LoadChat(bool detect) {
+        if (!ChatOn()) return;
+        ApplyChat(hooks_.chatAgents(), false);
+        if (detect && hooks_.refreshChatAgents) hooks_.refreshChatAgents();
+    }
+    // A new status: the rows follow; while « Agents » is on screen, a screen reader hears what changed (« Claude Code :
+    // Installation… », « Codex : Version 0.9 »).
+    void ApplyChat(const AnnotationSettings::ChatAgents& next, bool announce) {
+        namespace AS = AnnotationSettings;
+        const auto was = chatAgents_; chatAgents_ = next; MeasureChat();
+        const auto now = Motion::Now();   // the download icon runs while « Installation… » shows (no percentage: an empty ring, the arrow bobbing)
+        for (int i = 0; i < AS::ChatAppCount; ++i) installIcons_[static_cast<size_t>(i)].Update(AS::ChatIconAnimated(next[AS::ChatAppAt(i)]), 0.f, false, now, Reduced());
+        if (announce && visible_ && Current() == View::Agents)
+            for (int i = 0; i < AS::ChatAppCount; ++i) { const auto app = AS::ChatAppAt(i); if (was[app].state != next[app].state) Announce(TRF(agents_announce_status, AS::ChatAppName(app), AS::ChatStatusText(next[app]))); }
         AnnotationsRelaid();
-        Announce(connect ? TRF(settings_announce_connecting, AS::AppName(app)) : TRF(settings_announce_disconnecting, AS::AppName(app)));
-        hooks_.connectAgent(app, connect, [this, app, connect](bool ok, std::wstring message) {
-            if (!hwnd_) return;
-            auto& a = agents_[app]; a.activity = AS::Activity::Idle; a.failed = !ok; a.message = ok && !connect ? L"" : std::move(message);
-            AnnotationsRelaid();
-            Announce(!ok ? AS::StatusText(a, NowSeconds()) : (connect ? TRF(settings_announce_connected, AS::AppName(app)) : TRF(settings_announce_disconnected, AS::AppName(app))));
-            LoadAnnotations();
-        });
+    }
+    // The row's button, from its click (mouse, Entrée, Espace) ONLY: the host turns Installer / Réessayer
+    // into AgentStatus::Install / Retry(UserClicked(agent)) on the spot — the click IS the consent — and Se connecter into
+    // AgentStatus::SignIn. Nothing here runs by itself.
+    void ChatAgentAction(AnnotationSettings::ChatApp app) {
+        namespace AS = AnnotationSettings; const auto& a = chatAgents_[app];
+        if (!AS::ChatActionEnabled(a) || !hooks_.chatAgentAction) return;
+        hooks_.chatAgentAction(app, AS::ChatActionFor(a));
+    }
+    // « Installer moi-même ↗ »: the host opens the official page (its command to paste is there).
+    void ChatManualInstall(AnnotationSettings::ChatApp app) {
+        if (!AnnotationSettings::ChatManualLink(chatAgents_[app]) || !hooks_.chatAgentAction) return;
+        hooks_.chatAgentAction(app, AnnotationSettings::ChatAction::ManualInstall);
     }
     // ---- UI Automation: the whole drawer ----------------------------------------------------------------
     // The drawer (Pane) and its header (Retour / Fermer); Réglages › Profils: the profile list (List +
@@ -1611,7 +1733,9 @@ private:
             case Kind::Switch: n = &add(s.hit, Role::Button, s.text, box); n->toggle = SwitchValue(s.hit) ? 2 : 1; n->help = join(s.lines); break;
             case Kind::Value: n = &add(s.hit, Role::Button, s.text, box); n->status = s.value; n->expand = 1; n->help = join(s.lines); break;
             case Kind::Nav: if (s.hit == CatProfiles) { n = &add(s.hit, Role::Button, TRF(settings_profiles_name, s.value), box); n->automationId = L"SettingsProfiles"; n->help = TR(settings_profiles_help); }
-                else if (!s.hit) { n = &add(textKey++, Role::Text, s.text + (s.lines.empty() ? L"" : L" : " + join(s.lines)), box); n->focusable = false; } else { n = &add(s.hit, Role::Button, s.text, box); n->status = s.value; if (s.hit == ImportData) n->automationId = L"SettingsImportData"; } break;
+                else if (!s.hit) { n = &add(textKey++, Role::Text, s.text + (s.lines.empty() ? L"" : L" : " + join(s.lines)), box); n->focusable = false; }
+                else { n = &add(s.hit, Role::Button, s.text, box); n->status = s.value; if (!s.lines.empty()) n->help = join(s.lines);
+                       if (s.hit == ImportData) n->automationId = L"SettingsImportData"; else if (s.hit == ExternalAgents) n->automationId = L"SettingsExternalAgents"; else if (s.hit == CatAgents) n->automationId = L"SettingsAgents"; } break;
             case Kind::Folder: n = &add(s.hit, Role::Button, s.text.empty() ? std::wstring(TR(settings_save_in)) : s.text, box);
                 n->help = s.hit == Folder ? (hooks_.downloadFolder ? hooks_.downloadFolder() : L"") : (hooks_.annotationFolder ? hooks_.annotationFolder() : L""); break;
             case Kind::SiteRow: n = &add(s.hit, Role::Button, s.text, box); n->help = s.value; break;
@@ -1619,10 +1743,18 @@ private:
                 if (s.hit == AnnotationClear && annotationCount_ != SIZE_MAX) n->help = annotationCount_ == 0 ? std::wstring(TR(settings_no_annotation)) : AnnotationSettings::ClearAction(annotationCount_); break;
             case Kind::ProfileRow: case Kind::Editor: break;   // Profils views: described by UiaNodes
             case Kind::Agent: {
-                // The row reads as one sentence; its button names the app it acts on.
-                n = &add(textKey++, Role::Text, s.text + L" : " + join(s.lines), box); n->focusable = false; n->offscreen = offscreen;
-                if (!s.hit) break;
-                n = &add(s.hit, Role::Button, s.value + L" " + s.text, AgentAction(s)); n->help = join(s.lines); n->enabled = !s.disabled;
+                // The row reads as one sentence (« Claude Code : Version 2.1, Prêt »); its button names the agent it acts on.
+                n = &add(textKey++, Role::Text, s.text + L" : " + join(s.lines) + (s.notes.empty() ? L"" : L". " + join(s.notes)), box); n->focusable = false; n->offscreen = offscreen;
+                if (s.hit) {
+                    n = &add(s.hit, Role::Button, s.value + L" " + s.text, AgentAction(s)); n->help = join(s.lines); n->enabled = !s.disabled;
+                    n->automationId = s.index == 0 ? L"SettingsAgentClaudeCode" : L"SettingsAgentCodex"; n->offscreen = offscreen;
+                }
+                if (s.manual) {   // the link opens the official page: read as « Installer moi-même Claude Code »
+                    const int hit = ManualHit(AnnotationSettings::ChatAppAt(s.index)); std::wstring name = TR(agents_manual_install);
+                    while (!name.empty() && (name.back() == L' ' || name.back() == L'\u2197')) name.pop_back();
+                    n = &add(hit, Role::Button, name + L" " + s.text, ManualLink(s)); n->help = join(s.lines);
+                    n->automationId = s.index == 0 ? L"SettingsAgentManualClaudeCode" : L"SettingsAgentManualCodex";
+                }
                 break;
             }
             }
@@ -1729,8 +1861,7 @@ private:
                 SyncReveals(now);
             }
         } else if (SwitchIndex(hit) >= 0) {
-            if (hit == AnnotationPrompt) BrowserSettings::SetConnectPrompt(*state_, !SwitchValue(hit));   // on again: the « Plus tard » count restarts
-            else { bool* value = SwitchField(hit); if (!value) return; *value = !*value; }
+            { bool* value = SwitchField(hit); if (!value) return; *value = !*value; }
             switches_[SwitchIndex(hit)].Set(SwitchValue(hit) ? 1.f : 0.f, now, Motion::Milliseconds(0), Reduced() ? Motion::Milliseconds(0) : Timing::toggle, Timing::switchSpring);
             if (hooks_.changed) hooks_.changed(SwitchChange(hit));
             if (hit == ReduceMotion) SyncReducedMotion();
@@ -1787,15 +1918,17 @@ private:
             if (chosen > 0 && static_cast<BrowserSettings::Autoplay>(chosen - 1) != state_->autoplay) { state_->autoplay = static_cast<BrowserSettings::Autoplay>(chosen - 1); if (hooks_.changed) hooks_.changed(Change::Autoplay); }
         } else if (IsField(hit)) { if (editing_ != hit) StartEdit(hit); return; }
         else if (hit == SearchDismiss) { if (editing_) EndEdit(); ClearSearch(); }
-        else if (IsResult(hit)) { OpenResult(hit - ResultBase, keyboard); if (Searching()) results_ = SearchSettings(query_, AnnotationsOn(), static_cast<bool>(hooks_.importData)); }
+        else if (IsResult(hit)) { OpenResult(hit - ResultBase, keyboard); if (Searching()) results_ = SearchSettings(query_, AnnotationsOn(), static_cast<bool>(hooks_.importData), ChatOn()); }
         else if (hit == CatEngine) Push(View::Engine, now);
         else if (hit == CatTabs) Push(View::Tabs, now);
         else if (hit == CatPrivacy) { LoadSites(); Push(View::Privacy, now); }
         else if (hit == CatDownloads) Push(View::Downloads, now);
         else if (hit == CatDisplay) Push(View::Display, now);
         else if (hit == CatAnnotations) { LoadAnnotations(); Push(View::Annotations, now); }
-        else if (IsAgent(hit)) AgentAction(static_cast<AnnotationSettings::App>(hit - AgentBase));
-        else if (hit == ManualConnect) { if (hooks_.openConnect) hooks_.openConnect(); }
+        else if (hit == CatAgents) Push(View::Agents, now);
+        else if (IsAgent(hit)) ChatAgentAction(static_cast<AnnotationSettings::ChatApp>(hit - AgentBase));
+        else if (IsManual(hit)) ChatManualInstall(static_cast<AnnotationSettings::ChatApp>(hit - ManualBase));
+        else if (hit == ExternalAgents) { if (hooks_.openExternalAgents) hooks_.openExternalAgents(); }
         else if (hit == AnnotationFolder) { if (hooks_.openAnnotationFolder) hooks_.openAnnotationFolder(); }
         else if (hit == AnnotationClear) {
             if (hooks_.clearAnnotations && annotationCount_ != SIZE_MAX && annotationCount_ > 0) { const std::size_t n = annotationCount_; Modal([&] { hooks_.clearAnnotations(n, keyboard); }); }
@@ -2147,7 +2280,7 @@ public:
     void KeyForTest(WPARAM key) { if (hwnd_) Handle(hwnd_, WM_KEYDOWN, key, 0); }
     std::vector<Accessibility::Node> AccessibleNodesForTest() const { return UiaNodes(); }
     static constexpr long long UiaKey(int hit) { return HitBase + hit; }   // a control's UIA key
-    const AnnotationSettings::Agents& AgentsForTest() const { return agents_; }
+    const AnnotationSettings::ChatAgents& ChatAgentsForTest() const { return chatAgents_; }
     std::size_t AnnotationCountForTest() const { return annotationCount_; }
     Design::Box AgentActionForTest(const Slot& s) const { return AgentAction(s); }
     TrailingSpan TrailingForTest(const Slot& s) const { return Trailing(s); }
@@ -2236,7 +2369,8 @@ public:
             MeasureDescriptions();
             for (int i = 0; i < SwitchCount; ++i) { switches_[i].Snap(SwitchValue(SwitchHits[i]) ? 1.f : 0.f); knobPress_[i].Snap(0); }
             LoadSites(); // the Autorisations row shows how many sites
-            LoadAnnotations(); // the « Annotations » row shows the connected agents
+            LoadAnnotations(); // the « Annotations » section's count
+            LoadChat(target == View::Agents); // the « Agents » row shows the ready agents (detected again when it opens on « Agents »)
             RefreshProfiles(); // the « Profils » row (and its current profile) is there from the first frame
             if (hooks_.savedLanguage) { languageSaved_ = hooks_.savedLanguage(); languageFailed_ = false; }   // « Langue »: the preference as stored now
             defaultBrowser_ = hooks_.defaultBrowser ? hooks_.defaultBrowser() : -1;   // the card: Windows' answer now
@@ -2259,8 +2393,12 @@ public:
     void ShowProfiles() { RefreshProfiles(); Show(View::Profiles); }
     // Opens straight on « Annotations » (no-op section when the annotation mode is compiled out).
     void ShowAnnotations() { if (AnnotationsOn()) Show(View::Annotations); else Show(); }
-    // The agents or the store changed outside the drawer (connect modal, clear all done, …): ask again.
+    // The store changed outside the drawer (clear all done, …): ask again.
     void AnnotationsChanged() { if (hwnd_) LoadAnnotations(); }
+    // Opens straight on « Agents » (the chat compiled out: the root).
+    void ShowAgents() { if (ChatOn()) Show(View::Agents); else Show(); }
+    // « Ton agent »: an agent's status changed (the host's AgentStatus listener): the rows follow, announced while shown.
+    void ChatAgentsChanged() { if (hwnd_ && ChatOn()) ApplyChat(hooks_.chatAgents(), true); }
     // Leaves along the path it came in on; `animate` false hides at once.
     void Hide(bool keyboard, bool animate) {
         if (!visible_ || closing_) { if (visible_ && !animate) Finish(); return; }
@@ -2286,8 +2424,7 @@ public:
         SyncReveals(now);
         plate_.Set(EngineTop(SelectedIndex()), now, Motion::Milliseconds(0), reduced ? Motion::Milliseconds(0) : Timing::select, Timing::selectSpring);
         SetChecking(hooks_.version && hooks_.version().checking, now);
-        if (AnnotationsOn()) MeasureAgents();   // « il y a … » follows the clock
-        if (Searching()) results_ = SearchSettings(query_, AnnotationsOn(), static_cast<bool>(hooks_.importData));
+        if (Searching()) results_ = SearchSettings(query_, AnnotationsOn(), static_cast<bool>(hooks_.importData), ChatOn());
         auto order = FocusOrder(); if (focus_ && std::find(order.begin(), order.end(), focus_) == order.end()) focus_ = 0;
         RefreshTips(); Invalidate(); Schedule(now);
     }
@@ -2310,7 +2447,7 @@ public:
     Motion::Wake NextWakeForTest() const { return NextWake(Motion::Now()); }
     void SetReducedMotion() { SyncReducedMotion(); Invalidate(); }
     bool Moving(Motion::Time now) const {
-        bool moving = slide_.Moving(now) || plate_.Moving(now) || page_.Moving(now) || Spinning(now) || customReveal_.Moving(now) || homeReveal_.Moving(now);
+        bool moving = slide_.Moving(now) || plate_.Moving(now) || page_.Moving(now) || Spinning(now) || customReveal_.Moving(now) || homeReveal_.Moving(now) || InstallAnimating();
         for (auto& lane : scrolls_) moving = moving || lane.Moving(now);
         for (auto& lane : switches_) moving = moving || lane.Moving(now);
         for (auto& lane : knobPress_) moving = moving || lane.Moving(now);

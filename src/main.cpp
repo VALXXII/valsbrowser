@@ -2476,12 +2476,16 @@ void CreateSettingsPanel(){
     // private window. The drawer only asks; every disk / other-app access runs in src/annotation-mode.h, off the UI thread.
     namespace AS=AnnotationSettings;
     hooks.annotations=[]{return AnnotationsCompiled()&&AnnotationHistoryAvailable();};
-    hooks.loadAgents=[](std::function<void(AS::Agents)> done){AnnotationAgentsStatus([done](const AnnotationAgentState& claude,const AnnotationAgentState& codex){
-        auto to=[](const AnnotationAgentState& s){AS::Agent a;a.detected=s.detected;a.configured=s.configured;a.connected=s.connected;a.stalePath=s.stalePath;a.lastReadAt=s.lastReadAt;a.restart=s.restart;return a;};
-        AS::Agents agents;agents.claude=to(claude);agents.codex=to(codex);agents.codex.app=AS::App::Codex;if(done)done(agents);});};
-    hooks.connectAgent=[](AS::App app,bool on,std::function<void(bool,std::wstring)> done){   // explicit click only: same path, backups and test guard as the modal
-        AnnotationConnectAgent(app==AS::App::Claude?AnnotationApp::Claude:AnnotationApp::Codex,on,[done](bool ok,const std::wstring& message){if(done)done(ok,message);});};
-    hooks.openConnect=[]{settingsDrawer.Hide(false,true);AnnotationOpenConnect(true);};   // « Autre app ou réglage manuel »: the modal on its manual fallback
+    // « Agents » (« Ton agent », Paper « Réglages › Agents »): the chat agents' one status (src/agent-status.h, worker A);
+    // the row's button acts on its click only (ChatAgentAct takes the install's consent there). « Connecter un agent
+    // externe »: the MCP « Connecter un agent » window, its only way in besides the tutorial (it never opens by itself).
+    if(ChatAgentsAvailable()){
+        hooks.chatAgents=[]{return ChatAgentsStatus();};
+        hooks.refreshChatAgents=[]{ChatAgentsRefresh();};
+        hooks.chatAgentAction=[](AS::ChatApp app,AS::ChatAction action){ChatAgentAct(app,action);};
+        hooks.openExternalAgents=[]{settingsDrawer.Hide(false,true);AnnotationOpenConnect(false);};
+        ChatAgentsWatch([]{settingsDrawer.ChatAgentsChanged();});
+    }
     hooks.annotationFolder=[]{return AnnotationStoreRoot();};
     hooks.openAnnotationFolder=[]{AnnotationOpenFolder();};
     hooks.countAnnotations=[](std::function<void(std::size_t)> done){AnnotationCount(std::move(done));};

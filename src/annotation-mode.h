@@ -11,10 +11,10 @@
 // Ctrl+Maj+H (anchored 16 DIP from the bottom); its windows are destroyed too once it closes.
 //
 //   activation   ExecuteScript(page script) in the ACTIVE tab only (src/annotation-script.h); the page
-//                moves down 32 DIP under the band. The agents' state is read off the UI thread: none
-//                connected => the « Connecter un agent » modal opens 80 ms after the band (mode active
-//                behind), unless « Plus tard » was answered in this session or 3 times overall (setting
-//                annotationLater) — then the band's reminder « Aucun agent connecté · Connecter » only.
+//                moves down 32 DIP under the band. « Ton agent »: nothing opens by itself any more — the
+//                band's reminder « Aucun agent connecté · Connecter » shows while no CHAT agent is ready
+//                (src/agent-status.h; the chat panel closed) and its click opens « Ton agent »
+//                (src/ton-agent-entry.h). « Connecter un agent » (MCP): Réglages › Agents › advanced, on a click.
 //   connect      « Connecter avec Claude / Codex » (explicit click only) -> src/agent-connect.h off the UI
 //                thread (backup + atomic write; .mcpb when associated, else config merge); « Déconnecter »
 //                removes only our entry. BROWSER_ANNOTATIONS_CONNECT_ROOT redirects every write (sandbox).
@@ -52,6 +52,8 @@
 #include "annotation-onboarding.h"   // #125 v2: the mode's tutorial, in the place of « Connecter un agent » the first time
 #include "annotation-local-card.h"   // #125 v2 E1b: « Annoter marche sur vos projets et fichiers locaux » on a live site
 RECT RegionScreen(int id);           // src/main.cpp: a chrome control in screen pixels (the card sits under the button)
+#include "ton-agent-entry.h"          // « Ton agent »: the band's reminder opens the agents' screen (worker B defines it)
+#include "chat-agents-view.h"        // « Ton agent »: the chat agents' one status, as the reminder and Réglages › Agents read it
 #include "annotation-script.h"
 #include "annotation-host.h"
 #include "annotation-capture.h"
@@ -508,13 +510,15 @@ AUI::AppStatus StatusFor(int app, const AC::Status& st) {
     }
     return {AUI::ConnectState::Idle, L""};
 }
+// « Ton agent » (src/agent-status.h): the band's reminder is the CHAT's — no chat agent ready (once both are detected) and
+// the chat panel closed (AnnotationSettings::BandReminder); its click opens « Ton agent ». The « Connecter un agent »
+// window (MCP, external apps) never opens by itself: only from Réglages › Agents › « Connecter un agent externe » (and the
+// tutorial's « Autre app ou réglage manuel »), always on a click.
+AnnotationSettings::ChatAgents ChatAgentsNow() { return AnnotationSettings::FromStatuses(AgentStatus::Get(AgentStatus::Agent::Claude), AgentStatus::Get(AgentStatus::Agent::Codex)); }
+bool ReminderWanted() { return AnnotationSettings::BandReminder(ChatAgentsNow(), Chat::Open()); }
+void SyncReminder() { if (s.active && banner.Visible() && !connect.Visible() && !OnboardingOpen()) banner.SetReminder(ReminderWanted()); }
 void ApplyAgents() {
-    if (s.active && banner.Visible() && !connect.Visible() && !OnboardingOpen()) banner.SetReminder(!agents.any() && !Chat::Open());
-    if (OnboardingOpen()) {   // A3 / A4 follow the agents (a failure stays shown until the next click)
-        auto follow = [](AUI::AgentKind a, const AUI::AppStatus& st) { if (st.state == AUI::ConnectState::Idle && onboarding->Status(a).state == AUI::ConnectState::Failed) return; onboarding->SetStatus(a, st); };
-        if (!connectBusy[0] && !(pendingInstall && !agents.claude.connected())) follow(AUI::AgentKind::Claude, StatusFor(0, agents.claude));
-        if (!connectBusy[1]) follow(AUI::AgentKind::Codex, StatusFor(1, agents.codex));
-    }
+    SyncReminder();   // (the tutorial's A6 / A7 follow the agents' one status by themselves: no MCP rows to update)
     if (connect.Visible()) {
         if (!connectBusy[0] && !(pendingInstall && !agents.claude.connected())) connect.SetStatus(AUI::AgentKind::Claude, StatusFor(0, agents.claude));
         if (!connectBusy[1]) connect.SetStatus(AUI::AgentKind::Codex, StatusFor(1, agents.codex));
@@ -567,7 +571,6 @@ void ConnectApp(AUI::AgentKind a, bool on, std::function<void(const AC::Report&)
     if (a == AUI::AgentKind::Other || connectBusy[i]) { if (then) { AC::Report r; r.result = AC::Result::Failed; r.message = I18n::U8(I18n::Id::connect_already_running); then(r); } return; }
     connectBusy[i] = true; Store();
     if (on && connect.Visible()) connect.SetStatus(a, {AUI::ConnectState::Working, TRF(connect_connecting_to, a == AUI::AgentKind::Claude ? L"Claude" : L"Codex")});
-    if (on && OnboardingOpen()) onboarding->SetStatus(a, {AUI::ConnectState::Working, TRF(connect_connecting_to, a == AUI::AgentKind::Claude ? L"Claude" : L"Codex")});   // #125 A3   // « Cliquez sur Installer » only once a .mcpb was opened
     auto report = std::make_shared<AC::Report>(); const auto target = ConnectTarget(); const std::wstring work = DataRoot() + L"\\annotations-connect";
     Run([a, on, report, target, work] {
             const auto env = ConnectEnv();
@@ -586,7 +589,6 @@ void ConnectApp(AUI::AgentKind a, bool on, std::function<void(const AC::Report&)
                 if (a == AUI::AgentKind::Claude) pendingInstall = report->result == AC::Result::PendingInstall;
                 if (report->ok() && card == Card::NoAgent && launcher.CardVisible()) { launcher.HideCard(); card = Card::None; }   // « Aucun agent ne la lit encore » is no longer true
                 if (connect.Visible()) connect.SetStatus(a, st);
-                if (OnboardingOpen()) onboarding->SetStatus(a, st);   // #125 A3
             } else if (connect.Visible()) {
                 if (report->result == AC::Result::Disconnected || report->result == AC::Result::NotConnected) connect.SetStatus(a, {AUI::ConnectState::Idle, L""});
                 else connect.SetStatus(a, {AUI::ConnectState::Connected, AH::Wide(report->message)});
@@ -1113,7 +1115,7 @@ void OnboardingClosed(AnnotationOnboarding::Ending end, bool manual) {
     Log(std::wstring(L"ANNOTATE onboarding ") + (end == AO::Ending::Finished ? L"finished" : manual ? L"left for the manual setup" : L"skipped") + L" (" + (agents.claude.connected() ? L"Claude" : L"") +
         (agents.codex.connected() ? L" Codex" : L"") + (agents.any() ? L" connected)" : L"no agent connected)") + (Prefs::HasOnboarded<BrowserSettings::State>::value ? L"" : L", not persisted: no setting key"));
     if (manual && s.active) { OpenConnect(false, true); return; }
-    if (s.active) { banner.SetReminder(!agents.any() && !Chat::Open()); FocusPage(); }
+    if (s.active) { banner.SetReminder(ReminderWanted()); FocusPage(); }
     SyncWatch();
 }
 // #125 v2: the tutorial's colour is the profile's, like the mode's; « Personnel » (no colour) takes the mode's blue
@@ -1129,9 +1131,7 @@ bool OpenOnboarding(AnnotationOnboarding::Step start = AnnotationOnboarding::Ste
     EnsureUi();
     if (OnboardingOpen()) return true;
     if (localCard.Visible()) localCard.Close();
-    OUI::Options o; o.reduced = Reduced(); o.start = start; TintTutorial(o); o.claude = StatusFor(0, agents.claude); o.codex = StatusFor(1, agents.codex);
-    if (pendingInstall && !agents.claude.connected()) o.claude = {AUI::ConnectState::Working, TR(connect_click_install_claude)};
-    o.hooks.connect = [](AUI::AgentKind a) { ConnectApp(a, true); };
+    OUI::Options o; o.reduced = Reduced(); o.start = start; TintTutorial(o);   // « Ton agent »: A6 / A7 read the agents' one status (no MCP rows)
     o.hooks.closed = [](AnnotationOnboarding::Ending end, bool manual) { OnboardingClosed(end, manual); };
     o.hooks.language = [](I18n::Locale l) { const bool ok = UiLanguage::Save(DataRoot(), l); Log(std::wstring(L"ANNOTATE onboarding language ") + (l == I18n::Locale::En ? L"en" : L"fr") + (ok ? L" saved" : L" NOT saved")); };
     o.hooks.announce = [](const std::wstring& t) { Announce(t); };
@@ -1149,14 +1149,15 @@ void ConnectClosed(AUI::ConnectEnd end) {
         Log(L"ANNOTATE connect: « Plus tard » (" + std::to_wstring(Prefs::Declines(settings)) + L"/" + std::to_wstring(Prefs::MaxDeclines) + (Prefs::HasDeclines<BrowserSettings::State>::value ? L")" : L", not persisted: no setting key yet)"));
     }
     connectLaunch = false;
-    if (s.active) { banner.SetReminder(!agents.any()); FocusPage(); }
+    if (s.active) { banner.SetReminder(ReminderWanted()); FocusPage(); }
     SyncWatch();
 }
 void EnsureUi() {
     if (uiReady) return; uiReady = true;
     AUI::BannerHooks bh; bh.exit = [] { Exit(L"quit"); };
     bh.escape = [] { if (AH::OnEscape(false, Chat::BubbleOpen()) == AH::EscapeAction::CloseBubble) Chat::CloseBubble(true); else Exit(L"escape"); };   // as the page's Escape (review M4)
-    bh.connect = [] { OpenConnect(false); }; bh.announce = [](const std::wstring& t) { Announce(t); };
+    bh.connect = [] { OpenTonAgent(TonAgentFrom::Band); }; bh.announce = [](const std::wstring& t) { Announce(t); };   // « Ton agent »: the reminder opens the agents' screen
+    AgentStatus::Subscribe([](const AgentStatus::Status&) { SyncReminder(); });   // the reminder follows the chat agents (an install, a sign-in, a detection)
     bh.chat = [] { Chat::SwitchLayout(false); };     // « Panneau »: the chat at the right (opens it)
     bh.comment = [] { Chat::SwitchLayout(true); };   // « Commentaire »: a bubble on the element clicked
     banner.Init(instance, window, base, bh);
@@ -1264,19 +1265,14 @@ void Activate(const Start& st) {
     if (!veil.Start(PageClient(t), Reduced())) Log(L"ANNOTATE entry veil unavailable");   // V3-B: entry only
     LauncherSync(true);
     if (!purged) { purged = true; const std::int64_t retention = Prefs::Retention(settings); Run([retention] { std::lock_guard<std::mutex> g(writeLock); Store().Purge(retention); }, nullptr); }   // retention: first use of the session
-    // Launch rule (Spéc · Lancement): no agent => the modal right away (80 ms after the band), mode active behind.
+    // Launch rule (« Ton agent »): the tutorial the first time; otherwise nothing opens by itself — the band's reminder only.
     const bool direct = st.kind != 0;   // started on an element from the page menu: the note comes first
-    RefreshAgents([started, direct, nonce] {
+    RefreshAgents([direct, nonce] {
         if (!s.active || s.nonce != nonce) return;
         AnnotationOnboarding::Launch first; first.onboarded = Prefs::Onboarded(settings); first.forced = OnboardingForced(); first.direct = direct; first.chatOpen = Chat::Open();
         first.busy = connect.Visible() || note.Visible() || OnboardingOpen();
         if (AnnotationOnboarding::ShouldShow(first) && OpenOnboarding()) return;   // #125: the first time, the onboarding (agents connected or not)
-        if (agents.any()) { banner.SetReminder(false); return; }
-        if (Chat::Open()) { banner.SetReminder(false); return; }   // the chat was asked for: no « Connecter un agent » modal, no reminder (its agent is the chat's)
-        if (!direct && !laterThisSession && Prefs::Prompt(settings) && Prefs::Declines(settings) < Prefs::MaxDeclines && !connect.Visible() && !note.Visible()) {
-            const int elapsed = int(GetTickCount64() - started);
-            OpenConnect(true); (void)elapsed;
-        } else banner.SetReminder(true);
+        banner.SetReminder(ReminderWanted());   // « Ton agent »: no « Connecter un agent » window by itself any more; the reminder is the chat's
     });
     RefreshStatus(); SyncWatch();
     Log(L"ANNOTATE mode on (" + std::to_wstring(GetTickCount64() - started) + L" ms to inject request, accent " + AH::Wide(AccentInts(s.pageAccent)) + L") " + t->uri);
@@ -1501,22 +1497,33 @@ bool AnnotationHistoryAvailable() { return !privateWindow && !halted; }
 std::wstring AnnotationStoreRoot() { return Ann::Store().Root(); }
 void AnnotationOpenConnect(bool manual) { if (!halted) Ann::OpenConnect(false, manual); }
 void AnnotationOpenTutorial(bool fromWelcome) { if (!halted) Ann::OpenOnboarding(fromWelcome ? AnnotationOnboarding::Step::Pick : AnnotationOnboarding::Step::What); }
-void AnnotationConnectAgent(AnnotationApp app, bool on, std::function<void(bool, const std::wstring&)> done) {
-    Ann::ConnectApp(app == AnnotationApp::Claude ? Ann::AUI::AgentKind::Claude : Ann::AUI::AgentKind::Codex, on,
-                    [done](const AgentConnect::Report& r) { if (done) done(r.ok(), AnnotationHost::Wide(r.message)); });
-}
-void AnnotationAgentsStatus(std::function<void(const AnnotationAgentState&, const AnnotationAgentState&)> done) {
-    Ann::RefreshAgents([done] {
-        const auto now = BrowserAnnotations::SystemNow();
-        auto to = [&](const AgentConnect::Status& st, bool folder) {
-            AnnotationAgentState a; a.detected = folder; a.configured = st.configured; a.connected = st.connected(); a.stalePath = st.stalePath; a.removable = st.removableDrive;
-            a.lastReadAt = st.lastReadAt; a.lastRead = st.lastReadAt ? AnnotationHost::AgoText(now - st.lastReadAt) : L""; a.readerLabel = AnnotationHost::Wide(st.readerLabel);
-            return a;
-        };
-        auto claude = to(Ann::agents.claude, Ann::agents.claudeFolder), codex = to(Ann::agents.codex, Ann::agents.codexFolder);
-        claude.restart = claude.connected && Ann::RestartNeeded(0, Ann::agents.claude); codex.restart = codex.connected && Ann::RestartNeeded(1, Ann::agents.codex);
-        if (done) done(claude, codex);
-    });
+// « Ton agent » (src/agent-status.h) for Réglages › Agents (src/annotation-entry.h).
+bool ChatAgentsAvailable() { return true; }
+AnnotationSettings::ChatAgents ChatAgentsStatus() { return Ann::ChatAgentsNow(); }
+void ChatAgentsWatch(std::function<void()> changed) { AgentStatus::Subscribe([changed](const AgentStatus::Status&) { if (changed) changed(); }); }
+void ChatAgentsRefresh() { AgentStatus::Refresh(); }
+// Called from the row's click only (the drawer's Activate): Install / Retry get their consent HERE, from that click.
+void ChatAgentAct(AnnotationSettings::ChatApp app, AnnotationSettings::ChatAction action) {
+    namespace AS = AnnotationSettings; const auto agent = AS::ToAgent(app); bool started = false;
+    switch (action) {
+    case AS::ChatAction::Install: started = AgentStatus::Install(AgentStatus::UserClicked(agent)); break;
+    case AS::ChatAction::Retry: started = AgentStatus::Retry(AgentStatus::UserClicked(agent)); break;
+    case AS::ChatAction::Update: started = AgentStatus::Install(AgentStatus::UserClicked(agent)); break;   // TooOld: installing again updates it
+    case AS::ChatAction::SignIn: started = AgentStatus::SignIn(agent); break;
+    case AS::ChatAction::Cancel:
+#ifdef AGENT_STATUS_CANCEL_SIGN_IN   // worker A: closes the sign-in console, back to « Pas connecté »
+        started = AgentStatus::CancelSignIn(agent);
+#endif
+        break;
+    case AS::ChatAction::ManualInstall: {   // « Installer moi-même ↗ »: the official page (its command to paste is there)
+        const auto manual = AgentStatus::ManualInstall(agent);
+        started = manual.url && reinterpret_cast<INT_PTR>(ShellExecuteW(window, L"open", manual.url, nullptr, nullptr, SW_SHOWNORMAL)) > 32;
+        break;
+    }
+    default: return;
+    }
+    static constexpr const wchar_t* names[] = {L"none", L"install", L"update", L"sign-in", L"cancel sign-in", L"retry", L"manual install page"};   // i18n-exempt: log words (AGENTS settings …)
+    Log(std::wstring(L"AGENTS settings ") + names[static_cast<int>(action)] + L" " + AS::ChatAppName(app) + (started ? L": started" : L": refused (busy, not applicable or not available)"));
 }
 void AnnotationOpenFolder() {
     const std::wstring root = Ann::Store().Root();
@@ -1577,6 +1584,14 @@ void AnnotationMenuChoice(const std::shared_ptr<Tab>& tab, int choice) {
     Ann::Activate(st);
 }
 #include "chat-host.h"
+#ifndef BROWSER_TON_AGENT_SCREEN
+// Stand-in until worker B's « Ton agent » screen lands (src/ton-agent-entry.h: B defines OpenTonAgent and
+// BROWSER_TON_AGENT_SCREEN): the chat panel, whose own block shows the agents and their actions.
+void OpenTonAgent(TonAgentFrom from) {
+    Log(std::wstring(L"AGENTS « Ton agent » asked (") + (from == TonAgentFrom::Band ? L"band" : from == TonAgentFrom::Chat ? L"chat" : L"settings") + L"): screen not built yet, the chat panel instead");
+    if (!Chat::Open()) Chat::Toggle(false);
+}
+#endif
 #else
 // Unstamped fixtures (tests that include main.cpp) and --channel release builds: no annotation mode.
 float ChatInsetDip() { return 0; }
@@ -1601,8 +1616,13 @@ bool AnnotationsCompiled() { return false; }
 std::wstring AnnotationStoreRoot() { return L""; }
 void AnnotationOpenConnect(bool) {}
 void AnnotationOpenTutorial(bool) {}
-void AnnotationConnectAgent(AnnotationApp, bool, std::function<void(bool, const std::wstring&)> done) { if (done) done(false, TR(annotation_mode_absent)); }
-void AnnotationAgentsStatus(std::function<void(const AnnotationAgentState&, const AnnotationAgentState&)> done) { if (done) done({}, {}); }
+bool ChatAgentsAvailable() { return false; }
+AnnotationSettings::ChatAgents ChatAgentsStatus() { return {}; }
+void ChatAgentsWatch(std::function<void()>) {}
+void ChatAgentsRefresh() {}
+void ChatAgentAct(AnnotationSettings::ChatApp, AnnotationSettings::ChatAction) {}
+void ChatAgentsStartup() {}    // « Ton agent » (worker A): no chat, no agents' status
+void ChatAgentsShutdown() {}
 void AnnotationOpenFolder() {}
 void AnnotationCount(std::function<void(std::size_t)> done) { if (done) done(0); }
 void AnnotationClearAll(std::function<void(bool, std::size_t)> done) { if (done) done(true, 0); }
