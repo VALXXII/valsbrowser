@@ -94,6 +94,21 @@ inline ChoiceInfo Info(TabPosition p) {
     };
     const int i = static_cast<int>(p); return Resolve(positions[i >= 0 && i < TabPositionCount ? i : 0]);
 }
+// « Position des onglets » (#127, Réglages › Onglets › Disposition; Paper « Proposition — Option · Réglages › Onglets »):
+// the tab bar at the top (default, existing profiles and new installs), or the side panel, complete or compact. One
+// source of truth: the panel's fold button and Ctrl+Maj+, switch Side <-> Compact by changing this value.
+enum class TabsPosition { Top, Side, Compact };
+constexpr int TabsPositionCount = 3;
+inline ChoiceInfo Info(TabsPosition p) {
+    using I = I18n::Id;
+    static const ChoiceIds positions[TabsPositionCount] = {
+        {I::tabs_position_top, I::settings_tabs_position_note, "top"},
+        {I::tabs_position_side, I::settings_tabs_position_note, "side"},
+        {I::tabs_position_compact, I::settings_tabs_position_note, "compact"},
+    };
+    const int i = static_cast<int>(p); return Resolve(positions[i >= 0 && i < TabsPositionCount ? i : 0]);
+}
+inline bool SidePanel(TabsPosition p) { return p != TabsPosition::Top; }
 // Media autoplay (engine policy: applied when the browser starts).
 enum class Autoplay { Muted, Allowed };
 constexpr int AutoplayCount = 2;
@@ -180,12 +195,9 @@ struct State {
     int sleepMinutes = 120;        // one of SleepChoices
     int zoomPercent = 100;         // one of ZoomChoices
     BookmarksBar bookmarksBar = BookmarksBar::Auto;
-    // Window layout (#127, Val 2026-11-24): the tab bar at the top by default, for existing profiles and new installs;
-    // the side panel only when turned on (Réglages row to come). Applied live, no restart.
-    bool sidePanel = false;
-    // The side panel folded to its compact form (icons only). Changed by its button and Ctrl+Maj+, only; kept while
-    // the top bar is used; a narrow window shows it compact without touching this choice.
-    bool sidebarCompact = false;
+    // Window layout (#127, Val 2026-11-24): « Position des onglets ». Applied live, no restart; a narrow window shows
+    // the panel compact without touching it.
+    TabsPosition tabsPosition = TabsPosition::Top;
     std::uint32_t accent = DefaultAccent; // #RRGGBB
     std::wstring customSearch;     // Engine::Custom: http(s) template with %s (SearchTemplate)
     NewTabPage newTabPage = NewTabPage::Blank;
@@ -216,7 +228,7 @@ struct State {
                confirmCloseTabs == o.confirmCloseTabs && closeWithLastTab == o.closeWithLastTab && adBlock == o.adBlock &&
                httpsOnly == o.httpsOnly && blockThirdPartyCookies == o.blockThirdPartyCookies && memorySaver == o.memorySaver &&
                muteBackground == o.muteBackground && autoplay == o.autoplay && grayscaleText == o.grayscaleText &&
-               bookmarksBar == o.bookmarksBar && sidePanel == o.sidePanel && sidebarCompact == o.sidebarCompact && accent == o.accent &&
+               bookmarksBar == o.bookmarksBar && tabsPosition == o.tabsPosition && accent == o.accent &&
                annotationConnectPrompt == o.annotationConnectPrompt && annotationConnectDeclines == o.annotationConnectDeclines &&
                annotationRetentionDays == o.annotationRetentionDays && defaultBrowserLaterAt == o.defaultBrowserLaterAt;
     }
@@ -226,7 +238,7 @@ enum class Change { Engine, RestoreTabs, DownloadFolder, AskWhereToSave, ReduceM
                     SearchSuggestions, Tracking, Passwords, Autofill, ClearOnExit, Sleep, Zoom,
                     CustomSearch, NewTabPage, Homepage, TabPosition, ConfirmCloseTabs, CloseWithLastTab,
                     AdBlock, HttpsOnly, ThirdPartyCookies, MemorySaver, MuteBackground, Autoplay, BookmarksBar, GrayscaleText,
-                    AnnotationConnectPrompt, AnnotationRetention, DefaultBrowserLater, SidePanel };
+                    AnnotationConnectPrompt, AnnotationRetention, DefaultBrowserLater, TabsPosition };
 // Annotations: the connect modal stops opening by itself after this many « Plus tard » (src/annotation-mode.h).
 inline constexpr int MaxConnectDeclines = 3;
 inline constexpr int RetentionChoices[] = {7, 30, 90};
@@ -273,8 +285,7 @@ inline void Write(std::ostream& out, const State& s) {
         << "autoplay=" << Info(s.autoplay).key << '\n'
         << "grayscale-text=" << (s.grayscaleText ? 1 : 0) << '\n'
         << "bookmarks-bar=" << Info(s.bookmarksBar).key << '\n'
-        << "layout=" << (s.sidePanel ? "side-panel" : "top-bar") << '\n'
-        << "sidebar=" << (s.sidebarCompact ? "compact" : "complete") << '\n'
+        << "tabs-position=" << Info(s.tabsPosition).key << '\n'
         << "accent=" << AccentText(s.accent) << '\n'
         << "annotation-connect-prompt=" << (s.annotationConnectPrompt ? 1 : 0) << '\n'
         << "annotation-connect-declines=" << s.annotationConnectDeclines << '\n'
@@ -283,6 +294,9 @@ inline void Write(std::ostream& out, const State& s) {
 }
 inline State Read(std::istream& in) {
     State s; std::string line;
+    // #127 trial builds wrote the layout as two keys (« layout=top-bar|side-panel », « sidebar=complete|compact »): read
+    // when « tabs-position » is absent, never written back.
+    bool position = false, legacySide = false, legacyCompact = false;
     if (!std::getline(in, line)) return s;
     if (!line.empty() && line.back() == '\r') line.pop_back();
     if (line != "browser-settings 1") return s;
@@ -321,11 +335,13 @@ inline State Read(std::istream& in) {
         else if (key == "custom-search") { std::wstring v; if (value.size() < 4096 && NativeChrome::Downloads::FromUtf8(value, v)) s.customSearch = SearchTemplate(v); }
         else if (key == "homepage") { std::wstring v; if (value.size() < 4096 && NativeChrome::Downloads::FromUtf8(value, v)) s.homepage = HomepageUrl(v); }
         else if (key == "bookmarks-bar") { for (int i = 0; i < BookmarksBarCount; ++i) if (value == Info(static_cast<BookmarksBar>(i)).key) s.bookmarksBar = static_cast<BookmarksBar>(i); }
-        else if (key == "layout") { if (value == "side-panel") s.sidePanel = true; else if (value == "top-bar") s.sidePanel = false; }
-        else if (key == "sidebar") { if (value == "compact") s.sidebarCompact = true; else if (value == "complete") s.sidebarCompact = false; }
+        else if (key == "tabs-position") { for (int i = 0; i < TabsPositionCount; ++i) if (value == Info(static_cast<TabsPosition>(i)).key) { s.tabsPosition = static_cast<TabsPosition>(i); position = true; } }
+        else if (key == "layout") { if (value == "side-panel") legacySide = true; else if (value == "top-bar") legacySide = false; }
+        else if (key == "sidebar") { if (value == "compact") legacyCompact = true; else if (value == "complete") legacyCompact = false; }
         else if (key == "accent") { std::uint32_t rgb = 0; if (ParseAccent(value, rgb)) s.accent = rgb; }
         else if (key == "download-folder") { std::wstring folder; if (value.size() < 32768 && NativeChrome::Downloads::FromUtf8(value, folder)) s.downloadFolder = folder; }
     }
+    if (!position && legacySide) s.tabsPosition = legacyCompact ? TabsPosition::Compact : TabsPosition::Side;
     // A custom choice without its address falls back to the default.
     if (s.engine == Engine::Custom && s.customSearch.empty()) s.engine = Engine::DuckDuckGo;
     if (s.newTabPage == NewTabPage::Custom && s.homepage.empty()) s.newTabPage = NewTabPage::Blank;

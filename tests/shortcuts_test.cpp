@@ -22,11 +22,23 @@ int main(){
     Assert(Key('N')=='P');Assert(chrome.Enabled('P'));
     // #127 layout: the top bar by default; Ctrl+Maj+, folds the side panel only while it is the layout (else the page
     // gets the key); turning the panel on and off keeps its complete / compact choice; --side-panel is not saved.
-    Assert(!chrome.sidebar&&!settings.sidePanel);Assert(Key(VK_OEM_COMMA)==0);Assert(!NativeChrome::ShortcutsPanel::SidePanelRows());
-    settings.sidePanel=true;settings.sidebarCompact=true;ApplyLayout();Assert(chrome.sidebar&&Key(VK_OEM_COMMA)==SidebarToggleCommand&&NativeChrome::ShortcutsPanel::SidePanelRows());
-    settings.sidePanel=false;ApplyLayout();Assert(!chrome.sidebar&&Key(VK_OEM_COMMA)==0&&settings.sidebarCompact);
-    sidePanelForced=true;ApplyLayout();Assert(chrome.sidebar&&!settings.sidePanel);sidePanelForced=false;ApplyLayout();Assert(!chrome.sidebar);
-    {std::istringstream older("browser-settings 1\nsidebar=compact\n");settings=BrowserSettings::Read(older);ApplyLayout();Assert(!chrome.sidebar&&settings.sidebarCompact);settings=BrowserSettings::State{};}   // Ctrl+Maj+N: nouvelle fenêtre privée, without any toolbar button
+    {using P=BrowserSettings::TabsPosition;wchar_t tmp[MAX_PATH]{};GetTempPathW(MAX_PATH,tmp);dataDir=std::wstring(tmp)+L"browser-shortcuts-test-"+std::to_wstring(GetCurrentProcessId());CreateDirectoryW(dataDir.c_str(),nullptr);settingsFile=dataDir+L"\\settings";   // hermetic: SaveSettings writes here
+     Assert(!chrome.sidebar&&settings.tabsPosition==P::Top);Assert(Key(VK_OEM_COMMA)==0);Assert(!NativeChrome::ShortcutsPanel::SidePanelRows());
+     Command(SidebarToggleCommand);Assert(!chrome.sidebar&&settings.tabsPosition==P::Top);   // top bar: the fold does nothing
+     // Réglages / the tab menu set the position: live, the panel appears; the fold button / Ctrl+Maj+, flip Side <-> Compact in the setting.
+     chrome.width=1180;SetTabsPosition(P::Side);Assert(chrome.sidebar&&Key(VK_OEM_COMMA)==SidebarToggleCommand&&NativeChrome::ShortcutsPanel::SidePanelRows()&&SidebarEffective()==SBar::Mode::Complete);
+     Command(Key(VK_OEM_COMMA));Assert(settings.tabsPosition==P::Compact&&SidebarEffective()==SBar::Mode::Compact);
+     ToggleSidebar();Assert(settings.tabsPosition==P::Side);
+     SetTabsPosition(P::Compact);Assert(chrome.sidebar&&SidebarEffective()==SBar::Mode::Compact);
+     chrome.width=700;SetTabsPosition(P::Side);Assert(SidebarEffective()==SBar::Mode::Compact&&settings.tabsPosition==P::Side);chrome.width=1180;   // narrow: compact without touching the setting
+     SetTabsPosition(P::Top);Assert(!chrome.sidebar&&Key(VK_OEM_COMMA)==0);
+     // The tab menu's last row: « Position des onglets » as three icon segments, the current one active, each named in its tooltip.
+     {const auto row=TabsPositionMenu(40);Assert(row.kind==NativeChrome::ContextMenu::Kind::Segmented&&row.label==TR(settings_tabs_position)&&row.segments.size()==3&&row.segments[0].active&&!row.segments[1].active&&row.segments[2].id==42&&row.segments[1].tip==BrowserSettings::Info(P::Side).label&&row.paintSegment);}
+     // A trial run forced with --side-panel shows the panel without saving; its fold stays in the run.
+     sidePanelForced=true;ApplyLayout();Assert(chrome.sidebar&&settings.tabsPosition==P::Top);ToggleSidebar();Assert(settings.tabsPosition==P::Top&&SidebarEffective()==SBar::Mode::Compact);
+     SetTabsPosition(P::Side);Assert(!sidePanelForced&&settings.tabsPosition==P::Side);SetTabsPosition(P::Top);forcedCompact=false;Assert(!chrome.sidebar);
+     // Files written by the trial builds migrate (layout + sidebar keys).
+     {std::istringstream older("browser-settings 1\nlayout=side-panel\nsidebar=compact\n");settings=BrowserSettings::Read(older);ApplyLayout();Assert(chrome.sidebar&&settings.tabsPosition==P::Compact);settings=BrowserSettings::State{};ApplyLayout();Assert(!chrome.sidebar);}}   // Ctrl+Maj+N: nouvelle fenêtre privée, without any toolbar button
     Modifiers(false,false,true);Assert(Key('D')=='L');
     Modifiers();Assert(Key(VK_F6)==FocusChrome);Assert(Key('1')==0);
     for(int i=0;i<10;++i)pages.push_back(std::make_shared<Tab>());

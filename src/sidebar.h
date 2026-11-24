@@ -24,12 +24,18 @@ inline Box Centered(float cx, float cy, float w, float h) { return {cx - w / 2, 
 enum class Mode { Complete, Compact };
 
 // ---- Paper values (DIP) -------------------------------------------------------------------------------------
-// Page zone (01 « Zone page » 1PZS-0): 8 on its right and bottom. « Barre fenêtre » 1Q00-0: 40 high, the window
-// buttons 32 x 28 (1Q07-0 / 1Q04-0 / 1Q01-0), 4 apart, 2 from the zone's right edge, glyph 12 drawn with a 1.8 / 24
-// stroke in white 70 % (#FFFFFFB3). « Page web » 1PZT-0: the page, its four corners 8.
+// Page zone (01 « Zone page » 1PZS-0, retouched): 4 on its right and bottom (Val: the page's inset is 4 everywhere, and
+// 4 before an open drawer). « Barre fenêtre » 1Q00-0: 40 high in the complete layout, 32 in the compact one (« Favoris ·
+// fenêtre étroite » 1WBH-0); the window buttons 32 x 28 (1Q07-0 / 1Q04-0 / 1Q01-0), 4 apart, 2 inside the zone's 4,
+// glyph 12 drawn with a 1.8 / 24 stroke in white 70 % (#FFFFFFB3). « Page web » 1PZT-0: the page, its four corners 8.
 namespace Zone {
-inline constexpr float inset = 8, bar = 40, buttonW = 32, buttonH = 28, buttonGap = 4, buttonRight = 2;
+inline constexpr float inset = 4, bar = 40, compactBar = 32, buttonW = 32, buttonH = 28, buttonGap = 4, buttonRight = inset + 2;
 inline constexpr float glyph = 12, glyphStroke = 1.8f * glyph / 24, glyphAlpha = 0xB3 / 255.f, pageRadius = 8;
+// The top bar's page card (Designer, 24 nov.: 4 DIP inset, its four corners 6; the side panel's are 8).
+inline constexpr float topBarPageRadius = 6;
+// Docked drawers start at the window bar's bottom in the complete layout (07 « Tiroir » 1TNA-0: top 40) and at 25 in
+// the compact one (11 « Tiroir — Historique » 1TSJ-0: top 25, over the bar's last 7 DIP).
+inline constexpr float drawerTop = 40, compactDrawerTop = 25;
 }
 // Complete column (01 « Panneau » 1Q0A-0): 248, padding 8, gap 10.
 namespace Complete {
@@ -40,10 +46,15 @@ inline constexpr float row = 32, rowGap = 6, toggle = 28;
 // « Adresse » 1Q26-0: 32 high, #FFFFFF14, radius 6, padding 8, gap 6: lock 14 (1Q2A-0), text 16/20 -0.01 em
 // (1Q29-0), Copy 14 (1V38-0), star 14 (1Q27-0), glyphs white 50 %.
 inline constexpr float address = 32, addressPad = 8, addressGap = 6, addressGlyph = 14, addressFont = 16;
-// « Favoris — grille » 1Q1Q-0: tiles 40 high, radius 8, #FFFFFF0A (hover #FFFFFF14, 04 1QAY-0), gap 6, five per row,
-// favicon 18. At most two rows (Designer, answer 3): the tenth tile becomes « » » when there are more.
-inline constexpr float tile = 40, tileGap = 6;
-inline constexpr int columns = 5, maxRows = 2;
+// Bookmarks grid, variant B (Paper « Favoris · 10 / 20 · B / 40 · B replié / déplié / panneau 300 / 360 »): tiles 40
+// high, radius 8, #FFFFFF0A (hover #FFFFFF14), gap 6, as many columns as keep a tile about 42 wide (5 in 232, 6 in 284,
+// 7 in 344); favicon 18, a folder's glyph 16 white 70 %. Folded: two rows, then the 24 DIP row « Tous les favoris (N) »
+// with a caret (1WKW-0: padding 6, gap 6, 13/16 white 50 %, caret 12 white 50 %) when there are more. Unfolded: up to 5
+// rows (224) in a viewport that scrolls (a 32 DIP canvas fade at its bottom, a 3 DIP #FFFFFF33 bar radius 2 at its
+// right, 4 from its top: 1WRB-0 / 1WRC-0), then the row « Réduire » (caret up); the tabs keep at least half the height.
+inline constexpr float tile = 40, tileGap = 6, tileNominal = 41.6f, toggleRow = 24, togglePad = 6, toggleFont = 13, toggleGlyph = 12;
+inline constexpr int foldedRows = 2, openRows = 5;
+inline constexpr float fade = 32, barWidth = 3, barInset = 4, barAlpha = 0x33 / 255.f;
 // « Onglets » 1Q0R-0: a 1 DIP #FFFFFF0F line 4 in from each side and 8 above the rows (1Q1P-0); rows 32, radius 6,
 // padding 8 (4 on the right with the close button), gap 8, favicon 16, title 14/18; 2 between rows.
 inline constexpr float lineInset = 4, lineAfter = 8, tabRow = 32, tabGap = 2, tabPad = 8, tabIconGap = 8, favicon = 16;
@@ -51,22 +62,28 @@ inline constexpr float close = 24, closePadRight = 4, closeGlyph = 12;
 // « Outils (tiroirs) » 1Q0B-0: a 1 DIP #FFFFFF0F top border, padding-top 8, buttons 32 high sharing the width, gap 2.
 inline constexpr float toolsLead = 1 + 8, tool = 32, toolGap = 2;
 }
-// Compact column (02 « Panneau » 1Q3T-0): 56, padding 8, gap 12, items centred (40 wide).
+// Compact column (reference « Favoris · fenêtre étroite » 1WC7-0, Val's retouch, pasted on 02, 03, 10, 11, 12,
+// « compact, 40 »): 40 wide, padding 4, gap 12; items 40 wide (they reach the column's edges).
 namespace Compact {
-inline constexpr float width = 56, pad = 8, gap = 12, item = 40;
-// « Haut » 1Q5K-0: profile 32, gap 6, the fold button 28.
-inline constexpr float profile = 32, topGap = 6, toggle = 28;
-// « Favoris — grille » 1Q54-0: tiles 40 x 36, radius 8, #FFFFFF0F, gap 4; the first five, then « » » (answer 3).
+inline constexpr float width = 40, pad = 4, gap = 12, item = 40;
+// « Haut » 1WDY-0: the profile without its plate, 32 x 26; gap 6; the fold button 28.
+inline constexpr float profileW = 32, profileH = 26, topGap = 6, toggle = 28;
+// « Favoris — grille » 1WDI-0: tiles 40 x 36, radius 8, #FFFFFF0F, gap 4; all of them up to 5, else 4 then « » »
+// (#FFFFFF0A, caret-double-right 16 white 70 %; open: #FFFFFF1F, white): all the bookmarks in a popover.
 inline constexpr float tile = 36, tileGap = 4;
 inline constexpr int tiles = 5;
-// « Onglets » 1Q4A-0: a 1 DIP #FFFFFF0F top border, padding-top 8, rows 40 x 36, radius 6, favicon 16 at 12, gap 2.
+// « Onglets » 1WCO-0: a 1 DIP #FFFFFF0F top border, padding-top 8, rows 40 x 36, radius 6, favicon 16 centred, gap 2.
 inline constexpr float tabsLead = 1 + 8, tabRow = 36, tabGap = 2;
-// « Outils (tiroirs) » 1Q3U-0: a 1 DIP #FFFFFF0F top border, padding-top 8, buttons 40 x 32, gap 4.
+// « Outils (tiroirs) » 1WC8-0: a 1 DIP #FFFFFF0F top border, padding-top 8, buttons 40 x 32, gap 4.
 inline constexpr float toolsLead = 1 + 8, tool = 32, toolGap = 4;
-// « Barre fenêtre » 1Q35-0: padding-left 4. « Navigation + adresse » 1Q3F-0: gap 2 (pair, Reload), then the address
-// 1Q3G-0: 360 x 28, margin-left 6, #FFFFFF14, radius 6, padding 10, gap 6, lock 12, text 14/18 -0.01 em.
-inline constexpr float barPad = 4, navGap = 2, addressLead = 6, addressW = 360, addressH = 28, addressPad = 10, addressGap = 6, addressGlyph = 12, addressFont = 14;
+// « Barre fenêtre » 1WBH-0 (32 high): padding-left 4. « Navigation + adresse » 1WBR-0: gap 6, the pair and Reload
+// without plates, the address without background, the row's full height (360 x 32), padding 10, gap 6, lock 12,
+// text 14/18 -0.01 em.
+inline constexpr float barPad = 4, navGap = 6, addressLead = 0, addressW = 360, addressH = 32, addressPad = 10, addressGap = 6, addressGlyph = 12, addressFont = 14;
 }
+// « Popover — tous les favoris » (« compact, 40 » 1WSC-0): 248 wide, padding 8, radius 8, #171717, border 1 #FFFFFF0F,
+// 4 right of the column, its top on the « » » tile's; inside, the unfolded grid (5 rows then scrolling).
+namespace Popover { inline constexpr float width = 248, pad = 8, radius = 8, border = 1, borderAlpha = 0x0F / 255.f, gapX = 4; }
 // Back / Forward (1VCX-0): two 32 halves 3 from a 1 x 10 hairline (white 10 %); Reload (1VD5-0) 32.
 namespace Nav {
 inline constexpr float button = 32, pairGap = 3, hairline = 1, hairlineH = 10;
@@ -81,7 +98,7 @@ namespace Look {
 inline constexpr float tabActive = 0x3E / 255.f;                    // --color-browser-pressed #3E3E3E (1Q1K-0)
 inline constexpr float tabHover = 0x0A / 255.f;                     // white 4 % (1Q1C-0)
 inline constexpr float titleActive = 1, titleHover = 0xE6 / 255.f, titleRest = 0xB3 / 255.f, newTab = 0x80 / 255.f;
-inline constexpr float tileRest = 0x0A / 255.f, tileHover = 0x14 / 255.f, compactTile = 0x0F / 255.f;
+inline constexpr float tileRest = 0x0A / 255.f, tileHover = 0x14 / 255.f, compactTile = 0x0F / 255.f, moreRest = 0x0A / 255.f, moreOpen = 0x1F / 255.f, toggleText = .5f;
 inline constexpr float line = 0x0F / 255.f;                         // separators (1Q1P-0, 1Q0B-0 border)
 inline constexpr float toolHover = 0x0A / 255.f, toolOpen = 0x1A / 255.f;   // 04 1Q9J-0, 07 1QMH-0
 inline constexpr float glyph = 0xB3 / 255.f, glyphMuted = 0x80 / 255.f, settingsGlyph = .5f;   // 1Q0D-0 opacity .5
@@ -112,30 +129,75 @@ inline constexpr const char* star = "M243,96a20.33,20.33,0,0,0-17.74-14l-56.59-4
 // Annoter (01 « Annoter » 1TLR-0): the mode's mark, viewBox 47.5 239.5 14 13.4 in a 15 DIP box, white 70 %.
 inline constexpr const char* annotate = "M48.001 250.363L48.049 240.981C48.051 240.535 48.43 240.178 48.89 240.19L59.287 240.226C61.157 240.272 61.667 242.743 59.96 243.484L54.486 245.391C54.03 245.589 53.645 245.909 53.375 246.314 53.342 246.363 53.316 246.416 53.293 246.47L51.265 251.246C50.347 252.733 47.992 252.096 48.001 250.363Z";
 inline constexpr float annotateX = 47.5f, annotateY = 239.5f, annotateW = 14, annotateH = 13.4f, annotateBox = 15;
+// Grid B: a folder tile (1WOV-0, Phosphor folder fill, white 70 %), the toggle row carets (1WKY-0 down, 1WRF-0 up),
+// the compact « » » (1WV9-0, caret-double-right).
+inline constexpr const char* folder = "M216,72H131.31L104,44.69A15.86,15.86,0,0,0,92.69,40H40A16,16,0,0,0,24,56V200.62A15.4,15.4,0,0,0,39.38,216H216.89A15.13,15.13,0,0,0,232,200.89V88A16,16,0,0,0,216,72ZM40,56H92.69l16,16H40Z";
+inline constexpr const char* caretDown = "M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,53.66,90.34L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z";
+inline constexpr const char* caretUp = "M213.66,165.66a8,8,0,0,1-11.32,0L128,91.31,53.66,165.66a8,8,0,0,1-11.32-11.32l80-80a8,8,0,0,1,11.32,0l80,80A8,8,0,0,1,213.66,165.66Z";
+inline constexpr const char* more = "M141.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L124.69,128,50.34,53.66A8,8,0,0,1,61.66,42.34l80,80A8,8,0,0,1,141.66,133.66Zm80-11.32-80-80a8,8,0,0,0-11.32,11.32L204.69,128l-74.35,74.34a8,8,0,0,0,11.32,11.32l80-80A8,8,0,0,0,221.66,122.34Z";
 }
 
 // ---- Geometry ------------------------------------------------------------------------------------------------
 struct Input {
     Mode mode = Mode::Complete;   // the column's layout (complete also for the column opened over the page)
     float zoneLeft = -1;          // left of the page zone; -1: the column's width (docked)
+    Mode zoneMode = Mode::Complete; // the window bar's layout (compact under the column opened over the page)
+    bool zoneSet = false;         // zoneMode given (else the column's)
     float width = 1180, height = 740;
-    int tiles = 0;                // grid tiles (bookmarks shown, « » » included); 0 with `grid` = the empty tile
-    bool grid = false;            // the grid row exists
+    bool grid = false;            // the grid exists (bookmarks bar « Toujours », or « Automatique » with bookmarks)
+    int bookmarks = 0;            // bar bookmarks (0 with `grid`: the empty tile)
+    bool gridOpen = false;        // complete: « Tous les favoris » unfolded
+    float gridScroll = 0;         // complete, unfolded: the grid's own scroll
     int tabs = 0;                 // tab rows (the « + Nouvel onglet » row comes after them)
     int tools = 4;                // footer buttons
     float scroll = 0;             // tab list scroll (clamped)
     float band = 0;               // annotation band at the top of the page zone (answer 6)
+    float reserve = 0;            // an open drawer's column: the page stops `inset` before it
 };
+// A grid of tiles in a scrolling viewport (the complete column's, the compact popover's).
+struct Grid {
+    Box view;                     // the viewport (tiles are clipped to it)
+    std::vector<Box> tiles;       // every bookmark's tile at the current scroll
+    int columns = 5, rows = 0;
+    float content = 0, maxScroll = 0, scroll = 0;
+    Box bar;                      // scroll bar (empty without scrolling)
+    bool Scrolls() const { return maxScroll > .5f; }
+};
+inline int Columns(float width) { return std::max(1, static_cast<int>(std::floor((width + Complete::tileGap) / (Complete::tileNominal + Complete::tileGap) + 1e-3f))); }
+// `n` tiles in rows of Columns(w) inside [left, left + w], from `top`, `visibleRows` rows tall at most (then scrolling),
+// `maxHeight` at most (the viewport may cut a row: the fade covers it).
+inline Grid MakeGrid(float left, float top, float w, int n, int visibleRows, float scroll, float maxHeight = 1e9f) {
+    namespace C = Complete; Grid g; g.columns = Columns(w);
+    g.rows = n <= 0 ? 0 : (n + g.columns - 1) / g.columns;
+    const auto height = [](int r) { return r <= 0 ? 0.f : r * C::tile + (r - 1) * C::tileGap; };
+    const float viewH = std::min(height(std::min(g.rows, visibleRows)), std::max(C::tile, maxHeight));
+    g.view = {left, top, left + w, top + viewH};
+    g.content = height(g.rows); g.maxScroll = std::max(0.f, g.content - viewH); g.scroll = std::clamp(scroll, 0.f, g.maxScroll);
+    const float tw = (w - C::tileGap * (g.columns - 1)) / g.columns;
+    for (int i = 0; i < n; ++i) { const int c = i % g.columns, r = i / g.columns; const float x = left + c * (tw + C::tileGap), y = top + r * (C::tile + C::tileGap) - g.scroll; g.tiles.push_back({x, y, x + tw, y + C::tile}); }
+    if (g.Scrolls()) {
+        const float track = viewH - 2 * C::barInset, h = std::max(16.f, track * viewH / g.content), y = g.view.top + C::barInset + (track - h) * (g.scroll / g.maxScroll);
+        g.bar = {g.view.right - C::barWidth, y, g.view.right, y + h};
+    }
+    return g;
+}
 struct Layout {
     Mode mode = Mode::Complete;
     float column = 0;             // the column's width
+    float bar = Zone::bar;        // the window bar's height
     Box profile, back, forward, hairline, reload, toggle;
+    bool profilePlate = true;     // the compact profile has no plate (Val's retouch)
+    bool navPlates = true;        // the compact window bar's Back / Forward / Reload have no plates (Val's retouch)
     // The address field: in the column (complete) or in the window bar (compact). `copy` / `star` are empty in compact.
-    bool addressInColumn = true;
+    bool addressInColumn = true, addressPlate = true;
     Box address, lock, text, copy, star;
     float addressFont = 16, addressGlyph = 14;
-    Box grid;                     // the grid's rows (empty without a grid)
-    std::vector<Box> tiles;
+    // Bookmarks. Complete: `grid` (all bookmarks, folded to two rows or unfolded) and `gridToggle` (« Tous les favoris (N)
+    // » / « Réduire », empty when everything fits). Compact: `tiles` (up to 5; with `more`, the 5th is « » »).
+    Box gridBlock;                // the whole block (tiles + toggle row): empty without a grid
+    Grid grid; Box gridToggle; bool gridOpen = false;
+    bool emptyGrid = false;       // « Toujours » with no bookmark: one tile (complete: the full row)
+    std::vector<Box> tiles; bool more = false;
     Box line;                     // the line above the tabs (complete: inset; compact: the section's border)
     Box tabsView;                 // tab rows are clipped to it and scroll under it
     std::vector<Box> tabs;        // at the current scroll
@@ -145,11 +207,11 @@ struct Layout {
     std::vector<Box> tools;
     Box minimize, maximize, close;
     Box zone, band, page;
-    float drawerTop = Zone::bar;  // the real drawers dock at the right from here (07: top 40)
+    float drawerTop = Zone::drawerTop;   // the real drawers dock at the right from here
 };
 // The close target in a complete tab row (1Q1D-0: 24 x 24, 4 from the row's right edge).
 inline Box CloseIn(const Box& row) { const float r = row.right - Complete::closePadRight, cy = (row.top + row.bottom) / 2; return {r - Complete::close, cy - Complete::close / 2, r, cy + Complete::close / 2}; }
-// Favicon slot of a row (complete: 8 in; compact: centred, 12 in).
+// Favicon slot of a row (complete: 8 in; compact: centred).
 inline Box FaviconIn(const Box& row, Mode m) {
     const float cy = (row.top + row.bottom) / 2, s = Complete::favicon;
     const float l = m == Mode::Complete ? row.left + Complete::tabPad : (row.left + row.right - s) / 2;
@@ -164,21 +226,25 @@ inline Box TitleIn(const Box& row, bool closeShown) {
 
 inline Layout Compute(const Input& in) {
     Layout L; L.mode = in.mode; const bool full = in.mode == Mode::Complete;
+    const Mode zoneMode = in.zoneSet ? in.zoneMode : in.mode;
     const float W = std::max(in.width, 1.f), H = std::max(in.height, 1.f);
     L.column = Width(in.mode);
     const float zoneLeft = in.zoneLeft >= 0 ? in.zoneLeft : L.column;
-    // Page zone: window buttons right-aligned in the 40 DIP bar, the page under it (and under the annotation band).
+    L.bar = zoneMode == Mode::Complete ? Zone::bar : Zone::compactBar;
+    // Page zone: window buttons right-aligned in the bar, the page under it (and under the annotation band).
     {
         namespace Z = Zone;
-        const float right = W - Z::inset - Z::buttonRight, cy = Z::bar / 2;
+        const float right = W - Z::buttonRight, cy = L.bar / 2;
         L.close = Centered(right - Z::buttonW / 2, cy, Z::buttonW, Z::buttonH);
         L.maximize = Centered(L.close.left - Z::buttonGap - Z::buttonW / 2, cy, Z::buttonW, Z::buttonH);
         L.minimize = Centered(L.maximize.left - Z::buttonGap - Z::buttonW / 2, cy, Z::buttonW, Z::buttonH);
         L.zone = {zoneLeft, 0, W, H};
-        const float pageRight = std::max(zoneLeft, W - Z::inset), pageBottom = std::max(Z::bar, H - Z::inset);
-        L.band = in.band > 0 ? Box{zoneLeft, Z::bar, pageRight, Z::bar + in.band} : Box{};
-        L.page = {zoneLeft, Z::bar + in.band, pageRight, std::max(Z::bar + in.band, pageBottom)};
-        L.drawerTop = Z::bar;
+        float pageRight = std::max(zoneLeft, W - Z::inset);
+        if (in.reserve > 0) pageRight = std::max(zoneLeft, std::min(pageRight, W - in.reserve - Z::inset));
+        const float pageBottom = std::max(L.bar, H - Z::inset);
+        L.band = in.band > 0 ? Box{zoneLeft, L.bar, pageRight, L.bar + in.band} : Box{};
+        L.page = {zoneLeft, L.bar + in.band, pageRight, std::max(L.bar + in.band, pageBottom)};
+        L.drawerTop = zoneMode == Mode::Complete ? Z::drawerTop : Z::compactDrawerTop;
     }
     auto pairAt = [&](float x, float top) {
         L.back = {x, top, x + Nav::button, top + Nav::button};
@@ -189,13 +255,11 @@ inline Layout Compute(const Input& in) {
     if (full) {
         namespace C = Complete;
         const float l = C::pad, r = C::width - C::pad; float y = C::pad;
-        // Top row.
         L.profile = {l, y, l + C::row, y + C::row};
         pairAt(L.profile.right + C::rowGap, y);
         L.reload = {L.forward.right + C::rowGap, y, L.forward.right + C::rowGap + Nav::button, y + Nav::button};
         L.toggle = Centered(r - C::toggle / 2, y + C::row / 2, C::toggle, C::toggle);
         y += C::row + C::gap;
-        // Address.
         L.addressInColumn = true; L.addressFont = C::addressFont; L.addressGlyph = C::addressGlyph;
         L.address = {l, y, r, y + C::address};
         const float cy = y + C::address / 2, g = C::addressGlyph;
@@ -204,26 +268,29 @@ inline Layout Compute(const Input& in) {
         L.copy = Centered(L.star.left - C::addressGap - g / 2, cy, g, g);
         L.text = {L.lock.right + C::addressGap, y, L.copy.left - C::addressGap, y + C::address};
         y += C::address + C::gap;
-        // Grid: five columns (fixed: a short row keeps the 5-column lane), at most two rows.
-        if (in.grid) {
-            const int n = std::max(0, std::min(in.tiles, C::columns * C::maxRows));
-            const int rows = n == 0 ? 1 : (n + C::columns - 1) / C::columns;
-            const float w = (r - l - C::tileGap * (C::columns - 1)) / C::columns;
-            for (int i = 0; i < n; ++i) {
-                const int c = i % C::columns, row = i / C::columns;
-                const float x = l + c * (w + C::tileGap), t = y + row * (C::tile + C::tileGap);
-                L.tiles.push_back({x, t, x + w, t + C::tile});
-            }
-            L.grid = {l, y, r, y + rows * C::tile + (rows - 1) * C::tileGap};
-            y = L.grid.bottom + C::gap;
-        }
-        // Footer.
         const int tools = std::max(1, in.tools);
         const float footer = H - C::pad - (C::toolsLead + C::tool);
         L.footerLine = {l, footer, r, footer + 1};
         const float tw = (r - l - C::toolGap * (tools - 1)) / tools;
         for (int i = 0; i < tools; ++i) { const float x = l + i * (tw + C::toolGap); L.tools.push_back({x, footer + C::toolsLead, x + tw, footer + C::toolsLead + C::tool}); }
-        // Tabs: the line, then the rows (2 apart, the first 2 under the line's margin), scrolled inside the view.
+        // Grid B: two rows folded; unfolded up to five then scrolling; the toggle row only when it does not all fit.
+        if (in.grid) {
+            if (in.bookmarks <= 0) { L.emptyGrid = true; L.gridBlock = {l, y, r, y + C::tile}; L.tiles.push_back(L.gridBlock); y = L.gridBlock.bottom + C::gap; }
+            else {
+                const int n = in.bookmarks, cols = Columns(r - l);
+                const bool folds = n > cols * C::foldedRows;
+                L.gridOpen = folds && in.gridOpen;
+                if (!L.gridOpen) L.grid = MakeGrid(l, y, r - l, std::min(n, cols * C::foldedRows), C::foldedRows, 0);
+                else {
+                    // The tabs keep at least half of what the grid block and the tabs share.
+                    const float shared = (footer - C::gap) - y, maxGrid = shared / 2 - C::tileGap - C::toggleRow;
+                    L.grid = MakeGrid(l, y, r - l, n, C::openRows, in.gridScroll, maxGrid);
+                }
+                float bottom = L.grid.view.bottom;
+                if (folds) { L.gridToggle = {l, bottom + C::tileGap, r, bottom + C::tileGap + C::toggleRow}; bottom = L.gridToggle.bottom; }
+                L.gridBlock = {l, y, r, bottom}; y = bottom + C::gap;
+            }
+        }
         L.line = {l + C::lineInset, y, r - C::lineInset, y + 1};
         L.tabsView = {l, y + 1 + C::lineAfter, r, std::max(y + 1 + C::lineAfter, footer - C::gap)};
         const float pitch = C::tabRow + C::tabGap, lead = C::tabGap;
@@ -238,16 +305,17 @@ inline Layout Compute(const Input& in) {
     } else {
         namespace K = Compact;
         const float cx = K::width / 2, l = cx - K::item / 2, r = cx + K::item / 2; float y = K::pad;
-        L.profile = Centered(cx, y + K::profile / 2, K::profile, K::profile);
-        y += K::profile + K::topGap;
+        L.profilePlate = false;
+        L.profile = Centered(cx, y + K::profileH / 2, K::profileW, K::profileH);
+        y += K::profileH + K::topGap;
         L.toggle = Centered(cx, y + K::toggle / 2, K::toggle, K::toggle);
         y += K::toggle + K::gap;
         if (in.grid) {
-            const int n = std::max(1, std::min(in.tiles, K::tiles + 1));
-            for (int i = 0; i < n; ++i) { const float t = y + i * (K::tile + K::tileGap); L.tiles.push_back({l, t, r, t + K::tile}); }
-            if (in.tiles <= 0) L.tiles.resize(1);
-            L.grid = {l, y, r, L.tiles.back().bottom};
-            y = L.grid.bottom + K::gap;
+            const int n = in.bookmarks; L.emptyGrid = n <= 0; L.more = n > K::tiles;
+            const int count = L.emptyGrid ? 1 : std::min(n, K::tiles);
+            for (int i = 0; i < count; ++i) { const float t = y + i * (K::tile + K::tileGap); L.tiles.push_back({l, t, r, t + K::tile}); }
+            L.gridBlock = {l, y, r, L.tiles.back().bottom};
+            y = L.gridBlock.bottom + K::gap;
         }
         const int tools = std::max(1, in.tools);
         const float toolsH = K::toolsLead + tools * K::tool + (tools - 1) * K::toolGap, footer = H - K::pad - toolsH;
@@ -264,18 +332,41 @@ inline Layout Compute(const Input& in) {
             const Box row{l, t, r, t + K::tabRow};
             if (i < in.tabs) L.tabs.push_back(row); else L.newTab = row;
         }
-        // Window bar: the pair, Reload and the address after the zone's 4 DIP padding.
-        const float top = (Zone::bar - Nav::button) / 2;
+    }
+    if (zoneMode == Mode::Compact && !full) {
+        // Window bar: the pair, Reload and the address after the zone's 4 DIP padding, 6 apart, no plates.
+        namespace K = Compact;
+        const float top = (L.bar - Nav::button) / 2;
         pairAt(zoneLeft + K::barPad, top);
         L.reload = {L.forward.right + K::navGap, top, L.forward.right + K::navGap + Nav::button, top + Nav::button};
-        L.addressInColumn = false; L.addressFont = K::addressFont; L.addressGlyph = K::addressGlyph;
-        const float al = L.reload.right + K::addressLead, ar = std::max(al, std::min(al + K::addressW, L.minimize.left - Zone::buttonGap));
-        L.address = Centered((al + ar) / 2, Zone::bar / 2, ar - al, K::addressH);
-        const float acy = Zone::bar / 2, g = K::addressGlyph;
+        L.navPlates = false;
+        L.addressInColumn = false; L.addressPlate = false; L.addressFont = K::addressFont; L.addressGlyph = K::addressGlyph;
+        const float al = L.reload.right + K::navGap + K::addressLead, ar = std::max(al, std::min(al + K::addressW, L.minimize.left - Zone::buttonGap));
+        L.address = Centered((al + ar) / 2, L.bar / 2, ar - al, K::addressH);
+        const float acy = L.bar / 2, g = K::addressGlyph;
         L.lock = Centered(al + K::addressPad + g / 2, acy, g, g);
         L.text = {L.lock.right + K::addressGap, L.address.top, std::max(L.lock.right + K::addressGap, ar - K::addressPad), L.address.bottom};
     }
     return L;
+}
+// The compact « » » popover (« compact, 40 » 1WSC-0): all the bookmarks, 4 right of the column, top on the « » » tile
+// (moved up to stay in the window), the unfolded grid inside (5 rows, then scrolling).
+struct PopoverLayout { Box box; Grid grid; };
+inline PopoverLayout ComputePopover(float column, const Box& anchor, int bookmarks, float scroll, float windowHeight) {
+    namespace P = Popover; PopoverLayout p;
+    const float inner = P::width - 2 * (P::border + P::pad);
+    const Grid probe = MakeGrid(0, 0, inner, bookmarks, Complete::openRows, 0);
+    const float h = 2 * (P::border + P::pad) + probe.view.Height();
+    const float top = std::max(Zone::inset, std::min(anchor.top, windowHeight - Zone::inset - h));
+    p.box = {column + P::gapX, top, column + P::gapX + P::width, top + h};
+    p.grid = MakeGrid(p.box.left + P::border + P::pad, top + P::border + P::pad, inner, bookmarks, Complete::openRows, scroll);
+    return p;
+}
+// Tile index under (x, y) in a grid (clipped by its view), -1 elsewhere.
+inline int TileAt(const Grid& g, float x, float y) {
+    if (!g.view.Contains(x, y)) return -1;
+    for (int i = 0; i < static_cast<int>(g.tiles.size()); ++i) if (g.tiles[i].Contains(x, y)) return i;
+    return -1;
 }
 
 // Row index under (x, y): a tab (0..tabs-1), `tabs` for the « + » row, -1 elsewhere (rows clipped by the view).

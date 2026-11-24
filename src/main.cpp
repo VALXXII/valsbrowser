@@ -277,7 +277,7 @@ constexpr long long AccessibleToolbarKey=0x10001; // = AccessibleToolbar (declar
 extern Accessibility::Bridge accessibility;
 NativeChrome::BookmarkPopover::Popover bookmarkPopover; NativeChrome::BookmarkToast::Toast bookmarkToast; NativeChrome::BookmarksUI::Drawer bookmarksDrawer;
 // Panneau latéral (#127): section « Panneau latéral » below (src/sidebar.h, Chrome::BuildSidebar / PaintSidebar).
-constexpr int SidebarToggleCommand=NativeChrome::Chrome::SidebarToggleId;bool sidePanelForced=false;void ApplyLayout();bool AnnotationButtonDimmed();RECT RegionScreen(int id);void UpdateFont();void SidebarPrepare();void ToggleSidebar();void SidebarHoles();bool SidebarDragMove(POINT point);void SidebarDragEnd(bool commit);
+constexpr int SidebarToggleCommand=NativeChrome::Chrome::SidebarToggleId;bool sidePanelForced=false,forcedCompact=false;void ApplyLayout();float DrawerReserveDip();void SyncDrawerReserve();void SetTabsPosition(BrowserSettings::TabsPosition p);void SidebarPopover(bool open);bool AnnotationButtonDimmed();RECT RegionScreen(int id);void UpdateFont();void SidebarPrepare();void ToggleSidebar();void SidebarHoles();bool SidebarDragMove(POINT point);void SidebarDragEnd(bool commit);
 bool SyncBookmarkChrome();void BookmarksChanged();void ToggleBookmarksDrawer(bool keyboard);bool BookmarkedSite(const std::wstring& site);long long AccessibleBandItemKey(int region);
 // Self-update host hooks (no-ops in unstamped builds).
 std::wstring AboutTitle(){
@@ -515,7 +515,8 @@ void DissolveSmallGroups(){
 int VisibleGroup(){auto t=Active();return t&&t->group&&splitGroups.count(t->group)&&Members(t->group).size()>=2?t->group:0;}
 // Same box as a single page: under the chrome, 81 DIP or 121 with the bookmarks band
 // (SV::Content assumes the former fixed 84 DIP top).
-SV::Box ContentBox(){namespace View=NativeChrome::Design::Viewport;auto c=SV::Content(chrome.width,chrome.height);c.top=chrome.ContentTop();const float inset=chrome.sidebar?NativeChrome::Sidebar::Zone::inset:View::inset;c.left=chrome.sidebar?chrome.SidebarZoneLeft():View::inset;c.right=std::max(c.left,chrome.width-inset-ChatInsetDip()); /* the chat panel sits at the right of the page area: the page shrinks, it is never covered */c.bottom=chrome.height-inset;if(AnnotationBandSliding())c.bottom+=chrome.annotationBand; /* R25: while the annotation band slides, the page keeps its size and only moves (its bottom goes past the window, unseen): no relayout per frame */if(InFullscreen()){c={0,0,chrome.width,chrome.height};}c.bottom=std::max(c.top,c.bottom);return c;}
+SV::Box ContentBox(){namespace View=NativeChrome::Design::Viewport;auto c=SV::Content(chrome.width,chrome.height);c.top=chrome.ContentTop();const float inset=NativeChrome::Sidebar::Zone::inset; /* #127 (Val): 4 DIP around the page in both layouts */c.left=chrome.sidebar?chrome.SidebarZoneLeft():inset;c.right=std::max(c.left,chrome.width-inset-ChatInsetDip());
+    if(const float drawer=DrawerReserveDip();drawer>0)c.right=std::max(c.left,std::min(c.right,chrome.width-drawer-inset)); /* #127 (Val, B): an open drawer: the page stops 4 DIP before it, its right corners rounded */ /* the chat panel sits at the right of the page area: the page shrinks, it is never covered */c.bottom=chrome.height-inset;if(AnnotationBandSliding())c.bottom+=chrome.annotationBand; /* R25: while the annotation band slides, the page keeps its size and only moves (its bottom goes past the window, unseen): no relayout per frame */if(InFullscreen()){c={0,0,chrome.width,chrome.height};}c.bottom=std::max(c.top,c.bottom);return c;}
 struct SplitView{int group=0,active=-1;float min=SV::minWidthCss;std::vector<std::shared_ptr<Tab>> members;std::vector<float> weights;SV::Arrangement a;};
 SplitView CurrentSplit(){
     // A page element in fullscreen (video, game…) is presented alone at the whole ContentBox: the other panels,
@@ -694,12 +695,14 @@ void GripFrame(NativeChrome::Motion::Time now){
 // for a single page and for split views (side by side: the outer panels; stacked: the
 // bottom one). Top corners meet the toolbar and stay square, as in Paper.
 struct PageCorner{SV::Box page;bool right=false,top=false;};
+// The page card's corner (Designer, 24 nov.): 6 DIP with the top bar, 8 DIP with the side panel (the column's cards).
+float PageRadiusDip(){return chrome.sidebar?NativeChrome::Sidebar::Zone::pageRadius:NativeChrome::Sidebar::Zone::topBarPageRadius;}
 std::vector<PageCorner> PageCorners(){
     std::vector<PageCorner> out;if(IsZoomed(window)||InFullscreen())return out; // square like the window (Paper V3)
     const auto c=ContentBox();auto v=CurrentSplit();std::vector<SV::Box> boxes;
     if(v.group){for(auto& s:v.a.slots)if(!s.rail)boxes.push_back(s.box);}else{auto t=Active();if(t&&t->shown)boxes.push_back(c);}
     const bool leftCovered=chrome.sidebar&&chrome.sidebarOverlay;
-    for(auto& b:boxes){for(int top=0;top<(chrome.sidebar?2:1);++top){if(std::fabs((top?b.top:b.bottom)-(top?c.top:c.bottom))>.5f)continue;if(!leftCovered&&std::fabs(b.left-c.left)<.5f)out.push_back({b,false,top!=0});if(std::fabs(b.right-c.right)<.5f)out.push_back({b,true,top!=0});}}
+    for(auto& b:boxes){for(int top=0;top<2;++top){if(std::fabs((top?b.top:b.bottom)-(top?c.top:c.bottom))>.5f)continue;if(!leftCovered&&std::fabs(b.left-c.left)<.5f)out.push_back({b,false,top!=0});if(std::fabs(b.right-c.right)<.5f)out.push_back({b,true,top!=0});}}
     return out;
 }
 std::vector<HWND> cornerMasks;struct CornerLook{int x=0,y=0,size=0;bool right=false,top=false;UINT dpi=0;std::vector<std::uint32_t> pixels;};std::vector<CornerLook> cornerLooks;
@@ -708,7 +711,7 @@ void RenderCorner(size_t i,bool right,int size,UINT dpi,bool top=false){
     auto& L=cornerLooks[i];if(L.size==size&&L.right==right&&L.top==top&&L.dpi==dpi)return;HWND g=cornerMasks[i];
     BITMAPINFO bi{};bi.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);bi.bmiHeader.biWidth=size;bi.bmiHeader.biHeight=-size;bi.bmiHeader.biPlanes=1;bi.bmiHeader.biBitCount=32;bi.bmiHeader.biCompression=BI_RGB;
     HDC screen=GetDC(nullptr);HDC mem=CreateCompatibleDC(screen);void* bits=nullptr;HBITMAP bmp=CreateDIBSection(mem,&bi,DIB_RGB_COLORS,&bits,nullptr,0);if(!bmp||!bits){if(bmp)DeleteObject(bmp);DeleteDC(mem);ReleaseDC(nullptr,screen);return;}
-    HGDIOBJ old=SelectObject(mem,bmp);auto* px=(std::uint32_t*)bits;const float r=SV::pageRadius*dpi/96.f;
+    HGDIOBJ old=SelectObject(mem,bmp);auto* px=(std::uint32_t*)bits;const float r=PageRadiusDip()*dpi/96.f;
     // Mask origin: the corner square's top-left. Arc centre: r inside the page from the corner.
     const float cx=right?(float)size-r:r,cy=top?r:(float)size-r;const std::uint32_t canvas=GetRValue(BG);
     for(int y=0;y<size;++y)for(int x=0;x<size;++x){const float px0=x+.5f,py0=y+.5f;const bool beyond=right?px0>cx:px0<cx;float a=0;
@@ -721,7 +724,7 @@ void RenderCorner(size_t i,bool right,int size,UINT dpi,bool top=false){
 void BlendLayered(HDC dc,POINT client,HWND h,const std::vector<std::uint32_t>& pixels,int w,int hgt);
 void BlendCorners(HDC dc,POINT client){for(size_t i=0;i<cornerMasks.size()&&i<cornerLooks.size();++i)BlendLayered(dc,client,cornerMasks[i],cornerLooks[i].pixels,cornerLooks[i].size,cornerLooks[i].size);}
 void SyncCornerMasks(){
-    const auto corners=halted?std::vector<PageCorner>{}:PageCorners();const UINT dpi=GetDpiForWindow(window);const int size=(int)std::ceil(SV::pageRadius*dpi/96.f)+1;
+    const auto corners=halted?std::vector<PageCorner>{}:PageCorners();const UINT dpi=GetDpiForWindow(window);const int size=(int)std::ceil(PageRadiusDip()*dpi/96.f)+1;
     while(cornerMasks.size()<corners.size()){
         static bool registered=false;if(!registered){WNDCLASSW wc{};wc.lpfnWndProc=CornerProc;wc.hInstance=instance?instance:GetModuleHandleW(nullptr);wc.lpszClassName=L"BrowserPageCorner";RegisterClassW(&wc);registered=true;}
         HWND g=CreateWindowExW(WS_EX_LAYERED|WS_EX_NOACTIVATE,L"BrowserPageCorner",L"",WS_CHILD,0,0,1,1,window,nullptr,instance?instance:GetModuleHandleW(nullptr),nullptr);if(!g)break;
@@ -2241,6 +2244,7 @@ ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler* PopupScriptBar
 const std::wstring& PopupQa();
 void InjectAudioScript(const std::shared_ptr<Tab>& t,const PopupHost::RequestPtr& popup); // audio-integration.h
 #include "elements-integration.h"
+#include "tabs-position-icon.h"
 void SyncLatch();
 #include "audio-integration.h"
 #include "profiles-integration.h"
@@ -2357,7 +2361,7 @@ void SettingChanged(BrowserSettings::Change change){
     case Change::CustomSearch:break;
     case Change::TabPosition:case Change::ConfirmCloseTabs:case Change::CloseWithLastTab:case Change::MuteBackground:ApplyTabSettings();break;
     case Change::Autoplay:ApplyMediaSettings();break;
-    case Change::SidePanel:ApplyLayout();break;
+    case Change::TabsPosition:sidePanelForced=false;ApplyLayout();if(window&&chrome.sidebar)Layout();settingsDrawer.Changed();Log(std::wstring(L"SETTINGS tabs position ")+BrowserSettings::Info(settings.tabsPosition).label);break;
     case Change::GrayscaleText:Log(settings.grayscaleText?L"SETTINGS grayscale text on: applies at next launch":L"SETTINGS grayscale text off: applies at next launch");break;
     // Réglages › « Annotations »: the launcher shows / hides at once; the launch prompt and the
     // retention are read by the mode when it next needs them (src/annotation-mode.h, Prefs).
@@ -3382,9 +3386,16 @@ void SplitMenuHighlight(const CM::Item* item){
     if(item&&!item->accessible.empty())AnnounceSplit(item->accessible);
 }
 // Tab right click (Paper "Clic droit menu — poli"): acts on the tab that was clicked.
+// « Position des onglets » at the bottom of a tab's menu (Paper « Proposition — Clic droit · 3 icônes segmentées
+// (validée) » 1XO9-0): a full-width segmented control, icons only (src/tabs-position-icon.h), the current choice
+// highlighted, each named in a tooltip; a click changes the layout at once and closes the menu. Ids base .. base+2.
+CM::Item TabsPositionMenu(int base){std::vector<CM::Segment> seg;
+    for(int i=0;i<BrowserSettings::TabsPositionCount;++i){const auto p=static_cast<BrowserSettings::TabsPosition>(i);seg.push_back({base+i,BrowserSettings::Info(p).label,settings.tabsPosition==p});}
+    return CM::Segmented(TR(settings_tabs_position),std::move(seg),[](ID2D1RenderTarget* t,ID2D1Factory* f,ID2D1SolidColorBrush* b,D2D1_RECT_F box,int i,int state){
+        NativeChrome::TabsPositionIcon::Paint(t,f,b,box,NativeChrome::ContextMenu::Layout::segIcon,i,static_cast<NativeChrome::TabsPositionIcon::State>(state));});}
 void TabContextMenu(int tabIndex,int anchor){
     if(tabIndex<0||tabIndex>=(int)pages.size())return;
-    enum{NewTabItem=1,ReloadItem,CopyItem,ReopenItem,CloseItem,CloseOthersItem,PrintItem,PdfItem,PlaceRight=20,PlaceLeft,PlaceTop,PlaceBottom,ReverseItem,OrientItem,ResizeItem,QuitItem};
+    enum{NewTabItem=1,ReloadItem,CopyItem,ReopenItem,CloseItem,CloseOthersItem,PrintItem,PdfItem,PlaceRight=20,PlaceLeft,PlaceTop,PlaceBottom,ReverseItem,OrientItem,ResizeItem,QuitItem,TabsPositionItem=40};
     auto tab=pages[tabIndex];const bool link=!tab->home&&!tab->uri.empty(),page=link&&tab->view.p;
     auto v=CurrentSplit();std::vector<CM::Item> split;
     if(v.group&&tab->group==v.group){
@@ -3405,7 +3416,9 @@ void TabContextMenu(int tabIndex,int anchor){
         CM::Command(ReopenItem,TR(cmd_reopen_tab),TR(key_ctrl_shift_t),!closedTabs.empty()&&pages.size()<128),CM::Separator(),
         CM::Command(CloseItem,TR(cmd_close_tab),L"Ctrl+W"),CM::Command(CloseOthersItem,TR(cmd_close_other_tabs),L"",pages.size()>1)};
     items.insert(items.end(),rest.begin(),rest.end());
-    contextMenu.onHighlight=SplitMenuHighlight;const int chosen=ShowMenu(items,anchor);contextMenu.onHighlight=nullptr;SplitMenuHighlight(nullptr);
+    items.push_back(CM::Separator());items.push_back(TabsPositionMenu(TabsPositionItem));
+    contextMenu.onSegment=[](RECT r,const std::wstring& tip,bool keyboard){if(tip.empty()){ChromeTipHide();return;}RECT bounds=NativeChrome::TooltipPlacement::VisibleRect(window);if(keyboard)chromeTip.Show(TipContent(tip.c_str()),r,&bounds);else chromeTip.Hover(TipContent(tip.c_str()),r,&bounds);};
+    contextMenu.onHighlight=SplitMenuHighlight;const int chosen=ShowMenu(items,anchor);contextMenu.onHighlight=nullptr;contextMenu.onSegment=nullptr;ChromeTipHide();SplitMenuHighlight(nullptr);
     if(chosen>=SplitMenuBase&&chosen-SplitMenuBase<(int)block.actions.size()){RunSplitMenuAction(tab,block.actions[chosen-SplitMenuBase]);return;}
     switch(chosen){
     case PlaceRight:PlaceFromMenu(tab,SV::Side::Right);break;
@@ -3413,6 +3426,7 @@ void TabContextMenu(int tabIndex,int anchor){
     case PlaceTop:PlaceFromMenu(tab,SV::Side::Top);break;
     case PlaceBottom:PlaceFromMenu(tab,SV::Side::Bottom);break;
     case ReverseItem:ReverseGroup(tab->group);break;
+    case TabsPositionItem:case TabsPositionItem+1:case TabsPositionItem+2:SetTabsPosition(static_cast<BrowserSettings::TabsPosition>(chosen-TabsPositionItem));break;
     case OrientItem:if(splitGroups.count(tab->group)){auto& o=splitGroups[tab->group];o=o==SV::Orientation::Row?SV::Orientation::Column:SV::Orientation::Row;ApplyPages();AnnounceSplit(o==SV::Orientation::Row?TR(split_announce_side_by_side):TR(split_announce_stacked));}break;
     case ResizeItem:StartKeyboardResize();break;
     case QuitItem:QuitGroup(tab->group);break;
@@ -4184,7 +4198,8 @@ bool BookmarkPopoverFocus(){HWND f=GetFocus();return bookmarkPopover.Visible()&&
 void ExtraCommand(int cmd){auto t=Active();if(AnnotationCommand(cmd))return;if(NativeChrome::IsBookmark(cmd)){BandActivate(NativeChrome::BookmarkIndex(cmd),false,false,KeyboardAnchor()!=0||keyboardModality);return;}switch(cmd){
 case 'K':BookmarkStar(KeyboardAnchor()!=0||keyboardModality);break;
 case 'E':lastFolder=BM::BarRoot;BookmarkStar(KeyboardAnchor()!=0||keyboardModality);break;
-case 'O':OverflowMenu(KeyboardAnchor()!=0);break;
+case 'O':if(chrome.sidebar){SidebarPopover(!chrome.sidebarPopover);break;}OverflowMenu(KeyboardAnchor()!=0);break;
+case NativeChrome::Chrome::SidebarGridToggleId:chrome.sidebarGridOpen=!chrome.sidebarGridOpen;if(!chrome.sidebarGridOpen)chrome.sidebarGridScroll=0;BuildChrome();InvalidateChrome();{const std::wstring said=chrome.sidebarGridOpen?std::wstring(TR(sidebar_collapse_grid)):TRF(sidebar_all_bookmarks,std::to_wstring(chrome.bandItems.size()));accessibility.Notify('K',said.c_str(),L"Bookmarks" /* i18n-exempt: UIA activity id */);}break;
 case BookmarkBarCommand:ToggleBookmarkBar();break;
 case SidebarToggleCommand:ToggleSidebar();break;
 case BookmarksDrawerCommand:if(bookmarksDismissClick){bookmarksDismissClick=false;break;}ToggleBookmarksDrawer(keyboardModality);break;
@@ -4212,7 +4227,7 @@ case SandboxCommandId:OpenSandbox();break;
 case ShortcutsCommand:OpenShortcutsPanel();break;
 }}
 #ifndef BROWSER_UPDATES
-void SyncUpdateToastReserve(){} void CheckForUpdates(){} void SetUpdateToastTop(float){} float UpdateToastHeight(){return 0;} bool UpdateCheckAvailable(){return false;} bool FocusUpdateToast(){return false;} bool UpdateToastHasFocus(){return false;}
+void SyncUpdateToastReserve(){SyncDrawerReserve();} void CheckForUpdates(){} void SetUpdateToastTop(float){} float UpdateToastHeight(){return 0;} bool UpdateCheckAvailable(){return false;} bool FocusUpdateToast(){return false;} bool UpdateToastHasFocus(){return false;}
 NativeChrome::SettingsUI::Drawer::Version SettingsVersion(){return {AboutTitle(),false,false};}
 NativeChrome::Modal::Status AboutStatusNow(){namespace MD=NativeChrome::Modal;auto st=MD::AboutStatus(MD::AboutUpToDate);st.icon=MD::StatusIcon::None;st.title=TR(updates_unavailable);st.detail=TR(updates_unavailable_build);st.hasButton=false;return st;}
 void AboutUpdateAction(int){}
@@ -4355,7 +4370,7 @@ bool ForwardToInstalled(const std::wstring& installRoot=L""){
 }
 void LayoutUpdateToast(){if(updateToast.Window())updateToast.Layout();}
 // The bottom-left card keeps clear of the download drawer docked on the right.
-void SyncUpdateToastReserve(){const bool open=(downloadDrawer.Visible()&&!downloadDrawer.Closing())||settingsDrawer.Open()||historyDrawer.Open()||bookmarksDrawer.Open();updateToast.SetReservedRight(open?(settingsDrawer.Open()?NativeChrome::SettingsUI::Layout::width:NativeChrome::Downloads::DrawerLayout::width)+NativeChrome::Downloads::DrawerLayout::margin:0.f);}
+void SyncUpdateToastReserve(){SyncDrawerReserve();const bool open=(downloadDrawer.Visible()&&!downloadDrawer.Closing())||settingsDrawer.Open()||historyDrawer.Open()||bookmarksDrawer.Open();updateToast.SetReservedRight(open?(settingsDrawer.Open()?NativeChrome::SettingsUI::Layout::width:NativeChrome::Downloads::DrawerLayout::width)+NativeChrome::Downloads::DrawerLayout::margin:0.f);}
 bool FocusUpdateToast(){return updateToast.Shown()&&updateToast.Focus();}
 bool UpdateToastHasFocus(){HWND toast=updateToast.Window();HWND focus=GetFocus();return toast&&focus&&(focus==toast||IsChild(toast,focus));}
 void SyncUpdateToastMotion(){updateToast.SyncReducedMotion();} // no-op before Init/after Close
@@ -4611,7 +4626,7 @@ LRESULT CALLBACK AddressProc(HWND h,UINT msg,WPARAM w,LPARAM l,UINT_PTR,DWORD_PT
 }
 // ---- Panneau latéral (#127, variante A finale) ----------------------------------------------------------------
 // src/sidebar.h holds the Paper values and the geometry; Chrome::BuildSidebar / PaintSidebar draw the column. Here: the
-// mode (the user's choice `settings.sidebarCompact`, compact by itself under 800 DIP without touching that choice),
+// mode (« Position des onglets » `settings.tabsPosition`, compact by itself under 800 DIP without touching it),
 // the fold animation (the page follows the column), the complete column opened over the page after 400 ms on the
 // compact one (the page windows get a hole there: the page does not move), the vertical tab drag, the list's wheel.
 // Focus mode (branch VALXXII/Mode-Focus, not in main) plugs in here: design/127-sidebar-plan.md § 4.
@@ -4620,12 +4635,20 @@ namespace SBar=NativeChrome::Sidebar;
 SBar::Fold sidebarFold;SBar::Hover sidebarHover;bool sidebarReady=false;int sidebarShownTab=-1;
 constexpr UINT_PTR SidebarFoldTimerId=0x5161,SidebarHoverTimerId=0x5162;
 double SidebarNowMs(){return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();}
-SBar::Mode SidebarEffective(){return SBar::Effective(settings.sidebarCompact?SBar::Mode::Compact:SBar::Mode::Complete,chrome.width);}
+SBar::Mode SidebarEffective(){const bool compact=settings.tabsPosition==BrowserSettings::TabsPosition::Compact||(settings.tabsPosition==BrowserSettings::TabsPosition::Top&&forcedCompact);
+    return SBar::Effective(compact?SBar::Mode::Compact:SBar::Mode::Complete,chrome.width);}
 // The window's layout (Val, 24 nov.): the tab bar at the top by default; the side panel when the setting « layout=
 // side-panel » is on (Réglages row to come: Change::SidePanel) or for a run started with --side-panel (not saved).
 // Called when the settings are loaded (start, profile switch) and when the setting changes: live, no restart. The
 // panel's own complete / compact choice is kept either way.
-bool SidePanelWanted(){return !smoke&&(settings.sidePanel||sidePanelForced);}
+bool SidePanelWanted(){return !smoke&&(BrowserSettings::SidePanel(settings.tabsPosition)||sidePanelForced);}
+// The one source of truth (Val, 24 nov.): Réglages, the tab menu, the fold button and Ctrl+Maj+, all set this value.
+void SetTabsPosition(BrowserSettings::TabsPosition p){if(settings.tabsPosition==p&&!sidePanelForced)return;settings.tabsPosition=p;SettingChanged(BrowserSettings::Change::TabsPosition);}
+// #127 (Val, B): the drawer docked open on the right (its column's width), 0 when none: the page stops 4 DIP before it.
+float DrawerReserveDip(){if(InFullscreen()||halted)return 0;if(settingsDrawer.Open())return NativeChrome::SettingsUI::Layout::width;
+    if((downloadDrawer.Visible()&&!downloadDrawer.Closing())||historyDrawer.Open()||bookmarksDrawer.Open())return NativeChrome::Downloads::DrawerLayout::width;
+    if(audioPanel.Docked())return NativeChrome::AudioPanel::Layout::width;return 0;}
+void SyncDrawerReserve(){static float applied=0;const float r=DrawerReserveDip();if(r==applied)return;applied=r;if(window&&!halted)Layout();}
 void ApplyLayout(){
     const bool want=SidePanelWanted();NativeChrome::ShortcutsPanel::SidePanelRows()=want;if(want==chrome.sidebar)return;
     if(tabDrag.tab)CancelTabDrag(true);sidebarHover.Close();chrome.sidebarOverlay=false;chrome.sidebarDrag=-1;chrome.sidebarInsert=-1;
@@ -4636,15 +4659,22 @@ void ApplyLayout(){
         Layout();bookmarkToast.Reposition();RepositionElementSurfaces();}
     Log(want?L"LAYOUT side panel":L"LAYOUT top bar");
 }
+// The compact « » » popover (grid B « compact, 40 »): every bookmark in a card at the column's right, over the page
+// (a hole in the page windows like the column over the page). Closed by « » », Échap, a click elsewhere or on the page,
+// opening a bookmark, or the column leaving compact.
+void SidebarPopover(bool open){if(!chrome.sidebar)open=false;if(open==chrome.sidebarPopover)return;chrome.sidebarPopover=open;chrome.sidebarPopoverScroll=0;BuildChrome();if(window){ApplyPages();InvalidateChrome();}
+    accessibility.Notify('K',open?TR(sidebar_all_bookmarks_tip):L"",L"Bookmarks" /* i18n-exempt: UIA activity id */);}
 // Before every Build: the mode, the drawn width and titles (fold), the column over the page, per-tab details.
 void SidebarPrepare(){
-    namespace V=NativeChrome::Design::Vertical;V::DrawerTopValue()=chrome.sidebar?SBar::Zone::bar:V::top;
+    namespace V=NativeChrome::Design::Vertical;chrome.sidebarReserve=DrawerReserveDip();
+    // Drawers start under the window bar: 40 in the complete layout, 25 in the compact one (Paper 07 / 11).
+    V::DrawerTopValue()=!chrome.sidebar?V::top:(SidebarEffective()==SBar::Mode::Compact?SBar::Zone::compactDrawerTop:SBar::Zone::drawerTop);
     if(window){bookmarkToast.pageLeftPx=chrome.sidebar?S(chrome.SidebarZoneLeft()):0;bookmarkToast.pageBottomPx=chrome.sidebar?S(SBar::Zone::inset):0;}
     if(!chrome.sidebar)return;const double now=SidebarNowMs();const auto mode=SidebarEffective();
     if(!sidebarReady){sidebarFold.Set(mode,now,false);sidebarReady=true;}
     else if(mode!=sidebarFold.target){sidebarFold.Set(mode,now,!motion.ReducedMotion()&&window&&IsWindowVisible(window)&&!IsIconic(window));if(window&&sidebarFold.Moving(now))SetTimer(window,SidebarFoldTimerId,15,nullptr);}
     sidebarFold.Settle(now);const bool moving=sidebarFold.Moving(now);
-    if(sidebarFold.target!=SBar::Mode::Compact||moving)sidebarHover.Close();
+    if(sidebarFold.target!=SBar::Mode::Compact||moving){sidebarHover.Close();chrome.sidebarPopover=false;}
     chrome.sidebarMode=moving?SBar::Mode::Complete:sidebarFold.target;
     chrome.sidebarColumn=sidebarFold.ColumnWidth(now);chrome.sidebarTitles=sidebarFold.Titles(now);chrome.sidebarOverlay=sidebarHover.open;
     chrome.annotateDimmed=chrome.annotateShown&&AnnotationButtonDimmed();
@@ -4655,17 +4685,20 @@ void SidebarPrepare(){
 // The fold button and Ctrl+Maj+,: the user's choice flips (saved). In a window too narrow for the complete column,
 // the choice is kept and the complete column opens over the page instead (Designer, answer 11).
 void ToggleSidebar(){
-    if(!chrome.sidebar||!window)return;
+    if(!chrome.sidebar)return;
     if(chrome.width<SBar::autoCompactBelow){if(sidebarHover.open)sidebarHover.Close();else sidebarHover.Open();Layout();return;}
-    settings.sidebarCompact=!settings.sidebarCompact;SaveSettings();sidebarHover.Close();
-    Log(std::wstring(L"SIDEBAR ")+(settings.sidebarCompact?L"compact":L"complete"));
-    Layout();
+    sidebarHover.Close();
+    // The fold button and Ctrl+Maj+, switch Panneau latéral <-> Panneau compact in the setting (a trial run forced with
+    // --side-panel while the setting says « En haut » folds for this run only).
+    using BrowserSettings::TabsPosition;
+    if(BrowserSettings::SidePanel(settings.tabsPosition)){settings.tabsPosition=settings.tabsPosition==TabsPosition::Side?TabsPosition::Compact:TabsPosition::Side;SettingChanged(BrowserSettings::Change::TabsPosition);}
+    else{forcedCompact=!forcedCompact;Layout();}
 }
 // While the complete column is open over the page, every page window under it gets a window region without the
 // column: the main window draws the column there and gets the pointer; the page keeps its size and place.
 void SidebarHoles(){
-    const bool open=chrome.sidebar&&chrome.sidebarOverlay&&!InFullscreen();
-    const RECT hole{0,0,S(chrome.sideOver.column+SBar::Overlay::border),S(chrome.height)};
+    const bool over=chrome.sidebar&&chrome.sidebarOverlay&&!InFullscreen(),pop=chrome.sidebar&&chrome.sidebarPopover&&!InFullscreen()&&!chrome.sidePop.box.Empty();const bool open=over||pop;
+    const RECT hole=over?RECT{0,0,S(chrome.sideOver.column+SBar::Overlay::border),S(chrome.height)}:RECT{0,S(chrome.sidePop.box.top),S(chrome.sidePop.box.right),S(chrome.sidePop.box.bottom)};
     for(auto& t:pages){if(!t||!t->controller.p)continue;HWND h=t->host&&IsWindow(t->host)?t->host:(t->placedVisible==1?PageHostWindow(*t):nullptr);if(!h)continue;
         RECT w{};GetWindowRect(h,&w);MapWindowPoints(nullptr,window,(POINT*)&w,2);RECT cut{};
         if(open&&t->placedVisible==1&&IntersectRect(&cut,&hole,&w)){HRGN all=CreateRectRgn(0,0,w.right-w.left,w.bottom-w.top),sub=CreateRectRgn(cut.left-w.left,cut.top-w.top,cut.right-w.left,cut.bottom-w.top);
@@ -4686,7 +4719,10 @@ void SidebarHoverDue(){KillTimer(window,SidebarHoverTimerId);if(!sidebarHover.Du
 bool SidebarCaption(float x,float y){if(!chrome.sidebar)return false;const auto& L=chrome.SideColumn();const float col=chrome.sidebarOverlay?L.column:chrome.side.column;
     if(x>=col)return y<SBar::Zone::bar;return y<(L.mode==SBar::Mode::Complete?L.address.top:L.toggle.bottom);}
 // Wheel over the tab list scrolls it (answer 4).
-void SidebarWheel(POINT client,int delta){const float d=GetDpiForWindow(window)/96.f,x=client.x/d,y=client.y/d;const auto& L=chrome.SideColumn();if(!L.tabsView.Contains(x,y))return;
+void SidebarWheel(POINT client,int delta){const float d=GetDpiForWindow(window)/96.f,x=client.x/d,y=client.y/d;const auto& L=chrome.SideColumn();
+    if(chrome.sidebarPopover&&chrome.sidePop.box.Contains(x,y)){chrome.sidebarPopoverScroll=std::clamp(chrome.sidePop.grid.scroll-delta/120.f*48.f,0.f,chrome.sidePop.grid.maxScroll);BuildChrome();InvalidateChrome();return;}
+    if(L.gridOpen&&L.grid.view.Contains(x,y)){chrome.sidebarGridScroll=std::clamp(L.grid.scroll-delta/120.f*48.f,0.f,L.grid.maxScroll);BuildChrome();InvalidateChrome();return;}
+    if(!L.tabsView.Contains(x,y))return;
     chrome.sidebarScroll=std::clamp(L.scroll-delta/120.f*48.f,0.f,L.maxScroll);BuildChrome();InvalidateChrome();}
 // A right click on the list's empty space opens the tab list menu, as on the empty tab row before.
 bool SidebarListBlank(float x,float y){const auto& L=chrome.SideColumn();return chrome.sidebar&&L.tabsView.Contains(x,y)&&SBar::RowAt(L,x,y)<0;}
@@ -4713,7 +4749,7 @@ void SidebarDragEnd(bool commit){
     if(!commit||from<0||!tabDrag.tab)return;
     POINT p;GetCursorPos(&p);ScreenToClient(window,&p);const float d=GetDpiForWindow(window)/96.f,x=p.x/d,y=p.y/d;
     const auto& L=chrome.SideColumn();
-    if(!L.grid.Empty()&&x>=L.grid.left&&x<L.grid.right&&y>=L.grid.top&&y<L.grid.bottom){   // onto the grid: a new bookmark (answer 9)
+    if(!L.gridBlock.Empty()&&L.gridBlock.Contains(x,y)){   // onto the grid: a new bookmark (answer 9)
         auto t=tabDrag.tab;if(t->home||!BM::Admissible(t->uri))return;
         const BM::Id id=bookmarks.Add(BM::BarRoot,BM::End,t->title==TR(tab_new)?L"":t->title,t->uri,NativeChrome::DownloadsUI::UnixNowMs());
         if(id){PushUndo({{BookmarkStep::Created,id}},TR(bookmark_undo_add));SaveBookmarks();BookmarksChanged();AnnounceBookmark(TRF(bookmark_added_to,bookmarks.Find(BM::BarRoot)->title));}
@@ -4771,7 +4807,7 @@ case WM_SIZE:HideSuggestions();motionMinimized=w==SIZE_MINIMIZED;contentTransiti
     updateToast.SetOwnerVisible(!motionMinimized);
 #endif
     return 0;
-case WM_PARENTNOTIFY:{const UINT e=LOWORD(w);if(e==WM_LBUTTONDOWN||e==WM_RBUTTONDOWN||e==WM_MBUTTONDOWN||e==WM_XBUTTONDOWN||e==0x0246 /* WM_POINTERDOWN */)ContentTransitionInput(L"click");break;}
+case WM_PARENTNOTIFY:{const UINT e=LOWORD(w);if(e==WM_LBUTTONDOWN||e==WM_RBUTTONDOWN||e==WM_MBUTTONDOWN||e==WM_XBUTTONDOWN||e==0x0246 /* WM_POINTERDOWN */){ContentTransitionInput(L"click");if(chrome.sidebarPopover)SidebarPopover(false);}break;}
 case WM_MOVE:contentTransition.Cancel();RepositionElementSurfaces();HideSuggestions();SyncStatusBubble();audioPanel.OwnerChanged();downloadDrawer.Reposition();settingsDrawer.Reposition();historyDrawer.Reposition();bookmarksDrawer.Reposition();bookmarkToast.Reposition();if(bookmarkPopover.Visible())bookmarkPopover.Hide();
 #ifdef BROWSER_UPDATES
     LayoutUpdateToast();
@@ -4816,14 +4852,14 @@ case WM_MBUTTONUP:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET
 case WM_RBUTTONUP:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));const float y=GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h);
     if(NativeChrome::IsBookmark(id)&&NativeChrome::BookmarkIndex(id)<(int)chrome.bandItems.size()){POINT p{};GetCursorPos(&p);BookmarkContextMenu(chrome.bandItems[NativeChrome::BookmarkIndex(id)].id,p,nullptr,false);return 0;}
     if(!chrome.sidebar&&chrome.bandShown&&y>=NativeChrome::Design::Vertical::toolbarBottom&&y<chrome.ContentTop()){POINT p{};GetCursorPos(&p);BandContextMenu(p);return 0;}
-    if(chrome.sidebar&&!id&&chrome.bandShown&&chrome.SideColumn().grid.Contains(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),y)){POINT p{};GetCursorPos(&p);BandContextMenu(p);return 0;}
+    if(chrome.sidebar&&!id&&chrome.bandShown&&chrome.SideColumn().gridBlock.Contains(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),y)){POINT p{};GetCursorPos(&p);BandContextMenu(p);return 0;}
     if(NativeChrome::TabIndex(id)>=0)TabContextMenu(NativeChrome::TabIndex(id),0);else if(chrome.sidebar?SidebarListBlank(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),y):GET_Y_LPARAM(l)<S(44))TabMenu(0);return 0;}
 // Menu key / Shift+F10 arrive with lParam (-1,-1): on a focused tab or its close button, open the right-click menu
 // below it; on the flower or the gear, open their own menu.
 case WM_CONTEXTMENU:if(GET_X_LPARAM(l)==-1&&GET_Y_LPARAM(l)==-1&&GetFocus()==h){int tabIndex=NativeChrome::TabIndex(keyboardFocus);if(tabIndex>=0&&tabIndex<(int)pages.size()){keyboardModality=true;TabContextMenu(tabIndex,keyboardFocus);return 0;}if(keyboardFocus==900||keyboardFocus=='S'){keyboardModality=true;Command(keyboardFocus);return 0;}
     if(NativeChrome::IsBookmark(keyboardFocus)&&NativeChrome::BookmarkIndex(keyboardFocus)<(int)chrome.bandItems.size()){keyboardModality=true;const RECT r=RegionScreen(keyboardFocus);BookmarkContextMenu(chrome.bandItems[NativeChrome::BookmarkIndex(keyboardFocus)].id,{r.left,r.bottom},&r,true);if(GetForegroundWindow()==window&&!bookmarkPopover.Visible())SetFocus(window);InvalidateChrome();return 0;}}break;
 case WM_MOUSEWHEEL:{POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(h,&p);if(chrome.sidebar){SidebarWheel(p,GET_WHEEL_DELTA_WPARAM(w));return 0;}if(p.y<S(44)&&!pages.empty())Command(GET_WHEEL_DELTA_WPARAM(w)>0?'[':']');return 0;}
-case WM_KEYDOWN:if(w==VK_ESCAPE&&chrome.sidebar&&sidebarHover.open&&!tabDrag.tab){sidebarHover.Close();Layout();return 0;} /* #127: Échap closes the column opened over the page */if(w==VK_ESCAPE&&sepDrag.active){CancelSeparator();return 0;}if(splitResize>=0&&SplitResizeKey(w))return 0;if(w==VK_ESCAPE&&tabDrag.tab){CancelTabDrag(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;}
+case WM_KEYDOWN:if(w==VK_ESCAPE&&chrome.sidebarPopover){SidebarPopover(false);return 0;}if(w==VK_ESCAPE&&chrome.sidebar&&sidebarHover.open&&!tabDrag.tab){sidebarHover.Close();Layout();return 0;} /* #127: Échap closes the column opened over the page */if(w==VK_ESCAPE&&sepDrag.active){CancelSeparator();return 0;}if(splitResize>=0&&SplitResizeKey(w))return 0;if(w==VK_ESCAPE&&tabDrag.tab){CancelTabDrag(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;}
     if(w==VK_ESCAPE&&outerDrag.active){OuterDragEnd(true);return 0;}
     if(w==VK_ESCAPE&&bandDrag.index>=0){BandDragEnd(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;}
     if(GetFocus()==h&&BandKey(w)){SyncAccessibility();return 0;}if(w==VK_TAB||((w==VK_RETURN||w==VK_SPACE)&&keyboardFocus)||((w==VK_LEFT||w==VK_RIGHT||(chrome.sidebar&&(w==VK_UP||w==VK_DOWN)))&&NativeChrome::IsTab(keyboardFocus)))keyboardModality=true;if(w==VK_TAB){auto order=chrome.FocusOrder();if(order.empty())return 0;auto it=std::find(order.begin(),order.end(),keyboardFocus);int index=it==order.end()?-1:(int)(it-order.begin());index=it==order.end()?(GetKeyState(VK_SHIFT)<0?(int)order.size()-1:0):(index+(GetKeyState(VK_SHIFT)<0?-1:1)+(int)order.size())%(int)order.size();keyboardFocus=order[index];InvalidateRect(h,nullptr,FALSE);return 0;}if((w==VK_RETURN||w==VK_SPACE)&&keyboardFocus){if(NativeChrome::IsClose(keyboardFocus))CloseAt(NativeChrome::TabIndex(keyboardFocus));else if(NativeChrome::IsTab(keyboardFocus)){Select(NativeChrome::TabIndex(keyboardFocus));SetFocus(h);}else Command(keyboardFocus);return 0;}
