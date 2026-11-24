@@ -96,7 +96,6 @@ svg.i { display: block; flex-shrink: 0; }
 .sendw.tip-on:not(.no-tip) .tip, .sendw:not(.no-tip):has(.send:focus-visible) .tip { opacity: 1; transform: none; }
 @media (prefers-reduced-motion: reduce) { .sendw .tip { transform: none; } }
 :root.reduce-motion .sendw .tip { transform: none; }
-/* « Gardé en annotation » (B 1.6): the user's side, quieter than a bubble — dashed hairline, no fill */
 @media (prefers-reduced-motion: reduce) { .gauge .tip, .gauge:focus-visible .tip { transform: translate(-50%, 0); } .gauge .arc { transition: none; } }
 .hd-btn { width: 28px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .hd-btn svg { opacity: .7; width: 15px; height: 15px; }

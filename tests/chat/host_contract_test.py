@@ -63,28 +63,23 @@ order = [ready.find(x) for x in ('Send("hello"', 'SendLayout(', 'SendState();', 
 check(ready and all(p >= 0 for p in order) and order == sorted(order),
       'C1: « ready » sends hello, layout, state, thread, commands, queue — in that order, none left in a comment', order)
 
-turn = code('chat-host-turn.h'); batch = code('chat-host-batch.h'); comment = code('chat-comment.h')
+turn = code('chat-host-turn.h'); comment = code('chat-comment.h')
 
 # C2: a conversation shown « aside » while nothing runs becomes the engine's before anything is sent from it, and at the
 # end of a turn when nothing waits for another conversation
 soq = block_after(ui, 'void SendOrQueue(')
 check(0 <= soq.find('TakeShownAside()') < soq.find('StartTurn('), 'C2: SendOrQueue takes the conversation shown aside before starting a turn')
 check('TakeShownAside()' in block_after(turn, 'void ProcessQueue() {'), 'C2: the end of a turn (ProcessQueue, nothing queued) gives the engine to the conversation shown')
-check('TakeShownAside()' in block_after(batch, 'void StartBatchTurn('), 'C2: a batch sent from a bubble aside goes to its conversation')
-check('TakeShownAside()' in block_after(ui, 'void KeepAnnotation('), 'C2: Ctrl+Entrée in a bubble aside keeps the line in its conversation')
 check('SwitchEngineTo(' in block_after(comment, 'bool TakeShownAside()'), 'C2: by the same path as a queued message (SwitchEngineTo)')
 
 # C3: an element not found never closes the bubble while its conversation works or waits (a turn, an authorization, a
-# queued message); it stays at its last place and follows the element again if it comes back. Opened from the
-# launcher's history (element gone), the bubble follows no selector: it cannot close itself
+# queued message); it stays at its last place and follows the element again if it comes back.
 on_anchor = block_after(comment, 'void OnAnchor(')
 gone = block_after(on_anchor, 'if (e.gone)')
 check('BubbleBusy()' in gone and gone.find('BubbleBusy()') < gone.find('CloseBubble('), 'C3: « gone » closes only when nothing works or waits for this conversation', gone[:160])
 check('bubble.lost' in on_anchor, 'C3: an element found again is followed again (bubble.lost)')
 busy = block_after(comment, 'bool BubbleBusy()')
 check(all(x in busy for x in ('turn.active', 'waitingPermissions', 'HasQueued(')), 'C3: busy = a turn of its conversation, an authorization waiting, or a message queued for it')
-check('bubble.noFollow' in block_after(comment, 'void FollowBubbleElement(bool current) {') and 'noFollow = true' in block_after(comment, 'bool OpenFromHistory(const std::wstring& id) {'),
-      'C3: a conversation opened from the history follows no element (it used to close at once)')
 
 # E2 / M9 (coordinator): the model, the effort and the mode chosen are remembered per site and given to EVERY new session
 apply = block_after(turn, 'void ApplyDefaults() {')
@@ -136,7 +131,7 @@ keep_plan = block_after(turn, 'void KeepModeAfterPlan() {')
 check(all(x in keep_plan for x in ('turn.planLaunched', 'ChatOptions::ModeAfterPlan(true, mv.current', 'RememberSetting(&ChatStore::Project::mode, kept)', 'std::none_of(mv.list')), 'M: the mode the agent goes to after its plan is accepted is remembered for the site (only a mode the chat offers)')
 events = block_after(turn, 'void OnEvent(const Acp::Event& e) {')
 check('info.modes = e.modes; KeepModeAfterPlan(); SendState();' in events and 'info.options = e.configOptions; KeepModeAfterPlan(); SendState();' in events, 'M: …whether the agent says it as a mode or as an option (Codex)')
-start_turn = block_after(turn, 'void StartTurn(const std::string& text, const std::vector<std::string>& elementIds, const std::vector<std::string>& attachmentIds, bool batch) {')
+start_turn = block_after(turn, 'void StartTurn(const std::string& text, const std::vector<std::string>& elementIds, const std::vector<std::string>& attachmentIds) {')
 check(0 <= start_turn.find('GiveOwedChoices();') < start_turn.find('EnsureSession('), 'M: a choice still owed is given before the next prompt of that session (what the composer shows is what the message runs with)')
 check('ChoiceForNewSession(' in block_after(turn, 'std::string WantedMode('), 'M9: the mode shown before the session (R28) is the one it will get')
 
@@ -215,7 +210,6 @@ check('anchorSelector.clear()' in forget and 'anchorElements.erase(' in forget a
 # M7: messages of a bubble shown aside are resolved on ITS conversation
 check('ShownItems()' in ui[ui.find('if (type == "retry")'):][:500], 'M7: « Réessayer » takes the message of the conversation shown')
 check('ShownItems()' in block_after(turn, 'void ViewChanges(') and 'CheckpointOf(' in block_after(turn, 'void ViewChanges('), 'M7: the changes of a turn of the conversation shown')
-check('aside.on' in block_after(ui, 'void KeepAnnotation('), 'M7: Ctrl+Entrée in a bubble aside keeps the line in its conversation')
 # M8: the modes are cached with the options (the mode button is there from the first opening)
 check('"modes"' in block_after(ui, 'void SaveOptionsCache() {') and '"modes"' in block_after(ui, 'void LoadOptionsCache() {'), 'M8: the modes are cached and read back')
 # M14: a held message never waits forever (2 s, or the page reloaded), and a second one does not erase the first
@@ -366,6 +360,62 @@ check(0 <= at < place.find('if (!bubble.anchor.set) {') and all(x in place[max(0
       '#130 C: PlaceBubble slides a bubble grown past the bottom up along its element before choosing its anchor — not while scrolling, not resized by hand')
 check('BubbleMarginCss = 8' in consts and '2 * BubbleMarginCss' in block_after(comment, 'void PlaceBubble(bool scrolling) {'),
       '#130 C: 8 px from the page area\'s edges; the height offered is at most the page area - 16 px')
+
+# ---------------------------------------------------------------- lot R (2026-11-24): the old annotation system is gone
+def line_of(text, marker):
+    at = text.find(marker)
+    if at < 0:
+        return ''
+    end = text.find('\n', at)
+    return text[at:end if end >= 0 else len(text)]
+
+
+host_all = '\n'.join(code(n) for n in ('chat-host.h', 'chat-host-ui.h', 'chat-host-turn.h', 'chat-comment.h', 'chat-bubble.h', 'annotation-mode.h', 'annotation-ui.h'))
+page_all = '\n'.join((ROOT / 'assets' / 'chat-panel' / n).read_text(encoding='utf-8') for n in ('panel.js', 'panel.css', 'dev-host.js'))
+gone_host = ('PoseBatch', 'StartBatchTurn', 'BatchItem', 'composerBatch', 'activeBatch', 'annotations.batch', 'annotations.status', 'pendingAnnotations', 'chat-batch.h', 'chat-host-batch.h',
+             'KeepAnnotation', 'annotation.kept', 'AskFromNote', 'NotePopover', 'note.Show', 'AUI::Launcher', 'launcher.', 'LauncherSync', 'LoadHistory', 'OpenHistory', 'CommentHistory',
+             'OpenFromHistory', 'AnnotateHistoryCommand', 'AnnotateMarkdownItem', 'OnSubmit', 'ShowCardFor', 'RefreshStatus')
+left = [w for w in gone_host if w in host_all]
+check(not left, 'lot R (O7 and the removal): the host names no batch, no « garder en annotation », no note panel, no launcher, no card, no annotation history', left)
+gone_page = ('annotations.batch', 'annotations.status', 'annotation.show', 'annotations.request', 'pendingAnnotations', 'renderBatch', 'batch-row', 'ann-card', 'annotation.kept', 'Garder en annotation',
+             'Gardé en annotation', 'post("annotate"', 'Traiter ')
+left = [w for w in gone_page if w in page_all]
+check(not left, 'lot R: the page of the chat (panel.js, panel.css, dev-host.js) names no batch and no « garder en annotation »', left)
+check(all(not (SRC / n).exists() for n in ('chat-batch.h', 'chat-host-batch.h', 'annotation-launcher.h', 'annotation-history.h', 'annotation-note.h', 'annotation-problem.h')),
+      'lot R: the files of the batch, the launcher, the history and the note are deleted')
+mode = code('annotation-mode.h')
+on_select = block_after(mode, 'void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {')
+check('Chat::TakeSelection(' in on_select and 'Resume(!commentFirst);' in on_select and 'note' not in on_select.replace('annotation', '').lower().replace('notes', ''),
+      'lot R: a selection goes to the chat or nowhere (the picker resumes): no other surface opens')
+main_cpp = (SRC / 'main.cpp').read_text(encoding='utf-8')
+check("key=='H'&&Annotation" not in main_cpp and 'AnnotateHistoryCommand' not in main_cpp and 'key_ctrl_shift_h' not in (SRC / 'i18n-catalog.inc').read_text(encoding='utf-8'),
+      'lot R: Ctrl+Maj+H is no longer a shortcut of the browser (nor a text of the catalog)')
+# decision A (O12): the chat on a local file and in a private window
+ask = line_of(ui, 'bool AskAvailable(const std::shared_ptr<Tab>& t) {')
+check('ChatLocal::SiteOf(' in ask and '.file' not in ask and '!privateWindow || !ChatRoot().empty()' in ask, 'decision A: the chat is available on a local file, and in a private window once its own folder exists', ask)
+check('privateWindow ? Ann::PrivateData() : Ann::DataRoot()' in line_of(host, 'std::wstring ChatRoot() {') and 'ChatFilesRoot()' in line_of(host, 'ChatStore::History& History() {')
+      and 'ChatFilesRoot()' in line_of(host, 'std::wstring ProjectsFile() {') and 'ChatFilesRoot()' in line_of(turn, 'std::shared_ptr<CS::Store> Snapshots() {'),
+      'decision A: in a private window the conversations, the site memory and the snapshots live in that window\'s own folder (erased with its ledger)')
+wa = block_after(turn, 'void WriteAnnotations(std::vector<Element>& elements, const std::string& note) {')
+check(0 <= wa.find('privateWindow && !Ann::RecordPrivate(a)') < wa.find('Ann::Store().WriteAnnotation('), 'decision A: in a private window an element is listed in the ledger before it is stored (no line, nothing stored)')
+mss = block_after(turn, 'void StartSession() {')
+check(0 <= mss.find('if (!site.file) {') < mss.find('"--site", site.origin'), 'decision A (security): a local file\'s session never gets the annotation bridge (it could not be restricted to a site)')
+df = block_after(ui, 'void DetectFolder() {')
+check(all(x in df for x in ('if (site.file) {', 'ChatFolder::detail::Refused(dir)', 'ChatFolder::detail::TooWide(dir)', 'FolderDecided(suggestion.sure, suggestion.doubt)')) and 'Parent(' not in df[:df.find('ChatFolder::Detect(')],
+      'decision A (security): a local file\'s project folder is its own folder, never one above; a wide or refused folder is asked, never used silently')
+check('SiteOf(' in line_of(comment, 'std::string ModeOrigin() {') and 'ChatLocal::Classify(' not in ui.replace('ChatLocal::Classify(U8(t->uri)).label', ''),
+      'decision A: the host reads a page\'s site through ChatLocal::SiteOf everywhere (a file\'s folder)')
+# the chat opens with the mode in « Panneau »
+me = line_of(ui, 'void ModeEntered() {')
+oas = block_after(ui, 'void OpenAtModeStart() {')
+check('else OpenAtModeStart();' in me and 'CommentLayout()' in oas and 'quietOpening = true; OpenPanel();' in oas and 'openedByMode = true' in oas,
+      'lot R: in « Panneau » the panel opens with the mode (never in « Commentaire »), quietly')
+op = block_after(ui, 'void OpenPanel() {')
+check('if (quietOpening) quietOpening = false;' in op and 'if (quietOpening && !BubbleOpen()) quietOpening = false;' in block_after(ui, 'if (type == "ready")'),
+      'lot R: opened by the mode, the panel takes no keyboard focus (neither at once nor when its page is ready)')
+act = block_after(mode, 'void Activate(const Start& st) {')
+check('first.chatOpen = Chat::AskedFor();' in act and 'if (Chat::AskedFor()) {' in act and 'return Open() && !openedByMode;' in line_of(ui, 'bool AskedFor() {'),
+      'lot R: the launch rules (tutorial, « Connecter un agent ») still see « no chat asked » when the mode opened the panel itself')
 
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')

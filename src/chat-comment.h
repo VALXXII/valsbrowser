@@ -43,7 +43,6 @@ struct BubbleState {
     int roomAreaH = 0;                                               // M15: the page area's height the offered room was measured with
     bool frameKept = false; ChatBubble::Rect frameRel;              // E4: the window of this opening, relative to the surface's fixed corner
     bool holdForMeasure = false;                                     // H2 6e60162: the click's rectangle was measured in another viewport — shown at the page's first measure
-    bool noFollow = false;                                           // C3: opened from the history (its element is gone): no selector followed
     bool lost = false;                                               // C3: its element is not found while its conversation works: kept at its last place
     bool measured = false;                                           // R44: the page measured the element since this opening (the click's rectangle was only a first guess)
     bool warm = false;                                               // R18: the WebView is in the window, rendering, the window shown with an empty region
@@ -75,7 +74,7 @@ void ScriptReady() {   // at the first injection AND after every reload (annotat
     const auto r = ChatBubble::OnScriptIn(CommentLayout(), bubble.open);
     if (r.marks && !bubble.open) WarmBubble();   // R18: the bubble ready before the first click
     if (r.marks) SyncMarks();
-    if (bubble.open && !bubble.noFollow) if (auto t = ChatTab()) {   // F8 (review R): another page of the site now — the bubble's conversation belongs to its own page
+    if (bubble.open) if (auto t = ChatTab()) {   // F8 (review R): another page of the site now — the bubble's conversation belongs to its own page
         std::string page; if (const auto* h = AnchoredOf(bubble.conv)) page = h->anchorPage;
         else if (convo.data.head.id == bubble.conv) page = convo.data.head.anchorPage; else if (aside.on && aside.c.data.head.id == bubble.conv) page = aside.c.data.head.anchorPage;
         if (!page.empty() && page != ChatBubble::PageKey(U8(t->uri))) { Diag(L"another page is shown: the bubble of the previous one closes"); CloseBubble(false); return; }   // i18n-exempt: log detail
@@ -631,7 +630,7 @@ void OpenBubble(const std::string& conv, const RECT* element, const std::string&
     if (!again) {   // R44: the pointer is still where the user clicked
         POINT c{}; bubble.click = ChatBubble::Point{};
         if (element && GetCursorPos(&c) && PtInRect(element, c)) bubble.click = ChatBubble::Point{c.x, c.y, true};
-        bubble.fromBottom = false; bubble.surface = ChatBubble::Rect{}; bubble.measured = false; bubble.noFollow = false; bubble.lost = false; bubble.frameKept = false;
+        bubble.fromBottom = false; bubble.surface = ChatBubble::Rect{}; bubble.measured = false; bubble.lost = false; bubble.frameKept = false;
     }
     if (!again) { bubble.side = ChatBubble::Side::Right; bubble.h = 0; bubble.over = bubble.inset = ChatBubble::Edges{}; bubble.sizeW = bubble.sizeH = -1; bubble.anchor = ChatBubble::Anchor{}; bubble.endAsked = false; bubble.roomCss = 0; bubble.resized = false; bubble.baseHCss = 0; bubble.resizeMax = ChatBubble::ResizeMax{}; }
     stats = OpenStats{}; stats.requestedAt = Ann::NowMs();
@@ -685,7 +684,6 @@ void FinishOpening() {
 }
 void FollowBubbleElement(bool current) {
     auto t = ChatTab(); if (!t) t = Active(); if (!t || !bubble.open) return;
-    if (bubble.noFollow) { Diag(L"the bubble was opened from the history: no element followed"); return; }   // C3   // i18n-exempt: log detail
     std::string sel = bubble.selector;
     if (sel.empty()) if (const auto* h = AnchoredOf(bubble.conv)) sel = h->anchorSelector;
     if (sel.empty() && convo.data.head.id == bubble.conv) sel = convo.data.head.anchorSelector;
