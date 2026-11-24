@@ -150,8 +150,10 @@ inline void GrainBackdrop(Chrome& c, const Onboarding::Shaders::Layer& grain, co
 // 305 wide at (nx, ny), #171717, radius 16, padding 12, gap 12: a text block `textH` high (drawn by the caller at
 // (nx + 12, ny + 12), 281 wide), then the footer row (28): plus 14 at 50 %, shield 13, Claude 14 + « Opus 5.5 » 12/16 500 +
 // « Moyen » 12/16 400 at 50 %, send 28 × 28 in the accent (radius 8, arrow 14). `sendAlpha`: the send button's own
-// opacity (the tutorial's A3 dims it while nothing is typed). Returns the card's height.
-inline float DemoNote(Chrome& c, K::Glyphs& glyphs, float nx, float ny, float textH, K::Rgb8 accent, float alpha, float sendAlpha = 1) {
+// opacity (the tutorial's A3 dims it while nothing is typed). `ring`: the send button's highlight, under it (the tutorial's
+// A3, Paper 1S33-0 « box-shadow: 0 0 0 3px #0AF4FF59 »: 3 outside the button, radius 11); none by default (board 6).
+// Returns the card's height.
+inline float DemoNote(Chrome& c, K::Glyphs& glyphs, float nx, float ny, float textH, K::Rgb8 accent, float alpha, float sendAlpha = 1, D2D1_COLOR_F ring = {0, 0, 0, 0}) {
     auto box = [](float x, float y, float w, float h) { return D2D1_RECT_F{x, y, x + w, y + h}; };
     const float height = 12 + textH + 12 + 28 + 12;
     K::Fill(c, box(nx, ny, 305, height), 16, K::Col(K::Token::canvas, alpha));
@@ -164,6 +166,7 @@ inline float DemoNote(Chrome& c, K::Glyphs& glyphs, float nx, float ny, float te
     glyphs.Fill(c, K::Path::claude, box(chip + 6, fy + 2 + 5, 14, 14), 18.666f, K::Col(0xD97757, alpha), .667f, 1.6f);
     K::Text(c, name, {chip + 24, fy + 5, chip + 24 + wn + 8, fy + 21}, model, PopupKit::White(.9f * alpha));       // 1CIF-0 / 1CIH-0: measured one row above the 12/16 rule
     K::Text(c, level, {chip + 28 + wn, fy + 5, chip + 28 + wn + wl + 8, fy + 21}, effort, PopupKit::White(.5f * alpha));
+    if (ring.a > 0) K::Border(c, box(send - 3, fy - 3, 34, 34), 11, 3, ring);
     K::Fill(c, box(send, fy, 28, 28), 8, K::Col(accent, alpha * sendAlpha));
     glyphs.Fill(c, K::Path::arrowUp, box(send + 7, fy + 7, 14, 14), 256, K::Col(K::Token::text, alpha * sendAlpha));
     return height;

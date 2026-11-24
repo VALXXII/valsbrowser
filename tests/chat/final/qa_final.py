@@ -48,6 +48,39 @@ ELEMENTS = ['section.hero', 'div.plans', 'a.btn-primary', 'h1.hero-title', 'div.
 BIG = ['section.hero', 'div.plans']
 
 
+# #130, variant C (Paper « #130 Bulle sans place dessous · C règles (validées) », design/annotation-plan-2026-11-24.md §4.4).
+# Rules 1 to 4 are in the product (PR #133) and asserted. The others are asserted once their lot is done — the lot flips
+# its flag here (tests/annotation-general/coverage.json keeps a gap for each until then):
+C130_LOT1_RULES = True      # rules 7 to 10 (lot 1, coded): no page auto-scroll, Refuser / Autoriser in the footer, no free side, never over the element
+C130_SCROLL_RULES = False   # rules 5, 6 and 11 (lot 4): the place recomputed while the page scrolls, a 120 ms slide
+
+
+def scroll_y():
+    '''The site page's vertical scroll (CSS px), None when it cannot be read.'''
+    try:
+        return float(page('window.scrollY'))
+    except Exception:
+        return None
+
+
+def window_at(point):
+    '''O3 (« clic sans bulle »): the window a click at this screen point really reaches — its class, whether it is one of
+    this browser's, and the page element under it. A click that opened nothing says where it went.'''
+    try:
+        u32.WindowFromPoint.restype = W.HWND
+        h = u32.WindowFromPoint(W.POINT(int(point[0]), int(point[1])))
+        cls = ctypes.create_unicode_buffer(128); u32.GetClassNameW(h, cls, 128)
+        root_h = u32.GetAncestor(h, 2); rcls = ctypes.create_unicode_buffer(128); u32.GetClassNameW(root_h, rcls, 128)   # GA_ROOT
+        fg = u32.GetForegroundWindow(); fcls = ctypes.create_unicode_buffer(128); u32.GetClassNameW(fg, fcls, 128)
+        try:
+            el = element_at(point)
+        except Exception:
+            el = None
+        return {'window': cls.value, 'topWindow': rcls.value, 'foreground': fcls.value, 'pageElementBox': el}
+    except Exception as e:
+        return {'error': str(e)}
+
+
 def fake_agent_exe() -> pathlib.Path:
     p = pathlib.Path(os.environ['FINAL_FAKE_AGENT']) if os.environ.get('FINAL_FAKE_AGENT') else C.TOOLS / 'fake-acp-agent.exe'
     return p if p.is_absolute() else C.ROOT / p
@@ -684,6 +717,18 @@ def leftover_from_app():
     return [l for l in r.stdout.splitlines() if l.strip()]
 
 
+def holds(text, token):
+    '''The token is in the text AS A WHOLE: « jt1x1 » is not in « … jt1x13 … ». The monkey numbers its messages (jt<seed>x<n>): from
+    the 10th on, a plain `in` found the 1st one's token in every conversation (real-window monkey of 24 Nov 2026, seed 1: 8
+    openings said to show « another conversation's message » — the test's, not the product's).
+    Only a DIGIT right after the token is refused: chat_state() reads document.body.textContent, where neighbouring elements
+    are glued without a space (« …jeton1x435Revenir »), so a letter on either side is normal (20:00 release, 24 Nov).'''
+    return bool(token) and re.search(re.escape(token) + r'(?![0-9])', text or '') is not None
+
+
+assert holds('vrai-lent jt1x13 et jt1x14', 'jt1x13') and not holds('vrai-lent jt1x13 et jt1x14', 'jt1x1') and holds('« jt1x1 »', 'jt1x1')
+
+
 # ---------------------------------------------------------------- the chat, through real input
 def chat_point(selector=None, text=None, kind='bubble'):
     """Screen point of a control of the chat page (by selector, or by its visible text / accessible name)."""
@@ -795,9 +840,9 @@ def close_menus(kind='bubble'):
 
 
 def answer_permission(label='Autoriser', kind='bubble', after=0):
-    # a card below the visible area: the site's page scrolls softly once (H1) — click after that scroll
-    if wait_log(r'a card waits for an action below the visible area', after, 1.5):
-        time.sleep(0.6)
+    # #130 C rule 7: the page is no longer scrolled to show the card (the bubble is whole, its buttons in its foot). The card
+    # only takes a click 600 ms after it appeared (SEC-23): waited for here, as a user reading it would
+    time.sleep(0.8)
     for _ in range(16):
         real_click_chat(text=label, kind=kind, tries=2)
         if wait_log(r'CHAT permission answered', after, 1):
@@ -817,6 +862,7 @@ class Model:
     def __init__(self):
         self.layout = 'comment'; self.open = None; self.conv = {}; self.mode = None; self.model = None
         self.anchor = None; self.size = None; self.hidden_by_other = False; self.scroll_moved = False
+        self.scroll = None   # #130: the page's scroll when the bubble was last placed (opening, new anchor)
         self.panel_marked = set()   # elements picked in the panel then sent from it: they get a mark too
         self.unknown = False        # a bubble of an element the model does not know (a container selected by a click « elsewhere »)
 
@@ -842,24 +888,38 @@ class Invariants:
         st = chat_state('bubble'); sf = bubble_surface(st); pg = page_area()
         inside = sf is not None and sf[0] >= pg[0] - 1 and sf[1] >= pg[1] - 1 and sf[2] <= pg[2] + 1 and sf[3] <= pg[3] + 1
         sc = st.get('scroller') or {}
-        natural = bool(sc) and (sc['sh'] <= sc['ch'] + 2 or (sf and (sf[3] - sf[1]) / st['dpr'] >= 518))
+        cap = min(520, (pg[3] - pg[1]) / st['dpr'] - 16) if st.get('dpr') else 520   # #130 C rule 4: at most the page area - 16 px
+        if mark is not None:   # #130 C rule 10: below / above an element with no free side, the height its side holds (the host says it at each opening)
+            offered = re.findall(r'CHAT bubble: height offered (\d+) CSS px', C.log_text()[mark:])
+            if offered:
+                cap = min(cap, int(offered[-1]))
+        natural = bool(sc) and (sc['sh'] <= sc['ch'] + 2 or (sf and (sf[3] - sf[1]) / st['dpr'] >= cap - 2))
         token = self.m.conv.get(sel)
         others = [t for s, t in self.m.conv.items() if s != sel and t]
         text = st.get('text', '')
         t1 = time.time()
-        while token and token not in text and time.time() - t1 < 1.0:   # the older exchanges are drawn after the first image (P, 176e603)
+        while token and not holds(text, token) and time.time() - t1 < 1.0:   # the older exchanges are drawn after the first image (P, 176e603)
             time.sleep(0.1); text = (chat_state('bubble').get('text') or '')
-        right_conv = (token in text if token else True) and not any(t in text for t in others)
-        d = {'ms': ms, 'surface': sf, 'page': pg, 'scroller': sc, 'token': token, 'othersShown': [t for t in others if t in text]}
-        self.r.step(f'{where} · click on {sel}: the bubble is entirely visible (page area), natural height, < 150 ms, the right conversation',
-                    ms is not None and ms < 150 and inside and natural and right_conv, d, {'action': where})
+        right_conv = (holds(text, token) if token else True) and not any(holds(text, t) for t in others)   # whole tokens: jt1x1 is not in jt1x13
+        d = {'ms': ms, 'surface': sf, 'page': pg, 'scroller': sc, 'token': token, 'othersShown': [t for t in others if holds(text, t)]}
+        if ms is None and point:   # O3: no bubble came — where the click went (the window under it, the foreground, the page element)
+            d['underPoint'] = window_at(point); d['point'] = [int(point[0]), int(point[1])]
+        # decision 5 (24 Nov 2026): « in less than 150 ms » is an objective (reported); the bubble on screen within the wait,
+        # whole, at its height, with the right conversation, is what fails
+        self.r.step(f'{where} · click on {sel}: the bubble is entirely visible (page area), at its height (natural, or the page area - 16 px), the right conversation',
+                    ms is not None and inside and natural and right_conv, d, {'action': where})
+        C.objective('ouverture-150ms', ms is not None and ms < 150, ms, f'{where} · click on {sel}')
         if mark is not None:
             n = len(re.findall(r'conversation of an element reopened', C.log_text()[mark:]))
             if n > 1:
                 self.r.step(f'{where} · invariant: one « conversation of an element reopened » per click', False, n, {'action': where})
         self.m.open = sel; self.m.hidden_by_other = False; self.close_at = log_mark(); self.m.unknown = False
-        if ms is None:   # no bubble came (reported above): nothing open, no anchor — no cascade of follow-up failures
-            self.m.open = None; self.m.anchor = None; return
+        if ms is None:   # no bubble came (reported above, once): no anchor — no cascade of follow-up failures
+            # the bubble of BEFORE may rightly still be on screen when the click never opened anything (monkey seed 2 on ae51111:
+            # #102, the click was taken by another browser's window; #261, O3): a bubble the model cannot place — it said
+            # « closed -> no window » at each of the 6 next actions, twice
+            still, _ = bubble_shown()
+            self.m.open = None; self.m.anchor = None; self.m.unknown = bool(still); return
         el = element_screen(sel)
         if sel in EMBEDDED_BOX:   # the block clicked inside the iframe / the shadow root is the element (its host is only the anchor)
             r = page(EMBEDDED_BOX[sel]); pg0 = page_area(); kk = dpr()
@@ -868,6 +928,7 @@ class Invariants:
                 mark = None
         self.m.anchor = (sf[0] - el[0], sf[1] - el[1], sf[3] - el[3]) if sf else None
         self.m.size = (sf[2] - sf[0], sf[3] - sf[1]) if sf else None
+        self.m.scroll = scroll_y()
         if sf and mark is not None:
             hit = element_at(point) if point else None   # the element the click really selects (a child of `sel` may be under the point)
             self.distance(sel, hit or el, sf, st.get('dpr', 1), mark, where)
@@ -882,7 +943,7 @@ class Invariants:
         how = found[-1]; pg = page_area(); vis = intersect(el, pg) or el
         if how.startswith('inside') and re.search(r'bubble over the element slid -?\d+ px', seg):
             return   # over an element smaller than the bubble, slid to be whole in the visible area (H1, e26c39c): the whole-bubble check is what holds
-        slid = re.search(r'bubble slid -?\d+ px along its side to be fully visible', seg)   # no side holds it whole: the alignment gives way (H1)
+        slid = re.search(r'bubble slid -?\d+ px along its side to be fully visible|slid along it to be whole', seg)   # no side holds it whole: the alignment gives way (H1, #130 C)
         css = lambda v: round(v / k, 1)
         if how.startswith('right'):
             got = {'gap': css(sf[0] - el[2]), 'top': css(sf[1] - el[1])}; want = {'gap': 12, 'top': -4}
@@ -895,7 +956,7 @@ class Invariants:
         else:
             got = {'x': css(sf[0] - vis[0]) if 'left corner' in how else css(vis[2] - sf[2]),
                    'y': css(sf[1] - vis[1]) if 'top ' in how else css(vis[3] - sf[3])}
-            want = {'x': 12, 'y': 12}
+            want = {'x': 8, 'y': 8}   # #130 C rule 9: inside the element, the bottom right corner, 8 px from its edges
         bad = {key: (got[key], want[key]) for key in want if abs(got[key] - want[key]) > 2 and not (slid and key in ('top', 'left'))}
         if bad:
             frame = [l for l in seg.splitlines() if 'bubble' in l and ('placed' in l or 'frame' in l or 'shown' in l)][-6:]
@@ -908,12 +969,13 @@ class Invariants:
             sf = bubble_surface(); el = element_screen(self.m.open)
             self.m.anchor = (sf[0] - el[0], sf[1] - el[1], sf[3] - el[3]) if sf else None
             self.m.size = (sf[2] - sf[0], sf[3] - sf[1]) if sf else None
+            self.m.scroll = scroll_y()
 
     def sent(self, kind, token, where):
         """After a send: the user's message is in the bubble (or the panel) it was sent from."""
         t0 = time.time(); ok = False
         while time.time() - t0 < 3 and not ok:
-            ok = token in (chat_state(kind).get('text') or ''); time.sleep(0.1)
+            ok = holds(chat_state(kind).get('text') or '', token); time.sleep(0.1)
         if not ok:
             self.r.step(f'{where} · invariant: the message sent is shown where it was sent ({kind})', False, token, {'action': where})
         return ok
@@ -941,7 +1003,8 @@ class Invariants:
                 try:   # the element scrolled away with its bubble: nothing to see, nothing to check
                     el0 = element_screen(self.m.open); a0 = self.m.anchor
                     guess = (el0[0] + a0[0], el0[1] + a0[1], el0[0] + a0[0] + self.m.size[0], el0[1] + a0[1] + self.m.size[1])
-                    if intersect(guess, page_area()) is None:
+                    part = intersect(guess, page_area())   # what of it is still in the page area (rule 6: it leaves with its element)
+                    if part is None or part[2] - part[0] <= 40 or part[3] - part[1] <= 30:   # a sliver: bubble_shown() asks for more than 40 x 30 px
                         expect = False
                 except Exception:
                     pass
@@ -977,9 +1040,16 @@ class Invariants:
                     if sf and el and self.m.anchor and not wheel_moved:
                         a = (sf[0] - el[0], sf[1] - el[1], sf[3] - el[3])
                         if abs(a[0] - self.m.anchor[0]) > 2 or (abs(a[1] - self.m.anchor[1]) > 2 and abs(a[2] - self.m.anchor[2]) > 2):
-                            if not re.search(r'the bubble at the end of the document moves up once', C.log_text()[self.log_at:]):
+                            # #130 wins over R29: a bubble that grew past the bottom slid up along its element (same side) — not a defect
+                            if not re.search(r'the bubble at the end of the document moves up once|slid up along its element|it goes (above|below) it \(#130 C rule 10\)', C.log_text()[self.log_at:]):
                                 broken['stuck to its element (±2 px)'] = {'now': a, 'at opening': self.m.anchor, 'surface': sf, 'element': el}
                             self.rebase()
+                    # #130 (blocking, « bulle-entiere »): its element whole on screen and the page not scrolled since the bubble
+                    # was placed — the bubble is whole in the page area. After a scroll: rule 5, asserted from lot 4.
+                    if sf and el and not wheel_moved and el[0] >= pg[0] - 1 and el[1] >= pg[1] - 1 and el[2] <= pg[2] + 1 and el[3] <= pg[3] + 1:
+                        sy = scroll_y(); still = sy is not None and self.m.scroll is not None and abs(sy - self.m.scroll) < 1
+                        if (still or C130_SCROLL_RULES) and (sf[0] < pg[0] - 1 or sf[1] < pg[1] - 1 or sf[2] > pg[2] + 1 or sf[3] > pg[3] + 1):
+                            broken['the bubble is whole in the page area (#130 C)'] = {'surface': sf, 'page area': pg, 'element': el, 'scrolledSincePlaced': not still}
                     self._labels(st, broken)
             elif not self.m.open and shown:
                 broken['closed -> no window'] = {'region': region}
@@ -1042,8 +1112,14 @@ class Invariants:
             # again (a walk cut once while the tree changed) or still short (a tree cut for a screen reader too)
             short = self.uia.ask(f'list {Q.our_pid()}'); time.sleep(0.5); again, _ = self.uia.probe()
             n2 = next((x['n'] for x in again if x.get('cls') == 'LisiereBrowser'), -1) if isinstance(again, list) else -1
-            broken['UI Automation tree of the main window complete'] = {'elements': main[0]['n'], 'at start': self.uia_base, 'all windows': r,
-                                                                        'again after 0.5 s': n2, 'short walk': short}
+            # the 20:00 release's pass on ae51111 (#90: 32 of 113, then 151 half a second later, right after a change of layout):
+            # a walk cut ONCE while the tree changed is the reader's own (as chat_qa_uia_offscreen.py reads again) — what fails
+            # is a tree still short at the second walk (cut for a screen reader too)
+            if n2 < self.uia_base * 0.6:
+                broken['UI Automation tree of the main window complete'] = {'elements': main[0]['n'], 'at start': self.uia_base, 'all windows': r,
+                                                                            'again after 0.5 s': n2, 'short walk': short}
+            else:
+                print(f'NOTE UI Automation: a short walk ({main[0]["n"]} of {self.uia_base}), whole again 0.5 s later ({n2})', flush=True)
         if s > 15:
             broken['UI Automation answers in time'] = s
         chats = [x for x in r if x.get('cls', '').startswith('BrowserChat')]

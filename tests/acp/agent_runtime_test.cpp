@@ -17,6 +17,7 @@ namespace SJ = StrictJson;
 namespace {
 
 std::wstring g_agent, g_cli, g_tmp, g_fixtures;
+bool g_noConsole = false;   // --no-console: the one test that opens a visible console (the terminal sign-in) is skipped, and said
 
 std::string Bytes(const std::wstring& path) { return ReadFileText(path); }
 bool Copy(const std::wstring& from, const std::wstring& to) {
@@ -485,12 +486,18 @@ void TestFakeAgentHook() {
     if (terminal) {
         std::string why;
         CHECK(!AR::RunTerminalSignIn(env, AR::Agent::Claude, *preferred, &why).Started() && why == "not_terminal");
-        AR::SignIn signIn = AR::RunTerminalSignIn(env, AR::Agent::Claude, *terminal, &why);
-        CHECK(signIn.Started());
-        int code = -1;
-        CHECK(signIn.Wait(15000, &code) && code == 0 && Exists(auth));
-        CHECK(session.Start(o));
-        CHECK(started(result) && result.state == Acp::StartState::Ready);
+        if (g_noConsole) {
+            // The terminal sign-in runs the CLI in a console the user sees (CREATE_NEW_CONSOLE): a real window on the screen.
+            // Skipped outside the night run; the line below lets the runners count it as « not run », never as passed.
+            std::printf("SKIPPED terminal sign-in (it opens a visible console): replayed without --no-console\n");
+        } else {
+            AR::SignIn signIn = AR::RunTerminalSignIn(env, AR::Agent::Claude, *terminal, &why);
+            CHECK(signIn.Started());
+            int code = -1;
+            CHECK(signIn.Wait(15000, &code) && code == 0 && Exists(auth));
+            CHECK(session.Start(o));
+            CHECK(started(result) && result.state == Acp::StartState::Ready);
+        }
     }
     session.Dispose();
     CHECK(session.WaitStopped(10000));
@@ -665,7 +672,7 @@ void TestRealDownloads() {
 
 int wmain(int argc, wchar_t** argv) {
     if (argc < 5) {
-        std::printf("usage: agent_runtime_test <fake-acp-agent.exe> <fake-cli.exe> <tmp dir> <fixtures dir> [--network]\n");
+        std::printf("usage: agent_runtime_test <fake-acp-agent.exe> <fake-cli.exe> <tmp dir> <fixtures dir> [--network] [--no-console]\n");
         return 2;
     }
     SetConsoleOutputCP(CP_UTF8);
@@ -673,7 +680,12 @@ int wmain(int argc, wchar_t** argv) {
     g_cli = FullPath(argv[2]);
     g_tmp = FullPath(argv[3]);
     g_fixtures = FullPath(argv[4]);
-    const bool network = argc > 5 && std::wstring(argv[5]) == L"--network";
+    bool network = false;
+    for (int i = 5; i < argc; ++i) {
+        const std::wstring a = argv[i];
+        if (a == L"--network") network = true;
+        else if (a == L"--no-console") g_noConsole = true;
+    }
     RemoveTree(g_tmp);
     if (!MakeDirs(g_tmp) || !Exists(g_agent) || !Exists(g_cli) || !Exists(g_fixtures)) {
         std::printf("cannot prepare %s\n", Narrow(g_tmp).c_str());

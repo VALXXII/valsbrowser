@@ -1,0 +1,270 @@
+{
+ "off-w1462px.png": {
+  "profile plate": {
+   "diff_px": 0,
+   "max": 0,
+   "offset_px": [
+    6,
+    6
+   ],
+   "offset_dip": [
+    4.8,
+    4.8
+   ]
+  },
+  "tab": {
+   "diff_px": 348,
+   "max": 46,
+   "offset_px": [
+    6,
+    6
+   ],
+   "offset_dip": [
+    4.8,
+    4.8
+   ]
+  },
+  "+ button": {
+   "diff_px": 0,
+   "max": 0,
+   "offset_px": [
+    3,
+    4
+   ],
+   "offset_dip": [
+    2.4,
+    3.2
+   ]
+  },
+  "window buttons": {
+   "diff_px": 218,
+   "max": 60,
+   "offset_px": [
+    6,
+    6
+   ],
+   "offset_dip": [
+    4.8,
+    4.8
+   ]
+  },
+  "back/forward": {
+   "diff_px": 0,
+   "max": 0,
+   "offset_px": [
+    6,
+    6
+   ],
+   "offset_dip": [
+    4.8,
+    4.8
+   ]
+  },
+  "reload": {
+   "diff_px": 0,
+   "max": 0,
+   "offset_px": [
+    6,
+    6
+   ],
+   "offset_dip": [
+    4.8,
+    4.8
+   ]
+  },
+  "address field (left part)": {
+   "diff_px": 1180,
+   "max": 92,
+   "offset_px": [
+    6,
+    6
+   ],
+   "offset_dip": [
+    4.8,
+    4.8
+   ]
+  },
+  "address field (right end, link/star)": {
+   "diff_px": 250,
+   "max": 54,
+   "offset_px": [
+    7,
+    6
+   ],
+   "offset_dip": [
+    5.6,
+    4.8
+   ]
+  },
+  "right icons + separator + gear": {
+   "diff_px": 786,
+   "max": 58,
+   "offset_px": [
+    7,
+    6
+   ],
+   "offset_dip": [
+    5.6,
+    4.8
+   ]
+  },
+  "gap rows (y 38..42)": {
+   "diff_px": 0,
+   "max": 0,
+   "offset_px": [
+    3,
+    6
+   ],
+   "offset_dip": [
+    2.4,
+    4.8
+   ]
+  },
+  "bottom padding (y 76..80)": {
+   "diff_px": 0,
+   "max": 0,
+   "offset_px": [
+    3,
+    5
+   ],
+   "offset_dip": [
+    2.4,
+    4.0
+   ]
+  }
+ },
+ "off-w1463px.png": {
+  "profile plate": {
+   "diff_px": 0,
+   "max": 0,
+   "offset_px": [
+    6,
+    6
+   ],
+   "offset_dip": [
+    4.8,
+    4.8
+   ]
+  },
+  "tab": {
+   "diff_px": 348,
+   "max": 46,
+   "offset_px": [
+    6,
+    6
+   ],
+   "offset_dip": [
+    4.8,
+    4.8
+   ]
+  },
+  "+ button": {
+   "diff_px": 0,
+   "max": 0,
+   "offset_px": [
+    3,
+    4
+   ],
+   "offset_dip": [
+    2.4,
+    3.2
+   ]
+  },
+  "window buttons": {
+   "diff_px": 218,
+   "max": 60,
+   "offset_px": [
+    5,
+    6
+   ],
+   "offset_dip": [
+    4.0,
+    4.8
+   ]
+  },
+  "back/forward": {
+   "diff_px": 0,
+   "max": 0,
+   "offset_px": [
+    6,
+    6
+   ],
+   "offset_dip": [
+    4.8,
+    4.8
+   ]
+  },
+  "reload": {
+   "diff_px": 0,
+   "max": 0,
+   "offset_px": [
+    6,
+    6
+   ],
+   "offset_dip": [
+    4.8,
+    4.8
+   ]
+  },
+  "address field (left part)": {
+   "diff_px": 1180,
+   "max": 92,
+   "offset_px": [
+    6,
+    6
+   ],
+   "offset_dip": [
+    4.8,
+    4.8
+   ]
+  },
+  "address field (right end, link/star)": {
+   "diff_px": 250,
+   "max": 54,
+   "offset_px": [
+    6,
+    6
+   ],
+   "offset_dip": [
+    4.8,
+    4.8
+   ]
+  },
+  "right icons + separator + gear": {
+   "diff_px": 786,
+   "max": 58,
+   "offset_px": [
+    6,
+    6
+   ],
+   "offset_dip": [
+    4.8,
+    4.8
+   ]
+  },
+  "gap rows (y 38..42)": {
+   "diff_px": 0,
+   "max": 0,
+   "offset_px": [
+    3,
+    6
+   ],
+   "offset_dip": [
+    2.4,
+    4.8
+   ]
+  },
+  "bottom padding (y 76..80)": {
+   "diff_px": 0,
+   "max": 0,
+   "offset_px": [
+    3,
+    5
+   ],
+   "offset_dip": [
+    2.4,
+    4.0
+   ]
+  }
+ }
+}

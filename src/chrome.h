@@ -19,10 +19,12 @@
 #include "loading.h"
 #include "tab-motion.h"
 #include "address.h"
+#include "local-pill.h"
 #include "bookmarks-bar.h"
 #include "svg-path.h"
 #include "site-request.h"
 #include "emoji-text.h"
+#include "focus-mode.h"
 #include <set>
 #include <tuple>
 #include <cstring>
@@ -126,9 +128,10 @@ public:
         // Active panel ring (Paper 08): neutral, 1 DIP off the page, 2 DIP. After a click it is
         // discreet (white 10 %); reached by keyboard (F6, menu) it is the focus ring's 50 % (5.26:1).
         // The accent is kept for drop previews and manipulation, never a permanent frame.
-        // At an outer bottom corner the page is round (6 DIP): the ring follows it (8 on its centre line).
+        // At an outer bottom corner the page is round (6 DIP): the ring follows it (8 on its centre line). Mode Focus: the
+        // outer top corners too (the page's 6 DIP corners, 8 on the ring's centre line, 2 DIP off the page).
         if(split.ring){auto a=split.active;Color(1,keyboardModality?Design::Focus::keyboardOpacity:Design::Focus::pointerOpacity);
-            if(auto g=CornerBox({a.left-2,a.top-2,a.right+2,a.bottom+2},2,2,split.activeBottomRight?8.f:2.f,split.activeBottomLeft?8.f:2.f)){target->DrawGeometry(g,brush,2);g->Release();}}
+            if(auto g=CornerBox({a.left-2,a.top-2,a.right+2,a.bottom+2},split.activeTopLeft?8.f:2.f,split.activeTopRight?8.f:2.f,split.activeBottomRight?8.f:2.f,split.activeBottomLeft?8.f:2.f)){target->DrawGeometry(g,brush,2);g->Release();}}
         // Separator (Paper 08): at rest only the 4 DIP canvas gap, a thin neutral line. The
         // handle, 8 x 36 #2F2F2F fully rounded, appears while hovered, dragged or keyboard-focused
         // and overlaps both page edges by 2 DIP. Pages are child windows that cover the canvas,
@@ -469,11 +472,41 @@ public:
     // an outlined slot. `split` is painted on the canvas around the page windows.
     std::vector<int> tabGroups;int liftedIndex=-1,visibleTabGroup=0;
     std::vector<int> menuTargets;  // tabs a highlighted split-menu row designates (Paper V2: 1 DIP white 50 % outline)
-    struct SplitDecor{bool shown=false,ring=true;D2D1_RECT_F active{};std::vector<D2D1_RECT_F> rails;std::vector<int> railTabs;std::vector<D2D1_RECT_F> handles;int hotHandle=-1,focusedHandle=-1;bool paintHandles=true,activeBottomLeft=false,activeBottomRight=false;} split;
+    struct SplitDecor{bool shown=false,ring=true;D2D1_RECT_F active{};std::vector<D2D1_RECT_F> rails;std::vector<int> railTabs;std::vector<D2D1_RECT_F> handles;int hotHandle=-1,focusedHandle=-1;bool paintHandles=true,activeBottomLeft=false,activeBottomRight=false,activeTopLeft=false,activeTopRight=false;} split;
     UINT dpi=96;float width=1180,height=815;D2D1_RECT_F bar{},edit{};std::vector<Region> regions;
     // Fullscreen (F11 or a page's element): the page takes the whole window. Nothing of the chrome is drawn, hit,
     // focused, given a tooltip or exposed to UI Automation (all of these read `regions`); Paint only clears the canvas.
     bool contentOnly=false;
+    // Mode Focus (src/focus-mode.h, Paper p-U-0): the chrome floats in a panel over the top of the page. `width` is then
+    // the chrome's layout width (the client's minus FocusMode::layoutInset) and `clientWidth` the window's; `origin` is
+    // where chrome-local (0, 0) lands in client DIP and `panel` the panel's client rectangle at its slide position
+    // (bottom <= 0: off screen). Regions, `bar`, `edit` and every Design constant stay chrome-local: the host maps them
+    // with ToClient(), and Hit() / Local() take client DIP. Without `floating` the origin is (0, 0) and nothing changes.
+    bool floating=false;D2D1_POINT_2F origin{0,0};D2D1_RECT_F panel{};float clientWidth=0;
+    // The window paints the panel itself only while it is « live » (at rest, in the page windows' hole); while it slides,
+    // the host shows a picture of it (RenderPanel) in a layered window above the page instead.
+    bool panelLive=true;
+    // With the annotation mode (src/focus-mode.h « With the annotation mode »): the banner above the panel and the chat
+    // card's strip on its right (the chrome's layout width shrinks by it). Set by the host before Resize().
+    FocusMode::Above panelAbove{};
+    float ClientWidth()const{return floating?clientWidth:width;}
+    void SetFloating(bool on){if(on==floating)return;if(on){clientWidth=width;width=std::max(0.f,clientWidth-FocusMode::layoutInset-panelAbove.reserve);}else{width=clientWidth;origin={0,0};panel={};}floating=on;}
+    void SetPanelAbove(FocusMode::Above a){panelAbove=a;if(floating)width=std::max(0.f,clientWidth-FocusMode::layoutInset-a.reserve);}
+    // The panel's part inside the window (nothing above the client's top edge, nor over the annotation banner); empty when
+    // off screen.
+    D2D1_RECT_F PanelVisible()const{const float top=std::max(0.f,panelAbove.banner);if(!floating||panel.bottom<=top||panel.right<=panel.left)return {};return {panel.left,std::max(top,panel.top),panel.right,panel.bottom};}
+    bool PanelShown()const{const auto v=PanelVisible();return v.bottom>v.top;}
+    // Client DIP -> chrome-local; false where no chrome is on screen (floating: outside the panel's visible part).
+    bool Local(float& x,float& y)const{if(!floating)return true;const auto v=PanelVisible();if(!(x>=v.left&&x<v.right&&y>=v.top&&y<v.bottom))return false;x-=origin.x;y-=origin.y;return true;}
+    D2D1_RECT_F ToClient(D2D1_RECT_F r)const{return {r.left+origin.x,r.top+origin.y,r.right+origin.x,r.bottom+origin.y};}
+    // The panel at slide `position` (0 hidden .. 1 at rest), its edges and the content's origin on whole device pixels:
+    // the same rounding as the page windows, so the hole made in them and the painted panel meet exactly, and the
+    // chrome inside rasterises like the normal one (an integer pixel offset).
+    struct PanelPlace{D2D1_RECT_F panel;D2D1_POINT_2F origin;};
+    PanelPlace PanelAt(float position)const{namespace FM=FocusMode;const float s=dpi/96.f;const auto r=FM::Panel(ClientWidth(),bandShown,position,panelAbove);
+        const float top=FM::Snap(r.top,s),h=FM::Snap(FM::PanelHeight(bandShown),s);
+        return {{FM::Snap(r.left,s),top,FM::Snap(r.right,s),top+h},{FM::Snap(r.left+FM::border,s),top+FM::Snap(FM::border,s)}};}
+    void PlacePanel(float position){if(!floating)return;const auto p=PanelAt(position);panel=p.panel;origin=p.origin;}
     // Tab strip: adaptive width + horizontal scroll (DIP). `lockedTab` (0 = off) is set by
     // the host after a pointer close and cleared when the pointer leaves the strip.
     float scroll=0,lockedTab=0;Design::TabStrip::Strip strip;
@@ -516,6 +549,7 @@ public:
     HRESULT SavePng(const wchar_t* path){if(!surface)return E_FAIL;IWICStream* stream=nullptr;IWICBitmapEncoder* encoder=nullptr;IWICBitmapFrameEncode* frame=nullptr;HRESULT hr=wic->CreateStream(&stream);if(SUCCEEDED(hr))hr=stream->InitializeFromFilename(path,GENERIC_WRITE);if(SUCCEEDED(hr))hr=wic->CreateEncoder(GUID_ContainerFormatPng,nullptr,&encoder);if(SUCCEEDED(hr))hr=encoder->Initialize(stream,WICBitmapEncoderNoCache);if(SUCCEEDED(hr))hr=encoder->CreateNewFrame(&frame,nullptr);if(SUCCEEDED(hr))hr=frame->Initialize(nullptr);if(SUCCEEDED(hr))hr=frame->WriteSource(surface,nullptr);if(SUCCEEDED(hr))hr=frame->Commit();if(SUCCEEDED(hr))hr=encoder->Commit();Drop(frame);Drop(encoder);Drop(stream);return hr;}
     UINT32 SurfacePixel(float x,float y){UINT32 pixel=0;WICRect r{(INT)(x*dpi/96),(INT)(y*dpi/96),1,1};if(surface)surface->CopyPixels(&r,4,4,(BYTE*)&pixel);return pixel;}
     HRESULT Resize(){if(!factory||!hwnd)return S_OK;RECT r;GetClientRect(hwnd,&r);dpi=GetDpiForWindow(hwnd);width=(float)r.right*96/dpi;height=(float)r.bottom*96/dpi;
+        if(floating){clientWidth=width;width=std::max(0.f,clientWidth-FocusMode::layoutInset-panelAbove.reserve);}
         if(target){target->SetDpi((float)dpi,(float)dpi);return hwndTarget->Resize(D2D1::SizeU(r.right,r.bottom));}
         HRESULT hr=factory->CreateHwndRenderTarget(D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,D2D1::PixelFormat(),(float)dpi,(float)dpi),D2D1::HwndRenderTargetProperties(hwnd,D2D1::SizeU(r.right,r.bottom),presentOptions),&hwndTarget);if(FAILED(hr))return hr;target=hwndTarget;target->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);return target->CreateSolidColorBrush(D2D1::ColorF(1,1,1),&brush);
     }
@@ -812,7 +846,25 @@ public:
     D2D1_RECT_F AddressSlot()const{const float c=AddressCenter(),l=bar.left+Design::Address::slotInset;return {l,c-Design::Address::slot/2,l+Design::Address::slot,c+Design::Address::slot/2};}
     float ChipWidth(const wchar_t* label){namespace A=Design::Address;return A::chipPadLeft+Design::Size::icon+Design::Space::xs+TextWidth(label,Design::Type::label.size,true,false,Design::Type::label.tracking)+A::chipPadRight;}
     // Hit/tooltip box of the indicator: the icon slot, or the whole chip. None while editing.
-    D2D1_RECT_F IndicatorBox(){if(addressEditing||address.security==AddressBar::Security::Empty)return {};auto box=AddressSlot();const wchar_t* chip=address.chip();if(*chip)box.right=box.left+ChipWidth(chip);return box;}
+    D2D1_RECT_F IndicatorBox(){if(addressEditing||address.security==AddressBar::Security::Empty)return {};if(address.security==AddressBar::Security::Local)return LocalPillBox();auto box=AddressSlot();const wchar_t* chip=address.chip();if(*chip)box.right=box.left+ChipWidth(chip);return box;}
+    // #127 « Local » pill (Design::Address::LocalPill, AddressBar::Security::Local): its width and its box in the field
+    // (6 after the field's edge, 20 high, centred).
+    float LocalPillWidth(){namespace A=Design::Address;return A::localPad+A::localIcon+A::localGap+std::ceil(TextWidth(TR(address_local),A::localText))+A::localPad;}   // whole DIP, as Paper's 59
+    D2D1_RECT_F LocalPillBox(){namespace A=Design::Address;const float c=AddressCenter(),l=bar.left+A::localLead;return {l,c-A::localHeight/2,l+LocalPillWidth(),c+A::localHeight/2};}
+    // The profile's ink, as the profile button shows it (its target colour); without a profile button, the neutral grey.
+    ProfileColor::Rgb8 LocalInk()const{const auto& b=profileButton;if(!b.shown)return ProfileColor::Neutral();
+        auto byte=[](float v){return static_cast<std::uint8_t>(std::lround(std::clamp(v,0.f,1.f)*255));};return {byte(b.ink.r),byte(b.ink.g),byte(b.ink.b)};}
+    static D2D1_COLOR_F Solid(ProfileColor::Rgb8 c){return D2D1::ColorF(c.r/255.f,c.g/255.f,c.b/255.f,1);}
+    // The pill in `box` with one colour set: LocalPill::For(LocalInk(),true) in the top bar's #292929 field (DrawAddress);
+    // #127's compact bar (no field, on #171717) calls it with LocalPill::For(LocalInk(),false) and draws its divider in
+    // that set's `divider`.
+    void DrawLocalPill(D2D1_RECT_F box,bool hover,const LocalPill::Colors& c){
+        namespace A=Design::Address;const float cy=(box.top+box.bottom)/2;
+        FillBox(box,A::localRadius,Solid(hover?c.hover:c.plate));
+        const D2D1_RECT_F glyph{box.left+A::localPad,cy-A::localIcon/2,box.left+A::localPad+A::localIcon,cy+A::localIcon/2};
+        PathGlyph(A::monitorPath,glyph,A::localIcon,Solid(c.ink));
+        ink=Solid(c.ink);Text(TR(address_local),{glyph.right+A::localGap,cy-16,box.right,cy+16},A::localText,1);ink=D2D1::ColorF(1,1,1,1);
+    }
     // Pending permission request (Paper B01 « Puce permission »): set by the host while the
     // request's popover is open for the active tab, cleared with it. Glyphs are SiteRequest::Path
     // strings (the popover's own), the tip names the request for the tooltip and UI Automation.
@@ -824,7 +876,7 @@ public:
     float requestMix=1,requestAlpha=1,requestShift=-1;bool requestLive=true;
     D2D1_RECT_F request{};
     // Chip box: 2 DIP after the security slot (or its « Non sécurisé » plate). None while editing.
-    D2D1_RECT_F RequestBox(){if(requestGlyphs.empty())return {};const auto i=IndicatorBox();if(i.right<=i.left)return {};namespace L=SiteRequest::Layout;const float c=AddressCenter(),l=i.right+L::lead;return {l,c-L::height/2,l+SiteRequest::ChipWidth(requestGlyphs.size(),requestState),c+L::height/2};}
+    D2D1_RECT_F RequestBox(){if(requestGlyphs.empty())return {};const auto i=IndicatorBox();if(i.right<=i.left)return {};namespace L=SiteRequest::Layout;const auto pill=VaultPillBox();const float c=AddressCenter(),l=pill.right>pill.left?pill.right+VaultPillLayout::requestGap:i.right+L::lead;return {l,c-L::height/2,l+SiteRequest::ChipWidth(requestGlyphs.size(),requestState),c+L::height/2};}
     std::map<const char*,ID2D1PathGeometry*> pathGlyphs; // factory resources: survive target loss
     void DropPathGlyphs(){for(auto& g:pathGlyphs)if(g.second)g.second->Release();pathGlyphs.clear();}
     void PathGlyph(const char* d,D2D1_RECT_F box,float size,D2D1_COLOR_F color){
@@ -856,14 +908,31 @@ public:
         if(m<1&&requestFrom!=requestState)DrawChipState(requestFrom,box,a*(1-m));
         DrawChipState(requestState,box,a*(requestFrom!=requestState?m:1.f));}
     D2D1_COLOR_F DangerColor(float a=1)const{return D2D1::ColorF(Design::Danger::r,Design::Danger::g,Design::Danger::b,a);}
-    // B03 native key control (no icon asset yet: a drawn key; final glyph from the Paper writer). Ghost button.
-    bool vaultKey=false;static constexpr int VaultKeyId=906;   // not a character id: 'W' is Ctrl+W (close tab)
+    // B03 native key control, #121 point 4 variant C (Paper « Clé dans la barre d'adresse · A / B / C », C chosen by the
+    // owner): a pill right after the padlock with the number of saved accounts, the B01 pill's look (get_jsx 1MI5-0):
+    // #FFFFFF14, radius 4, height 24, padding 6 / 7, gap 4, key 14 #FFFFFFCC, count Inter 13/16 Medium #FFFFFFCC; 2 DIP
+    // after the padlock slot, the URL 8 DIP after it (4 group padding + 4 gap). It is chrome (a page cannot draw here,
+    // review P15); what it opens and its arming are unchanged (review §5). States (board « Listes sous le champ + bulle ·
+    // états », 1OE3-0): hovered, #FFFFFF24 with the key and the number in white (the same outline key, Phosphor Bold:
+    // owner decision 24 November); with a B01 request pill,
+    // the key first, the request pill 4 DIP after it (margin 2 + gap 2).
+    bool vaultKey=false;int vaultKeyCount=0;static constexpr int VaultKeyId=906;   // not a character id: 'W' is Ctrl+W (close tab)
+    static constexpr const char* VaultKeyGlyph="M160,12A84.09,84.09,0,0,0,79.43,119.53L23.51,175.51A12,12,0,0,0,20,184v40a12,12,0,0,0,12,12H72a12,12,0,0,0,12-12V212H96a12,12,0,0,0,12-12V188h12a12,12,0,0,0,8.49-3.51l7.93-7.94A84,84,0,1,0,160,12Zm0,144a59.66,59.66,0,0,1-24.43-5.18,12,12,0,0,0-13.48,2.45L115,164H96a12,12,0,0,0-12,12v12H72a12,12,0,0,0-12,12v12H44V189l58.73-58.73a12,12,0,0,0,2.45-13.48A60,60,0,1,1,160,156Zm36-76a16,16,0,1,1-16-16A16,16,0,0,1,196,80Z";
+    struct VaultPillLayout{static constexpr float lead=2,height=24,radius=4,padLeft=6,padRight=7,icon=14,gap=4,textSize=13,trail=8,requestGap=4,plate=0x14/255.f,hoverPlate=0x24/255.f,ink=0xCC/255.f,hoverInk=1;};
+    std::wstring VaultKeyCountText()const{return std::to_wstring(std::max(1,vaultKeyCount));}
+    // Shown whenever the host says so (VaultKeyVisible), as the key was before #121: also after a leading chip (« Non
+    // sécurisé » on a page whose certificate error was accepted, #127 « Local » on a project of this computer), right after
+    // its plate (2 DIP, as after the padlock; not drawn by a board next to « Local »). Hidden only while the address is
+    // edited (the EDIT covers that lane; the indicator is gone too).
+    D2D1_RECT_F VaultPillBox(){using P=VaultPillLayout;if(!vaultKey||addressEditing||address.security==AddressBar::Security::Empty)return {};const auto i=IndicatorBox();if(i.right<=i.left)return {};
+        const float c=AddressCenter(),l=i.right+P::lead,w=P::padLeft+P::icon+P::gap+TextWidth(VaultKeyCountText(),P::textSize,true)+P::padRight;return {l,c-P::height/2,l+w,c+P::height/2};}
     void DrawVaultKey(D2D1_RECT_F box,float hover,bool focused){
-        if(hover>0)FillBox(box,Design::Radius::button,D2D1::ColorF(1,1,1,.06f*std::clamp(hover,0.f,1.f)));
-        if(focused)FocusRing(box,Design::Radius::button);
-        const float cx=(box.left+box.right)/2,cy=(box.top+box.bottom)/2;brush->SetColor(D2D1::ColorF(1,1,1,.8f));
-        target->DrawEllipse(D2D1::Ellipse({cx-3.5f,cy},3.5f,3.5f),brush,1.5f);
-        target->DrawLine({cx,cy},{cx+7,cy},brush,1.5f);target->DrawLine({cx+5,cy},{cx+5,cy+3},brush,1.5f);target->DrawLine({cx+7,cy},{cx+7,cy+2.5f},brush,1.5f);
+        using P=VaultPillLayout;const float h=std::clamp(hover,0.f,1.f),ink=P::ink+(P::hoverInk-P::ink)*h;
+        FillBox(box,P::radius,D2D1::ColorF(1,1,1,P::plate+(P::hoverPlate-P::plate)*h));
+        if(focused)FocusRing(box,P::radius);
+        const float cy=(box.top+box.bottom)/2,gx=box.left+P::padLeft;
+        PathGlyph(VaultKeyGlyph,{gx,cy-P::icon/2,gx+P::icon,cy+P::icon/2},P::icon,D2D1::ColorF(1,1,1,ink));
+        Text(VaultKeyCountText(),{gx+P::icon+P::gap,box.top,box.right,box.bottom},P::textSize,ink,false,true,0);
     }
     // Profile button (region 900, Paper p-I-0 P01): the profile's Fill glyph on a plate of its ink.
     // `open`: the profile menu is showing (pressed look held). Private windows leave it off.
@@ -940,12 +1009,19 @@ public:
         namespace A=Design::Address;using AddressBar::Security;using AddressBar::Tone;
         const auto slot=AddressSlot();const float right=edit.right,cy=AddressCenter();
         const D2D1_RECT_F line{0,bar.top,0,bar.bottom};
-        if(editing){if(!DrawSiteImage(editFavicon,slot))Icon(editIcon?editIcon:address.icon(),slot,Design::Size::icon,A::secondary);return;}
+        if(editing){if(!DrawSiteImage(editFavicon,slot)){if(!editIcon&&address.security==Security::Local)PathGlyph(A::monitorPath,slot,A::localIcon,D2D1::ColorF(1,1,1,A::secondary));else Icon(editIcon?editIcon:address.icon(),slot,Design::Size::icon,A::secondary);}return;}
         if(address.security==Security::Empty){Icon(L"search",slot,Design::Size::icon,A::secondary);
             Text(TR(chrome_address_placeholder),{bar.left+A::textInset,line.top,right,line.bottom},Design::Type::address.size,Design::Text::address,false,Design::Type::address.medium,Design::Type::address.tracking);return;}
         const bool danger=address.security==Security::CertificateError;
         float x=bar.left+A::textInset;
-        if(const wchar_t* chip=address.chip();*chip){
+        if(address.security==Security::Local){
+            // Paper (« Barre du haut »): pill in the profile's colours, 6, the 1 × 10 divider (#545454), 6, the address.
+            const auto pill=LocalPillBox();const auto c=LocalPill::For(LocalInk(),true);DrawLocalPill(pill,indicatorHover,c);
+            float edge=pill.right;{const auto key=VaultPillBox();if(key.right>key.left)edge=std::ceil(key.right);}   // #121: the key pill follows « Local » (drawn with the regions), the divider after it, on a whole DIP as after « Local »
+            if(request.right>request.left){DrawRequestChip(request);edge=request.right;}
+            const float d=edge+A::localDivider;brush->SetColor(Solid(c.divider));target->FillRectangle(D2D1::RectF(d,cy-5,d+1,cy+5),brush);
+            x=d+1+A::localDivider;
+        }else if(const wchar_t* chip=address.chip();*chip){
             D2D1_RECT_F plate{slot.left,slot.top,slot.left+ChipWidth(chip),slot.bottom};
             const float lift=indicatorHover?.04f:0;
             FillBox(plate,A::chipRadius,danger?DangerColor(Design::Danger::plate+lift):D2D1::ColorF(1,1,1,A::chipPlate+lift));
@@ -954,14 +1030,18 @@ public:
             if(danger)ink=DangerColor();
             Text(chip,{glyph.right+Design::Space::xs,line.top,plate.right,line.bottom},Design::Type::label.size,danger?1.f:A::secondary,false,true,Design::Type::label.tracking);
             ink=D2D1::ColorF(1,1,1,1);
-            float edge=plate.right;if(request.right>request.left){DrawRequestChip(request);edge=request.right;}
+            float edge=plate.right;{const auto pill=VaultPillBox();if(pill.right>pill.left)edge=std::ceil(pill.right);}   // #121: the key pill follows the chip (drawn with the regions); divider on a whole DIP
+            if(request.right>request.left){DrawRequestChip(request);edge=request.right;}
             const float d=edge+A::divider;Color(1,.2f);target->FillRectangle(D2D1::RectF(d,cy-5,d+1,cy+5),brush);
             x=d+1+A::divider;
         }else{
             if(indicatorHover)FillBox(slot,A::chipRadius,D2D1::ColorF(1,1,1,A::chipPlate));
             Icon(address.icon(),slot,Design::Size::icon,A::secondary);
             // B01: lock (50 %) stays in its slot; the request chip follows, the URL moves past it.
-            if(request.right>request.left){DrawRequestChip(request);x=requestShift>=0?bar.left+A::textInset+requestShift:request.right+SiteRequest::Layout::trail+Design::Space::xs;}
+            // #121 C: the key pill comes first (drawn with the regions), the request chip after it.
+            const auto pill=VaultPillBox();const float pillShift=pill.right>pill.left?pill.right-pill.left+VaultPillLayout::requestGap:0;
+            if(pill.right>pill.left)x=pill.right+VaultPillLayout::trail;
+            if(request.right>request.left){DrawRequestChip(request);x=requestShift>=0?bar.left+A::textInset+pillShift+requestShift:request.right+SiteRequest::Layout::trail+Design::Space::xs;}
         }
         // Runs share one baseline; the overflowing tail is clipped under a fade, never ellipsised.
         target->PushAxisAlignedClip(D2D1::RectF(x,line.top,right,line.bottom),D2D1_ANTIALIAS_MODE_ALIASED);
@@ -1011,12 +1091,12 @@ public:
         regions.push_back({'m',{width-118,4,width-86,36},TR(chrome_tip_minimize)});regions.push_back({'M',{width-78,4,width-46,36},TR(chrome_tip_maximize)});regions.push_back({'X',{width-38,4,width-6,36},TR(chrome_tip_close_window)});
         {namespace T=Design::Toolbar;regions.push_back({'B',{T::backLeft,44,T::backRight,76},TR(chrome_tip_back)});regions.push_back({'F',{T::forwardLeft,44,T::forwardRight,76},TR(chrome_tip_forward)});regions.push_back({'R',{T::reloadLeft,44,T::reloadRight,76},navigationLoading?TR(chrome_tip_stop):TR(chrome_tip_reload)});bar={T::addressLeft,44,width-(annotateShown?AnnotateRight()+24+Design::Space::controlGap:audioShown?AudioLeft+Design::Space::controlGap:AudioRight),76};}edit={bar.left+Design::Address::textInset,44,bar.right-70,76};
         indicator=IndicatorBox();if(indicator.right>indicator.left)regions.push_back({'I',indicator,address.tip(),false});
+        // B03 (vault, review §5), #121 C: the key pill right after the padlock, only when the host says so.
+        {const auto pill=VaultPillBox();if(pill.right>pill.left)regions.push_back({VaultKeyId,pill,TR(chrome_tip_fill_password)});}
         request=RequestBox();if(request.right>request.left&&requestLive)regions.push_back({'Q',request,requestTip.c_str(),false});
         // Field actions, right to left 8 DIP apart (Paper): star, copy link. Reload/Stop lives
         // only in the standalone toolbar button; the field text runs to 10 DIP before Copy.
-        // B03 (vault, review §5): « Remplir un mot de passe enregistré », left of Copy, only when the host says so.
-        regions.push_back({'L',{bar.left,44,bar.right-(vaultKey?96.f:64.f),76},TR(chrome_tip_address)});
-        if(vaultKey){regions.push_back({VaultKeyId,{bar.right-92,48,bar.right-68,72},TR(chrome_tip_fill_password)});}
+        regions.push_back({'L',{bar.left,44,bar.right-64.f,76},TR(chrome_tip_address)});
         regions.push_back({'C',{bar.right-60,48,bar.right-36,72},TR(chrome_tip_copy_link)});
         regions.push_back({'K',{bar.right-28,48,bar.right-4,72},starred?TR(chrome_tip_edit_bookmark):TR(chrome_tip_add_bookmark)});
         if(annotateShown)regions.push_back({'N',{width-AnnotateRight()-24,48,width-AnnotateRight(),72},AnnotateTip()});
@@ -1031,7 +1111,8 @@ public:
     int BandStop()const{if(!bandShown)return 0;if(bandRover>=0&&bandRover<band.visible)return BookmarkBase+bandRover;if(bandRover==-2&&band.overflow)return 'O';if(band.visible>0)return BookmarkBase;return band.overflow?'O':0;}
     // Band order for arrows: visible items, then the » button.
     std::vector<int> BandOrder()const{std::vector<int> o;for(int i=0;i<band.visible;++i)o.push_back(BookmarkBase+i);if(band.overflow)o.push_back('O');return o;}
-    int Hit(float x,float y){for(auto& r:regions)if(x>=r.rect.left&&x<r.rect.right&&y>=r.rect.top&&y<r.rect.bottom)return Enabled(r.id)?r.id:0;return 0;}
+    // Client DIP (the floating panel's offset is taken off here; outside its visible part nothing is hit).
+    int Hit(float x,float y){if(!Local(x,y))return 0;for(auto& r:regions)if(x>=r.rect.left&&x<r.rect.right&&y>=r.rect.top&&y<r.rect.bottom)return Enabled(r.id)?r.id:0;return 0;}
     bool AssetsReady(){if(bitmaps.size()<11)return false;for(auto& b:bitmaps)if(!b.second)return false;return fonts&&fonts->GetFontFamilyCount()==1;}
     // Tabs at their presented geometry. Exactly one surface per tab (no second
     // close-button hover fill). While a tab opens its surface width follows
@@ -1107,7 +1188,59 @@ public:
     }
     // Smoke diagnostics: why AssetsReady() is false (bitmap count, keys that failed to load, font families).
     std::wstring AssetsReport(){std::wstring s=L"bitmaps="+std::to_wstring(bitmaps.size())+L" fonts="+std::to_wstring(fonts?fonts->GetFontFamilyCount():0)+L" missing=";for(auto& b:bitmaps)if(!b.second)s+=b.first+L";";return s;}
-    void Paint(const std::vector<std::wstring>& titles,int selected,const std::wstring& uri,bool editing,int hover,int focus,const D2D1_RECT_F* dirty=nullptr,Motion::Time now=Motion::Now()){(void)uri;/* the field reads `address`, set by the host */if(!target||!brush)return;++textPass;Build((int)titles.size(),selected,&titles,now);target->BeginDraw();target->PushAxisAlignedClip(dirty?*dirty:D2D1::RectF(0,0,width,height),D2D1_ANTIALIAS_MODE_ALIASED);target->Clear(D2D1::ColorF(Design::Surface::canvas,Design::Surface::canvas,Design::Surface::canvas));if(!contentOnly){
+    // `dirty`: client DIP.
+    void Paint(const std::vector<std::wstring>& titles,int selected,const std::wstring& uri,bool editing,int hover,int focus,const D2D1_RECT_F* dirty=nullptr,Motion::Time now=Motion::Now()){(void)uri;/* the field reads `address`, set by the host */if(!target||!brush)return;++textPass;Build((int)titles.size(),selected,&titles,now);target->BeginDraw();target->PushAxisAlignedClip(dirty?*dirty:D2D1::RectF(0,0,ClientWidth(),height),D2D1_ANTIALIAS_MODE_ALIASED);target->Clear(D2D1::ColorF(Design::Surface::canvas,Design::Surface::canvas,Design::Surface::canvas));
+        if(!contentOnly){if(floating){DrawSplit();DrawChatFrame();if(panelLive)DrawPanel(titles,selected,editing,hover,focus,dirty,now);}else DrawChrome(titles,selected,editing,hover,focus,dirty,now,true);}
+        target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET)RecreateTarget(); /* every target resource, the Lottie bitmap included */
+    }
+    // Mode Focus with the chat open (Paper 203J-0): the card's 1 DIP #262626 ring, on the canvas around the chat's WebView
+    // (placed 1 DIP inside `chatFrame`, client DIP; its rounded corners are the host's layered masks). Empty: nothing.
+    D2D1_RECT_F chatFrame{};
+    void DrawChatFrame(){if(chatFrame.right<=chatFrame.left||chatFrame.bottom<=chatFrame.top)return;namespace FM=FocusMode;const float g=((FM::chatBorderRgb>>16)&255)/255.f,b=FM::chatBorder/2;
+        brush->SetColor(D2D1::ColorF(g,g,g,1));target->DrawRoundedRectangle(D2D1::RoundedRect({chatFrame.left+b,chatFrame.top+b,chatFrame.right-b,chatFrame.bottom-b},FM::chatRadius-b,FM::chatRadius-b),brush,FM::chatBorder);}
+    // Mode Focus, « Hover en haut » (Paper 1JBQ-0): the panel (#171717, a 1 DIP #FFFFFF14 border, radius 4, no shadow)
+    // at its slide position, then the chrome inside it, translated to `origin` and clipped to the inside of the border.
+    // The normal chrome's 1 DIP lower hairline is not drawn: the border replaces it.
+    void DrawPanel(const std::vector<std::wstring>& titles,int selected,bool editing,int hover,int focus,const D2D1_RECT_F* dirty,Motion::Time now){
+        if(!PanelShown())return;
+        const D2D1_RECT_F p=panel;namespace FM=FocusMode;
+        Round(p,FM::panelRadius,Design::Surface::canvas);
+        Color(1,FM::borderAlpha);const float half=FM::border/2;
+        target->DrawRoundedRectangle(D2D1::RoundedRect({p.left+half,p.top+half,p.right-half,p.bottom-half},FM::panelRadius-half,FM::panelRadius-half),brush,FM::border);
+        target->PushAxisAlignedClip({p.left+FM::border,p.top+FM::border,p.right-FM::border,p.bottom-FM::border},D2D1_ANTIALIAS_MODE_ALIASED);
+        D2D1_MATRIX_3X2_F base;target->GetTransform(&base);target->SetTransform(D2D1::Matrix3x2F::Translation(origin.x,origin.y)*base);
+        D2D1_RECT_F local{};if(dirty)local={dirty->left-origin.x,dirty->top-origin.y,dirty->right-origin.x,dirty->bottom-origin.y};
+        DrawChrome(titles,selected,editing,hover,focus,dirty?&local:nullptr,now,false);
+        target->SetTransform(base);target->PopAxisAlignedClip();
+    }
+    // The panel at rest drawn alone into premultiplied BGRA pixels, outside its rounded shape transparent: the picture the
+    // host slides above the page during the slide (src/main.cpp « Mode Focus »: the page windows' region reaches the
+    // screen a frame after the window's paint, a moving hole would lag the panel). Drawn on a render target compatible
+    // with this one (same brushes, bitmaps and text), read back through Direct2D 1.1; false without it.
+    bool RenderPanel(const std::vector<std::wstring>& titles,int selected,bool editing,int hover,int focus,Motion::Time now,std::vector<uint32_t>& out,UINT& w,UINT& h){
+        if(!floating||!target||!brush||contentOnly)return false;
+        ++textPass;Build((int)titles.size(),selected,&titles,now);
+        const auto savedPanel=panel;const auto savedOrigin=origin;const auto rest=PanelAt(1);panel=rest.panel;origin=rest.origin;
+        const float s=dpi/96.f;w=(UINT)std::lround((panel.right-panel.left)*s);h=(UINT)std::lround((panel.bottom-panel.top)*s);
+        bool ok=false;ID2D1BitmapRenderTarget* bt=nullptr;
+        if(w&&h&&SUCCEEDED(target->CreateCompatibleRenderTarget(D2D1::SizeF(w/s,h/s),D2D1::SizeU(w,h),D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED),D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_NONE,&bt))&&bt){
+            bt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+            auto* main=SwapTarget(bt);bt->BeginDraw();bt->Clear(D2D1::ColorF(0,0,0,0));bt->SetTransform(D2D1::Matrix3x2F::Translation(-panel.left,-panel.top));
+            DrawPanel(titles,selected,editing,hover,focus,nullptr,now);
+            bt->SetTransform(D2D1::Matrix3x2F::Identity());const HRESULT hr=bt->EndDraw();SwapTarget(main);
+            ID2D1Bitmap* bitmap=nullptr;ID2D1DeviceContext* dc=nullptr;ID2D1Bitmap1* cpu=nullptr;
+            if(SUCCEEDED(hr)&&SUCCEEDED(bt->GetBitmap(&bitmap))&&bitmap&&SUCCEEDED(bt->QueryInterface(__uuidof(ID2D1DeviceContext),reinterpret_cast<void**>(&dc)))&&dc){
+                const D2D1_BITMAP_PROPERTIES1 props=D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_CPU_READ|D2D1_BITMAP_OPTIONS_CANNOT_DRAW,D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED),(float)dpi,(float)dpi);
+                if(SUCCEEDED(dc->CreateBitmap(D2D1::SizeU(w,h),nullptr,0,&props,&cpu))&&cpu&&SUCCEEDED(cpu->CopyFromBitmap(nullptr,bitmap,nullptr))){
+                    D2D1_MAPPED_RECT m{};if(SUCCEEDED(cpu->Map(D2D1_MAP_OPTIONS_READ,&m))){out.resize((size_t)w*h);for(UINT y=0;y<h;++y)memcpy(&out[(size_t)y*w],m.bits+(size_t)y*m.pitch,(size_t)w*4);cpu->Unmap();ok=true;}}
+            }
+            Drop(cpu);Drop(dc);Drop(bitmap);Drop(bt);
+        }
+        panel=savedPanel;origin=savedOrigin;return ok;
+    }
+    // The tab row, the toolbar and the band in chrome-local DIP (`dirty` too). `lowerEdge`: the normal chrome's hairline
+    // and split canvas under it (the floating panel has neither: DrawSplit runs on the canvas before the panel).
+    void DrawChrome(const std::vector<std::wstring>& titles,int selected,bool editing,int hover,int focus,const D2D1_RECT_F* dirty,Motion::Time now,bool lowerEdge){
         Round(bar,Design::Radius::control,Design::Surface::raised);DrawLoading(bar);if(focus=='L')FocusRing(bar,Design::Radius::control);
         // Skip controls wholly outside the dirty rectangle (4 DIP margin covers focus rings).
         auto visible=[&](D2D1_RECT_F b){return !dirty||(b.right+4>dirty->left&&b.left-4<dirty->right&&b.bottom+4>dirty->top&&b.top-4<dirty->bottom);};
@@ -1154,15 +1287,13 @@ public:
         DrawAddress(editing,hover=='I');
         DrawBand(hover,focus,now);
         // Chrome's lower edge: a 1 DIP #FFFFFF05 hairline, then the page (Paper: no top padding).
-        Color(1,5/255.f);target->FillRectangle(D2D1::RectF(0,ContentTop()-1,width,ContentTop()),brush);
-        DrawSplit();
+        if(lowerEdge){Color(1,5/255.f);target->FillRectangle(D2D1::RectF(0,ContentTop()-1,width,ContentTop()),brush);
+            DrawSplit();}
         // Ripple last, over the neighbouring buttons it reaches, never over the page edge.
         if(const auto ripple=downloadIcon.At(now).ripple;ripple>=0){
             const auto d=std::find_if(regions.begin(),regions.end(),[](const Region& r){return r.id=='D';});
             if(d!=regions.end()){target->PushAxisAlignedClip(D2D1::RectF(0,0,width,ContentTop()-1),D2D1_ANTIALIAS_MODE_ALIASED);DrawDownloadRipple(ripple,d->rect,Design::Size::icon);target->PopAxisAlignedClip();}
         }
-        }   // !contentOnly
-        target->PopAxisAlignedClip();HRESULT hr=target->EndDraw();if(hr==D2DERR_RECREATE_TARGET)RecreateTarget(); /* every target resource, the Lottie bitmap included */
     }
 };
 }

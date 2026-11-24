@@ -125,7 +125,7 @@ def j_r6(j):
     j.open_on('a.btn-primary', 'back to the first element (closed, scrolled away and back)'); j.check('first element again')
 
 
-@journey('r44_grand_element_taille_utilisateur', 'R44 R29 (section.hero, div.plans, page area ≈ 1470 × 665)')
+@journey('r44_grand_element_taille_utilisateur', 'R44 #130 (section.hero, div.plans, page area ≈ 1470 × 665)')
 def j_r44(j):
     size = F.set_page_size(*F.USER_PAGE)
     j.step('the page area is the user\'s (≈ 1470 × 665)', abs(size[0] - 1470) <= 4 and abs(size[1] - 665) <= 4, size)
@@ -147,16 +147,20 @@ def j_r44(j):
         j.open_on('section.hero', f'hero with its conversation, scrolled {y}'); j.close()
 
 
-@journey('r47_autorisation_defilement', 'R47 R9 R29 R39 (permission, then scroll up and back)')
+@journey('r47_autorisation_defilement', 'R47 R9 #130 R39 (permission, then scroll up and back)')
 def j_r47(j):
     F.scroll_into_view('div.plans', 'center')
     j.open_on('div.plans', 'plans')
+    sy0 = F.scroll_y()
     m = F.log_mark(); F.type_and_send('vrai-autorisation jetonperm', 'bubble'); j.inv.m.conv['div.plans'] = 'jetonperm'
     j.step('R9 · the permission is asked', F.wait_log(r'CHAT permission asked', m, 20))
     # a card below the visible area: the site's page scrolls once, softly (H1) — read the card after that scroll
     scrolled = F.wait_log(r'a card waits for an action below the visible area: the page scrolls (\d+) CSS px', m, 1.5)
     j.R.data['measures']['permissionScroll'] = scrolled.group(0) if scrolled else None
     time.sleep(0.6); j.inv.rebase()
+    sy1 = F.scroll_y(); j.R.data['measures']['pageScrollBeforeAfter'] = [sy0, sy1]
+    if F.C130_LOT1_RULES:   # #130 C rule 7 (lot 1): the browser never scrolls the user's page to show a card (the old R47 fix is removed)
+        j.step('#130 C rule 7 · the page is never scrolled by the browser to show the card', scrolled is None and sy0 is not None and sy1 is not None and abs(sy1 - sy0) < 1, [sy0, sy1])
     st = F.chat_state('bubble'); sf = F.bubble_surface(st)
     j.step('R47 · the whole permission card is shown, Refuser and Autoriser inside the bubble, not greyed',
            st.get('perm') and len(st['perm']['buttons']) == 2 and all(b['op'] >= 0.99 for b in st['perm']['buttons']), st.get('perm'))
@@ -251,7 +255,14 @@ def j_diff(j):
     if j.step('R40 · the handle is shown', g):
         F.drag(g[0], g[1], g[0] + 180, g[1] + 120, 24)
         s2 = F.bubble_surface()
-        j.step('R40 · the handle widens and heightens it, its corner fixed', s2 and s2[2] - s2[0] > (s1[2] - s1[0]) + 100 and s2[3] - s2[1] > (s1[3] - s1[1]) + 60 and abs(s2[0] - s1[0]) <= 1 and abs(s2[1] - s1[1]) <= 1, {'diff': s1, 'resized': s2})
+        # #130 C (the 20:00 release's pass on ae51111: [946, 522, 1346, 920] -> [946, 522, 1526, 920], page bottom 931): the bubble
+        # is always whole in the page area. One that already slid up along its element to 8 px from the page's bottom has no
+        # room under it: the handle (top-left corner fixed) then only widens it. With room under it, it heightens it too.
+        pg = F.page_area(); room = pg[3] - s1[3] if s1 else 0   # px between the diff's bottom and the page area's bottom
+        grew_h = (s2[3] - s2[1]) - (s1[3] - s1[1]) if s1 and s2 else 0
+        tall = grew_h > 60 if room > 90 else (grew_h >= -1 and s2 and s2[3] <= pg[3])
+        j.step('R40 · the handle widens it, and heightens it as far as the page area allows (#130 C: always whole), its corner fixed',
+               s2 and s2[2] - s2[0] > (s1[2] - s1[0]) + 100 and tall and abs(s2[0] - s1[0]) <= 1 and abs(s2[1] - s1[1]) <= 1, {'diff': s1, 'resized': s2, 'page': pg, 'roomUnder': room, 'grewHeight': grew_h})
         j.R.capture('diff-agrandi'); j.check('resized', wheel_moved=True)
         F.escape_chat('bubble'); time.sleep(0.8); s3 = F.bubble_surface()
         j.step('R40 · Échap gives the size of before back, at the same place', s3 and abs((s3[2] - s3[0]) - (s0[2] - s0[0])) <= 2 and abs((s3[3] - s3[1]) - (s0[3] - s0[1])) <= 2 and abs(s3[0] - s0[0]) <= 1, {'before': s0, 'after': s3})
@@ -380,8 +391,12 @@ def j_announce(j):
     j.step('R43 · during the turn: grey follow-up lines, no card', follow > 0, {'samples': samples, 'withFollow': follow})
     j.step('R48 · no caret block at the end of the streamed text', caret == 0, caret)
     lefts = set(p[0] for p in positions); tops = set(p[1] for p in positions); bottoms = set(p[3] for p in positions)
-    j.step('R29 · during the turn the bubble never moves (left and its anchored edge fixed)', len(lefts) <= 1 and (max(tops) - min(tops) <= 1 or max(bottoms) - min(bottoms) <= 1) if positions else False,
-           {'lefts': sorted(lefts)[:5], 'tops': (min(tops), max(tops)) if tops else None, 'bottoms': (min(bottoms), max(bottoms)) if bottoms else None})
+    # #130 wins over R29 (decision 1 of 24 Nov 2026, variant C): no longer « never moves » — it stays at its element's side
+    # (its left edge fixed) and whole in the page area; growing past the bottom, it slides up along its element
+    pg = F.page_area()
+    whole = all(p[1] >= pg[1] - 1 and p[3] <= pg[3] + 1 for p in positions)
+    j.step('#130 C (replaces R29) · during the turn the bubble stays at its element\'s side (left edge fixed) and whole in the page area', len(lefts) <= 1 and whole if positions else False,
+           {'lefts': sorted(lefts)[:5], 'tops': (min(tops), max(tops)) if tops else None, 'bottoms': (min(bottoms), max(bottoms)) if bottoms else None, 'page': pg})
     time.sleep(1.2)
     end = F.chat("(function(){var t=[...document.querySelectorAll('.turn.bt')].pop();return {follow:t.querySelectorAll('.bt-follow:not([hidden])').length,pre:t.querySelectorAll('pre').length,table:t.querySelectorAll('table').length,links:t.querySelectorAll('a').length,"
                  "hist:(document.body.innerText||'').includes('Historique'),logo:!!t.querySelector('svg')}})()")
@@ -494,7 +509,7 @@ def j_details(j):
     ib.save(j.R.dir / 'r15-bord-gauche.png')
     j.send('section.hero', 'reply')
     chips = F.chat("document.querySelectorAll('.scroller .chip').length")
-    j.step('R7 · no element chip under the user\'s message in the bubble', not chips and 'section.hero' not in F.chat_state('bubble').get('text', ''), chips)
+    j.step('R7 · no element chip under the user\'s message in the bubble', not chips and 'section.hero' not in (F.chat("(document.querySelector('.scroller')||document.body).innerText") or ''), chips)
     plus = F.chat("(function(){var b=Array.from(document.querySelectorAll('button.tb')).find(function(e){return /Joindre/.test(e.getAttribute('aria-label')||'')});return b?{popup:b.getAttribute('aria-haspopup')}:null})()")
     j.step('R22 · « + » opens the image picker directly (no menu) — not clicked: a system dialog', plus and plus.get('popup') != 'menu', plus)
     for name, sel in (('modèle', 'button.m'), ('mode', 'button.tb.mode')):
@@ -710,7 +725,13 @@ def j_e4b(j):
         return
     region = (sf[0] - 40, sf[1] - 40, sf[2] + 40, sf[3] + 40)
     film = V5.Frames(region, 90, 0.010); film.start(); time.sleep(0.05)
-    F.real_click_chat('button.m'); time.sleep(0.7); film.stop = True; film.join()
+    # The 20:00 release's pass on ae51111 (tops 6, 7, 41 while the host kept the surface's top at 576): after the scroll the
+    # bubble below div.plans (#130 C rule 10: height limited to the room under it) is offered more room at its next placement —
+    # this click — and grows DOWN by 36 px; its foot moves under the still pointer, which then rests on « Effort »: the
+    # sub-menu opens over the column measured here (the word « Élevé » read as the top edge). The pointer leaves at once:
+    # no sub-menu, the column stays the surface's. (That the bubble grows at the click is the product's: lot 4, rule 5.)
+    F.real_click_chat('button.m'); F.u32.SetCursorPos(pg[0] + 20, pg[1] + 20)
+    time.sleep(0.7); film.stop = True; film.join()
     x = (sf[2] - sf[0]) - 14 + 40; tops = []   # near the surface's right edge: the model menu opens above its button, out of this column (H1)
     for _, fr in film.frames:
         r = V5.run_of(fr, x, V5.dark, 0, fr[1] - 1)

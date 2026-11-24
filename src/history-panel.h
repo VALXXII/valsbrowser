@@ -10,6 +10,7 @@
 //  - Drawer: window, geometry, motion, pointer, keyboard, tooltips.
 #include <windowsx.h>
 #include <dwmapi.h>
+#include "drawer-corners.h"   // Mode Focus: the docked drawer's antialiased top corners
 #include <d2d1_1.h>
 #include <commctrl.h>
 #include <array>
@@ -436,7 +437,7 @@ private:
         const auto now = Motion::Now();
         auto scene = MakeScene(now); const auto slots = SlotsAt(now); scene.slots = &slots; scene.originX = LeadDip();
         target->BeginDraw();
-        view_.Paint(scene); chrome_.KeyOut(scene.originX);
+        view_.Paint(scene); chrome_.KeyOut(scene.originX); KeyCorners();
         if (target->EndDraw() == D2DERR_RECREATE_TARGET) { view_.Release(); chrome_.RecreateTarget(); }
     }
     void ClearPointer() { if (GetCapture() == hwnd_) ReleaseCapture(); reveals_.clear(); motion_.ClearInteractions(); hoverRow_ = -1; hover_ = pressed_ = 0; tracking_ = false; }
@@ -449,26 +450,35 @@ private:
     bool ApplyGeometry(Motion::Time now, bool force = false) {
         if (!hwnd_) return false;
         const RECT owner = OwnerClient();
-        const int column = OwnerPx(Layout::width), top = owner.top + OwnerPx(Layout::top), height = std::max(1, static_cast<int>(owner.bottom - top));
+        const int column = OwnerPx(Layout::width), top = owner.top + OwnerPx(Downloads::DrawerLayout::liveTop), height = std::max(1, static_cast<int>(owner.bottom - OwnerPx(Downloads::DrawerLayout::liveBottom) - top));
         const int shown = static_cast<int>(std::lround(column * Motion::Clamp(slide_.Value(now))));
-        if (!force && shown == appliedVisible_ && EqualRect(&owner, &appliedOwner_)) return false;
-        const bool resized = !EqualRect(&owner, &appliedOwner_), slid = shown != appliedVisible_;
-        appliedVisible_ = shown; appliedOwner_ = owner; lead_ = column - shown;
-        const RECT window{owner.right - column, top, owner.right, top + height};
+        const int inset = OwnerPx(DrawerLayout::liveRight); const RECT window{owner.right - inset - column, top, owner.right - inset, top + height};   // Mode Focus: the floating panel's right edge (0 otherwise)
+        const float radius = DrawerLayout::liveRadius * GetDpiForWindow(owner_) / 96.f;   // Mode Focus: round top corners (src/drawer-corners.h)
+        const bool restyled = !EqualRect(&window, &appliedWindow_) || radius != corners_.Radius();
+        if (!force && !restyled && shown == appliedVisible_ && EqualRect(&owner, &appliedOwner_)) return false;
+        const bool resized = !EqualRect(&owner, &appliedOwner_) || !EqualRect(&window, &appliedWindow_), slid = shown != appliedVisible_;
+        appliedVisible_ = shown; appliedOwner_ = owner; lead_ = column - shown; corners_.SetRadius(radius);
         if (force || !EqualRect(&window, &appliedWindow_)) { SetWindowPos(hwnd_, nullptr, window.left, window.top, column, height, SWP_NOACTIVATE | SWP_NOZORDER); appliedWindow_ = window; }
         const int entered = shown > 0;
-        if (force || resized || entered != appliedEntered_) { SetWindowRgn(hwnd_, NativeUI::DrawerRegion(entered, column, height, OwnerPx(20), IsZoomed(owner_)), FALSE); appliedEntered_ = entered; }
+        if (force || resized || entered != appliedEntered_) { SetWindowRgn(hwnd_, NativeUI::DrawerRegion(entered, column, height, OwnerPx(20), IsZoomed(owner_) || inset > 0), FALSE); appliedEntered_ = entered; }   // Mode Focus: off the window's corner, square
+        if (lead_ > 0) corners_.HideLeading();   // Mode Focus: it moves with the content: back at rest
+        if (restyled && !force) InvalidateRect(hwnd_, nullptr, FALSE);   // the corners keyed out (or no longer) by the next paint
         if (resized) { scroll_.Snap(std::clamp(scroll_.Target(), 0.f, MaxScroll(now, true))); RefreshTips(); }
-        if (force || !slid || shown == 0 || !IsWindowVisible(hwnd_)) return false;
-        PaintNow(); ValidateRect(hwnd_, nullptr);
+        if (force || !slid || shown == 0 || !IsWindowVisible(hwnd_)) { SyncCorners(); return false; }
+        PaintNow(); ValidateRect(hwnd_, nullptr); SyncCorners();
         return true;
     }
     // Slide offset in DIP (content drawn right of its docked place while it enters or leaves).
     float LeadDip() const { return lead_ * 96.f / std::max(1.f, Dpi()); }
+    // Mode Focus: the antialiased top corners as presented (src/drawer-corners.h): the trailing one whenever the column is
+    // in, the leading one at rest only (it moves with the content while sliding). KeyCorners: the paint's part of them.
+    void SyncCorners() { if (!visible_ || appliedVisible_ <= 0 || !IsWindowVisible(hwnd_)) { corners_.Hide(); return; } const float c = Design::Surface::canvas; corners_.Place(hwnd_, appliedWindow_, lead_, appliedWindow_.right - appliedWindow_.left, c + (1 - c) * DownloadsUI::Popup::border, c, lead_ == 0); }
+    void KeyCorners() { if (corners_.Radius() <= 0) return; HRGN cut = corners_.CutRegion(lead_, appliedWindow_.right - appliedWindow_.left); chrome_.KeyOutRegion(cut); DeleteObject(cut); }
     void Finish() {
         closing_ = false; visible_ = false; appliedVisible_ = -1; appliedWindow_ = {};
-        ShowWindow(hwnd_, SW_HIDE);
+        corners_.Hide(); ShowWindow(hwnd_, SW_HIDE);
     }
+    DrawerCorners::Pair corners_;   // Mode Focus: the antialiased top corners
     void Key(WPARAM w) {
         const bool ctrl = GetKeyState(VK_CONTROL) < 0, shift = GetKeyState(VK_SHIFT) < 0;
         if (w == VK_ESCAPE) { if (!query_.empty()) { SetQuery(L""); focus_ = SearchHit; Invalidate(); } else Hide(true, true); return; }
@@ -597,7 +607,7 @@ public:
         ApplyGeometry(now, true);
         // Painted while shown without activation, then activated: never a blank frame.
         SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        PaintNow(); ValidateRect(hwnd_, nullptr);
+        PaintNow(); ValidateRect(hwnd_, nullptr); SyncCorners();
         SetForegroundWindow(hwnd_); SetFocus(hwnd_);
         Repoint(); RefreshTips();
         if (hooks_.announce) hooks_.announce(entries_.empty() ? std::wstring(TR(history_announce_empty)) : TRP(history_announce_pages, entries_.size()));
@@ -615,7 +625,7 @@ public:
     }
     void Toggle(bool keyboard) { if (Open()) Hide(keyboard, true); else Show(keyboard); }
     // Owner moved, resized or changed DPI.
-    void Reposition() { if (visible_) ApplyGeometry(Motion::Now()); }
+    void Reposition() { if (visible_) ApplyGeometry(Motion::Now()); }   // Mode Focus: a new live top / right / radius counts as a move (ApplyGeometry)
     // The history changed (a visit, a title, a removal, cleared data).
     void Changed() {
         if (!hwnd_ || !visible_) return;

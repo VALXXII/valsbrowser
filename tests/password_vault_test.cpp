@@ -87,6 +87,19 @@ int main() {
         Check(ParseIsolatedFillResult(0, L"{\"result\":{\"type\":\"string\",\"value\":\"filled\"}}") == FillOutcome::Filled && ParseIsolatedFillResult(0, L"{\"result\":{\"type\":\"string\",\"value\":\"origin\"}}") == FillOutcome::Origin, "R-1: the world's answer: the fixed words");
         Check(ParseIsolatedFillResult(0, L"{\"result\":{\"type\":\"object\",\"value\":\"filled\"}}") == FillOutcome::Failed && ParseIsolatedFillResult(0, L"{\"result\":{\"type\":\"string\",\"value\":\"filled\"},\"exceptionDetails\":{}}") == FillOutcome::Failed && ParseIsolatedFillResult(-1, L"{\"result\":{\"type\":\"string\",\"value\":\"filled\"}}") == FillOutcome::Failed && ParseIsolatedFillResult(0, nullptr) == FillOutcome::Failed, "R-1: an exception, another type or an engine error is a failure, never « rempli »");
     }
+    // ---- #121: the identifier-only step through the key (UserStepScript, run before any decryption) ----------------
+    {
+        const std::wstring us = UserStepScript(origin, L"camille@exemple.test");
+        const std::wstring body = UserStepScriptBody;
+        Check(us == body + JsonString(origin) + L"," + JsonString(L"camille@exemple.test") + L");", "#121: the identifier step script takes the origin and the username only (no secret argument)");
+        const auto set = body.find(L"d.set.call"), guard = body.find(L"self.origin!==o"), pw = body.find(L"input[type=password]");
+        Check(guard != std::wstring::npos && set != std::wstring::npos && guard < set && body.find(L"ancestorOrigins") < set, "#121: the same origin, secure-context and ancestor checks come before anything is written");
+        Check(pw != std::wstring::npos && pw < set && body.find(L"'password'") < set, "#121: a visible password field answers « password » before anything is written (the full fill decides)");
+        Check(body.find(L"a.readOnly") < set && body.find(L"shown(a)") < set && body.find(L"t==='email'") < set, "#121: only a visible, writable identifier field gets the username");
+        Check(ParseFillResult(0, L"\"user\"") == FillOutcome::User && ParseFillResult(0, L"\"password\"") == FillOutcome::NeedsPassword && ParseIsolatedFillResult(0, L"{\"result\":{\"type\":\"string\",\"value\":\"user\"}}") == FillOutcome::User, "#121: the identifier step's words");
+        Check(std::wstring(FillScriptBody).find(L"'user'") == std::wstring::npos && std::wstring(FillScriptBody).find(L"'password'") == std::wstring::npos, "#121: FillScript never answers the identifier step's words");
+        Check(std::wstring(FillOutcomeText(FillOutcome::User)).empty(), "#121: a username filled is said like any fill (no notice)");
+    }
     // ---- Capture coverage (owner decision A): the capture runs in an ISOLATED world of every frame and reports
     // through a DevTools binding that exists only there (a page can neither call it nor fake its origin). -------
     {

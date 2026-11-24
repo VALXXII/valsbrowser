@@ -15,7 +15,8 @@
 //   Alone (the chat's first message, the band's reminder: OpenTonAgent): only A6, no progress; « Plus tard », the close
 //   button and Échap close it (Skipped), « Ouvrir le chat » too (Finished).
 //  * The trial is a fake page drawn by the window (no web page, no agent): hovering an element frames it with its tag,
-//    clicking « Payer » picks it; any text sent makes the button wider (the demo does not read it).
+//    clicking « Payer » picks it; A3's note arrives written and « Envoyer » makes the button wider (any text: the demo
+//    does not read it).
 //  * When: the first time the person turns the mode on (in the place of « Connecter un agent »); from the card of a live
 //    site (« Découvrir en 1 minute », E1b); from the welcome window's step 6 (« Essayer en 1 minute », E2), which starts
 //    at A2. Finished or skipped, it never opens by itself again (setting annotation-onboarded); E1b can always reopen it.
@@ -36,7 +37,7 @@ inline const char* TagOf(Part p) {
 }
 
 class Flow {
-    Step step_ = Step::What; Ending ending_ = Ending::None; bool tried_ = false, alone_ = false, chat_ = false; std::wstring text_;
+    Step step_ = Step::What; Ending ending_ = Ending::None; bool tried_ = false, alone_ = false, chat_ = false; std::wstring text_, suggestion_;
 public:
     Flow() = default;
     explicit Flow(Step start) : step_(start) {}
@@ -85,13 +86,19 @@ public:
     // A6 « Ouvrir le chat » (an agent is ready): the end, and the host opens the chat.
     bool OpenChat() { if (step_ != Step::Connect) return false; step_ = Step::Closed; ending_ = Ending::Finished; chat_ = true; return true; }
     bool Skip() { if (step_ == Step::Closed) return false; step_ = Step::Closed; ending_ = Ending::Skipped; return true; }
+    // A3's note arrives written (Val, 2026-11-24: « Envoyez la demande »): picking « Payer » fills it with the suggestion
+    // (the window gives the catalogue's « Rends ce bouton plus large »), so « Envoyer » is on at once. It stays editable
+    // (any text widens the button; emptied, the hint shows and « Envoyer » dims again). A new language replaces the
+    // suggestion when the person has not changed it.
+    void Suggest(std::wstring s) { if (step_ == Step::Write && text_ == suggestion_) text_ = s; suggestion_ = std::move(s); }
+    const std::wstring& suggestion() const { return suggestion_; }
     // A2: a click on the fake page. Only « Payer » picks.
-    bool Pick(Part p) { if (step_ != Step::Pick || p != Part::Pay) return false; step_ = Step::Write; return true; }
-    // A3: the note being typed.
+    bool Pick(Part p) { if (step_ != Step::Pick || p != Part::Pay) return false; step_ = Step::Write; text_ = suggestion_; return true; }
+    // A3: the note, as written or edited.
     void SetText(std::wstring t) { if (step_ == Step::Write) text_ = std::move(t); }
     // A3: « Envoyer » (button or Entrée).
     bool Send() { if (!CanSend()) return false; tried_ = true; step_ = Step::Result; return true; }
-    // A4: « Recommencer »: the trial again, from the page as it was.
+    // A4: « Recommencer »: the trial again, from the page as it was (the next pick writes the note again).
     void Restart() { step_ = Step::Pick; tried_ = false; text_.clear(); }
 };
 

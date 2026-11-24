@@ -48,14 +48,17 @@ gradient turned to its hue (Val, answer 8).
 | A2 pointer `1S1I-0` | the mode's crosshair 32 (white 4, `#1C1C1C` 1.6, accent dot r 2.6 ringed 1.2 white) |
 | A2 coach `1S1M-0` | at (350, 228): h 36, radius 18, `#171717`, padding 8 / 12, gap 8: disc 20 accent « 1 » 11/12 600 white, « Cliquez sur « Payer » » 13/16 500 white |
 | A3 frame `1S2H-0` | the button framed (no radius) + « button.btn-primary » |
-| A3 note `1S2K-0` | board 6's note at (304, 196), 305 wide: « Rends ce bouton plus large » 14/20 `#FFFFFFE6` + caret « \| » `#0AF4FF` |
+| A3 note `1S2K-0` | board 6's note at (304, 196), 305 wide, arriving written: « Rends ce bouton plus large » 14/20 `#FFFFFFE6`, no caret (`1S2M-0`); « Envoyer » `1S33-0` on and ringed: `box-shadow: 0 0 0 3px #0AF4FF59` (the light ink at 35 %, radius 11, under the button) — Val / Designer 2026-11-24 |
 | A4 button | 260 wide; measure `1S2…` at (166, 270) 260 × 16: lines 1.5 accent, « 160 → 260 » 11/14 600 `#007D83`, gap 6; « Fait » pill at (438, 228) (disc with check 12) |
 
 Behaviour (Val's defaults 3 – 6, confirmed): every element of the page is framed with its tag under the pointer (header,
-h2, input, button) and the Windows pointer becomes the drawn crosshair over the page; only « Payer » picks; A3's note is
-typed for real (hint « Rends ce bouton plus large » `#FFFFFF99`, « Envoyer » dimmed to 32 % until something is typed, any
-text works); A4: 160 → 260 in 400 ms, then « Fait » and the measure fade in over 200 ms; « Recommencer » back to A2; between
-trial steps the page stays and glides (A3 sits 40 to the left).
+h2, input, button) and the Windows pointer becomes the drawn crosshair over the page; only « Payer » picks; A3 « Envoyez la
+demande » (Val, 2026-11-24): the note arrives written (« Rends ce bouton plus large », EN « Make this button wider »), so
+« Envoyer » is on and ringed at once — one click (or Entrée) sends. The note stays editable (any text works): a click or a
+key shows the caret; emptied, the hint `#FFFFFF99` comes back and « Envoyer » dims to 32 % without its ring. A new language
+rewrites the note unless it was edited. A4: 160 → 260 in 400 ms, then « Fait » and the measure fade in over 200 ms;
+« Recommencer » back to A2 (the next « Payer » writes the note again); between trial steps the page stays and glides (A3
+sits 40 to the left).
 
 ## A5 – A7
 
@@ -82,4 +85,7 @@ converts them to sRGB. They are rasterised about half a pixel below and right of
 boxes on whole pixels. Measured adjustment: the key caps' labels one row lower than a line box at 134.5 (`DrawKey`).
 Text weight: the first-run onboarding's DirectWrite parameters. The violet boards use a « hue » blend over the cyan
 gradient and a fill `#7A5CE0` (OKLCH chroma 0.192, above any profile's 0.16): the code applies the onboarding's formulas to
-a violet profile instead, so the violet renders are close but not identical (see `compare-96.txt`).
+a violet profile instead, so the violet renders are close but not identical (see `compare-96.txt`); the same holds for
+A3's ring (Paper's violet `#A78BFA59`, the code the re-hued light ink at 35 %). Paper's export also blends translucent colours
+in Display P3: A3's cyan ring reads (35, 100, 104) there, (18, 100, 104) in the app, which blends `#0AF4FF59` over `#171717`
+in sRGB exactly.

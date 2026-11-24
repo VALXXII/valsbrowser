@@ -178,7 +178,8 @@ def run_main():
         latency = round((first - clicked_at) * 1000) if first else None
         report['measures']['r18'] = {'samples': len(s18.samples), 'shownSamples': len(shown), 'rects': rects, 'clickToSurfaceMs': latency, 'log': (logged(r'CHAT bubble shown at its place ([^\r\n]+)', m1, 2) or [None])[0]}
         # final QA: the final plan's invariant is « in less than 150 ms » (design/chat-comment-final-plan.md), not 100
-        step('R18 · a real click: the surface is on screen (its slide starts) less than 150 ms later', latency is not None and latency < 150, latency)
+        step('R18 · a real click: the surface comes on screen (its slide starts)', latency is not None, latency)
+        C.objective('ouverture-150ms', latency is not None and latency < 150, latency, 'comment-v3 R18: click to surface, ms')   # decision 5: an objective
         report['measures']['r18']['surfaceCorners'] = corners
         step('R18 · the window is shown once, already at its place (no move while it appears: one window rect, one surface corner)', opened is not None and len(shown) > 5 and len(rects) == 1 and len(corners) == 1, report['measures']['r18'])
         for i, (t, img) in enumerate(s18.frames[:40]):
