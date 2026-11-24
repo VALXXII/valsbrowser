@@ -131,6 +131,18 @@ try:
     square = W.RECT(cx - side // 2, cy - side // 2, cx + side // 2, cy + side // 2)
     band = W.RECT(wr.left + int(8 * scale), wr.top, wr.right - int(8 * scale), wr.top + int(40 * scale))
     print(f'window {wr.left},{wr.top} {wr.right - wr.left}x{wr.bottom - wr.top} at {scale * 100:.0f} %, foreground: {u32.GetForegroundWindow() == win}', flush=True)
+    # A fresh profile's first navigation waits for the content blocker's install (night run 24/11: the page painted ~10 s
+    # after start): wait until the page square shows the page before the rest captures, else a page not loaded yet
+    # counts as flashes.
+    probe = Grabber([square]); probe.stop = True; painted_after = None; t_wait = time.perf_counter()
+    while time.perf_counter() - t_wait < 40:
+        probe.frames = []; probe.stop = False
+        pt = threading.Thread(target=probe.run); pt.start(); time.sleep(0.05); probe.stop = True; pt.join()
+        if probe.frames and count(probe.frames[-1][1][0], PAGE_T) > len(probe.frames[-1][1][0]) // 4 * 0.9:
+            painted_after = time.perf_counter() - t_wait; break
+        time.sleep(0.25)
+    print(f'page painted after {painted_after if painted_after is None else round(painted_after, 1)} s of waiting', flush=True)
+    time.sleep(1.0)
     g = Grabber([square, band]); t = threading.Thread(target=g.run); t.start()
     try:
         time.sleep(1.5); rest_end = time.perf_counter()
