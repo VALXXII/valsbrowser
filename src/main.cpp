@@ -4418,7 +4418,7 @@ AccessibleLabel AccessibleButton(int id){
     case 'V':return {AU::ButtonName(AudioRows(NativeChrome::Motion::Now()),audioToolbar.Music()),L"",TR(a11y_audio_help),L"SiteAudio"};
     case 'P':return {TR(a11y_new_private_window),TR(key_ctrl_shift_n),privateWindow?TR(a11y_private_this_window_help):TR(a11y_private_new_window_help),L"Private"};
     case 'S':return {TR(chrome_tip_settings),L"",L"",L"Settings"};
-    case 'N':return {TR(a11y_annotate),TR(key_ctrl_shift_a),chrome.Enabled('N')?std::wstring(TR(a11y_annotate_help)):std::wstring(chrome.AnnotateTip()),L"AnnotateButton"};
+    case 'N':return {TR(a11y_annotate),TR(key_ctrl_shift_a),chrome.AnnotateHelp(),L"AnnotateButton"};
     // i18n-exempt-end
     default:return {L"",L"",L"",L""};
     }

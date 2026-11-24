@@ -1842,3 +1842,5 @@ void ChromeTipHover(int x,int y){
     chromeTip.Hide();
 }
 void ChromeTipHide(){if(chromeTip.Window())chromeTip.Hide();}
+// #125 E1b: while the live-site card hangs under the Annoter button, no toolbar tip shows (the one there goes at once).
+void ChromeTipBlock(bool on){chromeTip.Block(on);}

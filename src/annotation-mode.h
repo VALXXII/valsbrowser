@@ -295,7 +295,7 @@ void SyncChrome() {
     chrome.annotateShown = true; chrome.annotateActive = Selecting();
     std::wstring why; const bool ok = Available(Active(), &why);
     buttonOff = !ok && !s.active && why == TR(annotate_local_only);   // #125 v2: a live site — greyed, its click opens the E1b card
-    chrome.SetEnabled('N', ok || s.active || buttonOff);
+    chrome.SetEnabled('N', ok || s.active || buttonOff); chrome.annotateOff = buttonOff;   // E1a also for screen readers (AnnotateHelp)
     chrome.annotateTip = Selecting() ? std::wstring(TR(annotate_tip_quit)) : ok ? std::wstring(TR(chrome_tip_annotate)) : why == TR(annotate_local_only) ? why : TRF(annotate_tip_unavailable, why);   // #125 E1a: the live-site tooltip is a whole sentence
     if (!chrome.paintAnnotate) chrome.paintAnnotate = [](ID2D1RenderTarget* t, ID2D1Factory* f, ID2D1SolidColorBrush* b, D2D1_RECT_F box, NativeChrome::Motion::InteractionVisual iv, bool focus) {
         AUI::ToolbarVisual v; v.active = Selecting(); v.hover = chrome.Enabled('N') ? iv.hover : 0; v.press = iv.press; v.focus = focus; v.keyboard = keyboardModality; v.reduced = Reduced(); v.off = buttonOff;
@@ -1228,7 +1228,11 @@ void ShowLocalCard(const std::shared_ptr<Tab>& t) {
     NativeChrome::AnnotationLocalCard::Hooks h;
     h.discover = [] { Log(L"ANNOTATE live-site card: « Découvrir en 1 minute »"); OpenOnboarding(); };
     h.announce = [](const std::wstring& text) { Announce(text); };
-    if (localCard.Show(instance, window, base, button, host, accent, Reduced(), std::move(h))) Log(L"ANNOTATE live-site card shown (the mode is for local projects and files)");
+    // The click's own tooltip (E1a) goes at once and none shows over the card while it is open (Fix's PR #131 check: the
+    // card's appearance moves the pointer « over » the button again, which brought the tooltip back on top of the title).
+    // Blocked once shown: a card still fading out is finished inside Show, and its own `closed` lifts the block.
+    h.closed = [] { ChromeTipBlock(false); };
+    if (localCard.Show(instance, window, base, button, host, accent, Reduced(), std::move(h))) { ChromeTipBlock(true); Log(L"ANNOTATE live-site card shown (the mode is for local projects and files)"); }
 }
 void Activate(const Start& st) {
     auto t = Active(); std::wstring why;

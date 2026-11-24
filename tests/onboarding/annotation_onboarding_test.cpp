@@ -206,6 +206,35 @@ int wmain(int argc, wchar_t** argv) {
         card.ActivateForTest(NativeChrome::AnnotationLocalCard::Card::Discover);
         Expect(discover == 1 && closedCard == 1, "E1b « Découvrir en 1 minute »: the tutorial, the card gone");
     }
+    // ---- E1b over the toolbar's tooltips (Fix, PR #131: E1a's tip stayed on top of the card's title) ----
+    {
+        namespace T = NativeChrome::Tooltip;
+        T::Tip tip; const bool made = scratch && tip.Create(GetModuleHandleW(nullptr), scratch, argv[1]);   // never shown: no message loop runs its timer
+        const T::Content e1a{TR(annotate_local_only), L"", L""}, star{L"Ajouter aux favoris", L"Ctrl+D", L""};
+        const RECT annoter{1053, 48, 1077, 72}, favoris{1000, 48, 1024, 72};
+        if (made) {
+            tip.Hover(e1a, annoter); Expect(tip.Pending(), "tooltip: the greyed button's tip on its way (600 ms of rest)");
+            tip.Block(true);   // the card opens (ShowLocalCard)
+            Expect(tip.Blocked() && !tip.Pending() && !tip.Visible(), "E1b: the card opening dismisses the button's tip at once");
+            tip.Hover(e1a, annoter); Expect(!tip.Pending() && !tip.Visible(), "E1b: the pointer « moving » over the button again (the card's appearance) brings no tip back");
+            tip.Hover(star, favoris); Expect(!tip.Pending(), "E1b: no other toolbar tip while the card is open");
+            tip.Show(star, favoris); Expect(!tip.Visible(), "E1b: not even an immediate one (keyboard focus)");
+            tip.Block(false);  // the card gone (its `closed` hook)
+            tip.Hover(star, favoris); Expect(!tip.Blocked() && tip.Pending(), "E1b: the tips come back once the card is gone");
+            tip.HideNow();
+        } else Expect(false, "setup: a tooltip window (hidden)");
+        tip.Dispose();
+    }
+    // ---- E1a for screen readers: the greyed button's HelpText is the tooltip's sentence ----
+    {
+        NativeChrome::Chrome bar;
+        bar.SetEnabled('N', true); bar.annotateTip = TR(chrome_tip_annotate);
+        Expect(bar.AnnotateHelp() == TR(a11y_annotate_help), "UIA: on a local page the help says how to annotate");
+        bar.annotateOff = true; bar.annotateTip = TR(annotate_local_only);   // a live site: greyed but clickable (E1b)
+        Expect(bar.AnnotateHelp() == L"Mode Annotation - seulement sur vos projets et fichiers locaux", "UIA: on a live site the greyed button's help is E1a's text, word for word");
+        bar.annotateOff = false; bar.SetEnabled('N', false); bar.annotateTip = L"Annoter — indisponible";
+        Expect(bar.AnnotateHelp() == L"Annoter — indisponible", "UIA: any other unavailable state keeps its tooltip as help");
+    }
 
     // ---- English ----
     I18n::SetForProcess(I18n::Locale::En);
