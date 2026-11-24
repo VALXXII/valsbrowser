@@ -537,6 +537,10 @@ void Connect(const std::string& id, const std::string& methodId) {
     auto& info = agentInfo[id]; const Acp::AuthMethod* method = nullptr;
     for (const auto& m : info.auth) if (!methodId.empty() && m.id == methodId) method = &m;
     if (!method) method = AgentRuntime::PreferredSignIn(info.auth);
+    // O8 (first launch, signed out): the CLI itself says « signed out » (detection) and no session of this launch has named
+    // a sign-in method yet. Starting one only to learn them downloaded Node.js and the adapter first, then came back to the
+    // same « Se connecter »: a first click for nothing. The CLI's own sign-in needs neither (AgentRuntime::DefaultTerminalSignIn).
+    Acp::AuthMethod own; if (!method && info.auth.empty() && info.status == "notConnected" && info.cli) { own = AgentRuntime::DefaultTerminalSignIn(def->rt); method = &own; Diag(L"sign-in " + W(id) + L": no method named yet, the CLI's own sign-in"); }   // i18n-exempt: log detail
     if (!method) { if (id == agentId) { session.reset(); MaybeStartSession(); if (!session) StartSession(); } return; }   // no method known yet: a new start tells
     if (!method->terminal) {
         if (session && id == agentId && session->Authenticate(method->id)) { sessionStarting = true; SetAgentStatus(id, "starting", TR(chat_agent_starting)); }
