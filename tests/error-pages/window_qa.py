@@ -302,8 +302,21 @@ def main() -> int:
         dpr = dpi / 96
         print(f'window on a {dpi} DPI monitor (captures {"1x" if dpr == 1 else "brought back to 1x"})')
         # Real failures in a tab of their own (opened from the sandbox page: a plain new tab).
+        before = {t.get('id') for t in targets() if t.get('type') == 'page'}
         sandbox.eval('window.open("about:blank","_blank")'); time.sleep(1.5)
-        tab = page(lambda u: u == 'about:blank')
+        # the new tab's target (its URL may still read '' rather than about:blank: night run 24/11)
+        tab = None
+        for _ in range(12):
+            new = [t for t in targets() if t.get('type') == 'page' and t.get('id') not in before and t.get('url', '') in ('', 'about:blank')]
+            if new:
+                tab = Cdp(new[0]['webSocketDebuggerUrl']); break
+            time.sleep(0.4)
+        if tab is None:   # no reachable popup tab: the window's first tab is a plain new tab too (« Nouvel onglet », a data: page)
+            tab = page(lambda u: u == 'about:blank' or (u.startswith('data:text/html') and u != SANDBOX))
+            if hwnd:   # bring that first tab to the front (posted click on its tab, 96 DPI monitor: DIP = px)
+                for m, w in ((0x0200, 0), (0x0201, 1), (0x0202, 0)):
+                    user32.PostMessageW(hwnd, m, w, (100 & 0xFFFF) | (20 << 16))
+                time.sleep(1.0)
         tab.call('Fetch.enable', {'patterns': [{'urlPattern': '*', 'requestStage': 'Request'}]})
         for name, url in REAL:
             mark_old(tab); tab.call('Page.navigate', {'url': url})
@@ -318,6 +331,10 @@ def main() -> int:
             failures.append(f'unexpected requests (failed, never sent): {tab.leaked}')
         print(f'  requests failed locally by DevTools: {len(tab.failed)}')
         for name, command, variant in SANDBOXED:
+            if hwnd:   # the sandbox tab (second) in front for its own commands
+                for m, w in ((0x0200, 0), (0x0201, 1), (0x0202, 0)):
+                    user32.PostMessageW(hwnd, m, w, (250 & 0xFFFF) | (20 << 16))
+                time.sleep(0.6)
             before = {t['id'] for t in targets() if t.get('type') == 'page'}
             sandbox.eval(f'document.querySelector(\'[data-command="{command}"][data-variant="{variant}"]\').click()')
             new = None
