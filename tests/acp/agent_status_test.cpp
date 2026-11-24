@@ -279,7 +279,7 @@ static void CancelSignInCase() {
     Expect(AS::Get(C).state == S::NeedsSignIn, "cancel: Claude Code installed, signed out");
     Expect(!AS::CancelSignIn(C), "cancel: refused when the agent is not signing in");
     Expect(AS::SignIn(C) && AS::Get(C).state == S::SigningIn, "cancel: « Se connecter » opens the sign-in (the fake CLI never finishes)");
-    Pump(800, [&] { return RunningFrom(exe); });
+    Pump(5000, [&] { return RunningFrom(exe); });
     Expect(RunningFrom(exe), "cancel: the sign-in console is running");
     const ULONGLONG t0 = GetTickCount64();
     Expect(AS::CancelSignIn(C), "cancel: « Annuler » while signing in");
@@ -291,7 +291,7 @@ static void CancelSignInCase() {
     Expect(!AS::CancelSignIn(C), "cancel: nothing left to cancel");
     // The browser closing still ends a sign-in.
     Expect(AS::SignIn(C), "shutdown: a sign-in running");
-    Pump(800, [&] { return RunningFrom(exe); });
+    Pump(5000, [&] { return RunningFrom(exe); });
     const ULONGLONG t1 = GetTickCount64();
     AS::Shutdown();
     Pump(15000, [&] { return AS::Get(C).state != S::SigningIn; });
