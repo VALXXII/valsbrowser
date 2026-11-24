@@ -190,7 +190,11 @@ struct ErrorPageState { std::wstring shown,token; bool pending=false; int kind=0
     std::wstring starting; UINT64 startingId=0; /* last top-level navigation: only its failure gets the page */
     // Server certificate refused by the engine for the request `certUri` (CANCEL, never allowed): the
     // page shows only if the latest top-level navigation then fails for that same URL.
-    int certStatus=-1; std::wstring certUri,certIssuer; };
+    int certStatus=-1; std::wstring certUri,certIssuer;
+    // #121 sheet: the code the page shows (its copy button), and the consecutive failures of `triedUri` in
+    // this tab (« Essai : 2e tentative »; the time-out's 8 / 16 / 32 s retries), reset by another address or a success.
+    std::wstring code,triedUri; int tries=0;
+    int forcedCert=-1; std::wstring forcedIssuer; /* sandbox: a certificate case to show (status, example issuer) */ };
 struct Tab { unsigned serial=NextTabSerial(); Com<ICoreWebView2Controller> controller; Com<ICoreWebView2> view; Com<ICoreWebView2_15> faviconView; NativeChrome::FaviconState favicon; NativeChrome::Loading::State loading; std::wstring title=TR(tab_new),uri; bool closed=false,home=true,refreshing=false,certificateError=false;
     ULONGLONG hiddenAt=GetTickCount64(); bool sleeping=false; HttpsOnlyState https; // hiddenAt: when it last stopped being shown
     // Split view: group id (0 = none), relative size, use order (rails collapse the least
@@ -2206,8 +2210,9 @@ bool HttpExempt(const std::wstring& host){
         return a==127||a==10||a==0||(a==172&&b>=16&&b<=31)||(a==192&&b==168)||(a==169&&b==254);
     return false;
 }
-std::wstring HtmlText(const std::wstring& s){std::wstring r;for(wchar_t ch:s){switch(ch){case L'&':r+=L"&amp;";break;case L'<':r+=L"&lt;";break;case L'>':r+=L"&gt;";break;case L'"':r+=L"&quot;";break;case L'\'':r+=L"&#39;";break;default:r+=ch;}}return r;}
-// The "not secure" page for `insecure` (an http:// address), in place of the failed attempt.
+void PageFonts(NativeChrome::ErrorPages::Extras& x,bool mono); // elements-integration.h
+// The "not secure" page for `insecure` (an http:// address), in place of the failed attempt
+// (#121 layout and lock-open icon: NativeChrome::ErrorPages::InsecureHtml).
 void ShowInsecureInterstitial(const std::shared_ptr<Tab>& t,const std::wstring& insecure){
     if(halted||!t||t->closed||!t->view.p)return;
     std::wstring host,port;size_t end=0;if(!HttpParts(insecure,host,port,end))return;
@@ -2215,29 +2220,8 @@ void ShowInsecureInterstitial(const std::shared_ptr<Tab>& t,const std::wstring& 
     auto& h=t->https;h.shown=insecure;h.token=token;h.pending=true;h.upgrade=0;
     t->uri=insecure;t->home=false;t->title=TR(insecure_title);
     Log(L"HTTPS interstitial "+insecure);
-    const bool still=motion.ReducedMotion();
-    std::wstring html=std::wstring(L"<!doctype html><html lang=\"")+(I18n::Current()==I18n::Locale::En?L"en":L"fr")+L"\"><meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"dark\"><title>"+HtmlText(TR(insecure_title))+LR"HTML(</title><style>
-html,body{margin:0;height:100%;background:#171717;color:rgba(255,255,255,.9);font-family:"Inter Display",Inter,system-ui,sans-serif}
-body{display:flex;align-items:center;justify-content:center;padding:0 16px;box-sizing:border-box}
-main{width:100%;max-width:420px;display:flex;flex-direction:column;align-items:center;text-align:center)HTML";
-    html+=still?L"}":L";animation:in 150ms ease-out}@keyframes in{from{opacity:0}}@media (prefers-reduced-motion:reduce){main{animation:none}}";
-    html+=LR"HTML(
-h1{margin:0;font-size:20px;line-height:28px;font-weight:600;text-wrap:balance}
-p{margin:8px 0 24px;font-size:14px;line-height:20px;color:rgba(255,255,255,.6);text-wrap:balance;overflow-wrap:anywhere}
-p b{font-weight:500;color:rgba(255,255,255,.9)}
-div{display:flex;flex-wrap:wrap;justify-content:center;gap:8px}
-button{height:32px;padding:0 14px;border:0;border-radius:8px;font:inherit;font-size:14px;font-weight:500;cursor:pointer}
-button:focus-visible{outline:2px solid rgba(255,255,255,.9);outline-offset:2px}
-#back{background:rgba(255,255,255,.9);color:#171717}#back:hover{background:#fff}
-#go{background:rgba(255,255,255,.08);color:rgba(255,255,255,.9)}#go:hover{background:rgba(255,255,255,.12)}
-</style><main><h1>)HTML";
-    html+=HtmlText(TR(insecure_title))+L"</h1><p>";
-    // The host is escaped, then put in bold inside the escaped sentence (never the other way round).
-    html+=I18n::FormatText(HtmlText(TR(insecure_body)).c_str(),{L"<b>"+HtmlText(host)+L"</b>"});
-    html+=L"</p>\n<div><button id=\"back\" autofocus>"+HtmlText(TR(insecure_back))+L"</button><button id=\"go\">"+HtmlText(TR(insecure_continue))+L"</button></div></main>\n";
-    html+=LR"HTML(<script>const t=")HTML";
-    html+=token;
-    html+=LR"HTML(";const send=a=>window.chrome.webview.postMessage(t+":"+a);back.onclick=()=>send("back");go.onclick=()=>send("continue");</script></html>)HTML";
+    NativeChrome::ErrorPages::Extras extras;PageFonts(extras,false);extras.reducedMotion=motion.ReducedMotion();
+    const std::wstring html=NativeChrome::ErrorPages::InsecureHtml(host,token,extras);
     CheckTab(t->view->NavigateToString(html.c_str()),L"NavigateToString interstitial");
     if(t==Active())Update();
 }

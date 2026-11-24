@@ -945,6 +945,15 @@ I18N(error_unknown_code, L"Code inconnu", L"Unknown code")
 I18N(error_connection_back, L"Connexion rétablie", L"Connection restored")
 I18N(error_waiting_network, L"En attente du réseau…", L"Waiting for the network…")
 I18N(error_retry_in, L"Nouvel essai dans {0} s", L"Retrying in {0} s")
+I18N(error_offline_body_restored, L"Impossible d'ouvrir {0} : cet ordinateur n'est connecté à aucun réseau. Vérifiez le Wi-Fi ou le câble.", L"Can’t open {0}: this computer isn’t connected to any network. Check the Wi-Fi or cable.")
+I18N(error_sheet_code, L"Code", L"Code")  // same: same word in both languages
+I18N(error_sheet_issuer, L"Émetteur", L"Issuer")
+I18N(error_sheet_address, L"Adresse", L"Address")
+I18N(error_sheet_attempt, L"Essai", L"Attempt")
+I18N(error_attempt_first, L"1re tentative", L"First try")
+I18N(error_attempt_nth, L"{0}e tentative", L"Try {0}")
+I18N(error_copy_code, L"Copier le code", L"Copy code")
+I18N(error_code_copied, L"Code copié", L"Code copied")
 
 // ---- Main window: tabs, split view, new tab page, downloads, dialogs (src/main.cpp) ----
 I18N(tab_untitled, L"Onglet sans titre", L"Untitled tab")
