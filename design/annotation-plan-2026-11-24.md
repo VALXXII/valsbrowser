@@ -606,3 +606,36 @@ Pour les trois, le harnais enregistre maintenant ce qu'il faut pour conclure au 
 À surveiller au premier passage : les règles 9 et 10 changent la place de la bulle sur les éléments larges
 (`section.hero`, `div.plans`, les titres). Les suites écrites pour l'ancienne place (bulle sur l'élément, au coin du clic)
 peuvent demander une mise à jour d'attente ; chacune sera listée dans le rapport.
+
+## 9. À prévoir — les trois dispositions des onglets (#127)
+
+Pas encore fait : à ajouter au test général quand la branche `VALXXII/127-sidebar` de Builder sera fusionnée dans main.
+
+Le navigateur aura trois dispositions : onglets en haut, panneau latéral, panneau compact. La zone de page n'a pas la même
+taille ni la même position dans chacune ; or tout le placement de la bulle en dépend. Les parcours du mode annotation
+doivent donc tourner dans les trois.
+
+Ce que Builder doit fournir (demandé par le coordinateur) :
+
+- une option de lancement par disposition, non enregistrée dans le profil (par exemple `--tab-layout=top|side|compact`) ;
+- une ligne de journal au démarrage qui dit la disposition active ;
+- des noms d'accessibilité identiques dans les trois dispositions.
+
+Ce que le test général fera (partie en vraie fenêtre seulement ; la partie sans fenêtre ne dépend pas de la disposition) :
+
+| Élément | Prévu |
+|---|---|
+| `manifest.json` | Une liste `layouts` (`top`, `side`, `compact`) ; chaque suite dit dans quelles dispositions elle tourne |
+| Lanceur | Lance la suite une fois par disposition, avec l'option de lancement ; échec si la ligne de journal ne confirme pas la disposition demandée |
+| Rapport | Une ligne par suite et par disposition ; une disposition non lancée = rouge, comme toute suite sautée |
+| Couverture | La bulle entière dans la zone de page (#130) et « clic = bulle » sont vérifiés dans les trois |
+
+Proposition pour la durée, à valider (ce sont des **estimations**) :
+
+| Choix | Contenu | Durée de nuit |
+|---|---|---|
+| Aujourd'hui | Une seule disposition (en haut) | 1 h 45, prévoir 2 h 15 |
+| **Proposé** | Tout en haut ; les parcours et `comment-129-130` rejoués en latéral et en compact (≈ 23 min chacun) ; le monkey garde 3 graines, une par disposition | ≈ 2 h 30, prévoir 3 h |
+| Tout × 3 | Toutes les suites en vraie fenêtre dans les trois dispositions (≈ 1 h de plus par disposition) | ≈ 3 h 45, prévoir 4 h 30 |
+
+Le choix « proposé » tient encore dans une tournée de nuit de 3 h, mais sans marge ; « tout × 3 » n'y tient pas.
