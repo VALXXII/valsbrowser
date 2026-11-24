@@ -1151,8 +1151,9 @@
                                            onclick: () => { always = !always; sw.setAttribute("aria-checked", String(always)); } },
                                 h("span", { class: "sw", "aria-hidden": "true" }, h("i")), "Toujours autoriser") : h("span", { class: "always" });
     const respond = (opt, message) => {
-      if (!opt) return;
+      if (!opt || !S.perms[0] || S.perms[0].requestId !== p.requestId) return;   // one answer per request
       post("permission.respond", Object.assign({ requestId: p.requestId, optionId: opt.optionId }, message ? { message } : {}));
+      permAnswered(p, opt);
       S.perms.shift();
       refreshWaiting();
       renderDock(true);
@@ -1183,12 +1184,28 @@
     // Owner decision (24 Nov 2026) — the card tells the truth: « ↵ » on « Autoriser » and its `aria-keyshortcuts` are there
     // only while Entrée really allows, i.e. while the keyboard is in the card. After the user's own message the keyboard
     // stays out of it (SEC-23, unchanged): no symbol, nothing announced. They come back when the card takes the focus.
-    const keys = (on) => { card.classList.toggle("keys", on); if (on) allow.setAttribute("aria-keyshortcuts", "Enter"); else allow.removeAttribute("aria-keyshortcuts"); };
+    // The class is `kbd-on`, never `keys`: `.keys` is the composer's shortcuts row (centred, its own padding) — the card
+    // took that layout on the first click or Tab (owner's trial 0.3.952: title centred, the diff out of the card).
+    const keys = (on) => { card.classList.toggle("kbd-on", on); if (on) allow.setAttribute("aria-keyshortcuts", "Enter"); else allow.removeAttribute("aria-keyshortcuts"); };
     keys(card.__enter = !typing && document.hasFocus());
-    card.addEventListener("focusin", () => keys(true));
-    card.addEventListener("focusout", (e) => { if (!card.contains(e.relatedTarget)) keys(false); });
+    // One request, one click: « ↵ » widens « Autoriser » and pushes « Refuser » — while a button of the mouse is down the
+    // card does not change (the press and its release must land on the same button); the symbol comes at the release.
+    let pressing = null;
+    card.addEventListener("pointerdown", () => {
+      if (pressing) return;
+      const ac = pressing = new AbortController();
+      const up = () => { ac.abort(); pressing = null; if (card.isConnected) keys(card.contains(document.activeElement)); };
+      for (const ev of ["pointerup", "pointercancel", "blur"]) window.addEventListener(ev, up, { capture: true, signal: ac.signal });
+    }, true);
+    card.addEventListener("focusin", () => { if (!pressing) keys(true); });
+    card.addEventListener("focusout", (e) => { if (!pressing && !card.contains(e.relatedTarget)) keys(false); });
     requestAnimationFrame(() => { if (!typing && card.isConnected) card.focus(); });   // SEC-23: never on « Autoriser »
     return card;
+  }
+  // Refused: the step it was for never happened — the thread says nothing of it (no « A modifié », no « échec »).
+  function permAnswered(p, opt) {
+    const r = p.toolCallId && /^reject/.test(opt.kind) ? S.tools.get(p.toolCallId) : null;
+    if (r) { r.x.refused = true; queueRender(r.seg); }
   }
   function detailsBlock(text) {
     const pre = h("pre", { class: "detail", id: "perm-details", hidden: true, text });
@@ -1474,8 +1491,9 @@
     });
   }
   function permRespond(p, opt, message) {
-    if (!opt) return;
+    if (!opt || !S.perms[0] || S.perms[0].requestId !== p.requestId) return;   // one answer per request
     post("permission.respond", Object.assign({ requestId: p.requestId, optionId: opt.optionId }, message ? { message } : {}));
+    permAnswered(p, opt);
     S.perms.shift();
     closeView(true);
     refreshWaiting(); updateView(); renderDock(true);
@@ -1746,7 +1764,15 @@
     return running && !/…$/.test(t) ? t + "…" : t;
   }
   const isRunning = (x) => x.status === "in_progress" || x.status === "pending";
-  const stepTitle = (x) => stepLabel(x, isRunning(x));
+  // Until the user answers, a step is only wanted: « Veut modifier style.css » — the card's own words (the host's, in the
+  // browser's language: « … veut modifier … » / « … wants to edit … ») without the agent's name. « Modifie… » comes with
+  // the agreement, « A modifié » when the change is made; a refused step is not shown at all.
+  const wantOf = (x) => (isRunning(x) && !x.refused && S.perms.find((p) => p.toolCallId && p.toolCallId === x.id)) || null;
+  function wantLabel(p) {
+    const m = /(?:^|\s)(veut|wants) (\S.*)$/i.exec(p.title);
+    return m ? cap(m[1].toLowerCase()) + " " + m[2] : "Attend votre accord";
+  }
+  const stepTitle = (x) => { const p = wantOf(x); return p ? wantLabel(p) : stepLabel(x, isRunning(x)); };
   function bTipShow(el) {
     const rows = el._rows ? el._rows() : [];
     if (!rows.length) { if (btipFor === el) bTipHide(); return; }
@@ -1797,18 +1823,19 @@
   function bStatus(t) {
     if (!t.b) return;
     const steps = [];
-    for (const s of t.segs) if (s.kind === "steps") steps.push(...s.tools);
+    for (const s of t.segs) if (s.kind === "steps") steps.push(...s.tools.filter((x) => !x.refused));   // a refused step never happened
     let kind = "", label = "", rows = [];
     if (t.running) {
-      const cur = steps.slice().reverse().find((x) => x.status === "in_progress" || x.status === "pending");
-      label = cur ? stepTitle(cur) : S.perms.some((p) => p.turnId === t.id) ? "Attend votre accord" : t.segs.some((s) => s.kind === "thought" && !s.done) ? "Réfléchit…" : "Travaille…";
-      rows = bTipRows(steps.filter((x) => x !== cur && x.status !== "in_progress" && x.status !== "pending"));
+      const cur = steps.slice().reverse().find((x) => isRunning(x) && !x.refused);
+      // Paper « App réelle · Mode Commentaire 4 »: while a request waits, the status says so — never the step as if it ran
+      label = S.perms.some((p) => p.turnId === t.id) ? "Attend votre accord…" : cur ? stepTitle(cur) : t.segs.some((s) => s.kind === "thought" && !s.done) ? "Réfléchit…" : "Travaille…";
+      rows = bTipRows(steps.filter((x) => x !== cur && !isRunning(x) && !x.refused));
       kind = "run";
     } else if (t.stop === "cancelled") { kind = "stop"; label = "S'est arrêté"; }
     else if (t.stop !== "error" && steps.length) {
       kind = "done"; label = "Historique";
       const hist = [];   // R43: the announcements join the list, in their order
-      for (const s of t.segs) { if (s.kind === "text" && s.closed) hist.push({ say: plain(s.text) }); else if (s.kind === "steps") hist.push(...s.tools); }
+      for (const s of t.segs) { if (s.kind === "text" && s.closed) hist.push({ say: plain(s.text) }); else if (s.kind === "steps") hist.push(...s.tools.filter((x) => !x.refused)); }
       rows = bTipRows(hist);
     }
     t.stRows = rows;
@@ -2182,13 +2209,14 @@
   const baseName = (p) => p.split(/[\\/]/).pop();
   const listFr = (xs) => (xs.length < 2 ? xs.join("") : xs.slice(0, -1).join(", ") + " et " + xs[xs.length - 1]);
   const lowerFirst = (t) => (t && t.length > 1 && t[1] === t[1].toLowerCase() ? t[0].toLowerCase() + t.slice(1) : t);
+  // The folded line of a group. What is done is said as done; a step waiting for the user's agreement is said as wanted
+  // (« A lu 2 fichiers, veut modifier style.css ») — never as done.
   function stepsSummary(tools) {
-    if (tools.length === 1) {
-      const p = stepPart(tools[0]);
-      return stepLabel(tools[0], false);
-      return p.title != null ? p.title || "1 étape" : summaryText([p]);
-    }
-    return summaryText(tools.map(stepPart));
+    if (tools.length === 1) return wantOf(tools[0]) ? stepTitle(tools[0]) : stepLabel(tools[0], false);
+    const wanted = tools.filter((x) => wantOf(x)), rest = tools.filter((x) => !wantOf(x));
+    if (!wanted.length) return summaryText(tools.map(stepPart));
+    const parts = (rest.length === 1 ? [stepLabel(rest[0], false)] : rest.length ? [summaryText(rest.map(stepPart))] : []).concat(wanted.map(stepTitle));
+    return parts.map((t, i) => (i ? lowerFirst(t) : t)).join(", ");
   }
   function summaryText(parts) {
     const groups = [], byKey = new Map(), titles = [];
@@ -2227,7 +2255,7 @@
     const run = x.status === "in_progress" || x.status === "pending";
     const fail = x.status === "failed";
     const ic = run ? h("span", { class: "spin", style: "display:flex" }, icon("spinner")) : fail ? icon("x") : icon("check");
-    const label = stepLabel(x, run);
+    const label = stepTitle(x);
     return h("div", { class: "step " + (run ? "run" : fail ? "fail" : "done"), role: "listitem" }, ic, h("span", { text: label }), fail ? h("span", { class: "fail-tag", text: " (échec)" }) : null);
   }
   function stepsSeg(t) {
@@ -2236,11 +2264,14 @@
     const seg = { kind: "steps", tools: [], el, render() {
       if (t.b) { bStatus(t); return; }
       clear(el);
+      const tools = seg.tools.filter((x) => !x.refused);     // a refused step never happened: nothing is said of it
+      el.hidden = !tools.length;
+      if (!tools.length) return;
       const liveGroup = t.running && seg === t.segs[t.segs.length - 1] && !t.waitEl;
-      const list = h("div", { class: "steps", role: "list" }, seg.tools.map(stepLine));
+      const list = h("div", { class: "steps", role: "list" }, tools.map(stepLine));
       if (liveGroup) { el.appendChild(list); return; }
-      const failed = seg.tools.filter((x) => x.status === "failed").length;
-      const btn = h("button", { class: "fold", type: "button", "aria-expanded": String(open) }, h("span", { text: stepsSummary(seg.tools) }),
+      const failed = tools.filter((x) => x.status === "failed").length;
+      const btn = h("button", { class: "fold", type: "button", "aria-expanded": String(open) }, h("span", { text: stepsSummary(tools) }),
         failed ? h("span", { class: "fail", text: " (échec)" }) : null, icon("chevron", "chev"));
       btn.addEventListener("click", () => { open = !open; seg.render(); stick(); });
       el.appendChild(btn);
@@ -2255,7 +2286,7 @@
     if (seg && seg.kind === "text" && t.running) markFollow(t, seg, true);   // R43
     if (!seg || seg.kind !== "steps") seg = stepsSeg(t);
     else noteNew(1);
-    const x = { id: m.id, title: m.title, kind: m.kind || "other", status: m.status || "pending", locations: m.locations || [], diff: m.diff, summary: validSummary(m.summary) };
+    const x = { id: m.id, title: m.title, kind: m.kind || "other", status: m.status || "pending", locations: m.locations || [], diff: m.diff, summary: validSummary(m.summary), refused: m.refused === true };
     seg.tools.push(x);
     S.tools.set(m.id, { x, seg, t });
     queueRender(seg);
@@ -2267,9 +2298,10 @@
     if (!r) return;
     for (const k of ["title", "status", "locations", "diff"]) if (m[k] != null) r.x[k] = m[k];
     if (m.summary != null) r.x.summary = validSummary(m.summary);
+    if (m.refused === true) r.x.refused = true;
     queueRender(r.seg);
     refreshFollow(r.t);
-    if (m.status === "failed") say("Étape en échec : " + r.x.title);
+    if (m.status === "failed" && !r.x.refused) say("Étape en échec : " + r.x.title);
   }
 
   function onPlan(m) {
@@ -2329,9 +2361,12 @@
     const title = permissionTitle(m);
     // B 1.9 (R9): after each `thread.reset` (every opening of the bubble) the host sends again the request still waiting —
     // the card comes back; the same request twice never makes two cards
-    const again = S.perms.findIndex((p) => p.requestId === m.requestId);
-    if (again >= 0) S.perms.splice(again, 1);
-    S.perms.push({ requestId: m.requestId, turnId: m.turnId || S.lastTurn, title, details: permissionDetails(m), kind: m.kind, diff: validDiff(m.diff), command: typeof m.command === "string" ? m.command : null, options: m.options });
+    const req = { requestId: m.requestId, toolCallId: ID.test(m.toolCallId) ? m.toolCallId : null, turnId: m.turnId || S.lastTurn, title, details: permissionDetails(m), kind: m.kind, diff: validDiff(m.diff), command: typeof m.command === "string" ? m.command : null, options: m.options };
+    // …and it stays the request it was: its place in the queue, its card (what the user wrote in it, its switch), the time
+    // it appeared (SEC-23) — and its one answer
+    const again = S.perms.find((p) => p.requestId === m.requestId);
+    if (again) { Object.assign(again, req); refreshWaiting(); renderDock(true); return; }
+    S.perms.push(req);
     refreshWaiting();
     renderDock(true);
     noteNew(1);

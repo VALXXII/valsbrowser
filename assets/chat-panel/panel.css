@@ -251,7 +251,7 @@ svg.i { display: block; flex-shrink: 0; }
 .btn.ghost { background: transparent; color: var(--w80); padding: 0 10px; }
 /* the key on « Autoriser » (Paper, « carte d'autorisation · la carte a le clavier »): 16 high, radius 3, white 16 % on the accent (#3F995F on #1A8641), 11 / 14 white */
 .btn .kbd { display: flex; align-items: center; flex-shrink: 0; height: 16px; padding: 0 4px; border-radius: 3px; background: rgb(255 255 255 / 16%); color: #FFFFFF; font-size: 11px; line-height: 14px; font-weight: 400; }
-.perm:not(.keys) .btn.primary .kbd { display: none; }   /* « ↵ » only while Entrée really allows (the keyboard is in the card) */
+.perm:not(.kbd-on) .btn.primary .kbd { display: none; }   /* « ↵ » only while Entrée really allows (the keyboard is in the card) */
 @media (hover: hover) { .btn:hover { background: var(--hover); } .btn.primary:hover { background: #5579FF; } .btn.ghost:hover { background: var(--fill6); color: #FFFFFF; } }
 
 /* error card (6.7 D) */
