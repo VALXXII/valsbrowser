@@ -1203,6 +1203,8 @@ public:
         target->PushAxisAlignedClip(R(L.tabsView),D2D1_ANTIALIAS_MODE_ALIASED);
         const int n=std::min((int)titles.size(),(int)L.tabs.size());
         for(int i=0;i<n;++i){if(L.tabs[i].bottom<=L.tabsView.top||L.tabs[i].top>=L.tabsView.bottom)continue;
+            // Dragged onto the page (split view, « Vue partagée dans la colonne » 3): its place stays empty, a 1 DIP inner outline.
+            if(i==liftedIndex){const auto r=R(L.tabs[i]);Color(K::lifted);target->DrawRoundedRectangle(D2D1::RoundedRect({r.left+.5f,r.top+.5f,r.right-.5f,r.bottom-.5f},Design::Radius::control-.5f,Design::Radius::control-.5f),brush,1);continue;}
             const std::wstring title=titles[i].empty()?std::wstring(i<(int)sideHome.size()&&sideHome[i]?TR(tab_new):TR(chrome_tab_untitled_tip)):titles[i];
             DrawSideTab(L,i,title,selected,hover,focus,now,R(L.tabs[i]),i==sidebarDrag?K::origin:1.f,labels);}
         {const auto r=R(L.newTab);const float hv=Hovered('T',hover,now);if(hv>0)White(r,Design::Radius::control,K::tabHover*hv);if(focus=='T')FocusRing(r,Design::Radius::control);

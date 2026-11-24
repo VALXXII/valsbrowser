@@ -4,7 +4,11 @@ param([string]$DependencyRoot = $PSScriptRoot)
 #  2. tests/settings_test.cpp: the « sidebar=complete|compact » key;
 #  3. tests/ui/sidebar_render_test.cpp: the production painter in its column layout, PNGs + pixel checks
 #     (build/sidebar-qa/renders), then tools/sidebar/compose.py: side-by-side with the Paper boards
-#     (design/127-sidebar-evidence/paper -> design/127-sidebar-evidence).
+#     (design/127-sidebar-evidence/paper -> design/127-sidebar-evidence);
+#  4. tests/ui/sidebar_split_drag_test.cpp: a tab dragged from the column onto the page = split view (the real window
+#     procedure, its window and the drag overlay off screen at -32000, never shown): reorder / lift / grid / tear-off /
+#     Escape, panel, compact, the column over the page, motion; renders in build/sidebar-split-qa.
+#     WebView2 headers: deps/webview2 of $DependencyRoot, or WEBVIEW2_INCLUDE.
 # The keyboard shortcut (Ctrl+Maj+,) is covered by test-shortcuts.ps1 (it compiles the whole browser).
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
@@ -24,4 +28,9 @@ if ($LASTEXITCODE -ne 0) { throw 'sidebar_render_test compilation failed.' }
 & "./$out/sidebar_render_test.exe" $PSScriptRoot "$PSScriptRoot/$out/renders"; if ($LASTEXITCODE -ne 0) { throw 'sidebar_render_test failed.' }
 python tools/sidebar/compose.py "$out/renders" design/127-sidebar-evidence
 if ($LASTEXITCODE -ne 0) { throw 'compose failed.' }
+$wv2 = if ($env:WEBVIEW2_INCLUDE) { $env:WEBVIEW2_INCLUDE } else { "$DependencyRoot/deps/webview2/build/native/include" }
+New-Item -ItemType Directory -Force build/sidebar-split-qa | Out-Null
+& $gxx -std=c++17 -O2 -Wall -Wextra -Wno-unknown-pragmas -Wno-cast-function-type -Wno-misleading-indentation -Wno-missing-field-initializers -static -DTVG_STATIC "-I$DependencyRoot/deps/thorvg-1.1.3/inc" "-I$wv2" tests/ui/sidebar_split_drag_test.cpp src/native-lottie.cpp "$DependencyRoot/build/lottie-backend/src/libthorvg-1.a" -o build/sidebar-split-qa/sidebar_split_drag_test.exe -lole32 -luuid -lcomctl32 -lshlwapi -lgdi32 -ld2d1 -ldwrite -lwindowscodecs -ldwmapi
+if ($LASTEXITCODE -ne 0) { throw 'sidebar_split_drag_test compilation failed.' }
+& ./build/sidebar-split-qa/sidebar_split_drag_test.exe; if ($LASTEXITCODE -ne 0) { throw 'sidebar_split_drag_test failed.' }
 Write-Host 'test-sidebar: ok'

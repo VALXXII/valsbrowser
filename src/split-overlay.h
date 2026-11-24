@@ -196,10 +196,11 @@ private:
             b->SetColor(D2D1::ColorF(0, 0, 0, .028f * c.opacity));
             t->FillRoundedRectangle(D2D1::RoundedRect({r.left - s, r.top - s + 4, r.right + s, r.bottom + s + 4}, 6 + s, 6 + s), b);
         }
-        b->SetColor(D2D1::ColorF(41 / 255.f, 41 / 255.f, 41 / 255.f, c.opacity)); t->FillRoundedRectangle(D2D1::RoundedRect(r, 6, 6), b);
-        b->SetColor(D2D1::ColorF(1, 1, 1, .10f * c.opacity)); t->DrawRoundedRectangle(D2D1::RoundedRect({r.left + .5f, r.top + .5f, r.right - .5f, r.bottom - .5f}, 5.5f, 5.5f), b, 1);
+        // #127 (Paper « Vue partagée dans la colonne » 24BU-0, motion spec « soulevé »): #2A2A2A, a 1 DIP #3A3A3A border.
+        b->SetColor(D2D1::ColorF(42 / 255.f, 42 / 255.f, 42 / 255.f, c.opacity)); t->FillRoundedRectangle(D2D1::RoundedRect(r, 6, 6), b);
+        b->SetColor(D2D1::ColorF(58 / 255.f, 58 / 255.f, 58 / 255.f, c.opacity)); t->DrawRoundedRectangle(D2D1::RoundedRect({r.left + .5f, r.top + .5f, r.right - .5f, r.bottom - .5f}, 5.5f, 5.5f), b, 1);
         Fav(t, b, c.favicon, {r.left + 8, r.top + 8, r.left + 24, r.top + 24}, c.opacity);
-        Text(t, b, c.title, {r.left + 32, r.top, r.right - 8, r.bottom}, true, c.opacity);
+        if (r.right - 8 > r.left + 32) Text(t, b, c.title, {r.left + 32, r.top, r.right - 8, r.bottom}, true, c.opacity);   // a card flying home to a compact row (32 wide) has no room for it
     }
 public:
     // The refusal pill beside the pointer (p.x = pointer + 14), kept 8 DIP inside the window: it moves to the
