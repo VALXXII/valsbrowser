@@ -442,8 +442,12 @@ inline LRESULT DefWindowProcNoCaption(HWND window,UINT message,WPARAM w,LPARAM l
 // A window's text set only when it really changes: no WM_SETTEXT (nor its caption, accessibility and taskbar work)
 // for the same title on each of the page's address, history or loading events.
 inline bool SetTextIfChanged(HWND window,const std::wstring& text){
-    if(!window)return false;const int n=GetWindowTextLengthW(window);std::wstring now(n>0?n:0,L'\0');
-    if(n>0)now.resize(std::max(0,GetWindowTextW(window,now.data(),n+1)));if(now==text)return false;return SetWindowTextW(window,text.c_str())!=FALSE;}
+    if(!window)return false;
+    const int n=GetWindowTextLengthW(window);
+    std::wstring now(n>0?n:0,L'\0');
+    if(n>0)now.resize(std::max(0,GetWindowTextW(window,now.data(),n+1)));
+    if(now==text)return false;
+    return SetWindowTextW(window,text.c_str())!=FALSE;}
 inline bool HandleFrame(HWND window,UINT message,WPARAM w,LPARAM,LRESULT& result){switch(message){case WM_NCCALCSIZE:result=0;return true;case WM_NCPAINT:result=0;return true;case WM_NCACTIVATE:result=DefWindowProcW(window,message,w,-1);InvalidateRect(window,nullptr,FALSE);return true;}return false;}
 // ---------------------------------------------------------------------------------
 // Zero drop shadow (user decision, 2026-11-09). The earlier acceptance of DWM's
