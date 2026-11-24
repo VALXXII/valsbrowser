@@ -61,6 +61,16 @@ int main(){
       SidebarPrepare();Assert(SidebarEdgeKey(VK_LEFT)&&settings.tabsPosition==P::Compact);Assert(SidebarEdgeKey(VK_RIGHT)&&settings.tabsPosition==P::Side&&settings.sideWidth==220);
       Assert(SidebarEdgeKey(VK_RETURN)&&settings.sideWidth==248);Assert(!SidebarEdgeKey('A'));
       chrome.width=700;SidebarPrepare();Assert(!chrome.sidebarResizable&&!SidebarEdgeDown(246));chrome.width=1180;SidebarPrepare();Modifiers(true,true);}
+     // The empty-area right-click menu (Paper « Clic droit zone vide · barre du haut / panneau latéral / compact »): « Nouvel
+     // onglet », « Rouvrir l'onglet fermé », a separator, the 3-view picker (the current layout active); where it answers.
+     {SetTabsPosition(P::Side);const auto items=EmptyAreaMenuItems();
+      Assert(items.size()==4&&items[0].id==EmptyNewTab&&items[0].label==TR(tab_new)&&items[1].id==EmptyReopen&&items[1].label==TR(cmd_reopen_tab)&&items[2].separator&&items[3].kind==NativeChrome::ContextMenu::Kind::Segmented&&items[3].segments.size()==3&&!items[3].segments[0].active&&items[3].segments[1].active&&items[3].segments[1].id==EmptyPosition+1);
+      chrome.side=SBar::Compute(chrome.SideInput(SBar::Mode::Complete,3));const auto& L=chrome.side;
+      Assert(EmptyAreaMenuAt(0,100,L.tabsView.bottom-4)&&EmptyAreaMenuAt('T',100,(L.newTab.top+L.newTab.bottom)/2)&&EmptyAreaMenuAt('Y',30,L.tools[0].top+4));   // below the list, « + », a tool
+      Assert(!EmptyAreaMenuAt(NativeChrome::TabBase+1,100,(L.tabs[1].top+L.tabs[1].bottom)/2)&&!EmptyAreaMenuAt(NativeChrome::CloseBase+1,200,40)&&!EmptyAreaMenuAt(NativeChrome::BookmarkBase,20,100)&&!EmptyAreaMenuAt('L',100,60)&&!EmptyAreaMenuAt(0,L.column+20,300));   // a tab, its close, a bookmark, the address, the page
+      SetTabsPosition(P::Compact);chrome.side=SBar::Compute(chrome.SideInput(SBar::Mode::Compact,3));Assert(EmptyAreaMenuAt(0,20,chrome.side.tabsView.bottom-4)&&!EmptyAreaMenuAt(0,60,300));
+      SetTabsPosition(P::Top);Assert(EmptyAreaMenuAt(0,600,20)&&EmptyAreaMenuAt('T',300,20)&&!EmptyAreaMenuAt(NativeChrome::TabBase,100,20)&&!EmptyAreaMenuAt(0,600,60));   // the top bar's tab row only
+      Assert(EmptyAreaMenuItems()[3].segments[0].active);}
      SetTabsPosition(P::Top);Assert(!chrome.sidebar&&LayoutLine()==L"layout: top");
      // Files written by the trial builds migrate (layout + sidebar keys).
      {std::istringstream older("browser-settings 1\nlayout=side-panel\nsidebar=compact\n");settings=BrowserSettings::Read(older);ApplyLayout();Assert(chrome.sidebar&&settings.tabsPosition==P::Compact);settings=BrowserSettings::State{};ApplyLayout();Assert(!chrome.sidebar);}}   // Ctrl+Maj+N: nouvelle fenêtre privée, without any toolbar button

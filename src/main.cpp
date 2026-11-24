@@ -3468,6 +3468,26 @@ CM::Item TabsPositionMenu(int base){std::vector<CM::Segment> seg;
     for(int i=0;i<BrowserSettings::TabsPositionCount;++i){const auto p=static_cast<BrowserSettings::TabsPosition>(i);seg.push_back({base+i,BrowserSettings::Info(p).label,settings.tabsPosition==p});}
     return CM::Segmented(TR(settings_tabs_position),std::move(seg),[](ID2D1RenderTarget* t,ID2D1Factory* f,ID2D1SolidColorBrush* b,D2D1_RECT_F box,int i,int state){
         NativeChrome::TabsPositionIcon::Paint(t,f,b,box,NativeChrome::ContextMenu::Layout::segIcon,i,static_cast<NativeChrome::TabsPositionIcon::State>(state));});}
+// #127 (Paper « Clic droit zone vide · barre du haut / panneau latéral / compact », maquette prête): a right-click on
+// the tab bar, the side panel or the compact column anywhere but a tab (and the bookmarks, the bar's / grid's blank
+// and the address, which keep their own menus) opens the short menu: « Nouvel onglet », « Rouvrir l'onglet fermé »,
+// then the 3-view picker of the tab menu (same component, items, strings and commands).
+enum EmptyAreaItem{EmptyNewTab=1,EmptyReopen=2,EmptyPosition=40};
+std::vector<CM::Item> EmptyAreaMenuItems(){return {CM::Command(EmptyNewTab,TR(tab_new),L"Ctrl+T"),CM::Command(EmptyReopen,TR(cmd_reopen_tab),TR(key_ctrl_shift_t),!closedTabs.empty()&&pages.size()<128),CM::Separator(),TabsPositionMenu(EmptyPosition)};}
+// Where the short menu answers (client DIP; `id` the region under the pointer): the top bar's tab row, the column
+// (docked or over the page) — never a tab or its close, a bookmark tile, « » », the address or the grid's blank.
+bool EmptyAreaMenuAt(int id,float x,float y){
+    if(NativeChrome::TabIndex(id)>=0||NativeChrome::IsBookmark(id)||id=='O'||id=='L'||id==NativeChrome::Chrome::SidebarGridToggleId||id==NativeChrome::Chrome::SidebarManageId)return false;
+    if(!chrome.sidebar)return y<44;   /* the tab row, above the toolbar (the former blank-strip threshold) */
+    const auto& L=chrome.SideColumn();const float column=chrome.sidebarOverlay?L.column:chrome.side.column;
+    if(x>=column)return false;if(!id&&chrome.bandShown&&L.gridBlock.Contains(x,y))return false;
+    return true;}
+void EmptyAreaMenu(int anchor){
+    contextMenu.onSegment=[](RECT r,const std::wstring& tip,bool keyboard){if(tip.empty()){ChromeTipHide();return;}RECT bounds=NativeChrome::TooltipPlacement::VisibleRect(window);if(keyboard)chromeTip.Show(TipContent(tip.c_str()),r,&bounds);else chromeTip.Hover(TipContent(tip.c_str()),r,&bounds);};
+    const int chosen=ShowMenu(EmptyAreaMenuItems(),anchor);contextMenu.onSegment=nullptr;ChromeTipHide();
+    if(chosen==EmptyNewTab)Command('T');else if(chosen==EmptyReopen)Command('U');
+    else if(chosen>=EmptyPosition&&chosen<EmptyPosition+BrowserSettings::TabsPositionCount)SetTabsPosition(static_cast<BrowserSettings::TabsPosition>(chosen-EmptyPosition));
+}
 void TabContextMenu(int tabIndex,int anchor){
     if(tabIndex<0||tabIndex>=(int)pages.size())return;
     enum{NewTabItem=1,ReloadItem,CopyItem,ReopenItem,CloseItem,CloseOthersItem,PrintItem,PdfItem,PlaceRight=20,PlaceLeft,PlaceTop,PlaceBottom,ReverseItem,OrientItem,ResizeItem,QuitItem,TabsPositionItem=40};
@@ -4883,7 +4903,6 @@ void SidebarWheel(POINT client,int delta){const float d=GetDpiForWindow(window)/
     if(!L.tabsView.Contains(x,y))return;
     chrome.sidebarScroll=std::clamp(L.scroll-delta/120.f*48.f,0.f,L.maxScroll);BuildChrome();InvalidateChrome();}
 // A right click on the list's empty space opens the tab list menu, as on the empty tab row before.
-bool SidebarListBlank(float x,float y){const auto& L=chrome.SideColumn();return chrome.sidebar&&L.tabsView.Contains(x,y)&&SBar::RowAt(L,x,y)<0;}
 // Vertical drag in the list (05): the row follows the pointer, its place stays hollow, an accent line marks the drop.
 bool SidebarDragMove(POINT point){
     if(!tabDrag.tab)return false;const float d=GetDpiForWindow(window)/96.f,y=point.y/d;
@@ -5017,7 +5036,7 @@ case WM_RBUTTONUP:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET
     if(NativeChrome::IsBookmark(id)&&NativeChrome::BookmarkIndex(id)<(int)chrome.bandItems.size()){POINT p{};GetCursorPos(&p);BookmarkContextMenu(chrome.bandItems[NativeChrome::BookmarkIndex(id)].id,p,nullptr,false);return 0;}
     if(!chrome.sidebar&&chrome.bandShown&&y>=NativeChrome::Design::Vertical::toolbarBottom&&y<chrome.ContentTop()){POINT p{};GetCursorPos(&p);BandContextMenu(p);return 0;}
     if(chrome.sidebar&&!id&&chrome.bandShown&&chrome.SideColumn().gridBlock.Contains(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),y)){POINT p{};GetCursorPos(&p);BandContextMenu(p);return 0;}
-    if(NativeChrome::TabIndex(id)>=0)TabContextMenu(NativeChrome::TabIndex(id),0);else if(chrome.sidebar?SidebarListBlank(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),y):GET_Y_LPARAM(l)<S(44))TabMenu(0);return 0;}
+    if(NativeChrome::TabIndex(id)>=0)TabContextMenu(NativeChrome::TabIndex(id),0);else if(EmptyAreaMenuAt(id,GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),y))EmptyAreaMenu(0);return 0;}   /* #127: the short menu with the 3 views */
 // Menu key / Shift+F10 arrive with lParam (-1,-1): on a focused tab or its close button, open the right-click menu
 // below it; on the flower or the gear, open their own menu.
 case WM_CONTEXTMENU:if(GET_X_LPARAM(l)==-1&&GET_Y_LPARAM(l)==-1&&GetFocus()==h){int tabIndex=NativeChrome::TabIndex(keyboardFocus);if(tabIndex>=0&&tabIndex<(int)pages.size()){keyboardModality=true;TabContextMenu(tabIndex,keyboardFocus);return 0;}if(keyboardFocus==900||keyboardFocus=='S'){keyboardModality=true;Command(keyboardFocus);return 0;}
