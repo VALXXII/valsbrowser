@@ -36,11 +36,19 @@ void ApplyStatus(const std::string& id, const AgentStatus::Status& s) {
     if (preparing && a.status == "preparing" && s.state != AgentStatus::State::Installing) return;   // the chat's own download shows its progress
     a.status = v.status; a.detail = ChatAgentText(v.text); a.progress = -1;
 }
-// The agent is chosen without a screen: this site's last one or the user's pick; else Claude Code when it is installed;
-// else the first agent that is.
+// The agent is chosen without a screen: this site's last one or the user's pick (agentChosen); else, once BOTH agents are
+// detected (never the one whose detection answered first: the hub tells them one by one), a ready one — Claude Code
+// first —, else an installed one. Never under a conversation, a session or a turn; a ready current agent is kept.
 void ChooseInstalledAgent() {
-    if (!agentChosen && !turn.active && convo.data.items.empty() && !session && !agentInfo[agentId].cli)
-        for (const auto& def : Agents) if (agentInfo[def.id].cli) { agentId = def.id; convo.data.head.agentId = agentId; Diag(std::wstring(L"agent chosen by itself (the only one installed): ") + W(def.id)); break; }
+    if (agentChosen || turn.active || !convo.data.items.empty() || session) return;
+    for (const auto& def : Agents) if (AgentStatus::Get(def.rt).state == AgentStatus::State::Unknown) return;
+    const AgentDef* best = nullptr;
+    for (const auto& def : Agents) if (AgentStatus::Get(def.rt).Ready()) { best = &def; break; }
+    if (!best) for (const auto& def : Agents) if (agentInfo[def.id].cli) { best = &def; break; }
+    const AgentDef* now = AgentOf(agentId);
+    if (!best || best == now || (now && AgentStatus::Get(now->rt).Ready()) || (now && agentInfo[agentId].cli && !AgentStatus::Get(best->rt).Ready())) return;
+    agentId = best->id; convo.data.head.agentId = agentId;
+    Diag(std::wstring(L"agent chosen by itself (") + (AgentStatus::Get(best->rt).Ready() ? L"ready" : L"the only one installed") + L"): " + W(best->id));   // i18n-exempt: log detail
 }
 void ApplyAllStatuses() { for (const auto& def : Agents) ApplyStatus(def.id, AgentStatus::Get(def.rt)); }
 void StartSession();
