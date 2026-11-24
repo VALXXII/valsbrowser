@@ -236,7 +236,10 @@ def run_main():
         C.click_page('.title')
         # final QA: the panel is created in advance (O1): its opening by a click may be logged « panel in place » / « panel opened »
         opened = logged(r'CHAT (a click on an element opens the chat|panel in place|panel opened)', m1, 8)
-        ready = logged(r'CHAT panel ready', m1, 15)
+        # the panel's page is created when the mode starts (O1, « Chat à droite »): it says « panel ready » ONCE, usually before
+        # this click. Waited for after the click it was never found (15 s lost, step 7 failed on the 20:00 release's pass,
+        # ae51111): read from the start of the log — ready by the time the click has opened the chat, whenever it was said
+        ready = logged(r'CHAT panel ready', 0, 15)
         time.sleep(0.4)
         step('7 · chat closed: a click on an element OPENS the chat (no note panel)', opened is not None and ready is not None and not [w for w in Q.windows() if w[1] == 'BrowserAnnotationNote'])
         has_chip = C.wait_for(chips, 10)
@@ -369,45 +372,15 @@ def run_main():
         C.shortcut('D'); logged(r'CHAT panel closed', 0, 5); time.sleep(0.6)
         C.ws_for(C.URL).call('Page.navigate', {'url': other})
         C.wait_for(lambda: C.ws_for(other) is not None and pg('document.readyState', other) == 'complete', 15); time.sleep(0.8)
-        mA = mark()   # another site: the mode ended with the navigation; it starts again here
-        C.shortcut('A'); logged(r'ANNOTATE mode on', mA, 6); time.sleep(1.2)
-        if C.invoke('AnnotationConnectLater') or C.invoke('AnnotationConnectClose'):
-            time.sleep(0.6)
-        u32.SetForegroundWindow(Q.main_window())
-        m4 = mark()
-        tx, ty = page_point('.title', prefix=other)
-        u32.SetCursorPos(tx, ty); time.sleep(0.3)
-        click_on('.title', other)
-        note = C.wait_for(lambda: [w for w in Q.windows() if w[1] == 'BrowserAnnotationNote'], 6)
-        step('V1.3 · a site that is not local (no chat): a click opens the small note panel, as before', bool(note) and 'CHAT panel opened' not in C.log_text()[m4:])
-        if note:
-            import ctypes as _c
-            time.sleep(0.6)   # the panel's own layer shows once its entrance (a ghost) has settled
-            layer = [w for w in Q.windows() if w[1] == 'BrowserAnnotationLayer' and w[2] == 'Nouvelle annotation']
-            probe = _c.windll.gdi32.CreateRectRgn(0, 0, 0, 0)
-            no_region = bool(layer) and C.user32.GetWindowRgn(layer[0][0], probe) == 0 and C.user32.GetWindowRgn(note[0][0], probe) == 0
-            _c.windll.gdi32.DeleteObject(probe)
-            step('note panel: per-pixel-alpha layer, no window region (smooth corners)', no_region and bool(C.user32.GetWindowLongW(layer[0][0], -20) & 0x80000) if layer else False)
-            ids = C.uia('-List')
-            step('…with « Ajouter » and no « Demander à l\'agent » (no chat on this site)', 'AnnotationAdd' in ids and 'AnnotationNoteAskAgent' not in ids)
-            edit = Q.find_child(note[0][0], 'Edit')
-            Q.post_text(NOTE, edit); time.sleep(0.4)
-            typed = cursor()
-            report['measures']['pointerRightAfterTyping'] = typed
-            print('pointer right after typing:', 'hidden (Windows « hide pointer while typing »)' if not typed['showing'] else 'shown')
-            hx, hy = page_point('.hint', prefix=other)
-            glide_to(tx, ty, hx, hy); time.sleep(0.35)
-            back = cursor()
-            report['measures']['pointerAfterMovingOverPage'] = back
-            step('6 · after typing in the note, the pointer is visible again as soon as it moves over the page', back['showing'] and back['handle'] != 0, json.dumps(back))
-            capture('6-curseur-visible-apres-saisie', with_cursor=True)
-            # 5: the selection frame of the open note stays on its element while the page scrolls
-            pg("document.body.style.paddingBottom='2400px'", other); time.sleep(0.6)
-            fm = scroll_and_measure('x f', '.title', 0, 'selectionFrameWhileScrolling', other)   # final QA: the frame's class is « x f » since R14 / R45
-            step('5 · the selection frame stays on its element while the page scrolls (no glide behind it)', fm is not None and fm['scrolledPx'] > 100 and fm['worstOffsetPx'] <= 1.0, json.dumps(fm))
-            pg("scrollTo(0, 60)", other); time.sleep(0.5)
-            capture('5-cadre-selection-colle-apres-defilement')
-            Q.post_key(0x1B, edit)
+        # #125 (the owner, 24 Nov 2026; src/annotation-sites.h): « Annoter » is off on a site that is not local — the mode does
+        # not start there and the small note panel never opens (before: V1.3 kept the note panel on such a site). Points 6 (the
+        # pointer after typing in the note) and 5 (the note's selection frame while scrolling) were checked through that note:
+        # they move to a local FILE page, where the note panel still is — lot 3 (tests/annotation-general/coverage.json).
+        mA = mark(); C.shortcut('A'); time.sleep(2.0)
+        seg = C.log_text()[mA:]
+        step('#125 · a site that is not local: « Annoter » does not start the mode there (no note panel, no chat)',
+             'ANNOTATE mode on' not in seg and 'CHAT panel opened' not in seg and not [w for w in Q.windows() if w[1] == 'BrowserAnnotationNote'], seg[-300:])
+        capture('7-site-non-local-annoter-eteint')
     except Exception:
         traceback.print_exc()
         step('run without exception', False, traceback.format_exc()[-400:])

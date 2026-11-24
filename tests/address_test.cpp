@@ -1,4 +1,5 @@
 #include "../src/address.h"
+#include "../src/local-pill.h"
 #include <cstdio>
 #include <sstream>
 #include <fstream>
@@ -29,6 +30,59 @@ int main(){
     // never the empty field of the browser's own new tab.
     {auto blank=Describe(L"about:blank");CHECK(blank.security==Security::Other&&Joined(blank)==L"about:blank");}
     CHECK(Describe(L"data:text/plain,x").security==Security::Other);
+    // « Local » (Paper #127 « Adresse · pastille « Local » (validée) »): a project on this computer, any port, http or https,
+    // instead of « Non sécurisé »; the same rule as the annotation mode (AnnotationSites::Place::Local).
+    for(const wchar_t* local:{L"http://localhost:5173/checkout",L"https://localhost/",L"http://LOCALHOST:3000",L"http://127.0.0.1:8080/x",L"https://127.0.0.1",
+                              L"http://127.4.5.6:9000/",L"http://[::1]:8080/a",L"https://[::1]/",L"http://foo.localhost:5173/",L"https://app.dev.localhost/x?y=1#z",L"http://localhost:65535/"}){
+        auto d=Describe(local);
+        CHECK(d.security==Security::Local&&std::wstring(d.chip())==L"Local"&&std::wstring(d.icon())==L"monitor"&&std::wstring(d.tip())==L"Projet sur cet ordinateur");
+        CHECK(d.security==Security::Local&&AnnotationSites::Of(NativeChrome::Downloads::ToUtf8(local))==AnnotationSites::Place::Local);   // never disagrees with the mode
+    }
+    {auto d=Describe(L"http://localhost:5173/checkout");   // Paper 1ZX1-0: « localhost » primary, « :5173/checkout » secondary
+     CHECK(d.runs.size()==2&&d.runs[0].text==L"localhost"&&d.runs[0].tone==Tone::Primary&&d.runs[1].text==L":5173/checkout"&&d.runs[1].tone==Tone::Secondary);}
+    {auto d=Describe(L"http://[::1]:8080/a");CHECK(d.runs.size()==2&&d.runs[0].text==L"[::1]"&&d.runs[1].text==L":8080/a");}
+    {auto d=Describe(L"https://localhost/");CHECK(d.runs.size()==1&&d.runs[0].text==L"localhost");}
+    {auto d=Describe(L"http://foo.localhost/");CHECK(d.runs.size()==1&&d.runs[0].text==L"foo.localhost");}
+    // A development server's own certificate: still « Local » (the traffic never leaves the machine).
+    CHECK(Describe(L"https://localhost:8443/",true).security==Security::Local);
+    // Not local: live sites keep « Non sécurisé » / the lock; look-alikes, LAN addresses and credentials are not local.
+    for(const wchar_t* online:{L"http://neverssl.com/online",L"http://localhost.example.com/",L"http://127.0.0.1.example.com/",L"http://192.168.1.10:3000/",
+                               L"http://10.0.0.2/",L"http://0x7f.1/",L"http://2130706433/",L"http://user@localhost:3000/"}){
+        auto d=Describe(online);CHECK(d.security==Security::Insecure&&std::wstring(d.chip())==L"Non sécurisé");
+    }
+    CHECK(Describe(L"https://example.com/").security==Security::Secure);
+    CHECK(Describe(L"https://localhost.example.com/",true).security==Security::CertificateError);
+    // The pill's colours follow the profile (src/local-pill.h): Designer's reference values (Paper, 2026-11-24), the ink
+    // derived by the profile button's own code (ProfileColor::Ink) from each profile's colour.
+    {
+        using ProfileColor::Rgb8;
+        auto ink=[](const wchar_t* hex){int hue=0;float chroma=0;ProfileColor::FromHex(hex,hue,chroma);return ProfileColor::Ink(hue,chroma);};
+        struct Row{const wchar_t* name;Rgb8 ink,fieldRest,fieldHover,bareRest,bareHover;};
+        const Row rows[]={
+            {L"Personnel",ProfileColor::Neutral(),{0x37,0x37,0x37},{0x3F,0x3F,0x3F},{0x27,0x27,0x27},{0x30,0x30,0x30}},
+            {L"Travail",ink(L"#6FD087"),{0x30,0x3A,0x32},{0x34,0x44,0x38},{0x20,0x2A,0x22},{0x25,0x35,0x29}},
+            // Paper's violet swatch #B49BFF is darker than any profile ink (OKLCH L 0.78): the formula is checked with it, and
+            // a real violet profile's ink (#BCA7FF, the same hue) with the contrast rule just below.
+            {L"Violet",{0xB4,0x9B,0xFF},{0x37,0x34,0x3E},{0x3F,0x3B,0x4B},{0x27,0x24,0x2E},{0x30,0x2C,0x3C}},
+            {L"Violet (profile ink)",ink(L"#B49BFF"),ProfileColor::Over(ink(L"#B49BFF"),.10,{0x29,0x29,0x29}),ProfileColor::Over(ink(L"#B49BFF"),.16,{0x29,0x29,0x29}),ProfileColor::Over(ink(L"#B49BFF"),.10,{0x17,0x17,0x17}),ProfileColor::Over(ink(L"#B49BFF"),.16,{0x17,0x17,0x17})},
+        };
+        CHECK(rows[0].ink==(Rgb8{0xB3,0xB3,0xB3})&&rows[1].ink==(Rgb8{0x6F,0xD0,0x87})&&rows[3].ink==(Rgb8{0xBC,0xA7,0xFF}));   // the profiles' inks (Personnel, Travail exact)
+        for(const auto& r:rows){
+            const auto field=LocalPill::For(r.ink,true),bare=LocalPill::For(r.ink,false);
+            CHECK(field.ink==r.ink&&field.plate==r.fieldRest&&field.hover==r.fieldHover&&field.divider==(Rgb8{0x54,0x54,0x54}));
+            CHECK(bare.ink==r.ink&&bare.plate==r.bareRest&&bare.hover==r.bareHover&&bare.divider==(Rgb8{0x45,0x45,0x45}));
+            // Text / plate contrast >= 5:1 with the inks the app draws (Paper's violet swatch is not one: 4.68:1 on its hover).
+            const bool appInk=std::wstring(r.name)!=L"Violet";
+            for(Rgb8 plate:{field.plate,field.hover,bare.plate,bare.hover}){
+                const double c=ProfileColor::Contrast(r.ink,plate);
+                std::printf("local pill %ls ink #%02X%02X%02X on #%02X%02X%02X: %.2f:1\n",r.name,r.ink.r,r.ink.g,r.ink.b,plate.r,plate.g,plate.b,c);
+                if(appInk&&c<5){std::fprintf(stderr,"FAIL %ls: contrast %.2f on #%02X%02X%02X\n",r.name,c,plate.r,plate.g,plate.b);return 1;}
+            }
+        }
+    }
+    // Files keep « Fichier » (the mode treats them as local too, the address says what they are).
+    {auto d=Describe(L"file:///C:/projets/boutique/index.html");CHECK(d.security==Security::File&&std::wstring(d.chip())==L"Fichier");}
+    {auto d=Describe(L"file://localhost/C:/a.html");CHECK(d.security==Security::File);}
 
     // Typed text classification and encoding (mirrors Destination()).
     CHECK(LooksLikeAddress(L"example.org/docs")&&LooksLikeAddress(L"localhost:3000")&&LooksLikeAddress(L"https://x"));

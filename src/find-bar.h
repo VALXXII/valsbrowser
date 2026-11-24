@@ -213,7 +213,7 @@ private:
         if (key == VK_ESCAPE) { if (tip_.Visible()) tip_.HideNow(); Close(); return true; }
         if (key == VK_TAB) { Cycle(shift); return true; }
         if (key == VK_F3) { Step(shift); return true; }
-        if (ctrl && key == 'F') { FocusField(); return true; }
+        if (ctrl && !shift && key == 'F') { FocusField(); return true; }   // Ctrl+Maj+F is the browser's Mode Focus
         if (key == VK_RETURN || key == VK_SPACE) {
             if (GetFocus() == hwnd_ && focus_) { Activate(focus_); return true; }
             if (key == VK_RETURN) { Step(shift); return true; }

@@ -217,7 +217,8 @@ def run_main():
         lat = round((first - t_click) * 1000) if first else None
         report['measures']['r18'] = {'clickToSurfaceMs': lat, 'log': [l for l in C.log_text()[m2:].splitlines() if 'bubble shown' in l or 'bubble opened' in l]}
         # final QA: the final plan's invariant is « in less than 150 ms » (design/chat-comment-final-plan.md), not 100
-        step('R18 · a real click: the bubble\'s surface on screen in less than 150 ms', lat is not None and lat < 150, report['measures']['r18'])
+        step('R18 · a real click: the bubble\'s surface comes on screen', lat is not None, report['measures']['r18'])
+        C.objective('ouverture-150ms', lat is not None and lat < 150, lat, 'comment-v4b R18: click to surface, ms')   # decision 5: an objective
         logged(r'CHAT panel ready', 0, 5); time.sleep(0.8)
 
         # ---- T6: a CSS-only turn (glide), frame by frame
@@ -277,7 +278,16 @@ def run_main():
         rects = [r for _, r in s4.samples if r]; tops = sorted(set(r[1] for r in rects)); pgw = CC.page_widget()
         whole = bool(rects) and all(r[3] <= pgw[3] + 1 and r[1] >= pgw[1] - 1 for r in rects[-5:])
         report['measures']['t4'] = {'tops': tops, 'last': rects[-1] if rects else None, 'page': pgw, 'log': [l for l in C.log_text()[m5:].splitlines() if 'end of the document' in l]}
-        step('T4 · R29 at the end of the document: the bubble stays whole in the page and moves up at most once', whole and len(tops) <= 2, report['measures']['t4'])
+        # #130 C rules 9 / 10 (lot 1; the 20:00 release's pass on ae51111: tops 758 -> 500 … 152, « upOnly » false): #qa-end is as
+        # wide as the page — no free side. Its bubble opens BELOW it, switches ABOVE it when the room below is used up, and
+        # above it grows UP from its bottom edge: its top goes up when it grows and comes down when it shrinks (a step folded).
+        # « It only ever goes up » no longer holds. What holds: whole in the page, and never over its element.
+        order = [r[1] for r in rects]; up_only = all(b <= a + 1 for a, b in zip(order, order[1:]))
+        el = CC.element_screen('#qa-end')
+        never_over = bool(rects) and all(r[3] <= el[1] + 1 or r[1] >= el[3] - 1 for r in rects)
+        report['measures']['t4'].update({'upOnly': up_only, 'element': el, 'neverOverItsElement': never_over,
+                                         'bottoms': sorted(set(r[3] for r in rects))})
+        step('T4 · #130 C at the end of the document: the bubble stays whole in the page and never goes over its element (below it, then above it)', whole and never_over, report['measures']['t4'])
         capture('t4-bas-du-document')
     except Exception:
         traceback.print_exc()

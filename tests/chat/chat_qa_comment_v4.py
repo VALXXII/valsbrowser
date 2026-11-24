@@ -5,7 +5,8 @@ frame-by-frame measures for R29, R34, R36, R37:
     python tests/chat/chat_qa_comment_v4.py      # -> build/chat-qa/comment-v4/report.json + captures + frame series
 
   R28  the bubble's composer is right and stable from its first image (mode, model AND effort; no size change)
-  R29  during a turn and when the diff opens (R38) the bubble's surface keeps its corner, to the pixel
+  R29  during a turn and when the diff opens (R38) the bubble's surface keeps its corner, to the pixel — unless it grew
+       past the bottom of the page area: #130 wins over R29, it then slides up along its element (variant C)
   R32  a click then Échap (both layouts): no conversation frame + icon
   R34  six fast switches Panneau <-> Commentaire: the page's layout is always the right one
   R35  a chip added in the panel never shows in a bubble
@@ -170,8 +171,12 @@ def run_main():
         el1 = CC.element_screen('.btn-primary')
         off0 = (c0[0] - el0[0], c0[1] - el0[1]) if c0 else None; off1 = (after[0][0] - el1[0], after[0][1] - el1[1]) if after else None
         report['measures']['r29'] = {'during': during, 'afterEditAndDiff': after, 'element': [el0, el1], 'offsetBefore': off0, 'offsetAfter': off1}
-        step('R29 / R38 · new cards, the edit moving the element, the diff: the surface keeps its corner and its offset to the element',
-             end is not None and c0 is not None and all(c[1] == c0[1] and min(c0[0], c0[0] + el1[0] - el0[0]) <= c[0] <= max(c0[0], c0[0] + el1[0] - el0[0]) for c in during) and len(after) == 1 and off0 is not None and off1 is not None and abs(off0[0] - off1[0]) <= 1 and abs(off0[1] - off1[1]) <= 1, report['measures']['r29'])
+        # #130 wins over R29 (decision 1 of 24 Nov 2026, variant C): the corner is kept UNLESS the bubble grew past the bottom of
+        # the page area — it then slides up along its element (the host logs it): same side, its top only goes up
+        slid = 'slid up along its element' in C.log_text()[m2:]
+        report['measures']['r29']['slidUp130'] = slid
+        step('R38 / #130 C · new cards, the edit moving the element, the diff: the surface keeps its side; its corner too unless it slid up to stay whole',
+             end is not None and c0 is not None and all((c[1] == c0[1] or (slid and c[1] < c0[1])) and min(c0[0], c0[0] + el1[0] - el0[0]) <= c[0] <= max(c0[0], c0[0] + el1[0] - el0[0]) for c in during) and len(after) == 1 and off0 is not None and off1 is not None and abs(off0[0] - off1[0]) <= 1 and (abs(off0[1] - off1[1]) <= 1 or (slid and off1[1] < off0[1])), report['measures']['r29'])
 
         # ---- R36: the CSS-only edit: frames of the page while it changes
         m4 = mark()

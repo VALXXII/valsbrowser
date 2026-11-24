@@ -22,7 +22,7 @@ namespace Chat {
 
 bool CommentLayout() { LoadProjects(); return projects.layout == "comment"; }
 float Dpi() { return GetDpiForWindow(window) / 96.f; }
-inline constexpr int BubbleWidthCss = 320,   /* R20: the user's decision (Paper: 305) */ BubbleMaxHeightCss = 520, BubbleStartHeightCss = 104, BubbleGapCss = 12, BubbleLeadCss = 4, BubbleMarginCss = 8;   // Paper: 12 px from the element (8 from its selection frame), 4 px above it; #130 C: 8 px from the page area's edges (height at most page area − 16)
+inline constexpr int BubbleWidthCss = 320,   /* R20: the user's decision (Paper: 305) */ BubbleMaxHeightCss = 520, BubbleStartHeightCss = 104, BubbleGapCss = 12, BubbleLeadCss = 4, BubbleMarginCss = 8, BubbleMinRoomCss = 120;   // Paper: 12 px from the element (8 from its selection frame), 4 px above it; #130 C: 8 px from the page area's edges (height at most page area − 16)
 
 struct BubbleState {
     HWND hwnd = nullptr; bool open = false; std::string conv;      // the conversation it shows
@@ -39,7 +39,6 @@ struct BubbleState {
     ChatBubble::Point click;                                         // R44: where the click was (screen px): the corner of a big element nearest to it
     bool fromBottom = false; ChatBubble::Rect surface;               // R44: the edge that stays; where the surface is (screen px)
     RECT anchorArea{};                                               // M15: the page area the anchor was chosen in
-    bool revealDue = false; double lastScrollAt = 0;                 // R47: a card waiting for an action to bring on screen; the user's last scroll
     bool hadKeyboard = false;                                        // M4 (a): the bubble had the keyboard when another application came in front
     int roomAreaH = 0;                                               // M15: the page area's height the offered room was measured with
     bool frameKept = false; ChatBubble::Rect frameRel;              // E4: the window of this opening, relative to the surface's fixed corner
@@ -245,8 +244,7 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
     // grew, so an element low in the page had its bubble (an authorization's Refuser / Autoriser) past the bottom of the window,
     // where the page cannot always scroll. A new size (never a scroll step, R39; never a size chosen with the handle, R40) that
     // takes it closer than 8 px to the bottom while its element is on screen: variant C (Paper, validated) — at its side it
-    // slides up along its element by what is missing, never higher than 8 px under the banner, never over the element. An
-    // element with no free side (below it, over it: section.hero) keeps today's behaviour (a question for the Designer).
+    // slides up along its element by what is missing, never higher than 8 px under the banner, never over the element.
     if (!scrolling && bubble.anchor.set && bubble.known && !bubble.resized && !bubble.lost &&
         (bubble.anchor.side == ChatBubble::Side::Right || bubble.anchor.side == ChatBubble::Side::Left)) {
         const auto where = ChatBubble::Anchored(bubble.anchor, er, w, h);
@@ -257,10 +255,21 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
             }
         }
     }
+    // #130 C rule 10 (Paper « C règles (validées) »): below or above an element with no free side, the bubble never goes over
+    // the element — as high as its side allows and the other side holding more, it switches side (below <-> above); else its
+    // height stays limited to its side's room and its thread scrolls (rule 4). Never at a scroll step, never resized by hand.
+    if (!scrolling && bubble.anchor.set && bubble.known && !bubble.resized && !bubble.lost &&
+        (bubble.anchor.side == ChatBubble::Side::Below || bubble.anchor.side == ChatBubble::Side::Above)) {
+        const ChatBubble::Side to = ChatBubble::FlipSide(bubble.anchor.side, h, int(std::lround(bubble.roomCss * k)), ChatBubble::RoomBelow(er, area, gap, margin), ChatBubble::RoomAbove(er, area, gap, margin));
+        if (to != bubble.anchor.side) {
+            Diag(to == ChatBubble::Side::Above ? L"the bubble below its element has no more room: it goes above it (#130 C rule 10)" : L"the bubble above its element has no more room: it goes below it (#130 C rule 10)");   // i18n-exempt: log detail
+            bubble.anchor = ChatBubble::Anchor{}; bubble.side = to; bubble.roomCss = 0;
+        }
+    }
     if (!bubble.anchor.set) {   // R29: the first placement chooses the side and the anchor (#130 C: then it only slides up along its element to stay whole)
         // R44: the side is chosen for the height the bubble may take (520), so that it is whole in the visible area
         p = ChatBubble::Place(er, w, h, area, gap, margin, bubble.side, int(std::lround(BubbleLeadCss * k)),
-                              PlannedHeightPx(k), bubble.click, int(std::lround(BubbleGapCss * k)));   // r44: a conversation with content may take 520 (inside: its corner where that fits)
+                              PlannedHeightPx(k), bubble.click, int(std::lround(BubbleGapCss * k)), int(std::lround(BubbleMinRoomCss * k)));   // r44: a conversation with content may take 520; #130 C rules 9 / 10: no free side
         if (bubble.known) {
             bubble.anchor = ChatBubble::AnchorOf(p, er); placedNow = true; bubble.anchorArea = a;
             if (p.slid > 0) Diag(p.side == ChatBubble::Side::Inside ? L"bubble over the element slid " + std::to_wstring(p.slid) + L" px to be whole in the visible area (it may go past the element)"   // decision (whole first)   // i18n-exempt: log detail
@@ -275,8 +284,9 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
         // measured when it is placed and kept with the anchor — its composer and an authorization stay on screen (r47: past
         // the visible area « Autoriser » could not be clicked); its position stays Paper's, never moved
         (void)placedNow;   // R29 (the user, coordinator's decision): natural height — never bounded by the room under the fixed edge, at most the page area − 16 px (#130 C: past the bottom it slides up along its element, see above)
-        int room = std::min(BubbleMaxHeightCss, std::max(120, int(area.H() / k) - 2 * BubbleMarginCss));
-        if (p.fromBottom) room = std::min(room, std::max(120, int((p.rect.bottom - area.top - margin) / k)));   // M15 (Q 0.3.542): growing up, never past the page area's top (it was cut 150 px above it); #130 C: 8 px under the banner
+        int room = std::min(BubbleMaxHeightCss, std::max(BubbleMinRoomCss, int(area.H() / k) - 2 * BubbleMarginCss));
+        if (p.side == ChatBubble::Side::Below) room = std::min(room, std::max(BubbleMinRoomCss, int((area.bottom - margin - p.rect.top) / k)));   // #130 C rule 10: below its element it never goes past the page area's bottom (nor over the element): its thread scrolls
+        if (p.fromBottom) room = std::min(room, std::max(BubbleMinRoomCss, int((p.rect.bottom - area.top - margin) / k)));   // M15 (Q 0.3.542): growing up, never past the page area's top (it was cut 150 px above it); #130 C: 8 px under the banner
         const auto rm = ChatBubble::ResizeRoom(p.rect, p.fromRight, p.fromBottom, area, margin, k);
         if (room != bubble.roomCss || rm.width != bubble.resizeMax.width || rm.height != bubble.resizeMax.height) {
             if (room != bubble.roomCss) Diag(L"bubble: height offered " + std::to_wstring(room) + L" CSS px (page area " + std::to_wstring(area.H()) + L" px" + (areaResized ? L", resized" : L"") + L")");   // M15 diagnostics   // i18n-exempt: log detail
@@ -573,7 +583,8 @@ void WarmBubble() {
     SetWindowRgn(bubble.hwnd, CreateRectRgn(0, 0, 0, 0), FALSE);
     SetWindowPos(bubble.hwnd, HWND_TOP, a.left, a.top, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     bubble.win = RECT{}; bubble.region = RECT{};
-    if (!view.Usable(environment.p)) { view.Destroy(); panelReady = false; if (!view.Create(environment.p, bubble.hwnd, {0, 0, w, h})) return; Diag(L"bubble WebView created in advance (Mode Commentaire)"); }
+    if (!view.Usable(environment.p)) { view.Destroy(); panelReady = false; stats.requestedAt = stats.createdAt = stats.readyAt = 0;   // made in advance: no opening to time
+        if (!view.Create(environment.p, bubble.hwnd, {0, 0, w, h})) return; Diag(L"bubble WebView created in advance (Mode Commentaire)"); }
     else if (view.Parent() != bubble.hwnd) view.Reparent(bubble.hwnd, {0, 0, w, h});
     else view.Place({0, 0, w, h});
     view.Show(true);
@@ -599,8 +610,18 @@ void EnsureOnScreen(const wchar_t* why) {
     }
     SetForegroundWindow(bubble.hwnd); PostMessageW(bubble.hwnd, WM_APP + 2, 0, 0);
 }
+// O3 / M4 (real-window monkey of 24 Nov 2026, seed 1 #150 and #167): the old note panel (« Que faut-il changer ? », opened in
+// « Chat à droite » by a click past the composer's 10 chips) stayed open when the layout went to Commentaire. A bubble then
+// opened next to it and the note kept the keyboard: what the user typed for the bubble went into the note, nothing was sent.
+// The note never stays under a bubble, nor through a change of layout: closed without saving (its words are kept as its draft).
+void CloseStaleNote(const wchar_t* why) {
+    if (!Ann::uiReady || (!Ann::note.Visible() && !Ann::panel.on)) return;
+    Ann::panel.on = false; if (Ann::note.Visible()) Ann::note.Close(false);
+    Diag(std::wstring(L"the note panel was open: closed (") + why + L")");   // i18n-exempt: log detail
+}
 void OpenBubble(const std::string& conv, const RECT* element, const std::string& selector, bool followCurrent, const std::string& label) {
     auto t = Active(); if (!t || !Ann::s.active || Ann::ModeTab() != t || halted || privateWindow) return;
+    CloseStaleNote(L"a bubble opens");   // i18n-exempt: log detail
     UiSlow slowStart("opening: the panel's close and the window");   // monkey 0.3.561: host -> opened 40-50 ms right after a switch
     if (Open()) ClosePanel();
     if (panelState == PanelState::Closing) FinishClose();   // M5 (review R): the panel's slide ends now — it would move and hide the view the bubble takes
@@ -724,23 +745,9 @@ void CloseBubble(bool focusPage) {
     Diag(L"bubble closed (the agent goes on)");
     if (focusPage && Ann::s.active) { SetForegroundWindow(window); FocusChatPage(); }
 }
-// R47 (coordinator's decision): a permission or an error waiting for an action arrived for the bubble shown — at the bubble's
-// next size (the card is in it), if its bottom is past the visible area, the SITE's page scrolls softly by what is missing,
-// once; never while the user scrolls; at once with reduced motion. The bubble stays anchored to its element (it follows).
-void RevealCardSoon() { if (bubble.open && !aside.on) bubble.revealDue = true; }
-void RevealCardDone() { if (waitingPermissions.empty()) bubble.revealDue = false; }
-void RevealCard() {
-    if (!bubble.revealDue || !bubble.open || bubble.waitingAck) return;
-    if (waitingPermissions.empty()) bubble.revealDue = false;   // real window: an authorization's card grows after it arrives (223 -> 334 px) — kept due while it waits
-    auto t = ChatTab(); if (!t || !t->view.p) return;
-    const RECT a = PageArea(); const float k = Dpi();
-    const bool userScrolling = Ann::NowMs() - bubble.lastScrollAt < 600;
-    const int css = ChatBubble::RevealScrollCss(bubble.surface.bottom, a.bottom, int(std::lround(BubbleMarginCss * k)), k * float(Ann::s.zoom > 0 ? Ann::s.zoom : 1.0), userScrolling);   // the page's CSS px (scale x zoom)
-    if (css <= 0) { if (userScrolling) Diag(L"a card waits for an action, the user is scrolling: the page is left where it is"); return; }   // i18n-exempt: log detail
-    const std::wstring js = L"window.scrollBy({top:" + std::to_wstring(css) + L",behavior:'" + (Ann::Reduced() ? L"instant" : L"smooth") + L"'})";
-    t->view->ExecuteScript(js.c_str(), nullptr);
-    Diag(L"a card waits for an action below the visible area: the page scrolls " + std::to_wstring(css) + L" CSS px");   // i18n-exempt: log detail
-}
+// #130 C rule 7 (Paper « C règles (validées) »): the browser never scrolls the user's page to show a card (the old R47 fix,
+// RevealCard, is removed). The card's buttons are in the bubble's foot, always shown (rule 8); the bubble is whole in the
+// page area while its element is on screen (rules 2 to 4, 9, 10).
 void OnBubbleSize(int wCss, int hCss, ChatBubble::Edges over, bool resized) {
     if (!bubble.open) return;
     UiSlow slow("bubble.size");
@@ -768,7 +775,6 @@ void OnBubbleSize(int wCss, int hCss, ChatBubble::Edges over, bool resized) {
     const auto before = bubble.inset; PlaceBubble();
     if (bubble.inset == before && panelReady) SendLayout(false);   // R3: every new bubble.size gets its inset (PlaceBubble sent it if it changed)
     RevealBubble(L"on the acknowledgement");   // R18   // i18n-exempt: log detail
-    RevealCard();   // R47
 }
 // The element the bubble follows moved (scroll, layout, reload) or is gone.
 // C3: the bubble's conversation works or waits — a turn of it runs, an authorization of it waits, or a message of it is queued
@@ -800,9 +806,6 @@ void OnAnchor(const AH::Envelope& e) {
     }
     const bool released = bubble.holdForMeasure; if (released) { bubble.holdForMeasure = false; bubble.anchor = ChatBubble::Anchor{}; bubble.side = ChatBubble::Side::Right; }   // H2 6e60162: placed on the page's measure
     const bool scrolling = bubble.known && bubble.anchor.set;   // R39: a known element that moved: the window follows, nothing else
-    {   static double lastSy = -1;   // R47 (real window): a scroll = the page's offset changed — not the page reflowing (the agent's edit)
-        if (scrolling && e.t > 0 && lastSy >= 0 && std::abs(e.sy - lastSy) > 0.5) bubble.lastScrollAt = Ann::NowMs();
-        if (e.t > 0) lastSy = e.sy; }
     bubble.known = true;
     if (scrolling && FollowFrames() > 0) {   // F11: placed when the page's image of THIS position is on screen
         followPositions.push_back(FollowPos{++follower.gen, measured, e.t, EpochMs(), e.sy}); while (followPositions.size() > 8) followPositions.pop_front();
@@ -1052,16 +1055,25 @@ std::string LabelOfSelector(const std::string& s) {
 void CancelKeyboardBack() { if (bubble.hwnd && keyboardTries > 0) { KillTimer(bubble.hwnd, 0xB3); keyboardTries = 0; Diag(L"a click in the page: the keyboard stays with it"); } }   // case 3   // i18n-exempt: log detail
 bool OpenEarly(const std::shared_ptr<Tab>& t, const AnnotationHost::Envelope& env) {
     CancelKeyboardBack();
-    if (!t || !CommentFirst(t) || env.selector.empty() || Ann::NowMs() - bubble.closedAt < 400) return false;
+    if (!t || !CommentFirst(t)) return false;   // not the chat's: CommentFirst says why in the log
+    // O3 (« clic sans bulle »): the two other silent ways out say why — the full « select » that follows decides
+    if (env.selector.empty()) { Diag(L"the click's « selecting » has no selector: the bubble opens at the full selection"); return false; }   // i18n-exempt: log detail
+    if (Ann::NowMs() - bubble.closedAt < 400) { Diag(L"the click's « selecting » came right after the bubble closed: left to the full selection"); return false; }   // i18n-exempt: log detail
     // monkey 0.3.561 (div.plans 597 ms): a bubble open on ANOTHER element no longer waits for the full selection — the click
     // opens its element's bubble now (as TakeCommentSelection does later); a click on the open bubble's own element is left to it
     if (!ChatBubble::EarlyOpenAllowed(bubble.open, bubble.selector, env.selector)) return false;
+    // Real-window monkey of 24 Nov 2026 (seed 1 #81, #101: « switch then click »): the click came while the chat panel was still on
+    // screen (sliding out after « Commentaire »). Its rectangle was measured in the page as it was then (794 px wide); the page
+    // widens when the panel is gone (1269 px) — the bubble was shown at the right of the narrow element, then placed again
+    // below the wide one: a jump. The page area is about to change: the bubble waits for the page's first measure (as H2 6e60162).
+    const bool areaMoving = Shown();
     { UiSlow slowPrep("prepare the chat"); PrepareChat(t); }
     if (bubble.open) { Diag(L"a click on another element: its bubble opens (at the click)"); ForgetUnsent(bubble.conv); }   // i18n-exempt: log detail
     const float k = Dpi() * float(Ann::s.zoom > 0 ? Ann::s.zoom : 1.0); const RECT pa = Ann::PageScreen(t);
     const RECT element{pa.left + LONG(std::lround(env.x * k)), pa.top + LONG(std::lround(env.y * k)), pa.left + LONG(std::lround((env.x + env.w) * k)), pa.top + LONG(std::lround((env.y + env.h) * k))};
     const std::string page = ChatBubble::PageKey(U8(t->uri)), label = LabelOfSelector(env.selector);
     const bool stale = k > 0 && ChatBubble::StaleViewport(env.vw, env.vh, (pa.right - pa.left) / k, (pa.bottom - pa.top) / k);   // H2 6e60162
+    if (areaMoving && !stale) Diag(L"the chat panel was still on screen at the click: the bubble is shown at the page's first measure");   // i18n-exempt: log detail
     if (stale) Diag(L"the click's rectangle was measured in another viewport (" + std::to_wstring(int(env.vw)) + L"x" + std::to_wstring(int(env.vh)) + L" CSS px, the page area is " +
                     std::to_wstring(int((pa.right - pa.left) / k)) + L"x" + std::to_wstring(int((pa.bottom - pa.top) / k)) + L"): the bubble is shown at the page's first measure");   // i18n-exempt: log detail
     early = EarlyOpen{true, env.serial, "", Ann::NowMs()}; UiWatchStart();
@@ -1071,12 +1083,13 @@ bool OpenEarly(const std::shared_ptr<Tab>& t, const AnnotationHost::Envelope& en
         const double now = double(u.QuadPart / 10000ULL) - 11644473600000.0; early.clickLag = std::max(0.0, now - env.at); Diag(L"the click's « selecting » reached the host " + Ann::Ms(early.clickLag) + L" ms after the click"); }
     if (const auto* hp = FindAnchored(page, env.selector, "")) {   // its conversation (saved, or only in memory: F6)
         const auto& h = *hp; const std::string id = h.id, l = h.anchorLabel.empty() ? label : h.anchorLabel; early.conv = id;
-        ShowConversation(id, [id, element, l, stale] { OpenBubble(id, &element, ShownSelector(id), false, l); if (bubble.open && bubble.conv == id) bubble.holdForMeasure = stale; }, nullptr, true);   // opening time: one sending, with the opening
+        const bool hold = stale || areaMoving;
+        ShowConversation(id, [id, element, l, hold] { OpenBubble(id, &element, ShownSelector(id), false, l); if (bubble.open && bubble.conv == id) bubble.holdForMeasure = hold; }, nullptr, true);   // opening time: one sending, with the opening
         Diag(L"bubble opened on the click (selecting " + std::to_wstring(env.serial) + L"), the element's conversation");
         return true;
     }
     std::string id; { UiSlow slowNew("new conversation"); id = NewAnchoredConversation(env.selector, label, page, ""); } early.conv = id;
-    OpenBubble(id, &element, env.selector, false, label); if (bubble.open && bubble.conv == id) bubble.holdForMeasure = stale;
+    OpenBubble(id, &element, env.selector, false, label); if (bubble.open && bubble.conv == id) bubble.holdForMeasure = stale || areaMoving;
     Diag(L"bubble opened on the click (selecting " + std::to_wstring(env.serial) + L")");
     return true;
 }
@@ -1135,11 +1148,9 @@ bool TakeCommentSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, b
     // Q pass 1, defect 1 (the user's journey): a click on another element while a bubble is open opens THAT element's bubble
     // (before: it only closed the open one, 3 times out of 4 nothing opened). Only a click right after a close does nothing.
     if (!bubble.open && Ann::NowMs() - bubble.closedAt < 400) { Diag(L"a click right after the bubble closed: nothing opened"); return true; }   // i18n-exempt: log detail
-    // R35: the panel's chips are not this bubble's — only THEY count (monkey 0.3.561 #102 / #261: the bubbles' own elements
-    // whose image never came stayed in `aiming`; past 10 every click handled here — #qa-card, a click after another
-    // application — opened nothing, silently)
-    {   std::size_t chips = 0; for (const auto& a : aiming) if (a.second.anchorFor.empty()) ++chips;
-        if (!ChatBubble::BubbleClickAllowed(chips)) { Diag(L"a click on an element: 10 chips are being aimed in the panel, no bubble"); return false; } }   // i18n-exempt: log detail
+    // O3 (« clic sans bulle », monkey 0.3.611 #116: the old note opened instead of a bubble): in Commentaire a click on an
+    // element of a local page is ALWAYS the chat's. The panel's limit of 10 chips being aimed (R35) is not this layout's: a
+    // bubble's element is not a chip. Declining here sent the click to the note panel — nothing declines any more.
     if (bubble.open) { Diag(L"a click on another element: its bubble opens"); ForgetUnsent(bubble.conv); }   // i18n-exempt: log detail
     const std::string id = NewAnchoredConversation(sel, label, page, "", key);
     Element e = ElementFromMode(serial); e.captureDone = captureImpossible; e.anchorFor = id; aiming[serial] = std::move(e); QuerySource(t, serial);
@@ -1190,6 +1201,7 @@ bool KeepAnchorElement(Element& e) {
 // ---------------------------------------------------------------- the layout switch of the band (Paper 1AYP-0)
 void SwitchLayout(bool comment) {
     const bool was = CommentLayout();
+    CloseStaleNote(comment ? L"layout: Commentaire" : L"layout: Panneau");   // i18n-exempt: log detail
     if (!comment) ForgetUnsent(convo.data.head.id);   // M6: the panel never shows an element's unsent conversation
     if (comment != was) { projects.layout = comment ? "comment" : "panel"; SaveProjects(); Diag(comment ? L"layout: Commentaire (a bubble on the element)" : L"layout: Panneau (the chat at the right)"); }
     if (comment) {

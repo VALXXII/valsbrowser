@@ -632,22 +632,22 @@ static void TestBubble() {
         const auto t = Place(title, W, h, area, gap, margin, Side::Right, lead, 0 /* a new bubble */, Point{}, corner);
         Check(t.side == Side::Right && t.rect.left == title.right + gap && t.rect.top == title.top - lead, "Paper: h1.hero-title — +12, top -4 (was -84.8)");
         const Rect plans{65, 250, 1742, 805};   // div.plans, page-wide: no side has room (sides, below, above)
-        const auto pl = Place(plans, W, h, area, gap, margin, Side::Right, lead, 0, Point{200, 760, true}, corner);   // a new bubble (no content yet)
-        Check(pl.side == Side::Inside && !pl.fromRight && pl.fromBottom && pl.rect.left == plans.left + corner && pl.rect.bottom == plans.bottom - corner,
-              "Paper: div.plans clicked near its bottom left — inside, 12 px from its left and bottom edges (was 96 px below its bottom)");
-        const auto longConv = Place(plans, W, h, area, gap, margin, Side::Right, lead, px(520), Point{200, 760, true}, corner);   // r44: its conversation has content
-        Check(longConv.side == Side::Inside && !longConv.fromBottom && longConv.rect.top == plans.top + corner && longConv.rect.left == plans.left + corner,
-              "r44: a long conversation — the element's other corner where its 520 px fit (top left, 12 px), never moved");
+        const int m8 = px(8), minH = px(120);   // #130 C: 8 px from the page area's edges; a side is worth it from the composer's height
+        const auto pl = Place(plans, W, h, area, gap, m8, Side::Right, lead, 0, Point{200, 760, true}, corner, minH);   // a new bubble (no content yet)
+        Check(pl.side == Side::Inside && pl.fromRight && pl.fromBottom && pl.rect.right == plans.right - m8 && pl.rect.bottom == plans.bottom - m8,
+              "#130 C rule 9: div.plans fills the page area (101 px below, 84 above) — inside it, its bottom right corner, 8 px from its edges (no longer the click's corner)");
+        const auto longConv = Place(plans, W, h, area, gap, m8, Side::Right, lead, px(520), Point{200, 760, true}, corner, minH);   // r44: its conversation has content
+        Check(longConv.side == Side::Inside && longConv.fromBottom && longConv.rect.bottom == plans.bottom - m8 && longConv.rect.right == plans.right - m8 && longConv.limit == plans.bottom - m8 - (area.top + m8),
+              "#130 C rules 9 and 4: a long conversation — the same corner, growing up, its height limited to 8 px under the banner (its thread scrolls)");
         const auto grown = Anchored(AnchorOf(pl, plans), plans, W, px(400));
         Check(grown.bottom == pl.rect.bottom && grown.top == pl.rect.bottom - px(400), "R29: then it grows up from its fixed bottom");
         const Rect low{63, 860, 327, 900};   // near the bottom of the visible area: #130 C — slid up along its side, never flipped above it
-        const int m8 = px(8);
         const auto lo = Place(low, W, h, area, gap, m8, Side::Right, lead, 0 /* a new bubble */, Point{}, corner);
         Check(lo.side == Side::Right && lo.rect.left == low.right + gap && lo.rect.bottom == area.bottom - m8 && lo.slid > 0,
               "#130 C: no room under it at its side — at its right (+12), slid up until 8 px from the page area's bottom, not above it");
-        const Rect tall{0, 0, 1840, 3000};   // taller than the window: inside its visible part, top right corner (no click)
-        const auto d = Place(tall, W, h, area, gap, margin, Side::Right, lead, 0 /* a new bubble */, Point{}, corner);
-        Check(d.side == Side::Inside && d.rect.right == area.right - corner && d.rect.top == area.top + corner, "Paper: an element taller than the window — inside its visible part, 12 px from the corner");
+        const Rect tall{0, 0, 1840, 3000};   // taller than the window: inside its visible part, its bottom right corner
+        const auto d = Place(tall, W, h, area, gap, m8, Side::Right, lead, 0 /* a new bubble */, Point{}, corner, minH);
+        Check(d.side == Side::Inside && d.rect.right == area.right - m8 && d.rect.bottom == area.bottom - m8, "#130 C rule 9: an element taller than the window — inside its visible part, the bottom right corner, 8 px from the edges");
         Check(FullyVisible({10, 150, 330, 254}, area) && !FullyVisible({10, 900, 330, 1000}, area) && !FullyVisible({}, area), "whole in the visible area or not"); }
     // E2 / M9: every new session gets the choice just made, else the one remembered for the site, else the agent's own
     {   Check(ChatOptions::ChoiceForNewSession("opus", "sonnet") == "opus" && ChatOptions::ChoiceForNewSession("", "sonnet") == "sonnet" && ChatOptions::ChoiceForNewSession("", "").empty(),
@@ -790,9 +790,48 @@ static void TestBubble() {
               UnsafeAnchorKey("same-origin", "button.cta", {}) != UnsafeAnchorKey("main", "button.cta", shadow) && !UnsafeAnchorKey("main", "button.cta", shadow).empty(),
               "Q 6: the same element gives the same key; a frame or a shadow root tells it apart");
         Check(UnsafeAnchorKey("cross-origin", "a", {}).empty() && UnsafeAnchorKey("main", "", {}).empty(), "Q 6: nothing to key (cross-origin, no selector): no key"); }
-    // R47 (coordinator): how far the site's page scrolls so the bubble's last card (its buttons) is on screen — once, by what is missing
-    {   Check(RevealScrollCss(1035, 931, 15, 1.25f, false) == 96 && RevealScrollCss(900, 931, 15, 1.25f, false) == 0, "R47: by what is missing to show the bubble's bottom (12 px from the edge), nothing when it is on screen");
-        Check(RevealScrollCss(1035, 931, 15, 1.25f, true) == 0, "R47: never while the user scrolls"); }
+    // #130 C rules 9 and 10 (Paper « #130 Bulle sans place dessous · C règles (validées) »): an element with no free side
+    {   const Rect area{0, 100, 1200, 900}; const int W = 320, gap = 12, m = 8, lead = 4, minH = 120;
+        const Rect title{40, 300, 1160, 360};   // as wide as the page, room below and above
+        const auto b = Place(title, W, 104, area, gap, m, Side::Right, lead, 0, Point{}, 0, minH);
+        Check(b.side == Side::Below && b.rect.top == title.bottom + 12 && b.rect.left == title.left - 4 && !b.fromBottom && b.limit == 0,
+              "#130 C rule 9: no free side — below the element, 12 px from it, its left at -4");
+        const Rect low{40, 700, 1160, 800};   // 80 px under it (900 - 8 - 812): not enough for 104; 580 above
+        const auto a = Place(low, W, 104, area, gap, m, Side::Right, lead, 0, Point{}, 0, minH);
+        Check(a.side == Side::Above && a.fromBottom && a.rect.bottom == low.top - 12 && a.rect.left == low.left - 4 && a.limit == 0,
+              "#130 C rule 9: no room below — above the element, 12 px from it, growing up");
+        // rule 10: never over the element — neither side holds 520: the side with the most room, its height limited to that room
+        const Rect mid{40, 400, 1160, 500};   // below: 892 - 512 = 380; above: 388 - 108 = 280
+        const auto l = Place(mid, W, 104, area, gap, m, Side::Right, lead, 520, Point{}, 0, minH);
+        Check(l.side == Side::Below && l.rect.top == mid.bottom + 12 && l.limit == 380 && l.rect.bottom <= mid.bottom + 12 + 380,
+              "#130 C rule 10: a conversation of 520 that no side holds — below (the most room), its height limited to 380, never over the element");
+        const Rect mid2{40, 500, 1160, 640};   // below: 892 - 652 = 240; above: 488 - 108 = 380
+        const auto l2 = Place(mid2, W, 104, area, gap, m, Side::Right, lead, 520, Point{}, 0, minH);
+        Check(l2.side == Side::Above && l2.fromBottom && l2.rect.bottom == mid2.top - 12 && l2.limit == 380, "#130 C rule 10: more room above — above, limited to that room");
+        // rule 10, growing: below and as high as its side allows, the other side holds more — it switches side; never back and forth
+        Check(FlipSide(Side::Below, 240, 240, 240, 380) == Side::Above, "#130 C rule 10: below, at its side's limit (240), 380 above — it goes above");
+        Check(FlipSide(Side::Above, 380, 380, 240, 380) == Side::Above, "#130 C rule 10: once above (the roomier side) it stays there");
+        Check(FlipSide(Side::Below, 200, 240, 240, 380) == Side::Below, "#130 C rule 10: not at its limit yet — it stays below");
+        Check(FlipSide(Side::Below, 380, 380, 380, 280) == Side::Below, "#130 C rule 10: at its limit but less room above — it stays (its thread scrolls)");
+        Check(FlipSide(Side::Below, 650, 650, 800, 900) == Side::Below, "#130 C rule 10: at the bubble's own maximum (not its side's limit) it never switches, whatever room the other side has");
+        Check(FlipSide(Side::Right, 520, 520, 0, 900) == Side::Right && FlipSide(Side::Inside, 300, 300, 0, 900) == Side::Inside, "#130 C rule 10: only below / above switch");
+        const auto kept = Place(mid2, W, 380, area, gap, m, Side::Above, lead, 0, Point{}, 0, minH);
+        Check(kept.side == Side::Above && kept.rect.bottom == mid2.top - 12 && kept.rect.H() == 380, "#130 C rule 10: the side it went to is kept while it holds its height");
+        Check(RoomBelow(mid, area, gap, m) == 380 && RoomAbove(mid, area, gap, m) == 280, "the room of a side: from 12 px off the element to 8 px off the page area");
+        // rule 9, last: the element fills the page area (no side has even the composer's height): inside it, bottom right corner, 8 px
+        const Rect hero{0, 60, 1200, 1400};
+        const auto in = Place(hero, W, 104, area, gap, m, Side::Right, lead, 0, Point{200, 300, true}, 12, minH);
+        Check(in.side == Side::Inside && in.fromRight && in.fromBottom && in.rect.right == area.right - 8 && in.rect.bottom == area.bottom - 8 && in.rect.H() == 104,
+              "#130 C rule 9: the element fills the page area — inside it, the bottom right corner of what is visible, 8 px from its edges (not the click's corner)");
+        const Rect hero2{100, 60, 1000, 880};   // its bottom right corner is on screen: 8 px inside the ELEMENT's edges
+        const auto in2 = Place(hero2, 320, 104, {0, 100, 1100, 900}, gap, m, Side::Right, lead, 0, Point{}, 0, minH);
+        Check(in2.side == Side::Inside && in2.rect.right == hero2.right - 8 && in2.rect.bottom == hero2.bottom - 8, "#130 C rule 9: 8 px from the element's own bottom right corner when it is on screen");
+        const auto grown = Anchored(AnchorOf(in, hero), hero, W, 520);
+        Check(grown.bottom == in.rect.bottom && grown.right == in.rect.right && grown.top == in.rect.bottom - 520 && FullyVisible(grown, area), "#130 C rule 9: inside, it grows up and to the left from that corner, whole");
+        // a low window: a side with room for the width keeps the bubble (rules 2 to 4), its height limited to the page area - 16
+        const Rect small{0, 100, 1200, 500}; const Rect btn{64, 300, 342, 344};
+        const auto s = Place(btn, W, 104, small, gap, m, Side::Right, lead, 520, Point{}, 0, minH);
+        Check(s.side == Side::Right && s.rect.left == btn.right + 12 && s.rect.top == small.top + 8 && s.limit == 384, "#130 C rule 4: a low window — at its side, 8 px under the banner, at most the page area - 16 px (its thread scrolls)"); }
     // Decision (Q on 0.3.536, 1470 x 666 CSS, dpr 1.25): at its opening (R44) a bubble with a conversation is whole at the height it
     // WILL have (its last height, else 520); Paper's exact positions; then R29
     {   const float k = 1.25f; auto px = [&](int c) { return int(c * k + .5f); };
@@ -805,21 +844,12 @@ static void TestBubble() {
         const auto a2 = Place(btn, W, h, area, gap, 0, Side::Right, lead, px(200), Point{}, corner);   // its last height: 200
         Check(a2.side == Side::Right && a2.rect.top == btn.top - lead && a2.rect.left == btn.right + gap && whole(a2, px(200)), "decision: its last known height fits at its right — Paper exactly (+12, -4)");
         const Rect plans{65, 410, 1742, 785};   // div.plans with a conversation
-        const auto pl = Place(plans, W, h, area, gap, 0, Side::Right, lead, H, Point{200, 760, true}, corner);
-        Check(pl.side == Side::Inside && whole(pl, H), "decision (whole first): div.plans with a conversation — over the element, whole with 520 at its opening");
+        const int m8 = px(8);
+        const auto pl = Place(plans, W, h, area, gap, m8, Side::Right, lead, H, Point{200, 760, true}, corner, px(120));
+        Check(pl.side == Side::Above && pl.fromBottom && pl.rect.bottom == plans.top - gap && pl.limit == (plans.top - gap) - (area.top + m8) && whole(pl, pl.limit),
+              "#130 C rule 10: div.plans with a conversation — never over the element: above it (the most room, 244 px), its height limited to that room");
         const auto ab = Place({63, 840, 327, 900}, W, h, area, gap, 0, Side::Right, lead, px(300), Point{}, corner);
         Check(ab.side == Side::Right && !ab.fromBottom && ab.rect.left == 327 + gap && ab.slid > 0 && whole(ab, px(300)), "#130 C: no room under it — at its side, slid up along it (no longer flipped above)"); }
-    // R47 after the page scrolled (decision): the card's buttons are clickable — the carried window's region, clipped to the page
-    // area, covers the bubble's bottom
-    {   const Rect screen{0, 0, 1840, 1000}, area{3, 141, 1840, 973}; const float k = 1.25f; const Edges none{0, 0, 0, 0};
-        const Rect before{78, 701, 478, 1035};   // its bottom (the « Autoriser » row) 62 px past the visible area
-        const auto f0 = FrameBubble(before, int(520 * k), false, screen, k, none);
-        const int s = RevealScrollCss(before.bottom, area.bottom, 15, k, false);
-        const int moved = int(s * k + .5f); const Rect after{78, 701 - moved, 478, 1035 - moved};
-        const auto f1 = Reframe(after, f0.inset, f0.window.W(), f0.window.H(), k, none);
-        const Rect shown = Clip(f1.region, {area.left - f1.window.left, area.top - f1.window.top, area.right - f1.window.left, area.bottom - f1.window.top});
-        Check(after.bottom <= area.bottom && shown.bottom + f1.window.top >= after.bottom - 1 && shown.top + f1.window.top <= after.bottom - 40,
-              "R47: after the soft scroll the region shows the bubble's bottom (the « Autoriser » row is clickable)"); }
     // Decision (1): R44 wins — right, left, below, above at Paper's exact position; inside only if the element is bigger than the
     // bubble; else the side with the most room, the bubble SLID along it just enough to be whole (the 12 px gap stays exact)
     {   const float k = 1.25f; auto px = [&](int c0) { return int(c0 * k + .5f); };
@@ -834,23 +864,25 @@ static void TestBubble() {
         const auto ab = Place(low, W, h, area, gap, 0, Side::Right, lead, px(400), Point{}, corner);
         Check(ab.side == Side::Right && ab.rect.left == low.right + gap && ab.slid > 0 && FullyVisible(Rect{ab.rect.left, ab.rect.top, ab.rect.right, ab.rect.top + px(400)}, area), "#130 C: its side slid up along it is tried before below / above");
         const Rect plans{65, 410, 1742, 785};   // div.plans 1677 x 375: not taller than the bubble's 650 px — no inside
-        const auto pl = Place(plans, W, h, area, gap, 0, Side::Right, lead, H, Point{200, 760, true}, corner);
-        Check(pl.side == Side::Inside && FullyVisible(planned(pl), area), "decision (whole first): div.plans with a long conversation — no side holds it, even slid: over the element, whole");
-        const Rect big{65, 150, 1742, 925};   // an element bigger than the bubble: inside, 12 px from the corner nearest to the click
-        const auto in = Place(big, W, h, area, gap, 0, Side::Right, lead, H, Point{200, 300, true}, corner);
-        Check(in.side == Side::Inside && in.rect.left == big.left + corner && in.rect.top == big.top + corner, "decision: inside only an element bigger than the bubble — 12 px from the corner"); }
+        const int m8 = px(8);
+        const auto pl = Place(plans, W, h, area, gap, m8, Side::Right, lead, H, Point{200, 760, true}, corner, px(120));
+        Check(pl.side == Side::Above && pl.rect.bottom == plans.top - gap && pl.limit > 0 && pl.rect.bottom - pl.limit == area.top + m8,
+              "#130 C rule 10: div.plans with a long conversation — no side holds 520: above it (the most room), limited to 8 px under the banner, never over the element");
+        const Rect big{65, 150, 1742, 925};   // an element that fills the page area: inside, its bottom right corner (not the click's)
+        const auto in = Place(big, W, h, area, gap, m8, Side::Right, lead, H, Point{200, 300, true}, corner, px(120));
+        Check(in.side == Side::Inside && in.rect.right == big.right - m8 && in.rect.bottom == big.bottom - m8, "#130 C rule 9: inside only an element that fills the page area — its bottom right corner, 8 px from its edges"); }
     // Q r06 step 14 / M15 (0.3.542): div.plans [83,386,1761,686] (300 CSS high) with a conversation (520 CSS), page area 665
     // then 632 CSS high, dpr 1.25: no side holds it whole even slid — over the element, at the corner nearest to the click,
     // WHOLE in the visible area (past the element, never past the area: it was 150 px above it)
     {   const float k = 1.25f; auto px = [&](int c0) { return int(c0 * k + .5f); };
         const Rect plans{83, 386, 1761, 686};
         for (const Rect area : {Rect{3, 141, 1841, 141 + px(665)}, Rect{3, 141, 1841, 141 + px(632)}}) {
-            const auto p = Place(plans, px(320), px(104), area, px(12), 0, Side::Right, px(4), px(520), Point{300, 600, true}, px(12));
-            const Rect plan = p.fromBottom ? Rect{p.rect.left, p.rect.bottom - px(520), p.rect.right, p.rect.bottom} : Rect{p.rect.left, p.rect.top, p.rect.right, p.rect.top + px(520)};
-            Check(p.side == Side::Inside && FullyVisible(plan, area) && p.rect.left == plans.left + px(12) && p.slid > 0,
-                  "Q r06 / M15: div.plans 300 px with a conversation of 520 — over the element, its left corner (12 px), whole in the visible area");
+            const int m8 = px(8);
+            const auto p = Place(plans, px(320), px(104), area, px(12), m8, Side::Right, px(4), px(520), Point{300, 600, true}, px(12), px(120));
+            const Rect most{p.rect.left, p.rect.top, p.rect.right, p.rect.top + p.limit};   // as high as it may get there
+            Check(p.side == Side::Below && p.rect.top == plans.bottom + px(12) && p.limit > 0 && most.bottom == area.bottom - m8 && FullyVisible(most, area) && most.top >= plans.bottom,
+                  "Q r06 / M15, #130 C rule 10: div.plans 300 px with a conversation of 520 — below it (the most room), limited to 8 px from the bottom, whole, never over the element");
         } }
-    Check(BubbleClickAllowed(0) && BubbleClickAllowed(9) && !BubbleClickAllowed(10), "monkey #102 / #261: only the panel's chips (10) refuse a bubble");
     // monkey 0.3.561 (div.plans 597 ms with a bubble open on div.hero-visual): the early opening also when another element's bubble is open
     Check(EarlyOpenAllowed(false, "", "div.plans") && EarlyOpenAllowed(true, "div.hero-visual", "div.plans"), "selecting: opens at the click, also over another element's open bubble");
     Check(!EarlyOpenAllowed(true, "div.plans", "div.plans") && !EarlyOpenAllowed(true, "", "div.plans") && !EarlyOpenAllowed(false, "", ""), "selecting: the open bubble's own element (or an unknown one) waits for the full selection");

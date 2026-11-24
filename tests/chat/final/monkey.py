@@ -67,6 +67,11 @@ class Monkey:
         shown, rb = F.bubble_shown()
         return rb if shown and isinstance(rb, tuple) else None
 
+    def under_bubble(self, p):
+        '''The point is on the open bubble: a click there is the bubble's, the element under it cannot be clicked.'''
+        b = self.bubble_box()
+        return bool(b and p and b[0] <= p[0] <= b[2] and b[1] <= p[1] <= b[3])
+
     def turn_wait(self, m, timeout=0.0):
         return F.wait_log(r'CHAT turn t\d+ ended', m, timeout) if timeout else None
 
@@ -78,6 +83,8 @@ class Monkey:
         sel = vis[int(a['r'][0] * len(vis))]
         F.front()
         p = F.element_point(sel, avoid=self.bubble_box())
+        if self.under_bubble(p):   # real-window monkey of 24 Nov 2026 (#85): the click landed on the bubble, not on the element
+            return f'click: {sel} is under the open bubble (not clickable)', 0.1
         if self.inv.m.layout == 'panel':
             F.click_at(*p); self.picked = getattr(self, 'picked', set()) | {sel}; return f'panel: click on {sel} (a chip)', 0.6
         m = F.log_mark(); t = F.click_at(*p, settle=0.04)
@@ -143,7 +150,11 @@ class Monkey:
     def toggle_layout(self, a):
         to = 'panel' if self.inv.m.layout == 'comment' else 'comment'
         if to == 'panel':   # the panel continues the conversation of the bubble that was open (its title is that element)
-            self.panel_conv = self.inv.m.open
+            # … when something was SENT from that bubble. A bubble with nothing sent leaves no conversation tied to its element
+            # (M6 / F5, ForgetUnsent: « nothing was sent from that bubble: its conversation is no longer tied to the element »):
+            # what the panel sends next is the panel's. Monkey seed 2 on ae51111 (#229 … #277): the model gave h2.section-title
+            # the panel's message (jt2x9), its bubble rightly opened a new conversation — 6 false « right conversation ».
+            self.panel_conv = self.inv.m.open if self.inv.m.conv.get(self.inv.m.open) else None
         self.inv.allow_close = True; F.set_layout(to); self.inv.m.layout = to; self.inv.m.open = None; self.inv.m.unknown = False
         return f'layout -> {to}', 0.4
 
@@ -159,7 +170,9 @@ class Monkey:
                 if vis:
                     sel = vis[int(a['r'][1] * len(vis))]; p = F.element_point(sel)
                     m = F.log_mark(); t = F.click_at(*p, settle=0.04)
-                    self.inv.after_element_click(sel, t, f'#{a["i"]} other application in front, click {sel}', mark=m)
+                    # point=p: monkey seed 2 on ae51111 (#261, O3 « click without a bubble »: the click reached the browser, the
+                    # page posted nothing) — the failure now records the window under the click, as the other clicks do
+                    self.inv.after_element_click(sel, t, f'#{a["i"]} other application in front, click {sel}', mark=m, point=p)
                     return f'other application, then a click on {sel}', 0.3
         F.front(); time.sleep(0.5); self.inv.m.hidden_by_other = False
         return 'other application, then back', 0.4
@@ -225,6 +238,8 @@ class Monkey:
         kind = 'bubble' if self.inv.m.layout == 'comment' else 'panel'
         if kind == 'bubble' and not self.inv.m.open:
             return 'send: no bubble', 0.1
+        if F.chat_state(kind).get('perm'):   # real-window monkey of 24 Nov 2026 (#63, #72): the card replaces the input — the user answers it first
+            return 'send: a permission waits (its card replaces the input)', 0.1
         self.tok += 1; token = f'jt{self.seed}x{self.tok}'
         sc = a['scenario']
         if sc == 'apply':
@@ -331,7 +346,14 @@ class Monkey:
             comp = F.chat("(function(){var c=document.querySelector('[contenteditable=true]');if(!c)return null;var r=c.getBoundingClientRect();return r.bottom})()")
             st = F.chat_state('bubble')
             if sf and comp and st.get('app') and comp > st['app'][3] + 1:
-                self.R.step(f'#{a["i"]} invariant: after a resize the composer stays inside the bubble (M15)', False, {'composer': comp, 'app': st['app']})
+                # O5 (monkey 0.3.611 #110): what the page looks like when its input is out of the surface — the height it was told, the
+                # one it draws, and which part does not shrink
+                why = F.chat("(function(){var q=function(s){var e=document.querySelector(s);if(!e)return null;var r=e.getBoundingClientRect();return [Math.round(r.top),Math.round(r.bottom),e.scrollHeight,e.clientHeight]};"
+                             "var cs=getComputedStyle(document.documentElement);return {bh:cs.getPropertyValue('--bh'),it:cs.getPropertyValue('--it'),appClass:document.getElementById('app').className,"
+                             "main:q('.main'),body:q('.body'),scroller:q('.scroller'),dock:q('.dock'),composer:q('.composer'),perm:q('.bperm'),view:q('#bview'),"
+                             "dockKids:Array.prototype.map.call(document.querySelectorAll('.dock > *'),function(e){return e.className+':'+Math.round(e.getBoundingClientRect().height)})}})()")
+                host = [l for l in F.C.log_text()[-4000:].splitlines() if 'height offered' in l or 'bubble frame' in l or 'page area changed' in l][-4:]
+                self.R.step(f'#{a["i"]} invariant: after a resize the composer stays inside the bubble (M15)', False, {'composer': comp, 'app': st['app'], 'page': why, 'host': host, 'pageArea': got})
         return f'scroll then page area {got}', 0.3
 
     def switch_then_click(self, a):
@@ -346,7 +368,7 @@ class Monkey:
         F.front(); F.click_at((b[0] + b[2]) // 2, (b[1] + b[3]) // 2, settle=0.03); time.sleep(0.05)
         m = F.log_mark(); t = F.click_at(*p, settle=0.0)
         self.inv.m.layout = 'comment'
-        self.inv.after_element_click(sel, t, f'#{a["i"]} switch then click {sel}', mark=m)
+        self.inv.after_element_click(sel, t, f'#{a["i"]} switch then click {sel}', mark=m, point=p)
         st = F.chat_state('bubble'); aw = (st['app'][2] - st['app'][0]) if st.get('app') else 0
         if self.inv.m.open and abs(aw - 320) > 2:
             self.R.step(f'#{a["i"]} invariant: the bubble has the bubble layout (M5: a 320 px surface)', False, {'surface width': aw, 'window': st.get('w')})
@@ -380,8 +402,8 @@ class Monkey:
         finally:
             time.sleep(0.6); s.stop = True; s.join(2)
         v = s.verdict()
-        if v and v['over16']:
-            self.R.step(f'#{a["i"]} invariant: the bubble follows its element WHILE the page scrolls (R39, gap change <= 16 px CSS)', False, v)
+        if v:   # decision 5 (24 Nov 2026): the tracking while the page scrolls is an objective — reported, never a failure
+            C.objective('suivi-2px', not v['over16'], v, f'monkey #{a["i"]}: gap change while scrolling (<= 16 px CSS between two reads)')
         return out
 
     def run(self, actions):

@@ -194,7 +194,9 @@ def follow(label, act, edge="bottom"):
          'barChanged': bars, 'overBars': over[:6], 'page': pg, 'blackImages': blacks, 'hostLatency': lag[-2:]}
     report['measures']['r39-' + label] = m
     moved = abs(m['scrolled_px']) > 20
-    step(f'R39 · {label}: the bubble follows its element at every image (gap constant ±2 px, {len(seen)} images)', moved and not bad, m)
+    step(f'R39 · {label}: the page scrolled and the bubble was measured against its element ({len(seen)} images)', moved, m)
+    # decision 5 (24 Nov 2026): ± 2 px at every image is an objective — reported, never a failure
+    C.objective('suivi-2px', moved and not bad, {'maxGapChangePx': m['maxGapChangePx'], 'imagesOff': m['imagesOff'], 'images': len(seen)}, f'comment-v5 R39 {label}')
     step(f'R39b · {label}: never drawn over the browser\'s bar, no black image', bars == 0 and blacks == 0, {'barChanged': bars, 'blackImages': blacks})
     return not bad
 

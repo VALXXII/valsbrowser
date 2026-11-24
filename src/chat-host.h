@@ -215,7 +215,7 @@ bool Open() { return panelState == PanelState::Opening || panelState == PanelSta
 bool Shown() { return panelState != PanelState::Closed; }
 bool Usable() { return site.local && !site.file && !folder.empty(); }
 const AgentDef& Agent() { const auto* a = AgentOf(agentId); return a ? *a : Agents[0]; }
-float PanelDip() { return std::min(PanelWidthDip, std::max(PanelMinDip, chrome.width - PageMinDip)); }
+float PanelDip() { return std::min(PanelWidthDip, std::max(PanelMinDip, chrome.ClientWidth() - PageMinDip)); }   // the window's width (Mode Focus: chrome.width is the floating panel's)
 float InsetDip() { return Shown() && !InFullscreen() && !PageFullscreenActive() ? PanelDip() : 0.f; }
 
 // ---------------------------------------------------------------- host -> panel
@@ -458,9 +458,7 @@ Problem ProblemFor(const Acp::Error& e, const std::string& agent) {
     }
     return p;
 }
-void RevealCardSoon();
 void SendError(const Problem& p, const std::string& detail, const char* scope = "thread", bool keep = true) {
-    if (std::string(scope) == "thread") RevealCardSoon();   // R47: an error card waiting for an action — on screen
     SJ::Value m = SJ::Value::Obj(); m.Set("id", Str(NewId("err_"))); m.Set("scope", Str(std::string(scope))); m.Set("title", Str(p.title)); m.Set("message", Str(p.message));
     if (!detail.empty()) m.Set("detail", Str(ClipUtf8(detail, 4000)));
     SJ::Value actions = SJ::Value::Arr();

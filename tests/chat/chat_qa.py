@@ -59,6 +59,14 @@ REAL_CONFIGS = [pathlib.Path(os.environ['APPDATA']) / 'Claude' / 'claude_desktop
 user32 = ctypes.windll.user32
 
 
+def objective(oid, ok, value='', label=''):
+    """An OBJECTIVE, not a release blocker (owner's decision 5 of 24 Nov 2026, design/annotation-plan-2026-11-24.md §4.1):
+    the bubble's opening under 150 ms (`ouverture-150ms`) and its scroll tracking within 2 px (`suivi-2px`). Measured and
+    said at every run — one line the general test (tests/annotation-general/run.py) reads — and never a failed step."""
+    print(f"OBJECTIF {oid} {'atteint' if ok else 'manque'} | {label} | {value}", flush=True)
+    return True
+
+
 def fingerprints() -> dict:
     out = {}
     for f in REAL_CONFIGS:
@@ -151,11 +159,48 @@ def enter_panel():
     ws.call('Input.dispatchKeyEvent', {'type': 'keyUp', 'key': 'Enter', 'code': 'Enter', 'windowsVirtualKeyCode': 13, 'nativeVirtualKeyCode': 13})
 
 
+# The annotation mode's tutorial (#125, « Bienvenue sur le mode Annotation ») opens the first time the mode is turned on
+# in a profile, with a veil over the whole page: clicks, the wheel and the hover land on it. Every test profile is new, so
+# it masked 13 real-window suites (first full pass of the general test, 24 Nov 2026). The test profiles start with it
+# marked as seen — the product's own setting, `annotation-onboarded=1` in the profile's « settings » file. The tutorial
+# itself is tested by tests/onboarding/ (its own harness), never through this one.
+TUTORIAL_SEEN = 'annotation-onboarded=1'
+SETTINGS_HEADER = 'browser-settings 1'   # src/settings.h, Read: a settings file is read only under this first line
+TUTORIAL_OPENED = 'ANNOTATE onboarding opened'
+_tutorial_said = False
+
+
+def mark_tutorial_seen(app):
+    '''Writes `annotation-onboarded=1` in the test profile's settings (the other settings keep their value, or their default).'''
+    f = pathlib.Path(app) / 'settings'
+    lines = [l for l in (f.read_text(encoding='utf-8', errors='replace').splitlines() if f.exists() else []) if not l.startswith('annotation-onboarded=')]
+    if not lines or lines[0] != SETTINGS_HEADER:   # without its header line the browser takes every default: the tutorial opened anyway
+        lines = [SETTINGS_HEADER] + [l for l in lines if l != SETTINGS_HEADER]
+    f.write_text('\n'.join(lines + [TUTORIAL_SEEN]) + '\n', encoding='utf-8', newline='\n')
+
+
+def tutorial_guard(text):
+    '''The guard: the tutorial opened in a test profile although it was marked as seen — whatever the suite measures from
+    here is the tutorial's veil, not the product. Said once, loudly, and the suite stops (exit code 1).'''
+    global _tutorial_said
+    if _tutorial_said or TUTORIAL_OPENED not in text:
+        return
+    _tutorial_said = True
+    line = next((l for l in text.splitlines() if TUTORIAL_OPENED in l), TUTORIAL_OPENED)
+    msg = ('HARNESS FAILURE — the annotation tutorial (#125) opened in this test profile: « ' + line.strip() + ' ». Its veil covers the page: '
+           'clicks, scroll and hover land on it and nothing this suite measures is the product. The profile must start with ' + TUTORIAL_SEEN +
+           ' in its « settings » file (tests/chat/chat_qa.py, mark_tutorial_seen); only tests/onboarding/ tests the tutorial.')
+    print('FAIL ' + msg, flush=True)
+    raise SystemExit(msg)
+
+
 def log_text():
     try:
-        return LOG.read_text(encoding='utf-8', errors='replace')
+        text = LOG.read_text(encoding='utf-8', errors='replace')
     except OSError:
         return ''
+    tutorial_guard(text)
+    return text
 
 
 def wait_log(pattern, timeout=15.0, after=0):
@@ -269,6 +314,8 @@ def launch(real=False, fresh=True, extra_env=None, reset_site=True):
                 pass
     shutil.rmtree(APP / 'sessions', ignore_errors=True)
     (APP / 'session').write_text('browser-session-2\n0\n1\n' + json.dumps(URL) + '\n0\n', encoding='utf-8', newline='\n')
+    global _tutorial_said
+    mark_tutorial_seen(APP); _tutorial_said = False   # #125: the tutorial's veil never covers a test's page (see mark_tutorial_seen)
     prepare_site(reset_site)
     for sub in ('AppData/Roaming/Claude', 'AppData/Local', 'home/.codex'):
         (AGENTS / sub).mkdir(parents=True, exist_ok=True)

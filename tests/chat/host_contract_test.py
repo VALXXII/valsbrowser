@@ -283,15 +283,19 @@ bub = code('chat-bubble.h'); place = bub[bub.find('inline Placement Place('):bub
 check('element.top - lead' in place and 'element.right + gap' in place and 'whole(planned(p))' in place and 'slid' in place, 'Paper: the side positions are exact (+gap, top - lead), a side only if whole there; a clamp only for the inside fallback')
 consts = code('chat-comment.h')
 check('BubbleGapCss = 12' in consts and 'BubbleLeadCss = 4' in consts, 'Paper: gap 12, lead 4 (CSS px)')
-check('OfferedRoomCss(' not in block_after(comment, 'void PlaceBubble(bool scrolling) {'), 'R29 (the user): natural height, never bounded by the room under the fixed edge')
+check('OfferedRoomCss(' not in block_after(comment, 'void PlaceBubble(bool scrolling) {'), '#130 C rule 4 (replaces R29): the height offered is not the room under the fixed edge — it is the page area - 16 px (checked below)')
 
-# R47 (coordinator's decision): an authorization (or an error waiting for an action) whose buttons are out of the visible area
-# — the SITE's page scrolls softly just enough, once, when it arrives; not while the user scrolls; reduced motion respected
-check('RevealCardSoon()' in turn[turn.find('permission asked'):][:600] or 'RevealCardSoon()' in block_after(turn, 'void OnPermission('), 'R47: a permission asked asks for its card to be shown')
-check('RevealCardSoon()' in block_after(code('chat-host.h'), 'void SendError('), 'R47: an error waiting for an action too')
-rv = block_after(comment, 'void RevealCard() {')
-check('RevealScrollCss(' in rv and 'scrollBy' in rv and 'Reduced()' in rv and 'lastScrollAt' in rv, 'R47: the page scrolls by what is missing, softly (or at once with reduced motion), never while the user scrolls')
-check('RevealCard()' in block_after(comment, 'void OnBubbleSize('), 'R47: checked at the bubble\'s next size (the card is in it)')
+# #130 C rule 7 (Paper « C règles (validées) », the owner, 24 Nov 2026): the browser NEVER scrolls the user's page to show a
+# card — the old R47 fix (RevealCard: window.scrollBy from the host) is removed, everywhere
+host_all = ''.join(code(f) for f in ('chat-comment.h', 'chat-host.h', 'chat-host-ui.h', 'chat-host-turn.h', 'chat-bubble.h'))
+check('RevealCard' not in host_all and 'RevealScrollCss' not in host_all and 'scrollBy' not in comment and 'revealDue' not in comment,
+      '#130 C rule 7: no automatic scroll of the site page for a card (RevealCard and its scrollBy are gone)')
+# #130 C rules 9 and 10: no free side — below, else above, never over the element (its height limited to its side, or it switches side)
+pb = block_after(comment, 'void PlaceBubble(bool scrolling) {')
+check('ChatBubble::FlipSide(' in pb and pb.find('ChatBubble::FlipSide(') < pb.find('if (!bubble.anchor.set) {') and 'BubbleMinRoomCss' in pb,
+      '#130 C rule 10: PlaceBubble lets a bubble below / above its element switch side before it is placed again')
+check('p.side == ChatBubble::Side::Below' in pb and 'area.bottom - margin - p.rect.top' in pb,
+      '#130 C rule 10: below its element the height offered stops 8 px from the page area\'s bottom (its thread scrolls)')
 
 # Decision: the opening height = the conversation's last height (saved with it), else 520 when it has content
 pl2 = block_after(comment, 'void PlaceBubble(bool scrolling) {')
@@ -305,10 +309,8 @@ check('PanelKeyboardBack(' in block_after(comment, 'void CALLBACK ForegroundChan
 osz = block_after(comment, 'void OnBubbleSize(')
 check('std::max(head.bubbleHeight' in osz, 'decision: the height kept with a conversation never shrinks (the composer-only first size)')
 check('ShownItems()' not in block_after(comment, 'int PlannedHeightPx(float k) {').split('return mine')[0].split('AnchoredOf')[1] if 'AnchoredOf' in block_after(comment, 'int PlannedHeightPx(float k) {') else False, 'decision: « has content » is the bubble\'s own conversation')
-check('waitingPermissions.empty()' in block_after(comment, 'void RevealCard() {'), 'R47: the card stays due while the authorization waits (it grows after it arrives)')
 
 # real window (0.3.539): « the user is scrolling » = the page's scroll offset changed (not the page reflowing)
-check('lastSy' in block_after(comment, 'void OnAnchor('), 'R47: a scroll is an offset change, not a reflow (the reveal was skipped during the agent\'s edit)')
 
 check('bubble slid' in block_after(comment, 'void PlaceBubble(bool scrolling) {'), 'decision: « bubble slid N px along its side to be fully visible » in the log')
 
@@ -332,10 +334,21 @@ check('EarlyOpenAllowed(bubble.open, bubble.selector, env.selector)' in block_af
 
 # monkey 0.3.561 #102 / #261: the bubbles' own elements left in `aiming` never block a click (only the panel's chips count)
 tcs = block_after(comment, 'bool TakeCommentSelection(')
-check('aiming.size() >= 10' not in tcs and 'BubbleClickAllowed(chips)' in tcs and 'anchorFor.empty()' in tcs, 'monkey #102 / #261: a click is refused only by 10 chips of the panel, and says so')
+# O3 / M4 (real-window monkey, 24 Nov 2026): the old note panel never stays open under a bubble nor through a change of layout
+csn = block_after(comment, 'void CloseStaleNote(')
+check('note.Close(false)' in csn and 'CloseStaleNote(' in block_after(comment, 'void OpenBubble(')[:400] and 'CloseStaleNote(' in block_after(comment, 'void SwitchLayout(')[:300],
+      'O3 / M4: an open note panel is closed when a bubble opens and when the layout changes (it kept the keyboard)')
+# O3 (« clic sans bulle », monkey 0.3.611 #116: the old note opened instead of a bubble): in Commentaire nothing declines a click
+# on an element — the panel's limit of 10 chips is not this layout's; the early opening's ways out say why in the log
+check('return false' not in tcs and 'BubbleClickAllowed' not in tcs, 'O3: TakeCommentSelection never declines a click (the note panel never opens instead of a bubble)')
+oe = block_after(comment, 'bool OpenEarly(')
+check(oe.count('Diag(') >= 4 and 'has no selector' in oe and 'right after the bubble closed' in oe, 'O3: the early opening says why it leaves a click to the full selection')
 # monkey 0.3.561 F6: an element's conversation only in memory (its message waits in the queue) is found again by a click on it
 fa = block_after(comment, 'const ChatStore::Header* FindAnchored(')
 check('parked' in fa and 'SentConvo(' in fa and 'FindAnchored(page, env.selector' in block_after(comment, 'bool OpenEarly(') and 'FindAnchored(page, sel' in block_after(comment, 'bool TakeCommentSelection('), 'F6: a click finds its element conversation in memory too (not saved yet)')
+
+# monkey 0.3.611 #116: a click in Commentaire refused by CommentFirst says why
+check('a click in Commentaire is not the chat' in block_after(ui, 'bool CommentFirst('), 'monkey #116: a refused click in Commentaire is logged')
 
 # #129: the model menu of the bubble is the panel's (same page, same host): a provider, a model or an effort chosen in the
 # bubble goes to the conversation it shows — no layout makes the host ignore it, and a provider chosen is kept on the
@@ -359,5 +372,11 @@ check('BubbleMarginCss = 8' in consts and '2 * BubbleMarginCss' in block_after(c
       '#130 C: 8 px from the page area\'s edges; the height offered is at most the page area - 16 px')
 
 ok = all(checks)
+# M5 (real-window monkey, 24 Nov 2026, seed 1 #81 / #101): a click while the chat panel is still on screen (sliding out) — its
+# rectangle is of a page about to widen: the bubble waits for the page's first measure instead of being shown, then moved
+oe5 = block_after(comment, 'bool OpenEarly(')
+check('const bool areaMoving = Shown();' in oe5 and oe5.count('areaMoving') >= 4 and 'holdForMeasure = stale || areaMoving' in oe5,
+      'M5: a click while the chat panel is still on screen — the bubble waits for the first measure of the page')
+
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

@@ -172,6 +172,7 @@ struct State {
     std::wstring downloadFolder;   // empty: the system Downloads folder
     bool askWhereToSave = false;   // a save dialog for every download
     bool reduceMotion = false;     // on top of Windows' own "animation effects" switch
+    bool focusMode = false;        // « Mode Focus » (src/focus-mode.h): no chrome; the tabs and toolbar float in at the top edge
     bool searchSuggestions = true; // the address bar's suggestion list
     Tracking tracking = Tracking::Balanced;
     bool passwords = true;         // offer to save and fill passwords
@@ -204,7 +205,7 @@ struct State {
     long long defaultBrowserLaterAt = 0;
     bool operator==(const State& o) const {
         return engine == o.engine && restoreTabs == o.restoreTabs && downloadFolder == o.downloadFolder &&
-               askWhereToSave == o.askWhereToSave && reduceMotion == o.reduceMotion && searchSuggestions == o.searchSuggestions &&
+               askWhereToSave == o.askWhereToSave && reduceMotion == o.reduceMotion && focusMode == o.focusMode && searchSuggestions == o.searchSuggestions &&
                tracking == o.tracking && passwords == o.passwords && autofill == o.autofill && clearOnExit == o.clearOnExit &&
                sleepMinutes == o.sleepMinutes && zoomPercent == o.zoomPercent && customSearch == o.customSearch &&
                newTabPage == o.newTabPage && homepage == o.homepage && tabPosition == o.tabPosition &&
@@ -221,7 +222,7 @@ enum class Change { Engine, RestoreTabs, DownloadFolder, AskWhereToSave, ReduceM
                     SearchSuggestions, Tracking, Passwords, Autofill, ClearOnExit, Sleep, Zoom,
                     CustomSearch, NewTabPage, Homepage, TabPosition, ConfirmCloseTabs, CloseWithLastTab,
                     AdBlock, HttpsOnly, ThirdPartyCookies, MemorySaver, MuteBackground, Autoplay, BookmarksBar, GrayscaleText,
-                    AnnotationConnectPrompt, AnnotationRetention, DefaultBrowserLater };
+                    AnnotationConnectPrompt, AnnotationRetention, DefaultBrowserLater, FocusMode };
 // Annotations: the connect modal stops opening by itself after this many « Plus tard » (src/annotation-mode.h).
 inline constexpr int MaxConnectDeclines = 3;
 inline constexpr int RetentionChoices[] = {7, 30, 90};
@@ -247,6 +248,7 @@ inline void Write(std::ostream& out, const State& s) {
         << "download-folder=" << NativeChrome::Downloads::ToUtf8(s.downloadFolder) << '\n'
         << "ask-where-to-save=" << (s.askWhereToSave ? 1 : 0) << '\n'
         << "reduce-motion=" << (s.reduceMotion ? 1 : 0) << '\n'
+        << "focus-mode=" << (s.focusMode ? 1 : 0) << '\n'
         << "search-suggestions=" << (s.searchSuggestions ? 1 : 0) << '\n'
         << "tracking=" << Info(s.tracking).key << '\n'
         << "passwords=" << (s.passwords ? 1 : 0) << '\n'
@@ -289,6 +291,7 @@ inline State Read(std::istream& in) {
         else if (key == "restore-tabs") flag(value, s.restoreTabs);
         else if (key == "ask-where-to-save") flag(value, s.askWhereToSave);
         else if (key == "reduce-motion") flag(value, s.reduceMotion);
+        else if (key == "focus-mode") flag(value, s.focusMode);
         else if (key == "search-suggestions") flag(value, s.searchSuggestions);
         else if (key == "passwords") flag(value, s.passwords);
         else if (key == "autofill") flag(value, s.autofill);
