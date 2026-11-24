@@ -477,13 +477,15 @@ void MoveTab(int from,int to){
     current=(int)(std::find(pages.begin(),pages.end(),active)-pages.begin());
     motion.ClearInteractions();hover=pressed=keyboardFocus=0;Update();
 }
+// #127 motion spec §1: 6 DIP before a tab (top bar) or a row (column) lifts, for a reorder or a split view: ONE threshold.
+constexpr float TabDragThreshold=6;
 void DragTab(POINT point){
     if(!tabDrag.tab||halted)return;
     auto it=std::find(pages.begin(),pages.end(),tabDrag.tab);if(it==pages.end()){CancelTabDrag();return;}
     tabDrag.at=point;
     if(!tabDrag.active){
         // #127 motion spec: 6 DIP before the tab lifts (a click otherwise), or the system's drag distance when larger.
-        if(std::abs(point.x-tabDrag.start.x)<std::max(S(6),GetSystemMetrics(SM_CXDRAG)+1)&&std::abs(point.y-tabDrag.start.y)<std::max(S(6),GetSystemMetrics(SM_CYDRAG)+1))return;
+        if(std::abs(point.x-tabDrag.start.x)<std::max(S(TabDragThreshold),GetSystemMetrics(SM_CXDRAG)+1)&&std::abs(point.y-tabDrag.start.y)<std::max(S(TabDragThreshold),GetSystemMetrics(SM_CYDRAG)+1))return;
         tabDrag.active=true;
     }
     if(SplitDragMove(point))return;
