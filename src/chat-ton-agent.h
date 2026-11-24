@@ -116,10 +116,12 @@ void ListenTonSignIn() {
     if (tonSignInListener) return;
     tonSignInListener = AgentStatus::Subscribe([](const AgentStatus::Status& s) { if (s.state != AgentStatus::State::SigningIn) tonSignInPages[TonAgent::Index(s.agent)] = TonSignInPage{}; });   // the sign-in ended: forgotten
 }
-// 3b's link: the page, once its tab is closed (while it is open the person goes back to it themselves).
-std::wstring TonSignInPageFor(AgentStatus::Agent a) {
+// 3b: whether the page opened in a tab of Browser (else another browser has it: its own lines, no link) and, once that
+// tab is closed, the page to open again (while it is open the person goes back to it themselves).
+NativeChrome::AnnotationOnboardingUI::SignInPage TonSignInPageFor(AgentStatus::Agent a) {
     const auto& p = tonSignInPages[TonAgent::Index(a)];
-    return p.seen && p.tab.expired() && AgentStatus::Get(a).state == AgentStatus::State::SigningIn ? p.url : std::wstring();
+    if (!p.seen || AgentStatus::Get(a).state != AgentStatus::State::SigningIn) return {};
+    return {true, p.tab.expired() ? p.url : std::wstring()};
 }
 // « Rouvrir la page de connexion ↗ »: that page in a new tab (the screen steps aside: the tab changed).
 void ReopenSignInPage(AgentStatus::Agent a) {

@@ -1746,6 +1746,9 @@ I18N(ton_agent_mark_signin_failed, L"Connexion échouée", L"Sign-in failed")
 I18N(ton_agent_signing_in_title, L"Connexion en cours", L"Signing in")
 I18N(ton_agent_signing_in_body, L"Terminez la connexion dans l'onglet ouvert,\npuis revenez ici.", L"Finish signing in in the open tab,\nthen come back here.")
 I18N(ton_agent_signing_in_note, L"La page de connexion est ouverte dans un autre onglet.\nBrowser voit tout seul quand c'est fait.", L"The sign-in page is open in another tab.\nBrowser notices by itself when it's done.")
+// The page in another browser (Browser not the default one; Designer, note 26AL-0): no « Rouvrir ».
+I18N(ton_agent_signing_in_browser_body, L"Terminez la connexion dans votre navigateur,\npuis revenez ici.", L"Finish signing in in your browser,\nthen come back here.")
+I18N(ton_agent_signing_in_browser_note, L"La page de connexion est ouverte dans votre navigateur web.\nBrowser voit tout seul quand c'est fait.", L"The sign-in page is open in your web browser.\nBrowser notices by itself when it's done.")
 I18N(ton_agent_reopen_signin, L"Rouvrir la page de connexion ↗", L"Reopen the sign-in page ↗")
 // The tiles' names for screen readers (their action, as the click runs it); the hovered failed tile's word.
 I18N(ton_agent_button_install, L"Installer {0}", L"Install {0}")
@@ -1756,7 +1759,7 @@ I18N(ton_agent_tile_retry_signin, L"Réessayer la connexion à {0}", L"Retry sig
 I18N(ton_agent_tile_waits, L"Disponible après l'installation en cours", L"Available once the current installation ends")
 I18N(ton_agent_button_retry, L"Réessayer", L"Try again")
 I18N(ton_agent_install_failed, L"L'installation n'a pas abouti.\nUn antivirus, un proxy d'entreprise ou PowerShell a pu la bloquer.", L"The installation didn't finish.\nAn antivirus, a company proxy or PowerShell may have blocked it.")
-I18N(ton_agent_signin_failed, L"La connexion n'a pas abouti.\nRéessayez : la page s'ouvre dans votre navigateur web.", L"Signing in didn't finish.\nTry again: the page opens in your web browser.")
+I18N(ton_agent_signin_failed_codex, L"La connexion n'a pas abouti.\nVérifiez votre compte ChatGPT, puis réessayez.", L"Signing in didn't finish.\nCheck your ChatGPT account, then try again.")
 I18N(ton_agent_signin_failed_claude, L"La connexion n'a pas abouti.\nVérifiez votre compte Claude payant, puis réessayez.", L"Signing in didn't finish.\nCheck your paid Claude account, then try again.")
 I18N(ton_agent_manual, L"Installer moi-même ↗", L"Install it myself ↗")
 I18N(ton_agent_manual_done, L"Commande d'installation copiée : collez-la dans PowerShell. La page officielle s'ouvre.", L"Install command copied: paste it in PowerShell. The official page opens.")

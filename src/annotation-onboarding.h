@@ -111,6 +111,9 @@ inline constexpr float keysTop = 120, keyH = 56, keyPad = 18, keyGap = 10, keyRa
 }
 inline constexpr std::size_t MaxNote = 300;   // A3: what the note takes (the demo does not read it)
 
+// 3b: the sign-in page as the host saw it — opened in a tab of Browser (the default browser), and the page to offer again
+// once that tab is closed ("" = no « Rouvrir la page de connexion ↗ »). Never seen: another browser has it.
+struct SignInPage { bool inTab = false; std::wstring reopen; };
 struct Hooks {
     std::function<void(A::AgentKind)> connect;                     // (before « Ton agent ») A6's MCP rows: never called now, kept for the host's code
     std::function<void(AO::Ending, bool manual)> closed;           // after the window left; `manual` is always false now (no « Autre app » link)
@@ -118,7 +121,7 @@ struct Hooks {
     std::function<void(const std::wstring&)> announce;             // screen reader notifications (host: the browser's)
     std::function<void(AgentStatus::Agent)> openChat;              // A6 « Ouvrir le chat »: after the window left and `closed`, the agent to use
     std::function<void(const std::wstring&)> openPage;             // A6 « Installer moi-même ↗ »: the official page (the window copies the command)
-    std::function<std::wstring(AgentStatus::Agent)> signInPage;    // 3b: the sign-in page to offer again ("" = no « Rouvrir la page de connexion ↗ »)
+    std::function<SignInPage(AgentStatus::Agent)> signInPage;      // 3b: where the sign-in page is, and the page to offer again
     std::function<void(AgentStatus::Agent)> reopenSignIn;          // its click: that page in a tab of the browser again
 };
 // What « Continuer » (alone), « Installer moi-même ↗ » and « Rouvrir la page de connexion ↗ » do when the host gave no hook
@@ -126,7 +129,7 @@ struct Hooks {
 // the hooks).
 struct Fallback {
     std::function<void(AgentStatus::Agent)> openChat; std::function<void(const std::wstring&)> openPage;
-    std::function<std::wstring(AgentStatus::Agent)> signInPage; std::function<void(AgentStatus::Agent)> reopenSignIn;
+    std::function<SignInPage(AgentStatus::Agent)> signInPage; std::function<void(AgentStatus::Agent)> reopenSignIn;
 };
 inline Fallback& Fallbacks() { static Fallback f; return f; }
 struct Options {
@@ -293,7 +296,7 @@ private:
         case TonAgent::Heading::SignIn:   // the paid Claude plan: said here (after a failed sign-in, 25OI-0: in the card's lines)
             if (Target() == Agent::Codex) return TR(ton_agent_signin_codex_body);
             return TargetStatus().state == AState::Error ? TR(ton_agent_signin_claude_again_body) : TR(ton_agent_signin_claude_body);
-        case TonAgent::Heading::SigningIn: return TR(ton_agent_signing_in_body);
+        case TonAgent::Heading::SigningIn: return PageNow().inTab ? TR(ton_agent_signing_in_body) : TR(ton_agent_signing_in_browser_body);   // a tab of Browser, or another browser
         case TonAgent::Heading::Ready: return TR(ton_agent_ready_body);
         default: return TR(ton_agent_choose_body);
         }
@@ -325,17 +328,19 @@ private:
     std::wstring TroubleText() const {
         switch (TonAgent::TroubleOf(TargetStatus())) {
         case TonAgent::Trouble::Install: return TR(ton_agent_install_failed);
-        case TonAgent::Trouble::SignIn: return Target() == Agent::Claude ? TR(ton_agent_signin_failed_claude) : TR(ton_agent_signin_failed);
-        case TonAgent::Trouble::SigningIn: return TR(ton_agent_signing_in_note);
+        case TonAgent::Trouble::SignIn: return Target() == Agent::Claude ? TR(ton_agent_signin_failed_claude) : TR(ton_agent_signin_failed_codex);
+        case TonAgent::Trouble::SigningIn: return PageNow().inTab ? TR(ton_agent_signing_in_note) : TR(ton_agent_signing_in_browser_note);
         default: return L"";
         }
     }
-    // 3b: the sign-in page the host can open again (seen in a tab of the browser, that tab closed since); "" = no link.
-    std::wstring ReopenPage() const {
-        if (TonAgent::TroubleOf(TargetStatus()) != TonAgent::Trouble::SigningIn) return L"";
+    // 3b: the target's sign-in page as the host saw it (in a tab of Browser or not; the page to open again).
+    SignInPage PageNow() const {
+        if (TargetStatus().state != AState::SigningIn) return {};
         const auto& page = options_.hooks.signInPage ? options_.hooks.signInPage : Fallbacks().signInPage;
-        return page ? page(Target()) : L"";
+        return page ? page(Target()) : SignInPage{};
     }
+    // « Rouvrir la page de connexion ↗ »: only when the page was in a tab of Browser, that tab closed since; "" = no link.
+    std::wstring ReopenPage() const { const auto p = PageNow(); return p.inTab ? p.reopen : std::wstring(); }
     // The link under the two lines: « Installer moi-même ↗ » (an install failed), « Rouvrir la page de connexion ↗ » (3b).
     int LinkId() const {
         const auto t = TonAgent::TroubleOf(TargetStatus());
@@ -917,7 +922,7 @@ private:
         const auto g = glow_.find(id); const float glow = g == glow_.end() ? 0.f : g->second;
         return std::max(glow, pressed_ == id && hover_ == id ? 1.f : 0.f);
     }
-    // The other tile while one agent installs: dimmed (Val). No board draws it: the disabled token (32 %), provisional.
+    // The other tile while one agent installs or signs in: 32 % (Val; Designer, boards 2 Installation and 3b: opacity .32).
     static float TileAlpha(Agent a) { return TonAgent::Waits(St(TonAgent::Other(a))) ? K::Token::disabled : 1.f; }
     // A tile (Paper 2351-0 at rest, 24YR-0 hovered, 235O-0 current, 236S-0 failed): the frame, the logo, the name, the mark.
     void DrawTile(Agent a, D2D1_RECT_F r, bool target, Motion::Time now, float alpha) {

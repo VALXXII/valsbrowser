@@ -24,18 +24,19 @@ What it shows is decided in `src/annotation-onboarding-agent.h` (pure, tested):
 | --- | --- | --- | --- | --- |
 | first detection | Choisissez votre agent | no mark, no click | — | centred on 220 |
 | not installed (also Claude Desktop only) | Choisissez votre agent | ⤓ Installer, at rest (click: install) | — | centred on 220 (141.5 → 141) |
-| too old (no board: provisional) | Choisissez votre agent | ⤓ Mettre à jour, at rest (click: install again) | — | centred |
+| too old (Designer, note 26AL-0) | Choisissez votre agent | ⤓ Mettre à jour, at rest (click: install again) | — | centred |
 | installing | Installation de X / Ça peut prendre… | ⤓ Installation... animated, cyan; the other tile waits (32 %, no click) | — | 123 |
 | needs sign-in | Connectez X (Claude Code: its paid plan; Codex: its ChatGPT account) | 📶 Connecter, at rest (click: sign in) | — | centred |
-| signing in (3b 263M-0) | Connexion en cours / Terminez la connexion dans l'onglet ouvert, puis revenez ici. | 📶 Connexion…, cyan, no click | two lines + « Rouvrir la page de connexion ↗ » when its tab was closed | 72 |
+| signing in (3b 263M-0) | Connexion en cours / Terminez la connexion dans l'onglet ouvert (another browser: dans votre navigateur), puis revenez ici. | 📶 Connexion…, cyan, no click; the other tile waits | two lines (« …dans un autre onglet » / « …dans votre navigateur web ») + « Rouvrir la page de connexion ↗ » when its Browser tab was closed | 72 |
 | ready | X est prêt / Il travaille sur vos projets… | ✓ Prêt, cyan, no click | — | 140 |
 | install failed | Choisissez votre agent | ☹ Erreur, danger (hover: « Réessayer »; click: retry) | two lines + « Installer moi-même ↗ » | 72 |
-| sign-in failed (5 25OI-0) | Connectez X / Connectez-vous une fois avec votre compte Claude, … | ☹ Connexion échouée, danger (hover: « Réessayer ») | two lines (Claude Code: its paid account) | 72 |
+| sign-in failed (5 25OI-0) | Connectez X / Connectez-vous une fois avec votre compte Claude, … | ☹ Connexion échouée, danger (hover: « Réessayer ») | two lines (Claude Code: its paid account; Codex: its ChatGPT account) | 72 |
 
 - **The tile is the button** (265A-0): its click runs its action at once and is the consent. Hovered, a tile with an
   action shows the hand, #262626 with inset 1 #3A3A3A and its mark white (at rest #1F1F1F, #2A2A2A, #A6A6A6); a failed
   one keeps its danger frame and says « Réessayer » in #FF7B6E. Installation… / Connexion… / Prêt: no hover, no click.
-  While one agent installs the other tile waits: dimmed (the disabled token, 32 % — Val's rule, no board draws it yet).
+  While one agent installs or signs in, the other tile waits: 32 %, no click (Val; boards 2 and 3b). Keyboard focus on a
+  failed tile says « Réessayer » too (Designer).
 - **Target**: the tile acted on (the text above the footer follows it); before any click, the agent that is busy, else
   ready, else failed (Claude Code first), else Claude Code. Busy tiles are cyan wherever they are; a ready or failed tile
   when it is the target.

@@ -17,7 +17,8 @@
 //    consent of an install (AgentStatus::UserClicked): nothing installs before it. No selection, no action button.
 //  * A tile with an action: at rest #1F1F1F inset 1 #2A2A2A, its mark #A6A6A6; hovered: the hand, #262626 inset 1 #3A3A3A,
 //    the mark white. Installation… / Connexion… / Prêt: no hover, no click. A failed tile (danger): hovered, its word
-//    becomes « Réessayer » (#FF7B6E) and a click retries. While one agent installs, the other tile waits (dimmed, inert).
+//    becomes « Réessayer » (#FF7B6E) and a click retries. While one agent installs or signs in, the other tile waits
+//    (32 %, inert: Designer, note 26AL-0).
 //  * The tile acted on is the target (the text above the footer follows it); busy tiles are outlined cyan wherever they
 //    are, a ready or failed one when it is the target.
 //  * The footer: « Plus tard » on the left; « Continuer » on the right only once an agent is ready.
@@ -42,7 +43,7 @@ inline bool SignInReason(Reason r) { return r == Reason::SignInFailed || r == Re
 
 // ---- a tile ----------------------------------------------------------------------------------------------
 // The mark under the name (icon + word). Unknown: the first detection runs, nothing definite (no mark). Update (« Mettre à
-// jour », a CLI too old) has no board of its own: the « Installer » mark with its word (provisional, asked of the Designer).
+// jour », a CLI too old: Designer, note 26AL-0): the download icon with its word; the click installs again.
 enum class Mark { Unknown, Install, Update, Installing, Connect, SigningIn, Ready, Error, SignInFailed };
 inline Mark MarkOf(const Status& s) {
     switch (s.state) {
@@ -85,8 +86,8 @@ inline Action ActionOf(const Status& s) {
     default: return Action::None;   // the first detection, Installation…, Connexion…, Prêt: no hover, no click
     }
 }
-// While one agent installs, the other tile waits: dimmed, no hover, no click (Val).
-inline bool Waits(const Status& other) { return other.state == State::Installing; }
+// While one agent installs or signs in, the other tile waits: 32 %, no hover, no click (Val; Designer, boards 2 and 3b).
+inline bool Waits(const Status& other) { return other.state == State::Installing || other.state == State::SigningIn; }
 inline bool Clickable(const Status& s, const Status& other) { return ActionOf(s) != Action::None && !Waits(other); }
 // « Continuer » (the footer's right): only once an agent is ready.
 inline bool CanContinue(const Status& claude, const Status& codex) { return claude.Ready() || codex.Ready(); }

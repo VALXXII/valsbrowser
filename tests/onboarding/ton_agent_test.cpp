@@ -52,8 +52,8 @@ static void Model() {
     Expect(act(S::NotInstalled) == TA::Action::Install && act(S::NotInstalled, R::TooOld) == TA::Action::Update && act(S::NeedsSignIn) == TA::Action::SignIn && act(S::Error, R::Network) == TA::Action::Retry && act(S::Error, R::SignInFailed) == TA::Action::Retry,
            "the tile's click: Installer, Mettre à jour, Se connecter, Réessayer (Val: the tile is the button)");
     Expect(act(S::Installing) == TA::Action::None && act(S::SigningIn) == TA::Action::None && act(S::Ready) == TA::Action::None && act(S::Unknown) == TA::Action::None, "the tile's click: none while busy, ready or detecting (no hover, no click)");
-    Expect(TA::Waits(St(C, S::Installing)) && !TA::Clickable(St(X, S::NotInstalled), St(C, S::Installing)) && TA::Clickable(St(X, S::NotInstalled), St(C, S::NeedsSignIn)) && !TA::Waits(St(C, S::SigningIn)),
-           "while one agent installs, the other tile waits (not while it signs in)");
+    Expect(TA::Waits(St(C, S::Installing)) && TA::Waits(St(C, S::SigningIn)) && !TA::Clickable(St(X, S::NotInstalled), St(C, S::Installing)) && TA::Clickable(St(X, S::NotInstalled), St(C, S::NeedsSignIn)) && !TA::Waits(St(C, S::Error, R::Network)),
+           "while one agent installs or signs in, the other tile waits (Designer: 32 %, no click)");
     Expect(!TA::CanContinue(St(C, S::NotInstalled), St(X, S::NeedsSignIn)) && TA::CanContinue(St(C, S::NotInstalled), St(X, S::Ready)), "« Continuer » only once an agent is ready");
     Expect(TA::HeadingOf(St(C, S::NotInstalled)) == TA::Heading::Choose && TA::HeadingOf(St(C, S::Error, R::Network)) == TA::Heading::Choose && TA::HeadingOf(St(C, S::Installing)) == TA::Heading::Installing &&
            TA::HeadingOf(St(X, S::NeedsSignIn)) == TA::Heading::SignIn && TA::HeadingOf(St(X, S::SigningIn)) == TA::Heading::SigningIn && TA::HeadingOf(St(C, S::Error, R::SignInTimeout)) == TA::Heading::SignIn && TA::HeadingOf(St(X, S::Ready)) == TA::Heading::Ready,
@@ -125,16 +125,16 @@ static void Mode(const wchar_t* m) { SetEnvironmentVariableW(L"BROWSER_FAKE_INST
 struct Fixture {
     UI::Window window; std::wstring root, out;
     int closed = 0, chats = 0, pages = 0, order = 0, closedAt = 0, chatAt = 0, reopens = 0; AO::Ending ending = AO::Ending::None; RT::Agent chatAgent = C; std::wstring page;
-    std::wstring signInUrl;   // the host's sign-in page (3b's « Rouvrir la page de connexion ↗ »): "" = none
+    bool signInTab = false; std::wstring signInUrl;   // the host's sign-in page: in a tab of Browser, and the one to open again ("" = none)
     void Setup(Step start = Step::Connect, bool alone = false) {
         UI::Options o; o.reduced = true; o.start = start; o.alone = alone;
         o.hooks.closed = [this](AO::Ending e, bool) { ++closed; ending = e; closedAt = ++order; };
         o.hooks.openChat = [this](RT::Agent a) { ++chats; chatAgent = a; chatAt = ++order; };
         o.hooks.openPage = [this](const std::wstring& url) { ++pages; page = url; };
-        o.hooks.signInPage = [this](RT::Agent) { return signInUrl; };
+        o.hooks.signInPage = [this](RT::Agent) { return UI::SignInPage{signInTab, signInUrl}; };
         o.hooks.reopenSignIn = [this](RT::Agent) { ++reopens; };
         window.SetupForTest(root, o); window.SetShaderSecondsForTest(0);
-        closed = chats = pages = order = closedAt = chatAt = reopens = 0; ending = AO::Ending::None; signInUrl.clear();
+        closed = chats = pages = order = closedAt = chatAt = reopens = 0; ending = AO::Ending::None; signInTab = false; signInUrl.clear();
     }
     bool Shot(const std::wstring& name) {
         bool ok = true;
@@ -179,11 +179,15 @@ static void Screens(Fixture& f) {
         Expect(f.Shot(L"claude-to-connect"), "render: Claude Code to connect (the Codex « À connecter » board for Claude Code)");
         // the sign-in (3b): the window steps aside while another tab is in front, comes back over its tab
         f.Click(W::ClaudeRow);
-        Expect(AS::Get(C).state == S::SigningIn && f.window.TitleForTest() == L"Connexion en cours" && f.window.BodyForTest() == L"Terminez la connexion dans l'onglet ouvert,\npuis revenez ici.",
-               "3b: the tile's click signs in — « Connexion en cours », « Terminez la connexion dans l'onglet ouvert, puis revenez ici. »");
-        Expect(f.window.MarkForTest(C) == L"Connexion…" && !f.window.TileEnabledForTest(C) && f.window.TroubleForTest() == L"La page de connexion est ouverte dans un autre onglet.\nBrowser voit tout seul quand c'est fait." && Near(f.window.CardTopForTest(), 72),
-               "3b: the tile « Connexion… » (no click), the card's two lines, the card at 72");
-        Expect(f.window.LinkForTest().empty(), "3b: no sign-in page known → no « Rouvrir la page de connexion ↗ »");
+        Expect(AS::Get(C).state == S::SigningIn && f.window.TitleForTest() == L"Connexion en cours" && f.window.BodyForTest() == L"Terminez la connexion dans votre navigateur,\npuis revenez ici." &&
+               f.window.TroubleForTest() == L"La page de connexion est ouverte dans votre navigateur web.\nBrowser voit tout seul quand c'est fait." && f.window.LinkForTest().empty(),
+               "3b, the page in another browser (none seen in a tab): « Terminez la connexion dans votre navigateur », its lines, no « Rouvrir »");
+        Expect(f.Shot(L"claude-3b-autre-navigateur"), "render: 3b, the sign-in page in another browser (Designer's note 26AL-0)");
+        f.signInTab = true;
+        Expect(f.window.BodyForTest() == L"Terminez la connexion dans l'onglet ouvert,\npuis revenez ici." && f.window.LinkForTest().empty(),
+               "3b, the page in a tab of Browser (still open): « Terminez la connexion dans l'onglet ouvert, puis revenez ici. », no link yet");
+        Expect(f.window.MarkForTest(C) == L"Connexion…" && !f.window.TileEnabledForTest(C) && !f.window.TileEnabledForTest(X) && f.window.TroubleForTest() == L"La page de connexion est ouverte dans un autre onglet.\nBrowser voit tout seul quand c'est fait." && Near(f.window.CardTopForTest(), 72),
+               "3b: the tile « Connexion… » (no click), the other tile waits, the card's two lines, the card at 72");
         f.window.TabInFrontForTest(true); Expect(!f.window.AsideForTest(), "3b: its own tab in front → stays");
         f.window.TabInFrontForTest(false); Expect(f.window.AsideForTest() && f.window.OpenForTest(), "3b: the sign-in page's tab in front → the window steps aside (still open)");
         f.window.TabInFrontForTest(false); Expect(f.window.AsideForTest(), "3b: another tab → still aside");
@@ -208,6 +212,16 @@ static void Screens(Fixture& f) {
         f.Click(W::CodexRow);
         Expect(AS::Get(X).state == S::SigningIn && f.window.TargetForTest() == X && f.window.TitleForTest() == L"Connexion en cours", "a click on the Codex tile: signing in, Codex the target");
         Pump(); Expect(AS::Get(X).Ready(), "Codex signed in");
+    }
+    // ---- Codex: a sign-in that fails (like Claude Code's 5, Designer: its ChatGPT account) ----
+    {
+        const auto p = Profile(L"codex-signin-error"); PutCli(CodexExe(p), "codex-cli 0.166.0", "1"); UseProfile(p);
+        f.Setup(); signInFails = true; f.Click(W::CodexRow); Pump(); signInFails = false;
+        Expect(AS::Get(X).state == S::Error && AS::Get(X).reason == R::SignInFailed && f.window.TitleForTest() == L"Connectez Codex" && f.window.MarkForTest(X) == L"Connexion échouée",
+               "Codex sign-in failed: « Connectez Codex », « Connexion échouée »");
+        Expect(f.window.TroubleForTest() == L"La connexion n'a pas abouti.\nVérifiez votre compte ChatGPT, puis réessayez." && f.window.TileNameForTest(X) == L"Réessayer la connexion à Codex", "Codex sign-in failed: its ChatGPT account, its tile retries");
+        Expect(f.Shot(L"codex-5-connexion-echouee"), "render: Codex, sign-in failed");
+        Pump();
     }
     // ---- Claude Code: the install fails, retry, « Installer moi-même »; then a sign-in that fails (5) ----
     {
@@ -258,7 +272,7 @@ static void Screens(Fixture& f) {
         f.window.MorphForTest(X, 5000); Expect(f.Shot(L"morph-after") && f.window.MorphDrawsForTest() == before + 2, "after the morph: the still « Connecter » mark again");
         Expect(AS::Get(X).state == S::NeedsSignIn && f.window.TitleForTest() == L"Connectez Codex" && Near(f.window.CardTopForTest(), 141.5f), "Codex 3 À connecter: centred again");
         f.window.HoverForTest(W::CodexRow); Expect(f.Shot(L"codex-3-a-connecter"), "render: Codex 3 À connecter, its tile hovered (24YO-0: « Connecter » white)"); f.window.HoverForTest(W::None);
-        f.Click(W::CodexRow); f.signInUrl = L"https://auth.openai.com/oauth/authorize?client_id=test";
+        f.Click(W::CodexRow); f.signInTab = true; f.signInUrl = L"https://auth.openai.com/oauth/authorize?client_id=test";
         Expect(AS::Get(X).state == S::SigningIn && f.window.LinkForTest() == L"Rouvrir la page de connexion ↗" && Near(f.window.CardTopForTest(), 72), "3b: the sign-in page known (its tab closed) → « Rouvrir la page de connexion ↗ »");
         const auto order = f.window.TabOrderForTest();
         Expect(std::find(order.begin(), order.end(), static_cast<int>(W::Reopen)) != order.end() && std::find(order.begin(), order.end(), static_cast<int>(W::CodexRow)) == order.end(), "3b keys: the link in the tab order, not the busy tile");
