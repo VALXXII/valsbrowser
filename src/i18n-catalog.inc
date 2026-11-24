@@ -1836,3 +1836,6 @@ I18N(annotation_local_card_title, L"Annoter marche sur vos projets et fichiers l
 I18N(annotation_local_card_body, L"{0} est en ligne. Ouvrez votre projet en local (par exemple localhost:5173) ou un fichier pour l’annoter.", L"{0} is online. Open your project locally (for example localhost:5173) or a file to annotate it.")
 I18N(annotation_local_card_ok, L"Compris", L"Got it")
 I18N(annotation_local_card_discover, L"Découvrir en 1 minute", L"Discover in 1 minute")
+
+// ---- agents: status/install (« Ton agent », worker A: src/agent-status.h, src/chat-agent-status.h; design/ton-agent-interface.md)
+I18N(agents_installing, L"Installation…", L"Installing…")

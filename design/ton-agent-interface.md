@@ -23,7 +23,14 @@ window keeps its own MCP-config status: it is about external apps, not the chat'
 | `Error` | last install / sign-in failed (`reason`) | ☹ Erreur | « Réessayer » + « Installer moi-même ↗ » (`ManualInstall`) |
 
 `Reason::DesktopOnly`: only Claude Desktop is installed — its Claude Code is not usable by the browser: « not installed ».
-`Status::version` / `path` are filled whenever a CLI was found (« Version 2.1 » in Réglages).
+`Status::version` / `path` are filled whenever a CLI was found (« Version 2.1 » in Réglages). `Status::runtimeReady`: the
+chat's own runtime for that agent (private Node + adapter) is downloaded — not part of « installed »; the chat's first
+message downloads it otherwise.
+
+**The chat** (done by A): `src/chat-host-turn.h` no longer detects by itself. `ApplyStatus` maps the one status to the
+panel's `state.agents` through `src/chat-agent-status.h` (pure, tested): `notInstalled` / `notConnected` / `preparing`
+(installing) / `error` (too old) / `ready`, and an install that left no CLI is « Pas installé », never « Installé » (the bug:
+the chat's own Node + adapter download used to set « Installé » whatever the CLI). Every hub change reaches the panel.
 
 ## Who calls what (all on the UI thread)
 
@@ -33,7 +40,7 @@ window keeps its own MCP-config status: it is about external apps, not the chat'
 | `AgentStatus::Shutdown()` | main (WM_DESTROY) | cancels an install (kills its process tree), closes a sign-in console |
 | `Get(agent)`, `AnyReady()`, `FirstReady()` | everyone | the current status (cheap) |
 | `Subscribe(listener)` / `Unsubscribe(id)` | B, C, the chat | listener(status) after every change of that agent |
-| `Refresh()` / `Refresh(agent)` | B (screen shown), C (settings opened), chat (panel opened), window focus | detects again (off thread) |
+| `Refresh()` / `Refresh(agent)` / `Refresh(done)` | B (screen shown), C (settings opened), chat (panel opened), window focus | detects again (off thread); `done` after both |
 | `Install(UserClicked(agent))` | B / C / chat: the strong button's click ONLY | NotInstalled / Error → Installing → NeedsSignIn / Ready / Error |
 | `SignIn(agent)` | « Se connecter à … » | NeedsSignIn → SigningIn → Ready / Error(signInFailed) |
 | `Retry(UserClicked(agent))` | « Réessayer » | the failed step again |
@@ -73,7 +80,9 @@ job, 15 min timeout. Errors: `Network` (network, proxy, TLS), `FileInUse` (« us
   - `USERPROFILE`, `LOCALAPPDATA`, `APPDATA`, `PATH` of the browser process → temporary folders: the detection looks there
     (fake `claude.exe` / `codex.exe` = `tests/acp/fake_cli.cpp` with `<exe>.version` and `<exe>.login` beside them;
     Claude Desktop « only » = an empty `%LOCALAPPDATA%\AnthropicClaude` folder);
-  - `BROWSER_AGENT_INSTALL_SCRIPT=<fake .ps1>` replaces the official script (it copies the fake CLI into the fake folders);
+  - `BROWSER_AGENT_INSTALL_SCRIPT=<fake .ps1>` replaces the official script: `sandbox/agents/fake-install.ps1` copies
+    `BROWSER_FAKE_CLI` (fake-cli.exe) into the fake folders; `BROWSER_FAKE_INSTALL_MODE` = ok | nocli | policy | inuse |
+    network | fail | hang picks the outcome; `BROWSER_FAKE_INSTALL_DELAY_MS` slows it to watch the animation;
   - `BROWSER_AGENT_PATH_KEY=<key under HKCU>` replaces HKCU\Environment;
   - the sign-in stays the CLI's own: the fake CLI's `auth login` / `login` writes `0` into its `.login` file.
 

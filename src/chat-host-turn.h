@@ -11,7 +11,37 @@ void DisposeSession(const wchar_t* why);
 void SendPrompt(); void ModeSettled(); void ModeRefused(const Acp::Event& e);   // SEC-13
 
 // ---------------------------------------------------------------- « Ton agent »: the agents' one status (src/agent-status.h)
-// Started once with the browser (ChatAgentsStartup, main) — or on the first need of the chat. Everyone reads it.
+// The chat never detects agents on its own any more: it shows AgentStatus (src/chat-agent-status.h maps it), the same
+// status the tutorial, Réglages › Agents and the band read. Started once with the browser (ChatAgentsStartup, main).
+std::wstring ChatAgentText(ChatAgentStatus::Text t) {
+    using T = ChatAgentStatus::Text;
+    switch (t) {
+    case T::NotInstalled: return TR(chat_agent_not_installed);
+    case T::TooOld: return TR(chat_agent_too_old);
+    case T::NotConnected: return TR(chat_agent_not_connected);
+    case T::Starting: return TR(chat_agent_starting);
+    case T::Installing: return TR(agents_installing);
+    case T::Installed: return TR(chat_agent_installed);
+    case T::FirstUse: return TR(chat_agent_first_use);
+    case T::None: break;
+    }
+    return L"";
+}
+void ApplyStatus(const std::string& id, const AgentStatus::Status& s) {
+    auto& a = agentInfo[id]; const auto v = ChatAgentStatus::Of(s);
+    a.known = v.known; a.cli = v.cli; a.prepared = s.runtimeReady;
+    if (sessionReady && id == agentId) return;   // a live session says more than a detection
+    if (sessionStarting && id == agentId) return;
+    if (preparing && a.status == "preparing" && s.state != AgentStatus::State::Installing) return;   // the chat's own download shows its progress
+    a.status = v.status; a.detail = ChatAgentText(v.text); a.progress = -1;
+}
+// The agent is chosen without a screen: this site's last one or the user's pick; else Claude Code when it is installed;
+// else the first agent that is.
+void ChooseInstalledAgent() {
+    if (!agentChosen && !turn.active && convo.data.items.empty() && !session && !agentInfo[agentId].cli)
+        for (const auto& def : Agents) if (agentInfo[def.id].cli) { agentId = def.id; convo.data.head.agentId = agentId; Diag(std::wstring(L"agent chosen by itself (the only one installed): ") + W(def.id)); break; }
+}
+void ApplyAllStatuses() { for (const auto& def : Agents) ApplyStatus(def.id, AgentStatus::Get(def.rt)); }
 void EnsureAgentStatus() {
     static bool started = false; if (started) return; started = true;
     AgentStatus::Host h;
@@ -19,34 +49,20 @@ void EnsureAgentStatus() {
     h.run = [](std::function<void()> work, std::function<void()> done) { Ann::Run(std::move(work), std::move(done)); };
     h.log = [](const std::wstring& s) { Diag(s); };
     h.environment = [] { return RtEnv(); };
+    // Every change (an install from the tutorial, a sign-in from Réglages…) reaches the panel at once.
+    AgentStatus::Subscribe([](const AgentStatus::Status& s) {
+        for (const auto& def : Agents) if (def.rt == s.agent) ApplyStatus(def.id, s);
+        ChooseInstalledAgent(); SendState();
+    });
     AgentStatus::Init(std::move(h));
 }
-
-// ---------------------------------------------------------------- detection and preparation (off the UI thread)
-void ApplyDetection(const std::string& id, const AgentRuntime::Detection& d) {
-    auto& a = agentInfo[id]; a.known = true; a.cli = d.Usable(); a.prepared = !d.NeedsPrepare();
-    if (sessionReady && id == agentId) return;   // a live session says more than a detection
-    if (sessionStarting && id == agentId) return;
-    if (d.cli.state == AgentRuntime::CliState::Missing) { a.status = "notInstalled"; a.detail = TR(chat_agent_not_installed); }
-    else if (d.cli.state == AgentRuntime::CliState::TooOld) { a.status = "error"; a.detail = TR(chat_agent_too_old); }
-    else if (d.login == AgentRuntime::Login::SignedOut) { a.status = "notConnected"; a.detail = TR(chat_agent_not_connected); }
-    else { a.status = "ready"; a.detail = a.prepared ? TR(chat_agent_installed) : TR(chat_agent_first_use); }
-    a.progress = -1;
-}
 void DetectAgents(std::function<void()> then = nullptr) {
-    auto out = std::make_shared<std::vector<AgentRuntime::Detection>>();
-    Ann::Run([out] { const auto env = RtEnv(); for (const auto& def : Agents) out->push_back(AgentRuntime::Detect(env, def.rt)); },
-             [out, then] {
-                 for (std::size_t i = 0; i < out->size() && i < std::size(Agents); ++i) {
-                     const auto& d = (*out)[i]; ApplyDetection(Agents[i].id, d);
-                     Diag(std::wstring(L"agent ") + W(Agents[i].id) + L": cli " + (d.Usable() ? L"found " : L"missing ") + W(d.cli.version) + L" (" + W(d.cli.source) + L"), node " + (d.nodeReady ? L"ready" : L"absent") + L", adapter " + (d.adapterReady ? L"ready" : L"absent"));
-                 }
-                 // The agent is chosen without a screen: this site's last one or the user's pick; else Claude Code when it
-                 // is installed; else the first agent that is.
-                 if (!agentChosen && !turn.active && convo.data.items.empty() && !session && !agentInfo[agentId].cli)
-                     for (const auto& def : Agents) if (agentInfo[def.id].cli) { agentId = def.id; convo.data.head.agentId = agentId; Diag(std::wstring(L"agent chosen by itself (the only one installed): ") + W(def.id)); break; }
-                 SendState(); if (then) then();
-             });
+    EnsureAgentStatus();
+    AgentStatus::Refresh([then] {
+        ApplyAllStatuses();
+        for (const auto& def : Agents) { const auto& s = AgentStatus::Get(def.rt); Diag(std::wstring(L"agent ") + W(def.id) + L": " + W(AgentStatus::StateName(s.state)) + (s.version.empty() ? L"" : L" " + W(s.version)) + L", runtime " + (s.runtimeReady ? L"ready" : L"absent")); }
+        ChooseInstalledAgent(); SendState(); if (then) then();
+    });
 }
 void StartSession();
 // Downloads the private Node and the adapter (pinned fingerprints), with the progress in the panel, then starts.
@@ -80,9 +96,14 @@ void PrepareAgent(const std::string& id, std::function<void(bool)> then) {
             preparing = false;
             const bool ok = shared->result.Ok();
             Diag(L"prepare " + W(id) + L": " + W(AgentRuntime::PrepareErrorName(shared->result.error)) + (shared->result.detail.empty() ? L"" : L" — " + W(shared->result.detail)));
-            auto& a = agentInfo[id]; a.prepared = ok; a.progress = -1;
-            if (ok) { a.status = "ready"; a.detail = TR(chat_agent_installed); }
-            else if (shared->result.error == AgentRuntime::PrepareError::Cancelled) { a.status = "ready"; a.detail = TR(chat_agent_first_use); }
+            auto& a = agentInfo[id]; a.progress = -1;
+            if (ok || shared->result.error == AgentRuntime::PrepareError::Cancelled) {
+                // « Ton agent » (the « Installé » bug): this download is only the chat's own runtime (private Node + adapter);
+                // whether the agent is installed is the agents' one status — never « Installé » while claude.exe / codex.exe is
+                // missing. A new detection follows (it also learns that the runtime is in place).
+                if (const auto* def = AgentOf(id)) { AgentStatus::Status s = AgentStatus::Get(def->rt); s.runtimeReady = ok; ApplyStatus(id, s); AgentStatus::Refresh(def->rt); }
+                a.prepared = ok;
+            }
             else { a.status = "error"; a.detail = TR(chat_agent_unavailable);
                 if (!turn.active) { Acp::Error e; e.code = Acp::ErrorCode::NeedsPrepare; SendError(ProblemFor(e, id), std::string(AgentRuntime::PrepareErrorName(shared->result.error)) + " " + shared->result.detail); } }   // a waiting turn says it itself
             SendState(); if (then) then(ok);

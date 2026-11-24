@@ -1044,7 +1044,9 @@ InstallHelp GetInstallHelp(Agent agent) {
     if (agent == Agent::Claude)
         return {L"irm https://claude.ai/install.ps1 | iex", L"winget install Anthropic.ClaudeCode", L"claude update",
                 L"https://code.claude.com/docs/en/setup"};
-    return {L"npm install -g @openai/codex", L"", L"npm install -g @openai/codex@latest", L"https://github.com/openai/codex#quickstart"};
+    // « Ton agent »: the official per-user installer first (the same as AgentStatus::ManualInstall), npm as the other way.
+    return {L"powershell -ExecutionPolicy ByPass -c \"irm https://chatgpt.com/codex/install.ps1 | iex\"", L"npm install -g @openai/codex",
+            L"powershell -ExecutionPolicy ByPass -c \"irm https://chatgpt.com/codex/install.ps1 | iex\"", L"https://github.com/openai/codex"};
     // i18n-exempt-end
 }
 
