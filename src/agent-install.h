@@ -48,8 +48,10 @@ const char* ErrorName(Error error);   // stable identifiers
 
 // Where the user PATH lives. Tests and the fake-profile trials point it at a key of their own (never the real one).
 struct PathTarget {
+    // i18n-exempt-begin: registry names
     std::wstring key = L"Environment";   // under HKEY_CURRENT_USER
     std::wstring value = L"Path";
+    // i18n-exempt-end
     bool broadcast = true;               // WM_SETTINGCHANGE « Environment » after a change
 };
 

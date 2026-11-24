@@ -58,7 +58,11 @@ Options DefaultOptions(Agent agent, const AgentRuntime::Environment& env) {
     o.scriptUrl = OfficialScriptUrl(agent);
     if (agent == Agent::Claude && !env.userProfile.empty()) o.userBinDir = StripSlashes(env.userProfile) + L"\\.local\\bin";
     if (TestHooks()) {
-        if (const std::wstring s = Env(L"BROWSER_AGENT_INSTALL_SCRIPT"); !s.empty()) o.scriptFile = s;
+        if (const std::wstring s = Env(L"BROWSER_AGENT_INSTALL_SCRIPT"); !s.empty()) {
+            o.scriptFile = s;
+            const char* id = AgentRuntime::AgentId(agent);
+            o.environment.emplace_back(L"BROWSER_AGENT_INSTALL_AGENT", std::wstring(id, id + std::char_traits<char>::length(id)));   // sandbox/agents/fake-install.ps1
+        }
         if (const std::wstring k = Env(L"BROWSER_AGENT_PATH_KEY"); !k.empty()) { o.path.key = k; o.path.broadcast = false; }
     }
     return o;
@@ -131,15 +135,138 @@ bool EnsureOnUserPath(const std::wstring& dir, const PathTarget& target, bool* a
     if (added) *added = true;
     if (target.broadcast) {
         DWORD_PTR result = 0;
-        SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, reinterpret_cast<LPARAM>(L"Environment"), SMTO_ABORTIFHUNG, 2000, &result);
+        SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, reinterpret_cast<LPARAM>(L"Environment"), SMTO_ABORTIFHUNG, 2000, &result);   // i18n-exempt: the Windows message's section name
     }
     return true;
 }
 
-// Interface published first (design/ton-agent-interface.md): the run itself lands right after, behind this signature.
-Result Run(const Options& options, const std::function<void(Stage)>& stage, const std::atomic<bool>* cancel) {
-    (void)options; (void)stage; (void)cancel;
-    Result r; r.error = Error::ScriptFailed; r.detail = "installer not implemented yet"; return r;
+namespace {
+std::string Utf8(const std::wstring& w) {
+    if (w.empty()) return {};
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), int(w.size()), nullptr, 0, nullptr, nullptr);
+    std::string s(std::size_t(n), '\0'); WideCharToMultiByte(CP_UTF8, 0, w.data(), int(w.size()), s.data(), n, nullptr, nullptr); return s;
+}
+std::wstring FromBytes(const std::string& s) {
+    // PowerShell writes the console code page (or UTF-16 with a BOM when redirected by some hosts): read what we can
+    if (s.size() >= 2 && static_cast<unsigned char>(s[0]) == 0xFF && static_cast<unsigned char>(s[1]) == 0xFE)
+        return std::wstring(reinterpret_cast<const wchar_t*>(s.data() + 2), (s.size() - 2) / 2);
+    const UINT cp = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), int(s.size()), nullptr, 0) > 0 ? CP_UTF8 : GetOEMCP();
+    const int n = MultiByteToWideChar(cp, 0, s.data(), int(s.size()), nullptr, 0);
+    std::wstring w(std::size_t(std::max(0, n)), L'\0'); if (n > 0) MultiByteToWideChar(cp, 0, s.data(), int(s.size()), w.data(), n); return w;
+}
+bool MakeDirs(const std::wstring& dir) {
+    if (dir.empty() || DirExists(dir)) return true;
+    const auto slash = dir.find_last_of(L"\\/");
+    if (slash != std::wstring::npos && slash > 2 && !MakeDirs(dir.substr(0, slash))) return false;
+    return CreateDirectoryW(dir.c_str(), nullptr) || GetLastError() == ERROR_ALREADY_EXISTS;
+}
+std::wstring TempRoot() { wchar_t t[MAX_PATH + 1]; const DWORD n = GetTempPathW(MAX_PATH + 1, t); return StripSlashes(std::wstring(t, n)); }
+std::string ReadTail(const std::wstring& path, std::size_t max) {
+    std::string s;
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return s;
+    LARGE_INTEGER size{}; GetFileSizeEx(f, &size);
+    if (static_cast<unsigned long long>(size.QuadPart) > max) { LARGE_INTEGER at; at.QuadPart = size.QuadPart - static_cast<LONGLONG>(max); SetFilePointerEx(f, at, nullptr, FILE_BEGIN); }
+    char b[8192]; DWORD got = 0;
+    while (s.size() < max && ReadFile(f, b, sizeof b, &got, nullptr) && got) s.append(b, got);
+    CloseHandle(f);
+    return s;
+}
+// The browser's environment with `extra` set (sorted, as CreateProcess wants a block).
+std::wstring EnvironmentBlock(const std::vector<std::pair<std::wstring, std::wstring>>& extra) {
+    std::map<std::wstring, std::wstring> vars;   // upper-cased name → "Name=value"
+    if (wchar_t* block = GetEnvironmentStringsW()) {
+        for (const wchar_t* p = block; *p; p += wcslen(p) + 1) {
+            const std::wstring entry = p; const auto eq = entry.find(L'=', 1);
+            if (eq == std::wstring::npos) continue;
+            std::wstring key = entry.substr(0, eq); for (auto& c : key) c = static_cast<wchar_t>(std::towupper(c));
+            vars[key] = entry;
+        }
+        FreeEnvironmentStringsW(block);
+    }
+    for (const auto& kv : extra) { std::wstring key = kv.first; for (auto& c : key) c = static_cast<wchar_t>(std::towupper(c)); vars[key] = kv.first + L"=" + kv.second; }
+    std::wstring out;
+    for (const auto& v : vars) { out += v.second; out.push_back(L'\0'); }
+    out.push_back(L'\0');
+    return out;
+}
+}  // namespace
+
+Result Run(const Options& o, const std::function<void(Stage)>& stage, const std::atomic<bool>* cancel) {
+    Result r;
+    auto cancelled = [&] { return cancel && cancel->load(); };
+    const std::wstring id(AgentRuntime::AgentId(o.agent), AgentRuntime::AgentId(o.agent) + std::char_traits<char>::length(AgentRuntime::AgentId(o.agent)));
+    const std::wstring work = o.workDir.empty() ? TempRoot() + L"\\browser-agent-install\\" + id + L"-" + std::to_wstring(GetTickCount64()) : StripSlashes(o.workDir);
+    if (!MakeDirs(work)) { r.error = Error::Disk; r.detail = "work folder " + std::to_string(GetLastError()); return r; }
+    const std::wstring script = work + L"\\install.ps1", logFile = work + L"\\install.log";
+    // 1. The script: the official one over HTTPS, or (tests, fake-profile trials; never in a release) a local one.
+    bool local = false;
+#ifndef BROWSER_CHANNEL_RELEASE
+    local = !o.scriptFile.empty();
+#endif
+    if (local) {
+        if (!CopyFileW(o.scriptFile.c_str(), script.c_str(), FALSE)) { r.error = Error::Disk; r.detail = "copy script " + std::to_string(GetLastError()); return r; }
+    } else {
+        if (stage) stage(Stage::Downloading);
+        const std::wstring url = o.scriptUrl.empty() ? OfficialScriptUrl(o.agent) : o.scriptUrl;
+        std::string digest;
+        const auto got = AgentRuntime::detail::Download(url, script, 4u * 1024 * 1024, false, digest, nullptr, cancel);
+        if (!got.Ok()) {
+            r.error = got.error == AgentRuntime::PrepareError::Cancelled ? Error::Cancelled : got.error == AgentRuntime::PrepareError::Disk ? Error::Disk : Error::Network;
+            r.detail = "download " + std::string(AgentRuntime::PrepareErrorName(got.error)) + (got.detail.empty() ? "" : " " + got.detail);
+            return r;
+        }
+    }
+    if (cancelled()) { r.error = Error::Cancelled; return r; }
+    // 2. Run it: hidden, never elevated, in a job killed with the browser, its output kept in install.log.
+    if (stage) stage(Stage::Running);
+    std::wstring ps = o.powershell;
+    if (ps.empty()) { wchar_t sys[MAX_PATH]; const UINT n = GetSystemDirectoryW(sys, MAX_PATH); ps = std::wstring(sys, n) + L"\\WindowsPowerShell\\v1.0\\powershell.exe"; }
+    std::wstring cmd = L"\"" + ps + L"\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" + script + L"\"";   // i18n-exempt: a command line
+    SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+    HANDLE out = CreateFileW(logFile.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (out == INVALID_HANDLE_VALUE) { r.error = Error::Disk; r.detail = "log " + std::to_string(GetLastError()); return r; }
+    HANDLE in = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
+    STARTUPINFOW si{}; si.cb = sizeof si; si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW; si.wShowWindow = SW_HIDE;
+    si.hStdInput = in; si.hStdOutput = out; si.hStdError = out;
+    PROCESS_INFORMATION pi{};
+    std::wstring env = EnvironmentBlock(o.environment);
+    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    if (job) { JOBOBJECT_EXTENDED_LIMIT_INFORMATION li{}; li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE; SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof li); }
+    const BOOL started = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED, env.data(), work.c_str(), &si, &pi);
+    const DWORD startError = GetLastError();
+    CloseHandle(out); if (in != INVALID_HANDLE_VALUE) CloseHandle(in);
+    if (!started) { if (job) CloseHandle(job); r.error = Error::ScriptFailed; r.detail = "powershell " + std::to_string(startError); return r; }
+    if (job) AssignProcessToJobObject(job, pi.hProcess);
+    ResumeThread(pi.hThread); CloseHandle(pi.hThread);
+    const ULONGLONG deadline = GetTickCount64() + o.timeoutMs;
+    bool timedOut = false, stopped = false;
+    while (WaitForSingleObject(pi.hProcess, 200) == WAIT_TIMEOUT) {
+        if (cancelled()) { stopped = true; break; }
+        if (GetTickCount64() >= deadline) { timedOut = true; break; }
+    }
+    if (stopped || timedOut) { if (job) TerminateJobObject(job, 1); else TerminateProcess(pi.hProcess, 1); WaitForSingleObject(pi.hProcess, 5000); }
+    DWORD code = 1; GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess); if (job) CloseHandle(job);
+    const std::string output = ReadTail(logFile, 64 * 1024);
+    r.log = FromBytes(output); r.exitCode = static_cast<int>(code);
+    if (stopped) { r.error = Error::Cancelled; return r; }
+    if (timedOut) { r.error = Error::Timeout; r.detail = "after " + std::to_string(o.timeoutMs / 1000) + " s"; return r; }
+    r.error = Classify(r.exitCode, Utf8(r.log));
+    if (r.error != Error::None) {
+        // the telling line: the last non-empty one of the output
+        std::wstring line; std::size_t end = r.log.find_last_not_of(L"\r\n \t");
+        if (end != std::wstring::npos) { const std::size_t start = r.log.find_last_of(L"\r\n", end); line = r.log.substr(start == std::wstring::npos ? 0 : start + 1, end - (start == std::wstring::npos ? 0 : start + 1) + 1); }
+        r.detail = "exit " + std::to_string(r.exitCode) + (line.empty() ? "" : ": " + Utf8(line.substr(0, 300)));
+        return r;
+    }
+    // 3. Claude Code: its folder on the user PATH (the official installer may not add it).
+    if (stage) stage(Stage::Checking);
+    if (!o.userBinDir.empty() && DirExists(o.userBinDir)) {
+        std::string why;
+        if (!EnsureOnUserPath(o.userBinDir, o.path, &r.pathAdded, &why)) { r.error = Error::PathUpdate; r.detail = "user PATH " + why; }
+    }
+    return r;
 }
 
 }  // namespace AgentInstall
@@ -191,6 +318,7 @@ Status FromDetection(const AgentRuntime::Detection& d, bool desktopInstalled) {
     s.version = d.cli.version;
     s.path = d.cli.path;
     s.desktop = d.agent == Agent::Claude && desktopInstalled;
+    s.runtimeReady = !d.NeedsPrepare();
     switch (d.cli.state) {
     case AgentRuntime::CliState::Missing: s.state = State::NotInstalled; s.reason = s.desktop ? Reason::DesktopOnly : Reason::None; break;
     case AgentRuntime::CliState::TooOld: s.state = State::NotInstalled; s.reason = Reason::TooOld; break;
@@ -239,7 +367,7 @@ void RunOff(std::function<void()> work, std::function<void()> done) {
 void Set(Status next) {
     auto& cur = H().status[Index(next.agent)];
     const bool changed = cur.state != next.state || cur.reason != next.reason || cur.stage != next.stage || cur.version != next.version ||
-                         cur.path != next.path || cur.desktop != next.desktop;
+                         cur.path != next.path || cur.desktop != next.desktop || cur.runtimeReady != next.runtimeReady;
     next.generation = cur.generation + (changed ? 1u : 0u);
     cur = std::move(next);
     if (!changed) return;
@@ -267,20 +395,28 @@ std::optional<Agent> FirstReady() {
 int Subscribe(Listener listener) { const int id = H().nextId++; H().listeners[id] = std::move(listener); return id; }
 void Unsubscribe(int id) { H().listeners.erase(id); }
 
-void Refresh(Agent agent) {
+namespace {
+void RefreshOne(Agent agent, std::function<void()> done) {
     auto& h = H();
-    if (!h.initialised || h.shuttingDown || Get(agent).Busy()) return;
+    if (!h.initialised || h.shuttingDown || Get(agent).Busy()) { if (done) done(); return; }
     const unsigned ticket = ++h.detecting[Index(agent)];
     struct Out { AgentRuntime::Detection d; bool desktop = false; };
     auto out = std::make_shared<Out>();
     RunOff([out, agent] { const auto env = Environment(); out->d = DoDetect(env, agent); out->desktop = DesktopInstalled(env); },
-           [out, agent, ticket] {
+           [out, agent, ticket, done] {
                auto& hub = H();
-               if (hub.shuttingDown || ticket != hub.detecting[Index(agent)] || Get(agent).Busy()) return;   // a newer detection, or an install began
-               Set(FromDetection(out->d, out->desktop));
+               // a newer detection, or an install began: this one is stale
+               if (!hub.shuttingDown && ticket == hub.detecting[Index(agent)] && !Get(agent).Busy()) Set(FromDetection(out->d, out->desktop));
+               if (done) done();
            });
 }
-void Refresh() { for (Agent a : AllAgents) Refresh(a); }
+}  // namespace
+void Refresh(Agent agent) { RefreshOne(agent, nullptr); }
+void Refresh() { for (Agent a : AllAgents) RefreshOne(a, nullptr); }
+void Refresh(std::function<void()> done) {
+    auto left = std::make_shared<int>(2);
+    for (Agent a : AllAgents) RefreshOne(a, [left, done] { if (--*left == 0 && done) done(); });
+}
 
 namespace {
 Reason ReasonOf(AgentInstall::Error e) {
