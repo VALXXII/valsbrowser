@@ -65,6 +65,30 @@ static void TestLocal() {
 
 // Réglages › Annotations (lot R, texts validated 2026-11-24): « Connecté · actif {quand} » — the moment is worded in the
 // interface language, never a French format inside an English sentence.
+// Lot 5's real trial with Codex (24 Nov 2026): in « Demander » Codex refused instead of asking, changed nothing, and the
+// annotation was still closed as « resolved ».
+static void TestTurnOutcome() {
+    using ChatOptions::AnnotationEnd; using ChatOptions::AnnotationOutcome;
+    Check(AnnotationOutcome("end_turn", true, false) == AnnotationEnd::Resolved, "annotation: the turn ended and changed a file - resolved");
+    Check(AnnotationOutcome("end_turn", false, false) == AnnotationEnd::Unchanged, "annotation: the turn ended and changed NOTHING (an answer, a refusal: the Codex trial) - given back, never resolved");
+    Check(AnnotationOutcome("end_turn", false, true) == AnnotationEnd::Planned && AnnotationOutcome("end_turn", true, true) == AnnotationEnd::Resolved, "annotation: a plan with nothing changed is given back as a plan; a change resolves it, whatever the mode");
+    Check(AnnotationOutcome("cancelled", true, false) == AnnotationEnd::Stopped && AnnotationOutcome("cancelled", false, false) == AnnotationEnd::Stopped, "annotation: a stopped turn is given back, with or without a change");
+    Check(AnnotationOutcome("refusal", false, false) == AnnotationEnd::Failed && AnnotationOutcome("error", true, false) == AnnotationEnd::Failed && AnnotationOutcome("max_tokens", true, false) == AnnotationEnd::Failed,
+          "annotation: a refusal, an error, a cut answer are given back as failed");
+    I18n::SetForProcess(I18n::Locale::Fr);
+    Check(std::wstring(TR(chat_release_unchanged)) == L"L'agent a r\u00E9pondu sans rien modifier", "annotation: the reason kept with it, FR");
+    I18n::SetForProcess(I18n::Locale::En);
+    Check(std::wstring(TR(chat_release_unchanged)) == L"The agent answered without changing anything", "annotation: the reason kept with it, EN");
+    I18n::SetForProcess(I18n::Locale::Fr);
+    // what the agent is told: an edit that needs the user's approval is asked for, never refused
+    const std::string rule = ChatPrompt::ApprovalRule(), inst = ChatPrompt::Instructions();
+    ChatPrompt::PreambleInput pi; pi.site = "http://127.0.0.1:5173"; pi.folder = "C:\\proj";
+    const std::string pre = ChatPrompt::Preamble(pi);
+    Check(rule.find("do not refuse") != std::string::npos && rule.find("read-only") != std::string::npos && rule.find("permission card") != std::string::npos && rule.find('\n') == std::string::npos,
+          "approval rule: read-only or approval needed - do not refuse, request the edit, the user decides on the card (one line)");
+    Check(inst.find(rule) != std::string::npos && inst.rfind("You are working from inside a web browser", 0) == 0, "instructions appended to the agent's own: the context and the approval rule");
+    Check(pre.find("\n- " + rule + "\n") != std::string::npos && ChatPrompt::Version == 4, "preamble: the approval rule is one of its rules (version 4: resumed sessions get it again)");
+}
 static void TestAgentStatusText() {
     namespace AS = AnnotationSettings;
     const long long now = 1800000000;
@@ -100,7 +124,7 @@ static void TestPrompt() {
     PreambleInput pi; pi.site = "http://localhost:5173"; pi.folder = "C:\\sites\\boutique"; pi.browser = "the browser";
     const std::string pre = Preamble(pi);
     Check(pre.find("http://localhost:5173") != std::string::npos && pre.find("C:\\sites\\boutique") != std::string::npos, "preamble: site and folder");
-    Check(pre.find("first write one short sentence (a few words)") != std::string::npos && Version == 3, "R8: the agent first says in one short sentence what it is about to do (preamble v3)");
+    Check(pre.find("first write one short sentence (a few words)") != std::string::npos && Version >= 3, "R8: the agent first says in one short sentence what it is about to do (preamble v3 and after)");
     Check(pre.find("language of the user's LAST message") != std::string::npos && pre.find("If the user writes in French, write in French") != std::string::npos &&
           pre.find("J'\xC3\xA9largis le bouton") != std::string::npos && pre.find("I'm widening") == std::string::npos,
           "R43: announcements and answer in the language of the user's last message (French example, no English one)");
@@ -1056,7 +1080,7 @@ static void TestAnchorStore(const std::wstring& root) {
 }
 
 int wmain() {
-    TestLocal(); TestAgentStatusText(); TestPrompt(); TestTools(); TestMarks(); TestAgentPaths(); TestOptions(); TestBubble();
+    TestLocal(); TestAgentStatusText(); TestTurnOutcome(); TestPrompt(); TestTools(); TestMarks(); TestAgentPaths(); TestOptions(); TestBubble();
     const std::wstring root = TempDir();
     TestStore(root); TestFolder(root); TestServed(root); TestAnchorStore(root);
     RemoveTree(root);

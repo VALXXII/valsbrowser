@@ -25,6 +25,18 @@
 //   --start-mode <id>     the session starts in this mode (as the real Claude adapter does with "auto"); with --claude-like
 //                         the config option "mode" then lists it too
 //   --new-delay <ms>      answer session/new / resume / load only after this long (a slow start: the user types meanwhile)
+//   --codex-like          the real Codex adapter (codex-acp 2.6.0 with Codex 0.166.0, read in its source and in lot 5's real
+//                         trial of 24 Nov 2026; also %FAKE_AGENT_CODEX_LIKE%=1):
+//                         - modes « read-only », « workspace-write », « agent » (the starting one), « agent-full-access »;
+//                           « Planifier » is the config option `collaboration_mode` (default / plan);
+//                         - sessionCapabilities.systemPrompt: session/new takes appended instructions (mode "append", text
+//                           blocks; anything else is refused, -32602), logged as "system-prompt <text>";
+//                         - the "apply" edit in « read-only »: a permission request « Edit files » with Codex's own options
+//                           (allow_once « Yes, proceed », allow_for_session, cancel), the file written once allowed — but
+//                           ONLY when the instructions or the prompt say that an edit needing approval must be asked for
+//                           (ChatPrompt::ApprovalRule: « do not refuse »). Told nothing, it does what the real Codex did in
+//                           the trial: no tool call, no request, « L'accès au projet est en lecture seule… », end_turn;
+//                         - in « workspace-write » and « agent » the edit is made at once.
 //   --sleep               (internal) the long-lived child
 //
 // Scenarios, chosen by a word in the prompt's text:
@@ -99,6 +111,7 @@ struct Options {
     std::string crashAt;
     bool silent = false, noImages = false, resume = false, garbage = false, child = false;
     bool claudeLike = false;  // --claude-like: the real Claude adapter's lists ("Default" effort first and current, xhigh, max; a "default" model alias)
+    bool codexLike = false;   // --codex-like: the real Codex adapter's modes, instructions and permission requests
     int protocol = 1;
     unsigned readDelay = 0;
     std::string startMode;   // --start-mode
@@ -201,6 +214,9 @@ void Fail(const SJ::Value& id, int code, const std::string& message, SJ::Value d
 std::string sessionId, sessionCwd;
 std::string mcpServer;   // the first MCP server the client handed to the session (its name titles the « annotations » scenario's calls)
 std::string mode = "default", model = "sonnet", effort = "medium";
+std::string collaboration = "default", developer, promptAll;   // --codex-like: its plan option; the instructions appended at session/new; the whole text of the prompt running
+bool editsAllowed = false;                                     // --codex-like: « Yes, and don't ask again for these files »
+bool CodexMode(const std::string& id) { return id == "read-only" || id == "workspace-write" || id == "agent" || id == "agent-full-access"; }
 bool cancelled = false;
 std::int64_t nextRequest = 1000;
 
@@ -212,6 +228,12 @@ void Chunk(const char* kind, const std::string& text) {
     Update(Obj({{"sessionUpdate", S(kind)}, {"content", Obj({{"type", S("text")}, {"text", S(text)}})}, {"messageId", S("m1")}}));
 }
 SJ::Value Modes() {
+    if (opt.codexLike)   // codex-acp 2.6.0 (src/AgentMode.ts)
+        return Obj({{"currentModeId", S(mode)},
+                    {"availableModes", Arr({Obj({{"id", S("read-only")}, {"name", S("Read-only")}, {"description", S("Requires approval to edit files and access the internet.")}}),
+                                            Obj({{"id", S("workspace-write")}, {"name", S("Workspace access")}, {"description", S("Edit workspace files; ask before writing outside the workspace or accessing the network.")}}),
+                                            Obj({{"id", S("agent")}, {"name", S("Auto review")}, {"description", S("Only ask for actions detected as potentially unsafe")}}),
+                                            Obj({{"id", S("agent-full-access")}, {"name", S("Full access")}, {"description", S("Unrestricted access to the internet and any file on your computer")}})})}});
     if (opt.claudeLike)   // claude-agent-acp 0.107: English names, a 4th mode « auto » (bypassPermissions is never shown by the browser)
         return Obj({{"currentModeId", S(mode)},
                     {"availableModes", Arr({Obj({{"id", S("default")}, {"name", S("Manual")}, {"description", S("Always ask before making changes")}}),
@@ -224,6 +246,9 @@ SJ::Value Modes() {
                                         Obj({{"id", S("plan")}, {"name", S("Planifier")}})})}});
 }
 SJ::Value ModeOptions() {
+    if (opt.codexLike)
+        return Arr({Obj({{"value", S("read-only")}, {"name", S("Read-only")}}), Obj({{"value", S("workspace-write")}, {"name", S("Workspace access")}}),
+                    Obj({{"value", S("agent")}, {"name", S("Auto review")}}), Obj({{"value", S("agent-full-access")}, {"name", S("Full access")}})});
     SJ::Value list = Arr({Obj({{"value", S("default")}, {"name", S("Demander")}}), Obj({{"value", S("acceptEdits")}, {"name", S("Auto")}}),
                           Obj({{"value", S("plan")}, {"name", S("Planifier")}})});
     if (opt.claudeLike && !opt.startMode.empty()) list.Push(Obj({{"value", S("auto")}, {"name", S("Auto")}}));
@@ -237,7 +262,7 @@ SJ::Value ConfigOptions() {
         if (model != "haiku") { efforts.Push(Obj({{"value", S("high")}, {"name", S("High")}})); efforts.Push(Obj({{"value", S("xhigh")}, {"name", S("Xhigh")}})); efforts.Push(Obj({{"value", S("max")}, {"name", S("Max")}})); }
     }
     SJ::Value alias = Obj({{"value", S("default")}, {"name", S("Default (recommended)")}, {"description", S("Sonnet 5.5")}});
-    return Arr({
+    SJ::Value list = Arr({
         Obj({{"id", S("model")}, {"name", S("Modèle")}, {"category", S("model")}, {"type", S("select")}, {"currentValue", S(model)},
              {"options", Arr({Obj({{"group", S("claude")}, {"name", S("Claude")},
                                    {"options", opt.claudeLike ? Arr({std::move(alias), Obj({{"value", S("opus")}, {"name", S("Opus 5.5")}, {"description", S("Le plus capable")}}),
@@ -252,6 +277,10 @@ SJ::Value ConfigOptions() {
              {"options", ModeOptions()}}),
         Obj({{"id", S("fast")}, {"name", S("Rapide")}, {"category", S("model_config")}, {"type", S("boolean")}, {"currentValue", B(false)}}),
     });
+    if (opt.codexLike)   // « Planifier » for Codex: an option, not a mode
+        list.Push(Obj({{"id", S("collaboration_mode")}, {"name", S("Collaboration mode")}, {"type", S("select")}, {"currentValue", S(collaboration)},
+                       {"options", Arr({Obj({{"value", S("default")}, {"name", S("Default")}}), Obj({{"value", S("plan")}, {"name", S("Plan")}})})}}));
+    return list;
 }
 bool SignedIn() { return opt.authFile.empty() || Exists(opt.authFile); }
 
@@ -371,11 +400,19 @@ void Apply(const std::string& spec, const std::function<void(const char*)>& end)
     std::int64_t line = 1;
     for (std::size_t i = 0; i < at; ++i) line += before[i] == '\n';
     const SJ::Value diff = Obj({{"type", S("diff")}, {"path", S(shown)}, {"oldText", S(before)}, {"newText", S(after)}});
-    if (mode == "plan") {
+    if (mode == "plan" || (opt.codexLike && collaboration == "plan")) {
         Update(Obj({{"sessionUpdate", S("plan")},
                     {"entries", Arr({Obj({{"content", S("Remplacer « " + find + " » par « " + replacement + " » dans " + relative)}, {"priority", S("medium")},
                                           {"status", S("pending")}})})}}));
         Chunk("agent_message_chunk", "Plan prêt, rien n'a été modifié.");
+        return end("end_turn");
+    }
+    // The real Codex in « read-only » (lot 5's trial, 24 Nov 2026): told nothing about approvals it does not try the edit —
+    // no tool call, no permission request — and answers that the project is read-only.
+    const bool codexAsks = opt.codexLike && mode == "read-only" && !editsAllowed;
+    if (codexAsks && developer.find("do not refuse") == std::string::npos && promptAll.find("do not refuse") == std::string::npos) {
+        Append(opt.log, "codex read-only: refused without asking\n");
+        Chunk("agent_message_chunk", "L'accès au projet est en lecture seule, donc je n'ai pas pu modifier " + relative + ".");
         return end("end_turn");
     }
     SJ::Value started = call("pending", Arr({diff}), line);
@@ -385,15 +422,20 @@ void Apply(const std::string& spec, const std::function<void(const char*)>& end)
     const auto update = [&](const char* status) {
         Update(Obj({{"sessionUpdate", S("tool_call_update")}, {"toolCallId", S(callId)}, {"status", S(status)}}));
     };
-    if (mode == "default") {
+    if (mode == "default" || codexAsks) {
         const std::int64_t request = nextRequest++;
         SJ::Value asked = call("pending", Arr({diff}), line);
         asked.Set("toolCallId", S(callId));
+        if (codexAsks) asked.Set("title", S("Edit files"));   // codex-acp: FileChangeReporter.permission, « Make edits? »
+        // codex-acp 2.6.0, fileChangeDecisionOptions(): accept / acceptForSession / cancel
+        SJ::Value options = codexAsks ? Arr({Obj({{"optionId", S("allow_once")}, {"name", S("Yes, proceed")}, {"kind", S("allow_once")}}),
+                                             Obj({{"optionId", S("allow_for_session")}, {"name", S("Yes, and don't ask again for these files")}, {"kind", S("allow_always")}}),
+                                             Obj({{"optionId", S("cancel")}, {"name", S("No, and tell Codex what to do differently")}, {"kind", S("reject_once")}})})
+                                      : Arr({Obj({{"optionId", S("allow")}, {"name", S("Autoriser")}, {"kind", S("allow_once")}}),
+                                             Obj({{"optionId", S("always")}, {"name", S("Toujours autoriser")}, {"kind", S("allow_always")}}),
+                                             Obj({{"optionId", S("reject")}, {"name", S("Refuser")}, {"kind", S("reject_once")}})});
         Send(Obj({{"jsonrpc", S("2.0")}, {"id", I(request)}, {"method", S("session/request_permission")},
-                  {"params", Obj({{"sessionId", S(sessionId)}, {"toolCall", std::move(asked)},
-                                  {"options", Arr({Obj({{"optionId", S("allow")}, {"name", S("Autoriser")}, {"kind", S("allow_once")}}),
-                                                   Obj({{"optionId", S("always")}, {"name", S("Toujours autoriser")}, {"kind", S("allow_always")}}),
-                                                   Obj({{"optionId", S("reject")}, {"name", S("Refuser")}, {"kind", S("reject_once")}})})}})}}));
+                  {"params", Obj({{"sessionId", S(sessionId)}, {"toolCall", std::move(asked)}, {"options", std::move(options)}})}}));
         SJ::Value response;
         while (!Pump(1000, request, &response)) {}
         const SJ::Value* outcome = response.Get("outcome");
@@ -404,12 +446,13 @@ void Apply(const std::string& spec, const std::function<void(const char*)>& end)
             cancelled = true;
             return end("cancelled");
         }
-        if (option == "reject") {
+        if (option == "reject" || option == "cancel") {
             update("failed");
             Chunk("agent_message_chunk", "D'accord, je n'ai rien modifié.");
             return end("end_turn");
         }
         if (option == "always") mode = "acceptEdits";  // like "always allow": the next edits do not ask
+        if (option == "allow_for_session") editsAllowed = true;
     } else {
         ++nextRequest;
     }
@@ -604,6 +647,7 @@ void Prompt(const SJ::Value& id, const SJ::Value* params) {
             else if (type == "resource_link") ++links;
         }
     cancelled = false;
+    promptAll = all;
     {   // the user's own message as received (the last text block, one line): what the tests read back (V1.2: the note's text)
         std::string one = text; for (auto& c : one) if (c == '\n' || c == '\r') c = ' ';
         Append(opt.log, "prompt-text " + one.substr(0, 2000) + "\n");
@@ -856,6 +900,7 @@ bool Dispatch(const SJ::Value& msg, std::int64_t waitFor, SJ::Value* response) {
         if (opt.garbage) Raw("Welcome to the fake agent!\n\n{broken\n");
         SJ::Value session = SJ::Value::Obj();
         if (opt.resume) session.Set("resume", SJ::Value::Obj());
+        if (opt.codexLike) session.Set("systemPrompt", SJ::Value::Obj());
         Result(*id, Obj({{"protocolVersion", I(opt.protocol)},
                          {"agentCapabilities", Obj({{"loadSession", B(opt.resume)},
                                                     {"promptCapabilities", Obj({{"image", B(!opt.noImages)}, {"embeddedContext", B(true)}})},
@@ -887,6 +932,21 @@ bool Dispatch(const SJ::Value& msg, std::int64_t waitFor, SJ::Value* response) {
             return false;
         }
         const bool fresh = m == "session/new";
+        if (const SJ::Value* sp = params ? params->Get("systemPrompt") : nullptr; sp && !sp->IsNull()) {
+            if (!opt.codexLike) Append(opt.log, "system-prompt-unexpected\n");   // never advertised: the client must not send it
+            // codex-acp, clientSystemPromptText(): append mode, text blocks only
+            const SJ::Value* content = sp->IsObject() ? sp->Get("content") : nullptr;
+            bool ok = sp->IsObject() && Str(sp, "mode") == "append" && content && content->IsArray() && !content->items.empty();
+            std::string text;
+            if (ok) for (const SJ::Value& b : content->items) { if (Str(&b, "type") != "text" || !b.Get("text") || !b.Get("text")->IsString()) { ok = false; break; } text += (text.empty() ? "" : "\n\n") + Str(&b, "text"); }
+            if (!ok) {
+                Fail(*id, -32602, "Invalid params", Obj({{"details", S("systemPrompt requires append mode and text content")}}));
+                return false;
+            }
+            developer = text;
+            std::string one = text; for (auto& c : one) if (c == '\n' || c == '\r') c = ' ';
+            Append(opt.log, "system-prompt " + one.substr(0, 1500) + "\n");
+        }
         if (opt.newDelay) Sleep(opt.newDelay);
         if (const SJ::Value* servers = params ? params->Get("mcpServers") : nullptr; servers && servers->IsArray() && !servers->items.empty()) mcpServer = Str(&servers->items.front(), "name");
         if (!fresh && Str(params, "sessionId") != "sess-known") {
@@ -914,7 +974,7 @@ bool Dispatch(const SJ::Value& msg, std::int64_t waitFor, SJ::Value* response) {
     }
     if (m == "session/set_mode") {
         const std::string wanted = Str(params, "modeId");
-        if (wanted != "default" && wanted != "acceptEdits" && wanted != "plan" && !(opt.claudeLike && wanted == "auto")) {
+        if (opt.codexLike ? !CodexMode(wanted) : (wanted != "default" && wanted != "acceptEdits" && wanted != "plan" && !(opt.claudeLike && wanted == "auto"))) {
             Fail(*id, -32602, "Invalid params", Obj({{"details", S("unknown mode " + wanted)}}));
             return false;
         }
@@ -931,8 +991,10 @@ bool Dispatch(const SJ::Value& msg, std::int64_t waitFor, SJ::Value* response) {
         } else if (config == "effort" && (value == "low" || value == "medium" || (value == "high" && model != "haiku") ||
                                           (opt.claudeLike && (value == "default" || ((value == "xhigh" || value == "max") && model != "haiku"))))) {
             effort = value;
-        } else if (config == "mode" && (value == "default" || value == "acceptEdits" || value == "plan" || (opt.claudeLike && value == "auto"))) {
+        } else if (config == "mode" && (opt.codexLike ? CodexMode(value) : (value == "default" || value == "acceptEdits" || value == "plan" || (opt.claudeLike && value == "auto")))) {
             mode = value;
+        } else if (opt.codexLike && config == "collaboration_mode" && (value == "default" || value == "plan")) {
+            collaboration = value;
         } else if (config == "fast") {
             // boolean option: accepted, not stored
         } else {
@@ -976,6 +1038,7 @@ int wmain(int argc, wchar_t** argv) {
         else if (a == L"--garbage") opt.garbage = true;
         else if (a == L"--child") opt.child = true;
         else if (a == L"--claude-like") { opt.claudeLike = true; effort = "default"; }
+        else if (a == L"--codex-like") opt.codexLike = true;
         else if (a == L"--edit") opt.edit = Narrow(value());
         else if (a == L"--reply") opt.reply = Narrow(value());
         else if (a == L"--cli") cli = true;
@@ -991,6 +1054,12 @@ int wmain(int argc, wchar_t** argv) {
         const DWORD n = GetEnvironmentVariableW(L"FAKE_AGENT_EDIT", buffer, 4096);
         if (n && n < 4096) opt.edit = Narrow(std::wstring(buffer, n));
     }
+    {
+        wchar_t buffer[8];
+        const DWORD n = GetEnvironmentVariableW(L"FAKE_AGENT_CODEX_LIKE", buffer, 8);
+        if (n == 1 && buffer[0] == L'1') opt.codexLike = true;
+    }
+    if (opt.codexLike) mode = "agent";   // the real adapter's starting mode (« Auto review »)
     if (!opt.startMode.empty()) mode = opt.startMode;
     if (cliVerb == L"login" || (argc >= 2 && std::wstring(argv[1]) == L"login")) {  // the CLI's own sign-in
         Append(opt.authFile, "signed-in\n");

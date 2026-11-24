@@ -1607,6 +1607,7 @@ I18N(chat_prompt_contrast, L"Trouve sur cette page les textes dont le contraste 
 I18N(chat_resolve_default, L"Modification faite par {0} depuis le chat.", L"Change made by {0} from the chat.")
 I18N(chat_release_stopped, L"Arrêté avant la fin", L"Stopped before the end")
 I18N(chat_release_failed, L"L'agent n'a pas pu terminer", L"The agent could not finish")
+I18N(chat_release_unchanged, L"L'agent a répondu sans rien modifier", L"The agent answered without changing anything")
 I18N(chat_announce_open, L"Chat avec l'agent ouvert", L"Agent chat opened")
 I18N(chat_announce_closed, L"Chat avec l'agent fermé", L"Agent chat closed")
 I18N(chat_announce_unavailable, L"Chat : {0}", L"Chat: {0}")

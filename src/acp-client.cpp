@@ -153,6 +153,7 @@ Capabilities ParseCapabilities(const SJ::Value* caps) {
     c.embeddedContext = Flag(prompt, "embeddedContext");
     c.loadSession = Flag(caps, "loadSession");
     c.resume = Object(Object(caps, "sessionCapabilities"), "resume") != nullptr;
+    c.systemPrompt = Object(Object(caps, "sessionCapabilities"), "systemPrompt") != nullptr;
     const SJ::Value* mcp = Object(caps, "mcpCapabilities");
     c.httpMcp = Flag(mcp, "http");
     c.sseMcp = Flag(mcp, "sse");
@@ -816,6 +817,17 @@ struct Run : std::enable_shared_from_this<Run> {
         SJ::Value params = SJ::Value::Obj();
         params.Set("cwd", SJ::Value::Str(opts.cwd));
         params.Set("mcpServers", McpServersJson());
+        if (caps.systemPrompt && !opts.instructions.empty()) {  // appended, never replacing the agent's own (the adapter refuses any other mode)
+            SJ::Value block = SJ::Value::Obj();
+            block.Set("type", SJ::Value::Str("text"));
+            block.Set("text", SJ::Value::Str(opts.instructions));
+            SJ::Value content = SJ::Value::Arr();
+            content.Push(std::move(block));
+            SJ::Value prompt = SJ::Value::Obj();
+            prompt.Set("mode", SJ::Value::Str("append"));
+            prompt.Set("content", std::move(content));
+            params.Set("systemPrompt", std::move(prompt));
+        }
         if (!opts.resumeSessionId.empty()) {
             std::vector<Req> how;
             if (caps.resume) how.push_back(Req::Resume);

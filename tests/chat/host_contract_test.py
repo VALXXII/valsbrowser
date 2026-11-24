@@ -445,6 +445,22 @@ ad = block_after(turn, 'void ApplyDetection(const std::string& id, const AgentRu
 check(0 <= ad.find('if (d.login == AgentRuntime::Login::SignedIn) a.signedIn = true;') < ad.find('if (sessionReady && id == agentId) return;')
       and turn.count('signedIn = true') == 2 and 'info.cli = info.prepared = true; info.signedIn = true;' in turn and 'bool signedIn = false;' in host,
       'signed out: « seen signed in » is set by a detection that says so and by a ready session, nowhere else; false at start')
+# Lot 5's real trial with Codex (24 Nov 2026): « Demander » = Codex's « read-only »; it refused instead of asking, and the
+# annotation was closed as resolved with 0 file changed
+ct = block_after(turn, 'void CompleteTurn(const std::string& stopReason, const CS::TurnSummary* summary, const std::vector<std::pair<std::string, CS::FileDiff>>* diffs')
+check('const bool worked = summary ? changed : !turn.agentFiles.empty();' in ct
+      and 'const auto outcome = ChatOptions::AnnotationOutcome(stopReason, worked, CurrentModeKind() == "plan");' in ct
+      and 'const bool resolved = outcome == ChatOptions::AnnotationEnd::Resolved;' in ct and 'CloseAnnotations(turn.elements, resolved,' in ct
+      and 'TR(chat_release_unchanged)' in ct and 'CloseAnnotations(turn.elements, done' not in ct,
+      'lot 5 (Codex): an annotation is resolved only when the turn changed a file; ended with nothing changed, it is given back with its reason')
+ss = block_after(turn, 'void StartSession() {')
+acp_cpp = (SRC / 'acp-client.cpp').read_text(encoding='utf-8'); acp_h = (SRC / 'acp-client.h').read_text(encoding='utf-8'); rt_cpp = (SRC / 'agent-runtime.cpp').read_text(encoding='utf-8')
+check('o.instructions = ChatPrompt::Instructions();' in ss and 'if (caps.systemPrompt && !opts.instructions.empty()) {' in acp_cpp
+      and 'prompt.Set("mode", SJ::Value::Str("append"));' in acp_cpp and 'c.systemPrompt = Object(Object(caps, "sessionCapabilities"), "systemPrompt") != nullptr;' in acp_cpp
+      and 'std::string instructions;' in acp_h,
+      'lot 5 (Codex): the session is given the approval rule as appended instructions, only when the agent advertises that it takes some')
+check('m.ask = {"read-only"};' in rt_cpp and 'm.automatic = {"agent", "workspace-write"};' in rt_cpp and 'm.never = {"agent-full-access"};' in rt_cpp,
+      'lot 5 (Codex): « Demander » stays Codex\'s « read-only » (the only mode where an edit waits for the user), « Auto » its « agent » / « workspace-write »; full access is never offered')
 cn = block_after(ui, 'void Connect(const std::string& id, const std::string& methodId) {')
 check('if (!method && info.auth.empty() && info.status == "notConnected" && info.cli) { own = AgentRuntime::DefaultTerminalSignIn(def->rt); method = &own;' in cn
       and 'else if (id != agentId) DetectAgents();' in cn,

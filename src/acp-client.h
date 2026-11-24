@@ -123,6 +123,7 @@ struct Capabilities {
     bool image = false, audio = false, embeddedContext = false;  // promptCapabilities
     bool loadSession = false, resume = false;                    // session/load, session/resume
     bool httpMcp = false, sseMcp = false;                        // mcpCapabilities
+    bool systemPrompt = false;                                   // sessionCapabilities.systemPrompt: the session takes appended instructions
 };
 struct Command {
     std::string name, description, inputHint;
@@ -259,6 +260,8 @@ struct StartOptions {
     std::string cwd;                     // absolute project folder, UTF-8 (ACP requires an absolute cwd)
     std::vector<McpServer> mcpServers;
     std::string resumeSessionId;         // try session/resume, then session/load, then a new session
+    std::string instructions;            // appended to the agent's own instructions (`systemPrompt`, mode "append"); sent only to an
+                                         // agent that advertises sessionCapabilities.systemPrompt (seen: codex-acp 2.6.0)
     std::string authenticateMethodId;    // send `authenticate` first (set by Session::Authenticate)
     std::string clientName = "browser", clientVersion = "0";
     bool questions = true;               // surface the agent's single-choice questions as PermissionRequest events
