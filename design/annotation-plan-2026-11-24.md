@@ -630,12 +630,12 @@ Ce que le test général fera (partie en vraie fenêtre seulement ; la partie sa
 | Rapport | Une ligne par suite et par disposition ; une disposition non lancée = rouge, comme toute suite sautée |
 | Couverture | La bulle entière dans la zone de page (#130) et « clic = bulle » sont vérifiés dans les trois |
 
-Proposition pour la durée, à valider (ce sont des **estimations**) :
+Durée (ce sont des **estimations**). **Décidé le 24/11 : le choix « retenu » ci-dessous.** Tout rejouer trois fois n'est pas nécessaire.
 
 | Choix | Contenu | Durée de nuit |
 |---|---|---|
 | Aujourd'hui | Une seule disposition (en haut) | 1 h 45, prévoir 2 h 15 |
-| **Proposé** | Tout en haut ; les parcours et `comment-129-130` rejoués en latéral et en compact (≈ 23 min chacun) ; le monkey garde 3 graines, une par disposition | ≈ 2 h 30, prévoir 3 h |
-| Tout × 3 | Toutes les suites en vraie fenêtre dans les trois dispositions (≈ 1 h de plus par disposition) | ≈ 3 h 45, prévoir 4 h 30 |
+| **Retenu** | Tout en haut ; les parcours et `comment-129-130` rejoués en latéral et en compact (≈ 23 min chacun) ; le monkey garde 3 graines, une par disposition | ≈ 2 h 30, prévoir 3 h |
+| Écarté | Toutes les suites en vraie fenêtre dans les trois dispositions (≈ 1 h de plus par disposition) | ≈ 3 h 45, prévoir 4 h 30 |
 
-Le choix « proposé » tient encore dans une tournée de nuit de 3 h, mais sans marge ; « tout × 3 » n'y tient pas.
+Le choix retenu tient dans une tournée de nuit de 3 h, sans marge.
