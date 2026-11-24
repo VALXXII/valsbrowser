@@ -288,10 +288,17 @@ def run_main():
     except Exception:
         traceback.print_exc(); step('run without exception', False, traceback.format_exc()[-600:])
     finally:
+        # Shared machine (other workers run the same launchers): only OUR processes are stopped (chat_qa.quit_all: by
+        # process id) and checked — the fake agents started by our browser, by id, never by name.
+        ours = []
+        try:
+            ours = [r['ProcessId'] for r in C.descendants(Q.our_pid()) if (r.get('Name') or '').lower() == 'fake-acp-agent.exe']
+        except Exception:
+            pass
         C.quit_all()
         step('real Claude / Codex configuration files unchanged', before == C.fingerprints())
-        ps = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq fake-acp-agent.exe', '/NH'], capture_output=True, text=True).stdout
-        step('nothing left running (fake agent)', 'fake-acp-agent' not in ps)
+        left = [pid for pid in ours if C.pid_alive(pid)]
+        step('nothing of ours left running (our fake agents, by process id)', not left, {'ours': ours, 'left': left})
         (OUT / 'report.json').write_text(json.dumps(report, indent=2, ensure_ascii=False, default=str), encoding='utf-8')
     failed = [s for s in report['steps'] if not s['ok']]
     print(f"{len(report['steps']) - len(failed)} / {len(report['steps'])} steps passed")
