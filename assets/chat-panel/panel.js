@@ -327,7 +327,7 @@
   const modelBtn = h("button", { class: "m", type: "button", "aria-haspopup": "menu", "aria-expanded": "false", "aria-keyshortcuts": "Control+/",
                                  onclick: (e) => openModelMenu(e.currentTarget) }, h("span", { class: "mw" }, modelLogo, modelName), effortEl, icon("chevron", "mcv"));
   const sendBtn = h("button", { class: "send", type: "button", "aria-keyshortcuts": "Enter", "aria-describedby": "send-tip", onclick: () => onSendButton() });
-  const sendTip = h("span", { class: "tip", id: "send-tip", role: "tooltip" },
+  const sendTip = h("span", { class: "tip", id: "send-tip", role: "tooltip", "aria-hidden": "true" },
     h("span", { class: "tr" }, h("span", { text: "Demander à l'agent" }), h("span", { class: "kc" }, "↵")));
   const sendWrap = h("span", { class: "sendw" }, sendBtn, sendTip);
   withTip(sendWrap);
@@ -2326,8 +2326,8 @@
       if (state && state.conflicts) box.appendChild(h("div", { class: "conflict", role: "alert", text: "Rien n'a été annulé : " + state.conflicts.join(", ") + " " + (state.conflicts.length > 1 ? "ont" : "a") + " changé depuis. Aucun fichier n'a été écrasé." }));
       if (state && state.message) box.appendChild(h("div", { class: "conflict", role: "alert", text: state.message }));
       if (open) {
-        box.appendChild(h("div", { class: "files", id: listId, role: "list" }, changes.map((c) =>
-          h("button", { class: "file", type: "button", role: "listitem", "aria-label": "Voir les changements de " + c.path, onclick: (e) => openChanges(t, c.path, e.currentTarget) },
+        box.appendChild(h("div", { class: "files", id: listId, role: "group", "aria-label": "Fichiers modifiés" }, changes.map((c) =>
+          h("button", { class: "file", type: "button", "aria-label": "Voir les changements de " + c.path, onclick: (e) => openChanges(t, c.path, e.currentTarget) },
             h("span", { class: "p", text: c.path }), c.status === "created" ? h("span", { class: "tag", text: "nouveau" }) : c.status === "deleted" ? h("span", { class: "tag", text: "supprimé" }) : null,
             h("span", { class: "num plus", text: "+" + (c.added || 0) }), h("span", { class: "num minus", text: "−" + (c.removed || 0) }))).concat(
           changes.length === 1 && validDiff(changes[0].diff) ? [diffView(validDiff(changes[0].diff))] : []).concat(
@@ -2452,8 +2452,8 @@
           h("span", { class: "num minus", text: "−" + removed, "aria-label": removed + " lignes retirées" }))),
       canUndo ? h("button", { class: "btn-s", type: "button", onclick: () => { post("undo.turn", { turnId: v.turnId }); closeChanges(); } }, icon("undo"), "Tout annuler") : null));
     const ids = new Map(files.map((c, k) => [c.path, "chg-" + k]));
-    if (files.length > 1) changesEl.appendChild(h("div", { class: "files chg-nav", role: "list", "aria-label": "Fichiers modifiés" }, files.map((c) =>
-      h("button", { class: "file", type: "button", role: "listitem", "aria-label": "Aller à " + c.path,
+    if (files.length > 1) changesEl.appendChild(h("div", { class: "files chg-nav", role: "group", "aria-label": "Fichiers modifiés" }, files.map((c) =>
+      h("button", { class: "file", type: "button", "aria-label": "Aller à " + c.path,
                     onclick: () => { const n = document.getElementById(ids.get(c.path)); if (n) { n.scrollIntoView({ block: "start", behavior: isReduced() ? "auto" : "smooth" }); n.querySelector(".chg-fh").focus({ preventScroll: true }); } } },
         h("span", { class: "p", text: c.path }), statusTag(c),
         h("span", { class: "num plus", text: "+" + (c.added || 0) }), h("span", { class: "num minus", text: "−" + (c.removed || 0) })))));
@@ -2656,8 +2656,8 @@
     }
     if (S.st.disabledReason) sugs.length = 0;
     empty.append(h("h2", { id: "empty-h", text: "Que voulez-vous changer ?" }),
-      h("div", { class: "sugs", role: "list", "aria-labelledby": "empty-h" }, sugs.map((s) =>
-        h("button", { class: "sug", type: "button", role: "listitem", onclick: () => post("suggestion.run", { id: s.id }) }, h("span", { class: "lb", text: s.label }), s.badge ? h("span", { class: "ct", text: s.badge, "aria-hidden": "true" }) : null))));
+      h("div", { class: "sugs", role: "group", "aria-labelledby": "empty-h" }, sugs.map((s) =>
+        h("button", { class: "sug", type: "button", onclick: () => post("suggestion.run", { id: s.id }) }, h("span", { class: "lb", text: s.label }), s.badge ? h("span", { class: "ct", text: s.badge, "aria-hidden": "true" }) : null))));
   }
 
   // ---------------------------------------------------------------- history (6.7 B)
@@ -2690,7 +2690,7 @@
     input.addEventListener("input", () => { clearTimeout(histTimer); histTimer = setTimeout(() => post("history.search", { query: input.value }), 120); renderHistoryList(); });
     historyEl.appendChild(h("div", { class: "search" }, icon("search"), input,
       h("button", { class: "btn-s", type: "button", onclick: () => { toggleHistory(false); post("newChat"); } }, icon("plus"), "Nouveau")));
-    historyEl.appendChild(h("div", { class: "hlist", role: "list", style: "display:flex;flex-direction:column;gap:4px" }));
+    historyEl.appendChild(h("div", { class: "hlist", role: "group", "aria-label": "Conversations", style: "display:flex;flex-direction:column;gap:4px" }));
     historyEl.addEventListener("keydown", histKeys);
     renderHistoryList();
     if (hadFocus) { input.focus(); input.setSelectionRange(q.length, q.length); }
@@ -2713,7 +2713,7 @@
     if (!S.history) { list.appendChild(h("div", { class: "hnone", text: "Chargement…" })); return; }
     if (!items.length) { list.appendChild(h("div", { class: "hnone", role: "status", text: q ? "Aucune conversation ne contient « " + q + " »." : "Aucune conversation pour l'instant." })); return; }
     const mine = items.filter((i) => i.thisSite), others = items.filter((i) => !i.thisSite);
-    const row = (it, other) => h("button", { class: "hrow", type: "button", role: "listitem", "aria-current": it.current ? "true" : null, onclick: () => { post("history.select", { id: it.id }); toggleHistory(false); } },
+    const row = (it, other) => h("button", { class: "hrow", type: "button", "aria-current": it.current ? "true" : null, onclick: () => { post("history.select", { id: it.id }); toggleHistory(false); } },
       agentIcon({ icon: it.agentIcon, id: it.agentIcon }),
       h("span", { class: "grow" }, h("span", { class: "t", text: it.title }), h("span", { class: "s", title: other && it.siteLabel ? it.siteLabel : null, text: other ? [isStr(it.folderName, 200) && it.folderName || it.siteLabel, it.subtitle].filter(Boolean).join(" · ") : it.subtitle || "" })),
       it.running ? h("span", { class: "live" }, h("i"), "En cours") : h("span", { class: "when", text: relTime(it.updatedAt) }));

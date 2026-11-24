@@ -754,8 +754,9 @@ fonction `CloseStaleNote` du lot 1 (elle fermait l'ancienne note) est retirée �
 
 ### Vérifications sans fenêtre
 
-Passage complet de la partie sans fenêtre (`python tests/annotation-general/run.py --day`), 24/11, commit `ea7f36e`,
-arbre propre : **ROUGE, 10 suites sur 11.** Aucune relance.
+Deux passages complets de la partie sans fenêtre (`python tests/annotation-general/run.py --day`) le 24/11, arbre
+propre, aucune relance : commit `ea7f36e` puis commit `3d36be2`. **Les deux sont ROUGES, 10 suites sur 11**, à cause
+d'une seule vérification de la suite `chat-panel`, différente à chaque fois. Tableau du premier passage :
 
 | Suite | Résultat |
 |---|---|
@@ -769,14 +770,24 @@ arbre propre : **ROUGE, 10 suites sur 11.** Aucune relance.
 | `annotations-ui` (hors écran) | réussi (985 vérifications) |
 | `acp` (sans console) | réussi |
 
-La vérification en échec est une **mesure de vitesse** : la page doit accuser l'ouverture d'une bulle en moins de 16 ms ;
-mesuré 16,3 ms puis 16,4 ms sur deux passages faits pendant que d'autres agents compilaient et jouaient leurs tests sur
-la même machine, 12,6 ms sur un passage fait seul. Elle ne touche à rien de ce que le lot R change. À rejouer machine
-au calme ; si elle échoue encore, c'est un sujet pour le lot 4 (vitesse).
+- **Premier passage** : une **mesure de vitesse** (la page doit accuser l'ouverture d'une bulle en moins de 16 ms) :
+  16,3 ms, puis 16,4 ms sur la suite relancée seule, 12,6 ms sur un passage antérieur du même code. Sur le commit du
+  lot 1 seul, la même suite donne 15,0 ms : la mesure est à sa limite avec ou sans le lot R. Décision du coordinateur
+  (24/11, dans l'esprit de la décision 5) : c'est maintenant l'**objectif** `accuse-ouverture-16ms`, mesuré et écrit à
+  chaque passage, plus jamais bloquant.
+- **Second passage** : l'objectif est rapporté (« manque », 19,3 ms) et ne bloque plus ; c'est une autre vérification
+  qui échoue, « bubble: the next `layout` shows it again, opening from the element's side (180 ms) », qui lit une
+  animation de 180 ms et dépend elle aussi de la vitesse de la machine. Elle avait réussi aux trois passages
+  précédents du même code. Les 10 autres suites sont vertes aux deux passages.
+- Pendant ces passages, plusieurs autres agents compilaient et jouaient leurs tests sur la même machine. **Je ne peux
+  donc pas dire « vert de jour » :** le lot R n'a pas eu de passage complet sans échec. Ce qui échoue n'est pas du code
+  que le lot R change, mais ce n'est prouvé que par comparaison, pas par un passage vert.
 
 Aussi vérifié : le produit entier compile sans avertissement (vérification de syntaxe de `src/main.cpp` avec le mode
 annotation et le chat) ; `settings_test`, `i18n_test` (78 vérifications) ; la page du chat seule : 843 sur 844 (les 9
-vérifications de la file d'attente de la bulle réussies, la même mesure de vitesse en échec).
+vérifications de la file d'attente de la bulle réussies, la même mesure de vitesse en échec). Deux défauts du passage
+« Narrateur » du lot 5 sont corrigés dans la page : l'infobulle du bouton d'envoi n'est plus lue quand elle est cachée,
+et les boutons (suggestions, fichiers modifiés, conversations) ne sont plus annoncés « élément de liste ».
 
 ### Ce qui n'est pas prouvé (nuit)
 

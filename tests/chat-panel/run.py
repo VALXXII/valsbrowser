@@ -1461,6 +1461,17 @@ try:
         cdp.js("window.devHost.send({type:'annotations.batch',batchId:'b1',siteLabel:'127.0.0.1:5183',items:[{id:'a-hero',note:'Le texte est trop pâle'}]});window.devHost.send({type:'annotations.status',batchId:'b1',id:'a-hero',status:'working'})"); time.sleep(.1)
         check(cdp.js("!document.querySelector('.batch') && !document.querySelector('.batch-row') && !document.querySelector('.ann-card')"), "lot R: no batch in the input, no batch card — `annotations.batch` / `annotations.status` are ignored")
         sg = cdp.js("Array.from(document.querySelectorAll('.sug .lb')).map(n=>n.textContent)")
+        # Lot R (lot 5's Narrator pass, 24 Nov 2026): a button is announced as a button, never as « élément de liste »; the
+        # send button's tooltip is its description (aria-describedby) and is itself hidden from the screen reader
+        ax = cdp.call("Accessibility.getFullAXTree").get("nodes", [])
+        role_of = lambda label: [((n.get("role") or {}).get("value"), n.get("ignored")) for n in ax if ((n.get("name") or {}).get("value") or "").strip() == label and not n.get("ignored") and (n.get("role") or {}).get("value") not in ("StaticText", "InlineTextBox")]
+        sug_roles = role_of("Vérifier cette page sur mobile")
+        check(sug_roles and all(r == "button" for r, _ in sug_roles) and not cdp.js("document.querySelectorAll('button[role=listitem]').length"),
+              "screen reader (lot R): a suggestion is announced as a button (no role=listitem on a button)", str(sug_roles))
+        tips = [n for n in ax if (n.get("role") or {}).get("value") == "tooltip" and not n.get("ignored")]
+        desc = [((n.get("description") or {}).get("value") or "") for n in ax if (n.get("role") or {}).get("value") == "button" and "Demander" in ((n.get("description") or {}).get("value") or "")]
+        check(not tips and cdp.js("document.getElementById('send-tip').getAttribute('aria-hidden')") == "true" and cdp.js("document.querySelector('.send').getAttribute('aria-describedby')") == "send-tip" and bool(desc),
+              "screen reader (lot R): the send button's tooltip is hidden from the tree at rest and still read as the button's description", f"{len(tips)} tooltip(s) in the tree, description {desc[:1]}")
         check(sg == ["Vérifier cette page sur mobile", "Trouver les textes trop peu contrastés"], "empty chat: its two suggestions, no « Traiter les annotations en attente »", str(sg))
         cdp.js("window.devHost.send({type:'state',suggestions:[{id:'mobile',label:'Vérifier cette page sur mobile'},{id:'mobile',label:'Vérifier cette page sur mobile'},{id:'m2',label:'Vérifier cette page sur mobile'}]})"); time.sleep(.1)
         check(cdp.js("Array.from(document.querySelectorAll('.sug .lb')).map(n=>n.textContent)") == ["Vérifier cette page sur mobile"], "empty chat (R24): a suggestion never shows twice (same id or same words)")

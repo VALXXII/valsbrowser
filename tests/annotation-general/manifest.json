@@ -147,7 +147,7 @@
     },
     {
       "id": "annotations-ui",
-      "title": "Rendu natif du mode (bandeau, lanceur, historique, note)",
+      "title": "Rendu natif du mode (bandeau, « Connecter un agent », cadre natif)",
       "part": "day",
       "cmd": [
         "{python}",
