@@ -389,7 +389,7 @@ try:
                 spec = FID[name] if isinstance(FID[name], dict) else {"nodes": FID[name]}
                 fidelity[name] = cdp.js("(" + FID_JS + ")(" + json.dumps(spec["nodes"]) + "," + json.dumps(spec.get("root", "#app")) + "," + str(spec.get("dy", 0)) + ")")
             over = cdp.js("(()=>{const s=document.querySelector('.scroller'),a=document.getElementById('app');return [s.scrollHeight-s.clientHeight, s.scrollTop, a.scrollTop, Math.round(a.getBoundingClientRect().height)]})()")
-            if name in ("c-2-autorisation", "c-fil-long", "c-menu-modele-fil-long", "c-autorisation-reouverte", "c-autorisation-courte"): check(over[0] > 0 and over[2] == 0, f"{name}: at its maximum height only the thread scrolls", str(over))
+            if name in ("c-2-autorisation", "c-fil-long", "c-menu-modele-fil-long", "c-autorisation-reouverte", "c-autorisation-courte", "c-autorisation-sans-refus"): check(over[0] > 0 and over[2] == 0, f"{name}: at its maximum height only the thread scrolls", str(over))
             else: check(over[:3] == [0, 0, 0] and size and over[3] == size[1], f"{name}: the window fits the content exactly (nothing scrolls, nothing is cut)", str(over) + " " + str(size))
             out = os.path.join(COMMENT, name + ".png")
             cdp.call("Emulation.setDefaultBackgroundColorOverride", color={"r": 0, "g": 0, "b": 0, "a": 0})
@@ -558,9 +558,10 @@ try:
         p = cdp.js("""(()=>{const a=document.getElementById('app'),s=document.querySelector('.scroller');return {role:document.querySelector('.bperm').getAttribute('role'),title:document.getElementById('perm-t').textContent,
           nums:Array.from(document.querySelectorAll('.bperm-file .num')).map(n=>n.textContent),ph:document.querySelector('.instead').placeholder,auto:document.querySelector('.bperm .always').textContent,
           checked:document.querySelector('.bperm .always').getAttribute('aria-checked'),faded:a.classList.contains('faded'),fade:getComputedStyle(document.querySelector('.b-fade')).opacity,top:s.scrollTop,
-          composer:V('.composer'),rule:V('.b-rule')}})()""")
+          composer:V('.cin'),rule:V('.b-rule'),foot:[V('.tb.mode'),V('.send.stop'),V('.model')]}})()""")
         check(p["role"] == "alertdialog" and p["title"] == "Claude veut modifier checkout.css" and p["nums"] == ["+6", "−2"] and p["ph"] == "Dire à Claude quoi faire à la place…" and p["auto"] == "Auto." and p["checked"] == "false"
-              and p["composer"] == 0 and p["rule"] == 1, "bubble (permission): the request is in the bubble, in place of the input", json.dumps(p, ensure_ascii=False)[:300])
+              and p["composer"] == 0 and p["rule"] == 1 and p["foot"] == [1, 1, 0],
+              "bubble (permission): the request is in the bubble, in place of the input; the mode and « Arrêter » stay under the card (Paper 1AQU-0, 26K6-0)", json.dumps(p, ensure_ascii=False)[:340])
         check(p["faded"] and p["fade"] == "1" and p["top"] > 0, "bubble (permission): at its maximum height the thread scrolls and its top fades", f"faded {p['faded']}, opacity {p['fade']}, scrollTop {p['top']}")
         check(cdp.js("document.activeElement.classList.contains('bperm')"), "bubble (permission, SEC-23): the card holds the focus, never « Autoriser »", active())
         load("c-2-autorisation"); cdp.js("document.querySelector('.bperm').__shownAt = performance.now()"); key("Enter"); click(".bperm .btn.primary")
@@ -579,7 +580,7 @@ try:
         check(len(resp) == 1 and resp[0]["optionId"] == "reject" and resp[0].get("message") == "Garde 240 px", "bubble (permission): « Dire à Claude quoi faire à la place » rejects with the words", json.dumps(resp, ensure_ascii=False))
         load("c-autorisation-grande")
         g = cdp.js("[document.getElementById('app').classList.contains('faded'), document.querySelector('.scroller').scrollTop]")
-        check(sizes()[-1] == [305, 327] and g == [False, 0], "bubble (permission): with more room (maxHeight 520) the bubble grows to its content (327: the card is 118 high) and nothing fades", f"{sizes()[-1]} {g}")
+        check(sizes()[-1] == [305, 367] and g == [False, 0], "bubble (permission): with more room (maxHeight 520) the bubble grows to its content (367: the card is 118 high, the row under it 28, 12 below) and nothing fades", f"{sizes()[-1]} {g}")
 
         # the diff « en grand »
         load("c-2-autorisation-diff")
@@ -1407,6 +1408,7 @@ try:
                    "const q=(x)=>{const b=c.querySelector(x).getBoundingClientRect();return [+(b.left-r.left).toFixed(2),+(b.top-r.top).toFixed(2),+(r.right-b.right).toFixed(2),+(r.bottom-b.bottom).toFixed(2),+b.height.toFixed(2)]};"
                    "return {edge:[+(r.left-a.left).toFixed(2),+(a.right-r.right).toFixed(2),+(a.bottom-r.bottom).toFixed(2)],h:+r.height.toFixed(2),bg:s.backgroundColor,bw:[s.borderTopWidth,s.borderRightWidth,s.borderBottomWidth,s.borderLeftWidth],"
                    "bc:s.borderTopColor,radius:s.borderRadius,file:q('.bperm-file'),inp:q('.bperm-in'),ft:q('.bperm-ft'),refuse:q('.btn:not(.primary)'),allow:q('.btn.primary'),dpr:devicePixelRatio,"
+                   "foot:(()=>{const m=document.querySelector('.tb.mode').getBoundingClientRect(),t=document.querySelector('.send.stop').getBoundingClientRect();return Math.abs(t.top-r.bottom-12)<.51&&Math.abs(a.bottom-t.bottom-12)<.51&&Math.abs(a.right-t.right-12)<.51&&Math.abs(m.left-a.left-12)<.51&&t.height===28})(),"
                    "app:[Math.round(a.width),Math.round(a.height)],scroll:[document.getElementById('app').scrollTop,scrollY]}})()")
         for dsf in (1, 1.25, 1.5):
             cdp.call("Emulation.setDeviceMetricsOverride", width=1200, height=1400, deviceScaleFactor=dsf, mobile=False)
@@ -1414,16 +1416,73 @@ try:
             cdp.js("new Promise(r=>{const t0=performance.now();const f=()=>{if(window.__scenarioDone)r(true);else if(performance.now()-t0>15000)r(false);else setTimeout(f,20)};f()})")
             cdp.js("document.fonts.ready.then(()=>new Promise(r=>setTimeout(r,350)))")
             c = cdp.js(card_js); near = lambda v, w, d=.51: abs(v - w) <= d   # half a device pixel at most
-            ok = (c["dpr"] == dsf and c["app"] == [305, 303] and all(near(v, 12) for v in c["edge"]) and near(c["h"], 118) and c["bg"] == "rgb(41, 41, 41)" and c["bc"] == "rgba(255, 255, 255, 0.08)"
+            ok = (c["dpr"] == dsf and c["app"] == [305, 303] and near(c["edge"][0], 12) and near(c["edge"][1], 12) and near(c["edge"][2], 52) and c["foot"] and near(c["h"], 118) and c["bg"] == "rgb(41, 41, 41)" and c["bc"] == "rgba(255, 255, 255, 0.08)"
                   and all(near(float(w[:-2]), 1, .34) for w in c["bw"]) and c["radius"] == "12px"
                   and near(c["file"][0], 11) and near(c["file"][1], 11) and near(c["file"][2], 11) and near(c["file"][4], 18)
                   and near(c["inp"][0], 11) and near(c["inp"][1], 39) and near(c["inp"][4], 30)
                   and near(c["ft"][1], 79) and near(c["ft"][3], 11) and near(c["ft"][4], 28)
                   and near(c["allow"][2], 11) and near(c["allow"][3], 11) and near(c["refuse"][3], 11) and c["refuse"][0] > 11 and c["scroll"] == [0, 0])
-            check(ok, f"bubble (card, {int(dsf * 100)} %): a whole card on the bubble — #292929, 1 px border #FFFFFF14, radius 12, 10 px around its rows, 12 px from the bubble's edges, « Refuser » / « Autoriser » whole", json.dumps(c)[:420])
+            check(ok, f"bubble (card, {int(dsf * 100)} %): a whole card on the bubble — #292929, 1 px border #FFFFFF14, radius 12, 10 px around its rows, 12 px from the bubble's sides, « Refuser » / « Autoriser » whole; the mode and « Arrêter » 12 px under it", json.dumps(c)[:420])
             ins = cdp.js("window.__inset||{top:0,right:0,bottom:0,left:0}")
             shot(os.path.join(OUT, f"perm-bulle-{int(dsf * 100)}.png"), {"x": ins["left"] - 8, "y": ins["top"] - 8, "width": 321, "height": 319})
         viewport(380, 698)
+
+        # --- the row under the card (Paper 1AQU-0 / 19RN-0, 24 Nov 2026): the agent can be stopped while its request waits
+        p_host = lambda m: (cdp.js(f"window.devHost.send({json.dumps(m)})"), time.sleep(.15))
+        foot_js = ("(()=>{const a=document.getElementById('app'),A=a.getBoundingClientRect(),c=document.querySelector('.bperm'),C=c?c.getBoundingClientRect():null,co=document.querySelector('.composer'),"
+                   "m=document.querySelector('.tb.mode'),t=document.querySelector('.send');const vis=(n)=>!!n&&n.getClientRects().length>0;"
+                   "return {home:co&&co.parentNode?(co.parentNode.id||co.parentNode.className):null,mode:vis(m),stop:vis(t)&&t.classList.contains('stop'),input:vis(document.querySelector('.cin')),"
+                   "under:C&&vis(t)?+(t.getBoundingClientRect().top-C.bottom).toFixed(1):null,cardWhole:!!C&&C.top>=A.top-.5&&C.bottom<=A.bottom-11.5,stopWhole:vis(t)&&t.getBoundingClientRect().bottom<=A.bottom-5.5,"
+                   "cls:a.className.split(' ').filter(x=>['view','view-perm','running'].includes(x)).sort().join(' '),h:Math.round(A.height)}})()")
+        load("c-2-autorisation"); f0 = cdp.js(foot_js)
+        check(f0["home"] == "dock has-perm" and f0["mode"] and f0["stop"] and not f0["input"] and f0["under"] == 12 and f0["cardWhole"] and f0["stopWhole"] and f0["cls"] == "running",
+              "bubble (row under the card): the mode and « Arrêter » are under the card, 12 px below it, no input; the card whole", json.dumps(f0))
+        bx = p_box(".send.stop"); p_mouse(bx[0] + bx[2] / 2, bx[1] + bx[3] / 2)
+        st_ = posted()
+        check("stop" in st_ and not p_resp(), "bubble (row under the card): « Arrêter » stops the agent while its request waits — it answers nothing by itself (the host withdraws the request)", str(st_[-3:]))
+        p_host({"type": "permission.cancel", "requestId": "p1"}); p_host({"type": "turn.end", "turnId": "t1", "stopReason": "cancelled", "durationMs": 9000}); p_host({"type": "state", "running": False})
+        f1 = cdp.js(foot_js)
+        check(f1["home"] == "dock" and f1["input"] and not f1["stop"] and f1["cls"] == "" and cdp.js("!document.querySelector('.bperm')"), "bubble (row under the card): stopped, the request is gone and the input is back", json.dumps(f1))
+        # too little height for the card and its row: the card stays whole (plan rule 8), the row gives way — and comes back with the room
+        load("c-2-autorisation")
+        p_host({"type": "layout", "mode": "bubble", "open": False, "maxWidth": 305, "maxHeight": 150, "inset": cdp.js("window.__inset")}); f2 = cdp.js(foot_js)
+        p_host({"type": "layout", "mode": "bubble", "open": False, "maxWidth": 305, "maxHeight": 303, "inset": cdp.js("window.__inset")}); f3 = cdp.js(foot_js)
+        check(f2["h"] == 142 and f2["cardWhole"] and not f2["stop"] and not f2["mode"] and f3["h"] == 303 and f3["stop"] and f3["under"] == 12 and f3["cardWhole"],
+              "bubble (little room, R47): 150 px offered — the card whole and alone (142), the row and the thread give way; with the room of before they are back", f"{json.dumps(f2)} {json.dumps(f3)}")
+        tight = {}
+        for mh in (120, 139, 142, 190, 200, 231):   # the host offers 120 px at least
+            load("c-2-autorisation"); p_host({"type": "layout", "mode": "bubble", "open": False, "maxWidth": 305, "maxHeight": mh, "inset": cdp.js("window.__inset")})
+            tight[mh] = cdp.js("(()=>{const a=document.getElementById('app').getBoundingClientRect(),c=document.querySelector('.bperm').getBoundingClientRect(),v=(x)=>{const n=document.querySelector(x);return !!n&&n.getClientRects().length>0};"
+                               "const b=Array.from(document.querySelectorAll('.bperm .btn')).map(x=>x.getBoundingClientRect());"
+                               "return [Math.round(a.height), c.top>=a.top+11.5&&c.bottom<=a.bottom-11.5&&b.every(x=>x.top>=c.top&&x.bottom<=c.bottom), v('.bperm-in'), v('.bt-model'), v('.send.stop')]})()")
+        check(tight == {120: [102, True, False, False, False], 139: [102, True, False, False, False], 142: [142, True, True, False, False], 190: [142, True, True, False, False],
+                        200: [200, True, True, True, False], 231: [231, True, True, True, True]},
+              "bubble (little room, plan rule 8): whatever height the host offers (120 px at least) the card and « Refuser » / « Autoriser » are whole — the row under the card gives way first, then the thread, then the « à la place » field", str(tight))
+        # the diff « en grand » of a request (19RN-0): one card around the diff and the answer, the row under it in the bubble's 6 px
+        load("c-2-autorisation-diff")
+        v0 = cdp.js("(()=>{const a=document.getElementById('app').getBoundingClientRect(),m=document.querySelector('.main'),M=m.getBoundingClientRect(),s=getComputedStyle(m),q=(x)=>{const n=document.querySelector(x);if(!n)return null;const r=n.getBoundingClientRect();"
+                    "return [Math.round(r.left-a.left),Math.round(r.top-a.top),Math.round(r.width),Math.round(r.height)]};"
+                    "return {card:q('.main'),bg:s.backgroundColor,bw:s.borderTopWidth,radius:s.borderRadius,diff:q('.bview-wrap'),answer:q('.bperm'),stop:q('.send.stop'),mode:q('.tb.mode'),"
+                    "inside:['.bview','.bperm'].every(x=>m.contains(document.querySelector(x)))&&!m.contains(document.querySelector('.composer')),bviewBg:getComputedStyle(document.querySelector('.bview')).backgroundColor}})()")
+        f4 = cdp.js(foot_js)
+        check(v0["card"] == [6, 6, 293, 251] and v0["bg"] == "rgb(41, 41, 41)" and v0["bw"] == "1px" and v0["radius"] == "12px" and v0["inside"] and v0["bviewBg"] == "rgba(0, 0, 0, 0)"
+              and v0["diff"] == [17, 45, 271, 123] and v0["answer"] == [17, 178, 271, 68] and v0["stop"] == [271, 269, 28, 28] and v0["mode"][:2] == [6, 271] and f4["cls"] == "running view view-perm",
+              "bubble (diff of a request, Paper 19RN-0): one card (#292929, 1 px border, radius 12) holds the diff and the answer; the mode and « Arrêter » under it, 12 px below, 6 px from the bubble's edges", json.dumps(v0))
+        key("Escape"); f5 = cdp.js(foot_js)
+        check(f5["home"] == "dock has-perm" and f5["under"] == 12 and f5["cls"] == "running" and cdp.js("getComputedStyle(document.querySelector('.main')).borderTopWidth") == "0px",
+              "bubble (diff of a request): closed, the card and its row are as before (the row back under the card)", json.dumps(f5))
+        load("c-2-autorisation-diff"); p_arm(".bperm"); bx = p_box(".bperm .btn.primary"); p_mouse(bx[0] + bx[2] / 2, bx[1] + bx[3] / 2)
+        p_host({"type": "turn.end", "turnId": "t1", "stopReason": "end_turn", "durationMs": 9000}); p_host({"type": "state", "running": False}); f6 = cdp.js(foot_js)
+        check(len(p_resp()) == 1 and f6["home"] == "dock" and f6["input"] and f6["cls"] == "" and cdp.js("document.getElementById('bview').hidden && getComputedStyle(document.querySelector('.main')).borderTopWidth === '0px'"),
+              "bubble (diff of a request): answered from the open diff — one answer, the diff closes, the input is back in its place", f"{p_resp()} {json.dumps(f6)}")
+        load("c-2-autorisation-diff"); bx = p_box(".send.stop"); p_mouse(bx[0] + bx[2] / 2, bx[1] + bx[3] / 2)
+        p_host({"type": "permission.cancel", "requestId": "p1"}); p_host({"type": "turn.end", "turnId": "t1", "stopReason": "cancelled", "durationMs": 9000}); p_host({"type": "state", "running": False}); f7 = cdp.js(foot_js)
+        check("stop" in posted() and not p_resp() and f7["home"] == "dock" and f7["input"] and f7["cls"] == "" and cdp.js("document.getElementById('bview').hidden && !document.querySelector('.bperm')"),
+              "bubble (diff of a request): « Arrêter » under the open diff stops the agent — the request and its diff go, the input is back", f"{posted()[-4:]} {json.dumps(f7)}")
+        # the diff of a finished turn (1B19-0) is not a request's: no card around it
+        load("c-3-termine-diff")
+        v1 = cdp.js("[document.getElementById('app').classList.contains('view-perm'), getComputedStyle(document.querySelector('.main')).borderTopWidth, getComputedStyle(document.querySelector('.bview')).backgroundColor]")
+        check(v1 == [False, "0px", "rgba(255, 255, 255, 0.08)"], "bubble (diff of a finished turn, 1B19-0): untouched — no card around it", str(v1))
 
     if not ONLY:
         load("6.1-autorisation")

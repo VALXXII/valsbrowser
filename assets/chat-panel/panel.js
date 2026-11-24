@@ -1207,6 +1207,11 @@
     const r = p.toolCallId && /^reject/.test(opt.kind) ? S.tools.get(p.toolCallId) : null;
     if (r) { r.x.refused = true; queueRender(r.seg); }
   }
+  // The diff « en grand » of a request closes with its request (withdrawn, its turn over) — « Arrêter » is one click away
+  // under it: never a diff left open over nothing to answer.
+  function permViewGone() {
+    if (S.bview && S.bview.kind === "perm" && !S.perms.some((p) => p.requestId === S.bview.p.requestId)) { closeView(true); updateView(); }
+  }
   function detailsBlock(text) {
     const pre = h("pre", { class: "detail", id: "perm-details", hidden: true, text });
     const b = h("button", { class: "more perm-more", type: "button", "aria-expanded": "false", "aria-controls": "perm-details" }, icon("chevron", "dcv"), "Détails");
@@ -1239,12 +1244,13 @@
       if (!box) return S.lay.maxH;
       let inner = 12;                                        // a command or a tool's arguments: their own height, never
       for (const c of box.children) inner += c.offsetHeight; // smaller than the bubble of a turn in progress (224)
-      return Math.max(224, 68 + inner + dock.offsetHeight);
+      // 12 of padding + the card's border and padding (22) + its title row and gap (28) + the content + 10 + the answer (the dock) + the row under the card
+      return Math.max(224, 72 + inner + dock.offsetHeight + (composer.parentNode === app ? 12 + composer.offsetHeight : 0));
     }
     let hgt = 24, n = 0;                                     // 12 px of padding above and under
     const part = (x) => { if (x > 0) { hgt += x; n++; } };
     if (!body.hidden) part(log.offsetHeight);                // measured on the content: independent of the window's size
-    if (!ruleEl.hidden) part(1);
+    if (!ruleEl.hidden) part(ruleEl.offsetHeight);   // 1 px — nothing when the thread gave way to a request's card (perm-tight2)
     part(dock.offsetHeight);
     return hgt + Math.max(0, n - 1) * 12;
   }
@@ -1306,6 +1312,19 @@
   function publishSize(force) {
     if (!BUB() || S.fatal) return;
     if (ackPending && !force) return;   // nothing before the acknowledgement (it carries the final size)
+    // R47 / plan rule 8: « Refuser » and « Autoriser » are always whole. When the height offered is short, what is around the
+    // card gives way, in this order: the row under it, the thread, then the « à la place » field (the host offers 120 px at least).
+    {
+      const cl = app.classList; cl.remove("perm-tight2", "perm-tight3"); dock.classList.remove("tight");
+      const card = !S.bview && !S.bsize ? dock.querySelector(".bperm") : null;
+      if (card) {
+        const max = S.lay.maxH, thread = !body.hidden && log.firstChild ? 49 : 0;   // 12 + the hairline + 12, and one line of the thread (24)
+        if (24 + dock.offsetHeight + thread > max) {
+          dock.classList.add("tight");
+          if (24 + card.offsetHeight + thread > max) { cl.add("perm-tight2"); if (24 + card.offsetHeight > max) cl.add("perm-tight3"); }
+        }
+      }
+    }
     bQueueRoom();   // the waiting messages take what the height offered leaves: the input is always whole, inside the surface
     const hgt = Math.max(1, Math.min(S.bsize ? Infinity : S.lay.maxH, Math.ceil(bubbleNatural())));
     const need = floats.size ? floatNeed(hgt) : { top: 0, right: 0, bottom: 0, left: 0 };
@@ -1449,11 +1468,22 @@
     lastDockKey = key;
     const a = document.activeElement;
     const mine = composer.contains(a) || a === app || a === document.body || !a;
-    if (p && permKept(p)) { app.classList.remove("running"); ruleEl.hidden = none || !!S.bview; return; }
+    // Paper 1AQU-0 (26K6-0) and 19RN-0 (26JW-0), 24 Nov 2026: the mode and « Arrêter » stay under the card for as long as
+    // the request waits — the agent can be stopped while it waits for an answer.
+    // Under the open diff (19RN-0) one card holds the diff and the answer: the row is then the bubble's own last line.
+    const permFoot = () => {
+      const home = S.bview ? app : dock;
+      app.classList.toggle("running", running); app.classList.toggle("view-perm", !!S.bview);
+      if (!running) { if (composer.parentNode === dock || composer.parentNode === app) composer.remove(); return; }
+      if (composer.parentNode !== home) { if (home === app) app.insertBefore(composer, gripEl); else dock.appendChild(composer); }
+      composer.classList.toggle("disabled", off); updateSend();
+    };
+    if (p && permKept(p)) { permFoot(); ruleEl.hidden = none || !!S.bview; return; }
     clear(dock);
     dock.className = "dock" + (p ? " has-perm" : "");
-    app.classList.toggle("running", running && !p);
-    if (p) { dock.appendChild(bPerm(p, composer.contains(a))); ruleEl.hidden = none || !!S.bview; return; }
+    app.classList.toggle("running", running); app.classList.remove("view-perm");
+    if (composer.parentNode === app) composer.remove();   // back from the open diff of a request: the input goes home (the dock) below
+    if (p) { dock.appendChild(bPerm(p, composer.contains(a))); permFoot(); ruleEl.hidden = none || !!S.bview; return; }
     if (err) {
       // H1 (monkey seed 1 #29): the input used to leave the page here — whatever was typed next went nowhere until
       // « Annuler ». It stays in the page, out of sight (Paper 1AAE-0 draws the two buttons alone), and keeps the keyboard:
@@ -2574,7 +2604,7 @@
     t.el.setAttribute("aria-busy", "false");
     t.workEl.remove();
     if (t.waitEl) { t.waitEl.remove(); t.waitEl = null; }
-    S.perms = S.perms.filter((p) => p.turnId !== t.id);
+    S.perms = S.perms.filter((p) => p.turnId !== t.id); permViewGone();
     const d = typeof m.durationMs === "number" ? m.durationMs : m.interrupted ? null : Date.now() - t.start;
     t.durMs = d;
     setMeta(t, [t.model.replace(/\s+[\d.]+$/, ""), t.effort, d == null ? "" : dur(d)].filter(Boolean).join(" · "));
@@ -2973,7 +3003,7 @@
       // withdrawn unanswered (the turn was stopped while the card waited): if its step then fails, it never happened
       const p = S.perms.find((x) => x.requestId === m.requestId), r = p && p.toolCallId ? S.tools.get(p.toolCallId) : null;
       if (r) { r.x.dropped = true; if (r.x.status === "failed") r.x.refused = true; }
-      S.perms = S.perms.filter((x) => x.requestId !== m.requestId); refreshWaiting(); renderDock(true);
+      S.perms = S.perms.filter((x) => x.requestId !== m.requestId); permViewGone(); refreshWaiting(); renderDock(true);
     },
     "turn.end": onTurnEnd, "turn.undone": onUndone, error: onError,
     strip(m) {

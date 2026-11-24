@@ -777,26 +777,33 @@ button.bt-st[aria-describedby="b-tip"] { background: #FFFFFF1A; border-radius: 4
 .bperm .btn:not(.primary) { background: var(--fill6); color: var(--w80); }   /* 26HW-0 */
 @media (hover: hover) { .bperm .btn:not(.primary):hover { background: var(--fill8); color: #FFFFFF; } }
 .bub .perm-of { flex-shrink: 0; }
+/* the mode and « Arrêter » under the card (26K6-0), 12 px below it; with too little height the card stays whole and the row goes */
+.bub .dock.has-perm { gap: 12px; }
+.bub .dock.has-perm.tight > .composer { display: none; }
+.bub #app.perm-tight2 .body, .bub #app.perm-tight2 .b-rule { display: none; }
+.bub #app.perm-tight3 .bperm-in { display: none; }
 
 /* the diff « en grand » (19RN-0, 1B19-0) */
 .bub #app.view { padding: 6px; }
 .bub #app.view .b-rule { margin: 0 6px; }
 .bub #app.view .dock { padding: 0 6px 6px; }
 .bub #app.view .dock.has-perm { padding: 0; }
-/* under the open diff the card is still the one of its own board (19RN-0, card 1AMG-0: not redrawn on 24 Nov) */
-.bub #app.view .bperm { gap: 6px; padding: 0 6px 6px; border: 0; border-radius: 16px; background: var(--composer); }
-.bub #app.view .bperm-rows { gap: 6px; }
+/* the diff « en grand » of a request (19RN-0, redrawn 24 Nov 2026): ONE card (26KG-0) holds the diff and the answer, the
+   mode and « Arrêter » sit under it (26JW-0), in the bubble's 6 px. The diff of a finished turn (1B19-0) is not this. */
 .bub #app.view .bperm-file { display: none; }
-.bub #app.view .bperm-in { gap: 6px; height: 32px; padding: 0 8px; border-radius: 10px; background: var(--raised); }
-.bub #app.view .bperm-in .ic { width: 14px; height: 14px; opacity: .5; }
-.bub #app.view .bperm-in .instead { font-size: 13px; }
-.bub #app.view .bperm-in .instead::placeholder { color: var(--w50); }
-.bub #app.view .bperm-ft { padding-left: 4px; }
-.bub #app.view .bperm .always { flex: 1; margin-right: 0; }
-.bub #app.view .bperm .always:not([aria-checked="true"]) .sw { background: rgb(255 255 255 / 12%); }
-.bub #app.view .bperm .btn { padding: 0 8px; }
-.bub #app.view .bperm .btn:not(.primary) { background: var(--raised); color: #FFFFFF; }
-@media (hover: hover) { .bub #app.view .bperm .btn:not(.primary):hover { background: var(--hover); } }
+.bub #app.view-perm { gap: 12px; }
+.bub #app.view-perm .main { gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--raised); }
+.bub #app.view-perm .bview { padding: 0; background: none; }   /* 1ANA-0 */
+.bub #app.view-perm .bperm { gap: 10px; padding: 0 6px; border: 0; border-radius: 0; background: none; }   /* 1AMG-0 */
+.bub #app.view-perm .bperm-in { gap: 6px; padding: 0 8px; }   /* 1AMS-0 */
+.bub #app.view-perm .bperm-in .ic { width: 14px; height: 14px; opacity: .5; }
+.bub #app.view-perm .bperm-in .instead { font-size: 13px; }
+.bub #app.view-perm .bperm-in .instead::placeholder { color: var(--w50); }
+.bub #app.view-perm .bperm-ft { padding-left: 4px; }   /* 1AMU-0 */
+.bub #app.view-perm .bperm .always { flex: 1; margin-right: 0; }
+.bub #app.view-perm .bperm .btn { padding: 0 8px; }
+.bub #app.view-perm .bperm .btn:not(.primary) { color: #FFFFFF; }   /* 1AN0-0 */
+.bub #app.view-perm > .composer { flex-shrink: 0; }
 .bub #app.view .main { flex: 1 1 auto; }
 .bub .bview { display: flex; flex-direction: column; gap: 8px; flex: 1 1 0; min-height: 0; padding: 8px; border-radius: 10px; background: var(--fill8); }
 .bview-hd { display: flex; align-items: center; gap: 8px; padding: 0 2px; flex-shrink: 0; }

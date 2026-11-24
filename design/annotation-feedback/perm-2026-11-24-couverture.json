@@ -1,0 +1,41 @@
+{
+  "_comment": "Entries for tests/annotation-general/coverage.json (\"lines\"), proposed by the permission-circuit worker (VALXXII/annotation-perm). manifest.json: NO new suite — the tests live in the existing suites chat-panel (tests/chat-panel/run.py, block « perm », also runnable alone with --only perm) and chat-units (tests/chat/host_contract_test.py).",
+  "perm-une-demande-une-reponse": {
+    "tests": [
+      { "suite": "chat-panel", "what": "« permission (panel, point 1): ONE real click on « Autoriser » / « Refuser » … », « permission (panel): the same request received twice is one card, one answer », « bubble (point 1): one real click on « Autoriser » answers »" },
+      { "suite": "chat-units", "what": "host_contract_test.py — « permission: one answer per request… », « permission: the agent's request is sent to the page once… »" }
+    ]
+  },
+  "perm-carte-garde-sa-forme": {
+    "tests": [
+      { "suite": "chat-panel", "what": "« permission (panel, point 2) », « permission (panel, point 4) », « permission (panel): « Détails » opens under the diff… », « bubble (points 2 and 4) »" }
+    ]
+  },
+  "perm-veut-modifier-avant-accord": {
+    "tests": [
+      { "suite": "chat-panel", "what": "« thread (point 3) … » (en attente, autorisé, fait, refusé, rejoué), « thread: a step the host marks as refused… », « thread: a request withdrawn unanswered… », « bubble (point 3, Paper « Mode Commentaire 4 ») »" },
+      { "suite": "chat-units", "what": "host_contract_test.py — « permission: a refusal … marks the step it was for », « permission: a refused step is kept as refused in the conversation… », « permission: the agent's later updates of a refused step keep it refused… », « permission: a request withdrawn unanswered… »" }
+    ]
+  },
+  "perm-carte-bulle-vraie-carte": {
+    "tests": [
+      { "suite": "chat-panel", "what": "fidélité c-2-autorisation et c-2-autorisation-diff (planches 1ANU-0 / 19RN-0 redessinées le 24 nov.), « bubble (card, 100 % / 125 % / 150 %) », « bubble (row under the card) … », « bubble (diff of a request, Paper 19RN-0) … », « bubble (diff of a finished turn, 1B19-0): untouched »" }
+    ]
+  },
+  "perm-peu-de-place": {
+    "tests": [
+      { "suite": "chat-panel", "what": "« bubble (little room, R47) … », « bubble (little room, plan rule 8): whatever height the host offers (120 px at least) the card and « Refuser » / « Autoriser » are whole »" }
+    ]
+  },
+  "perm-plusieurs-demandes": {
+    "tests": [
+      { "suite": "chat-panel", "what": "« permission (several in a row, SEC-23): a double click on « Autoriser » answers the first request only… », « permission (several in a row): 600 ms later one click answers the second… »" }
+    ]
+  },
+  "perm-bulle-clic-de-retour": {
+    "gap": { "lot": "perm (vraie fenêtre)", "why": "essai 0.3.952 : la bulle est masquée quand une autre application passe devant ; le clic qui ramène le navigateur tombe sur la page (autre élément sélectionné, la carte disparaît puis revient) — correctif côté hôte (src/chat-comment.h) à faire et à vérifier en vraie fenêtre" }
+  },
+  "perm-essai-reel-par-agent": {
+    "gap": { "lot": 5, "why": "une modification acceptée, refusée, « toujours » — Claude Code et Codex réels (dont « Additional sandbox permissions » de Codex, titre encore en anglais)" }
+  }
+}
