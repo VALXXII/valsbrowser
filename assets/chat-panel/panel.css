@@ -754,21 +754,28 @@ button.bt-st[aria-describedby="b-tip"] { background: #FFFFFF1A; border-radius: 4
 .btn.danger { background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); }
 @media (hover: hover) { .btn.danger:hover { background: color-mix(in srgb, var(--danger) 18%, transparent); } }
 
-/* permission in the bubble (1ARF-0) */
-.bperm { display: flex; flex-direction: column; gap: 6px; border-radius: 16px; background: var(--composer); }
-.bperm-rows { display: flex; flex-direction: column; gap: 6px; }
-.bperm-file { display: flex; align-items: center; gap: 8px; width: 100%; height: 32px; padding: 0 8px; border-radius: 10px; background: var(--fill8); text-align: left; flex-shrink: 0; }
-.bperm-file .t { flex: 1; min-width: 0; color: var(--w90); font-size: 13px; font-weight: 500; line-height: 16px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
-.bperm-file .cv { width: 11px; height: 11px; opacity: .45; transform: rotate(-90deg); }
-@media (hover: hover) { button.bperm-file:hover { background: #FFFFFF1F; } button.bperm-file:hover .cv { opacity: .9; } }
-.bperm-in { display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 8px; border-radius: 10px; background: var(--raised); flex-shrink: 0; }
-.bperm-in .ic { width: 14px; height: 14px; opacity: .5; }
-.bperm-in .instead { flex: 1; min-width: 0; height: 100%; padding: 0; border-radius: 0; background: none; font-size: 13px; line-height: 16px; }
-.bperm-in .instead::placeholder { color: var(--w50); line-height: 16px; }
+/* permission in the bubble — a real card (Designer, 24 Nov 2026): Paper « 2 - Prompt envoyé » 1ANU-0, card 26HS-0, the same
+   as « App réelle · Mode Commentaire 4 » (1V51-0). #292929 with a 1 px border on the #171717 bubble, radius 12, 10 px
+   around and between its three rows. (Before: a #1F1F1F patch without padding, read as a card cut at the bottom.) */
+.bperm { display: flex; flex-direction: column; gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--raised); }
+.bperm-rows { display: flex; flex-direction: column; gap: 10px; }
+.bperm-file { display: flex; align-items: center; gap: 6px; width: 100%; height: 18px; border-radius: 4px; text-align: left; flex-shrink: 0; }
+.bperm-file .t { flex: 1; min-width: 0; color: var(--w90); font-size: 13px; font-weight: 500; line-height: 18px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+.bperm-file .num { font-family: inherit; }   /* 26IB-0 / 26IA-0: Inter Display 12 / 16 */
+.bperm-file .cv { width: 12px; height: 12px; opacity: .5; transform: rotate(-90deg); }
+@media (hover: hover) { button.bperm-file:hover .cv { opacity: .9; } }
+.bperm-in { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px; border-radius: 8px; background: var(--composer); flex-shrink: 0; }
+.bperm-in .ic { width: 12px; height: 12px; opacity: .4; }
+.bperm-in .instead { flex: 1; min-width: 0; height: 100%; padding: 0; border-radius: 0; background: none; font-size: 12px; line-height: 16px; }
+.bperm-in .instead::placeholder { color: var(--w40); line-height: 16px; }
 .bperm-in .instead:focus-visible { outline: none; }
 .bperm-in:focus-within { box-shadow: inset 0 0 0 1px #FFFFFF33; }
-.bperm-ft { display: flex; align-items: center; gap: 8px; padding-left: 4px; }
-.bperm .always { align-self: center; height: 28px; }
+.bperm-ft { display: flex; align-items: center; gap: 8px; }
+.bperm .always { flex: 0 0 auto; margin-right: auto; align-self: center; height: 28px; }   /* 26HY-0: the room left of the buttons is empty, not the switch */
+.bperm .sw { background: rgb(255 255 255 / 15%); }   /* 26I1-0, off: #FFFFFF26 */
+.bperm .btn { padding: 0 10px; }
+.bperm .btn:not(.primary) { background: var(--fill6); color: var(--w80); }   /* 26HW-0 */
+@media (hover: hover) { .bperm .btn:not(.primary):hover { background: var(--fill8); color: #FFFFFF; } }
 .bub .perm-of { flex-shrink: 0; }
 
 /* the diff « en grand » (19RN-0, 1B19-0) */
@@ -776,8 +783,20 @@ button.bt-st[aria-describedby="b-tip"] { background: #FFFFFF1A; border-radius: 4
 .bub #app.view .b-rule { margin: 0 6px; }
 .bub #app.view .dock { padding: 0 6px 6px; }
 .bub #app.view .dock.has-perm { padding: 0; }
-.bub #app.view .bperm { padding: 0 6px 6px; }
+/* under the open diff the card is still the one of its own board (19RN-0, card 1AMG-0: not redrawn on 24 Nov) */
+.bub #app.view .bperm { gap: 6px; padding: 0 6px 6px; border: 0; border-radius: 16px; background: var(--composer); }
+.bub #app.view .bperm-rows { gap: 6px; }
 .bub #app.view .bperm-file { display: none; }
+.bub #app.view .bperm-in { gap: 6px; height: 32px; padding: 0 8px; border-radius: 10px; background: var(--raised); }
+.bub #app.view .bperm-in .ic { width: 14px; height: 14px; opacity: .5; }
+.bub #app.view .bperm-in .instead { font-size: 13px; }
+.bub #app.view .bperm-in .instead::placeholder { color: var(--w50); }
+.bub #app.view .bperm-ft { padding-left: 4px; }
+.bub #app.view .bperm .always { flex: 1; margin-right: 0; }
+.bub #app.view .bperm .always:not([aria-checked="true"]) .sw { background: rgb(255 255 255 / 12%); }
+.bub #app.view .bperm .btn { padding: 0 8px; }
+.bub #app.view .bperm .btn:not(.primary) { background: var(--raised); color: #FFFFFF; }
+@media (hover: hover) { .bub #app.view .bperm .btn:not(.primary):hover { background: var(--hover); } }
 .bub #app.view .main { flex: 1 1 auto; }
 .bub .bview { display: flex; flex-direction: column; gap: 8px; flex: 1 1 0; min-height: 0; padding: 8px; border-radius: 10px; background: var(--fill8); }
 .bview-hd { display: flex; align-items: center; gap: 8px; padding: 0 2px; flex-shrink: 0; }

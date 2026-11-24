@@ -559,14 +559,16 @@ try:
           nums:Array.from(document.querySelectorAll('.bperm-file .num')).map(n=>n.textContent),ph:document.querySelector('.instead').placeholder,auto:document.querySelector('.bperm .always').textContent,
           checked:document.querySelector('.bperm .always').getAttribute('aria-checked'),faded:a.classList.contains('faded'),fade:getComputedStyle(document.querySelector('.b-fade')).opacity,top:s.scrollTop,
           composer:V('.composer'),rule:V('.b-rule')}})()""")
-        check(p["role"] == "alertdialog" and p["title"] == "Claude veut modifier checkout.css" and p["nums"] == ["+6", "−2"] and p["ph"] == "Dire à Claude quoi faire à la place…" and p["auto"] == "Auto." and p["checked"] == "true"
+        check(p["role"] == "alertdialog" and p["title"] == "Claude veut modifier checkout.css" and p["nums"] == ["+6", "−2"] and p["ph"] == "Dire à Claude quoi faire à la place…" and p["auto"] == "Auto." and p["checked"] == "false"
               and p["composer"] == 0 and p["rule"] == 1, "bubble (permission): the request is in the bubble, in place of the input", json.dumps(p, ensure_ascii=False)[:300])
         check(p["faded"] and p["fade"] == "1" and p["top"] > 0, "bubble (permission): at its maximum height the thread scrolls and its top fades", f"faded {p['faded']}, opacity {p['fade']}, scrollTop {p['top']}")
         check(cdp.js("document.activeElement.classList.contains('bperm')"), "bubble (permission, SEC-23): the card holds the focus, never « Autoriser »", active())
         load("c-2-autorisation"); cdp.js("document.querySelector('.bperm').__shownAt = performance.now()"); key("Enter"); click(".bperm .btn.primary")
         check(not any(x.startswith("permission.respond") for x in posted()), "bubble (permission, SEC-23): Entrée or a click in the card's first 600 ms answers nothing", str(posted()[-3:]))
-        time.sleep(0.7); key("Enter")
+        time.sleep(0.7); click(".bperm .always"); key("Enter")
         check("permission.respond:always" in posted(), "bubble (permission): Entrée = Autoriser (Auto on: the allow_always option)", str(posted()[-3:]))
+        load("c-2-autorisation"); cdp.js("document.querySelector('.bperm').__shownAt = -1e6"); key("Enter")
+        check("permission.respond:allow" in posted() and "permission.respond:always" not in posted(), "bubble (permission, SEC-23): Auto off, Entrée allows this once — never « always » without its switch", str(posted()[-3:]))
         load("c-2-autorisation"); key("Escape")
         t = posted()
         check("close" in t and not any(x.startswith("permission.respond") for x in t), "bubble (permission): Échap closes the bubble and answers nothing (the request waits)", str(t[-3:]))
@@ -577,7 +579,7 @@ try:
         check(len(resp) == 1 and resp[0]["optionId"] == "reject" and resp[0].get("message") == "Garde 240 px", "bubble (permission): « Dire à Claude quoi faire à la place » rejects with the words", json.dumps(resp, ensure_ascii=False))
         load("c-autorisation-grande")
         g = cdp.js("[document.getElementById('app').classList.contains('faded'), document.querySelector('.scroller').scrollTop]")
-        check(sizes()[-1] == [305, 313] and g == [False, 0], "bubble (permission): with more room (maxHeight 520) the bubble grows to its content (313) and nothing fades", f"{sizes()[-1]} {g}")
+        check(sizes()[-1] == [305, 327] and g == [False, 0], "bubble (permission): with more room (maxHeight 520) the bubble grows to its content (327: the card is 118 high) and nothing fades", f"{sizes()[-1]} {g}")
 
         # the diff « en grand »
         load("c-2-autorisation-diff")
@@ -1368,6 +1370,30 @@ try:
         check(len(rb) == 1 and rb[0]["optionId"] == "always" and cdp.js("!document.querySelector('.bperm')"), "bubble (point 1): one real click on « Autoriser » answers (Auto on: allow_always)", json.dumps(rb)[:200])
         p_tool("in_progress"); bs = cdp.js("document.querySelector('#app').innerText")
         check("Modifie style.css…" in bs, "bubble (point 3): allowed, the status reads « Modifie style.css… »", bs[-160:].replace("\n", " | "))
+
+        # --- the bubble's card is a real card (Designer, 24 Nov 2026: Paper 1ANU-0 / « App réelle · Mode Commentaire 4 »), whole at
+        # every display scale: #292929, 1 px border, radius 12, 10 px around its three rows, 12 px from the bubble's edges
+        card_js = ("(()=>{const a=document.getElementById('app').getBoundingClientRect(),c=document.querySelector('.bperm'),r=c.getBoundingClientRect(),s=getComputedStyle(c);"
+                   "const q=(x)=>{const b=c.querySelector(x).getBoundingClientRect();return [+(b.left-r.left).toFixed(2),+(b.top-r.top).toFixed(2),+(r.right-b.right).toFixed(2),+(r.bottom-b.bottom).toFixed(2),+b.height.toFixed(2)]};"
+                   "return {edge:[+(r.left-a.left).toFixed(2),+(a.right-r.right).toFixed(2),+(a.bottom-r.bottom).toFixed(2)],h:+r.height.toFixed(2),bg:s.backgroundColor,bw:[s.borderTopWidth,s.borderRightWidth,s.borderBottomWidth,s.borderLeftWidth],"
+                   "bc:s.borderTopColor,radius:s.borderRadius,file:q('.bperm-file'),inp:q('.bperm-in'),ft:q('.bperm-ft'),refuse:q('.btn:not(.primary)'),allow:q('.btn.primary'),dpr:devicePixelRatio,"
+                   "app:[Math.round(a.width),Math.round(a.height)],scroll:[document.getElementById('app').scrollTop,scrollY]}})()")
+        for dsf in (1, 1.25, 1.5):
+            cdp.call("Emulation.setDeviceMetricsOverride", width=1200, height=1400, deviceScaleFactor=dsf, mobile=False)
+            cdp.events.clear(); cdp.call("Page.navigate", url=f"{BASE}/chat-panel/dev.html?scenario=c-2-autorisation")
+            cdp.js("new Promise(r=>{const t0=performance.now();const f=()=>{if(window.__scenarioDone)r(true);else if(performance.now()-t0>15000)r(false);else setTimeout(f,20)};f()})")
+            cdp.js("document.fonts.ready.then(()=>new Promise(r=>setTimeout(r,350)))")
+            c = cdp.js(card_js); near = lambda v, w, d=.51: abs(v - w) <= d   # half a device pixel at most
+            ok = (c["dpr"] == dsf and c["app"] == [305, 303] and all(near(v, 12) for v in c["edge"]) and near(c["h"], 118) and c["bg"] == "rgb(41, 41, 41)" and c["bc"] == "rgba(255, 255, 255, 0.08)"
+                  and all(near(float(w[:-2]), 1, .34) for w in c["bw"]) and c["radius"] == "12px"
+                  and near(c["file"][0], 11) and near(c["file"][1], 11) and near(c["file"][2], 11) and near(c["file"][4], 18)
+                  and near(c["inp"][0], 11) and near(c["inp"][1], 39) and near(c["inp"][4], 30)
+                  and near(c["ft"][1], 79) and near(c["ft"][3], 11) and near(c["ft"][4], 28)
+                  and near(c["allow"][2], 11) and near(c["allow"][3], 11) and near(c["refuse"][3], 11) and c["refuse"][0] > 11 and c["scroll"] == [0, 0])
+            check(ok, f"bubble (card, {int(dsf * 100)} %): a whole card on the bubble — #292929, 1 px border #FFFFFF14, radius 12, 10 px around its rows, 12 px from the bubble's edges, « Refuser » / « Autoriser » whole", json.dumps(c)[:420])
+            ins = cdp.js("window.__inset||{top:0,right:0,bottom:0,left:0}")
+            shot(os.path.join(OUT, f"perm-bulle-{int(dsf * 100)}.png"), {"x": ins["left"] - 8, "y": ins["top"] - 8, "width": 321, "height": 319})
+        viewport(380, 698)
 
     if not ONLY:
         load("6.1-autorisation")
