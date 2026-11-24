@@ -62,7 +62,8 @@ int wmain(int argc, wchar_t** argv) {
         c.Paint(t, selected, L"https://lemonde.fr/planete", editing, hover, focus);
         Check(SUCCEEDED(c.SavePng((out + L"\\" + name + L".png").c_str())), "snapshot");
         const auto& L = c.side;
-        char line[256]; std::snprintf(line, sizeof line, "%ls page %.1f %.1f %.1f %.1f overlay %d column %.1f\n", name, L.page.left, L.page.top, L.page.right, L.page.bottom, c.sidebarOverlay ? 1 : 0, c.sidebarOverlay ? c.sideOver.column : c.sidebarColumn);
+        const Sidebar::Box P = c.sidebarPopover ? c.sidePop.box : Sidebar::Box{};   // the compact « » » popover (over the page)
+        char line[320]; std::snprintf(line, sizeof line, "%ls page %.1f %.1f %.1f %.1f overlay %d column %.1f popover %.1f %.1f %.1f %.1f\n", name, L.page.left, L.page.top, L.page.right, L.page.bottom, c.sidebarOverlay ? 1 : 0, c.sidebarOverlay ? c.sideOver.column : c.sidebarColumn, P.left, P.top, P.right, P.bottom);
         boxes << line;
         return c.SurfacePixel(0, 0);
     };
@@ -86,6 +87,24 @@ int wmain(int argc, wchar_t** argv) {
     shot(L"fav-20-B", [&](Chrome& c) { bookmarksN(c, 20); });
     shot(L"fav-40-deplie", [&](Chrome& c) { bookmarksN(c, 40); c.sidebarGridOpen = true; });
     shot(L"compact-40", [&](Chrome& c) { bookmarksN(c, 40); c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.sidebarTitles = 0; });
+    // « Gérer les favoris » (Paper « Favoris · panneau / compact · Gérer les favoris (tiroir) »): under the unfolded grid and at
+    // the foot of the « » » popover; folders in the grid (tiles 3, 11, 23 like the boards).
+    auto withFolders = [&](Chrome& c, int n) { bookmarksN(c, n); for (int i : {2, 10, 22}) if (i < n) { c.bandItems[i].folder = true; c.bandItems[i].image = nullptr; } };
+    shot(L"gerer-panneau", [&](Chrome& c) { withFolders(c, 40); c.sidebarGridOpen = true; });
+    shot(L"gerer-compact", [&](Chrome& c) { withFolders(c, 40); c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.sidebarTitles = 0; c.sidebarPopover = true; });
+    {   // The row's place and target, in both; a tile dragged onto a folder tile (the folder lit, the dragged tile dimmed).
+        Chrome c; Check(SUCCEEDED(c.InitOffscreen(root, 96, 1178, 738)), "offscreen chrome (manage)");
+        c.sidebar = true; c.bandShown = true; withFolders(c, 40); c.sidebarGridOpen = true; c.Paint(titles, 0, L"", false, 0, 0);
+        Check(!c.side.manage.Empty() && c.Hit((c.side.manage.left + c.side.manage.right) / 2, (c.side.manage.top + c.side.manage.bottom) / 2) == Chrome::SidebarManageId, "panel: « Gérer les favoris » row under « Réduire »");
+        const UINT32 row = c.SurfacePixel(c.side.manage.left + 120, c.side.manage.top + 3);
+        Check(((row >> 8) & 255) == 0x24, "row #242424");
+        const auto f = c.side.grid.tiles[2], l = c.side.grid.tiles[0];
+        Check(c.SideFolderAt((f.left + f.right) / 2, (f.top + f.bottom) / 2, 100) == 2 && c.SideFolderAt((l.left + l.right) / 2, (l.top + l.bottom) / 2, 102) == -1 && c.SideFolderAt((f.left + f.right) / 2, (f.top + f.bottom) / 2, 102) == -1, "a folder tile takes a drop (not a link, not itself)");
+        c.sidebarGridOpen = false; c.Paint(titles, 0, L"", false, 0, 0); Check(c.side.manage.Empty() && c.Hit(120, 210) != Chrome::SidebarManageId, "folded: no row");
+        c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.sidebarPopover = true; c.Paint(titles, 0, L"", false, 0, 0);
+        Check(c.sidebarPopover && !c.sidePop.manage.Empty() && c.Hit((c.sidePop.manage.left + c.sidePop.manage.right) / 2, (c.sidePop.manage.top + c.sidePop.manage.bottom) / 2) == Chrome::SidebarManageId, "compact: the row at the popover's foot");
+    }
+    shot(L"glisser-dossier", [&](Chrome& c) { withFolders(c, 20); c.bandDrag = 0; c.bandDropInto = 2; });
     // Resize (Paper « Redimensionner · 1 bord survolé », « 2 pendant le glisser » at 300, « 4 sous le minimum » compact).
     shot(L"redim-1-survol", [&](Chrome& c) { bookmarksN(c, 10); c.sidebarResizable = true; c.sidebarEdge = 1; });
     shot(L"redim-2-glisser", [&](Chrome& c) { bookmarksN(c, 20); c.sidebarResizable = true; c.sidebarEdge = 2; c.sidebarWidth = c.sidebarColumn = 300; });

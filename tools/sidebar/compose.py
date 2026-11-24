@@ -16,10 +16,11 @@ paper = out / 'paper'
 boxes = {}
 for line in (renders / 'boxes.txt').read_text(encoding='utf-8').splitlines():
     p = line.split()
-    boxes[p[0]] = (tuple(float(v) for v in p[2:6]), p[7] == '1', float(p[9]))
+    pop = tuple(float(v) for v in p[11:15]) if len(p) >= 15 else (0, 0, 0, 0)
+    boxes[p[0]] = (tuple(float(v) for v in p[2:6]), p[7] == '1', float(p[9]), pop)
 DARK_PAGE = {'06-nouvel-onglet'}  # the new tab page is the blank #171717 page
 
-for name, (page, overlay, column) in boxes.items():
+for name, (page, overlay, column, pop) in boxes.items():
     ref = paper / f'{name}.png'
     if not ref.exists():
         continue
@@ -38,6 +39,9 @@ for name, (page, overlay, column) in boxes.items():
         if overlay:
             over = src.crop((0, 0, int(column) + 1, 738))
             win.paste(over, (1, 1))
+        if pop[2] > pop[0]:  # the compact « » » popover over the page (drawn by the chrome, a hole in the page)
+            pl, pt, pr, pb = (int(v) for v in pop)
+            win.paste(src.crop((pl, pt, pr + 1, pb + 1)), (pl + 1, pt + 1))
         d = ImageDraw.Draw(win, 'RGBA')
     d.rounded_rectangle((0, 0, 1179, 739), radius=8, outline=(255, 255, 255, 0x14), width=1)
     p = Image.open(ref).convert('RGB').resize((1180, 740))

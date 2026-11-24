@@ -55,6 +55,10 @@ inline constexpr float address = 32, addressPad = 8, addressGap = 6, addressGlyp
 inline constexpr float tile = 40, tileGap = 6, tileNominal = 41.6f, toggleRow = 24, togglePad = 6, toggleFont = 13, toggleGlyph = 12;
 inline constexpr int foldedRows = 2, openRows = 5;
 inline constexpr float fade = 32, barWidth = 3, barInset = 4, barAlpha = 0x33 / 255.f;
+// « Gérer les favoris  Ctrl+Maj+O » under the unfolded grid (Paper « Favoris · panneau · Gérer les favoris (tiroir) »
+// 1Z8Y-0): 6 under « Réduire », 28 high, #242424, radius 6, padding 6, gap 6: folder 14 #B3B3B3, label 13/16 #E6E6E6,
+// the shortcut 12/16 #808080 on the right. It opens the Bookmarks drawer (Ctrl+Maj+O).
+inline constexpr float manage = 28, managePad = 6, manageGap = 6, manageIcon = 14, manageFont = 13, manageKeyFont = 12;
 // « Onglets » 1Q0R-0: a 1 DIP #FFFFFF0F line 4 in from each side and 8 above the rows (1Q1P-0); rows 32, radius 6,
 // padding 8 (4 on the right with the close button), gap 8, favicon 16, title 14/18; 2 between rows.
 inline constexpr float lineInset = 4, lineAfter = 8, tabRow = 32, tabGap = 2, tabPad = 8, tabIconGap = 8, favicon = 16;
@@ -83,7 +87,12 @@ inline constexpr float barPad = 4, navGap = 6, addressLead = 0, addressW = 360, 
 }
 // « Popover — tous les favoris » (« compact, 40 » 1WSC-0): 248 wide, padding 8, radius 8, #171717, border 1 #FFFFFF0F,
 // 4 right of the column, its top on the « » » tile's; inside, the unfolded grid (5 rows then scrolling).
-namespace Popover { inline constexpr float width = 248, pad = 8, radius = 8, border = 1, borderAlpha = 0x0F / 255.f, gapX = 4; }
+// The compact « » » popover; its foot (« Favoris · compact · Gérer les favoris (tiroir) » 1Z2Q-0): 8 under the grid, a
+// 1 DIP #262626 divider, 6, then the row (28, #242424, radius 6, padding 6 / 4, gap 8: folder 16 #B3B3B3, label 13/20
+// white, the shortcut 12/16 #808080).
+namespace Popover { inline constexpr float width = 248, pad = 8, radius = 8, border = 1, borderAlpha = 0x0F / 255.f, gapX = 4;
+inline constexpr float footGap = 8, divider = 1, dividerGap = 6, manage = 28, managePadL = 6, managePadR = 4, manageGap = 8, manageIcon = 16;
+inline constexpr int columns = 5; }   // five per row in its 230 (tiles 41.2), as Paper draws it
 // Back / Forward (1VCX-0): two 32 halves 3 from a 1 x 10 hairline (white 10 %); Reload (1VD5-0) 32.
 namespace Nav {
 inline constexpr float button = 32, pairGap = 3, hairline = 1, hairlineH = 10;
@@ -189,8 +198,9 @@ struct Grid {
 inline int Columns(float width) { return std::max(1, static_cast<int>(std::floor((width + Complete::tileGap) / (Complete::tileNominal + Complete::tileGap) + 1e-3f))); }
 // `n` tiles in rows of Columns(w) inside [left, left + w], from `top`, `visibleRows` rows tall at most (then scrolling),
 // `maxHeight` at most (the viewport may cut a row: the fade covers it).
-inline Grid MakeGrid(float left, float top, float w, int n, int visibleRows, float scroll, float maxHeight = 1e9f) {
-    namespace C = Complete; Grid g; g.columns = Columns(w);
+// `columns` > 0: that many per row (the popover's five in 230, Paper 1WSC-0 / 1YX2-0), else Columns(w).
+inline Grid MakeGrid(float left, float top, float w, int n, int visibleRows, float scroll, float maxHeight = 1e9f, int columns = 0) {
+    namespace C = Complete; Grid g; g.columns = columns > 0 ? columns : Columns(w);
     g.rows = n <= 0 ? 0 : (n + g.columns - 1) / g.columns;
     const auto height = [](int r) { return r <= 0 ? 0.f : r * C::tile + (r - 1) * C::tileGap; };
     const float viewH = std::min(height(std::min(g.rows, visibleRows)), std::max(C::tile, maxHeight));
@@ -219,6 +229,7 @@ struct Layout {
     // » / « Réduire », empty when everything fits). Compact: `tiles` (up to 5; with `more`, the 5th is « » »).
     Box gridBlock;                // the whole block (tiles + toggle row): empty without a grid
     Grid grid; Box gridToggle; bool gridOpen = false;
+    Box manage;                   // complete, unfolded: « Gérer les favoris » (empty otherwise)
     bool emptyGrid = false;       // « Toujours » with no bookmark: one tile (complete: the full row)
     std::vector<Box> tiles; bool more = false;
     Box line;                     // the line above the tabs (complete: inset; compact: the section's border)
@@ -306,11 +317,12 @@ inline Layout Compute(const Input& in) {
                 if (!L.gridOpen) L.grid = MakeGrid(l, y, r - l, std::min(n, cols * C::foldedRows), C::foldedRows, 0);
                 else {
                     // The tabs keep at least half of what the grid block and the tabs share.
-                    const float shared = (footer - C::gap) - y, maxGrid = shared / 2 - C::tileGap - C::toggleRow;
+                    const float shared = (footer - C::gap) - y, maxGrid = shared / 2 - C::tileGap - C::toggleRow - C::tileGap - C::manage;
                     L.grid = MakeGrid(l, y, r - l, n, C::openRows, in.gridScroll, maxGrid);
                 }
                 float bottom = L.grid.view.bottom;
                 if (folds) { L.gridToggle = {l, bottom + C::tileGap, r, bottom + C::tileGap + C::toggleRow}; bottom = L.gridToggle.bottom; }
+                if (L.gridOpen) { L.manage = {l, bottom + C::tileGap, r, bottom + C::tileGap + C::manage}; bottom = L.manage.bottom; }
                 L.gridBlock = {l, y, r, bottom}; y = bottom + C::gap;
             }
         }
@@ -374,15 +386,19 @@ inline Layout Compute(const Input& in) {
 }
 // The compact « » » popover (« compact, 40 » 1WSC-0): all the bookmarks, 4 right of the column, top on the « » » tile
 // (moved up to stay in the window), the unfolded grid inside (5 rows, then scrolling).
-struct PopoverLayout { Box box; Grid grid; };
+struct PopoverLayout { Box box; Grid grid; Box divider, manage; };
 inline PopoverLayout ComputePopover(float column, const Box& anchor, int bookmarks, float scroll, float windowHeight) {
     namespace P = Popover; PopoverLayout p;
     const float inner = P::width - 2 * (P::border + P::pad);
-    const Grid probe = MakeGrid(0, 0, inner, bookmarks, Complete::openRows, 0);
-    const float h = 2 * (P::border + P::pad) + probe.view.Height();
+    const Grid probe = MakeGrid(0, 0, inner, bookmarks, Complete::openRows, 0, 1e9f, P::columns);
+    const float foot = P::footGap + P::divider + P::dividerGap + P::manage;
+    const float h = 2 * (P::border + P::pad) + probe.view.Height() + foot;
     const float top = std::max(Zone::inset, std::min(anchor.top, windowHeight - Zone::inset - h));
     p.box = {column + P::gapX, top, column + P::gapX + P::width, top + h};
-    p.grid = MakeGrid(p.box.left + P::border + P::pad, top + P::border + P::pad, inner, bookmarks, Complete::openRows, scroll);
+    p.grid = MakeGrid(p.box.left + P::border + P::pad, top + P::border + P::pad, inner, bookmarks, Complete::openRows, scroll, 1e9f, P::columns);
+    const float l = p.box.left + P::border + P::pad, dy = p.grid.view.bottom + P::footGap;
+    p.divider = {l, dy, l + inner, dy + P::divider};
+    p.manage = {l, p.divider.bottom + P::dividerGap, l + inner, p.divider.bottom + P::dividerGap + P::manage};
     return p;
 }
 // Tile index under (x, y) in a grid (clipped by its view), -1 elsewhere.

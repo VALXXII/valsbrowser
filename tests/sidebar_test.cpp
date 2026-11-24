@@ -53,10 +53,11 @@ int main() {
     }
     {   // 40 unfolded: 5 rows (224) then scrolling, the « Réduire » row 6 under, the tabs follow.
         auto in = Complete(40); in.gridOpen = true; const auto L = S::Compute(in);
-        Check(L.gridOpen && L.grid.tiles.size() == 40 && Same(L.grid.view, 8, 92, 240, 316) && Same(L.gridToggle, 8, 322, 240, 346) && Near(L.gridBlock.Height(), 254), "40 unfolded: 224 viewport + Réduire, 254 (1WOK-0)");
+        Check(L.gridOpen && L.grid.tiles.size() == 40 && Same(L.grid.view, 8, 92, 240, 316) && Same(L.gridToggle, 8, 322, 240, 346) && Same(L.manage, 8, 352, 240, 380) && Near(L.gridBlock.Height(), 288), "40 unfolded: 224 viewport + Réduire + « Gérer les favoris » (6 under, 28), 288 (1Z5A-0)");
         Check(Near(L.grid.content, 8 * 40 + 7 * 6) && Near(L.grid.maxScroll, 362 - 224) && L.grid.Scrolls(), "8 rows scroll under the viewport");
         Check(Same(L.grid.bar, 237, 96, 240, 96 + 216 * 224 / 362.f) , "scroll bar 3 wide, 4 from the top, proportional (1WRC-0)");
-        Check(Near(L.line.top, 356), "tabs under the unfolded grid");
+        Check(Near(L.line.top, 390), "tabs under the unfolded grid");
+        Check(S::Compute(Complete(40)).manage.Empty() && S::Compute(Complete(20)).manage.Empty(), "folded: no « Gérer les favoris »");
         in.gridScroll = 1e6f; const auto E = S::Compute(in);
         Check(Near(E.grid.scroll, E.grid.maxScroll) && Near(E.grid.tiles.back().bottom, E.grid.view.bottom) && Near(E.grid.bar.bottom, E.grid.view.bottom - 4), "scrolled to the end");
         Check(S::TileAt(L.grid, 20, 100) == 0 && S::TileAt(L.grid, 20, 320) == -1 && S::TileAt(E.grid, 20, 100) == 15, "tiles hit-test inside the viewport only, scrolled");
@@ -99,7 +100,7 @@ int main() {
         const auto L = S::Compute(Compact(40));
         Check(L.tiles.size() == 5 && L.more, "compact 40: 4 tiles + « » » (1WAI-0)");
         const auto P = S::ComputePopover(L.column, L.tiles[4], 40, 0, 738);
-        Check(Same(P.box, 44, 236, 292, 236 + 2 + 16 + 224) && P.grid.tiles.size() == 40 && Near(P.grid.view.Width(), 230) && Near(P.grid.view.Height(), 224) && P.grid.Scrolls(), "popover 248, 4 right of the column, top on « » », 5 rows then scroll (1WSC-0)");
+        Check(Same(P.box, 44, 236, 292, 236 + 2 + 16 + 224 + 43) && Same(P.divider, 53, 477, 283, 478) && Same(P.manage, 53, 484, 283, 512) && P.grid.tiles.size() == 40 && P.grid.columns == 5 && Near(P.grid.tiles[0].Width(), (230 - 4 * 6) / 5.f) && Near(P.grid.view.Width(), 230) && Near(P.grid.view.Height(), 224) && P.grid.Scrolls(), "popover 248, 4 right of the column, top on « » », 5 rows then scroll (1WSC-0)");
         const auto low = S::ComputePopover(L.column, S::Box{0, 700, 40, 736}, 40, 0, 738);
         Check(Near(low.box.bottom, 734), "popover kept inside the window");
         Check(S::Compute(Compact(6)).more && !S::Compute(Compact(5)).more && S::Compute(Compact(3)).tiles.size() == 3, "« » » only beyond five");

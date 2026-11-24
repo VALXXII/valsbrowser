@@ -1020,7 +1020,7 @@ public:
     // « » », which opens every bookmark in a popover at its right. Host state: unfolded, both scrolls, the popover.
     bool sidebarGridOpen=false,sidebarPopover=false;float sidebarGridScroll=0,sidebarPopoverScroll=0;float sidebarReserve=0;
     Sidebar::PopoverLayout sidePop;
-    static constexpr int SidebarGridToggleId=908,SidebarMoreId='O';   // « » » keeps the band overflow's id (its tile, its keyboard stop)
+    static constexpr int SidebarGridToggleId=908,SidebarMoreId='O',SidebarManageId=910;   // 910: « Gérer les favoris » (grid or popover foot)   // « » » keeps the band overflow's id (its tile, its keyboard stop)
     Sidebar::Input SideInput(Sidebar::Mode m,int count,float zoneLeft=-1,bool compactZone=false)const{Sidebar::Input in;in.mode=m;in.zoneLeft=zoneLeft;in.width=width;in.height=height;
         if(compactZone){in.zoneSet=true;in.zoneMode=Sidebar::Mode::Compact;}
         in.grid=bandShown;in.bookmarks=(int)bandItems.size();in.gridOpen=sidebarGridOpen;in.gridScroll=sidebarGridScroll;in.tabs=count;in.tools=(int)std::max<size_t>(1,sideTools.size());in.scroll=sidebarScroll;in.band=annotationBand;in.reserve=sidebarReserve;in.panel=sidebarWidth;return in;}
@@ -1028,6 +1028,9 @@ public:
     // four (five when they all fit).
     int SideBookmarkTiles(const Sidebar::Layout& L)const{if(L.emptyGrid)return 0;if(L.mode==Sidebar::Mode::Complete)return (int)L.grid.tiles.size();return L.more?(int)L.tiles.size()-1:(int)L.tiles.size();}
     Sidebar::Box SideBookmarkTile(const Sidebar::Layout& L,int i)const{return L.mode==Sidebar::Mode::Complete?L.grid.tiles[i]:L.tiles[i];}
+    // #127: the folder tile under (x, y) a dragged bookmark `dragged` could be filed in (grid, compact column, « » » popover), else -1.
+    int SideFolderAt(float x,float y,unsigned dragged){if(!sidebar)return -1;const int hit=Hit(x,y);if(!IsBookmark(hit))return -1;const int i=BookmarkIndex(hit);
+        return i<(int)bandItems.size()&&bandItems[i].folder&&bandItems[i].id!=dragged?i:-1;}
     void BuildSidebar(int count,int selected,const std::vector<std::wstring>* titles){
         namespace SB=Sidebar;
         sideTools.clear();if(annotateShown)sideTools.push_back('N');if(audioShown)sideTools.push_back('V');sideTools.push_back('Y');sideTools.push_back('D');sideTools.push_back('S');
@@ -1035,7 +1038,8 @@ public:
         if(sidebarOverlay){sideOver=SB::Compute(SideInput(SB::Mode::Complete,count,side.column,true));sideOver.scroll=side.scroll;}
         // The compact « » » popover: all the bookmarks, its tiles first (it covers the column's right and the page).
         if(sidebarPopover&&!sidebarOverlay&&side.more&&side.mode==SB::Mode::Compact&&!side.tiles.empty()){sidePop=SB::ComputePopover(side.column,side.tiles.back(),(int)bandItems.size(),sidebarPopoverScroll,height);sidebarPopoverScroll=sidePop.grid.scroll;
-            for(int i=0;i<(int)sidePop.grid.tiles.size()&&i<(int)bandItems.size()&&i<BookmarkLimit;++i){auto t=sidePop.grid.tiles[i];if(t.bottom<=sidePop.grid.view.top||t.top>=sidePop.grid.view.bottom)continue;t.top=std::max(t.top,sidePop.grid.view.top);t.bottom=std::min(t.bottom,sidePop.grid.view.bottom);regions.push_back({BookmarkBase+i,R(t),bandItems[i].tip.c_str(),false});}}
+            for(int i=0;i<(int)sidePop.grid.tiles.size()&&i<(int)bandItems.size()&&i<BookmarkLimit;++i){auto t=sidePop.grid.tiles[i];if(t.bottom<=sidePop.grid.view.top||t.top>=sidePop.grid.view.bottom)continue;t.top=std::max(t.top,sidePop.grid.view.top);t.bottom=std::min(t.bottom,sidePop.grid.view.bottom);regions.push_back({BookmarkBase+i,R(t),bandItems[i].tip.c_str(),false});}
+            regions.push_back({SidebarManageId,R(sidePop.manage),nullptr});}
         else{sidebarPopover=false;sidePop={};}
         const auto& C=SideColumn();const bool full=C.mode==SB::Mode::Complete;
         tips.reserve(count);for(int i=0;i<count;i++){const std::wstring title=titles&&i<(int)titles->size()?(*titles)[i]:L"";std::wstring t=title.empty()?std::wstring(i<(int)sideHome.size()&&sideHome[i]?TR(tab_new):TR(chrome_tab_untitled_tip)):title;
@@ -1064,6 +1068,7 @@ public:
             for(int i=0;i<band.visible&&i<BookmarkLimit;++i){if(sidebarPopover&&!full)break;auto t=SideBookmarkTile(C,i);if(t.bottom<=clip.top||t.top>=clip.bottom)continue;t.top=std::max(t.top,clip.top);t.bottom=std::min(t.bottom,clip.bottom);
                 regions.push_back({BookmarkBase+i,R(t),bandItems[i].tip.c_str(),i==bandRover||(bandRover<0&&i==0)});}
             if(!full&&C.more){band.overflow=true;band.overflowLeft=C.tiles.back().left;regions.push_back({SidebarMoreId,R(C.tiles.back()),TR(sidebar_all_bookmarks_tip),bandRover<0&&band.visible==0});}
+            if(full&&!C.manage.Empty())regions.push_back({SidebarManageId,R(C.manage),nullptr});   // the row says what it does: no tooltip
             if(full&&!C.gridToggle.Empty()){gridToggleTip=C.gridOpen?std::wstring(TR(sidebar_collapse_grid)):TRF(sidebar_all_bookmarks,std::to_wstring(bandItems.size()));regions.push_back({SidebarGridToggleId,R(C.gridToggle),nullptr});}
             if(C.emptyGrid&&!C.tiles.empty())regions.push_back({'E',R(C.tiles.front()),TR(chrome_tip_add_page_bookmark)});}
         // Tabs: close targets first (they win over their row), rows clipped to the list's view.
@@ -1200,8 +1205,10 @@ public:
     void DrawBookmarkTile(int i,D2D1_RECT_F t,float rest,int hover,int focus,Motion::Time now){namespace K=Sidebar::Look;const int id=BookmarkBase+i;
         float hv=Hovered(id,hover,now);if(id==bandOpen)hv=1;White(t,Design::Radius::r8,rest+(K::tileHover-rest)*std::clamp(hv,0.f,1.f));if(focus==id)FocusRing(t,Design::Radius::r8);
         if(i<0||i>=(int)bandItems.size()){return;}const auto& item=bandItems[i];const float cx=(t.left+t.right)/2,cy=(t.top+t.bottom)/2;
-        if(item.folder){SideGlyph(Sidebar::Glyph::folder,t,Design::Size::icon,K::glyph);return;}
-        if(!DrawSiteImage(item.image,{cx-9,cy-9,cx+9,cy+9}))Icon(item.local?L"file":L"favicon",t,Design::Size::icon,1);}
+        if(i==bandDropInto){const auto a=Design::Accent::Get();FillBox(t,Design::Radius::r8,D2D1::ColorF(a.r,a.g,a.b,.18f));}   // a drag would file it here (the bar's look)
+        if(item.folder)SideGlyph(Sidebar::Glyph::folder,t,Design::Size::icon,K::glyph);
+        else if(!DrawSiteImage(item.image,{cx-9,cy-9,cx+9,cy+9}))Icon(item.local?L"file":L"favicon",t,Design::Size::icon,1);
+        if(i==bandDrag){const float c=Design::Surface::canvas;FillBox(t,Design::Radius::r8,D2D1::ColorF(c,c,c,1-K::origin));}}   // the dragged tile stays, dimmed (the tab drag's origin look)
     // A grid in its viewport: tiles clipped, the canvas fade at the bottom while more is below, the thin bar (1WRB-0, 1WRC-0).
     void DrawGridView(const Sidebar::Grid& g,float rest,int hover,int focus,Motion::Time now){namespace C=Sidebar::Complete;
         target->PushAxisAlignedClip(R(g.view),D2D1_ANTIALIAS_MODE_ALIASED);
@@ -1226,6 +1233,7 @@ public:
                 const D2D1_RECT_F caret{r.right-C::togglePad-C::toggleGlyph,r.top,r.right-C::togglePad,r.bottom};
                 Text(gridToggleTip,{r.left+C::togglePad,r.top,caret.left-C::togglePad,r.bottom},C::toggleFont,K::toggleText*labels,false,false,0);
                 SideGlyph(L.gridOpen?SB::Glyph::caretUp:SB::Glyph::caretDown,caret,C::toggleGlyph,K::toggleText*labels);}
+            if(!L.manage.Empty())PaintManageRow(R(L.manage),false,hover,focus,now,labels);
             return;}
         // Compact: the first tiles, then « » » (#FFFFFF0A, caret-double-right 70 %; open: #FFFFFF1F, white).
         const int shown=SideBookmarkTiles(L);for(int i=0;i<shown;++i)DrawBookmarkTile(i,R(L.tiles[i]),K::compactTile,sidebarPopover?0:hover,focus,now);
@@ -1234,7 +1242,20 @@ public:
     // The compact popover (« compact, 40 » 1WSC-0): canvas card, 1 DIP #FFFFFF0F border, radius 8, the unfolded grid.
     void PaintSidePopover(int hover,int focus,Motion::Time now){namespace P=Sidebar::Popover;if(!sidebarPopover||sidePop.box.Empty())return;
         const auto b=R(sidePop.box);Round(b,P::radius,Design::Surface::canvas);Color(1,P::borderAlpha);target->DrawRoundedRectangle(D2D1::RoundedRect({b.left+.5f,b.top+.5f,b.right-.5f,b.bottom-.5f},P::radius-.5f,P::radius-.5f),brush,P::border);
-        DrawGridView(sidePop.grid,Sidebar::Look::tileRest,hover,focus,now);}
+        DrawGridView(sidePop.grid,Sidebar::Look::tileRest,hover,focus,now);
+        FillBox(R(sidePop.divider),0,D2D1::ColorF(0x26/255.f,0x26/255.f,0x26/255.f,1));PaintManageRow(R(sidePop.manage),true,hover,focus,now,1);}
+    // « Gérer les favoris  Ctrl+Maj+O » (1Z8Y-0 under the unfolded grid; 1Z2S-0 at the popover's foot): #242424, radius 6,
+    // folder #B3B3B3, label #E6E6E6 (popover: white), the shortcut #808080 on the right; solid Paper colours over #242424.
+    // Hover: the tools' white 4 % (Paper draws no hover for it).
+    void PaintManageRow(D2D1_RECT_F r,bool popover,int hover,int focus,Motion::Time now,float labels){namespace C=Sidebar::Complete;namespace P=Sidebar::Popover;
+        const float bg=0x24/255.f;auto on=[bg](unsigned c){return (c/255.f-bg)/(1-bg);};   // an opacity giving that grey over #242424
+        FillBox(r,Design::Radius::control,D2D1::ColorF(bg,bg,bg,1));const float hv=Hovered(SidebarManageId,hover,now);if(hv>0)White(r,Design::Radius::control,Sidebar::Look::toolHover*hv);
+        if(focus==SidebarManageId)FocusRing(r,Design::Radius::control);
+        const float padL=popover?P::managePadL:C::managePad,padR=popover?P::managePadR:C::managePad,gap=popover?P::manageGap:C::manageGap,icon=popover?P::manageIcon:C::manageIcon,cy=(r.top+r.bottom)/2;
+        SideGlyph(Sidebar::Glyph::folder,{r.left+padL,cy-icon/2,r.left+padL+icon,cy+icon/2},icon,on(0xB3)*labels);
+        const std::wstring key=TR(key_ctrl_shift_o);const float kw=TextWidth(key,C::manageKeyFont,false,false,0);
+        Text(key,{r.right-padR-kw-1,r.top,r.right-padR+1,r.bottom},C::manageKeyFont,on(0x80)*labels);
+        Text(TR(bookmarks_manage),{r.left+padL+icon+gap,r.top,r.right-padR-kw-gap,r.bottom},C::manageFont,(popover?1.f:on(0xE6))*labels);}
     void DrawVerticalFade(float left,float from,float right,float to,bool overlay){(void)overlay;const float c=Design::Surface::canvas;ID2D1GradientStopCollection* stops=nullptr;ID2D1LinearGradientBrush* g=nullptr;
         D2D1_GRADIENT_STOP s[]={{0,D2D1::ColorF(c,c,c,1)},{1,D2D1::ColorF(c,c,c,0)}};
         if(SUCCEEDED(target->CreateGradientStopCollection(s,2,&stops))&&SUCCEEDED(target->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({0,from},{0,to}),stops,&g)))target->FillRectangle(D2D1::RectF(left,std::min(from,to),right,std::max(from,to)),g);
