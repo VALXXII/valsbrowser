@@ -428,7 +428,7 @@ def inject_embedded():
     r = page(EMBED_JS); time.sleep(0.5 if r else 0); return r
 
 
-def embedded_point(host):
+def embedded_point(host, strict=False):
     """Screen point of the block INSIDE the iframe / the shadow root of `host` (its anchor is the host); never under the
     open bubble (the click would reach the bubble, not the page): then the page is scrolled to free it."""
     inject_embedded()
@@ -439,10 +439,21 @@ def embedded_point(host):
             return None
         pg = page_area(); k = dpr(); p = (int(pg[0] + r[0] * k), int(pg[1] + r[1] * k))
         shown, rb = bubble_shown()
-        if not (shown and isinstance(rb, tuple) and rb[0] - 6 <= p[0] <= rb[2] + 6 and rb[1] - 6 <= p[1] <= rb[3] + 6):
+        under = shown and isinstance(rb, tuple) and rb[0] - 6 <= p[0] <= rb[2] + 6 and rb[1] - 6 <= p[1] <= rb[3] + 6
+        inside = pg[0] + 4 <= p[0] <= pg[2] - 20 and pg[1] + 4 <= p[1] <= pg[3] - 4
+        if inside and not under:
             return p
-        u32.SetCursorPos(pg[0] + 20, (pg[1] + pg[3]) // 2); wheel(2 if p[1] < (pg[1] + pg[3]) // 2 else -2, 0.05); time.sleep(0.6)
-    return p
+        u32.SetCursorPos(pg[0] + 20, (pg[1] + pg[3]) // 2)
+        if not inside:   # scrolled out of the page area (by the line below, a turn earlier): brought back, by one notch
+            wheel(1 if p[1] > pg[3] - 4 else -1, 0.05)
+        else:
+            wheel(2 if p[1] < (pg[1] + pg[3]) // 2 else -2, 0.05)
+        time.sleep(0.6)
+    # monkey seed 2 on the 20:00 release (#102, twice): freeing the block from under the bubble scrolled it OUT of the page area and
+    # the point was returned all the same — the click went under the browser's window, to the desktop (« foreground: Progman
+    # (another application), mouse button down ») or to the window behind it; no bubble could open. A point that is not in the
+    # page area, or still under the bubble, is not a point to click (`strict`: None; the journeys, whose bubble is closed, keep the point).
+    return None if strict else p
 
 
 def keyboard_to_page(avoid=None):
@@ -720,11 +731,15 @@ def leftover_from_app():
 def holds(text, token):
     '''The token is in the text AS A WHOLE: « jt1x1 » is not in « … jt1x13 … ». The monkey numbers its messages (jt<seed>x<n>): from
     the 10th on, a plain `in` found the 1st one's token in every conversation (real-window monkey of 24 Nov 2026, seed 1: 8
-    openings said to show « another conversation's message » — the test's, not the product's).'''
-    return bool(token) and re.search(r'(?<![0-9A-Za-z])' + re.escape(token) + r'(?![0-9A-Za-z])', text or '') is not None
+    openings said to show « another conversation's message » — the test's, not the product's).
+    Only a DIGIT right after the token says it is another one: the chat's text is the page's textContent, where neighbours are
+    glued without a space (« …jeton1x435Revenir », « echo jt1x4Sonnet ») — refusing a letter before or after it rejected tokens
+    that were there (about 25 false « right conversation » in the journeys, 20:00 release's pass of 24 Nov 2026).'''
+    return bool(token) and re.search(re.escape(token) + r'(?![0-9])', text or '') is not None
 
 
 assert holds('vrai-lent jt1x13 et jt1x14', 'jt1x13') and not holds('vrai-lent jt1x13 et jt1x14', 'jt1x1') and holds('« jt1x1 »', 'jt1x1')
+assert holds('echo jeton1x435Revenir', 'jeton1x435') and holds('Envoyéjt1x4Sonnet', 'jt1x4') and not holds('Envoyéjt1x41Sonnet', 'jt1x4')
 
 
 # ---------------------------------------------------------------- the chat, through real input
