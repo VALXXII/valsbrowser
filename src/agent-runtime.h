@@ -79,6 +79,7 @@ struct Environment {
     // BROWSER_CHAT_FAKE_AGENT=<fake-acp-agent.exe> [args...] replaces both agents (no CLI, no download).
     std::wstring fakeAgentExe;
     std::vector<std::wstring> fakeAgentArgs;
+    bool signInConsoleHidden = false;  // tests only: RunTerminalSignIn without a visible console (never set by FromProcess)
     const Pins* pins = nullptr;  // nullptr = BuiltInPins() (tests pass altered pins)
 
     static Environment FromProcess(const std::wstring& dataRoot);
