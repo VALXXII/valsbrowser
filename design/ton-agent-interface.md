@@ -86,6 +86,14 @@ job, 15 min timeout. Errors: `Network` (network, proxy, TLS), `FileInUse` (« us
   - `BROWSER_AGENT_PATH_KEY=<key under HKCU>` replaces HKCU\Environment;
   - the sign-in stays the CLI's own: the fake CLI's `auth login` / `login` writes `0` into its `.login` file.
 
+## Trials with fake profiles
+
+`python sandbox/annotations/try-onboarding.py --app <build> --agents present|absent|desktop|real [--install-mode ok|nocli|policy|inuse|network|fail|hang] [--install-delay-ms 4000] [--keep]`
+(temporary copy of the build, local demo page). `present`: Claude Code ready + Codex to sign in; `absent`: neither (the
+installs run the fake installer, slowed down to watch « Installation… »); `desktop`: Claude Desktop only; `real`: the
+REAL detection and the REAL official installers — only for Val, with his click as consent. The fake profiles live under
+`%TEMP%\browser-essai-onboarding-annotation\agents-profile`, their PATH changes on `HKCU\Software\BrowserTests\TonAgentTrial`.
+
 ## Strings (src/i18n-catalog.inc)
 
 The interface has no text. Each worker adds its strings in its own block: A « agents: status/install » (log-free: none
