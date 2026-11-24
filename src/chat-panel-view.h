@@ -129,6 +129,7 @@ class View {
     // #127 side panel layouts: the panel host window rounded (`radius` px) and `border` px inside its bounds, the chrome
     // painting the border ring around it (Chat::SyncCardFrame). 0, 0: square, edge to edge (the top bar).
     int cornerRadius_ = 0, cornerBorder_ = 0; SIZE regionFor_{};
+public:
     void Corner(int radius, int border) { if (radius == cornerRadius_ && border == cornerBorder_) return; cornerRadius_ = radius; cornerBorder_ = border; regionFor_ = {}; if (panelHost_) ShapeHost(); }
     void ShapeHost() {
         if (!panelHost_) return; RECT r{}; GetClientRect(panelHost_, &r); const SIZE sz{r.right, r.bottom};
@@ -137,6 +138,7 @@ class View {
         const int b = cornerBorder_, k = 2 * std::max(1, cornerRadius_ - b);
         SetWindowRgn(panelHost_, CreateRoundRectRgn(b, b, sz.cx - b + 1, sz.cy - b + 1, k, k), TRUE);
     }
+private:
     // Where the controller sits: its host window, and the WebView's bounds in that window's client pixels.
     void Seat(HWND parent, RECT bounds) {
         HWND host = parent; RECT inHost = bounds;
