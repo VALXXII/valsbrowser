@@ -711,6 +711,10 @@ public:
     // the 32 DIP "Mode Annotation" band under the toolbar while the mode is on (the page moves down).
     bool annotateShown=false,annotateActive=false; float annotationBand=0; std::wstring annotateTip;   // empty until Ann::SyncChrome: AnnotateTip() falls back to the catalog at use
     const wchar_t* AnnotateTip() const { return annotateTip.empty() ? TR(chrome_tip_annotate) : annotateTip.c_str(); }
+    // #125 E1a: on a live site the button is greyed but stays enabled (its click opens the E1b card): `annotateOff`.
+    bool annotateOff=false;
+    // UIA HelpText of 'N': how to use the mode when it can start, else why not (the tooltip, E1a's sentence on a live site).
+    std::wstring AnnotateHelp() const { return Enabled('N')&&!annotateOff ? std::wstring(TR(a11y_annotate_help)) : std::wstring(AnnotateTip()); }
     std::function<void(ID2D1RenderTarget*,ID2D1Factory*,ID2D1SolidColorBrush*,D2D1_RECT_F,Motion::InteractionVisual,bool focus)> paintAnnotate;
     float AnnotateRight()const{return (audioShown?AudioLeft:97.f)+6;}   // from the right edge: 6 DIP left of Audio/History
     float ContentTop()const{return Design::Vertical::ContentTop(bandShown)+annotationBand;}

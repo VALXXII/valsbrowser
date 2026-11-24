@@ -16,7 +16,7 @@ Captures need an unlocked session; without one the checks still run and the capt
 
 Scenarios
   full     1 → 2 (name, icon, hue, saved to the registry) → 3 → 4 → 5 (bookmarks and history really written) → 6 →
-           « Activer » → 7 → browser window, « Connecter un agent » opens. Shader animation, pause when minimised.
+           « Essayer en 1 minute » → 7 → browser window, the annotation tutorial opens at its trial (#125 v2 E2). Shader animation, pause when minimised.
   error    Chrome « open » (its History held): 5.1 with the reason, bookmarks kept; released; « Réessayer » → 5.
   skip     Échap on the first board: straight to the browser, nothing written.
   english  the language picker switches the window at once and writes the preference.
@@ -452,7 +452,7 @@ def scenario_full(app, work, evidence):
         if moved is not None:
             check(moved > .1, 'full: the annotation gradient is animated (%.2f / 255)' % moved)
         own = ui.rect()
-        ui.click(667, 547)                               # « Activer »
+        ui.click(667, 547)                               # « Essayer en 1 minute » (555 … 701)
         frames = film(5.5)                               # 6 -> 7, the logo's exit, the window's exit, the browser's entrance
         main = run.browser_window()
         check(main is not None, 'full: after the closing logo the browser window opens')
@@ -472,14 +472,14 @@ def scenario_full(app, work, evidence):
             check('ONBOARDING hand-off: browser painted under cover' in run.log(), 'full: the browser was painted under cover and scaled in on its picture')
             check(user32.IsWindowVisible(main) and not cloaked(main), 'full: the real browser window is uncovered at the end')
         end = time.time() + 25
-        while time.time() < end and 'ONBOARDING opens the agent connection' not in run.log():
+        while time.time() < end and 'ONBOARDING opens the annotation tutorial' not in run.log():
             time.sleep(.25)
         time.sleep(1.5)
         if main:
             Ui(main).grab(evidence / 'full-browser.png')
         log = run.log()
         check('ONBOARDING shown (requested)' in log and 'ONBOARDING ended: completed' in log and 'annotation asked' in log, 'full: log: shown, completed, annotation asked')
-        check('ONBOARDING opens the agent connection' in log, 'full: « Activer » opened the agent connection in the browser')
+        check('ONBOARDING opens the annotation tutorial' in log, 'full: « Essayer en 1 minute » opened the annotation tutorial in the browser')
         check('home.example' not in log and 'QA L' not in log, 'full: the log carries no address and no name')
         import re
         listed = re.search(r'listed in (\d+) ms off the UI thread', log); held = re.search(r'slowest board change held the UI thread (\d+) ms, slowest frame (\d+) ms', log)
@@ -537,11 +537,11 @@ def scenario_error(app, work, evidence):
         check(history.exists() and 'news.example' in history.read_text(encoding='utf-8', errors='replace'), 'error: « Réessayer » imported the history once Chrome let go')
         check(run.log().count('ONBOARDING bookmarks saved') == 1, 'error: the retry did not import the bookmarks a second time')
         ui.click(360, 546); time.sleep(.7)               # « Continuer » → board 6
-        ui.click(80, 547); time.sleep(.3)                # « Pas intéressé(e) »
+        ui.click(60, 547); time.sleep(.3)                # « Plus tard » (19 … 98)
         main = run.browser_window()
-        check(main is not None, 'error: the browser opens after « Pas intéressé(e) »')
+        check(main is not None, 'error: the browser opens after « Plus tard »')
         time.sleep(2.5)
-        check('ONBOARDING opens the agent connection' not in run.log() and 'annotation asked' not in run.log(), 'error: no agent connection proposed after « Pas intéressé(e) »')
+        check('ONBOARDING opens the annotation tutorial' not in run.log() and 'annotation tutorial asked' not in run.log(), 'error: no tutorial after « Plus tard »')
     finally:
         if held:
             kernel32.CloseHandle(wt.HANDLE(held))

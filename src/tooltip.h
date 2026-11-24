@@ -264,7 +264,7 @@ struct Hooks { std::function<void()> wake; };
 
 class Tip {
     HWND hwnd_ = nullptr, owner_ = nullptr; Chrome chrome_; Chrome* surface_ = &chrome_; PopupKit::Pump pump_; Accessibility::Bridge uia_;
-    Content content_; RECT target_{}, bounds_{}; bool hasBounds_ = false; bool shown_ = false, hiding_ = false, pending_ = false, reduced_ = false;
+    Content content_; RECT target_{}, bounds_{}; bool hasBounds_ = false; bool shown_ = false, hiding_ = false, pending_ = false, reduced_ = false, blocked_ = false;
     Motion::Tween alpha_; Motion::Time showAt_{}; ULONGLONG hiddenTick_ = 0;
     float width_ = 0, height_ = 0;
     bool Multi() const { return !content_.detail.empty() || wrapped_; }
@@ -380,7 +380,7 @@ public:
     // Pointer rest on a target: after 600 ms, or at once if a tip showed less than 300 ms ago.
     // `bounds` (optional, screen px) narrows the monitor work area the tip is clamped to.
     void Hover(const Content& content, RECT targetScreen, const RECT* bounds = nullptr) {
-        if (!hwnd_ || content.label.empty()) return;
+        if (!hwnd_ || blocked_ || content.label.empty()) return;
         SetBounds(bounds);
         const bool same = shown_ && !hiding_ && content == content_ && EqualRect(&target_, &targetScreen);
         content_ = content; target_ = targetScreen; if (same) return;
@@ -390,7 +390,11 @@ public:
     }
     // Keyboard focus (or an explicit request): shows at once, with the 120 ms fade.
     void Show(const std::wstring& text, const std::wstring& shortcut, RECT targetScreen) { Show(Content{text, shortcut, L""}, targetScreen); }
-    void Show(const Content& content, RECT targetScreen, const RECT* bounds = nullptr) { if (!hwnd_ || content.label.empty()) return; SetBounds(bounds); content_ = content; target_ = targetScreen; Appear(!shown_ || hiding_); }
+    void Show(const Content& content, RECT targetScreen, const RECT* bounds = nullptr) { if (!hwnd_ || blocked_ || content.label.empty()) return; SetBounds(bounds); content_ = content; target_ = targetScreen; Appear(!shown_ || hiding_); }
+    // A popover hangs from the toolbar (#125 E1b card): the tip showing (or about to) goes at once, no other one shows
+    // over it until it is gone — as under the modal menus, which get every pointer move while they are open.
+    void Block(bool on) { blocked_ = on; if (on) HideNow(); }
+    bool Blocked() const { return blocked_; }
     // Pointer left before the delay, a click, Échap, a menu opening: never shows / fades out.
     void Hide() {
         pending_ = false; if (!hwnd_ || !shown_ || hiding_) return;

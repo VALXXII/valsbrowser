@@ -123,9 +123,9 @@ int wmain(int argc, wchar_t** argv) {
         Expect(is(box(W::Primary), 316, 530, 88, 32), "5: « Continuer » centred");
         f.window.ActivateForTest(W::Primary);
         Expect(f.window.Flow().screen() == Screen::Annotation, "Continuer -> board 6");
-        Expect(is(box(W::Decline), 19, 531, 123, 32) && is(box(W::Primary), 633, 531, 68, 32) && is(box(W::Lang), 12, 10, 85, 28) && is(box(W::Close), 680, 10, 28, 28), "6: no border: one DIP up and left (19, 531 / 701)");
+        Expect(is(box(W::Decline), 19, 531, 79, 32) && is(box(W::Primary), 555, 531, 146, 32) && is(box(W::Lang), 12, 10, 85, 28) && is(box(W::Close), 680, 10, 28, 28), "6 (#125 v2 E2, 1SWL-0): « Plus tard » 79 at 19, « Essayer en 1 minute » 146 to 701, one DIP up and left");
         f.window.ActivateForTest(W::Primary);
-        Expect(f.window.Flow().screen() == Screen::Outro && f.window.Flow().annotate(), "Activer -> closing logo");
+        Expect(f.window.Flow().screen() == Screen::Outro && f.window.Flow().annotate(), "« Essayer en 1 minute » -> closing logo (the tutorial once the browser is up)");
     }
     // ---- keyboard, language, name errors, sources ----
     {

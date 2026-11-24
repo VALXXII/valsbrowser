@@ -187,6 +187,16 @@ def existing_fixtures() -> None:
     onboarding_evidence.mkdir(parents=True, exist_ok=True)
     fixture('onboarding_render_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/onboarding/onboarding_render_test.cpp', 'src/native-lottie.cpp', THORVG,
             *UI_LIBS, '-loleaut32', '-lshell32'], [ROOT, onboarding_evidence])
+    # Where « Annoter » is on (#125): local projects and files, normal or private window; live sites off (src/annotation-sites.h)
+    fixture('annotation_sites_test', [*STRICT, 'tests/annotations/annotation_sites_test.cpp'])
+    # A private window's notes are erased when it closes; a crashed one's at the next start; normal notes untouched (src/annotation-private.h)
+    fixture('annotation_private_test', [*STRICT, '-O2', 'tests/annotations/annotation_private_test.cpp', 'src/annotations.cpp', '-lbcrypt'])
+    # The annotation mode's onboarding (#125, Paper « MCP - Design UI UX » A1 – A4): flow, first-time rule and its setting,
+    # the four boards drawn off screen by the production window, Paper geometry, buttons, keys, A3's connected state.
+    annotation_onboarding_evidence = ROOT / 'build/annotation-onboarding-render'
+    annotation_onboarding_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('annotation_onboarding_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/onboarding/annotation_onboarding_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32'], [ROOT, annotation_onboarding_evidence])
 
 
 def peer_suites() -> None:
