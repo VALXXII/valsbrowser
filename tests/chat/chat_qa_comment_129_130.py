@@ -10,8 +10,10 @@ checkout page (« Payer 48,00 € », the issues' own example), the pay button p
       area, inside the bubble window's region, and on top of everything (WindowFromPoint on it = the bubble's window).
       Once the models are known: a model and an effort chosen in the bubble reach the session (fake agent log:
       session/set_config_option) before the comment is sent.
-#130  the bubble of that low button grows with an authorization card: the whole bubble stays in the page area, Refuser /
-      Autoriser are on screen and on top, a REAL click on Autoriser answers it; the model menu still opens whole on top.
+#130  variant C (Paper « #130 Bulle sans place dessous · C remonte le long du côté (validée) »): the bubble of that low button
+      grows with an authorization card — it stays at the button's right (+12 px), slides up along it until its bottom is 8 px
+      above the page area's bottom (never flipped above it), Refuser / Autoriser on screen and on top, a REAL click on Autoriser
+      answers it; the model menu still opens whole on top. Rule 5 (recomputing during a scroll) is not part of this run.
 
 Same guards as tests/chat/chat_qa.py (copy of the build, its own profile, BROWSER_ANNOTATIONS_TEST=1, agent configurations
 under build/, the real Claude / Codex configuration files fingerprinted before and after). The browser, its server and the
@@ -176,6 +178,17 @@ def run_main():
         lines = [l for l in C.log_text()[m:].splitlines() if 'bubble' in l]
         report['measures']['130-log'] = lines[:12]
         step('#130 · with its authorization, the whole bubble is in the page area', inside(rb, pg), {'region': rb, 'page': pg})
+        # variant C (Paper « #130 Bulle sans place dessous · C remonte le long du côté (validée) »): next to the element (+12 px from
+        # it = 8 from its selection frame), slid up along it, its bottom 8 px above the page area's bottom, never above 8 px under
+        # the banner, never over the element, never flipped above it
+        el = CC.element_screen('button.btn-primary'); dpr = C.evaluate(C.URL, 'devicePixelRatio') or 1
+        k8, k12 = round(8 * dpr), round(12 * dpr)
+        cd = {'region': rb, 'element': el, 'page': pg, 'gap': rb and rb[0] - el[2], 'bottom': rb and pg[3] - rb[3], 'top': rb and rb[1] - pg[1]}
+        step('#130 C · at the element\'s right, 12 px from it (8 from its frame), not covering it, not flipped above it',
+             bool(rb) and abs((rb[0] - el[2]) - k12) <= 2 and rb[0] >= el[2] and rb[3] >= el[1], cd)
+        step('#130 C · slid up: its bottom 8 px above the page area\'s bottom, its top at least 8 px under the banner',
+             bool(rb) and abs((pg[3] - rb[3]) - k8) <= 2 and rb[1] - pg[1] >= k8 - 2, cd)
+        step('#130 C · the slide is logged (« slid up along its element »)', any('#130 C' in l for l in lines), lines[:6])
         step('#130 · Refuser and Autoriser are on screen, in the bubble, on top of everything', inside(sa, rb) and inside(sr, rb) and inside(sa, pg) and top_a,
              {'autoriser': sa, 'refuser': sr, 'roots': roots})
         report['measures']['replacedLogged'] = any('#130' in l for l in lines)

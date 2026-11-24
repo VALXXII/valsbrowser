@@ -346,13 +346,17 @@ for t in ('setAgent', 'setModel', 'setEffort'):
 sw = block_after(ui, 'void SwitchAgent(')
 check('convo.data.head.agentId = id;' in sw and 'pendingModel = model;' in sw, '#129: a provider chosen is kept on the conversation (its header) for its next message')
 
-# #130: a new size that takes the bubble past the bottom of the page area (its element on screen) places it again, whole —
-# never at a scroll step (R39), never for a size chosen with the handle (R40)
+# #130 (wins over R29), variant C: a new size that takes the bubble closer than 8 px to the bottom of the page area (its
+# element on screen) slides it up along its element (SlideUp, 8 px from the page area's edges) — never at a scroll step
+# (R39), never for a size chosen with the handle (R40); the page area's edges are 8 px (height at most page area - 16)
 place = block_after(comment, 'void PlaceBubble(bool scrolling) {')
-grew = place[place.find('ChatBubble::PastBottom('):]
-check(0 <= place.find('ChatBubble::PastBottom(') < place.find('if (!bubble.anchor.set) {') and all(x in place[max(0, place.find('ChatBubble::PastBottom(') - 200):place.find('ChatBubble::PastBottom(')] for x in ('!scrolling', '!bubble.resized'))
-      and 'bubble.anchor = ChatBubble::Anchor{};' in grew[:400],
-      '#130: PlaceBubble places a bubble grown past the bottom again (R44 rules) before choosing its anchor — not while scrolling, not resized by hand')
+at = place.find('ChatBubble::PastBottom(')
+grew = place[at:]
+check(0 <= at < place.find('if (!bubble.anchor.set) {') and all(x in place[max(0, at - 300):at] for x in ('!scrolling', '!bubble.resized'))
+      and 'ChatBubble::SlideUp(where, area, margin)' in grew[:900] and 'bubble.anchor.dy -= up;' in grew[:900] and 'PastBottom(where, er, area, margin)' in grew[:120],
+      '#130 C: PlaceBubble slides a bubble grown past the bottom up along its element before choosing its anchor — not while scrolling, not resized by hand')
+check('BubbleMarginCss = 8' in consts and '2 * BubbleMarginCss' in block_after(comment, 'void PlaceBubble(bool scrolling) {'),
+      '#130 C: 8 px from the page area\'s edges; the height offered is at most the page area - 16 px')
 
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')

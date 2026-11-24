@@ -515,7 +515,7 @@ static void TestBubble() {
     p = Place({20, 120, 1180, 880}, w, h, area, gap, margin);
     Check(p.side == Side::Inside && p.rect.left >= 12 && p.rect.right <= 1188 && p.rect.top >= 112 && p.rect.bottom <= 888, "no room anywhere: inside the page area, never out of it");
     p = Place({100, 820, 400, 860}, w, h, area, gap, margin);
-    Check(p.side == Side::Above && p.rect.bottom == 812 && p.rect.left == 100, "near the bottom: not slid — the next side where it is whole (above, Paper)");
+    Check(p.side == Side::Right && p.rect.left == 408 && p.rect.bottom == 900 - margin && p.slid > 0, "#130 C: near the bottom — at its side, slid up along it until whole (`margin` from the bottom), not flipped above");
     p = Place({850, 400, 1100, 450}, w, h, area, gap, margin, Side::Below);
     Check(p.side == Side::Below, "the side it is on is kept while it still fits (a new height never makes it jump)");
     int fw = 305, fh = 900; Fit(fw, fh, area, margin, 305, 520);
@@ -576,7 +576,8 @@ static void TestBubble() {
         const auto taller = Anchored(a, el, 320, 400);
         Check(taller.left == p.rect.left && taller.top == p.rect.top && taller.bottom == p.rect.top + 400, "R29: a taller bubble (new card, open diff) keeps its top and its side: it only grows down");
         const auto bottomOut = Anchored(a, el, 320, 700);
-        Check(bottomOut.top == p.rect.top && bottomOut.bottom > area.bottom, "R29: never moved to fit the window (the user scrolls)");
+        Check(bottomOut.top == p.rect.top && PastBottom(bottomOut, el, area, 8) && SlideUp(bottomOut, area, 8) == bottomOut.bottom - (area.bottom - 8),
+              "#130 wins over R29: the anchored bubble past the window's bottom is caught and slid up by what is missing (8 px from the bottom)");
         const Rect scrolled{100, 250, 400, 300};
         const auto follow = Anchored(a, scrolled, 320, 120);
         Check(follow.top - scrolled.top == p.rect.top - el.top && follow.left == p.rect.left, "R29: it follows its element at the same offset");
@@ -584,25 +585,35 @@ static void TestBubble() {
         const auto up = Anchored(aa, {20, 700, 1180, 880}, 320, 300);
         Check(pa.side == Side::Above && up.bottom == pa.rect.bottom && up.top == pa.rect.bottom - 300, "R29: above its element it grows up, its bottom fixed");
         Check(BottomShift({100, 700, 420, 960}, area, 12, true) == 72 && BottomShift({100, 700, 420, 960}, area, 12, false) == 0 && BottomShift({100, 300, 420, 500}, area, 12, true) == 0,
-              "R29: the one exception — at the end of the document it moves up by what is missing, once; elsewhere never");
+              "R29: at the end of the document it moves up by what is missing");
         const auto c = Clip({0, 0, 400, 300}, {0, 50, 1000, 1000});
         Check(c.top == 50 && c.bottom == 300 && c.left == 0, "R29: never drawn over the browser's bars (clipped to the page area)"); }
-    // #130 (the user: the bubble of « Payer 48,00 € », low in the page, grew past the window's bottom — Refuser / Autoriser cut,
-    // the page could not scroll to them): a new size past the bottom, its element on screen, places it again (R44 rules), whole
-    {   const Rect area{0, 100, 1200, 900}; const Rect pay{64, 760, 342, 804};
-        const auto p = Place(pay, 305, 104, area, 12, 12, Side::Right, 4); const auto a = AnchorOf(p, pay);
-        Check(p.side == Side::Right && p.rect.top == pay.top - 4 && !PastBottom(p.rect, pay, area), "#130: a new comment low in the page opens at Paper's place (right, top -4), whole");
+    // #130 variant C (Paper « #130 Bulle sans place dessous · C remonte le long du côté (validée) »; the user: the bubble of
+    // « Payer 48,00 € », low in the page, grew past the window's bottom — Refuser / Autoriser cut): it stays NEXT TO its element
+    // (+12 from it = 8 from its selection frame) and slides up along it until whole, 8 px from the page area's bottom, never
+    // higher than 8 px under the banner, never over the element, never flipped above it
+    {   const Rect area{0, 100, 1200, 900}; const Rect pay{64, 760, 342, 804}; const int m = 8;
+        const auto p = Place(pay, 305, 104, area, 12, m, Side::Right, 4); auto a = AnchorOf(p, pay);
+        Check(p.side == Side::Right && p.rect.top == pay.top - 4 && p.rect.left == pay.right + 12 && !PastBottom(p.rect, pay, area, m), "#130 C: a new comment low in the page opens at Paper's place (right, +12, top -4), whole");
         const auto grown = Anchored(a, pay, 305, 334);
-        Check(PastBottom(grown, pay, area), "#130: its authorization (334 px) would take it past the bottom of the page area");
-        const auto q = Place(pay, 305, 334, area, 12, 12, Side::Right, 4, 334); const auto qa = AnchorOf(q, pay);
-        Check(q.side == Side::Above && q.rect.bottom == pay.top - 12 && FullyVisible(q.rect, area), "#130: placed again, whole — above its element (Paper's place: 12 px above it), its buttons on screen");
-        const auto more = Anchored(qa, pay, 305, 520);
-        Check(more.bottom == q.rect.bottom && FullyVisible(more, area) && !PastBottom(more, pay, area), "#130: then it grows up, its bottom fixed — never past the bottom again");
+        Check(PastBottom(grown, pay, area, m), "#130 C: its authorization (334 px) would take it past the bottom of the page area");
+        const int up = SlideUp(grown, area, m); a.dy -= up; const auto slid = Anchored(a, pay, 305, 334);
+        Check(up == 198 && slid.bottom == area.bottom - m && slid.left == pay.right + 12 && slid.left >= pay.right && FullyVisible(slid, area),
+              "#130 C: it slides up along its element by what is missing — bottom 8 px above the page area's bottom, same side and gap, the element not covered");
+        const int up2 = SlideUp(Anchored(a, pay, 305, 520), area, m); a.dy -= up2; const auto more = Anchored(a, pay, 305, 520);
+        Check(more.bottom == area.bottom - m && more.left == slid.left && FullyVisible(more, area), "#130 C: growing again (520), it slides again — always whole, never flipped above the element");
+        const auto full = Anchored(a, pay, 305, area.H() - 2 * m); a.dy -= SlideUp(full, area, m); const auto top = Anchored(a, pay, 305, area.H() - 2 * m);
+        Check(top.top == area.top + m && top.bottom == area.bottom - m, "#130 C: at its maximum (page area - 16) it goes no higher than 8 px under the banner");
+        const auto open = Place(pay, 305, 104, area, 12, m, Side::Right, 4, 520);
+        Check(open.side == Side::Right && open.rect.left == pay.right + 12 && open.rect.top == area.bottom - m - 520 && open.slid > 0,
+              "#130 C: opened with a long conversation (520 planned), it sits at its side, slid up — not above the element");
+        const auto high = Place({64, 102, 342, 146}, 305, 104, area, 12, m, Side::Right, 4, 300);
+        Check(high.side == Side::Right && high.rect.top == area.top + m, "#130 C: an element under the banner — the bubble 8 px under it, at the element's side");
         const Rect low{0, 100, 1200, 500}; const Rect pay2{64, 420, 342, 464};
-        const auto s = Place(pay2, 305, 334, low, 12, 12, Side::Right, 4, 334);
-        Check(s.side == Side::Right && s.rect.left == pay2.right + 12 && FullyVisible(s.rect, low) && s.slid > 0, "#130: no room above it either: slid along its side (12 px gap kept), whole");
-        Check(!PastBottom(Anchored(a, {64, 950, 342, 994}, 305, 334), {64, 950, 342, 994}, area) && !PastBottom(Anchored(a, {64, 20, 342, 64}, 305, 334), {64, 20, 342, 64}, area),
-              "#130: its element out of the visible area (the user scrolled it away): the bubble follows it, nothing is placed again"); }
+        const auto s = Place(pay2, 305, 334, low, 12, m, Side::Right, 4, 334);
+        Check(s.side == Side::Right && s.rect.left == pay2.right + 12 && s.rect.bottom == low.bottom - m && FullyVisible(s.rect, low) && s.slid > 0, "#130 C: a small window — slid along its side (12 px gap kept), 8 px from the bottom");
+        Check(!PastBottom(Anchored(a, {64, 950, 342, 994}, 305, 334), {64, 950, 342, 994}, area, m) && !PastBottom(Anchored(a, {64, 20, 342, 64}, 305, 334), {64, 20, 342, 64}, area, m),
+              "#130: its element out of the visible area (the user scrolled it away): the bubble follows it (rule 5, recomputing during a scroll, comes later)"); }
     // R38: the diff (or an expanded card) opens in place: the bubble may only take the room below its fixed edge
     {   const Rect area{0, 100, 1200, 900};
         Check(RoomCss({100, 500, 420, 600}, false, area, 12, 1.f, 520) == 388 && RoomCss({100, 300, 420, 400}, false, area, 12, 1.f, 520) == 520 &&
@@ -629,9 +640,11 @@ static void TestBubble() {
               "r44: a long conversation — the element's other corner where its 520 px fit (top left, 12 px), never moved");
         const auto grown = Anchored(AnchorOf(pl, plans), plans, W, px(400));
         Check(grown.bottom == pl.rect.bottom && grown.top == pl.rect.bottom - px(400), "R29: then it grows up from its fixed bottom");
-        const Rect low{63, 860, 327, 900};   // near the bottom of the visible area: not slid up — the next side where it is whole
-        const auto lo = Place(low, W, h, area, gap, margin, Side::Right, lead, 0 /* a new bubble */, Point{}, corner);
-        Check(lo.side == Side::Above && lo.rect.bottom == low.top - gap && lo.rect.left == low.left - lead, "Paper: no room at its sides nor below — above it, -12, left -4, never slid");
+        const Rect low{63, 860, 327, 900};   // near the bottom of the visible area: #130 C — slid up along its side, never flipped above it
+        const int m8 = px(8);
+        const auto lo = Place(low, W, h, area, gap, m8, Side::Right, lead, 0 /* a new bubble */, Point{}, corner);
+        Check(lo.side == Side::Right && lo.rect.left == low.right + gap && lo.rect.bottom == area.bottom - m8 && lo.slid > 0,
+              "#130 C: no room under it at its side — at its right (+12), slid up until 8 px from the page area's bottom, not above it");
         const Rect tall{0, 0, 1840, 3000};   // taller than the window: inside its visible part, top right corner (no click)
         const auto d = Place(tall, W, h, area, gap, margin, Side::Right, lead, 0 /* a new bubble */, Point{}, corner);
         Check(d.side == Side::Inside && d.rect.right == area.right - corner && d.rect.top == area.top + corner, "Paper: an element taller than the window — inside its visible part, 12 px from the corner");
@@ -795,7 +808,7 @@ static void TestBubble() {
         const auto pl = Place(plans, W, h, area, gap, 0, Side::Right, lead, H, Point{200, 760, true}, corner);
         Check(pl.side == Side::Inside && whole(pl, H), "decision (whole first): div.plans with a conversation — over the element, whole with 520 at its opening");
         const auto ab = Place({63, 840, 327, 900}, W, h, area, gap, 0, Side::Right, lead, px(300), Point{}, corner);
-        Check(ab.side == Side::Above && ab.fromBottom && ab.rect.bottom == 840 - gap && ab.rect.left == 63 - lead && whole(ab, px(300)), "decision: above — its bottom 12 px above the element, growing up, left -4"); }
+        Check(ab.side == Side::Right && !ab.fromBottom && ab.rect.left == 327 + gap && ab.slid > 0 && whole(ab, px(300)), "#130 C: no room under it — at its side, slid up along it (no longer flipped above)"); }
     // R47 after the page scrolled (decision): the card's buttons are clickable — the carried window's region, clipped to the page
     // area, covers the bubble's bottom
     {   const Rect screen{0, 0, 1840, 1000}, area{3, 141, 1840, 973}; const float k = 1.25f; const Edges none{0, 0, 0, 0};
@@ -817,9 +830,9 @@ static void TestBubble() {
         const auto a = Place(btn, W, h, area, gap, 0, Side::Right, lead, H, Point{}, corner);
         Check(a.side == Side::Right && a.rect.left == btn.right + gap && FullyVisible(planned(a), area) && a.slid > 0,
               "decision: a.btn-primary 264x69 — no side holds 520 at Paper's position: at its right (the most room), slid up just enough, its 12 px gap exact");
-        const Rect low{63, 860, 327, 900};   // a small element at the bottom, ~600 px above it: « above » is tried
+        const Rect low{63, 860, 327, 900};   // a small element at the bottom, ~600 px above it: #130 C — its side, slid up
         const auto ab = Place(low, W, h, area, gap, 0, Side::Right, lead, px(400), Point{}, corner);
-        Check(ab.side == Side::Above && ab.rect.bottom == low.top - gap && ab.slid == 0 && FullyVisible(planned(ab), area), "decision: above is tried (exact, its bottom 12 px above the element)");
+        Check(ab.side == Side::Right && ab.rect.left == low.right + gap && ab.slid > 0 && FullyVisible(Rect{ab.rect.left, ab.rect.top, ab.rect.right, ab.rect.top + px(400)}, area), "#130 C: its side slid up along it is tried before below / above");
         const Rect plans{65, 410, 1742, 785};   // div.plans 1677 x 375: not taller than the bubble's 650 px — no inside
         const auto pl = Place(plans, W, h, area, gap, 0, Side::Right, lead, H, Point{200, 760, true}, corner);
         Check(pl.side == Side::Inside && FullyVisible(planned(pl), area), "decision (whole first): div.plans with a long conversation — no side holds it, even slid: over the element, whole");
