@@ -95,6 +95,7 @@ bool Reduced() { return motion.ReducedMotion(); }
 // Chat intégré (src/chat-host.h, included at the end of this file): what the mode asks it.
 namespace Chat {
 bool Open();                                             // the panel is open (or opening)
+bool ComposerFull();                                     // « Panneau » already holds its 10 elements (lot R): the next click adds nothing
 bool AskedFor();                                         // … because the user asked for it (not only opened by the mode's start in « Panneau »)
 bool Shown();                                            // … or still sliding out
 bool TakeSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible);   // the selection goes to the chat (a bubble, or a chip in the panel opened if needed); false: it could not take it
@@ -675,6 +676,13 @@ void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {
     // page itself: the bubble is not in it) and its native frame follow.
     const bool offScreen = !AH::PlanClip(sel.target.rect, sel.target.viewport).ok;   // nothing of it is on screen: no image
     const bool commentFirst = Chat::CommentFirst(t) && Chat::TakeSelection(t, s.serial, offScreen);
+    // « Panneau » already holds its 10 elements (lot R, validated 2026-11-24): this click adds nothing — no native frame,
+    // no shot, no chip; the chat says why (its strip, 4 s). The picker goes on, the keyboard stays where it is.
+    if (!commentFirst && Chat::ComposerFull()) {
+        Chat::TakeSelection(t, s.serial, offScreen);   // refused there: it shows the strip
+        Log(L"ANNOTATE selection not taken by the chat (10 elements already): nothing opens");
+        Resume(false); return;
+    }
     // V3 (retours §2): nothing changes on screen. The native layer draws the page frame's edges and label at the same
     // pixels and waits for the compositor; then the page hides its own (« handoff ») and answers « hidden » in the
     // same task; the shot requested then is rendered without them (a style change made in the task before is absent
@@ -694,9 +702,11 @@ void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {
     }
     // The element is the chat's: a bubble on it (« Commentaire », opened above) or a chip in the composer (« Panneau »,
     // the panel opening if it is closed). The picker goes on. Not taken (10 elements already in the composer, the
-    // panel could not open): nothing opens — the old note panel is gone (lot R) — and the reason is in the log.
-    if (!commentFirst && !Chat::TakeSelection(t, s.serial, offScreen)) Log(L"ANNOTATE selection not taken by the chat: nothing opens");
-    Resume(!commentFirst);
+    // panel could not open): nothing opens — the old note panel is gone (lot R) — nothing moves, the keyboard stays
+    // where it is (the composer), and the reason is in the log.
+    const bool taken = commentFirst || Chat::TakeSelection(t, s.serial, offScreen);
+    if (!taken) Log(L"ANNOTATE selection not taken by the chat: nothing opens");
+    Resume(taken && !commentFirst);
 }
 // #125: what a private window stores (lot R: an element sent in the chat) is listed in its ledger BEFORE it is written
 // (same site folder as Store::WriteAnnotation).

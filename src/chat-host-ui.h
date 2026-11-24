@@ -159,10 +159,19 @@ bool CommentFirst(const std::shared_ptr<Tab>& t) {
     if (!ok && CommentLayout()) Diag(std::wstring(L"a click in Commentaire is not the chat's (") + (!AskAvailable(t) ? L"not a local page" : halted ? L"halted" : L"selection paused") + L")");   // i18n-exempt: log detail
     return ok;
 }
+// Lot R (validated by the owner, 2026-11-24): « Panneau » holds 10 elements at most. An 11th click adds nothing — no
+// frame, no shot, no chip — and the neutral strip above the composer says why for 4 s (again at each extra click).
+inline constexpr std::size_t ComposerMax = 10; inline constexpr UINT LimitStripMs = 4000;
+bool ComposerFull() { return !CommentLayout() && Open() && composerElements.size() + aiming.size() >= ComposerMax; }
+void SayComposerFull() {
+    Strip("limit", "neutral", TR(chat_strip_limit));
+    if (post) SetTimer(post, LimitTimer, LimitStripMs, nullptr);
+    Diag(L"an element beyond the 10 of the composer was clicked: nothing added, the strip says why");
+}
 bool TakeSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible) {
     if (!AskAvailable(t) || halted || Ann::s.paused) return false;
     if (CommentLayout()) return TakeCommentSelection(t, serial, captureImpossible);   // Mode Commentaire: a bubble on the element
-    if (composerElements.size() + aiming.size() >= 10) return false;
+    if (composerElements.size() + aiming.size() >= ComposerMax) { SayComposerFull(); return false; }
     if (!Open()) { OpenPanel(); if (!Open()) return false; Diag(L"a click on an element opens the chat"); }
     OnSelection(t, serial, captureImpossible);
     return true;
@@ -561,6 +570,7 @@ LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == WM_APP + 22) { PrepareProgress(); return 0; }
     if (m == WM_TIMER) {
         if (w == DestroyTimer) { KillTimer(h, DestroyTimer); if (panelState == PanelState::Closed && !BubbleOpen() && !BubbleWarm() && !Ann::s.active && view.Exists()) { view.Destroy(); panelReady = false; Diag(L"panel WebView destroyed (closed for " + std::to_wstring(PanelIdleMs()) + L" ms)"); } return 0; }
+        if (w == LimitTimer) { KillTimer(h, LimitTimer); ClearStrip("limit"); return 0; }   // « 10 éléments au maximum » leaves after 4 s
         if (w == WarmTimer) { void WarmPanel(); void WarmBubble(); KillTimer(h, WarmTimer); WarmPanel(); WarmBubble(); return 0; }   // QA: the warm-up held back is done now
         if (w == AgentIdleTimer) { KillTimer(h, AgentIdleTimer); if (!turn.active && session) DisposeSession(L"idle"); return 0; }   // i18n-exempt: log reason
         if (w == RearmTimer) { auto t = ChatTab(); if (!rearmOwed || !t) { KillTimer(h, RearmTimer); rearmOwed = false; } else if (t->navInFlight == 0 || ++rearmTries > 60) DoRearm(); return 0; }

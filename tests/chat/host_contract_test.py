@@ -385,7 +385,7 @@ check(all(not (SRC / n).exists() for n in ('chat-batch.h', 'chat-host-batch.h', 
       'lot R: the files of the batch, the launcher, the history and the note are deleted')
 mode = code('annotation-mode.h')
 on_select = block_after(mode, 'void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {')
-check('Chat::TakeSelection(' in on_select and 'Resume(!commentFirst);' in on_select and 'note' not in on_select.replace('annotation', '').lower().replace('notes', ''),
+check('Chat::TakeSelection(' in on_select and 'Resume(taken && !commentFirst);' in on_select and 'note' not in on_select.replace('annotation', '').lower().replace('notes', ''),
       'lot R: a selection goes to the chat or nowhere (the picker resumes): no other surface opens')
 main_cpp = (SRC / 'main.cpp').read_text(encoding='utf-8')
 check("key=='H'&&Annotation" not in main_cpp and 'AnnotateHistoryCommand' not in main_cpp and 'key_ctrl_shift_h' not in (SRC / 'i18n-catalog.inc').read_text(encoding='utf-8'),
@@ -416,6 +416,18 @@ check('if (quietOpening) quietOpening = false;' in op and 'if (quietOpening && !
 act = block_after(mode, 'void Activate(const Start& st) {')
 check('first.chatOpen = Chat::AskedFor();' in act and 'if (Chat::AskedFor()) {' in act and 'return Open() && !openedByMode;' in line_of(ui, 'bool AskedFor() {'),
       'lot R: the launch rules (tutorial, « Connecter un agent ») still see « no chat asked » when the mode opened the panel itself')
+# « 10 éléments au maximum » (validated 2026-11-24): the strip, 4 s, and no frame nor shot for the click
+ts = block_after(ui, 'bool TakeSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible) {')
+full = block_after(ui, 'void SayComposerFull() {')
+check('>= ComposerMax) { SayComposerFull(); return false; }' in ts and 'ComposerMax = 10' in ui and 'LimitStripMs = 4000' in ui
+      and 'Strip("limit", "neutral", TR(chat_strip_limit))' in full and 'SetTimer(post, LimitTimer, LimitStripMs' in full and 'ClearStrip("limit")' in line_of(ui, 'if (w == LimitTimer)'),
+      'lot R: an 11th element in « Panneau » is refused with the neutral strip, for 4 s, shown again at each extra click')
+cat = (SRC / 'i18n-catalog.inc').read_text(encoding='utf-8')
+check('I18N(chat_strip_limit, L"10 éléments au maximum. Envoyez la demande ou retirez-en un.", L"10 elements max. Send your request or remove one.")' in cat, 'lot R: the limit sentence, FR and EN, as validated')
+on_select = block_after(mode, 'void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {')
+at_full = on_select.find('Chat::ComposerFull()')
+check(0 <= at_full < on_select.find('StartShot(t)') and 'Resume(false); return;' in on_select[at_full:at_full + 400] and at_full < on_select.find('shot = ShotJob{}'),
+      'lot R: the click beyond 10 elements starts no native frame and no shot, and moves no focus')
 
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')
