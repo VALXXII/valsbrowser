@@ -30,7 +30,6 @@
 #include "chat-local.h"
 #include "chat-prompt.h"
 #include "chat-tools.h"
-#include "chat-batch.h"
 #include "chat-options.h"
 #include "chat-bubble.h"
 #if __has_include("chat-transition.h")
@@ -125,11 +124,10 @@ struct Element {   // an aimed element: a chip in the composer, then part of a t
     std::string anchorFor;   // Mode Commentaire: aimed as the element of this conversation's bubble (kept for its messages, never a chip)
 };
 struct Attachment { std::string id, name, mime, base64, thumb; };
-struct Queued { std::string id, text; std::vector<std::string> elements, attachments; std::string batchId; std::vector<std::string> annotations; std::string convId; };   // convId (Mode Commentaire): the conversation it belongs to, "" = the engine's   // annotations: a batch « Traiter N annotations » that waits its turn
+struct Queued { std::string id, text; std::vector<std::string> elements, attachments; std::string convId; };   // convId (Mode Commentaire): the conversation it belongs to, "" = the engine's
 struct Problem { std::wstring title, message; bool retry = true, connect = false, newChat = false, chooseFolder = false; };
 struct Turn {
     bool active = false, cancelled = false, snapshot = false, promptSent = false, ending = false;
-    bool batch = false;   // « Traiter les annotations »: the prompt is the batch's instruction, the card follows our tools
     bool planLaunched = false;   // M: « Lancer le plan » accepted the agent's plan in this turn — the mode it goes to is the user's choice (KeepModeAfterPlan)
     bool modeWait = false, modeFixed = false;   // SEC-13: the prompt waits for the session's mode; the wanted mode was asked again once for this turn
     std::string id, text, snapshotTurn, lastMessageId, thoughtId, summaryText; double startedMs = 0, thoughtStart = 0; int messageSeq = 0, thoughtSeq = 0;
@@ -138,22 +136,12 @@ struct Turn {
     std::size_t startItem = std::size_t(-1);       // D6: its `turn.start` in convo.items (model + effort filled in once known)
     std::string markSelector; std::string planPermission, planId; std::vector<Acp::PlanEntry> lastPlan; std::vector<Acp::PermissionOption> planOptions;
     Acp::Error failure; Problem problem;   // why it failed (an agent error code, or our own sentence)
-    struct OurCall { ChatTools::Ours tool = ChatTools::Ours::None; std::string annotation, input; int count = -1; bool done = false, reported = false; };   // input: its arguments (an update does not repeat them)
+    struct OurCall { ChatTools::Ours tool = ChatTools::Ours::None; std::string annotation; int count = -1; bool done = false; };
     std::map<std::string, OurCall> ourCalls;   // tool call id -> one of our annotation tools (its step line is ours to word)
     std::map<std::string, std::string> toolKinds;   // tool call id -> its ACP kind (an update may not repeat it)
     std::vector<std::string> agentFiles;            // files the agent's edit / delete / move calls named (relative to the folder): the only ones the turn counts and undoes
 };
 struct Convo { ChatStore::Conversation data; int turnSeq = 0; bool preambleSent = false; std::string recap; };   // recap (R42): given with the next prompt to the agent that took the chat over
-// « Traiter les annotations » (contract B 1.4): one pending annotation of the site, as a line of the block / the card.
-struct BatchItem {
-    std::string id, siteKey, note, element, source, thumb; std::string status = "pending", text;   // text: summary (done) or reason (skipped)
-    bool claimedHere = false;   // this turn's agent took it (its own claim call succeeded): ours to give back if it stops there
-};
-struct Batch {
-    std::string id; std::vector<BatchItem> items;
-    std::string instruction; std::int64_t sentAt = 0;                 // once sent: the exact text the agent got, and when (store seconds)
-    std::string conversation, userId; std::size_t item = std::size_t(-1);   // the user's message that carries the card: which conversation, which item
-};
 ChatPanelView::View view; PanelState panelState = PanelState::Closed; bool panelReady = false, uiInit = false, picking = false;
 HWND post = nullptr; constexpr UINT AcpWake = WM_APP + 21; constexpr UINT_PTR DestroyTimer = 1, AgentIdleTimer = 2, RearmTimer = 3, MarkTimer = 4, FolderTimer = 5, HoverTimer = 6, WarmTimer = 7, StopTimer = 8, HeldTimer = 9, PanelFocusTimer = 10;
 // QA (C1, Q's « c1_prechauffage_retarde »): BROWSER_CHAT_TEST_WARM_DELAY_MS=<ms>, read only with BROWSER_ANNOTATIONS_TEST=1, holds
@@ -197,13 +185,11 @@ std::vector<Element> orphanAnnotations;                // annotations of a turn 
 std::map<std::uint64_t, Element> aiming;                // elements being aimed (by capture serial): image and source still coming
 std::uint64_t turnNavStamp = 0; int rearmTries = 0; std::function<void()> afterTurn; std::function<void(bool)> afterUndo;
 std::map<std::string, SJ::Value> waitingPermissions, activeStrips;   // what the panel must show again when its WebView is (re)created: cards still waiting, strips still true
-Batch composerBatch, activeBatch;   // posed in the composer (not sent yet) / sent: the card of the current or last batch turn
-bool batchOwed = false;             // « Traiter avec l'agent » asked before the panel was ready
 std::map<std::string, std::string> annotationNotes;   // annotation id -> its note, as seen in this session (turns, tool results): the « … » of a step line
 std::wstring pendingAsk;                               // « Demander à l'agent » from the note: the text to send once the element is attached
 std::shared_ptr<CS::Store> snapshots; std::map<std::string, std::string> checkpointOfTurn;   // panel turn id -> checkpoint id
 std::map<std::string, std::string> snapshotOfTurn;                                              // panel turn id -> snapshot turn id
-bool rearmOwed = false; std::string doneMarkSelector; int elementSeq = 0; int pendingAnnotations = 0;
+bool rearmOwed = false; std::string doneMarkSelector; int elementSeq = 0;
 struct OpenStats { double requestedAt = 0, createdAt = 0, readyAt = 0, firstTextAt = 0, sendAt = 0, sessionAt = 0; } stats;
 void FinishTurn(const std::string& stopReason);
 
@@ -316,7 +302,6 @@ void SendState();
 void SetAgentStatus(const std::string& id, const std::string& status, const std::wstring& detail = L"", double progress = -1) {
     auto& a = agentInfo[id]; a.status = status; a.detail = detail; a.progress = progress; SendState();
 }
-int CountPending();
 void SendState() {
     if (!panelReady) return;
     SJ::Value st = SJ::Value::Obj();
@@ -371,7 +356,6 @@ void SendState() {
         SJ::Value c = SJ::Value::Obj(); c.Set("id", Str(shown.id)); c.Set("title", Str(shown.title.empty() ? T8(I18n::Id::chat_title_new) : shown.title));
         if (!shown.source.empty()) c.Set("source", Str(shown.source)); c.Set("running", SJ::Value::Bool(running)); st.Set("conversation", std::move(c));
         st.Set("running", SJ::Value::Bool(running)); }
-    st.Set("pendingAnnotations", SJ::Value::Int(0));   // R24 (the user: « c'est fini ce concept »): no pending-annotations source any more
     {   SJ::Value sg = SJ::Value::Arr();
         if (Usable()) {
             // R24: no « Traiter les N annotations en attente » suggestion
@@ -395,8 +379,7 @@ void SendQueue() {
         if ((q.convId.empty() ? convo.data.head.id : q.convId) != shown) continue;   // Mode Commentaire: the messages of the conversation shown
         SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(q.id));
         if (!q.convId.empty() && q.convId != convo.data.head.id && turn.active) o.Set("after", Str(convo.data.head.anchorLabel.empty() ? ChatPrompt::OneLine(convo.data.head.title, 40) : convo.data.head.anchorLabel));   // contract B 1.8 §19.6
-        if (!q.annotations.empty() && q.text.find_first_not_of(" \t\r\n") == std::string::npos) o.Set("text", Str(TRP(chat_batch_queue, q.annotations.size(), std::to_wstring(q.annotations.size()))));
-        else o.Set("text", Str(ClipUtf8(q.text, 400)));
+        o.Set("text", Str(ClipUtf8(q.text, 400)));
         items.Push(std::move(o));
     }
     {   std::string text;   // queue #70: a message held until its element is ready (image) is shown as waiting, in its bubble
@@ -482,5 +465,4 @@ void SwitchLayout(bool comment); void RefreshAnchored(); std::string BubbleSelec
 } // namespace Chat
 #include "chat-host-turn.h"
 #include "chat-host-ui.h"
-#include "chat-host-batch.h"
 #include "chat-comment.h"

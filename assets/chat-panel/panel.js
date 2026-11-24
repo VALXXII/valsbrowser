@@ -60,10 +60,9 @@
   // ---------------------------------------------------------------- state
   const S = {
     st: { site: null, folder: undefined, folderSuggestion: null, agents: [], agentId: null, model: null, efforts: [], effort: null,
-          modes: [], mode: null, conversation: null, running: false, pendingAnnotations: 0, suggestions: [], capabilities: {}, disabledReason: null },
+          modes: [], mode: null, conversation: null, running: false, suggestions: [], capabilities: {}, disabledReason: null },
     users: new Map(), turns: new Map(), tools: new Map(),
     lastUser: null, lastTurn: null, lastAt: 0,
-    batch: null, batches: new Map(),
     perms: [], queue: [], strips: new Map(), history: null, historyOpen: false, commands: [],
     picking: false, menu: null, atBottom: true, newCount: 0,
     cEls: new Map(), cAtt: new Map(), editing: null, replay: false, fatal: false,
@@ -320,7 +319,6 @@
   const modeBtn = h("button", { class: "tb mode", type: "button", "aria-haspopup": "menu", "aria-expanded": "false", onclick: (e) => openModeMenu(e.currentTarget) });
   const modeTip = h("span", { class: "tip ftip mtip", role: "tooltip", id: "mode-tip", "aria-hidden": "true" });
   menuLayer.appendChild(modeTip);
-  const batchEl = h("div", { class: "batch", hidden: true, role: "group" });
   const modelName = h("span", { class: "mn" });
   const modelLogo = h("span", { style: "display:flex" });
   const effortTxt = h("span");
@@ -372,7 +370,7 @@
   sendBtn.addEventListener("focus", () => { if (BUB() && sendBtn.matches(":focus-visible")) sendTipFloat(true); });
   sendBtn.addEventListener("blur", () => { if (BUB() && tipOn !== sendWrap) sendTipFloat(false); });
   const foot = h("div", { class: "foot" });
-  const composer = h("div", { class: "composer" }, batchEl, thumbs, cin,
+  const composer = h("div", { class: "composer" }, thumbs, cin,
     h(foot, null, h("div", { class: "tools" }, pickBtn, plusBtn, modeBtn), h("div", { class: "grow" }),
       h("div", { class: "model" }, modelBtn), sendWrap));
   const keysRow = h("div", { class: "keys", "aria-hidden": "true", hidden: true },
@@ -394,8 +392,7 @@
     return out.replace(/ /g, " ");
   }
   const chipsInComposer = () => Array.from(cin.querySelectorAll(".chip")).map((c) => c.dataset.id);
-  const batchChecked = () => (S.batch ? S.batch.items.filter((it) => S.batch.checked.has(it.id)) : []);
-  function hasContent() { return composerText().trim().length > 0 || S.cAtt.size > 0 || batchChecked().length > 0; }
+  function hasContent() { return composerText().trim().length > 0 || S.cAtt.size > 0; }
   function canSend() {
     const a = curAgent();
     return !S.st.disabledReason && !!S.st.folder && !hasDangerStrip() && (!a || a.status === "ready" || a.status === "starting");
@@ -430,13 +427,10 @@
     if (!hasContent() || !canSend()) return;
     const text = composerText().replace(/\s+$/, "");
     const msg = { text, elements: chipsInComposer().filter((id) => S.cEls.has(id)), attachments: Array.from(S.cAtt.keys()) };
-    const picked = batchChecked();
-    if (picked.length) msg.annotations = { batchId: S.batch.batchId, ids: picked.map((it) => it.id) };
     post("send", msg);
     if (BUB()) drafts.delete("b:el:" + (S.lay.elementKey || S.lay.element || ""));
     if (BUB() && text) outboxSet(text);
     S.cEls.clear(); S.cAtt.clear(); clear(cin); renderThumbs(); closeMenu();
-    if (S.batch) { S.batch = null; renderBatch(); }
     updateSend();
   }
   // « Garder en annotation » (B 1.6): the chips and the words become annotations of the store, read by the MCP agents;
@@ -448,7 +442,7 @@
     hintTimer = setTimeout(() => { S.strips.delete("keep-hint"); renderDock(); }, 4000);
   }
   function keep() {
-    if (S.st.disabledReason || S.batch) return;
+    if (S.st.disabledReason) return;
     const els = chipsInComposer().filter((id) => S.cEls.has(id));
     const text = composerText().replace(/\s+$/, "");
     let words = text; for (const id of els) words = words.split(S.cEls.get(id).label).join("");
@@ -462,8 +456,7 @@
   }
   function placeholder() {
     let p = "Que faut-il changer ?";
-    if (S.batch) p = "Ajouter une précision (facultatif)…";
-    else if (S.planPending) p = "Ajouter une précision au plan…";
+    if (S.planPending) p = "Ajouter une précision au plan…";
     else if (BUB()) {   // Paper 1AE7-0 (stopped) / 1AWI-0 (done)
       const lt = S.lastTurn && S.turns.get(S.lastTurn);
       if (lt) p = lt.stop && lt.stop !== "end_turn" ? "Que voulez-vous ajouter ?" : "Que voulez-vous ajouter de plus ?";
@@ -1027,12 +1020,11 @@
   }
   function openCommandMenu(q) {
     const ql = q.toLowerCase();
-    // R24: no panel command of its own anymore (« /annotations » is gone); the commands are the agent's
-    const all = (S.commands || []).filter((c) => c.name !== "annotations");
+    // the commands are the agent's own (the panel has none)
+    const all = S.commands || [];
     const rows = all.filter((c) => c.name.toLowerCase().startsWith(ql) || !ql).slice(0, 8)
       .map((c) => ({ label: c.name, desc: c.description, pick: () => {
         closeMenu(); clear(cin); cin.focus();
-        if (c.own) { post("annotations.request"); updateSend(); return; }
         document.execCommand("insertText", false, "/" + c.name + " "); updateSend(); } }));
     openCombo("/", rows);
   }
@@ -1390,7 +1382,6 @@
     resetGen++;
     closeChanges();
     S.usage = null; S.usageWarned = false; renderGauge();
-    S.batches.clear();
     clear(log); S.users.clear(); S.turns.clear(); S.tools.clear(); S.perms = []; S.lastUser = null; S.lastTurn = null; S.lastAt = 0; S.planPending = null; S.editing = null;
     S.atBottom = true; S.newCount = 0; newSteps.hidden = true;
     S.berr = null; closeView(true); bTipHide();
@@ -1880,8 +1871,6 @@
     const at = Date.parse(m.at) || Date.now();
     if (!S.lastAt || new Date(at).toDateString() !== new Date(S.lastAt).toDateString() || at - S.lastAt > 30 * 60 * 1000) add(h("div", { class: "date", text: dayLabel(at) }), false);
     S.lastAt = at;
-    const ann = validBatchMessage(m.annotations);
-    if (ann) { onAnnotationMessage(m, ann); return; }
     const els = (m.elements || []).filter(validElement);
     const bubble = h("div", { class: "bubble" });
     const inlineIds = fillWithChips(bubble, m.text, BUB() ? [] : els);   // B 1.9 (R7): in the bubble the element is implicit — no chip
@@ -1909,120 +1898,6 @@
       h("div", { class: "kept-sub", text: m.partial ? "Une partie n'a pas pu être enregistrée." : "Pour vos agents connectés · rien n'est envoyé au chat" }));
     add(node);
     if (!S.replay) { scrollToEnd(false); say("Gardé en annotation."); }
-  }
-  // ---------------------------------------------------------------- « Traiter les annotations » (B 1.4)
-  function validAnnItem(it) {
-    if (!it || !ID.test(it.id) || !isStr(it.note, 2000)) return null;
-    return { id: it.id, note: it.note, element: isStr(it.element, 200) ? it.element : "", source: isStr(it.source, 300) ? it.source : "",
-             thumb: isStr(it.thumb, 350000) && IMG.test(it.thumb) ? it.thumb : "", status: ["pending", "working", "done", "skipped"].includes(it.status) ? it.status : "pending",
-             summary: isStr(it.summary, 600) ? it.summary : "", reason: isStr(it.reason, 600) ? it.reason : "" };
-  }
-  function validBatchMessage(a) {
-    if (!a || typeof a !== "object" || !ID.test(a.batchId) || !Array.isArray(a.items)) return null;
-    const items = a.items.slice(0, 50).map(validAnnItem).filter(Boolean);
-    return items.length ? { batchId: a.batchId, items, instruction: isStr(a.instruction, 20000) ? a.instruction : "" } : null;
-  }
-  const annMeta = (it) => [it.element, it.source].filter(Boolean).join(" · ");
-  function annThumb(it) {
-    return it.thumb ? h("img", { class: "ann-thumb", src: it.thumb, alt: "" }) : h("span", { class: "ann-thumb blank", "aria-hidden": "true" });
-  }
-  // Composer block: what will be sent, everything checked; unchecking keeps an annotation for later.
-  function renderBatch() {
-    const b = S.batch;
-    clear(batchEl);
-    batchEl.hidden = !b;
-    placeholder();
-    if (!b) { batchEl.removeAttribute("aria-labelledby"); return; }
-    batchEl.setAttribute("aria-labelledby", "batch-h");
-    const n = batchChecked().length;
-    batchEl.appendChild(h("div", { class: "batch-hd" }, icon("tray", "ic"),
-      h("span", { class: "t", id: "batch-h", text: n ? plural(n, "annotation à traiter", "annotations à traiter") : "Aucune annotation cochée" }),
-      b.siteLabel ? h("span", { class: "site", text: b.siteLabel }) : null,
-      h("button", { class: "icon-btn", type: "button", "aria-label": "Retirer ces annotations de la saisie",
-                    onclick: () => { S.batch = null; renderBatch(); updateSend(); cin.focus(); } }, icon("close"))));
-    const shown = b.expanded || b.items.length <= 5 ? b.items : b.items.slice(0, 5);
-    for (const it of shown) {
-      const on = b.checked.has(it.id);
-      const row = h("button", { class: "batch-row" + (on ? "" : " off"), type: "button", role: "checkbox", "aria-checked": String(on), "data-id": it.id,
-                                "aria-label": it.note + (annMeta(it) ? " — " + annMeta(it) : "") },
-        h("span", { class: "box", "aria-hidden": "true" }, on ? icon("check") : null), annThumb(it),
-        h("span", { class: "tx" }, h("span", { class: "note", text: it.note }), annMeta(it) ? h("span", { class: "meta", text: annMeta(it) }) : null));
-      row.addEventListener("click", () => {
-        on ? b.checked.delete(it.id) : b.checked.add(it.id);
-        renderBatch(); updateSend();
-        const again = batchEl.querySelector(".batch-row[data-id='" + it.id + "']"); if (again) again.focus();
-        say(on ? "Gardée pour plus tard." : "Ajoutée.");
-      });
-      batchEl.appendChild(row);
-    }
-    if (shown.length < b.items.length) batchEl.appendChild(h("button", { class: "batch-more", type: "button", onclick: () => { b.expanded = true; renderBatch(); const r = batchEl.querySelectorAll(".batch-row")[5]; if (r) r.focus(); } },
-      "+ " + plural(b.items.length - shown.length, "autre", "autres")));
-  }
-  function onBatch(m) {
-    const items = (Array.isArray(m.items) ? m.items : []).slice(0, 50).map(validAnnItem).filter(Boolean);
-    S.batch = items.length ? { batchId: m.batchId, siteLabel: isStr(m.siteLabel, 200) ? m.siteLabel : "", items, checked: new Set(items.map((i) => i.id)), expanded: false } : null;
-    renderBatch(); updateSend();
-    if (S.batch) { cin.focus(); say(plural(items.length, "annotation prête à être traitée", "annotations prêtes à être traitées") + ". Décochez celles à garder pour plus tard."); }
-  }
-  // Thread card: the sent batch, kept alive by annotations.status.
-  function onAnnotationMessage(m, ann) {
-    const card = h("div", { class: "ann-card", role: "group", "aria-labelledby": "annh-" + ann.batchId });
-    const node = h("div", { class: "um ann", "data-id": m.id }, card);
-    const b = { batchId: ann.batchId, items: ann.items, instruction: ann.instruction, text: m.text || "", card, open: false };
-    S.batches.set(ann.batchId, b);
-    renderAnnCard(b);
-    S.users.set(m.id, { el: node, row: card, bubble: card, text: m.text || "", els: [], m });
-    S.lastUser = m.id;
-    add(node);
-    if (!S.replay) scrollToEnd(false);
-  }
-  function renderAnnCard(b) {
-    const card = b.card;
-    const prevFocus = card.contains(document.activeElement) ? document.activeElement.dataset.id || document.activeElement.className : null;
-    clear(card);
-    const n = b.items.length;
-    const done = b.items.filter((i) => i.status === "done").length, skipped = b.items.filter((i) => i.status === "skipped").length;
-    const working = b.items.findIndex((i) => i.status === "working");
-    const finished = done + skipped === n;
-    let right;
-    if (finished) right = h("span", { class: "ann-prog" + (skipped ? " mixed" : " ok") }, done ? icon("check") : null,
-      [done ? plural(done, "terminée", "terminées") : "", skipped ? plural(skipped, "non traitée", "non traitées") : ""].filter(Boolean).join(" · "));
-    else right = h("span", { class: "ann-prog", text: (working >= 0 ? working + 1 : Math.min(n, done + skipped + 1)) + " sur " + n });
-    const who = curAgentName().replace(/ Code$/, "");
-    card.appendChild(h("div", { class: "ann-hd" }, icon("tray", "ic"), h("span", { class: "t", id: "annh-" + b.batchId, text: "Traiter " + plural(n, "annotation", "annotations") }), right));
-    if (b.text.trim()) card.appendChild(h("div", { class: "ann-extra", text: b.text.trim() }));
-    for (const it of b.items) {
-      const st = it.status;
-      const line = st === "working" ? h("span", { class: "ann-st is-working" }, h("span", { class: "spin", style: "display:flex" }, icon("spinner")), who + " s'en occupe")
-        : st === "done" ? h("span", { class: "ann-st is-done" }, icon("check"), h("span", { text: it.summary || "Terminée" }))
-        : st === "skipped" ? h("span", { class: "ann-st is-skipped" }, icon("x"), h("span", { text: it.reason ? "Non traitée : " + it.reason : who + " n'a pas pu la traiter" }))
-        : h("span", { class: "ann-st is-pending" }, h("i", { "aria-hidden": "true" }), "En attente");
-      card.appendChild(h("button", { class: "ann-row is-" + st, type: "button", "data-id": it.id, "aria-description": "Montrer sur la page" + (annMeta(it) ? " (" + annMeta(it) + ")" : ""),
-                                     onclick: () => post("annotation.show", { id: it.id }) },
-        annThumb(it), h("span", { class: "tx" }, h("span", { class: "note", text: it.note }), line)));
-    }
-    if (b.instruction) {
-      const pre = h("pre", { class: "detail", id: "inst-" + b.batchId, hidden: !b.open, text: b.instruction });
-      const t = h("button", { class: "ann-inst", type: "button", "aria-expanded": String(b.open), "aria-controls": "inst-" + b.batchId },
-        "Voir la consigne envoyée à " + who, icon("chevron", "cv"));
-      t.addEventListener("click", () => { b.open = !b.open; renderAnnCard(b); const x = b.card.querySelector(".ann-inst"); if (x) x.focus(); stick(); });
-      card.append(t, pre);
-    }
-    if (prevFocus) { const x = card.querySelector("[data-id='" + prevFocus + "']"); if (x) x.focus(); }
-  }
-  function onAnnStatus(m) {
-    const b = S.batches.get(m.batchId);
-    const it = b && b.items.find((i) => i.id === m.id);
-    if (!it) return;
-    if (["pending", "working", "done", "skipped"].includes(m.status)) it.status = m.status;
-    if (isStr(m.summary, 600)) it.summary = m.summary;
-    if (isStr(m.reason, 600)) it.reason = m.reason;
-    renderAnnCard(b);
-    stick();
-    const who = curAgentName().replace(/ Code$/, "");
-    if (it.status === "working") say(who + " s'occupe de : " + it.note);
-    else if (it.status === "done") say("Terminée : " + it.note + (it.summary ? ". " + it.summary : ""));
-    else if (it.status === "skipped") say("Non traitée : " + it.note + (it.reason ? ". " + it.reason : ""));
   }
 
   // Chips sit where their label appears in the text (first occurrence); the rest go under the bubble.
@@ -2776,10 +2651,10 @@
   function renderEmpty() {
     clear(empty);
     const sugs = [];
-    // R24: the « annotations en attente » concept is gone; a suggestion never shows twice (same id or same words)
+    // a suggestion never shows twice (same id or same words)
     const seen = new Set();
     for (const s of S.st.suggestions || []) {
-      if (!s || !ID.test(s.id) || typeof s.label !== "string" || s.id === "annotations" || /annotations? en attente/i.test(s.label)) continue;
+      if (!s || !ID.test(s.id) || typeof s.label !== "string") continue;
       const k = s.label.trim().toLowerCase();
       if (seen.has(s.id) || seen.has(k)) continue;
       seen.add(s.id); seen.add(k); sugs.push(s);
@@ -2922,7 +2797,6 @@
     history: (m) => Array.isArray(m.items), "element.attached": (m) => validElement(m.element), "attachment.added": (m) => validAttachment(m.attachment),
     "pick.state": (m) => typeof m.active === "boolean", mentions: (m) => isStr(m.query, 200), commands: (m) => Array.isArray(m.items),
     usage: (m) => Number.isFinite(m.used) && Number.isFinite(m.size) && m.used >= 0 && m.size >= 0,
-    "annotations.batch": (m) => ID.test(m.batchId) && Array.isArray(m.items), "annotations.status": (m) => ID.test(m.batchId) && ID.test(m.id),
     layout: (m) => m.mode === "panel" || m.mode === "bubble",
     "changes.diff": (m) => ID.test(m.turnId) && Array.isArray(m.diffs), "edit.confirm": (m) => ID.test(m.messageId), state: (m) => true, hello: (m) => true, focus: () => true, "copy.done": () => true, "pointer.leave": () => true, "annotation.kept": (m) => ID.test(m.id) && isStr(m.text) && Array.isArray(m.elements),
   };
@@ -2931,7 +2805,7 @@
   const H = {
     hello(m) { if (m.reducedMotion) document.documentElement.classList.add("reduce-motion"); app.removeAttribute("aria-busy"); },
     state(m) {
-      const keys = ["site", "folder", "folderSuggestion", "askFolder", "agents", "agentId", "model", "efforts", "effort", "modes", "mode", "conversation", "running", "pendingAnnotations", "suggestions", "capabilities", "disabledReason"];
+      const keys = ["site", "folder", "folderSuggestion", "askFolder", "agents", "agentId", "model", "efforts", "effort", "modes", "mode", "conversation", "running", "suggestions", "capabilities", "disabledReason"];
       for (const k of keys) if (k in m) S.st[k] = m[k];
       S.st.agents = (S.st.agents || []).filter((a) => a && ID.test(a.id) && isStr(a.name, 100));
       if (!S.st.agentId && S.st.agents[0]) S.st.agentId = S.st.agents[0].id;
@@ -3036,7 +2910,7 @@
     "pick.state"(m) { S.picking = m.active; renderComposerBar(); },   // B 1.7: the button's aria-pressed says it (the browser announces the change)
     mentions(m) { S.mentions = { query: m.query, elements: (m.elements || []).filter(validElement), files: (m.files || []).filter((f) => f && isStr(f.path, 1000)) }; if (S.menu && S.menu.combo === "@" && mentionCtx) openMentionMenu(mentionCtx.q, mentionCtx.node, mentionCtx.offset); },
     commands(m) { S.commands = m.items.filter((c) => c && isStr(c.name, 80) && /^[\w-]+$/.test(c.name)); },
-    "edit.confirm": onEditConfirm, "annotations.status": onAnnStatus,   // R24: `annotations.batch` is ignored (no batch in the input)
+    "edit.confirm": onEditConfirm,
     focus() {
       app.classList.remove("b-out");
       if (S.perms.length) { const b = dock.querySelector(".btn.primary"); if (b) b.focus(); }

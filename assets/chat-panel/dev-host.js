@@ -48,7 +48,7 @@
             { id: "auto", label: "Auto", description: "Claude handles permission decisions", kind: "auto" },
             { id: "default", label: "Demander", description: "Propose chaque modification.", kind: "ask" },
             { id: "plan", label: "Planifier", description: "Propose un plan, ne touche à aucun fichier.", kind: "plan" }],
-    mode: "default", conversation: null, running: false, pendingAnnotations: 2,
+    mode: "default", conversation: null, running: false,
     suggestions: [{ id: "mobile", label: "Vérifier cette page sur mobile" }, { id: "contrast", label: "Trouver les textes trop peu contrastés" }],
     capabilities: { image: true, steering: true, commands: true }, disabledReason: null,
   };
@@ -80,26 +80,6 @@
     const g = c.getContext("2d"); g.fillStyle = "#F4F4F3"; g.fillRect(0, 0, 80, 52); g.fillStyle = "#1C1C1C"; g.fillRect(16, 20, 48, 12);
     return c.toDataURL("image/png");
   }
-  // « Traiter les annotations » fixtures (Paper 186K-0): two landing-page notes with drawn thumbnails.
-  function annThumb(kind) {
-    const c = document.createElement("canvas"); c.width = 88; c.height = 64;
-    const g = c.getContext("2d");
-    if (kind === "text") { g.fillStyle = "#F7F3EC"; g.fillRect(0, 0, 88, 64); g.fillStyle = "#1F1D1A"; g.fillRect(12, 22, 56, 8); g.fillStyle = "#C9C3B9"; g.fillRect(12, 36, 48, 6); }
-    else { g.fillStyle = "#FFFFFF"; g.fillRect(0, 0, 88, 64); g.fillStyle = "#B5532A"; g.beginPath(); g.roundRect(34, 8, 44, 14, 7); g.fill(); }
-    return c.toDataURL("image/png");
-  }
-  const ANN = () => [
-    { id: "a-hero", note: "Le texte sous le titre est trop pâle, on le lit mal.", element: "p.hero-text", source: "landing.html:23", thumb: annThumb("text") },
-    { id: "a-badge", note: "Le badge « Le plus choisi » dépasse de la carte.", element: "span.badge", source: "landing.html:64", thumb: annThumb("badge") },
-  ];
-  const ANN_MORE = () => ANN().concat([
-    { id: "a-cta", note: "Le bouton « Commencer » manque de contraste au survol.", element: "a.cta", source: "landing.html:31" },
-    { id: "a-grid", note: "Les cartes ne sont pas alignées sur tablette.", element: "div.plans", source: "landing.html:58" },
-    { id: "a-foot", note: "Le pied de page est collé au contenu.", element: "footer", source: "landing.html:112" },
-    { id: "a-logo", note: "Le logo est flou sur écran Retina.", element: "img.logo", source: "landing.html:9" },
-    { id: "a-faq", note: "La FAQ s'ouvre sans animation.", element: "details.faq", source: "landing.html:88" }]);
-  const INSTRUCTION = "Traite ces 2 annotations du site 127.0.0.1:5183, une par une, dans le dossier du projet.\n\n1. p.hero-text (landing.html:23) : « Le texte sous le titre est trop pâle, on le lit mal. »\n2. span.badge (landing.html:64) : « Le badge « Le plus choisi » dépasse de la carte. »\n\nPour chacune : fais la plus petite modification, puis marque-la terminée avec un résumé d'une phrase.";
-  const annMsg = (items) => ({ type: "message.user", id: "u-ann", text: "", at: today(10, 51), editable: false, annotations: { batchId: "b1", items, instruction: INSTRUCTION } });
   function userMsg(id, text, at, els) { return { type: "message.user", id, text, at: at || today(15, 34), elements: els || [EL] }; }
   function doneTurn(id, opts) {
     const o = Object.assign({ text: "Le bouton a une largeur fixe de 240 px. Je le passe à droite sur grand écran et en pleine largeur sous 640 px.", end: "C'est fait. La page s'est rechargée ; l'annotation est marquée « terminée ».", model: "Sonnet 5.5", ms: 18000 }, opts || {});
@@ -343,7 +323,7 @@
       typeIn("Sur mobile, le bouton doit prendre toute la largeur.\nSur tablette, garde-le à droite mais avec 16 px de marge.\nLe texte doit rester sur une seule ligne.\nVérifie aussi l'état désactivé : il est trop pâle.\nEt aligne l'icône du cadenas avec le texte.")],
     "6.5-4-arobase": [st(), { type: "thread.reset", conversationId: "new", items: [] }, typeIn("Rapproche le prix de @butt"), wait(200)],
     "6.5-5-slash": [st(), { type: "thread.reset", conversationId: "new", items: [] },
-      { type: "commands", items: [{ name: "expliquer", description: "Explique comment cet élément est construit" }, { name: "responsive", description: "Vérifie l'élément sur mobile, tablette et bureau" }, { name: "annotations", description: "Traite les annotations en attente sur ce site" }] },
+      { type: "commands", items: [{ name: "expliquer", description: "Explique comment cet élément est construit" }, { name: "responsive", description: "Vérifie l'élément sur mobile, tablette et bureau" }] },
       typeIn("/")],
     "6.5-6-file": [st(Object.assign({ running: true }, conv("Bouton de paiement", { running: true }))),
       { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", ASK), { type: "turn.start", turnId: "t1", model: "Sonnet 5.5", effort: "Élevé", at: ago(12000) }] },
@@ -387,33 +367,6 @@
         { type: "toolCall", turnId: "t1", id: "c2", title: "A marqué l'annotation « Badge » comme terminée", kind: "other", status: "completed",
           summary: { verb: "a marqué", object: "l'annotation « Badge »", after: "comme terminée", afterMany: "comme terminées" } },
         { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 9000 }] }],
-    "annotations-avant": [st(), { type: "thread.reset", conversationId: "new", items: [] },
-      { type: "annotations.batch", batchId: "b1", siteLabel: "127.0.0.1:5183", items: ANN() }, () => document.activeElement && document.activeElement.blur()],
-    "annotations-avant-long": [st(), { type: "thread.reset", conversationId: "new", items: [] },
-      { type: "annotations.batch", batchId: "b1", siteLabel: "127.0.0.1:5183", items: ANN_MORE() }, click(".batch-row[data-id='a-badge']"), () => document.activeElement && document.activeElement.blur()],
-    "annotations-pendant": [st(Object.assign({ running: true }, conv("Annotations en attente", { running: true }))),
-      { type: "thread.reset", conversationId: "c1", items: [annMsg(ANN().map((it, i) => Object.assign(it, { status: i ? "pending" : "working" }))),
-        { type: "turn.start", turnId: "t1", model: "Opus 5.5", effort: "Moyen", at: ago(9000) },
-        { type: "toolCall", turnId: "t1", id: "s1", title: "A lu 2 annotations", kind: "read", status: "completed", summary: { verb: "a lu", object: "2 annotations", count: 2, one: "annotation", many: "annotations" } },
-        { type: "toolCall", turnId: "t1", id: "s2", title: "A lu landing.css", kind: "read", status: "completed", locations: [{ path: "styles/landing.css" }] },
-        { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: "Je commence par le texte d'accroche : sa couleur #a8a299 est trop claire sur ce fond. Je la passe à la couleur secondaire du site." }] }],
-    "annotations-fin": [st(conv("Annotations en attente")),
-      { type: "thread.reset", conversationId: "c1", items: [annMsg(ANN().map((it, i) => Object.assign(it, { status: "done", summary: i ? "Badge replacé dans le coin de la carte." : "Couleur passée au gris secondaire du site." }))),
-        { type: "turn.start", turnId: "t1", model: "Opus 5.5", effort: "Moyen", at: today(10, 51) },
-        { type: "toolCall", turnId: "t1", id: "s1", title: "A lu 2 annotations", kind: "read", status: "completed", summary: { verb: "a lu", object: "2 annotations", count: 2, one: "annotation", many: "annotations" } },
-        { type: "toolCall", turnId: "t1", id: "s2", title: "A modifié landing.css", kind: "edit", status: "completed", locations: [{ path: "styles/landing.css" }] },
-        { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: "C'est fait pour les deux. La page s'est rechargée ; les annotations sont marquées « terminées » dans l'historique." },
-        { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 41000, changes: [{ path: "styles/landing.css", status: "modified", added: 4, removed: 2 }], checkpointId: "cp-a", undoable: true }] }],
-    "annotations-non-traitee": [st(conv("Annotations en attente")),
-      { type: "thread.reset", conversationId: "c1", items: [annMsg(ANN().map((it, i) => Object.assign(it, i ? { status: "skipped", reason: "le badge vient d'une bibliothèque externe, rien à changer dans le projet." } : { status: "done", summary: "Couleur passée au gris secondaire du site." }))),
-        { type: "turn.start", turnId: "t1", model: "Opus 5.5", effort: "Moyen", at: today(10, 51) },
-        { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: "J'ai corrigé le texte d'accroche. Le badge vient d'un composant externe : je l'ai laissé." },
-        { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 30000 }] }, click(".ann-inst")],
-    "annotations-statuts": [st(Object.assign({ running: true }, conv("Annotations en attente", { running: true }))),
-      { type: "thread.reset", conversationId: "c1", items: [annMsg(ANN()), { type: "turn.start", turnId: "t1", model: "Opus 5.5", effort: "Moyen", at: ago(3000) }] },
-      { type: "annotations.status", batchId: "b1", id: "a-hero", status: "working" }, wait(20),
-      { type: "annotations.status", batchId: "b1", id: "a-hero", status: "done", summary: "Couleur passée au gris secondaire du site." },
-      { type: "annotations.status", batchId: "b1", id: "a-badge", status: "working" }],
     "dossier-puce": [st(), { type: "thread.reset", conversationId: "new", items: [] }],
     "dossier-demande": [st({ askFolder: true, folder: null, folderSuggestion: { path: "C:\\Users\\val\\projets\\boutique", display: "C:\\Users\\…\\projets\\boutique", name: "boutique", reason: "auto" } }), { type: "thread.reset", conversationId: "new", items: [] }],
     "6.7a-vide": [st(), { type: "thread.reset", conversationId: "new", items: [] }],
@@ -559,9 +512,6 @@
       case "copy": send({ type: "copy.done", ok: true }); break;
       case "pickElement": send({ type: "pick.state", active: !!m.active }); break;
       case "annotate": send({ type: "annotation.kept", id: "k" + Date.now(), text: m.text, elements: [Object.assign({}, EL, { id: m.elements[0], label: "h1.title", kind: "heading" })], annotations: ["ann_x"], at: new Date().toISOString() }); break;
-      case "annotations.request": case "suggestion.run":
-        if (m.type === "suggestion.run" && m.id !== "annotations") break;
-        send({ type: "annotations.batch", batchId: "b1", siteLabel: "127.0.0.1:5183", items: ANN() }); break;
       case "setAgent": send({ type: "state", agentId: m.id, model: m.id === "codex" ? "terra" : "sonnet", conversation: null }); send({ type: "thread.reset", conversationId: "new", items: [] }); break;
       case "checkpoint.viewChanges": send({ type: "changes.diff", turnId: m.turnId, diffs: /^c-/.test(window.__scenarioName || "") && window.__scenarioName !== "c-diff-plusieurs-fichiers" ? [C_DIFF] : FULL_DIFFS }); break;
       // bubble layout: the fake host's window follows the bubble (a real host resizes the WebView)
@@ -585,18 +535,6 @@
       case "pickElement": send({ type: "pick.state", active: m.active }); if (m.active) setTimeout(() => send({ type: "element.attached", element: EL }), 600); break;
       case "attachImage": send({ type: "attachment.added", attachment: { id: "img" + Date.now(), kind: "image", name: m.name || "capture.png", thumb: thumbPng() } }); break;
       case "send": {
-        if (m.annotations) {
-          const items = ANN().filter((it) => m.annotations.ids.includes(it.id));
-          send(Object.assign(annMsg(items), { text: m.text, at: new Date().toISOString() }));
-          send({ type: "state", running: true, conversation: { id: "c1", title: "Annotations en attente", running: true } });
-          send({ type: "turn.start", turnId: "ta", model: "Sonnet 5.5", effort: "Élevé", at: new Date().toISOString() });
-          items.forEach((it, i) => {
-            setTimeout(() => send({ type: "annotations.status", batchId: "b1", id: it.id, status: "working" }), 400 + i * 1400);
-            setTimeout(() => send({ type: "annotations.status", batchId: "b1", id: it.id, status: "done", summary: "Corrigé dans landing.css." }), 1200 + i * 1400);
-          });
-          setTimeout(() => { send({ type: "turn.end", turnId: "ta", stopReason: "end_turn", durationMs: 3000 }); send({ type: "state", running: false }); }, 1400 + items.length * 1400);
-          break;
-        }
         if (window.__scenarioName === "interactive" || !window.__scenarioName) fakeTurn(m.text);
         break;
       }

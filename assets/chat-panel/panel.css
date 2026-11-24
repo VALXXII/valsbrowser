@@ -591,57 +591,6 @@ svg.i { display: block; flex-shrink: 0; }
 .menu .btn-s.primary { background: var(--accent); }
 @media (hover: hover) { .menu .btn-s.primary:hover { background: #5579FF; } }
 
-/* « Traiter les annotations » — composer block (Paper 186S-0) */
-.batch { display: flex; flex-direction: column; gap: 2px; padding: 4px; border-radius: 10px; background: #FFFFFF08; border: 1px solid var(--line); max-height: 300px; overflow-y: auto; overscroll-behavior: contain; }
-.batch-hd { display: flex; align-items: center; gap: 8px; padding: 6px 4px 6px 8px; }
-.batch-hd .ic, .ann-hd .ic { width: 14px; height: 14px; opacity: .8; flex-shrink: 0; }
-.batch-hd .t, .ann-hd .t { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; line-height: 18px; color: #FFFFFF; }
-.batch-hd .site { color: var(--w50); font-size: 12px; line-height: 16px; white-space: pre; }
-.batch-hd .icon-btn svg { width: 10px; height: 10px; }
-.batch-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px; border-radius: 8px; text-align: left; width: 100%; }
-@media (hover: hover) { .batch-row:hover { background: var(--fill4); } }
-.batch-row .box { width: 16px; height: 16px; margin-top: 8px; border-radius: 4px; background: var(--accent); display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: background-color 120ms ease; }
-.batch-row .box svg { width: 10px; height: 10px; color: #FFFFFF; }
-.batch-row.off .box { background: transparent; box-shadow: inset 0 0 0 1.5px #FFFFFF4D; }
-.batch-row.off .note { color: var(--w50); }
-.batch-row.off .ann-thumb { opacity: .45; }
-.ann-thumb { width: 44px; height: 32px; border-radius: 5px; object-fit: cover; flex-shrink: 0; display: block; background: #2A2A2A; outline: 1px solid #FFFFFF14; outline-offset: -1px; }
-.ann-thumb.blank { background: linear-gradient(#FFFFFF14, #FFFFFF0A); }
-.batch-row .tx, .ann-row .tx { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.batch-row .note, .ann-row .note { color: #FFFFFF; font-size: 13px; line-height: 18px; }
-.batch-row .meta { color: var(--w50); font-family: var(--mono); font-size: 11px; line-height: 14px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
-.batch-more { align-self: flex-start; margin: 0 0 4px 34px; padding: 2px 6px; border-radius: 4px; color: var(--accent-ink); font-size: 12px; font-weight: 500; line-height: 16px; }
-@media (hover: hover) { .batch-more:hover { background: var(--fill6); } }
-
-/* « Traiter les annotations » — live card in the thread (Paper 188L-0, 18B2-0) */
-.um.ann { align-items: flex-end; }
-.ann-card { width: 320px; max-width: 100%; background: var(--raised); border-radius: 16px; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
-.ann-hd { display: flex; align-items: center; gap: 8px; padding: 6px 8px 4px; }
-.ann-prog { display: flex; align-items: center; gap: 4px; color: var(--w50); font-size: 12px; line-height: 16px; white-space: pre; font-variant-numeric: tabular-nums; }
-.ann-prog svg { width: 12px; height: 12px; }
-.ann-prog.ok { color: var(--plus); }
-.ann-prog.mixed { color: #E6AC3D; }
-.ann-extra { padding: 0 8px 4px 30px; color: var(--w80); font-size: 13px; line-height: 18px; white-space: pre-wrap; }
-.ann-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px; border-radius: 10px; text-align: left; width: 100%; transition: background-color 150ms ease; }
-.ann-row .note { color: var(--w80); }
-.ann-row.is-working { background: var(--fill4); }
-.ann-row.is-working .note { color: #FFFFFF; }
-@media (hover: hover) { .ann-row:hover { background: var(--fill6); } }
-.ann-st { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; line-height: 16px; }
-.ann-st svg { width: 12px; height: 12px; flex-shrink: 0; margin-top: 2px; }
-.ann-st.is-working { color: var(--accent-ink); font-weight: 500; align-items: center; }
-.ann-st.is-working svg { margin-top: 0; }
-.ann-st.is-pending { color: var(--w50); align-items: center; }
-.ann-st.is-pending i { width: 6px; height: 6px; margin: 0 2px; border-radius: 3px; background: #FFFFFF4D; flex-shrink: 0; }
-.ann-st.is-done { color: var(--w60); }
-.ann-st.is-done svg { color: var(--ok); }
-.ann-st.is-skipped { color: #E6AC3D; }
-.ann-inst { display: flex; align-items: center; gap: 6px; align-self: flex-start; padding: 6px 8px 4px; border-radius: 6px; color: var(--w40); font-size: 12px; line-height: 16px; }
-.ann-inst .cv { width: 11px; height: 11px; opacity: .6; transform: rotate(-90deg); transition: transform 150ms var(--ease-out); }
-.ann-inst[aria-expanded="true"] .cv { transform: none; }
-@media (hover: hover) { .ann-inst:hover { color: var(--w80); } }
-.ann-card .detail { margin: 2px 6px 4px; }
-
 /* ---------- comment-mode bubble (B 1.8) — Paper 18NS-0, 1B30-0, 1AIE-0, 1AE7-0, 1ANU-0, 19ON-0, 1AAE-0, 1A6L-0, 1AWI-0, 19IO-0 ----------
    Same page, another layout: `:root.bub`. The surface fills the window the host sizes from `bubble.size`; around it the
    page is transparent. Content sits on the edge the host keeps fixed (top; bottom when the bubble is above its element). */
@@ -696,7 +645,6 @@ svg.i { display: block; flex-shrink: 0; }
 .bub .um-attach { max-width: 210px; }
 .bub .kept { max-width: 100%; padding: 6px 10px; }
 .bub .kept-note { font-size: 13px; }
-.bub .ann-card { width: 100%; }
 /* agent turn (1B64-0): « modèle · effort » + status on one line, the words in one block */
 .bub .turn.bt { gap: 2px; }
 .bt-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 24px; }
@@ -772,7 +720,6 @@ button.bt-st[aria-describedby="b-tip"] { background: #FFFFFF1A; border-radius: 4
 .bub .model .m { gap: 4px; }
 /* cv4 R28 (user's decision): the chevron of the model button never disappears, in the bubble too */
 .bub .model .mcv { margin-left: 0; }
-.bub .batch { max-height: 170px; }
 .bub .strip { border-radius: 10px; padding: 8px 8px 8px 10px; }
 .bub .strip + .composer, .bub .strip.danger + .composer { margin-top: 0; }
 .bub .strip.danger { padding-bottom: 8px; }

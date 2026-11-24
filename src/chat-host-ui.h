@@ -3,7 +3,7 @@
 // (included by src/chat-host.h; see its header for the whole picture).
 namespace Chat {
 
-void OpenPanel(); void ClosePanel(); void NewConversation(); void MaybeStartSession(); void SendHistory(const std::string& query); void SendComposerBatch();
+void OpenPanel(); void ClosePanel(); void NewConversation(); void MaybeStartSession(); void SendHistory(const std::string& query);
 // Keyboard focus back to the page of the chat. Never through the host's FocusPage(): its Check() treats a refusal of
 // MoveFocus as fatal (it stops the whole browser), and WebView2 does refuse while a modal owns the window.
 void FocusChatPage() {
@@ -406,13 +406,6 @@ void DetectFolder() {
                  AskPageMarks(origin, 20);   // the page's own files must be in the folder (3 s at most for the mode's script)
              });
 }
-int CountPending() { return pendingAnnotations; }
-void RefreshPending() {
-    if (!site.local || site.origin.empty()) return;
-    auto n = std::make_shared<int>(0); const std::string origin = site.origin;
-    Ann::Run([n, origin] { BA::ListQuery q; q.site = origin; q.status = BA::Status::Open; *n = int(Ann::Store().List(q).entries.size()); }, [n] { if (*n != pendingAnnotations) { pendingAnnotations = *n; SendState(); } });
-}
-
 // ---------------------------------------------------------------- conversations
 void RebuildTurnMaps() {
     checkpointOfTurn.clear(); snapshotOfTurn.clear(); convo.turnSeq = 0;
@@ -647,16 +640,13 @@ void EnsureInit() {
     std::wstring exe = Ann::BrowserExe(); const auto slash = exe.find_last_of(L'\\');
     view.Init(std::move(h), (slash == std::wstring::npos ? std::wstring(L".") : exe.substr(0, slash)) + L"\\assets", !Ann::EnvVar(L"BROWSER_CHAT_DEVTOOLS").empty() && TestMode());
 }
-bool preparedOtherSite = false;   // PrepareChat moved to another site (the composer's batch of the old one leaves)
 std::string preparedNonce;        // the mode's page the chat was last prepared for (Mode Commentaire: once per page, not per bubble)
 // `force` (the panel's opening): every opening looks again (folder detection: a port is reused by other projects).
 void PrepareChat(const std::shared_ptr<Tab>& t, bool force = false) {
     EnsureInit();
     const auto now = ChatLocal::Classify(U8(t->uri));
-    if (!force && ChatTab() == t && now.origin == site.origin && preparedNonce == Ann::s.nonce) { preparedOtherSite = false; return; }
+    if (!force && ChatTab() == t && now.origin == site.origin && preparedNonce == Ann::s.nonce) return;
     chatTab = t; preparedNonce = Ann::s.nonce;
-    const bool otherSite = now.origin != site.origin;
-    if (otherSite) composerBatch = Batch{};   // a batch belongs to its site
     suggestion = {}; suggestionAsked = false;   // every opening looks again: a port is reused by other projects from one day to the next
     site = now; LoadProjects(); folder.clear(); folderAsk = false; folderChosen = false; folderInstead.clear();
     if (site.local && !site.file) if (auto it = projects.sites.find(site.origin); it != projects.sites.end()) {
@@ -669,15 +659,14 @@ void PrepareChat(const std::shared_ptr<Tab>& t, bool force = false) {
     if (!turn.active && (convo.data.head.id.empty() || convo.data.head.origin != site.origin)) NewConversation();
     if (post) KillTimer(post, DestroyTimer);
     if (Ann::connect.Visible()) Ann::connect.Close(false);   // the chat was asked for: the « Connecter un agent » modal (MCP) steps back
-    preparedOtherSite = otherSite;
-    DetectAgents([] { MaybeStartSession(); }); DetectFolder(); RefreshPending(); RefreshAnchored();
+    DetectAgents([] { MaybeStartSession(); }); DetectFolder(); RefreshAnchored();
 }
 void OpenPanel() {
     auto t = Active(); if (!t || !Ann::s.active || Ann::ModeTab() != t || halted || privateWindow) return;
     if (Open()) return;
     if (BubbleOpen()) CloseBubble(false);
     stats = OpenStats{}; stats.requestedAt = Ann::NowMs();
-    PrepareChat(t, true); const bool otherSite = preparedOtherSite;
+    PrepareChat(t, true);
     const bool reduced = Ann::Reduced(); const auto at = NativeChrome::Motion::Now();
     panelState = PanelState::Opening; slide.Snap(reduced ? 1.f : 0.f); slide.Set(1.f, at, reduced ? 0 : SlideInMs, AUI::Curves::band);
     ArmAgentIdle();   // an open panel gives the agent its long idle delay back
@@ -688,7 +677,6 @@ void OpenPanel() {
     picking = site.local && !site.file;
     Ann::LauncherSync(); SyncChromeBits();
     if (reduced) panelState = PanelState::Open; else AUI::Animator::Get().Request(&slideClient);
-    if (panelReady && otherSite) SendComposerBatch();   // empty: the block of the other site leaves the composer
     if (panelReady) { SendLayout(false); SendThread(); SendState(); SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && !Ann::s.paused)); Send("pick.state", std::move(p)); SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus(); }
     Ann::Announce(site.local && !site.file ? std::wstring(TR(chat_announce_open)) : TRF(chat_announce_unavailable, site.file ? TR(chat_disabled_file) : TR(chat_disabled_not_local)));
     Diag(L"panel opened on " + W(site.origin) + (site.local ? L"" : L" (not local: disabled)") + (folder.empty() ? L", no folder yet" : L", folder " + folder));
@@ -833,7 +821,6 @@ void KeepAnnotation(const std::string& text, const std::vector<std::string>& ids
                 Diag(L"annotation kept (Ctrl+Entrée) " + W(id) + L": write " + W(BA::CodeName(out->code)));
                 if (out->ok()) { left->ids.push_back(id); annotationNotes[id] = note; } else { left->ok = false; left->why = U8(AnnotationProblem::Text(*out)); }
                 if (--left->n > 0) return;
-                Ann::RefreshStatus(); RefreshPending();
                 if (left->ids.empty()) { Problem p; p.title = TR(chat_err_keep_title); p.message = TRF(chat_err_keep, W(left->why)); p.retry = false; SendError(p, "", "composer", false); return; }
                 SJ::Value m = SJ::Value::Obj(); m.Set("id", Str(keptId)); m.Set("text", Str(text)); m.Set("elements", *shared);
                 SJ::Value ann = SJ::Value::Arr(); for (const auto& i : left->ids) ann.Push(Str(i)); m.Set("annotations", std::move(ann));
@@ -881,8 +868,6 @@ void OnPanelMessage(const std::string& json) {
         for (const auto& a : composerAttachments) { SJ::Value x = SJ::Value::Obj(); x.Set("attachment", AttachmentRef(a.second)); Send("attachment.added", std::move(x)); }
         for (const auto& s : activeStrips) Send("strip", s.second);
         // the cards still waiting were sent again by SendThread (after its thread.reset)
-        if (!composerBatch.items.empty()) SendComposerBatch();                               // the batch posed in the composer
-        if (batchOwed) { batchOwed = false; PoseBatch(L"asked from the browser"); }   // i18n-exempt: log detail
         {   SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && !Ann::s.paused)); Send("pick.state", std::move(p)); }
         if (Open() || BubbleOpen()) { SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus(); }
         return;
@@ -890,18 +875,8 @@ void OnPanelMessage(const std::string& json) {
     if (!panelReady) return;
     if (type == "send") {
         const std::string text = m.Text("text", 400000);
-        if (const auto* an = v.Get("annotations"); an && an->IsObject()) {   // « Traiter les annotations »: the ticked lines of the batch (the text is what the user adds, it may be empty)
-            const Msg am{*an}; const std::string batch = am.Id("batchId"); const auto ids = am.Ids("ids", 50);
-            if (!batch.empty() && !ids.empty()) {
-                if (!Usable()) return;
-                if (turn.active) { Queued q; q.id = NewId("q_"); q.text = text; q.batchId = batch; q.annotations = ids; queue.push_back(std::move(q)); SendQueue(); }
-                else StartBatchTurn(text, batch, ids);
-                return;
-            }
-        }
         { auto ids = m.Ids("elements", 10); extern bool HoldForAnchor(const std::string&, const std::vector<std::string>&, const std::vector<std::string>&, bool); if (HoldForAnchor(text, ids, m.Ids("attachments", 10), false)) return; AddAnchorElement(ids); SendOrQueue(text, ids, m.Ids("attachments", 10)); } return;   // Mode Commentaire: + the bubble's element
     }
-    if (type == "annotations.request") { PoseBatch(L"/annotations"); return; }
     if (type == "annotate") { auto ids = m.Ids("elements", 10); extern bool HoldForAnchor(const std::string&, const std::vector<std::string>&, const std::vector<std::string>&, bool); if (HoldForAnchor(m.Text("text", 400000), ids, {}, true)) return; AddAnchorElement(ids); KeepAnnotation(m.Text("text", 400000), ids); return; }   // contract B 1.6: Ctrl+Entrée (+ the bubble's element)
     if (type == "element.hover") {   // R26 (P -> H, H2's peek): the element of a chip, shown in the page while it is hovered
         const std::string id = m.Text("id", 64); const auto* a = v.Get("active"); const bool active = a && a->IsBool() && a->boolean;
@@ -923,7 +898,6 @@ void OnPanelMessage(const std::string& json) {
         OnBubbleSize(int(w->number), int(h->number), {edge("overflowTop"), edge("overflowRight"), edge("overflowBottom"), edge("overflowLeft")}, rz && rz->IsBool() && rz->boolean);
         return;
     }
-    if (type == "annotation.show") { ShowAnnotation(m.Id("id")); return; }
     if (type == "stop") { StopTurn(); return; }
     if (type == "queue.sendNow") { const std::string id = m.Id("id"); for (auto it = queue.begin(); it != queue.end(); ++it) if (it->id == id) { Queued q = std::move(*it); queue.erase(it); queue.push_front(std::move(q)); break; } if (turn.active) StopTurn(); else ProcessQueue(); SendQueue(); return; }
     if (type == "queue.remove" && m.Id("id") == "held") { void CancelHeld(); CancelHeld(); return; }   // queue: the cross of a held message
@@ -1027,8 +1001,7 @@ void OnPanelMessage(const std::string& json) {
     }
     if (type == "suggestion.run") {
         const std::string id = m.Id("id");
-        if (id == "annotations") PoseBatch(L"suggestion");   // the batch goes to the composer: the user sees and picks what leaves (contract B 1.4)
-        else SendOrQueue(T8(id == "mobile" ? I18n::Id::chat_prompt_mobile : I18n::Id::chat_prompt_contrast), {}, {});
+        SendOrQueue(T8(id == "mobile" ? I18n::Id::chat_prompt_mobile : I18n::Id::chat_prompt_contrast), {}, {});
         return;
     }
     if (type == "copy") { const bool ok = CopyToClipboard(W(m.Text("text", 400000))); SJ::Value r = SJ::Value::Obj(); r.Set("ok", SJ::Value::Bool(ok)); Send("copy.done", std::move(r)); return; }

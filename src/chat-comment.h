@@ -1,6 +1,6 @@
 #pragma once
 // Chat intégré — Mode Commentaire (design/chat-integration.md « Mode Commentaire », contract B 1.8 §19, Paper 18NS-0 …
-// 18IJ-0). Included by src/chat-host.h after the panel, the turn and the batch: same engine, other layout.
+// 18IJ-0). Included by src/chat-host.h after the panel and the turn: same engine, other layout.
 //
 //   switch    the band's two icons (Paper 1AYP-0): Commentaire (a bubble on the element clicked) | Panneau (the chat at
 //             the right, as before). Remembered for all sites (projects.json « layout »).
