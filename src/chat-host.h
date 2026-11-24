@@ -140,6 +140,7 @@ struct Turn {
     struct OurCall { ChatTools::Ours tool = ChatTools::Ours::None; std::string annotation; int count = -1; bool done = false; };
     std::map<std::string, OurCall> ourCalls;   // tool call id -> one of our annotation tools (its step line is ours to word)
     std::map<std::string, std::string> toolKinds;   // tool call id -> its ACP kind (an update may not repeat it)
+    std::set<std::string> refusedTools, droppedTools;   // tool call id -> its request was refused by the user / withdrawn unanswered (stop): the step never happened
     std::vector<std::string> agentFiles;            // files the agent's edit / delete / move calls named (relative to the folder): the only ones the turn counts and undoes
 };
 struct Convo { ChatStore::Conversation data; int turnSeq = 0; bool preambleSent = false; std::string recap; };   // recap (R42): given with the next prompt to the agent that took the chat over

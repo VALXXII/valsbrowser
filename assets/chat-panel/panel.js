@@ -2298,7 +2298,7 @@
     if (!r) return;
     for (const k of ["title", "status", "locations", "diff"]) if (m[k] != null) r.x[k] = m[k];
     if (m.summary != null) r.x.summary = validSummary(m.summary);
-    if (m.refused === true) r.x.refused = true;
+    if (m.refused === true || (m.status === "failed" && r.x.dropped)) r.x.refused = true;
     queueRender(r.seg);
     refreshFollow(r.t);
     if (m.status === "failed" && !r.x.refused) say("Étape en échec : " + r.x.title);
@@ -2969,7 +2969,12 @@
     },
     "message.agentChunk": onChunk, thought: onThought, toolCall: onToolCall, toolCallUpdate: onToolUpdate, plan: onPlan,
     "permission.request": onPermission,
-    "permission.cancel"(m) { S.perms = S.perms.filter((p) => p.requestId !== m.requestId); refreshWaiting(); renderDock(true); },
+    "permission.cancel"(m) {
+      // withdrawn unanswered (the turn was stopped while the card waited): if its step then fails, it never happened
+      const p = S.perms.find((x) => x.requestId === m.requestId), r = p && p.toolCallId ? S.tools.get(p.toolCallId) : null;
+      if (r) { r.x.dropped = true; if (r.x.status === "failed") r.x.refused = true; }
+      S.perms = S.perms.filter((x) => x.requestId !== m.requestId); refreshWaiting(); renderDock(true);
+    },
     "turn.end": onTurnEnd, "turn.undone": onUndone, error: onError,
     strip(m) {
       if (m.clear) S.strips.delete(m.id);

@@ -478,6 +478,21 @@ void WordOurCall(Turn::OurCall& call, const Acp::ToolCall& t, SJ::Value& message
     message.Set("kind", Str(std::string("other")));
     if (call.done) message.Set("summary", OurToolSummary(call.tool, call.annotation, call.count));
 }
+// The step a request was for, once the request is over without an agreement. Refused by the user: the step never happened
+// — it is kept as `refused` in the conversation and the page says nothing of it (no « A modifié », no « échec »), now and
+// when the conversation is opened again. Withdrawn unanswered (the turn stopped while the card waited): the same, once
+// the agent reports the step as failed.
+void MarkRefused(const std::string& toolId) {
+    if (toolId.empty() || !turn.refusedTools.insert(toolId).second) return;
+    if (auto it = turn.itemOf.find("tool:" + toolId); it != turn.itemOf.end()) convo.data.items[it->second].Set("refused", SJ::Value::Bool(true));
+    SJ::Value m = SJ::Value::Obj(); m.Set("id", Str(toolId)); m.Set("refused", SJ::Value::Bool(true)); Send("toolCallUpdate", std::move(m));
+}
+std::string AskedTool(const SJ::Value& asked) { const auto* t = asked.Get("toolCallId"); return t && t->IsString() ? t->string : std::string(); }
+bool RefusingOption(const SJ::Value& asked, const std::string& option) {
+    const auto* opts = asked.Get("options"); if (!opts || !opts->IsArray()) return false;
+    for (const auto& o : opts->items) { const auto* id = o.Get("optionId"); const auto* kind = o.Get("kind"); if (id && kind && id->IsString() && kind->IsString() && id->string == option) return kind->string.rfind("reject", 0) == 0; }
+    return false;
+}
 void OnPermission(const Acp::PermissionRequest& p) {
     if (!turn.active) { if (session) session->RespondPermission(p.requestId, ""); return; }
     CloseThought(); turn.lastMessageId.clear();
@@ -546,6 +561,7 @@ void OnEvent(const Acp::Event& e) {
         if (!turn.active || !ChatStore::ValidId(e.tool.id)) break;
         CloseThought(); turn.lastMessageId.clear(); NoteAgentFiles(e.tool);
         SJ::Value m = ToolJson(e.tool, false); m.Set("turnId", Str(turn.id));
+        if (turn.refusedTools.count(e.tool.id)) m.Set("refused", SJ::Value::Bool(true));
         if (const auto ours = OurToolOf(e.tool); ours != ChatTools::Ours::None) {   // one of our annotation tools: the step says it in words
             auto& call = turn.ourCalls[e.tool.id]; call.tool = ours; if (call.annotation.empty()) call.annotation = ChatTools::AnnotationIdOf(e.tool.rawInput);
             WordOurCall(call, e.tool, m);
@@ -557,18 +573,21 @@ void OnEvent(const Acp::Event& e) {
         if (!turn.active || !ChatStore::ValidId(e.tool.id)) break;
         NoteAgentFiles(e.tool);
         SJ::Value m = ToolJson(e.tool, true);
+        if (e.tool.status == "failed" && turn.droppedTools.count(e.tool.id)) turn.refusedTools.insert(e.tool.id);   // its request was withdrawn unanswered: it never happened
+        if (turn.refusedTools.count(e.tool.id)) m.Set("refused", SJ::Value::Bool(true));
         if (auto call = turn.ourCalls.find(e.tool.id); call != turn.ourCalls.end() && call->second.tool != ChatTools::Ours::None) {
             if (call->second.annotation.empty()) call->second.annotation = ChatTools::AnnotationIdOf(e.tool.rawInput);
             WordOurCall(call->second, e.tool, m);
         }
         if (auto it = turn.itemOf.find("tool:" + e.tool.id); it != turn.itemOf.end()) { auto& item = convo.data.items[it->second]; for (const auto& f : m.members) if (f.first != "diff") item.Set(f.first, f.second); }
-        else { SJ::Value full = ToolJson(e.tool, false); full.Set("turnId", Str(turn.id)); turn.itemOf["tool:" + e.tool.id] = Keep("toolCall", full); Send("toolCall", std::move(full)); break; }
+        else { SJ::Value full = ToolJson(e.tool, false); full.Set("turnId", Str(turn.id)); if (turn.refusedTools.count(e.tool.id)) full.Set("refused", SJ::Value::Bool(true)); turn.itemOf["tool:" + e.tool.id] = Keep("toolCall", full); Send("toolCall", std::move(full)); break; }
         Send("toolCallUpdate", std::move(m));
         break; }
     case T::Plan: if (turn.active) { turn.lastPlan = e.plan; SendPlan(e.plan, false); } break;
     case T::PermissionRequest: OnPermission(e.permission); break;
     case T::PermissionDismissed: {
         if (e.permission.requestId == turn.planPermission) { turn.planPermission.clear(); break; }
+        if (const auto w = waitingPermissions.find(e.permission.requestId); w != waitingPermissions.end()) if (const std::string tool = AskedTool(w->second); !tool.empty()) turn.droppedTools.insert(tool);
         waitingPermissions.erase(e.permission.requestId);
         SJ::Value m = SJ::Value::Obj(); m.Set("requestId", Str(e.permission.requestId)); Send("permission.cancel", std::move(m)); break; }
     case T::ModesChanged: info.modes = e.modes; KeepModeAfterPlan(); SendState(); ModeSettled(); break;

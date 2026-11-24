@@ -488,5 +488,24 @@ oe5 = block_after(comment, 'bool OpenEarly(')
 check('const bool areaMoving = Shown();' in oe5 and oe5.count('areaMoving') >= 4 and 'holdForMeasure = stale || areaMoving' in oe5,
       'M5: a click while the chat panel is still on screen — the bubble waits for the first measure of the page')
 
+# Permission circuit (owner's trial 0.3.952, 24 Nov 2026): one answer per request; a refused step is kept as refused
+respond = block_after(ui, 'if (type == "permission.respond")')
+check(0 <= respond.find('waitingPermissions.find(request)') < respond.find('if (asked == waitingPermissions.end())') < respond.find('session->RespondPermission(request, option)')
+      and respond.count('session->RespondPermission(') == 1 and respond.find('session->RespondPermission(request, option)') < respond.find('waitingPermissions.erase(request)'),
+      'permission: one answer per request — a request that no longer waits (answered, withdrawn) is answered nothing more')
+check(0 <= respond.find('RefusingOption(asked->second, option)') < respond.find('session->RespondPermission(request, option)') < respond.find('if (refused) MarkRefused(tool);'),
+      'permission: a refusal (the option\'s own kind, read from the request as it was sent) marks the step it was for')
+mark = block_after(turn, 'void MarkRefused(const std::string& toolId) {')
+check('turn.refusedTools.insert(toolId)' in mark and 'convo.data.items[it->second].Set("refused", SJ::Value::Bool(true))' in mark and 'Send("toolCallUpdate"' in mark,
+      'permission: a refused step is kept as refused in the conversation (opened again, it is not shown) and the page is told')
+tool_call = block_after(turn, 'case T::ToolCall: {'); tool_update = block_after(turn, 'case T::ToolCallUpdate: {')
+check('turn.refusedTools.count(e.tool.id)' in tool_call and tool_update.count('turn.refusedTools.count(e.tool.id)') >= 2
+      and 'e.tool.status == "failed" && turn.droppedTools.count(e.tool.id)' in tool_update,
+      'permission: the agent\'s later updates of a refused step keep it refused; a step whose request was withdrawn unanswered and that fails never happened')
+check('turn.droppedTools.insert(tool)' in block_after(turn, 'case T::PermissionDismissed: {'), 'permission: a request withdrawn unanswered (turn stopped) is remembered for its step')
+on_perm = block_after(turn, 'void OnPermission(const Acp::PermissionRequest& p) {')
+check(on_perm.count('Send("permission.request"') == 1 and 'waitingPermissions[p.requestId] = m;' in on_perm and 'm.Set("toolCallId"' in on_perm,
+      'permission: the agent\'s request is sent to the page once, with its tool call, and kept while it waits')
+
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

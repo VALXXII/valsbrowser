@@ -1371,6 +1371,36 @@ try:
         p_tool("in_progress"); bs = cdp.js("document.querySelector('#app').innerText")
         check("Modifie style.css…" in bs, "bubble (point 3): allowed, the status reads « Modifie style.css… »", bs[-160:].replace("\n", " | "))
 
+        # the host says a step was refused (answered from the other surface, a conversation shown aside): the page follows
+        load("6.10-travaille"); p_tool("pending", True); p_ask()
+        cdp.js("window.devHost.send({type:'toolCallUpdate',id:'e1',refused:true})"); cdp.js("window.devHost.send({type:'permission.cancel',requestId:'p1'})"); p_tool("failed")
+        t5 = p_text()
+        check("modifié" not in t5 and "échec" not in t5 and "Veut modifier" not in t5 and cdp.js("!document.querySelector('.perm')"), "thread: a step the host marks as refused is not shown either", str(p_steps()))
+        # the turn stopped while the card waited: the request is withdrawn, its step fails — nothing is said of the edit
+        load("6.10-travaille"); p_tool("pending", True); p_ask()
+        cdp.js("window.devHost.send({type:'permission.cancel',requestId:'p1'})"); time.sleep(.15); p_tool("failed")
+        t6 = p_text()
+        check("modifié" not in t6 and "échec" not in t6 and cdp.js("!document.querySelector('.perm')"), "thread: a request withdrawn unanswered (turn stopped) whose step fails — nothing is said of the edit", str(p_steps()))
+        # …but a request withdrawn whose step then really runs is said as it is
+        load("6.10-travaille"); p_tool("pending", True); p_ask()
+        cdp.js("window.devHost.send({type:'permission.cancel',requestId:'p1'})"); time.sleep(.15); p_tool("completed")
+        check(any("A modifié style.css" in x for x in p_steps()), "thread: a request withdrawn whose step is then done by the agent reads « A modifié style.css »", str(p_steps()))
+        # --- several requests in a row (SEC-23): a double click on « Autoriser » answers the first only; the second card is armed on its own
+        load("6.10-travaille"); p_tool("pending", True); p_ask("p1"); p_ask("p2", "e2"); p_arm(".perm")
+        of0 = cdp.js("(document.querySelector('.perm-of')||{}).textContent")
+        bx = p_box(".perm .btn.primary"); x, y = bx[0] + bx[2] / 2, bx[1] + bx[3] / 2
+        cdp.call("Input.dispatchMouseEvent", type="mouseMoved", x=x, y=y)
+        for n in (1, 2):
+            cdp.call("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button="left", clickCount=n)
+            cdp.call("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button="left", clickCount=n); time.sleep(.06)
+        time.sleep(.2); r2 = p_resp()
+        two = cdp.js("[document.querySelectorAll('.perm').length, !!document.querySelector('.perm-of'), !!document.activeElement.closest('.perm')]")
+        check(of0 == "1 sur 2" and [m["requestId"] for m in r2] == ["p1"] and two == [1, False, True],
+              "permission (several in a row, SEC-23): a double click on « Autoriser » answers the first request only; the next card is there, unanswered, the keyboard in it", f"{of0} {r2} {two}")
+        time.sleep(.65); bx = p_box(".perm .btn.primary"); p_mouse(bx[0] + bx[2] / 2, bx[1] + bx[3] / 2)
+        check([m["requestId"] for m in p_resp()] == ["p1", "p2"] and cdp.js("!document.querySelector('.perm') && document.activeElement.id === 'composer-input'"),
+              "permission (several in a row): 600 ms later one click answers the second; the input is back with the keyboard", str(p_resp()))
+
         # --- the bubble's card is a real card (Designer, 24 Nov 2026: Paper 1ANU-0 / « App réelle · Mode Commentaire 4 »), whole at
         # every display scale: #292929, 1 px border, radius 12, 10 px around its three rows, 12 px from the bubble's edges
         card_js = ("(()=>{const a=document.getElementById('app').getBoundingClientRect(),c=document.querySelector('.bperm'),r=c.getBoundingClientRect(),s=getComputedStyle(c);"

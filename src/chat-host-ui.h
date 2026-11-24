@@ -957,7 +957,12 @@ void OnPanelMessage(const std::string& json) {
     if (type == "permission.respond") {
         const std::string request = m.Id("requestId"), option = m.Id("optionId"); if (request.empty() || !session) return;
         if (In(ModesOf(agentId, agentInfo[agentId]).map.never, option)) { Diag(L"permission answer refused: a mode that asks for nothing"); return; }   // SEC-02 (review): never forwarded, whatever the page sends
+        // one answer per request: a request that no longer waits (answered, withdrawn) is answered nothing more
+        const auto asked = waitingPermissions.find(request);
+        if (asked == waitingPermissions.end()) { Diag(L"permission answer ignored: the request no longer waits"); return; }
+        const bool refused = RefusingOption(asked->second, option); const std::string tool = AskedTool(asked->second);
         session->RespondPermission(request, option); waitingPermissions.erase(request); Diag(L"permission answered: " + W(option));
+        if (refused) MarkRefused(tool);
         if (const std::string text = m.Text("message", 400000); text.find_first_not_of(" \t\r\n") != std::string::npos) { queue.push_front({NewId("q_"), text, {}, {}}); SendQueue(); }
         return;
     }
