@@ -499,7 +499,7 @@
     old: () => ({ icon: "download", ink: "grey", status: "Version trop ancienne", action: { id: "install", label: "Mettre à jour", strong: true } }),
     installing: () => ({ icon: "download", ink: "accent", animate: true, status: "Installation…" }),
     signedOut: () => ({ icon: "wifi", ink: "grey", status: "Pas connecté", action: { id: "signIn", label: "Se connecter", strong: true } }),
-    signingIn: () => ({ icon: "wifi", ink: "accent", status: "Connexion…" }),
+    signingIn: () => ({ icon: "wifi", ink: "accent", status: "Connexion…", action: { id: "cancel", label: "Annuler", strong: false } }),
     failed: () => ({ icon: "error", ink: "danger", status: "Échec de l'installation", manual: "Installer moi-même ↗", action: { id: "retry", label: "Réessayer", strong: false } }),
     signInFailed: () => ({ icon: "error", ink: "danger", status: "Échec de la connexion", action: { id: "retry", label: "Réessayer", strong: false } }),
   };

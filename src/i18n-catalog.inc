@@ -1883,4 +1883,5 @@ I18N(ton_agent_row_install_error, L"Échec de l'installation", L"Installation fa
 I18N(ton_agent_row_signin_error, L"Échec de la connexion", L"Sign-in failed")
 I18N(ton_agent_row_install, L"Installer", L"Install")
 I18N(ton_agent_row_signin, L"Se connecter", L"Sign in")
+I18N(ton_agent_row_cancel, L"Annuler", L"Cancel")
 I18N(ton_agent_row_update, L"Mettre à jour", L"Update")

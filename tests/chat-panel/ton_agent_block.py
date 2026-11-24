@@ -123,12 +123,6 @@ try:
         check(ok and not errs and not logs, f"{name}: played without error", json.dumps([e["params"] for e in errs] + logs)[:400])
         return ok
     def posted(types): return cdp.js(f"window.__posted.filter(m=>{json.dumps(types)}.includes(m.type)).map(m=>{{const o=Object.assign({{}},m);delete o.v;return o}})")
-    block = lambda: cdp.js("""(()=>{const t=document.querySelector('.tas');if(!t||t.hidden||!t.getClientRects().length)return null;const r=(n)=>{const b=n.getBoundingClientRect();return [Math.round(b.left),Math.round(b.top),Math.round(b.width),Math.round(b.height)]};
-      return {title:(t.querySelector('.tas-h')||{}).textContent,sub:(t.querySelector('.tas-sub')||{}).textContent,note:(t.querySelector('.tas-note')||{}).textContent,
-        trouble:(t.querySelector('.tas-trouble p')||{}).textContent||'',link:(t.querySelector('.tas-link')||{}).textContent||'',
-        rows:Array.from(t.querySelectorAll('.tas-row')).map(n=>({name:n.querySelector('.tas-nm').textContent,status:n.querySelector('.tas-st span').textContent,dot:getComputedStyle(n.querySelector('.tas-dot')).backgroundColor,
-          btn:n.querySelector('.tas-btn')?n.querySelector('.tas-btn').textContent:'',strong:!!n.querySelector('.tas-btn.strong'),busy:!!n.querySelector('.tas-btn.busy'),logo:!!n.querySelector('.tas-logo svg'),box:r(n)})),
-        box:r(t),h2:r(t.querySelector('.tas-h')),noteBox:r(t.querySelector('.tas-note'))}})()""")
     def shot(name, clip):
         cdp.js("document.activeElement&&document.activeElement.blur()"); time.sleep(.05)
         path = os.path.join(OUT, name + ".png")
@@ -150,36 +144,43 @@ try:
         print(f"     render vs Paper: mean difference {mean:.2f} / 255 — {out}")
         return mean
 
-    GREY, AMBER, DANGER, ACCENT_DOT = "rgb(140, 140, 140)", "rgb(230, 172, 61)", "rgb(255, 123, 110)", "rgb(47, 209, 217)"
+    block = lambda: cdp.js("""(()=>{const t=document.querySelector('.tas');if(!t||t.hidden||!t.getClientRects().length)return null;const r=(n)=>{const b=n.getBoundingClientRect();return [Math.round(b.left),Math.round(b.top),Math.round(b.width),Math.round(b.height)]};
+      return {title:(t.querySelector('.tas-h')||{}).textContent,sub:(t.querySelector('.tas-sub')||{}).textContent,note:(t.querySelector('.tas-note')||{}).textContent,
+        rows:Array.from(t.querySelectorAll('.tas-row')).map(n=>{const st=n.querySelector('.tas-st'),b=n.querySelector('.tas-btn');return {name:n.querySelector('.tas-nm').textContent,status:st.lastChild.textContent,
+          ink:['grey','accent','danger'].find(k=>st.classList.contains(k)),color:getComputedStyle(st).color,icon:!!st.querySelector('svg'),anim:!!st.querySelector('svg.tas-anim'),dot:!!n.querySelector('.tas-dot'),
+          note:(n.querySelector('.tas-rn')||{}).textContent||'',link:(n.querySelector('.tas-link')||{}).textContent||'',btn:b?b.textContent:'',strong:!!(b&&b.classList.contains('strong')),logo:!!n.querySelector('.tas-logo svg'),box:r(n)}}),
+        box:r(t),h2:r(t.querySelector('.tas-h')),noteBox:r(t.querySelector('.tas-note'))}})()""")
+    row = lambda b, i: (b["rows"][i]["status"], b["rows"][i]["ink"], b["rows"][i]["icon"], b["rows"][i]["btn"], b["rows"][i]["strong"]) if b else None
+    GREY, ACCENT, DANGER = "rgb(166, 166, 166)", "rgb(47, 209, 217)", "rgb(255, 123, 110)"
     # ---------------------------------------------------------------- panel: the board (Claude Code absent, Codex to sign in)
     load("ta-premier-message")
     b = block()
     check(b is not None and cdp.js("document.querySelector('.empty').hidden"), "panel: the block in the place of « Que voulez-vous changer ? » (empty chat, no agent ready)")
     check(b and b["title"] == "Choisissez votre agent" and b["sub"] == "Le chat utilise Claude Code ou Codex, installés sur cet ordinateur." and b["note"] == "Claude Code demande un compte Claude payant (Pro, Max, Team ou Enterprise).",
           "panel: the board's words (title, line, the paid Claude account)", b)
-    rows = b["rows"] if b else []
-    check([(r["name"], r["status"], r["dot"], r["btn"], r["strong"], r["logo"]) for r in rows] == [("Claude Code", "Pas installé", GREY, "Installer", True, True), ("Codex", "Installé · pas connecté", AMBER, "Se connecter", False, True)],
-          "panel: the rows — Claude Code « Pas installé » grey + strong « Installer »; Codex « Installé · pas connecté » amber + « Se connecter »", rows)
+    check(b and row(b, 0) == ("Pas installé", "grey", True, "Installer", True) and row(b, 1) == ("Pas connecté", "grey", True, "Se connecter", True),
+          "panel: the rows — ⤓ « Pas installé » + strong « Installer »; 📶 « Pas connecté » + strong « Se connecter » (one strong button, on the missing action)", b and b["rows"])
+    check(b and not any(r["dot"] for r in b["rows"]) and all(r["logo"] for r in b["rows"]) and b["rows"][0]["color"] == GREY, "panel: no coloured dot — the state is an icon and its words (grey)", b and b["rows"])
     check(not cdp.js("Array.from(document.querySelectorAll('.dock .strip')).some(s=>/pas installé/.test(s.textContent))"), "panel: no « n'est pas installé » strip under it (the block says it)")
-    v = cdp.js("""(()=>{const t=document.querySelector('.tas');const q=(s)=>t.querySelector(s);const c=(n)=>getComputedStyle(n);const card=q('.tas-card'),row=q('.tas-row'),logo=q('.tas-logo'),nm=q('.tas-nm'),st=q('.tas-st span'),dot=q('.tas-dot'),strong=q('.tas-btn.strong'),raised=q('.tas-btn:not(.strong)'),h=q('.tas-h'),sub=q('.tas-sub'),note=q('.tas-note');
+    v = cdp.js("""(()=>{const t=document.querySelector('.tas');const q=(s)=>t.querySelector(s);const c=(n)=>getComputedStyle(n);const card=q('.tas-card'),row=q('.tas-row'),logo=q('.tas-logo'),nm=q('.tas-nm'),st=q('.tas-st'),ic=q('.tas-st svg'),strong=q('.tas-btn.strong'),h=q('.tas-h'),sub=q('.tas-sub'),note=q('.tas-note');
       const b=(n)=>n.getBoundingClientRect();
       return {wrap:[c(t).paddingTop,c(t).paddingLeft,c(t).rowGap],h:[c(h).fontSize,c(h).lineHeight,c(h).color],sub:[c(sub).fontSize,c(sub).lineHeight,c(sub).color],note:[c(note).fontSize,c(note).lineHeight,c(note).color],
         card:[c(card).backgroundColor,c(card).borderTopColor,c(card).borderTopWidth,c(card).borderTopLeftRadius,c(card).paddingTop,c(card).rowGap],
         row:[c(row).paddingTop,c(row).borderTopLeftRadius,c(row).columnGap,Math.round(b(row).height)],logo:[b(logo).width,b(logo).height,c(logo).backgroundColor,c(logo).borderTopLeftRadius,b(logo.querySelector('svg')).width],
-        nm:[c(nm).fontSize,c(nm).lineHeight,c(nm).fontWeight,c(nm).color],st:[c(st).fontSize,c(st).lineHeight,c(st).color],dot:[b(dot).width,b(dot).height,c(dot).borderTopLeftRadius],
-        strong:[b(strong).height,c(strong).paddingLeft,c(strong).borderTopLeftRadius,c(strong).backgroundColor,c(strong).fontSize,c(strong).lineHeight,c(strong).fontWeight],raised:[c(raised).backgroundColor]}})()""")
+        nm:[c(nm).fontSize,c(nm).lineHeight,c(nm).fontWeight,c(nm).color],st:[c(st).fontSize,c(st).lineHeight,c(st).color,c(st).columnGap,b(ic).width],
+        strong:[b(strong).height,c(strong).paddingLeft,c(strong).borderTopLeftRadius,c(strong).backgroundColor,c(strong).fontSize,c(strong).lineHeight,c(strong).fontWeight]}})()""")
     exp = {"wrap": ["16px", "12px", "12px"], "h": ["16px", "22px", "rgb(255, 255, 255)"], "sub": ["12px", "17px", "rgb(166, 166, 166)"], "note": ["12px", "17px", "rgb(140, 140, 140)"],
            "card": ["rgb(28, 28, 28)", "rgb(38, 38, 38)", "1px", "12px", "4px", "2px"], "row": ["10px", "10px", "10px", 56], "logo": [32, 32, "rgb(38, 38, 38)", "8px", 16],
-           "nm": ["14px", "18px", "500", "rgb(255, 255, 255)"], "st": ["12px", "16px", "rgb(166, 166, 166)"], "dot": [6, 6, "3px"],
-           "strong": [28, "10px", "6px", "rgb(0, 153, 160)", "13px", "16px", "500"], "raised": ["rgb(42, 42, 42)"]}
+           "nm": ["14px", "18px", "500", "rgb(255, 255, 255)"], "st": ["12px", "16px", GREY, "4px", 14],
+           "strong": [28, "10px", "6px", "rgb(0, 153, 160)", "13px", "16px", "500"]}
     for k in exp: check(v[k] == exp[k], f"panel: Paper values — {k}", f"page {v[k]} / Paper {exp[k]}")
-    # the render: the block, from its title to its note, against the board's (Paper 22N3-0: x 12 … 368, y 321 … 554, measured on the export)
+    # the render: the block, from its title to its note, against the board's (Paper 22N3-0: x 12 … 368, y 321 … 554, measured on
+    # the export). The board still draws the old dots and Codex's neutral button: the Designer's states differ there (informative).
     if b:
         top, bottom = b["h2"][1], b["noteBox"][1] + b["noteBox"][3]
         check(bottom - top == 233, "panel: the block 233 high, as the board's (title … note; rows 56)", bottom - top)
         mine = shot("panneau-premier-message", {"x": 0, "y": 0, "width": 380, "height": 664})
         compare(mine, os.path.join(PAPER, "chat-first-message@96.png"), (12, top, 368, top + 233), (12, 321, 368, 554), os.path.join(OUT, "cote-a-cote-panneau.png"))
-    # the buttons tell the host; Tab reaches them
     n0 = len(posted(["agents.setup.act"]))
     cdp.js("Array.from(document.querySelectorAll('.tas-btn')).find(b=>b.textContent==='Installer').click()"); time.sleep(.1)
     cdp.js("Array.from(document.querySelectorAll('.tas-btn')).find(b=>b.textContent==='Se connecter').click()"); time.sleep(.1)
@@ -187,25 +188,54 @@ try:
           "panel: « Installer » → install Claude Code (the click is the consent), « Se connecter » → sign in to Codex", posted(["agents.setup.act"]))
     check(cdp.js("Array.from(document.querySelectorAll('.tas-btn')).map(b=>b.getAttribute('aria-label'))") == ["Installer Claude Code", "Se connecter Codex"], "panel: the buttons name their agent for screen readers")
 
-    # ---------------------------------------------------------------- installing: the button waits
+    # ---------------------------------------------------------------- installing: the morph, no button
     load("ta-installation"); b = block()
-    check(b and b["rows"][0]["status"] == "Installation…" and b["rows"][0]["busy"] and b["rows"][0]["dot"] == ACCENT_DOT, "installing: « Installation… », the accent dot, the button busy", b and b["rows"][0])
-    n0 = len(posted(["agents.setup.act"])); cdp.js("document.querySelector('.tas-btn.busy').click()"); time.sleep(.1)
-    check(len(posted(["agents.setup.act"])) == n0 and cdp.js("document.querySelector('.tas-btn.busy').getAttribute('aria-disabled')") == "true", "installing: the busy button does nothing (aria-disabled)")
+    check(b and row(b, 0) == ("Installation…", "accent", True, "", False) and b["rows"][0]["color"] == ACCENT and not b["rows"][0]["anim"], "installing: ⤓ « Installation… » in the accent, no button (reduced motion: the still icon)", b and b["rows"][0])
     shot("panneau-installation", {"x": 0, "y": 0, "width": 380, "height": 664})
+    cdp.call("Emulation.setEmulatedMedia", features=[{"name": "prefers-reduced-motion", "value": "no-preference"}])
+    cdp.call("Page.navigate", url=f"{BASE}/chat-panel/dev.html?scenario=ta-installation")
+    cdp.js("new Promise(r=>{const f=()=>{if(window.__scenarioDone)r(true);else setTimeout(f,20)};f()})"); time.sleep(.5)
+    m = cdp.js("""(()=>{const s=document.querySelector('.tas-row .tas-st svg.tas-anim');if(!s)return null;const g=s.querySelectorAll('animateTransform'),a=s.querySelector('animate');
+      return {ring:a.getAttribute('values').split(';')[1].slice(0,12),dur:a.getAttribute('dur'),loop:g[1].getAttribute('dur'),bob:g[1].getAttribute('values'),repeat:g[1].getAttribute('repeatCount'),mask:!!s.querySelector('mask'),
+        moving:(()=>{const g=s.querySelector('animateTransform[id$=a]').parentNode;const t=g.transform.animVal;return t.length?t[0].matrix.f:null})()}})()""")
+    check(m and m["dur"] == "0.2333s" and m["loop"] == "1.3s" and m["bob"] == "0 30;0 42;0 30" and m["repeat"] == "indefinite" and m["mask"] and m["ring"].startswith("M128 40"),
+          "installing: the Downloads morph — tray → ring in 233 ms, the arrow bobbing 12 units every 1.3 s, a band cut around it", m)
+    time.sleep(.3); y1 = cdp.js("(()=>{const s=document.querySelector('.tas-row .tas-st svg.tas-anim');const g=s.querySelector('animateTransform[id$=a]').parentNode;const t=g.transform.animVal;return t.length?t[0].matrix.f:null})()")
+    time.sleep(.35); y2 = cdp.js("(()=>{const s=document.querySelector('.tas-row .tas-st svg.tas-anim');const g=s.querySelector('animateTransform[id$=a]').parentNode;const t=g.transform.animVal;return t.length?t[0].matrix.f:null})()")
+    check(y1 is not None and y2 is not None and y1 != y2 and 30 <= min(y1, y2) and max(y1, y2) <= 42, "installing: the arrow moves (between its rest and its low point)", [y1, y2])
+    cdp.js("devHost.send(" + json.dumps({"type": "agents.setup", "show": True, "title": "Choisissez votre agent", "body": "x", "note": "y", "accent": "#0099A0",
+          "rows": [{"id": "claude", "name": "Claude Code", "icon": "download", "ink": "accent", "animate": True, "status": "Installation…"}, {"id": "codex", "name": "Codex", "icon": "wifi", "ink": "grey", "status": "Pas connecté", "action": {"id": "signIn", "label": "Se connecter", "strong": True}}]}) + ")")
+    same = cdp.js("document.querySelector('.tas-row .tas-st svg.tas-anim').querySelector('mask').id")
+    check(same == "tasCut1", "installing: the block sent again (another agent changed) keeps the same running morph", same)
+    cdp.call("Emulation.setEmulatedMedia", features=[{"name": "prefers-reduced-motion", "value": "reduce"}])
 
-    # ---------------------------------------------------------------- the install failed
+    # ---------------------------------------------------------------- signing in: « Annuler »; too old: « Mettre à jour »
+    load("ta-connexion"); b = block()
+    check(b and row(b, 0) == ("Version trop ancienne", "grey", True, "Mettre à jour", True), "too old: ⤓ « Version trop ancienne » + strong « Mettre à jour »", b and b["rows"][0])
+    check(b and row(b, 1) == ("Connexion…", "accent", True, "Annuler", False), "signing in: 📶 « Connexion… » in the accent + neutral « Annuler »", b and b["rows"][1])
+    n0 = len(posted(["agents.setup.act"])); cdp.js("Array.from(document.querySelectorAll('.tas-btn')).find(b=>b.textContent==='Annuler').click()"); time.sleep(.1)
+    check(posted(["agents.setup.act"])[n0:] == [{"type": "agents.setup.act", "agentId": "codex", "action": "cancel"}], "signing in: « Annuler » tells the host (CancelSignIn)", posted(["agents.setup.act"])[n0:])
+    shot("panneau-connexion", {"x": 0, "y": 0, "width": 380, "height": 664})
+
+    # ---------------------------------------------------------------- the install failed / the sign-in failed
     load("ta-erreur"); b = block()
-    check(b and b["rows"][0]["status"] == "Erreur" and b["rows"][0]["dot"] == DANGER and b["rows"][0]["btn"] == "Réessayer" and b["rows"][0]["strong"],
-          "error: « Erreur » with the danger dot, « Réessayer » (strong)", b and b["rows"][0])
-    check(b and b["trouble"] == "L'installation n'a pas abouti.\nUn antivirus, un proxy d'entreprise ou PowerShell a pu la bloquer." and b["link"] == "Installer moi-même ↗", "error: the two lines and « Installer moi-même ↗ »", b)
+    check(b and row(b, 0) == ("Échec de l'installation", "danger", True, "Réessayer", False) and b["rows"][0]["color"] == DANGER and b["rows"][0]["link"] == "Installer moi-même ↗",
+          "error: ☹ « Échec de l'installation » (danger) + neutral « Réessayer » + « Installer moi-même ↗ » under it", b and b["rows"][0])
     n0 = len(posted(["agents.setup.manual", "agents.setup.act"]))
     cdp.js("document.querySelector('.tas-link').click()"); time.sleep(.1); cdp.js("Array.from(document.querySelectorAll('.tas-btn')).find(b=>b.textContent==='Réessayer').click()"); time.sleep(.1)
     check(posted(["agents.setup.manual", "agents.setup.act"])[n0:] == [{"type": "agents.setup.manual", "agentId": "claude"}, {"type": "agents.setup.act", "agentId": "claude", "action": "retry"}],
           "error: « Installer moi-même ↗ » and « Réessayer » tell the host", posted(["agents.setup.manual", "agents.setup.act"])[n0:])
+    lk = cdp.js("(()=>{const l=document.querySelector('.tas-link'),c=getComputedStyle(l);return [c.fontSize,c.lineHeight,c.textDecorationLine,c.color]})()")
+    check(lk == ["13px", "17px", "underline", "rgb(230, 230, 230)"], "error: the link 13 px, underlined", lk)
     shot("panneau-erreur", {"x": 0, "y": 0, "width": 380, "height": 664})
+    load("ta-connexion-echec"); b = block()
+    check(b and row(b, 1) == ("Échec de la connexion", "danger", True, "Réessayer", False) and not b["rows"][1]["link"], "sign-in failed: « Échec de la connexion » + « Réessayer », no « Installer moi-même »", b and b["rows"][1])
     load("ta-desktop"); b = block()
-    check(b and b["rows"][0]["status"] == "Claude Desktop seul · pas installé" and b["rows"][0]["btn"] == "Installer" and b["rows"][1]["status"] == "Pas installé", "Claude Desktop only: « Claude Desktop seul · pas installé », « Installer »", b and b["rows"])
+    check(b and row(b, 0) == ("Pas installé", "grey", True, "Installer", True) and b["rows"][0]["note"] == "L'appli Claude est installée, mais le chat a besoin de Claude Code (même compte).",
+          "Claude Desktop only: « Pas installé » + its 13 px note", b and b["rows"][0])
+    rn = cdp.js("(()=>{const c=getComputedStyle(document.querySelector('.tas-rn'));return [c.fontSize,c.color]})()")
+    check(rn == ["13px", "rgb(140, 140, 140)"], "Claude Desktop only: the note 13 px #8C8C8C", rn)
+    shot("panneau-desktop", {"x": 0, "y": 0, "width": 380, "height": 664})
 
     # ---------------------------------------------------------------- ready, or a thread: no block
     load("ta-pret")
@@ -214,9 +244,10 @@ try:
     check(block() is None and not cdp.js("document.querySelector('.log').hidden"), "a chat with messages: no block over the thread")
     strip = cdp.js("(()=>{const s=Array.from(document.querySelectorAll('.dock .strip')).find(s=>/pas installé/.test(s.textContent));return s?s.textContent:null})()")
     check(strip is not None and "Installer" in strip, "a chat with messages: the « pas installé » strip stays, with « Installer »", strip)
-    n0 = len(posted(["agents.setup.open", "agent.prepare"]))
-    cdp.js("Array.from(document.querySelectorAll('.dock .strip .btn-s')).find(b=>b.textContent==='Installer').click()"); time.sleep(.1)
-    check(posted(["agents.setup.open", "agent.prepare"])[n0:] == [{"type": "agents.setup.open"}], "the strip's « Installer » opens the « Ton agent » screen (never the old download)", posted(["agents.setup.open", "agent.prepare"])[n0:])
+    if strip:
+        n0 = len(posted(["agents.setup.open", "agent.prepare"]))
+        cdp.js("Array.from(document.querySelectorAll('.dock .strip .btn-s')).find(b=>b.textContent==='Installer').click()"); time.sleep(.1)
+        check(posted(["agents.setup.open", "agent.prepare"])[n0:] == [{"type": "agents.setup.open"}], "the strip's « Installer » opens the « Ton agent » screen (never the old download)", posted(["agents.setup.open", "agent.prepare"])[n0:])
 
     # ---------------------------------------------------------------- the comment bubble: the same block
     load("c-ta-premier-message"); b = block()
@@ -227,7 +258,7 @@ try:
         r = cdp.js("(()=>{const a=document.getElementById('app').getBoundingClientRect();return {x:a.left,y:a.top,width:a.width,height:a.height}})()")
         shot("bulle-premier-message", r)
     load("c-ta-erreur"); b = block()
-    check(b and b["link"] == "Installer moi-même ↗", "bubble: after a failure, the two lines and the link", b)
+    check(b and b["rows"][0]["link"] == "Installer moi-même ↗", "bubble: after a failure, « Échec de l'installation » and the link", b)
     if b:
         r = cdp.js("(()=>{const a=document.getElementById('app').getBoundingClientRect();return {x:a.left,y:a.top,width:a.width,height:a.height}})()")
         shot("bulle-erreur", r)

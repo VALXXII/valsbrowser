@@ -7,7 +7,7 @@
 //
 // Paper « Browser Design » › « Onboarding agents — Ton agent (maquette prête) »: Claude Code 1 Choisir 22ZR-0,
 // 2 Installation 2312-0, 3 Prêt 232D-0, 4 Erreur 233O-0; Codex 1 Choisir 24VS-0, 2 Installation 24X8-0, 3 À connecter
-// 24YO-0, 4 Prêt 2504-0, 5 Erreur 251H-0; the note « Installation… » 253G-0. Values: design/ton-agent-values.md.
+// 24YO-0, 4 Prêt 2504-0, 5 Erreur 251H-0; the note « Installation… » 253G-0. Values: design/ton-agent-screen.md.
 //
 //  * Two tiles, Claude Code then Codex. Under each name its mark: ⤓ Installer · 📶 Connecter · ⤓ Installation… · ✓ Prêt ·
 //    ☹ Erreur. At the start NO tile is current; the target of the strong button is Claude Code unless an agent is busy,

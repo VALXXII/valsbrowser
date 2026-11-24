@@ -3081,10 +3081,10 @@
   // states as the Designer set them for Réglages › Agents (an icon and the words, no coloured dot; one strong button on the
   // missing action). The host (src/chat-ton-agent.h) sends `agents.setup` from the agents' one status — every word from its
   // catalogue — and the block shows on an empty chat while no agent is ready, in the panel and in the bubble. A row's
-  // strong button is that agent's: install (its click is the consent), sign in; « Réessayer » and « Installer moi-même ↗ »
-  // after a failure.
+  // strong button is that agent's: install (its click is the consent), sign in; « Annuler » (neutral) while signing in;
+  // « Réessayer » (neutral) and « Installer moi-même ↗ » after a failure.
   let TA = null, taIcons = 0;
-  const TA_INKS = ["grey", "accent", "danger"], TA_ACTS = ["install", "signIn", "retry"], TA_ICONS = ["download", "wifi", "error", "check"];
+  const TA_INKS = ["grey", "accent", "danger"], TA_ACTS = ["install", "signIn", "retry", "cancel"], TA_ICONS = ["download", "wifi", "error", "check"];
   function tasShown() { return !!(TA && TA.show) && !S.st.disabledReason; }
   function validTa(m) {
     if (typeof m.show !== "boolean" || !Array.isArray(m.rows) || m.rows.length > 4 || !isStr(m.title, 200) || !isStr(m.body, 400) || !isStr(m.note, 400)) return null;
@@ -3102,14 +3102,14 @@
   // SVG in the row's ink; a clear band is cut around the arrow where it crosses the ring. Reduced motion: the still icon.
   function installingIcon() {
     if (isReduced()) return icon("ta-download", "tas-i");
-    const id = "tas-cut-" + (++taIcons);
+    const id = "tasCut" + (++taIcons);   // no « - »: SMIL reads « a-b.end » as an offset
     const el = (tag, attrs, ...kids) => { const n = document.createElementNS(SVGNS, tag); for (const k in attrs) n.setAttribute(k, attrs[k]); for (const c of kids) n.appendChild(c); return n; };
     const TRAY = "M216 144C216 144 216 208 216 208C216 208 128 208 128 208C128 208 40 208 40 208C40 208 40 144 40 144";
     const RING = "M128 40C176.601 40 216 79.399 216 128C216 176.601 176.601 216 128 216C79.399 216 40 176.601 40 128C40 79.399 79.399 40 128 40";
     const SETTLE = ".45 0 .15 1", SINE = ".45 0 .55 1";
     const arrow = (w, tag) => el("g", {}, el("path", { d: "M128 32L128 140", "stroke-width": w }), el("path", { d: "M88 100L128 140L168 100", "stroke-width": w }),
-      el("animateTransform", { attributeName: "transform", type: "translate", values: "0 0;0 30", dur: "0.2333s", fill: "freeze", calcMode: "spline", keyTimes: "0;1", keySplines: SETTLE, id: id + tag }),
-      el("animateTransform", { attributeName: "transform", type: "translate", values: "0 30;0 42;0 30", keyTimes: "0;0.5;1", dur: "1.3s", begin: id + tag + ".end", repeatCount: "indefinite", calcMode: "spline", keySplines: SINE + ";" + SINE }));
+      el("animateTransform", { attributeName: "transform", type: "translate", values: "0 0;0 30", dur: "0.2333s", fill: "freeze", calcMode: "spline", keyTimes: "0;1", keySplines: SETTLE, id: id + tag.slice(1) }),
+      el("animateTransform", { attributeName: "transform", type: "translate", values: "0 30;0 42;0 30", keyTimes: "0;0.5;1", dur: "1.3s", begin: id + tag.slice(1) + ".end", repeatCount: "indefinite", calcMode: "spline", keySplines: SINE + ";" + SINE }));
     const mask = el("mask", { id, maskUnits: "userSpaceOnUse", x: "0", y: "0", width: "256", height: "256" }, el("rect", { width: "256", height: "256", fill: "#FFFFFF" }),
       el("g", { stroke: "#000000", fill: "none", "stroke-linecap": "round", "stroke-linejoin": "round" }, arrow("46", "-m")));
     return el("svg", { viewBox: "0 0 256 256", class: "i tas-i tas-anim", "aria-hidden": "true", focusable: "false" }, el("defs", {}, mask),

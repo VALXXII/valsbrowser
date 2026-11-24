@@ -41,7 +41,7 @@ std::string TonAgentAccent() {
 //   too old        ⤓ « Version trop ancienne » grey · strong « Mettre à jour »
 //   installing     ⤓ animated (the Downloads morph) « Installation… » accent · no button
 //   needs sign-in  📶 « Pas connecté » grey · strong « Se connecter »
-//   signing in     📶 « Connexion… » accent · no button (closing the sign-in console cancels it: no API to cancel)
+//   signing in     📶 « Connexion… » accent · neutral « Annuler » (AgentStatus::CancelSignIn: closes the sign-in console)
 //   failed         ☹ « Échec de l'installation » / « Échec de la connexion » danger · neutral « Réessayer » (+ « Installer moi-même ↗ »)
 //   ready          ✓ « Prêt · version 2.1 » accent (the block is gone by then: kept for completeness)
 SJ::Value TonAgentRow(AgentStatus::Agent a) {
@@ -56,7 +56,7 @@ SJ::Value TonAgentRow(AgentStatus::Agent a) {
         act = "install"; break;
     case S::Installing: icon = "download"; ink = "accent"; animate = true; status = TR(ton_agent_row_installing); break;
     case S::NeedsSignIn: icon = "wifi"; status = TR(ton_agent_row_needs_signin); act = "signIn"; label = T8(I18n::Id::ton_agent_row_signin); break;
-    case S::SigningIn: icon = "wifi"; ink = "accent"; status = TR(ton_agent_row_signing_in); break;
+    case S::SigningIn: icon = "wifi"; ink = "accent"; status = TR(ton_agent_row_signing_in); act = "cancel"; label = T8(I18n::Id::ton_agent_row_cancel); strong = false; break;
     case S::Ready: icon = "check"; ink = "accent"; status = s.version.empty() ? std::wstring(TR(ton_agent_row_ready)) : TRF(ton_agent_row_ready_version, W(s.version)); break;
     case S::Error: {
         const bool signIn = TonAgent::SignInReason(s.reason);
@@ -121,6 +121,7 @@ bool TonAgentMessage(const std::string& type, const SJ::Value& v) {
         if (act == "install" && s.state == AgentStatus::State::NotInstalled) started = AgentStatus::Install(AgentStatus::UserClicked(a));
         else if (act == "signIn" && s.state == AgentStatus::State::NeedsSignIn) started = AgentStatus::SignIn(a);
         else if (act == "retry" && s.state == AgentStatus::State::Error) started = AgentStatus::Retry(AgentStatus::UserClicked(a));
+        else if (act == "cancel" && s.state == AgentStatus::State::SigningIn) started = AgentStatus::CancelSignIn(a);   // the sign-in console closes
         Diag(L"Ton agent (chat): " + W(act) + L" " + W(TonAgentId(a)) + (started ? L" started" : L" refused (state " + W(AgentStatus::StateName(s.state)) + L")"));
         SendTonAgent();
         return true;

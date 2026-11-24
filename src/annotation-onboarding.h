@@ -32,7 +32,7 @@
 //     h 16, 6 below); « Fait » (pill as above, disc with check 12) 12 right of the button.
 //   A5 three rows (1S3K-0 at (120, 84), 480 wide, gap 14): localhost (on), « Fichier  …/boutique/index.html » (on),
 //     lemonde.fr (off) + the tooltip « Seulement sur vos projets et fichiers locaux ».
-//   A6 « Ton agent » (src/annotation-onboarding-agent.h, values design/ton-agent-values.md): the card 400 wide at x 160,
+//   A6 « Ton agent » (src/annotation-onboarding-agent.h, values design/ton-agent-screen.md): the card 400 wide at x 160,
 //     #171717, radius 16, padding 12, two tiles (gap 10) of radius 12 — at rest #1F1F1F inset 1 #2A2A2A, current #192A2A
 //     inset 1.5 #2FD1D9, failed danger 10 % inset 1.5 danger: logo 34 (26 from the top), name 16/21 600, 10, the mark
 //     (icon 14, 4, 13/13 500 #A6A6A6 — the light ink when current, danger for « Erreur », « ✓ Prêt » 13/17). Its top by
