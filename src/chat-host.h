@@ -105,6 +105,7 @@ std::wstring AgentShort(const std::string& id) { return id == "codex" ? L"Codex"
 AgentRuntime::Environment RtEnv() { return AgentRuntime::Environment::FromProcess(Ann::DataRoot()); }
 struct AgentInfo {   // what the panel shows for one agent (state.agents)
     std::string status = "starting"; std::wstring detail; double progress = -1; bool cli = false, prepared = false, known = false;
+    bool signedIn = false;   // seen signed in since Browser started (a detection said so, or a session was ready): « plus connecté » is true only then
     std::vector<Acp::AuthMethod> auth; std::vector<Acp::ConfigOption> options; Acp::ModeState modes; Acp::Capabilities caps; std::vector<Acp::Command> commands;
 };
 std::map<std::string, AgentInfo> agentInfo;
@@ -325,6 +326,8 @@ void SendState() {
         const auto& info = agentInfo[def.id]; SJ::Value a = SJ::Value::Obj();
         a.Set("id", Str(std::string(def.id))); a.Set("name", Str(std::string(def.name))); a.Set("icon", Str(std::string(def.icon))); a.Set("status", Str(info.status));
         if (!info.detail.empty()) a.Set("detail", Str(info.detail));
+        // owner decision (24 Nov 2026): never signed in reads « Claude Code n'est pas connecté. »; « Vous n'êtes plus connecté à … » only when it was
+        if (info.status == "notConnected") a.Set("notice", Str(info.signedIn ? TRF(chat_agent_signed_out, W(std::string(def.name))) : TRF(chat_agent_never_signed_in, W(std::string(def.name)))));
         if (info.progress >= 0) a.Set("progress", SJ::Value::Num(std::clamp(info.progress, 0.0, 1.0)));
         if (!info.auth.empty()) { SJ::Value ms = SJ::Value::Arr(); for (const auto& m : info.auth) if (ChatStore::ValidId(m.id)) { SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(m.id)); o.Set("label", Str(m.name.empty() ? m.id : m.name)); ms.Push(std::move(o)); } a.Set("authMethods", std::move(ms)); }
         {   const auto* mo = Acp::FindModelOption(info.options); a.Set("models", OptionList(mo, DefaultModelOf(def.id, mo))); }

@@ -551,7 +551,8 @@ void Connect(const std::string& id, const std::string& methodId) {
     SetAgentStatus(id, "starting", TR(chat_agent_starting));
     Ann::Run([signIn, error, copy, rt] { *signIn = AgentRuntime::RunTerminalSignIn(RtEnv(), rt, copy, error.get()); if (signIn->Started()) signIn->Wait(15 * 60 * 1000); },
              [signIn, error, id] { Diag(L"terminal sign-in " + W(id) + (signIn->Started() ? L": console closed" : L": could not start — " + W(*error)));
-                                   signIn->Close(); if (id == agentId && !sessionReady) { session.reset(); sessionStarting = false; if (Usable()) StartSession(); else DetectAgents(); } });
+                                   signIn->Close(); if (id == agentId && !sessionReady) { session.reset(); sessionStarting = false; if (Usable()) StartSession(); else DetectAgents(); }
+                                   else if (id != agentId) DetectAgents(); });   // another agent's sign-in (the menu): its line says what is true now, never « starting » for ever
 }
 
 // ---------------------------------------------------------------- panel window, layout, motion

@@ -10,6 +10,7 @@ void SendPrompt(); void ModeSettled(); void ModeRefused(const Acp::Event& e);   
 // ---------------------------------------------------------------- detection and preparation (off the UI thread)
 void ApplyDetection(const std::string& id, const AgentRuntime::Detection& d) {
     auto& a = agentInfo[id]; a.known = true; a.cli = d.Usable(); a.prepared = !d.NeedsPrepare();
+    if (d.login == AgentRuntime::Login::SignedIn) a.signedIn = true;
     if (sessionReady && id == agentId) return;   // a live session says more than a detection
     if (sessionStarting && id == agentId) return;
     if (d.cli.state == AgentRuntime::CliState::Missing) { a.status = "notInstalled"; a.detail = TR(chat_agent_not_installed); }
@@ -227,7 +228,7 @@ void OnStarted(const Acp::StartResult& r) {
     Diag(std::wstring(L"session start: ") + (r.state == Acp::StartState::Ready ? (r.resumed ? L"ready (resumed)" : L"ready (new)") : W(Acp::ErrorCodeName(r.error.code))) + (r.error.detail.empty() ? L"" : L" — " + W(ClipUtf8(r.error.detail, 300))));
     switch (r.state) {
     case Acp::StartState::Ready: {
-        sessionReady = true; info.status = "ready"; info.detail = TR(chat_agent_installed); info.progress = -1; info.auth.clear(); info.cli = info.prepared = true;
+        sessionReady = true; info.status = "ready"; info.detail = TR(chat_agent_installed); info.progress = -1; info.auth.clear(); info.cli = info.prepared = true; info.signedIn = true;
         info.options = r.configOptions; info.modes = r.modes; info.caps = r.capabilities; info.commands = r.commands;
         if (const auto* mo = Acp::FindModelOption(info.options); mo && !agentFirstModel.count(agentId)) agentFirstModel[agentId] = mo->currentValue;
         { void SaveOptionsCache(); SaveOptionsCache(); }   // R13: shown from the next launch's first opening

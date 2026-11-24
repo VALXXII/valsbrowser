@@ -250,6 +250,7 @@ svg.i { display: block; flex-shrink: 0; }
 .btn.primary { background: var(--accent); }
 .btn.ghost { background: transparent; color: var(--w80); padding: 0 10px; }
 .btn .kbd { color: #FFFFFF80; font-size: 12px; font-weight: 400; }
+.perm:not(.keys) .btn.primary .kbd { display: none; }   /* « ↵ » only while Entrée really allows (the keyboard is in the card) */
 @media (hover: hover) { .btn:hover { background: var(--hover); } .btn.primary:hover { background: #5579FF; } .btn.ghost:hover { background: var(--fill6); color: #FFFFFF; } }
 
 /* error card (6.7 D) */

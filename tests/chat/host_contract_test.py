@@ -434,6 +434,21 @@ check(0 <= tg.find('if (Open() && openedByMode) {') < tg.find('if (Open()) { Clo
 sq = block_after(host, 'void SendQueue() {')
 check('m.Set("more", Str(TRF(chat_queue_more, L"{n}")))' in sq and 'I18N(chat_queue_more, L"+{0} en attente", L"+{0} queued")' in cat,
       'lot R (O5): the queue message carries the « +N en attente » line in the interface language')
+# Owner decision (24 Nov 2026): never signed in reads « Claude Code n'est pas connecté. »; « Vous n'êtes plus connecté à … » only when
+# the host saw the agent signed in since Browser started (a detection said so, or a session was ready)
+check('I18N(chat_agent_never_signed_in, L"{0} n\'est pas connecté.", L"{0} is not signed in.")' in cat
+      and 'I18N(chat_agent_signed_out, L"Vous n\'êtes plus connecté à {0}.", L"You are no longer signed in to {0}.")' in cat,
+      'signed out: the two sentences, FR and EN (never signed in / no longer signed in)')
+check('if (info.status == "notConnected") a.Set("notice", Str(info.signedIn ? TRF(chat_agent_signed_out, W(std::string(def.name))) : TRF(chat_agent_never_signed_in, W(std::string(def.name)))));' in host,
+      'signed out: the state carries the sentence in the interface language — « plus connecté » only when the agent was seen signed in')
+ad = block_after(turn, 'void ApplyDetection(const std::string& id, const AgentRuntime::Detection& d) {')
+check(0 <= ad.find('if (d.login == AgentRuntime::Login::SignedIn) a.signedIn = true;') < ad.find('if (sessionReady && id == agentId) return;')
+      and turn.count('signedIn = true') == 2 and 'info.cli = info.prepared = true; info.signedIn = true;' in turn and 'bool signedIn = false;' in host,
+      'signed out: « seen signed in » is set by a detection that says so and by a ready session, nowhere else; false at start')
+cn = block_after(ui, 'void Connect(const std::string& id, const std::string& methodId) {')
+check('if (!method && info.auth.empty() && info.status == "notConnected" && info.cli) { own = AgentRuntime::DefaultTerminalSignIn(def->rt); method = &own;' in cn
+      and 'else if (id != agentId) DetectAgents();' in cn,
+      'sign-in (O8): signed out with no method named yet, « Se connecter » runs the CLI\'s own sign-in; another agent\'s line is detected again once its console closes')
 
 ok = all(checks)
 print(f'{sum(checks)} / {len(checks)} host contracts')

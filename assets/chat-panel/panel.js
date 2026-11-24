@@ -1013,7 +1013,7 @@
     else if (BUB() && S.st.folder === null) out.push({ id: "folder", tone: "neutral", text: "Choisissez le dossier du projet pour commencer.", action: { id: "choose", label: "Choisir le dossier…" } });
     const a = curAgent();
     if (a && S.st.folder) {
-      if (a.status === "notConnected") out.push({ id: "agent", tone: "danger", text: "Vous n'êtes plus connecté à " + a.name + ".", action: { id: "connect", label: "Se connecter" } });
+      if (a.status === "notConnected") out.push({ id: "agent", tone: "danger", text: typeof a.notice === "string" && a.notice && a.notice.length <= 200 ? a.notice : a.name + " n'est pas connecté.", action: { id: "connect", label: "Se connecter" } });
       else if (a.status === "notInstalled") out.push({ id: "agent", tone: "neutral", text: a.name + " n'est pas installé sur cet ordinateur.", action: { id: "prepare", label: "Installer" } });
       else if (a.status === "preparing") out.push({ id: "agent", tone: "neutral", text: (a.detail || "Préparation de " + a.name + "…"), progress: a.progress });
       else if (a.status === "error") out.push({ id: "agent", tone: "danger", text: a.detail || a.name + " n'a pas pu démarrer.", action: { id: "prepare", label: "Réessayer" } });
@@ -1160,7 +1160,7 @@
     };
     const refuse = h("button", { class: "btn", type: "button", "aria-keyshortcuts": "Escape", onclick: () => respond(reject, instead.value.trim() || undefined) },
       "Refuser", h("span", { class: "kbd", "aria-hidden": "true" }, "Échap"));
-    const allow = h("button", { class: "btn primary", type: "button", "aria-keyshortcuts": "Enter",
+    const allow = h("button", { class: "btn primary", type: "button",
                                 onclick: (e) => { if (permArmed(card, e)) respond(always && allowAlways ? allowAlways : allowOnce); } },
       "Autoriser", h("span", { class: "kbd", "aria-hidden": "true" }, "↵"));
     instead.addEventListener("keydown", (e) => {
@@ -1180,6 +1180,13 @@
       else if ((e.key === "Enter" || e.key === " ") && e.repeat && e.target !== instead) e.preventDefault();   // SEC-23: a held key answers nothing
       else if (e.key === "Enter" && e.target !== instead && e.target.tagName !== "BUTTON") { e.preventDefault(); if (permArmed(card, e)) allow.click(); }
     });
+    // Owner decision (24 Nov 2026) — the card tells the truth: « ↵ » on « Autoriser » and its `aria-keyshortcuts` are there
+    // only while Entrée really allows, i.e. while the keyboard is in the card. After the user's own message the keyboard
+    // stays out of it (SEC-23, unchanged): no symbol, nothing announced. They come back when the card takes the focus.
+    const keys = (on) => { card.classList.toggle("keys", on); if (on) allow.setAttribute("aria-keyshortcuts", "Enter"); else allow.removeAttribute("aria-keyshortcuts"); };
+    keys(card.__enter = !typing && document.hasFocus());
+    card.addEventListener("focusin", () => keys(true));
+    card.addEventListener("focusout", (e) => { if (!card.contains(e.relatedTarget)) keys(false); });
     requestAnimationFrame(() => { if (!typing && card.isConnected) card.focus(); });   // SEC-23: never on « Autoriser »
     return card;
   }
@@ -2299,7 +2306,10 @@
     refreshWaiting();
     renderDock(true);
     noteNew(1);
-    shout(title + (BUB() ? ". Autoriser avec Entrée." : ". Autoriser avec Entrée, refuser avec Échap."));
+    // said only where it is true (owner decision, 24 Nov 2026): « Entrée » when the card shown has the keyboard, « Échap »
+    // when this request is the one shown (Échap answers the card shown, not one waiting behind it)
+    const shown = !BUB() && S.perms[0] && S.perms[0].requestId === m.requestId ? dock.querySelector(".perm") : null;
+    shout(title + (BUB() ? ". Autoriser avec Entrée." : shown && shown.__enter ? ". Autoriser avec Entrée, refuser avec Échap." : shown ? ". Refuser avec Échap." : "."));
   }
 
   function copyButton(get, label) {
@@ -2922,7 +2932,9 @@
     "edit.confirm": onEditConfirm,
     focus() {
       app.classList.remove("b-out");
-      if (S.perms.length) { const b = dock.querySelector(".btn.primary"); if (b) b.focus(); }
+      // SEC-23: the card, never its « Autoriser ». (Until O10 the card was drawn again — and focused again — by each request
+      // sent again; kept as it is now, it would have stayed on « Autoriser » after the host's `focus` of a reopening.)
+      if (S.perms.length) { const c = dock.querySelector(".perm, .bperm"); if (c && !c.contains(document.activeElement)) c.focus(); }
       else if (BUB() && S.bview) { const x = bviewEl.querySelector(".bview-x"); if (x) x.focus(); }
       else if (BUB() && S.st.running) app.focus({ preventScroll: true });   // no input during a turn (after an error the input is out of sight but takes what is written: H1 monkey #29)
       else cin.focus();

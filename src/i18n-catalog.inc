@@ -1502,6 +1502,8 @@ I18N(chat_disabled_not_local, L"Le chat ne fonctionne que sur vos sites locaux (
 I18N(chat_agent_installed, L"Installé", L"Installed")
 I18N(chat_agent_not_installed, L"Pas installé", L"Not installed")
 I18N(chat_agent_not_connected, L"Pas connecté", L"Not signed in")
+I18N(chat_agent_never_signed_in, L"{0} n'est pas connecté.", L"{0} is not signed in.")
+I18N(chat_agent_signed_out, L"Vous n'êtes plus connecté à {0}.", L"You are no longer signed in to {0}.")
 I18N(chat_agent_starting, L"Démarrage…", L"Starting…")
 I18N(chat_agent_checking, L"Vérification…", L"Checking…")
 I18N(chat_agent_download, L"Téléchargement {0} %", L"Downloading {0}%")

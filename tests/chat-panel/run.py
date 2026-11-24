@@ -1246,6 +1246,52 @@ try:
         load("6.1-autorisation"); key("Escape")
         check("permission.respond:reject" in posted(), "keyboard: Échap = Refuser", str(posted()[-3:]))
         check(cdp.js("!!document.querySelector('[role=alertdialog]')") is False and cdp.js("document.activeElement.id") == "composer-input", "keyboard: after answering, the input is back and focused")
+        # Owner decision (24 Nov 2026): the card tells the truth — « ↵ » on « Autoriser », its `aria-keyshortcuts` and the
+        # announcement « Autoriser avec Entrée » are there only while Entrée really allows (the keyboard is in the card)
+        keys_js = ("(()=>{const c=document.querySelector('.perm');if(!c)return null;const a=c.querySelector('.btn.primary');"
+                   "return {keys:c.classList.contains('keys'),aria:a.getAttribute('aria-keyshortcuts'),kbd:getComputedStyle(a.querySelector('.kbd')).display!=='none',"
+                   "esc:c.querySelector('.btn:not(.primary)').getAttribute('aria-keyshortcuts'),said:document.querySelector('.sr-only[role=alert]').textContent,active:document.activeElement===c}})()")
+        perm_msg = ("{type:'permission.request',requestId:'%s',turnId:'t1',title:'Claude veut modifier checkout.css',kind:'edit',"
+                    "options:[{optionId:'allow',name:'Autoriser',kind:'allow_once'},{optionId:'reject',name:'Refuser',kind:'reject_once'}]}")
+        load("6.10-travaille"); cdp.js("document.activeElement&&document.activeElement.blur()")
+        cdp.js("window.devHost.send(" + perm_msg % "k1" + ")"); time.sleep(.25)
+        k1 = cdp.js(keys_js) or {}
+        check(k1.get("active") and k1.get("keys") and k1.get("aria") == "Enter" and k1.get("kbd") and k1.get("esc") == "Escape" and k1.get("said", "").endswith("Autoriser avec Entrée, refuser avec Échap."),
+              "permission (owner, 24 Nov): the card has the keyboard — « Autoriser ↵ », aria-keyshortcuts=Enter, announced « Autoriser avec Entrée, refuser avec Échap. »", json.dumps(k1, ensure_ascii=False)[:300])
+        load("6.10-travaille"); cdp.js("document.getElementById('composer-input').focus()")
+        cdp.js("window.devHost.send(" + perm_msg % "k2" + ")"); time.sleep(.25)
+        k2 = cdp.js(keys_js) or {}
+        check(k2 and not k2.get("active") and not k2.get("keys") and k2.get("aria") is None and not k2.get("kbd") and k2.get("esc") == "Escape"
+              and "Entrée" not in k2.get("said", "x Entrée") and k2.get("said", "").endswith("checkout.css. Refuser avec Échap."),
+              "permission (owner, 24 Nov): after the user's own message the card has no keyboard — no « ↵ », no aria-keyshortcuts on « Autoriser », « Entrée » is not announced (« Refuser avec Échap. » stays: it is true)", json.dumps(k2, ensure_ascii=False)[:300])
+        cdp.js("document.querySelector('.perm').__shownAt = -1e6"); key("Enter")
+        check(not any(x.startswith("permission.respond") for x in posted()), "permission (SEC-23 unchanged): Entrée answers nothing while the card has no keyboard", str(posted()[-3:]))
+        cdp.js("document.querySelector('.perm').focus()"); k3 = cdp.js(keys_js) or {}
+        cdp.js("document.querySelector('.perm .instead').focus()"); k3b = cdp.js(keys_js) or {}
+        cdp.js("document.querySelector('.perm').focus()"); key("Enter")
+        check(k3.get("keys") and k3.get("aria") == "Enter" and k3.get("kbd") and k3b.get("keys") and k3b.get("kbd") and "permission.respond:allow" in posted(),
+              "permission (owner, 24 Nov): once the card takes the focus, « ↵ » and aria-keyshortcuts come back — and Entrée allows", f"{json.dumps(k3, ensure_ascii=False)[:160]} {posted()[-2:]}")
+        # SEC-23: the host's `focus` (panel opened again, Ctrl+Maj+D) gives the keyboard to the card, never to « Autoriser » —
+        # and takes nothing from the « à la place » field being written
+        load("6.10-travaille"); cdp.js("window.devHost.send(" + perm_msg % "k6" + ")"); time.sleep(.25)
+        cdp.js("document.activeElement&&document.activeElement.blur()"); cdp.js("window.devHost.send({type:'focus',target:'composer'})")
+        f1 =cdp.js("document.activeElement.classList.contains('perm')")
+        cdp.js("document.querySelector('.perm .instead').focus()"); cdp.js("window.devHost.send({type:'focus',target:'composer'})")
+        f2 = cdp.js("document.activeElement.classList.contains('instead')")
+        check(f1 and f2, "permission (SEC-23): the host's `focus` puts the keyboard on the card, never on « Autoriser »; a field of the card being used keeps it", f"{f1} {f2} {active()}")
+        # a second request behind the card shown: neither « Entrée » nor « Échap » is announced for it (they answer the card shown)
+        load("6.10-travaille"); cdp.js("document.activeElement&&document.activeElement.blur()")
+        cdp.js("window.devHost.send(" + perm_msg % "k4" + ")"); time.sleep(.2)
+        cdp.js("window.devHost.send(" + (perm_msg % "k5").replace("modifier checkout.css", "lancer npm test") + ")"); time.sleep(.25)
+        k5 = cdp.js(keys_js) or {}
+        check(k5.get("said") == "Claude veut lancer npm test." and k5.get("keys") and k5.get("active"),
+              "permission (owner, 24 Nov): a request waiting behind the card is announced by its title alone; the card shown keeps the keyboard and its « ↵ »", json.dumps(k5, ensure_ascii=False)[:300])
+        # Owner decision (24 Nov 2026): never signed in reads « Claude Code n'est pas connecté. »; « plus connecté » only when the host says so
+        strip_js = "(()=>{const s=document.querySelector('.strip .tx');return s?s.firstChild.textContent:null})()"
+        load("6.5-7-deconnecte"); was = cdp.js(strip_js)
+        check(was == "Vous n'êtes plus connecté à Claude Code.", "signed out (owner, 24 Nov): the host says the agent was signed in before — « Vous n'êtes plus connecté à Claude Code. »", str(was))
+        load("signe-jamais"); never = cdp.js(strip_js); never_btn = cdp.js("(()=>{const b=document.querySelector('.strip .btn-s');return b?b.textContent:null})()")
+        check(never == "Codex n'est pas connecté." and never_btn == "Se connecter", "signed out (owner, 24 Nov): never signed in — « Codex n'est pas connecté. » with « Se connecter », never « plus connecté »", f"{never!r} {never_btn!r}")
 
         load("6.10-travaille"); cdp.js("document.activeElement&&document.activeElement.blur()"); key("Escape")
         check("stop" in posted(), "keyboard: Échap during a turn sends stop")

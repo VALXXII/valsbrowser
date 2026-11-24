@@ -327,7 +327,9 @@
     "6.5-6-file": [st(Object.assign({ running: true }, conv("Bouton de paiement", { running: true }))),
       { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", ASK), { type: "turn.start", turnId: "t1", model: "Sonnet 5.5", effort: "Élevé", at: ago(12000) }] },
       { type: "queue", items: [{ id: "q1", text: "Et fais pareil pour le titre" }] }],
-    "6.5-7-deconnecte": [st({ agents: [Object.assign({}, CLAUDE, { status: "notConnected", detail: "Pas connecté", authMethods: [{ id: "claude-ai-login", label: "Claude" }] }), CODEX] }), { type: "thread.reset", conversationId: "new", items: [] }],
+    // never signed in: the host sends no `notice`, the page words it itself
+    "signe-jamais": [st({ agentId: "codex", agents: [CLAUDE, Object.assign({}, CODEX, { status: "notConnected", detail: "Pas connecté", models: [] })] }), { type: "thread.reset", conversationId: "new", items: [] }],
+    "6.5-7-deconnecte": [st({ agents: [Object.assign({}, CLAUDE, { status: "notConnected", detail: "Pas connecté", notice: "Vous n'êtes plus connecté à Claude Code.", authMethods: [{ id: "claude-ai-login", label: "Claude" }] }), CODEX] }), { type: "thread.reset", conversationId: "new", items: [] }],
     "6.5-8-limite": [st(), { type: "thread.reset", conversationId: "new", items: [] },
       { type: "strip", id: "limit", tone: "neutral", text: "Limite Claude atteinte - Retour à 15:40", action: { id: "switch-codex", label: "Passer à Codex" } }],
     "6.5-9-site-non-local": [st({ site: { origin: "https://exemple.fr", label: "exemple.fr", local: false }, disabledReason: "Le chat ne marche que sur les sites locaux (localhost, 127.0.0.1, fichiers). Ouvrez la version locale de ce site." }),
