@@ -20,6 +20,9 @@ int main(){
     Assert(Key('L')=='L');Assert(Key(VK_TAB)==']');
     Modifiers(true,true);Assert(Key(VK_PRIOR)==MoveTabLeft);Assert(Key(VK_NEXT)==MoveTabRight);Assert(Key(VK_TAB)=='[');Assert(Key('1')==0);Assert(Key('T')=='U');
     Assert(Key('N')=='P');Assert(chrome.Enabled('P'));   // Ctrl+Maj+N: nouvelle fenêtre privée, without any toolbar button
+    // Ctrl+Maj+F: Mode Focus (toggle); Ctrl+F stays the find bar. The command flips the setting both ways (smoke: never written to disk).
+    Assert(Key('F')==FocusModeCommand);Modifiers(true);Assert(Key('F')==FindPage);Modifiers(true,true,true);Assert(Key('F')==0);
+    {const bool wasSmoke=smoke;smoke=true;settings.focusMode=false;Command(FocusModeCommand);Assert(settings.focusMode);Command(FocusModeCommand);Assert(!settings.focusMode);smoke=wasSmoke;}
     Modifiers(false,false,true);Assert(Key('D')=='L');
     Modifiers();Assert(Key(VK_F6)==FocusChrome);Assert(Key('1')==0);
     for(int i=0;i<10;++i)pages.push_back(std::make_shared<Tab>());

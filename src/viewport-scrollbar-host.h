@@ -95,8 +95,10 @@ void PlaceScrollbars(unsigned serial,PageScrollbar& s,NativeChrome::Motion::Time
     if(!t||!ScrollbarOnScreen(*t)){for(HWND b:s.bars)HideScrollbarWindow(b);if(s.dragging<0){s.motion.Reset();s.hovered=-1;s.nearEdge=false;}return;}
     const float scale=GetDpiForWindow(window)/96.f;const RECT p=t->placed;s.page=p;
     // Outer bottom corners are rounded only where the page meets the viewport's own (8 DIP; square maximised or full screen).
-    const float corner=IsZoomed(window)||InFullscreen()?0.f:NativeChrome::Design::Viewport::radius;
-    s.layout=SB::Compute(t->scroll,(float)(p.right-p.left),(float)(p.bottom-p.top),scale,corner);
+    // Mode Focus (src/focus-mode.h): 6 DIP corners, the top ones included.
+    const bool square=IsZoomed(window)||InFullscreen();
+    const float corner=square?0.f:chrome.floating?FM::pageRadius:NativeChrome::Design::Viewport::radius,topCorner=square||!chrome.floating?0.f:FM::pageRadius;
+    s.layout=SB::Compute(t->scroll,(float)(p.right-p.left),(float)(p.bottom-p.top),scale,corner,topCorner);
     s.motion.Advance(now);const auto v=s.motion.Sample(now);
     for(int k=0;k<2;++k){
         const bool vertical=k==0;const SB::Axis& a=vertical?s.layout.v:s.layout.h;
@@ -112,7 +114,10 @@ void PlaceScrollbars(unsigned serial,PageScrollbar& s,NativeChrome::Motion::Time
         if(d.w<=0||d.h<=0){HideScrollbarWindow(s.bars[k]);continue;}
         // Whole-pixel position along the track, fractional width across it.
         const int along=(int)std::round(a.thumbStart)-d.pad,across=(int)std::floor(d.origin);
-        ShowScrollbarWindow(s.bars[k],d,p.left+(vertical?across:along),p.top+(vertical?along:across),v.opacity);
+        const int bx=p.left+(vertical?across:along),by=p.top+(vertical?along:across);
+        // Mode Focus: a handle under the floating panel would draw over it; it steps away while the panel covers it.
+        if(FocusPanelOver({bx,by,bx+d.w,by+d.h})){HideScrollbarWindow(s.bars[k]);continue;}
+        ShowScrollbarWindow(s.bars[k],d,bx,by,v.opacity);
     }
 }
 void ScrollbarRefresh(NativeChrome::Motion::Time now){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */

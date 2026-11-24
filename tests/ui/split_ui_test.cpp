@@ -277,6 +277,104 @@ int main() {
         QuitGroup(v0.group);
     }
 
+    // 16. Mode Focus (design/focus-mode-plan.md, Paper 1J9P-0): the page 4 DIP inside the window on all four sides, its
+    //     four corners round (6 DIP), the chrome a floating panel that starts hidden; fullscreen still wins; split pages
+    //     get their top corners too. Layout()'s order without its EDIT (no real field in this fixture).
+    {
+        auto relayout = [] { SyncFocusMode(); BuildChrome(); FocusPlace(); ApplyPages(); };
+        splitGroups.clear(); for (auto& t : pages) t->group = 0; current = 0; ApplyPages();
+        settings.focusMode = true; relayout();
+        assert(chrome.floating && chrome.ClientWidth() == 1180 && chrome.width == 1170);   // the chrome's layout width: client - 10
+        { auto c = ContentBox(); assert(c.left == 4 && c.top == 4 && c.right == 1176 && c.bottom == 811); }
+        assert(PageTopDip() == 4 && ChromeBottomDip() == 88 && NativeChrome::Downloads::DrawerLayout::liveTop == 92);
+        // Hidden at first: nothing of the chrome is hit or on screen; the tab row's space over the page is no caption.
+        assert(!chrome.PanelShown() && !focusBar.Shown() && chrome.Hit(1150, 20) == 0 && chrome.Hit(60, 25) == 0);
+        assert(WndProc(window, WM_NCHITTEST, 0, MAKELPARAM(805, 25)) == HTCLIENT);
+        // Four round corners (6 DIP) on a single page.
+        { auto cs = PageCorners(); int tops = 0; for (auto& c : cs) tops += c.top; assert(cs.size() == 4 && tops == 2 && PageCornerRadius() == 6); }
+        // Revealed (the keyboard: at once): the chrome lives in the panel, translated by (5, 5).
+        FocusReveal(); assert(focusBar.Shown() && chrome.PanelShown() && focusPlaced == 1);
+        assert(chrome.panel.left == 4 && chrome.panel.top == 4 && chrome.panel.right == 1176 && chrome.panel.bottom == 88 && chrome.origin.x == 5 && chrome.origin.y == 5);
+        assert(chrome.Hit(1150, 20) == 'X' && chrome.Hit(1172, 20) == 0);   // the close button at x 1132 .. 1164 chrome-local: 1137 .. 1169 on screen
+        assert(chrome.Hit(5 + 50, 5 + 20) == NativeChrome::TabBase && chrome.Hit(3, 20) == 0 && chrome.Hit(600, 90) == 0);
+        { RECT r = ChromePx(chrome.bar); assert(r.left == 5 + (LONG)chrome.bar.left && r.top == 49 && r.bottom == 81); }   // the field at 44 .. 76 in the panel: 49 .. 81
+        assert(WndProc(window, WM_NCHITTEST, 0, MAKELPARAM(805, 25)) == HTCAPTION);   // the tab row's empty space drags the window
+        { auto cs = PageCorners(); int tops = 0; for (auto& c : cs) tops += c.top; assert(cs.size() == 4 && tops == 2); }   // corners kept; the top masks step away (SyncCornerMasks)
+        // Split side by side: the outer panels get their top corners too; the ring follows the active one's.
+        SV::Target t; t.kind = SV::Kind::Split; t.side = SV::Side::Right; t.orientation = SV::Orientation::Row;
+        ApplySplitTarget(pages[1], t, pages[0], CurrentSplit()); auto v = CurrentSplit();
+        { auto cs = PageCorners(); int tops = 0; for (auto& c : cs) tops += c.top; assert(v.members.size() == 2 && cs.size() == 4 && tops == 2);
+          for (auto& c : cs) if (c.top) assert(c.page.top == 4 && (c.right ? c.page.right == 1176 : c.page.left == 4)); }
+        assert(chrome.split.activeTopLeft != chrome.split.activeTopRight && chrome.split.activeBottomLeft != chrome.split.activeBottomRight);
+        for (auto& s : v.a.slots) assert(s.box.top == 4 && s.box.bottom == 811);
+        splitGroups[v.group] = SV::Orientation::Column; ApplyPages(); v = CurrentSplit();
+        { auto cs = PageCorners(); assert(cs.size() == 4); for (auto& c : cs) assert(c.top ? c.page.top == 4 : c.page.bottom == 811); }   // stacked: top panel's top, bottom panel's bottom
+        QuitGroup(v.group); ApplyPages();
+        // Code review: a surface anchored to the chrome opened from the keyboard (Ctrl+Maj+M's profile menu, a region's
+        // popover or menu) brings the panel at rest first, so its anchor is on screen.
+        {   const double t0 = FocusMs(NativeChrome::Motion::Now()); focusBar.Reset(false, t0); FocusApply(0); assert(!focusBar.Shown() && !chrome.PanelShown());
+            (void)ProfileButtonScreen(); assert(focusBar.Shown() && focusPlaced == 1 && chrome.PanelShown());
+            focusBar.Reset(false, t0); FocusApply(0); (void)RegionScreen('K'); assert(focusBar.Shown() && focusPlaced == 1); }
+        // Code review: a press on the panel while it slides lands it at rest first; press and release then hit the same
+        // control (here the first tab, under the pointer once at rest): a click, not a lost press or a stray drag.
+        {   current = 1; ApplyPages(); BuildChrome(); const double t0 = FocusMs(NativeChrome::Motion::Now());
+            FM::Input rv; rv.reveal = rv.pointer = true; focusBar.Reset(false, t0); FocusApply(0); focusBar.Update(t0, rv, false); FocusApply(.6f);
+            assert(focusBar.Moving(t0 + 1) && chrome.Hit(5 + 100, 25) == (int)'R');
+            WndProc(window, WM_LBUTTONDOWN, MK_LBUTTON, At(5 + 100, 25));
+            const double t1 = FocusMs(NativeChrome::Motion::Now());
+            assert(!focusBar.Moving(t1) && focusBar.Position(t1) == 1 && tabDrag.tab == pages[0] && std::fabs(tabDrag.grabY - (25 - chrome.origin.y - chrome.strip.Surface(0).top)) < .01f);
+            WndProc(window, WM_LBUTTONUP, 0, At(5 + 100, 25)); assert(current == 0 && !tabDrag.tab); }
+        // Fullscreen wins: the page alone, no panel; focus mode comes back after.
+        fullscreen.browser = true; relayout();
+        assert(!chrome.floating && !chrome.PanelShown()); { auto c = ContentBox(); assert(c.left == 0 && c.top == 0 && c.right == 1180 && c.bottom == 815); }
+        fullscreen.browser = false; relayout(); assert(chrome.floating && !focusBar.Shown()); { auto c = ContentBox(); assert(c.top == 4 && c.bottom == 811); }
+        // Off again: the normal chrome exactly as before (inset 2, 81 DIP, bottom corners only, radius 8).
+        settings.focusMode = false; relayout();
+        assert(!chrome.floating && chrome.width == 1180 && chrome.origin.x == 0 && NativeChrome::Downloads::DrawerLayout::liveTop == 81);
+        { auto c = ContentBox(); assert(c.left == 2 && c.top == 81 && c.right == 1178 && c.bottom == 813); auto cs = PageCorners(); assert(cs.size() == 2 && !cs[0].top && !cs[1].top && PageCornerRadius() == 8); }
+        assert(chrome.Hit(1172, 20) == 'X');
+    }
+
+    // 17. Mode Focus with the annotation mode (owner's rule 2026-11-24; Paper « Annotation + Focus · barre du haut » 203J-0,
+    //     « … panneau révélé » 20MM-0, « … tiroir ouvert » 21OK-0): the banner stays at the very top, Focus hides only the
+    //     tabs and the toolbar. This fixture is unstamped (no annotation mode compiled: src/main.cpp): the banner's height is
+    //     set the way the mode sets it (chrome.annotationBand); the banner's and the chat card's own placement (Ann::BandRect,
+    //     Chat::PanelRect) are checked in a real window (tests/focus/annotation_focus_journey.py), their geometry in
+    //     tests/focus_mode_test.cpp.
+    {
+        namespace DL = NativeChrome::Downloads::DrawerLayout;
+        auto relayout = [] { SyncFocusMode(); FocusAbove(); BuildChrome(); FocusPlace(); ApplyPages(); };
+        splitGroups.clear(); for (auto& t : pages) t->group = 0; current = 0;
+        settings.focusMode = true; chrome.annotationBand = 32; relayout();
+        assert(chrome.floating);   // the annotation mode no longer suspends focus mode
+        assert(chrome.panelAbove.banner == 32 && chrome.panelAbove.reserve == 0 && chrome.width == 1170);
+        { auto c = ContentBox(); assert(c.left == 4 && c.top == 32 && c.right == 1176 && c.bottom == 811); }   // under the banner (Mode Commentaire: no card)
+        { auto k = FocusChatCard(380); assert(k.left == 796 && k.top == 32 && k.right == 1176 && k.bottom == 811); }   // 203J-0: the card 380 wide, 4 from the edges
+        assert(PageTopDip() == 32 && ChromeBottomDip() == 120 && DL::liveTop == 124 && DL::liveRight == 4 && DL::liveBottom == 4 && DL::liveRadius == 6);   // 21OK-0
+        { auto cs = PageCorners(); int tops = 0; for (auto& c : cs) { tops += c.top; if (c.top) assert(c.page.top == 32); } assert(cs.size() == 4 && tops == 2); }
+        // Hidden: the panel waits behind the banner (nothing of it on screen, nothing hit).
+        assert(!chrome.PanelShown() && chrome.Hit(60, 20) == 0 && chrome.Hit(60, 40) == 0);
+        {   const double t0 = FocusMs(NativeChrome::Motion::Now()); focusBar.Reset(false, t0); FocusApply(.3f);
+            assert(chrome.panel.top < 32 && chrome.PanelVisible().top == 32 && chrome.Hit(60, 20) == 0); }   // mid-slide: only its part under the banner
+        // Revealed (20MM-0): top 36, 4 under the banner; the chrome inside at (5, 37); the banner's strip never hit.
+        FocusReveal(); assert(focusBar.Shown() && chrome.PanelShown());
+        assert(chrome.panel.left == 4 && chrome.panel.top == 36 && chrome.panel.right == 1176 && chrome.panel.bottom == 120 && chrome.origin.x == 5 && chrome.origin.y == 37);
+        assert(chrome.Hit(5 + 50, 37 + 20) == NativeChrome::TabBase && chrome.Hit(400, 20) == 0);
+        { RECT r = ChromePx(chrome.bar); assert(r.top == 37 + 44 && r.bottom == 37 + 76); }   // the address field follows the panel under the banner
+        // With a chat card's strip (Panneau mode: reserve 384) the panel spans the page's width only (788 in 20MM-0).
+        chrome.SetPanelAbove({32, FM::ChatReserve(380)}); chrome.PlacePanel(1);
+        assert(chrome.width == 1180 - 10 - 384 && chrome.panel.right == 792 && chrome.Hit(800, 60) == 0);
+        // The selection paused (the banner goes up, the chat may stay): back to the 4 DIP inset.
+        chrome.annotationBand = 0; relayout(); FocusReveal();
+        { auto c = ContentBox(); assert(c.top == 4); } assert(chrome.panel.top == 4 && DL::liveTop == 92 && PageTopDip() == 4);
+        // Focus off with the annotation mode on: the normal chrome, the banner's height back under the toolbar.
+        chrome.annotationBand = 32; settings.focusMode = false; relayout();
+        assert(!chrome.floating && chrome.width == 1180 && chrome.panelAbove.banner == 0);
+        { auto c = ContentBox(); assert(c.top == 81 + 32 && c.left == 2); }
+        assert(DL::liveTop == 81 && DL::liveRight == 0 && DL::liveBottom == 0 && DL::liveRadius == 0);
+        chrome.annotationBand = 0; relayout();
+    }
+
     // Text fit: the refusal pill (« Pas de place pour deux sites · 256 px de haut minimum chacun ») is drawn beside
     // the pointer; dragged near the right or bottom edge of the window it must stay whole inside it (8 DIP margin),
     // never cut by the window edge, in French and English, at 96 and 120 DPI.

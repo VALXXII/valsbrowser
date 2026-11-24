@@ -1,0 +1,148 @@
+{
+ "off-w1170px.png": {
+  "profile plate": {
+   "diff_px": 0,
+   "max": 0,
+   "offset_px": [
+    5,
+    5
+   ],
+   "offset_dip": [
+    5.0,
+    5.0
+   ]
+  },
+  "tab": {
+   "diff_px": 0,
+   "max": 0,
+   "offset_px": [
+    5,
+    5
+   ],
+   "offset_dip": [
+    5.0,
+    5.0
+   ]
+  },
+  "+ button": {
+   "diff_px": 0,
+   "max": 0,
+   "offset_px": [
+    2,
+    3
+   ],
+   "offset_dip": [
+    2.0,
+    3.0
+   ]
+  },
+  "window buttons": {
+   "diff_px": 7,
+   "max": 13,
+   "offset_px": [
+    5,
+    5
+   ],
+   "offset_dip": [
+    5.0,
+    5.0
+   ]
+  },
+  "back/forward": {
+   "diff_px": 0,
+   "max": 0,
+   "offset_px": [
+    5,
+    5
+   ],
+   "offset_dip": [
+    5.0,
+    5.0
+   ]
+  },
+  "reload": {
+   "diff_px": 0,
+   "max": 0,
+   "offset_px": [
+    5,
+    5
+   ],
+   "offset_dip": [
+    5.0,
+    5.0
+   ]
+  },
+  "address field (left part)": {
+   "diff_px": 0,
+   "max": 0,
+   "offset_px": [
+    5,
+    5
+   ],
+   "offset_dip": [
+    5.0,
+    5.0
+   ]
+  },
+  "address field (right end, link/star)": {
+   "diff_px": 0,
+   "max": 0,
+   "offset_px": [
+    5,
+    5
+   ],
+   "offset_dip": [
+    5.0,
+    5.0
+   ]
+  },
+  "right icons + separator + gear": {
+   "diff_px": 0,
+   "max": 0,
+   "offset_px": [
+    5,
+    5
+   ],
+   "offset_dip": [
+    5.0,
+    5.0
+   ]
+  },
+  "gap rows (y 38..42)": {
+   "diff_px": 0,
+   "max": 0,
+   "offset_px": [
+    2,
+    5
+   ],
+   "offset_dip": [
+    2.0,
+    5.0
+   ]
+  },
+  "bottom padding (y 76..80)": {
+   "diff_px": 0,
+   "max": 0,
+   "offset_px": [
+    2,
+    4
+   ],
+   "offset_dip": [
+    2.0,
+    4.0
+   ]
+  },
+  "bookmarks band row": {
+   "diff_px": 0,
+   "max": 0,
+   "offset_px": [
+    5,
+    5
+   ],
+   "offset_dip": [
+    5.0,
+    5.0
+   ]
+  }
+ }
+}

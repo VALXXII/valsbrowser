@@ -215,7 +215,7 @@ bool Open() { return panelState == PanelState::Opening || panelState == PanelSta
 bool Shown() { return panelState != PanelState::Closed; }
 bool Usable() { return site.local && !site.file && !folder.empty(); }
 const AgentDef& Agent() { const auto* a = AgentOf(agentId); return a ? *a : Agents[0]; }
-float PanelDip() { return std::min(PanelWidthDip, std::max(PanelMinDip, chrome.width - PageMinDip)); }
+float PanelDip() { return std::min(PanelWidthDip, std::max(PanelMinDip, chrome.ClientWidth() - PageMinDip)); }   // the window's width (Mode Focus: chrome.width is the floating panel's)
 float InsetDip() { return Shown() && !InFullscreen() && !PageFullscreenActive() ? PanelDip() : 0.f; }
 
 // ---------------------------------------------------------------- host -> panel

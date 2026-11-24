@@ -67,9 +67,13 @@ RECT PageScreenRect(){
     if(window)MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&r),2);return r;
 }
 RECT WindowScreenRect(){RECT r{};if(window)GetWindowRect(window,&r);return r;}
+// The find bar hangs 8 DIP inside the page's top-right corner; in Mode Focus it keeps clear of the floating panel while
+// the panel is on screen (it follows the slide: FocusApply), so it never covers the toolbar.
+RECT FindBarArea(){RECT r=PageScreenRect();const RECT p=FocusPanelPixels();if(!IsRectEmpty(&p)&&window){POINT b{0,p.bottom};ClientToScreen(window,&b);r.top=std::min(r.bottom,std::max(r.top,b.y));}return r;}
 RECT OriginAnchorRect(){
+    FocusAnchor(L"permission prompt"); // i18n-exempt: log tag. Mode Focus: the permission prompt hangs from the address field: the panel at rest
     auto i=chrome.indicator;if(i.right<=i.left||i.bottom<=i.top)i=chrome.AddressSlot();
-    RECT r{S(i.left),S(i.top),S(i.right),S(i.bottom)};if(window)MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&r),2);return r;
+    RECT r=ChromePx(i);if(window)MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&r),2);return r;   // Mode Focus: the panel at rest
 }
 
 // ---------------------------------------------------------------------------------------
@@ -601,7 +605,7 @@ void FindQuery(const std::wstring& term,const NativeChrome::FindBar::Options& op
 void OpenFindBar(){
     auto t=Active();if(!t||!t->view.p||!PageShown(*t)||halted)return;
     if(!findBar.Window()){FindInPage();return;} // component unavailable: engine find
-    findBar.Show(PageScreenRect(),findSession.tab.lock()==t?findSession.term:L"");findBar.Focus();
+    findBar.Show(FindBarArea(),findSession.tab.lock()==t?findSession.term:L"");findBar.Focus();
     if(findSession.tab.lock()==t&&!findSession.term.empty())FindQuery(findSession.term,findSession.options);
 }
 void CloseFindBar(bool focusPage){
@@ -1584,6 +1588,7 @@ bool ElementSurfaceKey(UINT key,bool ctrl,bool alt,bool shift,int& cmd){
     cmd=0;HWND f=GetFocus();if(!f)return false;
     if(InWindow(findBar.Window(),f)){
         if(ctrl&&!alt&&!shift&&key=='F'){cmd=FindPage;return true;}
+        if(ctrl&&!alt&&shift&&key=='F'){cmd=FocusModeCommand;return true;}   // Ctrl+Maj+F: Mode Focus, from the find field too
         if(!ctrl&&!alt&&key==VK_F3){cmd=shift?FindPreviousCommand:FindNextCommand;return true;}
         return true;
     }
@@ -1594,7 +1599,7 @@ void RepositionElementSurfaces(){
     if(modal.Visible())modal.Reposition(PageScreenRect());
     if(notesCard.Visible())notesCard.Reposition(PageScreenRect());
     if(originPrompt.Visible())originPrompt.Reposition(OriginAnchorRect());
-    if(findBar.Visible())findBar.Reposition(PageScreenRect());
+    if(findBar.Visible())findBar.Reposition(FindBarArea());
     if(contextToast.Visible())contextToast.Reposition(PageScreenRect());
     originPrompt.SetPageArea(PageScreenRect());
 }
@@ -1871,10 +1876,11 @@ NativeChrome::Tooltip::Content TipContent(const wchar_t* tip){
 }
 void ChromeTipHover(int x,int y){
     if(!chromeTip.Window())return;
-    const float d=GetDpiForWindow(window)/96.f,fx=x/d,fy=y/d;
+    const float d=GetDpiForWindow(window)/96.f;float fx=x/d,fy=y/d;
+    if(!chrome.Local(fx,fy)){chromeTip.Hide();return;}   // Mode Focus: only over the floating panel's visible part
     for(auto& r:chrome.regions){
         if(!r.tip||!*r.tip||fx<r.rect.left||fx>=r.rect.right||fy<r.rect.top||fy>=r.rect.bottom)continue;
-        RECT target{S(r.rect.left),S(r.rect.top),S(r.rect.right),S(r.rect.bottom)};MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&target),2);
+        RECT target=ChromePx(r.rect);MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&target),2);
         RECT bounds=NativeChrome::TooltipPlacement::VisibleRect(window);chromeTip.Hover(TipContent(r.tip),target,&bounds);return;
     }
     chromeTip.Hide();

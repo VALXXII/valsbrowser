@@ -65,8 +65,9 @@ struct Axis {
 };
 struct Layout { Axis v,h; float scale=1,width=0,height=0; };
 
-// Host size in physical px, DIP scale (dpi/96), viewport bottom-corner radius in DIP.
-inline Layout Compute(const Metrics& m,float hostW,float hostH,float scale,float cornerDip){
+// Host size in physical px, DIP scale (dpi/96), viewport bottom-corner radius in DIP; `topCornerDip`: a round top corner
+// too (Mode Focus, src/focus-mode.h: the vertical track then starts below its arc).
+inline Layout Compute(const Metrics& m,float hostW,float hostH,float scale,float cornerDip,float topCornerDip=0){
     Layout out;out.scale=scale;out.width=hostW;out.height=hostH;
     if(!m.valid||hostW<=0||hostH<=0||scale<=0)return out;
     const bool wantY=m.canY&&m.contentH>m.viewH+.5f&&m.viewH>0;
@@ -80,7 +81,7 @@ inline Layout Compute(const Metrics& m,float hostW,float hostH,float scale,float
         a.thumbStart=start+a.Travel()*std::clamp(pos/a.range,0.f,1.f);
         a.present=true;
     };
-    if(wantY)fill(out.v,endInset*scale,hostH-(wantX?std::max(cornerDip,crossReserve):cornerEnd)*scale,m.viewH,m.contentH,m.y);
+    if(wantY)fill(out.v,std::max(endInset,topCornerDip)*scale,hostH-(wantX?std::max(cornerDip,crossReserve):cornerEnd)*scale,m.viewH,m.contentH,m.y);
     if(wantX)fill(out.h,cornerEnd*scale,hostW-(out.v.present?std::max(cornerDip,crossReserve):cornerEnd)*scale,m.viewW,m.contentW,m.LeftX());
     return out;
 }
