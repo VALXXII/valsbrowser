@@ -22,6 +22,12 @@ CSS = C.SITE / 'styles' / 'checkout.css'
 MOVED = 'margin-left: auto'
 
 
+def mode_is_on():
+    '''Lot R: the launcher is gone — the log says whether the mode is on (the last of « mode on » / « mode off »).'''
+    t = C.log_text()
+    return t.rfind('ANNOTATE mode on') > t.rfind('ANNOTATE mode off (')
+
+
 def step(name, ok, detail=''):
     report['steps'].append({'step': name, 'ok': bool(ok), 'detail': str(detail)})
     print(('PASS ' if ok else 'FAIL ') + name + (' — ' + str(detail) if detail else ''), flush=True)
@@ -435,11 +441,18 @@ def run_main():
                     except Exception:
                         out.append(t)
             return out
-        step('panel WebView destroyed after staying closed', destroyed is not None and not panel_pages())
+        # O1 (0bcc02c, 20 Nov 2026; src/chat-host-ui.h, DestroyTimer: « !Ann::s.active »): in « Chat à droite » the panel's page is
+        # made in advance when the mode starts and KEPT, hidden, while the mode is on — destroyed after staying closed only once
+        # the mode is off. The mode is on here (lot R: read in the log, the launcher is gone): « destroyed » was this step's expectation of before O1
+        # (20:00 release's pass on e1521cf, 24 Nov: not destroyed, 1 page kept; the same code is in 0.3.833).
+        mode_on = mode_is_on()
+        step('panel WebView after staying closed: destroyed — or kept ready while the mode is on (O1)', (destroyed is not None and not panel_pages()) or (mode_on and destroyed is None),
+             f'mode on: {mode_on}, destroyed: {destroyed is not None}, panel pages: {len(panel_pages())}')
         step('agent stopped after the panel closed', logged(r'CHAT agent stopped \(idle', m11, 12))
         time.sleep(2.5)
         left = agent_processes()
-        step('rest again: 0 agent process, 0 panel WebView (the bubble\'s prepared page may stay, R18)', not left and not panel_pages(), f'{len(left)} agent process(es)')
+        step('rest again: 0 agent process; 0 panel WebView, or the one kept ready while the mode is on (O1; the bubble\'s prepared page may stay, R18)',
+             not left and (not panel_pages() or mode_on), f'{len(left)} agent process(es), {len(panel_pages())} panel page(s), mode on: {mode_on}')
         report['measures']['restAfterClose'] = {'agentProcesses': len(left), 'chatWebViews': 1 if C.panel_exists() else 0}
 
         # ---- V1.3 (the user's decision): with the chat closed, a click on an element OPENS the chat — the element is a

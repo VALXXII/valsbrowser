@@ -912,8 +912,12 @@ class Invariants:
             if n > 1:
                 self.r.step(f'{where} · invariant: one « conversation of an element reopened » per click', False, n, {'action': where})
         self.m.open = sel; self.m.hidden_by_other = False; self.close_at = log_mark(); self.m.unknown = False
-        if ms is None:   # no bubble came (reported above): nothing open, no anchor — no cascade of follow-up failures
-            self.m.open = None; self.m.anchor = None; return
+        if ms is None:   # no bubble came (reported above, once): no anchor — no cascade of follow-up failures
+            # the bubble of BEFORE may rightly still be on screen when the click never opened anything (monkey seed 2 on ae51111:
+            # #102, the click was taken by another browser's window; #261, O3): a bubble the model cannot place — it said
+            # « closed -> no window » at each of the 6 next actions, twice
+            still, _ = bubble_shown()
+            self.m.open = None; self.m.anchor = None; self.m.unknown = bool(still); return
         el = element_screen(sel)
         if sel in EMBEDDED_BOX:   # the block clicked inside the iframe / the shadow root is the element (its host is only the anchor)
             r = page(EMBEDDED_BOX[sel]); pg0 = page_area(); kk = dpr()
@@ -1106,8 +1110,14 @@ class Invariants:
             # again (a walk cut once while the tree changed) or still short (a tree cut for a screen reader too)
             short = self.uia.ask(f'list {Q.our_pid()}'); time.sleep(0.5); again, _ = self.uia.probe()
             n2 = next((x['n'] for x in again if x.get('cls') == 'LisiereBrowser'), -1) if isinstance(again, list) else -1
-            broken['UI Automation tree of the main window complete'] = {'elements': main[0]['n'], 'at start': self.uia_base, 'all windows': r,
-                                                                        'again after 0.5 s': n2, 'short walk': short}
+            # the 20:00 release's pass on ae51111 (#90: 32 of 113, then 151 half a second later, right after a change of layout):
+            # a walk cut ONCE while the tree changed is the reader's own (as chat_qa_uia_offscreen.py reads again) — what fails
+            # is a tree still short at the second walk (cut for a screen reader too)
+            if n2 < self.uia_base * 0.6:
+                broken['UI Automation tree of the main window complete'] = {'elements': main[0]['n'], 'at start': self.uia_base, 'all windows': r,
+                                                                            'again after 0.5 s': n2, 'short walk': short}
+            else:
+                print(f'NOTE UI Automation: a short walk ({main[0]["n"]} of {self.uia_base}), whole again 0.5 s later ({n2})', flush=True)
         if s > 15:
             broken['UI Automation answers in time'] = s
         chats = [x for x in r if x.get('cls', '').startswith('BrowserChat')]

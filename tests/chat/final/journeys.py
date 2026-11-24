@@ -255,7 +255,14 @@ def j_diff(j):
     if j.step('R40 · the handle is shown', g):
         F.drag(g[0], g[1], g[0] + 180, g[1] + 120, 24)
         s2 = F.bubble_surface()
-        j.step('R40 · the handle widens and heightens it, its corner fixed', s2 and s2[2] - s2[0] > (s1[2] - s1[0]) + 100 and s2[3] - s2[1] > (s1[3] - s1[1]) + 60 and abs(s2[0] - s1[0]) <= 1 and abs(s2[1] - s1[1]) <= 1, {'diff': s1, 'resized': s2})
+        # #130 C (the 20:00 release's pass on ae51111: [946, 522, 1346, 920] -> [946, 522, 1526, 920], page bottom 931): the bubble
+        # is always whole in the page area. One that already slid up along its element to 8 px from the page's bottom has no
+        # room under it: the handle (top-left corner fixed) then only widens it. With room under it, it heightens it too.
+        pg = F.page_area(); room = pg[3] - s1[3] if s1 else 0   # px between the diff's bottom and the page area's bottom
+        grew_h = (s2[3] - s2[1]) - (s1[3] - s1[1]) if s1 and s2 else 0
+        tall = grew_h > 60 if room > 90 else (grew_h >= -1 and s2 and s2[3] <= pg[3])
+        j.step('R40 · the handle widens it, and heightens it as far as the page area allows (#130 C: always whole), its corner fixed',
+               s2 and s2[2] - s2[0] > (s1[2] - s1[0]) + 100 and tall and abs(s2[0] - s1[0]) <= 1 and abs(s2[1] - s1[1]) <= 1, {'diff': s1, 'resized': s2, 'page': pg, 'roomUnder': room, 'grewHeight': grew_h})
         j.R.capture('diff-agrandi'); j.check('resized', wheel_moved=True)
         F.escape_chat('bubble'); time.sleep(0.8); s3 = F.bubble_surface()
         j.step('R40 · Échap gives the size of before back, at the same place', s3 and abs((s3[2] - s3[0]) - (s0[2] - s0[0])) <= 2 and abs((s3[3] - s3[1]) - (s0[3] - s0[1])) <= 2 and abs(s3[0] - s0[0]) <= 1, {'before': s0, 'after': s3})
@@ -718,7 +725,13 @@ def j_e4b(j):
         return
     region = (sf[0] - 40, sf[1] - 40, sf[2] + 40, sf[3] + 40)
     film = V5.Frames(region, 90, 0.010); film.start(); time.sleep(0.05)
-    F.real_click_chat('button.m'); time.sleep(0.7); film.stop = True; film.join()
+    # The 20:00 release's pass on ae51111 (tops 6, 7, 41 while the host kept the surface's top at 576): after the scroll the
+    # bubble below div.plans (#130 C rule 10: height limited to the room under it) is offered more room at its next placement —
+    # this click — and grows DOWN by 36 px; its foot moves under the still pointer, which then rests on « Effort »: the
+    # sub-menu opens over the column measured here (the word « Élevé » read as the top edge). The pointer leaves at once:
+    # no sub-menu, the column stays the surface's. (That the bubble grows at the click is the product's: lot 4, rule 5.)
+    F.real_click_chat('button.m'); F.u32.SetCursorPos(pg[0] + 20, pg[1] + 20)
+    time.sleep(0.7); film.stop = True; film.join()
     x = (sf[2] - sf[0]) - 14 + 40; tops = []   # near the surface's right edge: the model menu opens above its button, out of this column (H1)
     for _, fr in film.frames:
         r = V5.run_of(fr, x, V5.dark, 0, fr[1] - 1)
