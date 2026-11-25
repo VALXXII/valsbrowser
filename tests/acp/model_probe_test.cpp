@@ -187,13 +187,48 @@ static void TestFailures() {
     CHECK(ChatModelProbe::RemoveFolder(dir) && !Exists(dir));
 }
 
+// « Ton agent » × #128 v2 (night of 25/11): the read waits for a calm chat — a start pushes it CalmMs further, a later
+// start further again; nothing while the chat's own session starts or a turn runs.
+static void TestCalm() {
+    ChatModelProbe::Calm c;
+    CHECK(c.Ready(1000, false, false));                                  // nothing started yet
+    c.Busy(1000);                                                         // the annotation mode starts
+    CHECK(!c.Ready(1000, false, false) && !c.Ready(1000 + ChatModelProbe::CalmMs - 1, false, false) && c.Wait(1000) == ChatModelProbe::CalmMs);
+    CHECK(c.Ready(1000 + ChatModelProbe::CalmMs, false, false) && c.Wait(1000 + ChatModelProbe::CalmMs) == 0);
+    c.Busy(3000);                                                         // a bubble opens meanwhile: the read waits again
+    CHECK(!c.Ready(1000 + ChatModelProbe::CalmMs, false, false) && c.Ready(3000 + ChatModelProbe::CalmMs, false, false));
+    CHECK(!c.Ready(99999, true, false) && !c.Ready(99999, false, true));  // the chat's own session starting, a turn: never
+}
+// The chat's own session start stops a read: before its session (no session opened) and while it waits for it.
+static void TestCancel() {
+    const std::wstring dir = ChatModelProbe::MakeFolder();
+    {
+        const std::wstring log = g_tmp + L"\probe-cancel-before.log"; DeleteFileW(log.c_str());
+        Acp::StartOptions o = Options(log, {}); o.cwd = Narrow(dir);
+        std::atomic<bool> cancel{true};
+        const auto r = ChatModelProbe::Read(o, 20000, nullptr, &cancel);
+        CHECK(!r.ok && r.cancelled && r.why == "cancelled" && r.stopped && !Exists(log));   // no agent started at all
+    }
+    {   // an agent that never answers: stopped at once on the chat's start, long before the read's time limit
+        const std::wstring log = g_tmp + L"\probe-cancel-during.log"; DeleteFileW(log.c_str());
+        Acp::StartOptions o = Options(log, {L"--silent"}); o.cwd = Narrow(dir);
+        std::atomic<bool> cancel{false};
+        std::thread later([&cancel] { Sleep(300); cancel.store(true); });
+        const DWORD t0 = GetTickCount();
+        const auto r = ChatModelProbe::Read(o, 60000, nullptr, &cancel);
+        later.join();
+        CHECK(!r.ok && r.cancelled && r.why == "cancelled" && r.stopped && GetTickCount() - t0 < 15000);
+    }
+    CHECK(ChatModelProbe::RemoveFolder(dir) && !Exists(dir));
+}
+
 int wmain(int argc, wchar_t** argv) {
     if (argc < 3) { std::printf("usage: model_probe_test <fake-acp-agent.exe> <scratch folder> [<repository>]\n"); return 2; }
     g_agent = FullPath(argv[1]); g_tmp = FullPath(argv[2]);
     CreateDirectoryW(g_tmp.c_str(), nullptr);
     if (!Exists(g_agent) || !Exists(g_tmp)) { std::printf("missing agent or folder\n"); return 2; }
     if (argc >= 4) g_root = FullPath(argv[3]);   // the repository: the fixture of the real adapters' lists
-    TestDecision(); TestKnownModels(); TestRead(); TestPrepareThenRead(); TestNotSignedIn(); TestFailures();
+    TestDecision(); TestKnownModels(); TestRead(); TestPrepareThenRead(); TestNotSignedIn(); TestFailures(); TestCalm(); TestCancel();
     std::printf("%s: %d checks, %d failed\n", g_failed ? "FAILED" : "model_probe_test passed", g_checks, g_failed);
     return g_failed ? 1 : 0;
 }

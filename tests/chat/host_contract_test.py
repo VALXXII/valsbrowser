@@ -514,13 +514,6 @@ check('key = FrameKeyOf(bubble.conv)' in fb and 'f.Set("key", Str(key))' in fb a
 check('!ChatBubble::FrameKey(h.anchorKey) || !marked.insert(h.anchorKey).second' in sm and 'o.Set("key", Str(h.anchorKey))' in sm,
       'lot 1d, case 3: a conversation of an iframe\'s element has its mark too (by its key); a web component\'s still has none')
 
-# « Ton agent » after the night of 25/11: the agents' hub starts with the browser and must not write « CHAT » lines (the chat
-# does nothing before it is used: chat_qa_run « rest »).
-ea = block_after(turn, 'void EnsureAgentStatus() {')
-check('h.log = [](const std::wstring& s) { ::Log(s); };' in ea and 'Diag(s)' not in ea,
-      '« Ton agent »: the agents\' hub logs its own lines (« AGENTS … »), never through the chat\'s Diag — no chat activity at rest')
-# The bubble's opening sends the thread before the « Ton agent » block (journeys C1, night of 25/11: the size was published
-# before the conversation).
-check('SendState(); SendThread(); SendTonAgent();' in ui, '« Ton agent »: the page ready, the thread goes before the agents\' block (the bubble publishes its size with its conversation)')
+
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

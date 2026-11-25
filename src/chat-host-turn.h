@@ -8,6 +8,8 @@ void DisposeSession(const wchar_t* why);
 void SendPrompt(); void ModeSettled(); void ModeRefused(const Acp::Event& e);   // SEC-13
 void ReleaseHeldQueue(const wchar_t* why);   // « Ton agent »: the messages held behind an agent that stopped
 void MaybeReadModels();                      // #128 v2: an agent's model list read before its first chat
+void ModelReadBusy();                        // « Ton agent » × #128 v2: a start event — the read waits for a calm chat
+void StopModelReadForStart();                // the chat's own session starts: a read still running stops
 
 // ---------------------------------------------------------------- « Ton agent »: the agents' one status (src/agent-status.h)
 // The chat never detects agents on its own any more: it shows AgentStatus (src/chat-agent-status.h maps it), the same
@@ -93,8 +95,22 @@ struct ModelRead { std::set<std::string> done; std::map<std::string, int> failur
 struct ModelReadMail { std::mutex mu; std::shared_ptr<ChatModelProbe::Result> result; };
 ModelReadMail& ModelMail() { static auto* m = new ModelReadMail; return *m; }
 void SaveOptionsCache();   // chat-host-ui.h
+// The calm gate (ChatModelProbe::Calm): every start event pushes the read CalmMs further; the timer comes back then.
+ChatModelProbe::Calm modelReadCalm;
+std::shared_ptr<std::atomic<bool>> modelReadCancel;   // the running read's (its thread holds it too)
+void ModelReadBusy() {
+    modelReadCalm.Busy(GetTickCount64());
+    if (post) SetTimer(post, ModelReadTimer, ChatModelProbe::CalmMs, nullptr);   // re-armed: counted from the last start event
+}
+void StopModelReadForStart() {
+    if (!modelRead.agent.empty() && modelReadCancel && !modelReadCancel->exchange(true)) Diag(L"models of " + W(modelRead.agent) + L": the read stops for the chat's own start (again once calm)");   // i18n-exempt: log detail
+    ModelReadBusy();
+}
 void MaybeReadModels() {
     if (!modelRead.agent.empty() || !post) return;
+    if (const auto now = GetTickCount64(); !modelReadCalm.Ready(now, sessionStarting || preparing, turn.active)) {   // a start, a turn: later
+        SetTimer(post, ModelReadTimer, std::max(500u, modelReadCalm.Wait(now)), nullptr); return;
+    }
     for (const auto& def : Agents) {
         const auto& a = agentInfo[def.id];
         ChatModelProbe::Facts f;
@@ -111,9 +127,10 @@ void MaybeReadModels() {
         o.clientVersion = BROWSER_VERSION_TEXT;
 #endif
         const HWND target = post; const bool prepare = modelRead.prepare;
+        auto cancel = std::make_shared<std::atomic<bool>>(false); modelReadCancel = cancel;
         if (prepare) Diag(L"prepare " + W(def.id) + L" in the background, for its model list (first use: the private Node and its adapter are downloaded into <data>\\agents)");   // i18n-exempt: log detail
         Diag(L"reading the models of " + W(std::string(def.name)) + L" (installed, signed in, never started here): a session opened and closed in a temporary folder, no message");   // i18n-exempt: log detail
-        std::thread([o, target, prepare, env, rt]() mutable {
+        std::thread([o, target, prepare, env, rt, cancel]() mutable {
             auto r = std::make_shared<ChatModelProbe::Result>();
             std::function<bool(std::string&)> ready;
             if (prepare) ready = [env, rt](std::string& log) {   // as PrepareAgent does it (same pins, same folder), without its progress strip
@@ -123,7 +140,7 @@ void MaybeReadModels() {
             };
             const std::wstring dir = ChatModelProbe::MakeFolder();
             if (dir.empty()) r->why = "no temporary folder";
-            else { o.cwd = U8(dir); *r = ChatModelProbe::Read(std::move(o), 90000, ready); if (!ChatModelProbe::RemoveFolder(dir)) r->why += r->why.empty() ? "temporary folder left" : ", temporary folder left"; }
+            else { o.cwd = U8(dir); *r = ChatModelProbe::Read(std::move(o), 90000, ready, cancel.get()); if (!ChatModelProbe::RemoveFolder(dir)) r->why += r->why.empty() ? "temporary folder left" : ", temporary folder left"; }
             { auto& m = ModelMail(); std::lock_guard<std::mutex> g(m.mu); m.result = r; }
             PostMessageW(target, AcpWake, 0, 0);
         }).detach();
@@ -148,9 +165,13 @@ void PumpModelRead() {
         a.options = r->options; SaveOptionsCache();
         Diag(L"models of " + W(id) + L" read: " + std::to_wstring(mo->choices.size()) + L" (the agent stopped)");   // i18n-exempt: log detail
     } else Diag(L"models of " + W(id) + L" not read: " + (r->ok ? std::wstring(mo ? L"already known" : L"the agent gave no model list") : W(r->why)));   // i18n-exempt: log detail
-    if (!r->ok) ++modelRead.failures[id];
-    if (ChatModelProbe::Settled(r->ok, modelRead.failures[id])) modelRead.done.insert(id);
-    else Diag(L"models of " + W(id) + L": tried again at the next opening of the chat or start of the mode (" + std::to_wstring(modelRead.failures[id]) + L" / " + std::to_wstring(ChatModelProbe::MaxTries) + L")");   // i18n-exempt: log detail
+    modelReadCancel.reset();
+    if (r->cancelled) { Diag(L"models of " + W(id) + L": stopped for the chat's own start, read again once the chat is calm"); ModelReadBusy(); }   // i18n-exempt: log detail
+    else {
+        if (!r->ok) ++modelRead.failures[id];
+        if (ChatModelProbe::Settled(r->ok, modelRead.failures[id])) modelRead.done.insert(id);
+        else { Diag(L"models of " + W(id) + L": tried again once the chat is calm (" + std::to_wstring(modelRead.failures[id]) + L" / " + std::to_wstring(ChatModelProbe::MaxTries) + L")"); ModelReadBusy(); }   // i18n-exempt: log detail; never at once, never in a loop
+    }
     SendState();   // the menu, open or not, shows the agent's own list now (or keeps the one it had)
     MaybeReadModels();
 }
@@ -374,6 +395,7 @@ void GiveOwedChoices() {
 }
 void OnStarted(const Acp::StartResult& r) {
     sessionStarting = false; auto& info = agentInfo[agentId]; started = r;
+    ModelReadBusy();   // the chat just started: a model read waits until it is calm
     Diag(std::wstring(L"session start: ") + (r.state == Acp::StartState::Ready ? (r.resumed ? L"ready (resumed)" : L"ready (new)") : W(Acp::ErrorCodeName(r.error.code))) + (r.error.detail.empty() ? L"" : L" — " + W(ClipUtf8(r.error.detail, 300))));
     switch (r.state) {
     case Acp::StartState::Ready: {
@@ -408,6 +430,7 @@ void OnStarted(const Acp::StartResult& r) {
 void StartSession() {
     if (session && !sessionReady && !sessionStarting) { session->Dispose(); disposed.push_back(std::move(session)); session.reset(); }   // an object left by AuthRequired
     if (session || sessionStarting || !Usable()) return;
+    StopModelReadForStart();   // « Ton agent » × #128 v2: never a model read's session next to the chat's own start
     const auto* def = AgentOf(agentId); if (!def) return;
     session = std::make_unique<Acp::Session>();
     const HWND target = post; session->SetWake([target] { if (target) PostMessageW(target, AcpWake, 0, 0); });

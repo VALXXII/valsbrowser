@@ -21,6 +21,7 @@
 #include "acp-client.h"
 #include <windows.h>
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <functional>
 #include <mutex>
@@ -34,6 +35,19 @@ namespace ChatModelProbe {
 // (downloaded, as at its first use) for the read. false: only agents already prepared are read (the earlier limit).
 inline constexpr bool PrepareForModels = true;
 inline constexpr int MaxTries = 3;   // failed downloads / reads per launch (each at a later detection, never in a loop)
+
+// « Ton agent » × #128 v2 (night of 25/11: the read at the chat's start made the first click, the bubble's warm page and the
+// band's slide late): the read waits for a CALM chat. Every start — the annotation mode, the chat's page or session, a
+// bubble opening, a change of layout — pushes it CalmMs further (Busy); nothing reads while the chat's own session starts
+// or prepares, or while a turn runs; the chat's own session start stops a read still running (Read's `cancel`: tried
+// again once calm, not counted as a failure).
+inline constexpr unsigned CalmMs = 5000;
+struct Calm {
+    unsigned long long until = 0;   // GetTickCount64 before which no read starts
+    void Busy(unsigned long long now) { until = now + CalmMs; }
+    bool Ready(unsigned long long now, bool chatStarting, bool turnRunning) const { return now >= until && !chatStarting && !turnRunning; }
+    unsigned Wait(unsigned long long now) const { return until > now ? static_cast<unsigned>(until - now) : 0u; }
+};
 
 // When the browser may read an agent's model list on its own (pure: unit-tested).
 struct Facts {
@@ -84,13 +98,15 @@ struct Result {
     std::string why;                         // when not ok: the start's error code, "timeout", "start refused"
     bool stopped = false;                    // its processes are gone
     bool prepareTried = false, prepared = false;   // the adapter had to be prepared first; it is now
+    bool cancelled = false;                  // stopped for the chat's own session start (not a failure: tried again once calm)
     std::string prepareLog;                  // that preparation's result, as the panel's own logs it (PrepareErrorName — detail)
 };
 // Blocking — a thread of its own, never the UI thread. Start → initialize → session/new in `o.cwd` → its configOptions →
 // stop (the adapter and everything it started). `o.resolve` and `o.cwd` are the caller's; whatever else `o` asks for that
 // would do more than open a session (resume, sign-in, MCP servers, questions) is cleared. `prepare` (PrepareThenRead): run
 // first, under PrepareLock; it returns false with its log line when the adapter could not be made ready (no session then).
-inline Result Read(Acp::StartOptions o, unsigned timeoutMs = 90000, const std::function<bool(std::string& log)>& prepare = nullptr) {
+inline Result Read(Acp::StartOptions o, unsigned timeoutMs = 90000, const std::function<bool(std::string& log)>& prepare = nullptr,
+                   const std::atomic<bool>* cancel = nullptr) {
     Result r;
     if (prepare) {
         r.prepareTried = true;
@@ -98,6 +114,7 @@ inline Result Read(Acp::StartOptions o, unsigned timeoutMs = 90000, const std::f
         r.prepared = prepare(r.prepareLog);
         if (!r.prepared) { r.why = "prepare: " + r.prepareLog; r.stopped = true; return r; }
     }
+    if (cancel && cancel->load()) { r.cancelled = true; r.why = "cancelled"; r.stopped = true; return r; }
     o.resumeSessionId.clear(); o.authenticateMethodId.clear(); o.mcpServers.clear(); o.questions = false;
     Acp::Session s;
     if (!s.Start(std::move(o))) { r.why = "start refused"; return r; }
@@ -106,6 +123,7 @@ inline Result Read(Acp::StartOptions o, unsigned timeoutMs = 90000, const std::f
     for (bool started = false; !started;) {
         const ULONGLONG now = GetTickCount64();
         if (now >= until) { r.why = "timeout"; break; }
+        if (cancel && cancel->load()) { r.cancelled = true; r.why = "cancelled"; break; }
         s.WaitForEvents(unsigned(std::min<ULONGLONG>(until - now, 500)));
         events.clear(); s.Poll(events);
         for (auto& e : events) {

@@ -580,6 +580,7 @@ LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == WM_TIMER) {
         if (w == DestroyTimer) { KillTimer(h, DestroyTimer); if (panelState == PanelState::Closed && !BubbleOpen() && !BubbleWarm() && !Ann::s.active && view.Exists()) { view.Destroy(); panelReady = false; Diag(L"panel WebView destroyed (closed for " + std::to_wstring(PanelIdleMs()) + L" ms)"); } return 0; }
         if (w == LimitTimer) { KillTimer(h, LimitTimer); ClearStrip("limit"); return 0; }   // « 10 éléments au maximum » leaves after 4 s
+        if (w == ModelReadTimer) { KillTimer(h, ModelReadTimer); MaybeReadModels(); return 0; }   // « Ton agent » × #128 v2: the chat is calm (or it re-arms)
         if (w == WarmTimer) { void WarmPanel(); void WarmBubble(); KillTimer(h, WarmTimer); WarmPanel(); WarmBubble(); return 0; }   // QA: the warm-up held back is done now
         if (w == AgentIdleTimer) { KillTimer(h, AgentIdleTimer); if (!turn.active && session) DisposeSession(L"idle"); return 0; }   // i18n-exempt: log reason
         if (w == RearmTimer) { auto t = ChatTab(); if (!rearmOwed || !t) { KillTimer(h, RearmTimer); rearmOwed = false; } else if (t->navInFlight == 0 || ++rearmTries > 60) DoRearm(); return 0; }
@@ -728,6 +729,7 @@ std::string preparedNonce;        // the mode's page the chat was last prepared 
 // `force` (the panel's opening): every opening looks again (folder detection: a port is reused by other projects).
 void PrepareChat(const std::shared_ptr<Tab>& t, bool force = false) {
     EnsureInit();
+    ModelReadBusy();   // « Ton agent » × #128 v2: the chat's page / a bubble is being prepared — no model read before it is calm
     const auto now = ChatLocal::SiteOf(U8(t->uri));
     fileFolder = now.file ? W(ChatLocal::FolderOfFile(U8(t->uri)).folder) : std::wstring();
     if (!force && ChatTab() == t && now.origin == site.origin && preparedNonce == Ann::s.nonce) return;
@@ -825,7 +827,7 @@ void OpenAtModeStart() {
     else quietOpening = false;
 }
 bool AskedFor() { return Open() && !openedByMode; }
-void ModeEntered() { SyncChromeBits(); if (CommentLayout()) { if (auto t = Active(); t && AskAvailable(t)) PrepareChat(t); SyncMarks(); } else OpenAtModeStart(); }   // M16: the chat's tab is set at once (a reload before the first click kept the mode off)
+void ModeEntered() { ModelReadBusy(); SyncChromeBits(); if (CommentLayout()) { if (auto t = Active(); t && AskAvailable(t)) PrepareChat(t); SyncMarks(); } else OpenAtModeStart(); }   // M16: the chat's tab is set at once (a reload before the first click kept the mode off)
 void CoolBubble();
 void ModeExited() { openedByMode = quietOpening = false; rearmOwed = false; if (post) { KillTimer(post, RearmTimer); KillTimer(post, MarkTimer); } CloseBubble(false); CoolBubble(); ForgetPage(); if (Open()) ClosePanel(); if (Ann::uiReady) Ann::banner.SetChat(false, false); }
 bool KeepsMode(const std::shared_ptr<Tab>& t) { return (Open() || CommentLayout()) && t && ChatTab() == t; }   // Mode Commentaire: the frames of the page's conversations come back after a reload
