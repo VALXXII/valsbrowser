@@ -63,28 +63,23 @@ order = [ready.find(x) for x in ('Send("hello"', 'SendLayout(', 'SendState();', 
 check(ready and all(p >= 0 for p in order) and order == sorted(order),
       'C1: « ready » sends hello, layout, state, thread, commands, queue — in that order, none left in a comment', order)
 
-turn = code('chat-host-turn.h'); batch = code('chat-host-batch.h'); comment = code('chat-comment.h')
+turn = code('chat-host-turn.h'); comment = code('chat-comment.h')
 
 # C2: a conversation shown « aside » while nothing runs becomes the engine's before anything is sent from it, and at the
 # end of a turn when nothing waits for another conversation
 soq = block_after(ui, 'void SendOrQueue(')
 check(0 <= soq.find('TakeShownAside()') < soq.find('StartTurn('), 'C2: SendOrQueue takes the conversation shown aside before starting a turn')
 check('TakeShownAside()' in block_after(turn, 'void ProcessQueue() {'), 'C2: the end of a turn (ProcessQueue, nothing queued) gives the engine to the conversation shown')
-check('TakeShownAside()' in block_after(batch, 'void StartBatchTurn('), 'C2: a batch sent from a bubble aside goes to its conversation')
-check('TakeShownAside()' in block_after(ui, 'void KeepAnnotation('), 'C2: Ctrl+Entrée in a bubble aside keeps the line in its conversation')
 check('SwitchEngineTo(' in block_after(comment, 'bool TakeShownAside()'), 'C2: by the same path as a queued message (SwitchEngineTo)')
 
 # C3: an element not found never closes the bubble while its conversation works or waits (a turn, an authorization, a
-# queued message); it stays at its last place and follows the element again if it comes back. Opened from the
-# launcher's history (element gone), the bubble follows no selector: it cannot close itself
+# queued message); it stays at its last place and follows the element again if it comes back.
 on_anchor = block_after(comment, 'void OnAnchor(')
 gone = block_after(on_anchor, 'if (e.gone)')
 check('BubbleBusy()' in gone and gone.find('BubbleBusy()') < gone.find('CloseBubble('), 'C3: « gone » closes only when nothing works or waits for this conversation', gone[:160])
 check('bubble.lost' in on_anchor, 'C3: an element found again is followed again (bubble.lost)')
 busy = block_after(comment, 'bool BubbleBusy()')
 check(all(x in busy for x in ('turn.active', 'waitingPermissions', 'HasQueued(')), 'C3: busy = a turn of its conversation, an authorization waiting, or a message queued for it')
-check('bubble.noFollow' in block_after(comment, 'void FollowBubbleElement(bool current) {') and 'noFollow = true' in block_after(comment, 'bool OpenFromHistory(const std::wstring& id) {'),
-      'C3: a conversation opened from the history follows no element (it used to close at once)')
 
 # E2 / M9 (coordinator): the model, the effort and the mode chosen are remembered per site and given to EVERY new session
 apply = block_after(turn, 'void ApplyDefaults() {')
@@ -136,7 +131,7 @@ keep_plan = block_after(turn, 'void KeepModeAfterPlan() {')
 check(all(x in keep_plan for x in ('turn.planLaunched', 'ChatOptions::ModeAfterPlan(true, mv.current', 'RememberSetting(&ChatStore::Project::mode, kept)', 'std::none_of(mv.list')), 'M: the mode the agent goes to after its plan is accepted is remembered for the site (only a mode the chat offers)')
 events = block_after(turn, 'void OnEvent(const Acp::Event& e) {')
 check('info.modes = e.modes; KeepModeAfterPlan(); SendState();' in events and 'info.options = e.configOptions; KeepModeAfterPlan(); SendState();' in events, 'M: …whether the agent says it as a mode or as an option (Codex)')
-start_turn = block_after(turn, 'void StartTurn(const std::string& text, const std::vector<std::string>& elementIds, const std::vector<std::string>& attachmentIds, bool batch) {')
+start_turn = block_after(turn, 'void StartTurn(const std::string& text, const std::vector<std::string>& elementIds, const std::vector<std::string>& attachmentIds) {')
 check(0 <= start_turn.find('GiveOwedChoices();') < start_turn.find('EnsureSession('), 'M: a choice still owed is given before the next prompt of that session (what the composer shows is what the message runs with)')
 check('ChoiceForNewSession(' in block_after(turn, 'std::string WantedMode('), 'M9: the mode shown before the session (R28) is the one it will get')
 
@@ -215,7 +210,6 @@ check('anchorSelector.clear()' in forget and 'anchorElements.erase(' in forget a
 # M7: messages of a bubble shown aside are resolved on ITS conversation
 check('ShownItems()' in ui[ui.find('if (type == "retry")'):][:500], 'M7: « Réessayer » takes the message of the conversation shown')
 check('ShownItems()' in block_after(turn, 'void ViewChanges(') and 'CheckpointOf(' in block_after(turn, 'void ViewChanges('), 'M7: the changes of a turn of the conversation shown')
-check('aside.on' in block_after(ui, 'void KeepAnnotation('), 'M7: Ctrl+Entrée in a bubble aside keeps the line in its conversation')
 # M8: the modes are cached with the options (the mode button is there from the first opening)
 check('"modes"' in block_after(ui, 'void SaveOptionsCache() {') and '"modes"' in block_after(ui, 'void LoadOptionsCache() {'), 'M8: the modes are cached and read back')
 # M14: a held message never waits forever (2 s, or the page reloaded), and a second one does not erase the first
@@ -334,10 +328,6 @@ check('EarlyOpenAllowed(bubble.open, bubble.selector, env.selector)' in block_af
 
 # monkey 0.3.561 #102 / #261: the bubbles' own elements left in `aiming` never block a click (only the panel's chips count)
 tcs = block_after(comment, 'bool TakeCommentSelection(')
-# O3 / M4 (real-window monkey, 24 Nov 2026): the old note panel never stays open under a bubble nor through a change of layout
-csn = block_after(comment, 'void CloseStaleNote(')
-check('note.Close(false)' in csn and 'CloseStaleNote(' in block_after(comment, 'void OpenBubble(')[:400] and 'CloseStaleNote(' in block_after(comment, 'void SwitchLayout(')[:300],
-      'O3 / M4: an open note panel is closed when a bubble opens and when the layout changes (it kept the keyboard)')
 # O3 (« clic sans bulle », monkey 0.3.611 #116: the old note opened instead of a bubble): in Commentaire nothing declines a click
 # on an element — the panel's limit of 10 chips is not this layout's; the early opening's ways out say why in the log
 check('return false' not in tcs and 'BubbleClickAllowed' not in tcs, 'O3: TakeCommentSelection never declines a click (the note panel never opens instead of a bubble)')
@@ -371,12 +361,162 @@ check(0 <= at < place.find('if (!bubble.anchor.set) {') and all(x in place[max(0
 check('BubbleMarginCss = 8' in consts and '2 * BubbleMarginCss' in block_after(comment, 'void PlaceBubble(bool scrolling) {'),
       '#130 C: 8 px from the page area\'s edges; the height offered is at most the page area - 16 px')
 
+# ---------------------------------------------------------------- lot R (2026-11-24): the old annotation system is gone
+def line_of(text, marker):
+    at = text.find(marker)
+    if at < 0:
+        return ''
+    end = text.find('\n', at)
+    return text[at:end if end >= 0 else len(text)]
+
+
+host_all = '\n'.join(code(n) for n in ('chat-host.h', 'chat-host-ui.h', 'chat-host-turn.h', 'chat-comment.h', 'chat-bubble.h', 'annotation-mode.h', 'annotation-ui.h'))
+page_all = '\n'.join((ROOT / 'assets' / 'chat-panel' / n).read_text(encoding='utf-8') for n in ('panel.js', 'panel.css', 'dev-host.js'))
+gone_host = ('PoseBatch', 'StartBatchTurn', 'BatchItem', 'composerBatch', 'activeBatch', 'annotations.batch', 'annotations.status', 'pendingAnnotations', 'chat-batch.h', 'chat-host-batch.h',
+             'KeepAnnotation', 'annotation.kept', 'AskFromNote', 'NotePopover', 'note.Show', 'AUI::Launcher', 'launcher.', 'LauncherSync', 'LoadHistory', 'OpenHistory', 'CommentHistory',
+             'OpenFromHistory', 'AnnotateHistoryCommand', 'AnnotateMarkdownItem', 'OnSubmit', 'ShowCardFor', 'RefreshStatus')
+left = [w for w in gone_host if w in host_all]
+check(not left, 'lot R (O7 and the removal): the host names no batch, no « garder en annotation », no note panel, no launcher, no card, no annotation history', left)
+gone_page = ('annotations.batch', 'annotations.status', 'annotation.show', 'annotations.request', 'pendingAnnotations', 'renderBatch', 'batch-row', 'ann-card', 'annotation.kept', 'Garder en annotation',
+             'Gardé en annotation', 'post("annotate"', 'Traiter ')
+left = [w for w in gone_page if w in page_all]
+check(not left, 'lot R: the page of the chat (panel.js, panel.css, dev-host.js) names no batch and no « garder en annotation »', left)
+check(all(not (SRC / n).exists() for n in ('chat-batch.h', 'chat-host-batch.h', 'annotation-launcher.h', 'annotation-history.h', 'annotation-note.h', 'annotation-problem.h')),
+      'lot R: the files of the batch, the launcher, the history and the note are deleted')
+mode = code('annotation-mode.h')
+on_select = block_after(mode, 'void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {')
+check('Chat::TakeSelection(' in on_select and 'Resume(taken && !commentFirst);' in on_select and 'note' not in on_select.replace('annotation', '').lower().replace('notes', ''),
+      'lot R: a selection goes to the chat or nowhere (the picker resumes): no other surface opens')
+main_cpp = (SRC / 'main.cpp').read_text(encoding='utf-8')
+check("key=='H'&&Annotation" not in main_cpp and 'AnnotateHistoryCommand' not in main_cpp and 'key_ctrl_shift_h' not in (SRC / 'i18n-catalog.inc').read_text(encoding='utf-8'),
+      'lot R: Ctrl+Maj+H is no longer a shortcut of the browser (nor a text of the catalog)')
+# decision A (O12): the chat on a local file and in a private window
+ask = line_of(ui, 'bool AskAvailable(const std::shared_ptr<Tab>& t) {')
+check('ChatLocal::SiteOf(' in ask and '.file' not in ask and '!privateWindow || !ChatRoot().empty()' in ask, 'decision A: the chat is available on a local file, and in a private window once its own folder exists', ask)
+check('privateWindow ? Ann::PrivateData() : Ann::DataRoot()' in line_of(host, 'std::wstring ChatRoot() {') and 'ChatFilesRoot()' in line_of(host, 'ChatStore::History& History() {')
+      and 'ChatFilesRoot()' in line_of(host, 'std::wstring ProjectsFile() {') and 'ChatFilesRoot()' in line_of(turn, 'std::shared_ptr<CS::Store> Snapshots() {'),
+      'decision A: in a private window the conversations, the site memory and the snapshots live in that window\'s own folder (erased with its ledger)')
+wa = block_after(turn, 'void WriteAnnotations(std::vector<Element>& elements, const std::string& note) {')
+check(0 <= wa.find('privateWindow && !Ann::RecordPrivate(a)') < wa.find('Ann::Store().WriteAnnotation('), 'decision A: in a private window an element is listed in the ledger before it is stored (no line, nothing stored)')
+mss = block_after(turn, 'void StartSession() {')
+check(0 <= mss.find('if (!site.file) {') < mss.find('"--site", site.origin'), 'decision A (security): a local file\'s session never gets the annotation bridge (it could not be restricted to a site)')
+df = block_after(ui, 'void DetectFolder() {')
+check(all(x in df for x in ('if (site.file) {', 'ChatFolder::detail::Refused(dir)', 'ChatFolder::detail::TooWide(dir)', 'FolderDecided(suggestion.sure, suggestion.doubt)')) and 'Parent(' not in df[:df.find('ChatFolder::Detect(')],
+      'decision A (security): a local file\'s project folder is its own folder, never one above; a wide or refused folder is asked, never used silently')
+check('SiteOf(' in line_of(comment, 'std::string ModeOrigin() {') and 'ChatLocal::Classify(' not in ui.replace('ChatLocal::Classify(U8(t->uri)).label', ''),
+      'decision A: the host reads a page\'s site through ChatLocal::SiteOf everywhere (a file\'s folder)')
+# the chat opens with the mode in « Panneau »
+me = line_of(ui, 'void ModeEntered() {')
+oas = block_after(ui, 'void OpenAtModeStart() {')
+check('else OpenAtModeStart();' in me and 'CommentLayout()' in oas and 'quietOpening = true; OpenPanel();' in oas and 'openedByMode = true' in oas,
+      'lot R: in « Panneau » the panel opens with the mode (never in « Commentaire »), quietly')
+op = block_after(ui, 'void OpenPanel() {')
+check('if (quietOpening) quietOpening = false;' in op and 'if (quietOpening && !BubbleOpen()) quietOpening = false;' in block_after(ui, 'if (type == "ready")'),
+      'lot R: opened by the mode, the panel takes no keyboard focus (neither at once nor when its page is ready)')
+act = block_after(mode, 'void Activate(const Start& st) {')
+# « Ton agent »: « Connecter un agent » no longer opens by itself (the tutorial the first time, the band's reminder else):
+# the tutorial's rule is the one left to read « no chat asked ».
+check('first.chatOpen = Chat::AskedFor();' in act and 'return Open() && !openedByMode;' in line_of(ui, 'bool AskedFor() {'),
+      'lot R: the launch rules (tutorial, « Connecter un agent ») still see « no chat asked » when the mode opened the panel itself')
+# « 10 éléments au maximum » (validated 2026-11-24): the strip, 4 s, and no frame nor shot for the click
+ts = block_after(ui, 'bool TakeSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible) {')
+full = block_after(ui, 'void SayComposerFull() {')
+check('>= ComposerMax) { if (!Open()) OpenPanel(); SayComposerFull(); return false; }' in ts and 'ComposerMax = 10' in ui and 'LimitStripMs = 4000' in ui
+      and 'Strip("limit", "neutral", TR(chat_strip_limit))' in full and 'SetTimer(post, LimitTimer, LimitStripMs' in full and 'ClearStrip("limit")' in line_of(ui, 'if (w == LimitTimer)'),
+      'lot R: an 11th element in « Panneau » is refused with the neutral strip, for 4 s, shown again at each extra click')
+cat = (SRC / 'i18n-catalog.inc').read_text(encoding='utf-8')
+check('I18N(chat_strip_limit, L"10 éléments au maximum. Envoyez la demande ou retirez-en un.", L"10 elements max. Send your request or remove one.")' in cat, 'lot R: the limit sentence, FR and EN, as validated')
+on_select = block_after(mode, 'void OnSelect(const std::shared_ptr<Tab>& t, AH::Selection sel, double lag) {')
+at_full = on_select.find('Chat::ComposerFull()')
+check(0 <= at_full < on_select.find('StartShot(t)') and 'Resume(false); return;' in on_select[at_full:at_full + 400] and at_full < on_select.find('shot = ShotJob{}'),
+      'lot R: the click beyond 10 elements starts no native frame and no shot, and moves no focus')
+tg = block_after(ui, 'void Toggle(bool keyboard) {')
+check(0 <= tg.find('if (Open() && openedByMode) {') < tg.find('if (Open()) { ClosePanel(); return; }') and 'view.Focus()' in tg[:tg.find('if (Open()) { ClosePanel(); return; }')],
+      'lot R: Ctrl+Maj+D on the panel opened with the mode gives it the keyboard; only the next one closes it')
+sq = block_after(host, 'void SendQueue() {')
+check('m.Set("more", Str(TRF(chat_queue_more, L"{n}")))' in sq and 'I18N(chat_queue_more, L"+{0} en attente", L"+{0} queued")' in cat,
+      'lot R (O5): the queue message carries the « +N en attente » line in the interface language')
+# Owner decision (24 Nov 2026): never signed in reads « Claude Code n'est pas connecté. »; « Vous n'êtes plus connecté à … » only when
+# the host saw the agent signed in since Browser started (a detection said so, or a session was ready)
+check('I18N(chat_agent_never_signed_in, L"{0} n\'est pas connecté.", L"{0} is not signed in.")' in cat
+      and 'I18N(chat_agent_signed_out, L"Vous n\'êtes plus connecté à {0}.", L"You are no longer signed in to {0}.")' in cat,
+      'signed out: the two sentences, FR and EN (never signed in / no longer signed in)')
+check('if (info.status == "notConnected") a.Set("notice", Str(info.signedIn ? TRF(chat_agent_signed_out, W(std::string(def.name))) : TRF(chat_agent_never_signed_in, W(std::string(def.name)))));' in host,
+      'signed out: the state carries the sentence in the interface language — « plus connecté » only when the agent was seen signed in')
+# « Ton agent »: the chat reads the agents' one status (src/agent-status.h): « ready » is the detection that says signed in
+ad = block_after(turn, 'void ApplyStatus(const std::string& id, const AgentStatus::Status& s) {')
+check(0 <= ad.find('if (s.state == AgentStatus::State::Ready) a.signedIn = true;') < ad.find('if (sessionReady && id == agentId) return;')
+      and turn.count('signedIn = true') == 2 and 'info.cli = info.prepared = true; info.signedIn = true;' in turn and 'bool signedIn = false;' in host,
+      'signed out: « seen signed in » is set by a detection that says so and by a ready session, nowhere else; false at start')
+# Lot 5's real trial with Codex (24 Nov 2026): « Demander » = Codex's « read-only »; it refused instead of asking, and the
+# annotation was closed as resolved with 0 file changed
+ct = block_after(turn, 'void CompleteTurn(const std::string& stopReason, const CS::TurnSummary* summary, const std::vector<std::pair<std::string, CS::FileDiff>>* diffs')
+check('const bool worked = summary ? changed : !turn.agentFiles.empty();' in ct
+      and 'const auto outcome = ChatOptions::AnnotationOutcome(stopReason, worked, CurrentModeKind() == "plan");' in ct
+      and 'const bool resolved = outcome == ChatOptions::AnnotationEnd::Resolved;' in ct and 'CloseAnnotations(turn.elements, resolved,' in ct
+      and 'TR(chat_release_unchanged)' in ct and 'CloseAnnotations(turn.elements, done' not in ct,
+      'lot 5 (Codex): an annotation is resolved only when the turn changed a file; ended with nothing changed, it is given back with its reason')
+ss = block_after(turn, 'void StartSession() {')
+acp_cpp = (SRC / 'acp-client.cpp').read_text(encoding='utf-8'); acp_h = (SRC / 'acp-client.h').read_text(encoding='utf-8'); rt_cpp = (SRC / 'agent-runtime.cpp').read_text(encoding='utf-8')
+check('o.instructions = ChatPrompt::Instructions();' in ss and 'if (caps.systemPrompt && !opts.instructions.empty()) {' in acp_cpp
+      and 'prompt.Set("mode", SJ::Value::Str("append"));' in acp_cpp and 'c.systemPrompt = Object(Object(caps, "sessionCapabilities"), "systemPrompt") != nullptr;' in acp_cpp
+      and 'std::string instructions;' in acp_h,
+      'lot 5 (Codex): the session is given the approval rule as appended instructions, only when the agent advertises that it takes some')
+check('m.ask = {"read-only"};' in rt_cpp and 'm.automatic = {"agent", "workspace-write"};' in rt_cpp and 'm.never = {"agent-full-access"};' in rt_cpp,
+      'lot 5 (Codex): « Demander » stays Codex\'s « read-only » (the only mode where an edit waits for the user), « Auto » its « agent » / « workspace-write »; full access is never offered')
+# Lot R, private window closed in the middle of a turn (found 25 Nov 2026, hidden-desktop run): the snapshot store kept its
+# « turn.lock » open in the window's own folder, which could then not be removed — conversation and ledger stayed until the
+# next start. The chat lets go of the store when it shuts down, and it shuts down BEFORE the private window's files are erased.
+sd = block_after(ui, 'void Shutdown() {')
+main_all = (SRC / 'main.cpp').read_text(encoding='utf-8')
+check(0 <= sd.find('for (auto& s : disposed) s->WaitStopped(3000);') < sd.find('snapshots.reset();') < sd.find('view.Destroy();')
+      and 0 <= main_all.find('case WM_DESTROY:ChatShutdown();') < main_all.find('AnnotationShutdown();', main_all.find('case WM_DESTROY:ChatShutdown();')),
+      'lot R (private window): at the close the chat stops its agent, lets go of the snapshot store, then the window\'s notes and folder are erased')
+cn = block_after(ui, 'void Connect(const std::string& id, const std::string& methodId) {')
+check('if (!method && info.auth.empty() && info.status == "notConnected" && info.cli) { own = AgentRuntime::DefaultTerminalSignIn(def->rt); method = &own;' in cn
+      and 'else if (id != agentId) DetectAgents();' in cn,
+      'sign-in (O8): signed out with no method named yet, « Se connecter » runs the CLI\'s own sign-in; another agent\'s line is detected again once its console closes')
+
 ok = all(checks)
+# Lot 1b (real-window monkey, 24 Nov 2026, seed 1 #185 / #219, replayed without a window): the opening's acknowledgement is the
+# page's answer to the OPENING layout — nothing sent before it makes the page publish a size for the layout of before
+ob = block_after(comment, 'void OpenBubble('); pb = block_after(comment, 'void PlaceBubble(bool scrolling) {')
+check('bubble.opening = panelReady; PlaceBubble(); bubble.opening = false;' in ob and pb.count('!bubble.opening) SendLayout(false)') == 2
+      and pb.count('SendLayout(false)') == 2 and ob.index('bubble.opening = panelReady') < ob.index('SendLayout(true)'),
+      'lot 1b: placing a bubble that opens sends no layout {open: false} before its opening layout (the page answered it with the height of the conversation of before)')
+sa = block_after(comment, 'void ShowAside('); afb = block_after(comment, 'void AsideForBubbleShown('); sc = block_after(comment, 'void ShowConversation(')
+check('if (forBubble) return;' in sa and sa.index('if (forBubble) return;') < sa.index('SendState()') and 'RefreshWaitStrip();' in afb
+      and 'if (!(bubble.open && bubble.conv == id)) { SendState(); SendThread(); SendQueue(); }' in afb
+      and sc.count('ShowAside(std::move(c), forBubble); if (then) then(); if (forBubble) AsideForBubbleShown(') == 2 and 'ShowAside(std::move(c));' not in comment,
+      'lot 1b: a conversation shown aside for a bubble opening (a turn runs elsewhere) is sent once, with the opening layout — never first, in the layout of before')
+oe2 = block_after(comment, 'bool OpenEarly(')
+check('NewAnchoredConversation(env.selector, label, page, "", "", true)' in oe2 and oe2.index('AsideForBubbleShown(id)') > oe2.index('OpenBubble(id, &element, env.selector, false, label)')
+      and 'NewAnchoredConversation(sel, label, page, "", key, true)' in comment and comment.count('AsideForBubbleShown(id);') == 3,
+      'lot 1b: a new conversation for a clicked element is sent once too (it was first drawn with the draft of the element of before)')
 # M5 (real-window monkey, 24 Nov 2026, seed 1 #81 / #101): a click while the chat panel is still on screen (sliding out) — its
 # rectangle is of a page about to widen: the bubble waits for the page's first measure instead of being shown, then moved
 oe5 = block_after(comment, 'bool OpenEarly(')
 check('const bool areaMoving = Shown();' in oe5 and oe5.count('areaMoving') >= 4 and 'holdForMeasure = stale || areaMoving' in oe5,
       'M5: a click while the chat panel is still on screen — the bubble waits for the first measure of the page')
+
+# Permission circuit (owner's trial 0.3.952, 24 Nov 2026): one answer per request; a refused step is kept as refused
+respond = block_after(ui, 'if (type == "permission.respond")')
+check(0 <= respond.find('waitingPermissions.find(request)') < respond.find('if (asked == waitingPermissions.end())') < respond.find('session->RespondPermission(request, option)')
+      and respond.count('session->RespondPermission(') == 1 and respond.find('session->RespondPermission(request, option)') < respond.find('waitingPermissions.erase(request)'),
+      'permission: one answer per request — a request that no longer waits (answered, withdrawn) is answered nothing more')
+check(0 <= respond.find('RefusingOption(asked->second, option)') < respond.find('session->RespondPermission(request, option)') < respond.find('if (refused) MarkRefused(tool);'),
+      'permission: a refusal (the option\'s own kind, read from the request as it was sent) marks the step it was for')
+mark = block_after(turn, 'void MarkRefused(const std::string& toolId) {')
+check('turn.refusedTools.insert(toolId)' in mark and 'convo.data.items[it->second].Set("refused", SJ::Value::Bool(true))' in mark and 'Send("toolCallUpdate"' in mark,
+      'permission: a refused step is kept as refused in the conversation (opened again, it is not shown) and the page is told')
+tool_call = block_after(turn, 'case T::ToolCall: {'); tool_update = block_after(turn, 'case T::ToolCallUpdate: {')
+check('turn.refusedTools.count(e.tool.id)' in tool_call and tool_update.count('turn.refusedTools.count(e.tool.id)') >= 2
+      and 'e.tool.status == "failed" && turn.droppedTools.count(e.tool.id)' in tool_update,
+      'permission: the agent\'s later updates of a refused step keep it refused; a step whose request was withdrawn unanswered and that fails never happened')
+check('turn.droppedTools.insert(tool)' in block_after(turn, 'case T::PermissionDismissed: {'), 'permission: a request withdrawn unanswered (turn stopped) is remembered for its step')
+on_perm = block_after(turn, 'void OnPermission(const Acp::PermissionRequest& p) {')
+check(on_perm.count('Send("permission.request"') == 1 and 'waitingPermissions[p.requestId] = m;' in on_perm and 'm.Set("toolCallId"' in on_perm,
+      'permission: the agent\'s request is sent to the page once, with its tool call, and kept while it waits')
 
 # Lot 1d (the owner's decisions of 24 Nov 2026 on iframes; Paper « Iframes · cas 1 … A », « Iframes · cas 3 »)
 page_js = (ROOT / 'src' / 'annotation-script.h').read_text(encoding='utf-8')
@@ -392,6 +532,52 @@ check('key = FrameKeyOf(bubble.conv)' in fb and 'f.Set("key", Str(key))' in fb a
       'lot 1d, case 3: after a reload of the page the host gives an iframe\'s element back to the script by its key')
 check('!ChatBubble::FrameKey(h.anchorKey) || !marked.insert(h.anchorKey).second' in sm and 'o.Set("key", Str(h.anchorKey))' in sm,
       'lot 1d, case 3: a conversation of an iframe\'s element has its mark too (by its key); a web component\'s still has none')
+
+# Owner's trial 0.3.952, decision A: another application in front no longer hides the bubble (the click that brought the
+# browser back fell on the page: another element selected, the request « asked twice »); away, it never takes the keyboard
+away = block_after(comment, 'void BubbleAway(')
+check('inline constexpr bool BubbleHidesBehindOthers = false;' in comment and 'if (BubbleHidesBehindOthers) SetWindowRgn(bubble.hwnd, CreateRectRgn(0, 0, 0, 0), TRUE)' in away and 'bubble.away = true;' in away,
+      'A: another application in front — the bubble keeps its region (it stays on the browser\'s window), only its state says « away »')
+ktry = block_after(comment, 'void KeyboardTry() {')
+check('bubble.away' in ktry.split('SetForegroundWindow')[0] and '!bubble.away' in comment[comment.find('if (m == WM_APP + 2)'):comment.find('if (m == WM_APP + 3)')],
+      'A: while another application is in front the bubble never takes the foreground nor the keyboard')
+place = block_after(comment, 'void PlaceBubble(bool scrolling) {')
+check('!BubbleHidden()' in place and 'bubble.away' not in place, 'A: the bubble on screen behind another application still follows its element (its region is kept up to date)')
+check('if (BubbleHidden())' in block_after(comment, 'void RevealBubble(const wchar_t* why) {'), 'A: a bubble that becomes ready while another application is in front is shown (never left invisible)')
+
+# Designer, 25 Nov 2026: Codex's « Additional sandbox permissions » is said in the browser's language, before any kind is looked at
+ptitle = block_after(turn, 'std::wstring PermissionTitle(const Acp::ToolCall& t) {')
+catalog = (ROOT / 'src' / 'i18n-catalog.inc').read_text(encoding='utf-8')
+known_title = block_after(turn, 'std::wstring KnownStepTitle(const std::string& title) {'); tool_json = block_after(turn, 'SJ::Value ToolJson(const Acp::ToolCall& t, bool update) {')
+check('ChatTools::SameTitle(title, "Additional sandbox permissions") ? TRF(chat_perm_sandbox, AgentShort(agentId)) : std::wstring()' in known_title
+      and 'const std::wstring known = KnownStepTitle(t.title);' in tool_json and 'known.empty() ? Str(ClipUtf8(t.title.empty() ? t.kind : t.title, 400)) : Str(known)' in tool_json
+      and '!known.empty() || t.kind.empty() || t.kind == "switch_mode" ? std::string("other") : t.kind' in tool_json,
+      "permission: Codex's step « Additional sandbox permissions » reads in the thread as on the card (the same sentence, its kind's wording never replaces it); every other title stays as the agent sends it")
+check(0 <= ptitle.find('KnownStepTitle(t.title); !known.empty()) return known;') < ptitle.find('t.kind == "edit"')
+      and "I18N(chat_perm_sandbox, L\"{0} demande plus d'accès à cet ordinateur\", L\"{0} is asking for more access to this computer\")" in catalog,
+      "permission: Codex asking for more access — « Codex demande plus d'accès à cet ordinateur » / « Codex is asking for more access to this computer »")
+
+# C1 (journeys of 25 Nov 2026, « chat page delayed by 4 s », replayed on a hidden desktop): a bubble opened before its page
+# exists is never shown empty — the 2 s safety waits for the page (at most BubblePageWaitMs), the page's « ready » re-arms
+# the short safety and its acknowledgement shows the surface with the conversation.
+b2 = comment[comment.find('if (m == WM_TIMER && w == 0xB2)'):]; b2 = b2[:b2.find('RevealBubble(L"without acknowledgement (safety delay)")')]
+check('if (!panelReady && bubble.open && bubble.waitingAck && Ann::NowMs() - bubble.openedAt < BubblePageWaitMs)' in b2 and 'SetTimer(h, 0xB2, 250, nullptr); return 0;' in b2,
+      'C1: a bubble whose page is still being created is not revealed by the safety delay (it waits for its page, at most BubblePageWaitMs)')
+check('SetTimer(bubble.hwnd, 0xB2, 300, nullptr)' in block_after(comment, 'void BubblePageReady() {')
+      and 0 <= ready.find('BubblePageReady();') < ready.find('SendThread();'),
+      'C1: the page ready, a bubble that waited for it is shown with the acknowledgement of its opening layout (the thread sent with it)')
+# « Ton agent », 2nd defect of 25 Nov (Fix's « absent » check): an agent installed / signed in from the chat's block turns
+# ready — the keyboard goes back to the input where the text waits (the browser in front only).
+tas = (SRC / 'chat-ton-agent.h').read_text(encoding='utf-8'); csr = block_after(tas, 'void ChatSetupReady(AgentStatus::Agent a) {')
+kbn = block_after(tas, 'void KeysBackNow(AgentStatus::Agent a) {'); kbt = block_after(tas, 'void KeysBackTick() {')
+check('if (started && act != "cancel") setupFromChat.insert(a);' in tas and 'setupFromChat.erase(a)' in csr and 'if (BrowserInFront()) { KeysBackNow(a); return; }' in csr
+      and 'Send("focus", std::move(f)); view.Focus();' in kbn and 'KeyboardToBubble(' in kbn and 'PanelKeyboardBack();' in kbn
+      and 'if (s.Ready() && before != AgentStatus::State::Ready) ChatSetupReady(s.agent);' in turn,
+      '« Ton agent »: an agent set up from the chat\'s block turns ready — the keyboard back to the input (panel or bubble), the browser in front')
+check('SetTimer(post, KeysBackTimer, 100, nullptr)' in csr and 'if (!BrowserInFront()) return;' in kbt and 'if (f && f != ::window)' in kbt and 'GetTickCount64() > keysBack.until' in kbt
+      and 'if (w == KeysBackTimer) { void KeysBackTick(); KeysBackTick(); return 0; }' in ui,
+      '« Ton agent »: ready while its sign-in console holds the foreground — the keys go back once the browser is in front again (never over the person\'s own focus, bounded in time)')
+
 
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

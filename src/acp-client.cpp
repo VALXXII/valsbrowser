@@ -153,6 +153,7 @@ Capabilities ParseCapabilities(const SJ::Value* caps) {
     c.embeddedContext = Flag(prompt, "embeddedContext");
     c.loadSession = Flag(caps, "loadSession");
     c.resume = Object(Object(caps, "sessionCapabilities"), "resume") != nullptr;
+    c.systemPrompt = Object(Object(caps, "sessionCapabilities"), "systemPrompt") != nullptr;
     const SJ::Value* mcp = Object(caps, "mcpCapabilities");
     c.httpMcp = Flag(mcp, "http");
     c.sseMcp = Flag(mcp, "sse");
@@ -433,12 +434,24 @@ ErrorCode PlainFailure(std::string_view text) {
     return ErrorCode::None;
 }
 
+// « Ton agent »: the adapter is alive but the agent's CLI behind it closed before answering — the Claude Agent SDK says
+// « Query closed before response received » (the CLI quit: an expired sign-in, a crash, an antivirus, an update replacing
+// it). Not an unknown agent error: the host checks the agent again and says the real cause (chat-host-turn.h).
+bool LooksLikeCliClosed(std::string_view text) {
+    const std::string t = Lower(text);
+    // i18n-exempt-begin: wording matched in the agents' own (English) error text
+    return HasAny(t, {"query closed before response", "closed before response received", "process exited unexpectedly",
+                      "claude code process exited", "cli process exited", "process exited with code"});
+    // i18n-exempt-end
+}
+
 Error ClassifyAgentError(int rpcCode, const std::string& message, const std::string& dataDetail) {
     Error e;
     e.rpcCode = rpcCode;
     // Many agents put the useful part in `data` behind a generic "Internal error".
     e.detail = Clip(ValidText(Trim(dataDetail).empty() ? Trim(message) : Trim(dataDetail)), MaxDetailBytes);
     if (rpcCode == -32000 || LooksLikeAuthError(e.detail) || LooksLikeAuthError(message)) e.code = ErrorCode::AuthRequired;
+    else if (LooksLikeCliClosed(e.detail) || LooksLikeCliClosed(message)) e.code = ErrorCode::ProcessExited;
     else if (const ErrorCode plain = PlainFailure(e.detail); plain != ErrorCode::None) e.code = plain;
     else e.code = ErrorCode::AgentError;
     return e;
@@ -804,6 +817,17 @@ struct Run : std::enable_shared_from_this<Run> {
         SJ::Value params = SJ::Value::Obj();
         params.Set("cwd", SJ::Value::Str(opts.cwd));
         params.Set("mcpServers", McpServersJson());
+        if (caps.systemPrompt && !opts.instructions.empty()) {  // appended, never replacing the agent's own (the adapter refuses any other mode)
+            SJ::Value block = SJ::Value::Obj();
+            block.Set("type", SJ::Value::Str("text"));
+            block.Set("text", SJ::Value::Str(opts.instructions));
+            SJ::Value content = SJ::Value::Arr();
+            content.Push(std::move(block));
+            SJ::Value prompt = SJ::Value::Obj();
+            prompt.Set("mode", SJ::Value::Str("append"));
+            prompt.Set("content", std::move(content));
+            params.Set("systemPrompt", std::move(prompt));
+        }
         if (!opts.resumeSessionId.empty()) {
             std::vector<Req> how;
             if (caps.resume) how.push_back(Req::Resume);

@@ -938,7 +938,7 @@ std::wstring ReleaseNotesUrl(const std::wstring& version){
 bool AboutOpen(){return modalOpen&&modalActive.spec.kind==MD::Kind::About&&!modalActive.spec.demo;}
 // The update engine notified: an open « À propos » shows the new state at once.
 void RefreshAboutStatus(){if(AboutOpen())modal.SetStatus(AboutStatusNow());}
-void ShowReleaseNotes(bool mini,std::function<void()> shown=nullptr,bool activate=true);
+void ShowReleaseNotes(bool mini,std::function<void()> shown=nullptr,bool activate=true,ReleaseNotes::Content card={});
 void ShowAboutDialog(int demoState){
     auto spec=MD::AboutSpec(RunningVersion(),demoState<0?MD::AboutUpToDate:demoState);
     if(demoState>=0)spec.demo=true;
@@ -960,21 +960,24 @@ void ShowAboutDialog(int demoState){
     });
 }
 void ShowAboutDialog(){ShowAboutDialog(-1);}
-// « Nouveautés » (src/release-notes.h, Paper p-L-0 142E-0 / 144O-0): the build's own notes (release-notes/notes.json),
-// never fetched. A build without notes shows no card: À propos then opens the release's GitHub page, as before the card.
+// « Nouveautés » (src/release-notes.h, Paper p-L-0 142E-0 / 144O-0): the build's own notes (release-notes/notes.json and
+// its history), never fetched. `card`: what to show (the automatic Mini: the versions the user has not seen yet); empty =
+// the most recent version's notes (À propos). A build without notes shows no card: À propos then opens the release's GitHub page.
 // `mini`: the automatic Mini after an update (« Voir tout » expands it in place); else the Full view.
 // `activate`: take the keyboard (opened by hand from À propos); the automatic card leaves it to the page.
 // `shown` runs only once the card is really on screen. One card at a time: a new request replaces it.
 std::wstring ReleaseNotesLogo(){return base+L"\\assets\\lottie\\logo-spin.json";}
-void ShowReleaseNotes(bool mini,std::function<void()> shown,bool activate){
-    const auto& content=ReleaseNotes::Compiled();
+void ShowReleaseNotes(bool mini,std::function<void()> shown,bool activate,ReleaseNotes::Content card){
+    const auto& history=ReleaseNotes::History();
+    const ReleaseNotes::Content content=!card.Empty()?std::move(card):ReleaseNotes::Latest(history);
     if(content.Empty()){
         if(mini){Log(L"RELEASE NOTES none in this build");return;}
         Log(L"RELEASE NOTES none in this build: release page");NewTab(ReleaseNotesUrl(RunningVersion()),-1,L"");return;
     }
     std::vector<MD::NoteSection> sections;const auto notes=ReleaseNotes::Sections(content);
     for(const auto& s:notes)sections.push_back({s.kind==ReleaseNotes::Kind::Fixed,s.title,s.items});
-    auto spec=MD::ReleaseNotesSpec(std::move(sections),ReleaseNotes::Spoken(notes),ReleaseNotesLogo(),mini);
+    const std::wstring subtitle=ReleaseNotes::Subtitle(content);   // « Depuis la version … »: several versions (Paper 26KK-0)
+    auto spec=MD::ReleaseNotesSpec(std::move(sections),(subtitle.empty()?L"":subtitle+L". ")+ReleaseNotes::Spoken(notes),ReleaseNotesLogo(),mini,subtitle);
     spec.onShown=[mini,shown]{Log(std::wstring(L"RELEASE NOTES shown ")+(mini?L"mini":L"full"));if(shown)shown();};
     spec.onButton=[](int id){if(id==MD::Dialog::NotesExpandHit)Log(L"RELEASE NOTES expanded (Voir tout)");};
     spec.activate=activate;
@@ -982,7 +985,7 @@ void ShowReleaseNotes(bool mini,std::function<void()> shown,bool activate){
     if(notesCard.Visible())notesCard.Abort();
     if(!notesCard.Show(std::move(spec),PageScreenRect(),[](const MD::Result&){Log(L"RELEASE NOTES closed");}))Log(L"RELEASE NOTES show failed");
 }
-// Automatic Mini after a successful update, at most once per notes text (ReleaseNotes::Decide on Compiled().id).
+// Automatic Mini after a successful update: the notes of every version the user has not seen yet (ReleaseNotes::Decide).
 // `startupInstalled`: the update engine reported Installed when it started (the helper-launched process).
 // `dataRoot`: the GLOBAL data root (profileRoot, else dataDir) where the read state lives; never a private window's.
 // True when the card will open: it then replaces the « Mise à jour installée » toast.
@@ -992,14 +995,14 @@ bool ReleaseNotesAtStartup(bool startupInstalled,const std::wstring& installRoot
     if(startupInstalled){if(ProfileStore::ReadAll(installRoot+L"\\previous",previousBytes))previous=ReleaseNotes::ParsePrevious(previousBytes);else previous.kind=ReleaseNotes::Previous::Kind::Invalid;}
     const auto state=startupInstalled?ReleaseNotes::Load(dataRoot):ReleaseNotes::State{};
     std::string current;for(wchar_t c:version)current.push_back(c<128?static_cast<char>(c):'?');
-    const auto& content=ReleaseNotes::Compiled();const std::string notesId=content.Empty()?std::string():content.id;
-    const auto decision=ReleaseNotes::Decide(startupInstalled,previous,current,state,notesId);
+    const auto& history=ReleaseNotes::History();ReleaseNotes::Content card;
+    const auto decision=ReleaseNotes::Decide(startupInstalled,previous,current,state,history,&card);
     if(!startupInstalled)return false; // ordinary launch, other window, dev build: nothing read, nothing logged
-    {const char* d=ReleaseNotes::DecisionText(decision);const char* st=ReleaseNotes::StatusText(state.status);
-     Log(L"RELEASE NOTES startup: "+std::wstring(d,d+std::strlen(d))+L" (state "+std::wstring(st,st+std::strlen(st))+L") notes "+(notesId.empty()?std::wstring(L"none"):std::wstring(notesId.begin(),notesId.end()))+L", seen "+std::wstring(state.seen.begin(),state.seen.end()));}
-    if(decision==ReleaseNotes::Decision::Baseline){const bool ok=ReleaseNotes::MarkSeen(dataRoot,notesId);Log(ok?L"RELEASE NOTES baseline recorded (first install)":L"RELEASE NOTES baseline NOT recorded");return false;}
+    {const char* d=ReleaseNotes::DecisionText(decision);const char* st=ReleaseNotes::StatusText(state.status);const std::string seen=ReleaseNotes::SeenVersion(state,history);
+     Log(L"RELEASE NOTES startup: "+std::wstring(d,d+std::strlen(d))+L" (state "+std::wstring(st,st+std::strlen(st))+L") seen "+std::wstring(state.seen.begin(),state.seen.end())+L" = version "+(seen.empty()?std::wstring(L"unknown"):std::wstring(seen.begin(),seen.end()))+L", "+std::to_wstring(history.size())+L" version(s) with notes, card "+std::to_wstring(card.added.size())+L"+"+std::to_wstring(card.fixed.size()));}
+    if(decision==ReleaseNotes::Decision::Baseline){const bool ok=ReleaseNotes::MarkSeen(dataRoot,current);Log(ok?L"RELEASE NOTES baseline recorded (first install)":L"RELEASE NOTES baseline NOT recorded");return false;}
     if(decision!=ReleaseNotes::Decision::Show)return false;
-    Defer([dataRoot,notesId]{ShowReleaseNotes(true,[dataRoot,notesId]{const bool ok=ReleaseNotes::MarkSeen(dataRoot,notesId);Log(ok?L"RELEASE NOTES seen recorded":L"RELEASE NOTES seen NOT recorded (kept as it was)");},false);});
+    Defer([dataRoot,card]{const std::string upTo=card.id;ShowReleaseNotes(true,[dataRoot,upTo]{const bool ok=ReleaseNotes::MarkSeen(dataRoot,upTo);Log(ok?L"RELEASE NOTES seen recorded":L"RELEASE NOTES seen NOT recorded (kept as it was)");},false,card);});
     return true;
 }
 void ShowPrivateDialog(bool future){AskModal(MD::PrivateSpec(future),nullptr,[future](const MD::Result& r){if(r.button==MD::PrivateClearDataButton)AskClearBrowsingData(future,nullptr);});}

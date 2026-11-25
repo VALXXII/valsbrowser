@@ -48,7 +48,7 @@
             { id: "auto", label: "Auto", description: "Claude handles permission decisions", kind: "auto" },
             { id: "default", label: "Demander", description: "Propose chaque modification.", kind: "ask" },
             { id: "plan", label: "Planifier", description: "Propose un plan, ne touche à aucun fichier.", kind: "plan" }],
-    mode: "default", conversation: null, running: false, pendingAnnotations: 2,
+    mode: "default", conversation: null, running: false,
     suggestions: [{ id: "mobile", label: "Vérifier cette page sur mobile" }, { id: "contrast", label: "Trouver les textes trop peu contrastés" }],
     capabilities: { image: true, steering: true, commands: true }, disabledReason: null,
   };
@@ -80,26 +80,6 @@
     const g = c.getContext("2d"); g.fillStyle = "#F4F4F3"; g.fillRect(0, 0, 80, 52); g.fillStyle = "#1C1C1C"; g.fillRect(16, 20, 48, 12);
     return c.toDataURL("image/png");
   }
-  // « Traiter les annotations » fixtures (Paper 186K-0): two landing-page notes with drawn thumbnails.
-  function annThumb(kind) {
-    const c = document.createElement("canvas"); c.width = 88; c.height = 64;
-    const g = c.getContext("2d");
-    if (kind === "text") { g.fillStyle = "#F7F3EC"; g.fillRect(0, 0, 88, 64); g.fillStyle = "#1F1D1A"; g.fillRect(12, 22, 56, 8); g.fillStyle = "#C9C3B9"; g.fillRect(12, 36, 48, 6); }
-    else { g.fillStyle = "#FFFFFF"; g.fillRect(0, 0, 88, 64); g.fillStyle = "#B5532A"; g.beginPath(); g.roundRect(34, 8, 44, 14, 7); g.fill(); }
-    return c.toDataURL("image/png");
-  }
-  const ANN = () => [
-    { id: "a-hero", note: "Le texte sous le titre est trop pâle, on le lit mal.", element: "p.hero-text", source: "landing.html:23", thumb: annThumb("text") },
-    { id: "a-badge", note: "Le badge « Le plus choisi » dépasse de la carte.", element: "span.badge", source: "landing.html:64", thumb: annThumb("badge") },
-  ];
-  const ANN_MORE = () => ANN().concat([
-    { id: "a-cta", note: "Le bouton « Commencer » manque de contraste au survol.", element: "a.cta", source: "landing.html:31" },
-    { id: "a-grid", note: "Les cartes ne sont pas alignées sur tablette.", element: "div.plans", source: "landing.html:58" },
-    { id: "a-foot", note: "Le pied de page est collé au contenu.", element: "footer", source: "landing.html:112" },
-    { id: "a-logo", note: "Le logo est flou sur écran Retina.", element: "img.logo", source: "landing.html:9" },
-    { id: "a-faq", note: "La FAQ s'ouvre sans animation.", element: "details.faq", source: "landing.html:88" }]);
-  const INSTRUCTION = "Traite ces 2 annotations du site 127.0.0.1:5183, une par une, dans le dossier du projet.\n\n1. p.hero-text (landing.html:23) : « Le texte sous le titre est trop pâle, on le lit mal. »\n2. span.badge (landing.html:64) : « Le badge « Le plus choisi » dépasse de la carte. »\n\nPour chacune : fais la plus petite modification, puis marque-la terminée avec un résumé d'une phrase.";
-  const annMsg = (items) => ({ type: "message.user", id: "u-ann", text: "", at: today(10, 51), editable: false, annotations: { batchId: "b1", items, instruction: INSTRUCTION } });
   function userMsg(id, text, at, els) { return { type: "message.user", id, text, at: at || today(15, 34), elements: els || [EL] }; }
   function doneTurn(id, opts) {
     const o = Object.assign({ text: "Le bouton a une largeur fixe de 240 px. Je le passe à droite sur grand écran et en pleine largeur sous 640 px.", end: "C'est fait. La page s'est rechargée ; l'annotation est marquée « terminée ».", model: "Sonnet 5.5", ms: 18000 }, opts || {});
@@ -167,7 +147,7 @@
     "c-2-envoye": cRun(),
     "c-2.1-survol": cRun(),
     "c-2.1-arrete": [LAY(), st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: cRunning().concat([{ type: "turn.end", turnId: "t1", stopReason: "cancelled", durationMs: 9000 }]) }],
-    "c-2-autorisation": cRun({ maxHeight: 303 }).concat([C_PERM, wait(60), click(".bperm .always")]),
+    "c-2-autorisation": cRun({ maxHeight: 303 }).concat([C_PERM, wait(60)]),   // Paper 1ANU-0 (card 26HS-0, 24 Nov 2026): « Auto. » drawn off
     "c-2-autorisation-diff": cRun({ maxHeight: 303 }).concat([C_PERM, wait(60), click(".bperm .always"), click(".bperm-file"), wait(60)]),
     "c-2.2b-erreur": cError(),
     "c-2.2b-erreur-details": cError().concat([click(".bt-more"), wait(30)]),
@@ -271,6 +251,11 @@
     "c-menu-effort-gauche": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }, () => { window.__grant = { right: 0 }; }, wait(30), click(".model .m"), wait(40), click(".menu .mi[data-key=effort]"), wait(120)],
     "c-menu-plus": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }, wait(30), click(".tools .tb[aria-label=Joindre]"), wait(60)],
     "c-menu-plus-incertain": [LAY(), st({ askFolder: true }), { type: "thread.reset", conversationId: "new", items: [] }, wait(30), click(".tools .tb[aria-label=Joindre]"), wait(60)],
+    // lot R: 4 waiting messages in the bubble (O5: they pushed the input out) — 2 shown, « +2 en attente » opens the list
+    "c-file-attente-4": [LAY({ element: "h1.title" }), st(), { type: "thread.reset", conversationId: "new", items: [] },
+      { type: "queue", more: "+{n} en attente", items: [{ id: "q1", text: "Premier message en attente", after: "button.btn-primary" }, { id: "q2", text: "Deuxième message en attente", after: "button.btn-primary" },
+        { id: "q3", text: "Troisième message, long : aligne le bouton à droite sur grand écran, garde-le en pleine largeur sur mobile, et vérifie que le texte reste lisible sur les deux thèmes sans toucher au reste de la page." },
+        { id: "q4", text: "Quatrième message", after: "button.btn-primary" }] }],
     "c-infobulle-envoyer": [LAY(), st(), { type: "thread.reset", conversationId: "new", items: [] }, typeIn(CASK), blur],
     "c-mode-auto": [LAY(), st({ mode: "acceptEdits" }), { type: "thread.reset", conversationId: "new", items: [] }],
     "c-plan": [LAY(), st(Object.assign({ mode: "plan" }, conv("Paiement sur mobile"))), { type: "thread.reset", conversationId: "c1", items: [cUser(), cStart(),
@@ -323,15 +308,9 @@
       click(".model .m"), wait(30), click(".menu .mi[data-key='effort']")],
     "jauge-survol": [st(conv("Bouton de paiement")), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", ASK)].concat(doneTurn("t1")) },
       { type: "usage", used: 86000, size: 270000 }],
-    // V1.3 (B 1.6): a click on the page put the element in the composer; Ctrl+Entrée keeps it as an annotation
-    "garder-annotation": [st(conv("Titre de la page")), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Aligne-le à droite")].concat(doneTurn("t1")) },
-      () => send({ type: "element.attached", element: Object.assign({}, EL, { id: "el-title", label: "h1.title", kind: "heading" }) }), typeIn("Mets ce titre en gras")],
-    "garde-en-annotation": [st(conv("Titre de la page")), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Aligne-le à droite")].concat(doneTurn("t1"),
-      [{ type: "annotation.kept", id: "k1", text: "h1.title Mets ce titre en gras", elements: [Object.assign({}, EL, { id: "el-title", label: "h1.title", kind: "heading" })], annotations: ["ann_1"], at: today(15, 40) }]) }],
     // B 1.7: the selection switch, on (pressed) and off
     "selection-active": [st(conv("Titre de la page")), { type: "thread.reset", conversationId: "c1", items: [] }, { type: "pick.state", active: true }],
     "selection-coupee": [st(conv("Titre de la page")), { type: "thread.reset", conversationId: "c1", items: [] }, { type: "pick.state", active: false }],
-    "garder-sans-texte": [st(conv("Titre de la page")), { type: "thread.reset", conversationId: "c1", items: [] }, () => send({ type: "element.attached", element: EL })],
     "envoyer-infobulle": [st(conv("Titre de la page")), { type: "thread.reset", conversationId: "c1", items: [] },
       () => send({ type: "element.attached", element: EL }), typeIn("Aligne-le à droite")],
     "6.4-pas-installe": [st({ agents: [Object.assign({}, CLAUDE, { status: "notInstalled", detail: "Pas installé" }), CODEX] }), { type: "thread.reset", conversationId: "new", items: [] }],
@@ -343,12 +322,14 @@
       typeIn("Sur mobile, le bouton doit prendre toute la largeur.\nSur tablette, garde-le à droite mais avec 16 px de marge.\nLe texte doit rester sur une seule ligne.\nVérifie aussi l'état désactivé : il est trop pâle.\nEt aligne l'icône du cadenas avec le texte.")],
     "6.5-4-arobase": [st(), { type: "thread.reset", conversationId: "new", items: [] }, typeIn("Rapproche le prix de @butt"), wait(200)],
     "6.5-5-slash": [st(), { type: "thread.reset", conversationId: "new", items: [] },
-      { type: "commands", items: [{ name: "expliquer", description: "Explique comment cet élément est construit" }, { name: "responsive", description: "Vérifie l'élément sur mobile, tablette et bureau" }, { name: "annotations", description: "Traite les annotations en attente sur ce site" }] },
+      { type: "commands", items: [{ name: "expliquer", description: "Explique comment cet élément est construit" }, { name: "responsive", description: "Vérifie l'élément sur mobile, tablette et bureau" }] },
       typeIn("/")],
     "6.5-6-file": [st(Object.assign({ running: true }, conv("Bouton de paiement", { running: true }))),
       { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", ASK), { type: "turn.start", turnId: "t1", model: "Sonnet 5.5", effort: "Élevé", at: ago(12000) }] },
       { type: "queue", items: [{ id: "q1", text: "Et fais pareil pour le titre" }] }],
-    "6.5-7-deconnecte": [st({ agents: [Object.assign({}, CLAUDE, { status: "notConnected", detail: "Pas connecté", authMethods: [{ id: "claude-ai-login", label: "Claude" }] }), CODEX] }), { type: "thread.reset", conversationId: "new", items: [] }],
+    // never signed in: the host sends no `notice`, the page words it itself
+    "signe-jamais": [st({ agentId: "codex", agents: [CLAUDE, Object.assign({}, CODEX, { status: "notConnected", detail: "Pas connecté", models: [] })] }), { type: "thread.reset", conversationId: "new", items: [] }],
+    "6.5-7-deconnecte": [st({ agents: [Object.assign({}, CLAUDE, { status: "notConnected", detail: "Pas connecté", notice: "Vous n'êtes plus connecté à Claude Code.", authMethods: [{ id: "claude-ai-login", label: "Claude" }] }), CODEX] }), { type: "thread.reset", conversationId: "new", items: [] }],
     "6.5-8-limite": [st(), { type: "thread.reset", conversationId: "new", items: [] },
       { type: "strip", id: "limit", tone: "neutral", text: "Limite Claude atteinte - Retour à 15:40", action: { id: "switch-codex", label: "Passer à Codex" } }],
     "6.5-9-site-non-local": [st({ site: { origin: "https://exemple.fr", label: "exemple.fr", local: false }, disabledReason: "Le chat ne marche que sur les sites locaux (localhost, 127.0.0.1, fichiers). Ouvrez la version locale de ce site." }),
@@ -387,33 +368,6 @@
         { type: "toolCall", turnId: "t1", id: "c2", title: "A marqué l'annotation « Badge » comme terminée", kind: "other", status: "completed",
           summary: { verb: "a marqué", object: "l'annotation « Badge »", after: "comme terminée", afterMany: "comme terminées" } },
         { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 9000 }] }],
-    "annotations-avant": [st(), { type: "thread.reset", conversationId: "new", items: [] },
-      { type: "annotations.batch", batchId: "b1", siteLabel: "127.0.0.1:5183", items: ANN() }, () => document.activeElement && document.activeElement.blur()],
-    "annotations-avant-long": [st(), { type: "thread.reset", conversationId: "new", items: [] },
-      { type: "annotations.batch", batchId: "b1", siteLabel: "127.0.0.1:5183", items: ANN_MORE() }, click(".batch-row[data-id='a-badge']"), () => document.activeElement && document.activeElement.blur()],
-    "annotations-pendant": [st(Object.assign({ running: true }, conv("Annotations en attente", { running: true }))),
-      { type: "thread.reset", conversationId: "c1", items: [annMsg(ANN().map((it, i) => Object.assign(it, { status: i ? "pending" : "working" }))),
-        { type: "turn.start", turnId: "t1", model: "Opus 5.5", effort: "Moyen", at: ago(9000) },
-        { type: "toolCall", turnId: "t1", id: "s1", title: "A lu 2 annotations", kind: "read", status: "completed", summary: { verb: "a lu", object: "2 annotations", count: 2, one: "annotation", many: "annotations" } },
-        { type: "toolCall", turnId: "t1", id: "s2", title: "A lu landing.css", kind: "read", status: "completed", locations: [{ path: "styles/landing.css" }] },
-        { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: "Je commence par le texte d'accroche : sa couleur #a8a299 est trop claire sur ce fond. Je la passe à la couleur secondaire du site." }] }],
-    "annotations-fin": [st(conv("Annotations en attente")),
-      { type: "thread.reset", conversationId: "c1", items: [annMsg(ANN().map((it, i) => Object.assign(it, { status: "done", summary: i ? "Badge replacé dans le coin de la carte." : "Couleur passée au gris secondaire du site." }))),
-        { type: "turn.start", turnId: "t1", model: "Opus 5.5", effort: "Moyen", at: today(10, 51) },
-        { type: "toolCall", turnId: "t1", id: "s1", title: "A lu 2 annotations", kind: "read", status: "completed", summary: { verb: "a lu", object: "2 annotations", count: 2, one: "annotation", many: "annotations" } },
-        { type: "toolCall", turnId: "t1", id: "s2", title: "A modifié landing.css", kind: "edit", status: "completed", locations: [{ path: "styles/landing.css" }] },
-        { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: "C'est fait pour les deux. La page s'est rechargée ; les annotations sont marquées « terminées » dans l'historique." },
-        { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 41000, changes: [{ path: "styles/landing.css", status: "modified", added: 4, removed: 2 }], checkpointId: "cp-a", undoable: true }] }],
-    "annotations-non-traitee": [st(conv("Annotations en attente")),
-      { type: "thread.reset", conversationId: "c1", items: [annMsg(ANN().map((it, i) => Object.assign(it, i ? { status: "skipped", reason: "le badge vient d'une bibliothèque externe, rien à changer dans le projet." } : { status: "done", summary: "Couleur passée au gris secondaire du site." }))),
-        { type: "turn.start", turnId: "t1", model: "Opus 5.5", effort: "Moyen", at: today(10, 51) },
-        { type: "message.agentChunk", turnId: "t1", messageId: "m1", text: "J'ai corrigé le texte d'accroche. Le badge vient d'un composant externe : je l'ai laissé." },
-        { type: "turn.end", turnId: "t1", stopReason: "end_turn", durationMs: 30000 }] }, click(".ann-inst")],
-    "annotations-statuts": [st(Object.assign({ running: true }, conv("Annotations en attente", { running: true }))),
-      { type: "thread.reset", conversationId: "c1", items: [annMsg(ANN()), { type: "turn.start", turnId: "t1", model: "Opus 5.5", effort: "Moyen", at: ago(3000) }] },
-      { type: "annotations.status", batchId: "b1", id: "a-hero", status: "working" }, wait(20),
-      { type: "annotations.status", batchId: "b1", id: "a-hero", status: "done", summary: "Couleur passée au gris secondaire du site." },
-      { type: "annotations.status", batchId: "b1", id: "a-badge", status: "working" }],
     "dossier-puce": [st(), { type: "thread.reset", conversationId: "new", items: [] }],
     "dossier-demande": [st({ askFolder: true, folder: null, folderSuggestion: { path: "C:\\Users\\val\\projets\\boutique", display: "C:\\Users\\…\\projets\\boutique", name: "boutique", reason: "auto" } }), { type: "thread.reset", conversationId: "new", items: [] }],
     "6.7a-vide": [st(), { type: "thread.reset", conversationId: "new", items: [] }],
@@ -491,6 +445,46 @@
     "stream": [st(Object.assign({ running: true }, conv("Texte en flux", { running: true }))), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Explique tout en détail.", null, []), { type: "turn.start", turnId: "t1", model: "Sonnet 5.5", effort: "Élevé" }] }],
   };
   Object.assign(SC, C_SCENARIOS);
+  // « Ton agent » (worker B): the first message's block while no agent is ready (Paper 22N3-0), from `agents.setup` as
+  // src/chat-ton-agent.h sends it (the words are the host's catalogue). `ta(...)` builds one; the rows from the agents' one status.
+  const TA_ROW = {
+    absent: () => ({ icon: "download", ink: "grey", status: "Pas installé", action: { id: "install", label: "Installer", strong: true } }),
+    desktop: () => ({ icon: "download", ink: "grey", status: "Pas installé", note: "L'appli Claude est installée, mais le chat a besoin de Claude Code (même compte).", action: { id: "install", label: "Installer", strong: true } }),
+    old: () => ({ icon: "download", ink: "grey", status: "Version trop ancienne", action: { id: "install", label: "Mettre à jour", strong: true } }),
+    installing: () => ({ icon: "download", ink: "accent", animate: true, status: "Installation…" }),
+    signedOut: () => ({ icon: "wifi", ink: "grey", status: "Pas connecté", action: { id: "signIn", label: "Se connecter", strong: true } }),
+    signingIn: () => ({ icon: "wifi", ink: "accent", status: "Connexion…", action: { id: "cancel", label: "Annuler", strong: false } }),
+    failed: () => ({ icon: "error", ink: "danger", status: "Échec de l'installation", manual: "Installer moi-même ↗", action: { id: "retry", label: "Réessayer", strong: false } }),
+    signInFailed: () => ({ icon: "error", ink: "danger", status: "Échec de la connexion", action: { id: "retry", label: "Réessayer", strong: false } }),
+  };
+  const RAF2 = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));   // the next message in a frame of its own
+  const MARK = () => { window.__mark = posted.length; };   // a scenario's checkpoint: what the page posted until then
+  const ta = (claude, codex, over) => Object.assign({ type: "agents.setup", show: true, title: "Choisissez votre agent", body: "Le chat utilise Claude Code ou Codex, installés sur cet ordinateur.",
+    note: "Claude Code demande un compte Claude payant (Pro, Max, Team ou Enterprise).", accent: "#0099A0", hint: "Connectez un agent pour envoyer",
+    rows: [Object.assign({ id: "claude", name: "Claude Code" }, TA_ROW[claude]()), Object.assign({ id: "codex", name: "Codex" }, TA_ROW[codex]())] }, over || {});
+  // the chat's own view of the same status (A's src/chat-agent-status.h)
+  const TA_AGENTS = { agents: [Object.assign({}, CLAUDE, { status: "notInstalled", detail: "Pas installé", models: [] }), Object.assign({}, CODEX, { status: "notConnected", detail: "Pas connecté", models: [] })], agentId: "claude-code" };
+  Object.assign(SC, {
+    "ta-premier-message": [st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("absent", "signedOut")],
+    "ta-installation": [st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("installing", "signedOut")],
+    "ta-erreur": [st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("failed", "signedOut")],
+    "ta-desktop": [st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("desktop", "absent")],
+    "ta-connexion": [st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("old", "signingIn")],
+    "ta-connexion-echec": [st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("absent", "signInFailed")],
+    "ta-pret": [st(), { type: "thread.reset", conversationId: "new", items: [] }, ta("absent", "signedOut", { show: false })],
+    "ta-fil": [st(TA_AGENTS), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Plus grand")] }, ta("absent", "signedOut")],
+    "c-ta-premier-message": [LAY(), st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("absent", "signedOut")],
+    "c-ta-erreur": [LAY(), st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("failed", "signedOut")],
+    // A bubble opening as the host sends it, each message in its own frame (journeys C1, night of 25/11): the block's
+    // message must never publish the bubble's size before the conversation is in (it flashed empty at 105 px, then 256).
+    // the host's opening order since: state, thread, then the block; then the block sent again (an agent's state changed)
+    // (MARK: what was posted until then; the block's messages after it must post no size)
+    "c-ta-ouverture-pret": [LAY(), st(), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Plus grand")] }, RAF2, MARK,
+                            ta("absent", "signedOut", { show: false }), RAF2, ta("absent", "signedOut", { show: false }), RAF2],
+    "c-ta-ouverture-pas-pret": [LAY(), st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("absent", "signedOut"), RAF2, MARK,
+                                ta("absent", "signedOut"), RAF2, ta("absent", "signedOut"), RAF2],
+    "ta-ouverture-pret": [st(), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Plus grand")] }, ta("absent", "signedOut", { show: false }), RAF2, ta("absent", "signedOut", { show: false }), RAF2],
+  });
 
   // #128 v2 (Paper « #128 Menu des modèles · v2 ancien menu + groupes (maquette prête) »): the old menu with a header per
   // agent, the latest models first, the others under « Plus de modèles », in the panel and in the comment bubble. The model
@@ -583,10 +577,6 @@
       case "setMode": send({ type: "state", mode: m.id }); break;
       case "copy": send({ type: "copy.done", ok: true }); break;
       case "pickElement": send({ type: "pick.state", active: !!m.active }); break;
-      case "annotate": send({ type: "annotation.kept", id: "k" + Date.now(), text: m.text, elements: [Object.assign({}, EL, { id: m.elements[0], label: "h1.title", kind: "heading" })], annotations: ["ann_x"], at: new Date().toISOString() }); break;
-      case "annotations.request": case "suggestion.run":
-        if (m.type === "suggestion.run" && m.id !== "annotations") break;
-        send({ type: "annotations.batch", batchId: "b1", siteLabel: "127.0.0.1:5183", items: ANN() }); break;
       case "setAgent": send({ type: "state", agentId: m.id, model: m.id === "codex" ? "terra" : "sonnet", conversation: null }); send({ type: "thread.reset", conversationId: "new", items: [] }); break;
       case "checkpoint.viewChanges": send({ type: "changes.diff", turnId: m.turnId, diffs: /^c-/.test(window.__scenarioName || "") && window.__scenarioName !== "c-diff-plusieurs-fichiers" ? [C_DIFF] : FULL_DIFFS }); break;
       // bubble layout: the fake host's window follows the bubble (a real host resizes the WebView)
@@ -610,18 +600,6 @@
       case "pickElement": send({ type: "pick.state", active: m.active }); if (m.active) setTimeout(() => send({ type: "element.attached", element: EL }), 600); break;
       case "attachImage": send({ type: "attachment.added", attachment: { id: "img" + Date.now(), kind: "image", name: m.name || "capture.png", thumb: thumbPng() } }); break;
       case "send": {
-        if (m.annotations) {
-          const items = ANN().filter((it) => m.annotations.ids.includes(it.id));
-          send(Object.assign(annMsg(items), { text: m.text, at: new Date().toISOString() }));
-          send({ type: "state", running: true, conversation: { id: "c1", title: "Annotations en attente", running: true } });
-          send({ type: "turn.start", turnId: "ta", model: "Sonnet 5.5", effort: "Élevé", at: new Date().toISOString() });
-          items.forEach((it, i) => {
-            setTimeout(() => send({ type: "annotations.status", batchId: "b1", id: it.id, status: "working" }), 400 + i * 1400);
-            setTimeout(() => send({ type: "annotations.status", batchId: "b1", id: it.id, status: "done", summary: "Corrigé dans landing.css." }), 1200 + i * 1400);
-          });
-          setTimeout(() => { send({ type: "turn.end", turnId: "ta", stopReason: "end_turn", durationMs: 3000 }); send({ type: "state", running: false }); }, 1400 + items.length * 1400);
-          break;
-        }
         if (window.__scenarioName === "interactive" || !window.__scenarioName) fakeTurn(m.text);
         break;
       }

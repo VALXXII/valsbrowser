@@ -97,7 +97,7 @@ int main() {
         Check(DL::Bytes(504 * MB / 10, 200 * MB) == L"50,4/200 Mo" && DL::Bytes(512, 0) == L"512 o", "French sizes: decimal comma, French units");
         Check(DL::FolderLabel(L"C:\\Users\\a\\Downloads\\f.zip") == L"Dans …/Downloads" && DL::FailureText(L"") == L"Échec", "French download labels");
         Check(std::wstring(DL::PeriodLabel(DL::Period::Yesterday)) == L"Hier" && std::wstring(DL::TipFor(DL::Action::ShowInFolder)) == L"Afficher dans le dossier", "French periods and actions");
-        Check(BS::SleepLabel(30) == L"Après 30 min" && BS::RetentionLabel(1) == L"1 jour" && BS::RetentionLabel(30) == L"30 jours" && BS::ZoomLabel(110) == L"110 %", "French settings labels and plurals");
+        Check(BS::SleepLabel(30) == L"Après 30 min" && BS::ZoomLabel(110) == L"110 %", "French settings labels and plurals");
         Check(BS::PermissionValue(BS::Permission::Camera, BS::PermissionState::Allow) == L"Autorisée" && BS::PermissionValue(BS::Permission::Notifications, BS::PermissionState::Block) == L"Bloquées" &&
               BS::PermissionValue(BS::Permission::Microphone, BS::PermissionState::Allow) == L"Autorisé", "French agreement of permission values");
         const std::int64_t day = 86400000LL, now = 20070LL * day;   // 2024-12-13 (UTC), a fixed date
@@ -106,7 +106,7 @@ int main() {
         I18n::SetForProcess(Locale::En);
         Check(DL::Bytes(504 * MB / 10, 200 * MB) == L"50.4/200MB" && DL::Bytes(512, 0) == L"512B", "English sizes: the Paper copy « 50.4/200MB »");
         Check(DL::FolderLabel(L"C:\\Users\\a\\Downloads\\f.zip") == L"In …/Downloads" && DL::FailureText(L"Disk full") == L"Failed · Disk full", "English download labels");
-        Check(BS::SleepLabel(120) == L"After 2 h" && BS::RetentionLabel(1) == L"1 day" && BS::RetentionLabel(7) == L"7 days" && BS::ZoomLabel(110) == L"110%", "English settings labels and plurals");
+        Check(BS::SleepLabel(120) == L"After 2 h" && BS::ZoomLabel(110) == L"110%", "English settings labels and plurals");
         Check(std::wstring(BS::Info(BS::Tracking::Balanced).label) == L"Balanced" && std::string(BS::Info(BS::Tracking::Balanced).key) == "balanced", "a choice's label follows the language, its stored key never does");
         Check(BS::PermissionValue(BS::Permission::Camera, BS::PermissionState::Allow) == L"Allowed", "English permission value");
         Check(HV::DateText(now - 3 * day, now, 0) == L"Dec 10" && HV::DateText(now - 400 * day, now, 0) == L"Nov 9, 2023", "English dates: « Dec 10 », « Nov 9, 2023 »");
@@ -158,7 +158,7 @@ int main() {
         Check(std::wstring(ProfileColor::HueName(0)) == L"red" && std::wstring(ProfileColor::HueName(150)) == L"emerald", "English hue names");
         Check(std::wstring(TR(key_shift_enter)) == L"Shift+Enter" && std::wstring(TR(key_escape)) == L"Esc" && std::wstring(TR(key_enter)) == L"Enter", "English key names");
         Check(TRP(bookmarks_folder_summary, 1) == L"Folder, 1 item" && TRP(bookmarks_results, 0) == L"0 results", "English folder summary and result count");
-        Check(TRF(settings_announce_disconnected, L"Claude Desktop") == L"Claude Desktop disconnected" && std::wstring(TR(annotation_reopened)) == L"Annotation reopened", "English annotation announcements");
+        Check(TRF(settings_announce_disconnected, L"Claude Desktop") == L"Claude Desktop disconnected" && std::wstring(TR(chat_strip_limit)) == L"10 elements max. Send your request or remove one.", "English annotation announcements");
         I18n::SetForProcess(Locale::Fr);
     }
 

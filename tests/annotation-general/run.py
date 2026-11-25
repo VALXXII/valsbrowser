@@ -167,7 +167,7 @@ def check_static(manifest, coverage):
         if not s.get('cmd') or not isinstance(s.get('timeout'), int):
             bad.append(f"manifest: suite {s['id']} needs a command and a time limit")
         script = next((a for a in s.get('cmd', []) if a.endswith(('.py', '.ps1'))), None)
-        if script and not (ROOT / script).exists() and s.get('pendingMerge'):
+        if s.get('pendingMerge') and any(not (ROOT / f).exists() for f in ([script] if script else []) + s.get('needs', [])):
             continue   # its script arrives with a branch not merged yet: said « en attente de fusion » at each run, never counted as passed
         if script and not (ROOT / script).exists():
             bad.append(f"manifest: suite {s['id']} names a script that does not exist ({script})")
@@ -193,7 +193,7 @@ def check_static(manifest, coverage):
             if not t.get('what'):
                 bad.append(f'coverage: {lid} does not say which test of {t.get("suite")} proves it')
         if gap and not tests:
-            if not isinstance(gap.get('lot'), int) or not gap.get('why'):
+            if not (isinstance(gap.get('lot'), int) or gap.get('lot') == 'R') or not gap.get('why'):   # a lot number, or « R » (the old system's removal)
                 bad.append(f'coverage: the gap of {lid} needs its lot and its reason')
             elif gap['lot'] in done:
                 bad.append(f"coverage: {lid} still has no test although lot {gap['lot']} is marked done")
@@ -490,7 +490,7 @@ def main():
             continue
         wait_pause(pauses)
         script = next((a for a in s.get('cmd', []) if a.endswith(('.py', '.ps1'))), None)
-        if s.get('pendingMerge') and script and not (ROOT / script).exists():   # its script is on a branch not merged yet
+        if s.get('pendingMerge') and any(not (ROOT / f).exists() for f in ([script] if script else []) + s.get('needs', [])):   # its script (or a file it needs, « needs ») is on a branch not merged yet
             results.append({'id': s['id'], 'title': s.get('title', s['id']), 'status': 'pending', 'seconds': 0,
                             'why': 'en attente de fusion : ' + script + ' arrive avec ' + s['pendingMerge']})
             print(f"pending  {s['id']} (waits for {s['pendingMerge']})", flush=True); continue

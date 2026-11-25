@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "../../src/acp-client.h"
+#include "../../src/chat-prompt.h"
 #include "../../src/strict-json.h"
 #include "acp_test_util.h"
 
@@ -104,6 +105,9 @@ const Event* First(const std::vector<Event>& events, Event::Type type) {
 // ---------------------------------------------------------------- pure helpers
 void TestClassification() {
     using Acp::ErrorCode;
+    // « Ton agent »: the CLI behind the adapter closed before answering — a stopped agent, never an unknown error
+    CHECK(Acp::LooksLikeCliClosed("Query closed before response received") && Acp::ClassifyAgentError(-32603, "Internal error", "Query closed before response received").code == Acp::ErrorCode::ProcessExited);
+    CHECK(!Acp::LooksLikeCliClosed("The query was closed by the user") && Acp::ClassifyAgentError(-32603, "Something odd", "").code == Acp::ErrorCode::AgentError);
     CHECK(Acp::LooksLikeAuthError("Authentication required"));
     CHECK(Acp::LooksLikeAuthError("Auth is required to continue"));
     CHECK(Acp::LooksLikeAuthError("You are not logged in. Please run `claude auth login`."));
@@ -798,6 +802,117 @@ void TestEnvironmentAndCwd() {
     CHECK(Contains(h.LogText(), "cwd " + Narrow(cwd)));  // and session/new carries it, accents included
 }
 
+// Lot 5's real trial with Codex (24 Nov 2026, Codex 0.166.0 through codex-acp 2.6.0): in « Demander » — Codex's mode
+// « read-only » — the agent answered « L'accès au projet est en lecture seule… »: no permission request, no file changed.
+// The fake agent as that adapter (--codex-like). Told nothing it does the same (1); with the instructions the browser
+// appends (ChatPrompt::Instructions, ACP `systemPrompt`) it asks with Codex's own request, and writes once allowed (2);
+// the preamble alone is enough too (3: a resumed session, an agent that takes no instructions); an agent that does not
+// advertise `systemPrompt` is never sent one (4).
+void TestCodexAsk() {
+    const std::wstring project = g_tmp + L"\\codex projet";
+    RemoveTree(project);
+    CHECK(MakeDirs(project + L"\\styles"));
+    const std::wstring file = project + L"\\styles\\checkout.css";
+    const std::string before = ".btn-primary {\n  width: 240px;\n}\n", after = ".btn-primary {\n  width: 240px;\n  margin-left: auto;\n}\n";
+    const std::vector<std::wstring> args = {L"--codex-like", L"--edit", L"styles/checkout.css|width: 240px;|width: 240px;\n  margin-left: auto;"};
+    const auto asked = [](const std::vector<Event>& turn) { return First(turn, Event::Type::PermissionRequest) != nullptr || First(turn, Event::Type::ToolCall) != nullptr; };
+    Event started, mode, ask, end;
+
+    // 1. As the trial went: nothing said about approvals — Codex refuses without asking, and nothing is written.
+    {
+        CHECK(WriteFileText(file, before));
+        Harness h;
+        Acp::StartOptions o = h.Options(args);
+        o.cwd = Narrow(project);
+        CHECK(h.session.Start(o));
+        CHECK(h.Started(started) && started.started.state == Acp::StartState::Ready && started.started.capabilities.systemPrompt);
+        CHECK(started.started.modes.currentId == "agent" && started.started.modes.available.size() == 4 && started.started.modes.available[0].id == "read-only" &&
+              started.started.modes.available[1].id == "workspace-write" && started.started.modes.available[3].id == "agent-full-access");
+        CHECK(h.session.SetMode("read-only"));
+        CHECK(h.Wait(Event::Type::ModesChanged, mode) && mode.modes.currentId == "read-only");
+        const auto turn = h.Turn("apply", end);
+        CHECK(end.stopReason == "end_turn" && !asked(turn) && Contains(Joined(turn, Event::Type::MessageChunk), "lecture seule"));
+        CHECK(ReadFileText(file) == before && Contains(h.LogText(), "codex read-only: refused without asking") && !Contains(h.LogText(), "system-prompt "));
+    }
+
+    // 2. With the browser's instructions: appended at session/new, Codex asks (its own request), then writes.
+    {
+        CHECK(WriteFileText(file, before));
+        Harness h;
+        Acp::StartOptions o = h.Options(args);
+        o.cwd = Narrow(project);
+        o.instructions = ChatPrompt::Instructions();
+        CHECK(Contains(o.instructions, "do not refuse") && Contains(o.instructions, "permission card"));
+        CHECK(h.session.Start(o));
+        CHECK(h.Started(started) && started.started.state == Acp::StartState::Ready);
+        CHECK(Contains(h.LogText(), "\"systemPrompt\":{\"mode\":\"append\",\"content\":[{\"type\":\"text\",\"text\":\"You are working from inside a web browser"));
+        CHECK(Contains(h.LogText(), "system-prompt You are working from inside a web browser") && Contains(h.LogText(), "do not refuse"));
+        CHECK(h.session.SetMode("read-only"));
+        CHECK(h.Wait(Event::Type::ModesChanged, mode) && mode.modes.currentId == "read-only");
+        // refused on the card: nothing is written
+        h.cursor = h.events.size();
+        CHECK(h.session.Prompt({Acp::ContentBlock::Text("apply")}));
+        CHECK(h.Wait(Event::Type::PermissionRequest, ask));
+        const auto& p = ask.permission;
+        CHECK(p.toolCall.kind == "edit" && p.toolCall.title == "Edit files" && p.toolCall.diffs.size() == 1 && p.toolCall.diffs[0].newText == after);
+        CHECK(p.options.size() == 3 && p.options[0].id == "allow_once" && p.options[0].kind == "allow_once" && p.options[0].name == "Yes, proceed" &&
+              p.options[1].id == "allow_for_session" && p.options[1].kind == "allow_always" && p.options[2].id == "cancel" && p.options[2].kind == "reject_once");
+        CHECK(ReadFileText(file) == before);  // nothing before « Autoriser »
+        CHECK(h.session.RespondPermission(p.requestId, "cancel"));
+        CHECK(h.Wait(Event::Type::TurnEnded, end) && end.stopReason == "end_turn" && ReadFileText(file) == before);
+        // allowed: the file is written
+        const std::size_t from = h.events.size();
+        h.cursor = from;
+        CHECK(h.session.Prompt({Acp::ContentBlock::Text("apply")}));
+        CHECK(h.Wait(Event::Type::PermissionRequest, ask));
+        CHECK(h.session.RespondPermission(ask.permission.requestId, "allow_once"));
+        CHECK(h.Wait(Event::Type::TurnEnded, end) && end.stopReason == "end_turn");
+        CHECK(ReadFileText(file) == after && Contains(h.LogText(), "applied styles/checkout.css"));
+        const std::vector<Event> turn(h.events.begin() + std::ptrdiff_t(from), h.events.end());
+        const Event* done = nullptr;
+        for (const auto& e : turn)
+            if (e.type == Event::Type::ToolCallUpdate && e.tool.status == "completed") done = &e;
+        CHECK(done && done->tool.locations.size() == 1 && done->tool.locations[0].path == Narrow(file));  // what the host counts as a file changed
+        // « Workspace access » (the product's « Auto »): the edit is made at once, nothing asked
+        CHECK(WriteFileText(file, before));
+        CHECK(h.session.SetMode("workspace-write"));
+        CHECK(h.Wait(Event::Type::ModesChanged, mode) && mode.modes.currentId == "workspace-write");
+        const auto direct = h.Turn("apply", end);
+        CHECK(end.stopReason == "end_turn" && First(direct, Event::Type::PermissionRequest) == nullptr && ReadFileText(file) == after);
+    }
+
+    // 3. No instructions taken, the preamble alone (first prompt of a session): Codex asks too.
+    {
+        CHECK(WriteFileText(file, before));
+        Harness h;
+        Acp::StartOptions o = h.Options(args);
+        o.cwd = Narrow(project);
+        CHECK(h.session.Start(o));
+        CHECK(h.Started(started) && started.started.state == Acp::StartState::Ready);
+        CHECK(h.session.SetMode("read-only"));
+        CHECK(h.Wait(Event::Type::ModesChanged, mode) && mode.modes.currentId == "read-only");
+        ChatPrompt::PreambleInput in;
+        in.site = "http://127.0.0.1:5173";
+        in.folder = Narrow(project);
+        h.cursor = h.events.size();
+        CHECK(h.session.Prompt({Acp::ContentBlock::Text(ChatPrompt::Preamble(in)), Acp::ContentBlock::Text("apply")}));
+        CHECK(h.Wait(Event::Type::PermissionRequest, ask) && ask.permission.toolCall.title == "Edit files");
+        CHECK(h.session.RespondPermission(ask.permission.requestId, "allow_once"));
+        CHECK(h.Wait(Event::Type::TurnEnded, end) && end.stopReason == "end_turn" && ReadFileText(file) == after);
+    }
+
+    // 4. An agent that does not advertise `systemPrompt` is never sent one (the real Claude adapter is not asked to take it).
+    {
+        Harness h;
+        Acp::StartOptions o = h.Options();
+        o.instructions = ChatPrompt::Instructions();
+        CHECK(h.session.Start(o));
+        CHECK(h.Started(started) && started.started.state == Acp::StartState::Ready && !started.started.capabilities.systemPrompt);
+        CHECK(!Contains(h.LogText(), "systemPrompt") && !Contains(h.LogText(), "system-prompt"));
+    }
+    RemoveTree(project);
+}
+
 // The "apply" scenario: the fake agent really edits a file of the session folder (for the browser's sandbox).
 void TestApplyEdit() {
     const std::wstring project = g_tmp + L"\\apply projet";
@@ -937,6 +1052,7 @@ int wmain(int argc, wchar_t** argv) {
         {"resume", TestResume},
         {"environment + cwd", TestEnvironmentAndCwd},
         {"apply: a real edit in the project", TestApplyEdit},
+        {"Codex in « Demander » (read-only): asks, then writes", TestCodexAsk},
     };
     for (const auto& t : tests) {
         const int before = Failures();

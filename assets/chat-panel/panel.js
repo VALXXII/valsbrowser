@@ -60,11 +60,10 @@
   // ---------------------------------------------------------------- state
   const S = {
     st: { site: null, folder: undefined, folderSuggestion: null, agents: [], agentId: null, model: null, efforts: [], effort: null,
-          modes: [], mode: null, conversation: null, running: false, pendingAnnotations: 0, suggestions: [], capabilities: {}, disabledReason: null },
+          modes: [], mode: null, conversation: null, running: false, suggestions: [], capabilities: {}, disabledReason: null },
     users: new Map(), turns: new Map(), tools: new Map(),
     lastUser: null, lastTurn: null, lastAt: 0,
-    batch: null, batches: new Map(),
-    perms: [], queue: [], strips: new Map(), history: null, historyOpen: false, commands: [],
+    perms: [], queue: [], queueOpen: false, queueMore: "", strips: new Map(), history: null, historyOpen: false, commands: [],
     picking: false, menu: null, atBottom: true, newCount: 0,
     cEls: new Map(), cAtt: new Map(), editing: null, replay: false, fatal: false,
     planPending: null,
@@ -215,7 +214,8 @@
   const log = h("div", { class: "log", role: "log", "aria-label": "Conversation", "aria-live": "off", id: "log" });
   const first = h("div", { class: "first", hidden: true });
   const empty = h("div", { class: "empty", hidden: true });
-  const scroller = h("div", { class: "scroller", tabindex: "-1" }, first, empty, log);
+  const tasEl = h("section", { class: "tas", hidden: true });   // « Ton agent »: the first message's block
+  const scroller = h("div", { class: "scroller", tabindex: "-1" }, first, empty, tasEl, log);
   const newSteps = h("button", { class: "newsteps", type: "button", hidden: true, onclick: () => scrollToEnd(true) }, icon("arrowDown"), h("span"));
   const historyEl = h("div", { class: "history", id: "history", role: "dialog", "aria-label": "Historique des conversations", hidden: true });
   const dock = h("div", { class: "dock" });
@@ -320,7 +320,6 @@
   const modeBtn = h("button", { class: "tb mode", type: "button", "aria-haspopup": "menu", "aria-expanded": "false", onclick: (e) => openModeMenu(e.currentTarget) });
   const modeTip = h("span", { class: "tip ftip mtip", role: "tooltip", id: "mode-tip", "aria-hidden": "true" });
   menuLayer.appendChild(modeTip);
-  const batchEl = h("div", { class: "batch", hidden: true, role: "group" });
   const modelName = h("span", { class: "mn" });
   const modelLogo = h("span", { style: "display:flex" });
   const effortTxt = h("span");
@@ -328,14 +327,13 @@
   // The whole « modèle · effort » chip is one trigger for one menu (efforts live in its « Effort › » sub-view).
   const modelBtn = h("button", { class: "m", type: "button", "aria-haspopup": "menu", "aria-expanded": "false", "aria-keyshortcuts": "Control+/",
                                  onclick: (e) => openModelMenu(e.currentTarget) }, h("span", { class: "mw" }, modelLogo, modelName), effortEl, icon("chevron", "mcv"));
-  const sendBtn = h("button", { class: "send", type: "button", "aria-keyshortcuts": "Enter Control+Enter", "aria-describedby": "send-tip", onclick: () => onSendButton() });
-  const sendTip = h("span", { class: "tip", id: "send-tip", role: "tooltip" },
-    h("span", { class: "tr" }, h("span", { text: "Demander à l'agent" }), h("span", { class: "kc" }, "↵")),
-    h("span", { class: "tr" }, h("span", { text: "Garder en annotation" }), h("span", { class: "kcs" }, h("span", { class: "kc" }, "Ctrl"), h("span", { class: "kc" }, "↵"))));
+  const sendBtn = h("button", { class: "send", type: "button", "aria-keyshortcuts": "Enter", "aria-describedby": "send-tip", onclick: () => onSendButton() });
+  const sendTip = h("span", { class: "tip", id: "send-tip", role: "tooltip", "aria-hidden": "true" },
+    h("span", { class: "tr" }, h("span", { text: "Demander à l'agent" }), h("span", { class: "kc" }, "↵")));
   const sendWrap = h("span", { class: "sendw" }, sendBtn, sendTip);
   withTip(sendWrap);
   // Bubble (B 1.9, R3): the send button's bubble lives in the layer and may leave the surface — above the button, right
-  // edges aligned (never cut: « Garder en annotation Ctrl ↵ » was).
+  // edges aligned (never cut).
   function sendTipFloat(on) {
     if (!BUB()) return;
     if (!on || sendWrap.classList.contains("no-tip")) { sendTip.classList.remove("on"); floatDrop(sendTip); return; }
@@ -372,13 +370,16 @@
   sendBtn.addEventListener("focus", () => { if (BUB() && sendBtn.matches(":focus-visible")) sendTipFloat(true); });
   sendBtn.addEventListener("blur", () => { if (BUB() && tipOn !== sendWrap) sendTipFloat(false); });
   const foot = h("div", { class: "foot" });
-  const composer = h("div", { class: "composer" }, batchEl, thumbs, cin,
+  const composer = h("div", { class: "composer" }, thumbs, cin,
     h(foot, null, h("div", { class: "tools" }, pickBtn, plusBtn, modeBtn), h("div", { class: "grow" }),
       h("div", { class: "model" }, modelBtn), sendWrap));
+  // « Ton agent »: while the agent cannot take a message (not installed, signed out, installing, signing in) what was typed
+  // stays and this line says why it does not go (the host's catalogue: `agents.setup.hint`). No board draws it yet: the
+  // keys row's look (12/16 #FFFFFF80), provisional.
+  const sendHint = h("div", { class: "send-hint", id: "send-hint", role: "status", hidden: true });
   const keysRow = h("div", { class: "keys", "aria-hidden": "true", hidden: true },
     h("span", { class: "k" }, h("span", { class: "kc" }, "↵"), "Envoyer"),
-    h("span", { class: "k" }, h("span", { class: "kcs" }, h("span", { class: "kc" }, "Maj"), h("span", { class: "kc" }, "↵")), "Nouvelle ligne"),
-    h("span", { class: "k" }, h("span", { class: "kcs" }, h("span", { class: "kc" }, "Ctrl"), h("span", { class: "kc" }, "↵")), "Annotation"));
+    h("span", { class: "k" }, h("span", { class: "kcs" }, h("span", { class: "kc" }, "Maj"), h("span", { class: "kc" }, "↵")), "Nouvelle ligne"));
 
   function composerText() {
     let out = "";
@@ -394,8 +395,7 @@
     return out.replace(/ /g, " ");
   }
   const chipsInComposer = () => Array.from(cin.querySelectorAll(".chip")).map((c) => c.dataset.id);
-  const batchChecked = () => (S.batch ? S.batch.items.filter((it) => S.batch.checked.has(it.id)) : []);
-  function hasContent() { return composerText().trim().length > 0 || S.cAtt.size > 0 || batchChecked().length > 0; }
+  function hasContent() { return composerText().trim().length > 0 || S.cAtt.size > 0; }
   function canSend() {
     const a = curAgent();
     return !S.st.disabledReason && !!S.st.folder && !hasDangerStrip() && (!a || a.status === "ready" || a.status === "starting");
@@ -420,6 +420,18 @@
     }
     const lines = composerText().split("\n").length;
     keysRow.hidden = BUB() || !(lines > 1 && document.activeElement === cin);
+    updateSendHint(running, content);
+  }
+  // The agent is why nothing can be sent (the site and the folder are fine): the typed text waits for it.
+  function agentBlocks() {
+    const a = curAgent();
+    return !!a && !S.st.disabledReason && !!S.st.folder && a.status !== "ready" && a.status !== "starting";
+  }
+  function updateSendHint(running, content) {
+    const on = !running && content && agentBlocks() && !!(TA && TA.hint);
+    if (sendHint.hidden !== !on) { sendHint.hidden = !on; publishSize(); }
+    if (on && sendHint.textContent !== TA.hint) sendHint.textContent = TA.hint;
+    if (on) sendBtn.setAttribute("aria-describedby", "send-tip send-hint"); else sendBtn.setAttribute("aria-describedby", "send-tip");
   }
   function onSendButton() {
     if (sendBtn.classList.contains("stop")) { post("stop"); return; }
@@ -430,40 +442,15 @@
     if (!hasContent() || !canSend()) return;
     const text = composerText().replace(/\s+$/, "");
     const msg = { text, elements: chipsInComposer().filter((id) => S.cEls.has(id)), attachments: Array.from(S.cAtt.keys()) };
-    const picked = batchChecked();
-    if (picked.length) msg.annotations = { batchId: S.batch.batchId, ids: picked.map((it) => it.id) };
     post("send", msg);
     if (BUB()) drafts.delete("b:el:" + (S.lay.elementKey || S.lay.element || ""));
     if (BUB() && text) outboxSet(text);
     S.cEls.clear(); S.cAtt.clear(); clear(cin); renderThumbs(); closeMenu();
-    if (S.batch) { S.batch = null; renderBatch(); }
     updateSend();
-  }
-  // « Garder en annotation » (B 1.6): the chips and the words become annotations of the store, read by the MCP agents;
-  // nothing goes to the chat's agent. Needs an element and a few words (the note of an annotation); images stay.
-  let hintTimer = 0;
-  function hint(text) {
-    clearTimeout(hintTimer);
-    S.strips.set("keep-hint", { id: "keep-hint", tone: "neutral", text, local: true }); renderDock(); say(text);
-    hintTimer = setTimeout(() => { S.strips.delete("keep-hint"); renderDock(); }, 4000);
-  }
-  function keep() {
-    if (S.st.disabledReason || S.batch) return;
-    const els = chipsInComposer().filter((id) => S.cEls.has(id));
-    const text = composerText().replace(/\s+$/, "");
-    let words = text; for (const id of els) words = words.split(S.cEls.get(id).label).join("");
-    // bubble (B 1.8): the element is the one the bubble is anchored to — the host adds it, no chip is needed
-    if (!els.length && !BUB()) { hint("Cliquez un élément de la page pour le garder en annotation."); return; }
-    if (!words.trim()) { hint("Écrivez ce qu'il faut changer, puis Ctrl+Entrée."); return; }
-    clearTimeout(hintTimer); if (S.strips.delete("keep-hint")) renderDock();
-    post("annotate", { text, elements: els });
-    for (const id of els) S.cEls.delete(id);
-    clear(cin); closeMenu(); updateSend();
   }
   function placeholder() {
     let p = "Que faut-il changer ?";
-    if (S.batch) p = "Ajouter une précision (facultatif)…";
-    else if (S.planPending) p = "Ajouter une précision au plan…";
+    if (S.planPending) p = "Ajouter une précision au plan…";
     else if (BUB()) {   // Paper 1AE7-0 (stopped) / 1AWI-0 (done)
       const lt = S.lastTurn && S.turns.get(S.lastTurn);
       if (lt) p = lt.stop && lt.stop !== "end_turn" ? "Que voulez-vous ajouter ?" : "Que voulez-vous ajouter de plus ?";
@@ -542,7 +529,6 @@
   cin.addEventListener("drop", (e) => e.preventDefault());
   cin.addEventListener("keydown", (e) => {
     if (S.menu && S.menu.combo && comboKey(e)) return;
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.isComposing) { e.preventDefault(); keep(); return; }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); return; }
     if (e.key === "Enter" && e.shiftKey) { e.preventDefault(); document.execCommand("insertText", false, "\n"); return; }
     if (e.key === "Tab" && e.shiftKey && shownModes().length > 1 && !errGhost()) {   // (out of sight after an error: Maj+Tab goes back to the buttons)
@@ -1034,7 +1020,7 @@
   }
   function agentAction(a) {
     if (a.status === "notConnected") return { label: "Se connecter", run: () => post("agent.connect", { agentId: a.id, methodId: a.authMethods && a.authMethods[0] ? a.authMethods[0].id : undefined }) };
-    if (a.status === "notInstalled") return { label: "Installer", run: () => post("agent.prepare", { agentId: a.id }) };
+    if (a.status === "notInstalled") return { label: "Installer", run: () => post("agents.setup.open") };   // « Ton agent »: the screen, where the click is the consent
     if (a.status === "error") return { label: "Réessayer", run: () => post("agent.prepare", { agentId: a.id }) };
     return null;
   }
@@ -1132,12 +1118,11 @@
   }
   function openCommandMenu(q) {
     const ql = q.toLowerCase();
-    // R24: no panel command of its own anymore (« /annotations » is gone); the commands are the agent's
-    const all = (S.commands || []).filter((c) => c.name !== "annotations");
+    // the commands are the agent's own (the panel has none)
+    const all = S.commands || [];
     const rows = all.filter((c) => c.name.toLowerCase().startsWith(ql) || !ql).slice(0, 8)
       .map((c) => ({ label: c.name, desc: c.description, pick: () => {
         closeMenu(); clear(cin); cin.focus();
-        if (c.own) { post("annotations.request"); updateSend(); return; }
         document.execCommand("insertText", false, "/" + c.name + " "); updateSend(); } }));
     openCombo("/", rows);
   }
@@ -1149,8 +1134,8 @@
     // bubble: there is no « Où est le code de ce site ? » screen — one line says what is missing, with its action
     else if (BUB() && S.st.folder === null) out.push({ id: "folder", tone: "neutral", text: "Choisissez le dossier du projet pour commencer.", action: { id: "choose", label: "Choisir le dossier…" } });
     const a = curAgent();
-    if (a && S.st.folder) {
-      if (a.status === "notConnected") out.push({ id: "agent", tone: "danger", text: "Vous n'êtes plus connecté à " + a.name + ".", action: { id: "connect", label: "Se connecter" } });
+    if (a && S.st.folder && !(tasShown() && !log.firstChild)) {   // « Ton agent »: the block (empty chat) already says it
+      if (a.status === "notConnected") out.push({ id: "agent", tone: "danger", text: typeof a.notice === "string" && a.notice && a.notice.length <= 200 ? a.notice : a.name + " n'est pas connecté.", action: { id: "connect", label: "Se connecter" } });
       else if (a.status === "notInstalled") out.push({ id: "agent", tone: "neutral", text: a.name + " n'est pas installé sur cet ordinateur.", action: { id: "prepare", label: "Installer" } });
       else if (a.status === "preparing") out.push({ id: "agent", tone: "neutral", text: (a.detail || "Préparation de " + a.name + "…"), progress: a.progress });
       else if (a.status === "error") out.push({ id: "agent", tone: "danger", text: a.detail || a.name + " n'a pas pu démarrer.", action: { id: "prepare", label: "Réessayer" } });
@@ -1177,6 +1162,17 @@
         h("i", { style: "width:" + Math.round(s.progress * 100) + "%" })) : null),
       s.action ? h("button", { class: "btn-s", type: "button", onclick: () => stripAction(s) }, s.action.label) : null);
   }
+  // O10: while a request is shown, a redraw of the dock (another request queued behind it, a strip, the state) keeps the
+  // card the user is answering — the words typed in « à la place », the switch, the keyboard — and only its « 1 sur N »
+  // changes. A card is built for a new request only.
+  function permKept(p) {
+    const card = dock.querySelector(".perm, .bperm");
+    if (!card || card.__req !== p.requestId) return false;
+    let of = card.querySelector(".perm-of");
+    if (S.perms.length > 1) { if (!of) { of = h("span", { class: "perm-of" }); card.querySelector("#perm-t").after(of); } of.textContent = "1 sur " + S.perms.length; }
+    else if (of) of.remove();
+    return true;
+  }
   let lastDockKey = "";
   function renderDock(force) {
     if (BUB()) { renderDockB(force); return; }
@@ -1185,6 +1181,7 @@
     const key = JSON.stringify([p && p.requestId, S.perms.length, s, S.queue, S.st.disabledReason]);
     if (!force && key === lastDockKey) { composer.classList.toggle("disabled", !!(S.st.disabledReason || (s && s.tone === "danger"))); updateSend(); return; }
     lastDockKey = key;
+    if (p && permKept(p)) return;
     const hadFocusInComposer = composer.contains(document.activeElement);
     clear(dock);
     dock.className = "dock"; ruleEl.hidden = true;
@@ -1201,7 +1198,7 @@
     composer.classList.toggle("disabled", !!(S.st.disabledReason || (s && s.tone === "danger")));
     cin.setAttribute("contenteditable", S.st.disabledReason ? "false" : "true");
     cin.setAttribute("aria-disabled", S.st.disabledReason ? "true" : "false");
-    dock.append(stack, keysRow);
+    dock.append(stack, sendHint, keysRow);
     if (hadFocusInComposer) cin.focus();
     updateSend();
   }
@@ -1276,16 +1273,17 @@
                                            onclick: () => { always = !always; sw.setAttribute("aria-checked", String(always)); } },
                                 h("span", { class: "sw", "aria-hidden": "true" }, h("i")), "Toujours autoriser") : h("span", { class: "always" });
     const respond = (opt, message) => {
-      if (!opt) return;
+      if (!opt || !S.perms[0] || S.perms[0].requestId !== p.requestId) return;   // one answer per request
       post("permission.respond", Object.assign({ requestId: p.requestId, optionId: opt.optionId }, message ? { message } : {}));
+      permAnswered(p, opt);
       S.perms.shift();
       refreshWaiting();
       renderDock(true);
       if (!S.perms.length) cin.focus(); else dock.querySelector(".perm") && dock.querySelector(".perm").focus();   // SEC-23: the next card, never its « Autoriser »
     };
     const refuse = h("button", { class: "btn", type: "button", "aria-keyshortcuts": "Escape", onclick: () => respond(reject, instead.value.trim() || undefined) },
-      "Refuser", h("span", { class: "kbd", "aria-hidden": "true" }, "Échap"));
-    const allow = h("button", { class: "btn primary", type: "button", "aria-keyshortcuts": "Enter",
+      "Refuser");   // Paper (boards 8 / 9 of the permission card, 24 Nov 2026): no key drawn on « Refuser » — Échap still refuses
+    const allow = h("button", { class: "btn primary", type: "button",
                                 onclick: (e) => { if (permArmed(card, e)) respond(always && allowAlways ? allowAlways : allowOnce); } },
       "Autoriser", h("span", { class: "kbd", "aria-hidden": "true" }, "↵"));
     instead.addEventListener("keydown", (e) => {
@@ -1299,14 +1297,42 @@
       p.details ? detailsBlock(p.details) : null,
       reject ? instead : null,
       h("div", { class: "perm-ft" }, sw, reject ? refuse : null, allow));   // F10: no refuse option, no « Refuser »
-    card.__shownAt = p.shownAt || (p.shownAt = performance.now());
+    card.__shownAt = p.shownAt || (p.shownAt = performance.now()); card.__req = p.requestId;
     card.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); refuse.click(); }
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); if (!e.repeat) refuse.click(); }   // O10: a held Échap refuses this card only
       else if ((e.key === "Enter" || e.key === " ") && e.repeat && e.target !== instead) e.preventDefault();   // SEC-23: a held key answers nothing
       else if (e.key === "Enter" && e.target !== instead && e.target.tagName !== "BUTTON") { e.preventDefault(); if (permArmed(card, e)) allow.click(); }
     });
+    // Owner decision (24 Nov 2026) — the card tells the truth: « ↵ » on « Autoriser » and its `aria-keyshortcuts` are there
+    // only while Entrée really allows, i.e. while the keyboard is in the card. After the user's own message the keyboard
+    // stays out of it (SEC-23, unchanged): no symbol, nothing announced. They come back when the card takes the focus.
+    // The class is `kbd-on`, never `keys`: `.keys` is the composer's shortcuts row (centred, its own padding) — the card
+    // took that layout on the first click or Tab (owner's trial 0.3.952: title centred, the diff out of the card).
+    const keys = (on) => { card.classList.toggle("kbd-on", on); if (on) allow.setAttribute("aria-keyshortcuts", "Enter"); else allow.removeAttribute("aria-keyshortcuts"); };
+    keys(card.__enter = !typing && document.hasFocus());
+    // One request, one click: « ↵ » widens « Autoriser » and pushes « Refuser » — while a button of the mouse is down the
+    // card does not change (the press and its release must land on the same button); the symbol comes at the release.
+    let pressing = null;
+    card.addEventListener("pointerdown", () => {
+      if (pressing) return;
+      const ac = pressing = new AbortController();
+      const up = () => { ac.abort(); pressing = null; if (card.isConnected) keys(card.contains(document.activeElement)); };
+      for (const ev of ["pointerup", "pointercancel", "blur"]) window.addEventListener(ev, up, { capture: true, signal: ac.signal });
+    }, true);
+    card.addEventListener("focusin", () => { if (!pressing) keys(true); });
+    card.addEventListener("focusout", (e) => { if (!pressing && !card.contains(e.relatedTarget)) keys(false); });
     requestAnimationFrame(() => { if (!typing && card.isConnected) card.focus(); });   // SEC-23: never on « Autoriser »
     return card;
+  }
+  // Refused: the step it was for never happened — the thread says nothing of it (no « A modifié », no « échec »).
+  function permAnswered(p, opt) {
+    const r = p.toolCallId && /^reject/.test(opt.kind) ? S.tools.get(p.toolCallId) : null;
+    if (r) { r.x.refused = true; queueRender(r.seg); }
+  }
+  // The diff « en grand » of a request closes with its request (withdrawn, its turn over) — « Arrêter » is one click away
+  // under it: never a diff left open over nothing to answer.
+  function permViewGone() {
+    if (S.bview && S.bview.kind === "perm" && !S.perms.some((p) => p.requestId === S.bview.p.requestId)) { closeView(true); updateView(); }
   }
   function detailsBlock(text) {
     const pre = h("pre", { class: "detail", id: "perm-details", hidden: true, text });
@@ -1340,12 +1366,13 @@
       if (!box) return S.lay.maxH;
       let inner = 12;                                        // a command or a tool's arguments: their own height, never
       for (const c of box.children) inner += c.offsetHeight; // smaller than the bubble of a turn in progress (224)
-      return Math.max(224, 68 + inner + dock.offsetHeight);
+      // 24 of padding + the card's border and padding (22) + its title row and gap (28) + the content + 10 + the answer (the dock) + the row under the card
+      return Math.max(224, 84 + inner + dock.offsetHeight + (composer.parentNode === app ? 12 + composer.offsetHeight : 0));
     }
     let hgt = 24, n = 0;                                     // 12 px of padding above and under
     const part = (x) => { if (x > 0) { hgt += x; n++; } };
-    if (!body.hidden) part(log.offsetHeight);                // measured on the content: independent of the window's size
-    if (!ruleEl.hidden) part(1);
+    if (!body.hidden) part(log.offsetHeight + tasEl.offsetHeight);   // measured on the content: independent of the window's size (« Ton agent »: the block)
+    if (!ruleEl.hidden) part(ruleEl.offsetHeight);   // 1 px — nothing when the thread gave way to a request's card (perm-tight2)
     part(dock.offsetHeight);
     return hgt + Math.max(0, n - 1) * 12;
   }
@@ -1409,6 +1436,20 @@
   function publishSize(force) {
     if (!BUB() || S.fatal) return;
     if (ackPending && !force) return;   // nothing before the acknowledgement (it carries the final size)
+    // R47 / plan rule 8: « Refuser » and « Autoriser » are always whole. When the height offered is short, what is around the
+    // card gives way, in this order: the row under it, the thread, then the « à la place » field (the host offers 120 px at least).
+    {
+      const cl = app.classList; cl.remove("perm-tight2", "perm-tight3"); dock.classList.remove("tight");
+      const card = !S.bview && !S.bsize ? dock.querySelector(".bperm") : null;
+      if (card) {
+        const max = S.lay.maxH, thread = !body.hidden && log.firstChild ? 49 : 0;   // 12 + the hairline + 12, and one line of the thread (24)
+        if (24 + dock.offsetHeight + thread > max) {
+          dock.classList.add("tight");
+          if (24 + card.offsetHeight + thread > max) { cl.add("perm-tight2"); if (24 + card.offsetHeight > max) cl.add("perm-tight3"); }
+        }
+      }
+    }
+    bQueueRoom();   // the waiting messages take what the height offered leaves: the input is always whole, inside the surface
     const hgt = Math.max(1, Math.min(S.bsize ? Infinity : S.lay.maxH, Math.ceil(bubbleNatural())));
     const need = floats.size ? floatNeed(hgt) : { top: 0, right: 0, bottom: 0, left: 0 };
     const key = curW() + "x" + hgt + ":" + SIDES.map((k) => need[k]).join(",") + (S.bsize ? ":r" : "");
@@ -1497,7 +1538,7 @@
     resetGen++;
     closeChanges();
     S.usage = null; S.usageWarned = false; renderGauge();
-    S.batches.clear();
+    S.queueOpen = false;
     clear(log); S.users.clear(); S.turns.clear(); S.tools.clear(); S.perms = []; S.lastUser = null; S.lastTurn = null; S.lastAt = 0; S.planPending = null; S.editing = null;
     S.atBottom = true; S.newCount = 0; newSteps.hidden = true;
     S.berr = null; closeView(true); bTipHide();
@@ -1546,15 +1587,27 @@
     const p = S.perms[0], s = activeStrip(), running = !!S.st.running, none = !log.firstChild;
     const err = !running && !p ? S.berr : null;
     const off = !!(S.st.disabledReason || (s && s.tone === "danger"));
-    const key = JSON.stringify(["b", p && p.requestId, S.perms.length, s, S.queue, S.st.disabledReason, running, err && err.id, !!S.bview, none, S.outbox && S.outbox.shown && S.outbox.text]);
+    const key = JSON.stringify(["b", p && p.requestId, S.perms.length, s, S.queue, S.queueOpen, S.st.disabledReason, running, err && err.id, !!S.bview, none, S.outbox && S.outbox.shown && S.outbox.text]);
     if (!force && key === lastDockKey) { composer.classList.toggle("disabled", off); updateSend(); return; }
     lastDockKey = key;
     const a = document.activeElement;
     const mine = composer.contains(a) || a === app || a === document.body || !a;
+    // Paper 1AQU-0 (26K6-0) and 19RN-0 (26JW-0), 24 Nov 2026: the mode and « Arrêter » stay under the card for as long as
+    // the request waits — the agent can be stopped while it waits for an answer.
+    // Under the open diff (19RN-0) one card holds the diff and the answer: the row is then the bubble's own last line.
+    const permFoot = () => {
+      const home = S.bview ? app : dock;
+      app.classList.toggle("running", running); app.classList.toggle("view-perm", !!S.bview);
+      if (!running) { if (composer.parentNode === dock || composer.parentNode === app) composer.remove(); return; }
+      if (composer.parentNode !== home) { if (home === app) app.insertBefore(composer, gripEl); else dock.appendChild(composer); }
+      composer.classList.toggle("disabled", off); updateSend();
+    };
+    if (p && permKept(p)) { permFoot(); ruleEl.hidden = none || !!S.bview; return; }
     clear(dock);
     dock.className = "dock" + (p ? " has-perm" : "");
-    app.classList.toggle("running", running && !p);
-    if (p) { dock.appendChild(bPerm(p, composer.contains(a))); ruleEl.hidden = none || !!S.bview; return; }
+    app.classList.toggle("running", running); app.classList.remove("view-perm");
+    if (composer.parentNode === app) composer.remove();   // back from the open diff of a request: the input goes home (the dock) below
+    if (p) { dock.appendChild(bPerm(p, composer.contains(a))); permFoot(); ruleEl.hidden = none || !!S.bview; return; }
     if (err) {
       // H1 (monkey seed 1 #29): the input used to leave the page here — whatever was typed next went nowhere until
       // « Annuler ». It stays in the page, out of sight (Paper 1AAE-0 draws the two buttons alone), and keeps the keyboard:
@@ -1566,10 +1619,10 @@
       if (mine && document.hasFocus()) dockFocusSoon();
       updateSend(); return;
     }
-    for (const q of S.queue) dock.appendChild(bQueued(q));
-    if (S.outbox && S.outbox.shown) dock.appendChild(bQueued({ text: S.outbox.text, local: true }));
+    const waiting = bQueue(); if (waiting) dock.appendChild(waiting);
     if (s) dock.appendChild(stripNode(s));
-    dock.appendChild(composer);
+    dock.append(composer, sendHint);
+    if (waiting) bQueueFit(waiting);
     composer.classList.toggle("disabled", off);
     cin.setAttribute("contenteditable", S.st.disabledReason ? "false" : "true");
     cin.setAttribute("aria-disabled", S.st.disabledReason ? "true" : "false");
@@ -1592,8 +1645,9 @@
     });
   }
   function permRespond(p, opt, message) {
-    if (!opt) return;
+    if (!opt || !S.perms[0] || S.perms[0].requestId !== p.requestId) return;   // one answer per request
     post("permission.respond", Object.assign({ requestId: p.requestId, optionId: opt.optionId }, message ? { message } : {}));
+    permAnswered(p, opt);
     S.perms.shift();
     closeView(true);
     refreshWaiting(); updateView(); renderDock(true);
@@ -1624,7 +1678,7 @@
     const card = h("div", { class: "bperm" + (S.replay || p.shown ? "" : " pop-in"), role: "alertdialog", "aria-modal": "false", "aria-labelledby": "perm-t", tabindex: "-1" },
       h("div", { class: "bperm-rows" }, file, reject ? h("label", { class: "bperm-in" }, icon("pencilFill", "ic"), instead) : null),
       h("div", { class: "bperm-ft" }, sw, reject ? refuse : null, allow));   // F10
-    card.__shownAt = p.shownAt || (p.shownAt = performance.now());   // SEC-23: armed from its first appearance (a redraw of the same request does not re-arm)
+    card.__shownAt = p.shownAt || (p.shownAt = performance.now()); card.__req = p.requestId;   // SEC-23: armed from its first appearance (a redraw of the same request does not re-arm)
     card.addEventListener("keydown", (e) => {
       if ((e.key === "Enter" || e.key === " ") && e.repeat && e.target !== instead) e.preventDefault();   // SEC-23: a held key answers nothing
       else if (e.key === "Enter" && e.target !== instead && e.target.tagName !== "BUTTON") { e.preventDefault(); if (permArmed(card, e)) allow.click(); } });
@@ -1665,13 +1719,73 @@
   }
   // One agent turn at a time: a request written in another element's bubble waits (B 1.8 `queue.items[].after`).
   function bQueued(q) {
-    if (q.local) return h("div", { class: "bq", role: "group", "aria-label": "Message envoyé" }, h("div", { class: "bubble pending", text: q.text }));
+    if (q.local) return h("div", { class: "bq", role: "group", "aria-label": "Message envoyé" }, h("div", { class: "bubble pending" }, h("span", { class: "bq-tx", text: q.text })));
     return h("div", { class: "bq", role: "group", "aria-label": "Message en attente" },
-      h("div", { class: "bubble pending", text: q.text }),
+      h("div", { class: "bubble pending" }, h("span", { class: "bq-tx", text: q.text })),
       h("div", { class: "bq-cap" },
         // H1 c342b23: « held » = kept the time the element's image gets ready, then sent
         h("span", { class: "tx" }, q.after ? ["Commencera après le travail en cours sur ", h("span", { class: "el", text: q.after })] : q.id === "held" ? "Envoi dans un instant…" : "En file : commencera après le travail en cours"),
         h("button", { class: "icon-btn", type: "button", "aria-label": "Retirer ce message de la file", onclick: () => post("queue.remove", { id: q.id }) }, icon("close"))));
+  }
+
+  // Lot R (validated by the owner, 2026-11-24; fixes O5 — 4 waiting messages pushed the input out of the bubble): the
+  // bubble shows the 2 most recent waiting messages, each cut at 2 lines under a fade (never « … »). With more than 2, a
+  // compact line « +N en attente » above them opens the whole list (160 px high at most, its own scroll, a fade at its
+  // top) and closes it again. The queue shrinks, never the input.
+  function bQueue() {
+    const all = S.queue.slice();
+    if (S.outbox && S.outbox.shown) all.push({ text: S.outbox.text, local: true });
+    const more = Math.max(0, all.length - 2);
+    if (!more) S.queueOpen = false;
+    if (!all.length) return null;
+    const box = h("div", { class: "bqs" + (S.queueOpen ? " open" : "") });
+    if (more) {
+      const label = (n) => (S.queueMore && S.queueMore.includes("{n}") ? S.queueMore : "+{n} en attente").replace("{n}", String(n));
+      const tx = h("span", { text: label(more) });
+      box.__count = (hiddenList) => { const t = label(hiddenList ? all.length : more); if (tx.textContent !== t) tx.textContent = t; };   // bQueueRoom
+      box.appendChild(h("button", { class: "bq-more", type: "button", "aria-expanded": String(!!S.queueOpen), "aria-controls": "bq-list",
+        onclick: () => { S.queueOpen = !S.queueOpen; renderDock(true); const b = dock.querySelector(".bq-more"); if (b) b.focus(); } },
+        tx, icon("chevron", "cv")));
+    }
+    const list = h("div", { class: "bq-list", id: "bq-list" });
+    for (const q of (S.queueOpen ? all : all.slice(-2))) list.appendChild(bQueued(q));
+    box.appendChild(list);
+    return box;
+  }
+  // Once in the page: which texts are cut (their fade), the open list at its end (the most recent), its top fade.
+  function bQueueFit(box) {
+    for (const t of box.querySelectorAll(".bq-tx")) t.classList.toggle("cut", t.scrollHeight > t.clientHeight + 1);
+    const list = box.querySelector(".bq-list");
+    if (!list) return;
+    list.addEventListener("scroll", () => list.classList.toggle("scrolled", list.scrollTop > 0), { passive: true });
+    if (box.classList.contains("open")) { list.scrollTop = list.scrollHeight; list.classList.toggle("scrolled", list.scrollTop > 0); }
+    bQueueRoom();
+  }
+  // « The input always whole » when little height is offered (#110, and the clicks « through » the bubble #185 / #219 —
+  // lot 1b's replay, 24 Nov 2026: a bubble squeezed between its element and the window's edge got 269 px; two waiting
+  // messages and the input need 272, so the input and the buttons were drawn under the surface the host shows and makes
+  // clickable, and a click aimed at them reached the site's page). The thread gives its height first (it scrolls); then
+  // the list takes what is left, never more — cut at its top under the open list's fade, the most recent at its end, its
+  // own scroll. With no room for a line of it, the list goes and « +N en attente » counts them all; with no room for
+  // that line either, nothing of the queue is drawn. Run with each size published (the height offered changes).
+  const BQ_MIN = 28;
+  function bQueueRoom() {
+    const box = BUB() && !S.bview ? dock.querySelector(".bqs") : null, list = box && box.querySelector(".bq-list");
+    if (!list) return;
+    if (box.hidden || list.hidden) { box.hidden = false; list.hidden = false; }   // measured in the page
+    const want = box.classList.contains("open") ? Math.min(160, list.scrollHeight) : list.scrollHeight;
+    const thread = () => (body.hidden ? 0 : log.offsetHeight);
+    const room = S.bsize ? want : S.lay.maxH - (Math.ceil(bubbleNatural()) - list.offsetHeight - thread());
+    const cap = room >= want ? 0 : room >= BQ_MIN ? room : -1;   // 0: its own height; -1: no list
+    box.classList.toggle("tight", cap !== 0);
+    list.hidden = cap < 0;
+    if (box.__count) box.__count(cap < 0);
+    const more = box.querySelector(".bq-more"); if (more) more.disabled = cap < 0;
+    const css = cap > 0 ? cap + "px" : "";
+    if (list.style.maxHeight !== css) { list.style.maxHeight = css; if (cap > 0) list.scrollTop = list.scrollHeight; }
+    if (cap > 0) list.classList.toggle("scrolled", list.scrollTop > 0);
+    else if (!box.classList.contains("open")) list.classList.remove("scrolled");
+    if (cap < 0 && (!more || Math.ceil(bubbleNatural()) - thread() > S.lay.maxH)) box.hidden = true;
   }
 
   // The diff « en grand » (Paper 19ON-0 for a request, 19IO-0 for a finished turn): it takes the bubble, the thread waits.
@@ -1804,7 +1918,15 @@
     return running && !/…$/.test(t) ? t + "…" : t;
   }
   const isRunning = (x) => x.status === "in_progress" || x.status === "pending";
-  const stepTitle = (x) => stepLabel(x, isRunning(x));
+  // Until the user answers, a step is only wanted: « Veut modifier style.css » — the card's own words (the host's, in the
+  // browser's language: « … veut modifier … » / « … wants to edit … ») without the agent's name. « Modifie… » comes with
+  // the agreement, « A modifié » when the change is made; a refused step is not shown at all.
+  const wantOf = (x) => (isRunning(x) && !x.refused && S.perms.find((p) => p.toolCallId && p.toolCallId === x.id)) || null;
+  function wantLabel(p) {
+    const m = /(?:^|\s)(veut|wants) (\S.*)$/i.exec(p.title);
+    return m ? cap(m[1].toLowerCase()) + " " + m[2] : "Attend votre accord";
+  }
+  const stepTitle = (x) => { const p = wantOf(x); return p ? wantLabel(p) : stepLabel(x, isRunning(x)); };
   function bTipShow(el) {
     const rows = el._rows ? el._rows() : [];
     if (!rows.length) { if (btipFor === el) bTipHide(); return; }
@@ -1855,18 +1977,19 @@
   function bStatus(t) {
     if (!t.b) return;
     const steps = [];
-    for (const s of t.segs) if (s.kind === "steps") steps.push(...s.tools);
+    for (const s of t.segs) if (s.kind === "steps") steps.push(...s.tools.filter((x) => !x.refused));   // a refused step never happened
     let kind = "", label = "", rows = [];
     if (t.running) {
-      const cur = steps.slice().reverse().find((x) => x.status === "in_progress" || x.status === "pending");
-      label = cur ? stepTitle(cur) : S.perms.some((p) => p.turnId === t.id) ? "Attend votre accord" : t.segs.some((s) => s.kind === "thought" && !s.done) ? "Réfléchit…" : "Travaille…";
-      rows = bTipRows(steps.filter((x) => x !== cur && x.status !== "in_progress" && x.status !== "pending"));
+      const cur = steps.slice().reverse().find((x) => isRunning(x) && !x.refused);
+      // Paper « App réelle · Mode Commentaire 4 »: while a request waits, the status says so — never the step as if it ran
+      label = S.perms.some((p) => p.turnId === t.id) ? "Attend votre accord…" : cur ? stepTitle(cur) : t.segs.some((s) => s.kind === "thought" && !s.done) ? "Réfléchit…" : "Travaille…";
+      rows = bTipRows(steps.filter((x) => x !== cur && !isRunning(x) && !x.refused));
       kind = "run";
     } else if (t.stop === "cancelled") { kind = "stop"; label = "S'est arrêté"; }
     else if (t.stop !== "error" && steps.length) {
       kind = "done"; label = "Historique";
       const hist = [];   // R43: the announcements join the list, in their order
-      for (const s of t.segs) { if (s.kind === "text" && s.closed) hist.push({ say: plain(s.text) }); else if (s.kind === "steps") hist.push(...s.tools); }
+      for (const s of t.segs) { if (s.kind === "text" && s.closed) hist.push({ say: plain(s.text) }); else if (s.kind === "steps") hist.push(...s.tools.filter((x) => !x.refused)); }
       rows = bTipRows(hist);
     }
     t.stRows = rows;
@@ -1946,19 +2069,22 @@
   // ---------------------------------------------------------------- thread
   function updateView() {
     if (BUB()) {   // no first-run screen, no suggestions: the input, and the thread once there is one
-      const none = !log.firstChild;
-      first.hidden = true; empty.hidden = true; log.hidden = none; body.hidden = none || !!S.bview;
+      const none = !log.firstChild, ta = none && tasShown();   // « Ton agent »: the block until an agent is ready
+      first.hidden = true; empty.hidden = true; log.hidden = none; body.hidden = (none && !ta) || !!S.bview;
+      tasEl.hidden = !ta; if (ta) renderTas();
       app.classList.toggle("has-thread", !none);
       renderDock();
       return;
     }
     body.hidden = false;
     const firstRun = S.st.askFolder === true || (S.st.askFolder === undefined && S.st.folder === null);
-    const isEmpty = !log.firstChild;
+    const isEmpty = !log.firstChild, ta = !firstRun && isEmpty && tasShown();   // « Ton agent »: in the place of « Que voulez-vous changer ? »
     first.hidden = !firstRun;
-    empty.hidden = firstRun || !isEmpty;
+    empty.hidden = firstRun || !isEmpty || ta;
+    tasEl.hidden = !ta;
     log.hidden = firstRun || isEmpty;
     if (firstRun) renderFirst();
+    else if (ta) renderTas();
     else if (isEmpty) renderEmpty();
   }
   function add(node, liveItem) {
@@ -1987,8 +2113,6 @@
     const at = Date.parse(m.at) || Date.now();
     if (!S.lastAt || new Date(at).toDateString() !== new Date(S.lastAt).toDateString() || at - S.lastAt > 30 * 60 * 1000) add(h("div", { class: "date", text: dayLabel(at) }), false);
     S.lastAt = at;
-    const ann = validBatchMessage(m.annotations);
-    if (ann) { onAnnotationMessage(m, ann); return; }
     const els = (m.elements || []).filter(validElement);
     const bubble = h("div", { class: "bubble" });
     const inlineIds = fillWithChips(bubble, m.text, BUB() ? [] : els);   // B 1.9 (R7): in the bubble the element is implicit — no chip
@@ -2004,134 +2128,6 @@
     if (!S.replay) { scrollToEnd(false); }
     if (BUB()) { S.berr = null; renderDock(); }   // a new request: the « Annuler / Réessayer » of an earlier error goes
   }
-  function onKept(m) {
-    const els = (m.elements || []).filter(validElement);
-    const n = Array.isArray(m.annotations) ? m.annotations.length : els.length;
-    const words = (() => { let w = m.text; for (const e of els) w = w.split(e.label).join(""); return w.replace(/\s+/g, " ").trim(); })();
-    const where = h("span", { class: "kept-els" });
-    for (const e of els) where.appendChild(chipNode(Object.assign({ picked: true }, e), false));
-    const node = h("div", { class: "kept", role: "note", "data-id": m.id, "aria-label": "Gardé en annotation : " + words },
-      h("div", { class: "kept-note", text: words }),
-      h("div", { class: "kept-meta" }, icon("check", "ck"), h("span", { text: n > 1 ? plural(n, "annotation gardée", "annotations gardées") : "Gardé en annotation" }), where),
-      h("div", { class: "kept-sub", text: m.partial ? "Une partie n'a pas pu être enregistrée." : "Pour vos agents connectés · rien n'est envoyé au chat" }));
-    add(node);
-    if (!S.replay) { scrollToEnd(false); say("Gardé en annotation."); }
-  }
-  // ---------------------------------------------------------------- « Traiter les annotations » (B 1.4)
-  function validAnnItem(it) {
-    if (!it || !ID.test(it.id) || !isStr(it.note, 2000)) return null;
-    return { id: it.id, note: it.note, element: isStr(it.element, 200) ? it.element : "", source: isStr(it.source, 300) ? it.source : "",
-             thumb: isStr(it.thumb, 350000) && IMG.test(it.thumb) ? it.thumb : "", status: ["pending", "working", "done", "skipped"].includes(it.status) ? it.status : "pending",
-             summary: isStr(it.summary, 600) ? it.summary : "", reason: isStr(it.reason, 600) ? it.reason : "" };
-  }
-  function validBatchMessage(a) {
-    if (!a || typeof a !== "object" || !ID.test(a.batchId) || !Array.isArray(a.items)) return null;
-    const items = a.items.slice(0, 50).map(validAnnItem).filter(Boolean);
-    return items.length ? { batchId: a.batchId, items, instruction: isStr(a.instruction, 20000) ? a.instruction : "" } : null;
-  }
-  const annMeta = (it) => [it.element, it.source].filter(Boolean).join(" · ");
-  function annThumb(it) {
-    return it.thumb ? h("img", { class: "ann-thumb", src: it.thumb, alt: "" }) : h("span", { class: "ann-thumb blank", "aria-hidden": "true" });
-  }
-  // Composer block: what will be sent, everything checked; unchecking keeps an annotation for later.
-  function renderBatch() {
-    const b = S.batch;
-    clear(batchEl);
-    batchEl.hidden = !b;
-    placeholder();
-    if (!b) { batchEl.removeAttribute("aria-labelledby"); return; }
-    batchEl.setAttribute("aria-labelledby", "batch-h");
-    const n = batchChecked().length;
-    batchEl.appendChild(h("div", { class: "batch-hd" }, icon("tray", "ic"),
-      h("span", { class: "t", id: "batch-h", text: n ? plural(n, "annotation à traiter", "annotations à traiter") : "Aucune annotation cochée" }),
-      b.siteLabel ? h("span", { class: "site", text: b.siteLabel }) : null,
-      h("button", { class: "icon-btn", type: "button", "aria-label": "Retirer ces annotations de la saisie",
-                    onclick: () => { S.batch = null; renderBatch(); updateSend(); cin.focus(); } }, icon("close"))));
-    const shown = b.expanded || b.items.length <= 5 ? b.items : b.items.slice(0, 5);
-    for (const it of shown) {
-      const on = b.checked.has(it.id);
-      const row = h("button", { class: "batch-row" + (on ? "" : " off"), type: "button", role: "checkbox", "aria-checked": String(on), "data-id": it.id,
-                                "aria-label": it.note + (annMeta(it) ? " — " + annMeta(it) : "") },
-        h("span", { class: "box", "aria-hidden": "true" }, on ? icon("check") : null), annThumb(it),
-        h("span", { class: "tx" }, h("span", { class: "note", text: it.note }), annMeta(it) ? h("span", { class: "meta", text: annMeta(it) }) : null));
-      row.addEventListener("click", () => {
-        on ? b.checked.delete(it.id) : b.checked.add(it.id);
-        renderBatch(); updateSend();
-        const again = batchEl.querySelector(".batch-row[data-id='" + it.id + "']"); if (again) again.focus();
-        say(on ? "Gardée pour plus tard." : "Ajoutée.");
-      });
-      batchEl.appendChild(row);
-    }
-    if (shown.length < b.items.length) batchEl.appendChild(h("button", { class: "batch-more", type: "button", onclick: () => { b.expanded = true; renderBatch(); const r = batchEl.querySelectorAll(".batch-row")[5]; if (r) r.focus(); } },
-      "+ " + plural(b.items.length - shown.length, "autre", "autres")));
-  }
-  function onBatch(m) {
-    const items = (Array.isArray(m.items) ? m.items : []).slice(0, 50).map(validAnnItem).filter(Boolean);
-    S.batch = items.length ? { batchId: m.batchId, siteLabel: isStr(m.siteLabel, 200) ? m.siteLabel : "", items, checked: new Set(items.map((i) => i.id)), expanded: false } : null;
-    renderBatch(); updateSend();
-    if (S.batch) { cin.focus(); say(plural(items.length, "annotation prête à être traitée", "annotations prêtes à être traitées") + ". Décochez celles à garder pour plus tard."); }
-  }
-  // Thread card: the sent batch, kept alive by annotations.status.
-  function onAnnotationMessage(m, ann) {
-    const card = h("div", { class: "ann-card", role: "group", "aria-labelledby": "annh-" + ann.batchId });
-    const node = h("div", { class: "um ann", "data-id": m.id }, card);
-    const b = { batchId: ann.batchId, items: ann.items, instruction: ann.instruction, text: m.text || "", card, open: false };
-    S.batches.set(ann.batchId, b);
-    renderAnnCard(b);
-    S.users.set(m.id, { el: node, row: card, bubble: card, text: m.text || "", els: [], m });
-    S.lastUser = m.id;
-    add(node);
-    if (!S.replay) scrollToEnd(false);
-  }
-  function renderAnnCard(b) {
-    const card = b.card;
-    const prevFocus = card.contains(document.activeElement) ? document.activeElement.dataset.id || document.activeElement.className : null;
-    clear(card);
-    const n = b.items.length;
-    const done = b.items.filter((i) => i.status === "done").length, skipped = b.items.filter((i) => i.status === "skipped").length;
-    const working = b.items.findIndex((i) => i.status === "working");
-    const finished = done + skipped === n;
-    let right;
-    if (finished) right = h("span", { class: "ann-prog" + (skipped ? " mixed" : " ok") }, done ? icon("check") : null,
-      [done ? plural(done, "terminée", "terminées") : "", skipped ? plural(skipped, "non traitée", "non traitées") : ""].filter(Boolean).join(" · "));
-    else right = h("span", { class: "ann-prog", text: (working >= 0 ? working + 1 : Math.min(n, done + skipped + 1)) + " sur " + n });
-    const who = curAgentName().replace(/ Code$/, "");
-    card.appendChild(h("div", { class: "ann-hd" }, icon("tray", "ic"), h("span", { class: "t", id: "annh-" + b.batchId, text: "Traiter " + plural(n, "annotation", "annotations") }), right));
-    if (b.text.trim()) card.appendChild(h("div", { class: "ann-extra", text: b.text.trim() }));
-    for (const it of b.items) {
-      const st = it.status;
-      const line = st === "working" ? h("span", { class: "ann-st is-working" }, h("span", { class: "spin", style: "display:flex" }, icon("spinner")), who + " s'en occupe")
-        : st === "done" ? h("span", { class: "ann-st is-done" }, icon("check"), h("span", { text: it.summary || "Terminée" }))
-        : st === "skipped" ? h("span", { class: "ann-st is-skipped" }, icon("x"), h("span", { text: it.reason ? "Non traitée : " + it.reason : who + " n'a pas pu la traiter" }))
-        : h("span", { class: "ann-st is-pending" }, h("i", { "aria-hidden": "true" }), "En attente");
-      card.appendChild(h("button", { class: "ann-row is-" + st, type: "button", "data-id": it.id, "aria-description": "Montrer sur la page" + (annMeta(it) ? " (" + annMeta(it) + ")" : ""),
-                                     onclick: () => post("annotation.show", { id: it.id }) },
-        annThumb(it), h("span", { class: "tx" }, h("span", { class: "note", text: it.note }), line)));
-    }
-    if (b.instruction) {
-      const pre = h("pre", { class: "detail", id: "inst-" + b.batchId, hidden: !b.open, text: b.instruction });
-      const t = h("button", { class: "ann-inst", type: "button", "aria-expanded": String(b.open), "aria-controls": "inst-" + b.batchId },
-        "Voir la consigne envoyée à " + who, icon("chevron", "cv"));
-      t.addEventListener("click", () => { b.open = !b.open; renderAnnCard(b); const x = b.card.querySelector(".ann-inst"); if (x) x.focus(); stick(); });
-      card.append(t, pre);
-    }
-    if (prevFocus) { const x = card.querySelector("[data-id='" + prevFocus + "']"); if (x) x.focus(); }
-  }
-  function onAnnStatus(m) {
-    const b = S.batches.get(m.batchId);
-    const it = b && b.items.find((i) => i.id === m.id);
-    if (!it) return;
-    if (["pending", "working", "done", "skipped"].includes(m.status)) it.status = m.status;
-    if (isStr(m.summary, 600)) it.summary = m.summary;
-    if (isStr(m.reason, 600)) it.reason = m.reason;
-    renderAnnCard(b);
-    stick();
-    const who = curAgentName().replace(/ Code$/, "");
-    if (it.status === "working") say(who + " s'occupe de : " + it.note);
-    else if (it.status === "done") say("Terminée : " + it.note + (it.summary ? ". " + it.summary : ""));
-    else if (it.status === "skipped") say("Non traitée : " + it.note + (it.reason ? ". " + it.reason : ""));
-  }
-
   // Chips sit where their label appears in the text (first occurrence); the rest go under the bubble.
   function fillWithChips(parent, text, els) {
     const used = new Set();
@@ -2370,13 +2366,14 @@
   const baseName = (p) => p.split(/[\\/]/).pop();
   const listFr = (xs) => (xs.length < 2 ? xs.join("") : xs.slice(0, -1).join(", ") + " et " + xs[xs.length - 1]);
   const lowerFirst = (t) => (t && t.length > 1 && t[1] === t[1].toLowerCase() ? t[0].toLowerCase() + t.slice(1) : t);
+  // The folded line of a group. What is done is said as done; a step waiting for the user's agreement is said as wanted
+  // (« A lu 2 fichiers, veut modifier style.css ») — never as done.
   function stepsSummary(tools) {
-    if (tools.length === 1) {
-      const p = stepPart(tools[0]);
-      return stepLabel(tools[0], false);
-      return p.title != null ? p.title || "1 étape" : summaryText([p]);
-    }
-    return summaryText(tools.map(stepPart));
+    if (tools.length === 1) return wantOf(tools[0]) ? stepTitle(tools[0]) : stepLabel(tools[0], false);
+    const wanted = tools.filter((x) => wantOf(x)), rest = tools.filter((x) => !wantOf(x));
+    if (!wanted.length) return summaryText(tools.map(stepPart));
+    const parts = (rest.length === 1 ? [stepLabel(rest[0], false)] : rest.length ? [summaryText(rest.map(stepPart))] : []).concat(wanted.map(stepTitle));
+    return parts.map((t, i) => (i ? lowerFirst(t) : t)).join(", ");
   }
   function summaryText(parts) {
     const groups = [], byKey = new Map(), titles = [];
@@ -2414,8 +2411,11 @@
   function stepLine(x) {
     const run = x.status === "in_progress" || x.status === "pending";
     const fail = x.status === "failed";
+    // Designer, 25 Nov 2026: a step whose request waits has its own state — a still clock (no spinning ring) and « Attend
+    // votre accord », like the panel's line under the thread. The answer makes it a running step again, or a refused one.
+    if (wantOf(x)) return h("div", { class: "step want", role: "listitem" }, icon("clock"), h("span", { text: "Attend votre accord" }));
     const ic = run ? h("span", { class: "spin", style: "display:flex" }, icon("spinner")) : fail ? icon("x") : icon("check");
-    const label = stepLabel(x, run);
+    const label = stepTitle(x);
     return h("div", { class: "step " + (run ? "run" : fail ? "fail" : "done"), role: "listitem" }, ic, h("span", { text: label }), fail ? h("span", { class: "fail-tag", text: " (échec)" }) : null);
   }
   function stepsSeg(t) {
@@ -2424,11 +2424,14 @@
     const seg = { kind: "steps", tools: [], el, render() {
       if (t.b) { bStatus(t); return; }
       clear(el);
+      const tools = seg.tools.filter((x) => !x.refused);     // a refused step never happened: nothing is said of it
+      el.hidden = !tools.length;
+      if (!tools.length) return;
       const liveGroup = t.running && seg === t.segs[t.segs.length - 1] && !t.waitEl;
-      const list = h("div", { class: "steps", role: "list" }, seg.tools.map(stepLine));
+      const list = h("div", { class: "steps", role: "list" }, tools.map(stepLine));
       if (liveGroup) { el.appendChild(list); return; }
-      const failed = seg.tools.filter((x) => x.status === "failed").length;
-      const btn = h("button", { class: "fold", type: "button", "aria-expanded": String(open) }, h("span", { text: stepsSummary(seg.tools) }),
+      const failed = tools.filter((x) => x.status === "failed").length;
+      const btn = h("button", { class: "fold", type: "button", "aria-expanded": String(open) }, h("span", { text: stepsSummary(tools) }),
         failed ? h("span", { class: "fail", text: " (échec)" }) : null, icon("chevron", "chev"));
       btn.addEventListener("click", () => { open = !open; seg.render(); stick(); });
       el.appendChild(btn);
@@ -2443,7 +2446,7 @@
     if (seg && seg.kind === "text" && t.running) markFollow(t, seg, true);   // R43
     if (!seg || seg.kind !== "steps") seg = stepsSeg(t);
     else noteNew(1);
-    const x = { id: m.id, title: m.title, kind: m.kind || "other", status: m.status || "pending", locations: m.locations || [], diff: m.diff, summary: validSummary(m.summary) };
+    const x = { id: m.id, title: m.title, kind: m.kind || "other", status: m.status || "pending", locations: m.locations || [], diff: m.diff, summary: validSummary(m.summary), refused: m.refused === true };
     seg.tools.push(x);
     S.tools.set(m.id, { x, seg, t });
     queueRender(seg);
@@ -2455,9 +2458,10 @@
     if (!r) return;
     for (const k of ["title", "status", "locations", "diff"]) if (m[k] != null) r.x[k] = m[k];
     if (m.summary != null) r.x.summary = validSummary(m.summary);
+    if (m.refused === true || (m.status === "failed" && r.x.dropped)) r.x.refused = true;
     queueRender(r.seg);
     refreshFollow(r.t);
-    if (m.status === "failed") say("Étape en échec : " + r.x.title);
+    if (m.status === "failed" && !r.x.refused) say("Étape en échec : " + r.x.title);
   }
 
   function onPlan(m) {
@@ -2499,7 +2503,7 @@
       if (p && t.running) {
         const what = /veut (.+)$/.exec(p.title);
         const txt = what ? "Attend votre accord pour " + what[1] : "Attend votre accord";
-        if (!t.waitEl) { t.waitEl = h("div", { class: "waiting" }, icon("waiting"), h("span")); t.el.insertBefore(t.waitEl, t.workEl); }
+        if (!t.waitEl) { t.waitEl = h("div", { class: "waiting" }, icon("clock"), h("span")); t.el.insertBefore(t.waitEl, t.workEl); }
         t.waitEl.lastChild.textContent = txt;
         t.workEl.hidden = true;
       } else {
@@ -2517,13 +2521,22 @@
     const title = permissionTitle(m);
     // B 1.9 (R9): after each `thread.reset` (every opening of the bubble) the host sends again the request still waiting —
     // the card comes back; the same request twice never makes two cards
-    const again = S.perms.findIndex((p) => p.requestId === m.requestId);
-    if (again >= 0) S.perms.splice(again, 1);
-    S.perms.push({ requestId: m.requestId, turnId: m.turnId || S.lastTurn, title, details: permissionDetails(m), kind: m.kind, diff: validDiff(m.diff), command: typeof m.command === "string" ? m.command : null, options: m.options });
+    const req = { requestId: m.requestId, toolCallId: ID.test(m.toolCallId) ? m.toolCallId : null, turnId: m.turnId || S.lastTurn, title, details: permissionDetails(m), kind: m.kind, diff: validDiff(m.diff), command: typeof m.command === "string" ? m.command : null, options: m.options };
+    // …and it stays the request it was: its place in the queue, its card (what the user wrote in it, its switch), the time
+    // it appeared (SEC-23) — and its one answer
+    const again = S.perms.find((p) => p.requestId === m.requestId);
+    if (again) { Object.assign(again, req); refreshWaiting(); renderDock(true); return; }
+    S.perms.push(req);
     refreshWaiting();
     renderDock(true);
     noteNew(1);
-    shout(title + (BUB() ? ". Autoriser avec Entrée." : ". Autoriser avec Entrée, refuser avec Échap."));
+    // said only where it is true (owner decision, 24 Nov 2026): « Entrée » when the card shown has the keyboard, « Échap »
+    // when this request is the one shown (Échap answers the card shown, not one waiting behind it)
+    const shown = !BUB() && S.perms[0] && S.perms[0].requestId === m.requestId ? dock.querySelector(".perm") : null;
+    // « Échap » refuses the card shown while the keyboard is in the chat (the page's own Échap; in the site's page Échap
+    // leaves the mode instead) and the request can be refused
+    const esc = !!shown && document.hasFocus() && m.options.some((o) => /^reject/.test(o.kind));
+    shout(title + (BUB() ? ". Autoriser avec Entrée." : shown && shown.__enter ? (esc ? ". Autoriser avec Entrée, refuser avec Échap." : ". Autoriser avec Entrée.") : esc ? ". Refuser avec Échap." : "."));
   }
 
   function copyButton(get, label) {
@@ -2563,8 +2576,8 @@
       if (state && state.conflicts) box.appendChild(h("div", { class: "conflict", role: "alert", text: "Rien n'a été annulé : " + state.conflicts.join(", ") + " " + (state.conflicts.length > 1 ? "ont" : "a") + " changé depuis. Aucun fichier n'a été écrasé." }));
       if (state && state.message) box.appendChild(h("div", { class: "conflict", role: "alert", text: state.message }));
       if (open) {
-        box.appendChild(h("div", { class: "files", id: listId, role: "list" }, changes.map((c) =>
-          h("button", { class: "file", type: "button", role: "listitem", "aria-label": "Voir les changements de " + c.path, onclick: (e) => openChanges(t, c.path, e.currentTarget) },
+        box.appendChild(h("div", { class: "files", id: listId, role: "group", "aria-label": "Fichiers modifiés" }, changes.map((c) =>
+          h("button", { class: "file", type: "button", "aria-label": "Voir les changements de " + c.path, onclick: (e) => openChanges(t, c.path, e.currentTarget) },
             h("span", { class: "p", text: c.path }), c.status === "created" ? h("span", { class: "tag", text: "nouveau" }) : c.status === "deleted" ? h("span", { class: "tag", text: "supprimé" }) : null,
             h("span", { class: "num plus", text: "+" + (c.added || 0) }), h("span", { class: "num minus", text: "−" + (c.removed || 0) }))).concat(
           changes.length === 1 && validDiff(changes[0].diff) ? [diffView(validDiff(changes[0].diff))] : []).concat(
@@ -2689,8 +2702,8 @@
           h("span", { class: "num minus", text: "−" + removed, "aria-label": removed + " lignes retirées" }))),
       canUndo ? h("button", { class: "btn-s", type: "button", onclick: () => { post("undo.turn", { turnId: v.turnId }); closeChanges(); } }, icon("undo"), "Tout annuler") : null));
     const ids = new Map(files.map((c, k) => [c.path, "chg-" + k]));
-    if (files.length > 1) changesEl.appendChild(h("div", { class: "files chg-nav", role: "list", "aria-label": "Fichiers modifiés" }, files.map((c) =>
-      h("button", { class: "file", type: "button", role: "listitem", "aria-label": "Aller à " + c.path,
+    if (files.length > 1) changesEl.appendChild(h("div", { class: "files chg-nav", role: "group", "aria-label": "Fichiers modifiés" }, files.map((c) =>
+      h("button", { class: "file", type: "button", "aria-label": "Aller à " + c.path,
                     onclick: () => { const n = document.getElementById(ids.get(c.path)); if (n) { n.scrollIntoView({ block: "start", behavior: isReduced() ? "auto" : "smooth" }); n.querySelector(".chg-fh").focus({ preventScroll: true }); } } },
         h("span", { class: "p", text: c.path }), statusTag(c),
         h("span", { class: "num plus", text: "+" + (c.added || 0) }), h("span", { class: "num minus", text: "−" + (c.removed || 0) })))));
@@ -2721,7 +2734,7 @@
     t.el.setAttribute("aria-busy", "false");
     t.workEl.remove();
     if (t.waitEl) { t.waitEl.remove(); t.waitEl = null; }
-    S.perms = S.perms.filter((p) => p.turnId !== t.id);
+    S.perms = S.perms.filter((p) => p.turnId !== t.id); permViewGone();
     const d = typeof m.durationMs === "number" ? m.durationMs : m.interrupted ? null : Date.now() - t.start;
     t.durMs = d;
     setMeta(t, [t.model.replace(/\s+[\d.]+$/, ""), t.effort, d == null ? "" : dur(d)].filter(Boolean).join(" · "));
@@ -2883,18 +2896,18 @@
   function renderEmpty() {
     clear(empty);
     const sugs = [];
-    // R24: the « annotations en attente » concept is gone; a suggestion never shows twice (same id or same words)
+    // a suggestion never shows twice (same id or same words)
     const seen = new Set();
     for (const s of S.st.suggestions || []) {
-      if (!s || !ID.test(s.id) || typeof s.label !== "string" || s.id === "annotations" || /annotations? en attente/i.test(s.label)) continue;
+      if (!s || !ID.test(s.id) || typeof s.label !== "string") continue;
       const k = s.label.trim().toLowerCase();
       if (seen.has(s.id) || seen.has(k)) continue;
       seen.add(s.id); seen.add(k); sugs.push(s);
     }
     if (S.st.disabledReason) sugs.length = 0;
     empty.append(h("h2", { id: "empty-h", text: "Que voulez-vous changer ?" }),
-      h("div", { class: "sugs", role: "list", "aria-labelledby": "empty-h" }, sugs.map((s) =>
-        h("button", { class: "sug", type: "button", role: "listitem", onclick: () => post("suggestion.run", { id: s.id }) }, h("span", { class: "lb", text: s.label }), s.badge ? h("span", { class: "ct", text: s.badge, "aria-hidden": "true" }) : null))));
+      h("div", { class: "sugs", role: "group", "aria-labelledby": "empty-h" }, sugs.map((s) =>
+        h("button", { class: "sug", type: "button", onclick: () => post("suggestion.run", { id: s.id }) }, h("span", { class: "lb", text: s.label }), s.badge ? h("span", { class: "ct", text: s.badge, "aria-hidden": "true" }) : null))));
   }
 
   // ---------------------------------------------------------------- history (6.7 B)
@@ -2927,7 +2940,7 @@
     input.addEventListener("input", () => { clearTimeout(histTimer); histTimer = setTimeout(() => post("history.search", { query: input.value }), 120); renderHistoryList(); });
     historyEl.appendChild(h("div", { class: "search" }, icon("search"), input,
       h("button", { class: "btn-s", type: "button", onclick: () => { toggleHistory(false); post("newChat"); } }, icon("plus"), "Nouveau")));
-    historyEl.appendChild(h("div", { class: "hlist", role: "list", style: "display:flex;flex-direction:column;gap:4px" }));
+    historyEl.appendChild(h("div", { class: "hlist", role: "group", "aria-label": "Conversations", style: "display:flex;flex-direction:column;gap:4px" }));
     historyEl.addEventListener("keydown", histKeys);
     renderHistoryList();
     if (hadFocus) { input.focus(); input.setSelectionRange(q.length, q.length); }
@@ -2950,7 +2963,7 @@
     if (!S.history) { list.appendChild(h("div", { class: "hnone", text: "Chargement…" })); return; }
     if (!items.length) { list.appendChild(h("div", { class: "hnone", role: "status", text: q ? "Aucune conversation ne contient « " + q + " »." : "Aucune conversation pour l'instant." })); return; }
     const mine = items.filter((i) => i.thisSite), others = items.filter((i) => !i.thisSite);
-    const row = (it, other) => h("button", { class: "hrow", type: "button", role: "listitem", "aria-current": it.current ? "true" : null, onclick: () => { post("history.select", { id: it.id }); toggleHistory(false); } },
+    const row = (it, other) => h("button", { class: "hrow", type: "button", "aria-current": it.current ? "true" : null, onclick: () => { post("history.select", { id: it.id }); toggleHistory(false); } },
       agentIcon({ icon: it.agentIcon, id: it.agentIcon }),
       h("span", { class: "grow" }, h("span", { class: "t", text: it.title }), h("span", { class: "s", title: other && it.siteLabel ? it.siteLabel : null, text: other ? [isStr(it.folderName, 200) && it.folderName || it.siteLabel, it.subtitle].filter(Boolean).join(" · ") : it.subtitle || "" })),
       it.running ? h("span", { class: "live" }, h("i"), "En cours") : h("span", { class: "when", text: relTime(it.updatedAt) }));
@@ -3029,16 +3042,15 @@
     history: (m) => Array.isArray(m.items), "element.attached": (m) => validElement(m.element), "attachment.added": (m) => validAttachment(m.attachment),
     "pick.state": (m) => typeof m.active === "boolean", mentions: (m) => isStr(m.query, 200), commands: (m) => Array.isArray(m.items),
     usage: (m) => Number.isFinite(m.used) && Number.isFinite(m.size) && m.used >= 0 && m.size >= 0,
-    "annotations.batch": (m) => ID.test(m.batchId) && Array.isArray(m.items), "annotations.status": (m) => ID.test(m.batchId) && ID.test(m.id),
     layout: (m) => m.mode === "panel" || m.mode === "bubble",
-    "changes.diff": (m) => ID.test(m.turnId) && Array.isArray(m.diffs), "edit.confirm": (m) => ID.test(m.messageId), state: (m) => true, hello: (m) => true, focus: () => true, "copy.done": () => true, "pointer.leave": () => true, "annotation.kept": (m) => ID.test(m.id) && isStr(m.text) && Array.isArray(m.elements),
+    "changes.diff": (m) => ID.test(m.turnId) && Array.isArray(m.diffs), "edit.confirm": (m) => ID.test(m.messageId), state: (m) => true, hello: (m) => true, focus: () => true, "copy.done": () => true, "pointer.leave": () => true,
   };
 
   // ---------------------------------------------------------------- dispatch
   const H = {
     hello(m) { if (m.reducedMotion) document.documentElement.classList.add("reduce-motion"); app.removeAttribute("aria-busy"); },
     state(m) {
-      const keys = ["site", "folder", "folderSuggestion", "askFolder", "agents", "agentId", "model", "efforts", "effort", "modes", "mode", "conversation", "running", "pendingAnnotations", "suggestions", "capabilities", "disabledReason"];
+      const keys = ["site", "folder", "folderSuggestion", "askFolder", "agents", "agentId", "model", "efforts", "effort", "modes", "mode", "conversation", "running", "suggestions", "capabilities", "disabledReason"];
       for (const k of keys) if (k in m) S.st[k] = m[k];
       S.st.agents = (S.st.agents || []).filter((a) => a && ID.test(a.id) && isStr(a.name, 100));
       if (!S.st.agentId && S.st.agents[0]) S.st.agentId = S.st.agents[0].id;
@@ -3118,7 +3130,12 @@
     },
     "message.agentChunk": onChunk, thought: onThought, toolCall: onToolCall, toolCallUpdate: onToolUpdate, plan: onPlan,
     "permission.request": onPermission,
-    "permission.cancel"(m) { S.perms = S.perms.filter((p) => p.requestId !== m.requestId); refreshWaiting(); renderDock(true); },
+    "permission.cancel"(m) {
+      // withdrawn unanswered (the turn was stopped while the card waited): if its step then fails, it never happened
+      const p = S.perms.find((x) => x.requestId === m.requestId), r = p && p.toolCallId ? S.tools.get(p.toolCallId) : null;
+      if (r) { r.x.dropped = true; if (r.x.status === "failed") r.x.refused = true; }
+      S.perms = S.perms.filter((x) => x.requestId !== m.requestId); permViewGone(); refreshWaiting(); renderDock(true);
+    },
     "turn.end": onTurnEnd, "turn.undone": onUndone, error: onError,
     strip(m) {
       if (m.clear) S.strips.delete(m.id);
@@ -3128,6 +3145,7 @@
     },
     queue(m) {
       S.queue = m.items.filter((q) => q && ID.test(q.id) && isStr(q.text)).map((q) => ({ id: q.id, text: q.text, after: isStr(q.after, 300) ? q.after : "" }));
+      if (isStr(m.more, 80)) S.queueMore = m.more;
       for (const q of S.queue) outboxEnd(q.text);
       renderDock();
     },
@@ -3144,10 +3162,12 @@
     "pick.state"(m) { S.picking = m.active; renderComposerBar(); },   // B 1.7: the button's aria-pressed says it (the browser announces the change)
     mentions(m) { S.mentions = { query: m.query, elements: (m.elements || []).filter(validElement), files: (m.files || []).filter((f) => f && isStr(f.path, 1000)) }; if (S.menu && S.menu.combo === "@" && mentionCtx) openMentionMenu(mentionCtx.q, mentionCtx.node, mentionCtx.offset); },
     commands(m) { S.commands = m.items.filter((c) => c && isStr(c.name, 80) && /^[\w-]+$/.test(c.name)); },
-    "edit.confirm": onEditConfirm, "annotations.status": onAnnStatus,   // R24: `annotations.batch` is ignored (no batch in the input)
+    "edit.confirm": onEditConfirm,
     focus() {
       app.classList.remove("b-out");
-      if (S.perms.length) { const b = dock.querySelector(".btn.primary"); if (b) b.focus(); }
+      // SEC-23: the card, never its « Autoriser ». (Until O10 the card was drawn again — and focused again — by each request
+      // sent again; kept as it is now, it would have stayed on « Autoriser » after the host's `focus` of a reopening.)
+      if (S.perms.length) { const c = dock.querySelector(".perm, .bperm"); if (c && !c.contains(document.activeElement)) c.focus(); }
       else if (BUB() && S.bview) { const x = bviewEl.querySelector(".bview-x"); if (x) x.focus(); }
       else if (BUB() && S.st.running) app.focus({ preventScroll: true });   // no input during a turn (after an error the input is out of sight but takes what is written: H1 monkey #29)
       else cin.focus();
@@ -3166,7 +3186,6 @@
       lastSize = "";
     },
     "pointer.leave"() { tipHide(); chipHover(null, false); },   // B 1.5: the host saw the cursor leave the panel
-    "annotation.kept": onKept,          // B 1.6: Ctrl+Entrée wrote the annotation(s)
   };
   function receive(m) {
     if (typeof m === "string") { try { m = JSON.parse(m); } catch (e) { warn("bad json"); return; } }
@@ -3180,10 +3199,97 @@
     if (!S.replay) publishSize();   // bubble: the height follows the content (no-op in the panel)
   }
 
+  // ---------------------------------------------------------------- « Ton agent » (worker B): the first message's block
+  // Paper « Onboarding agents — Ton agent (maquette prête) » › 22N3-0 « Chat — premier message, rien n'est prêt », its rows'
+  // states as the Designer set them for Réglages › Agents (an icon and the words, no coloured dot; one strong button on the
+  // missing action). The host (src/chat-ton-agent.h) sends `agents.setup` from the agents' one status — every word from its
+  // catalogue — and the block shows on an empty chat while no agent is ready, in the panel and in the bubble. A row's
+  // strong button is that agent's: install (its click is the consent), sign in; « Annuler » (neutral) while signing in;
+  // « Réessayer » (neutral) and « Installer moi-même ↗ » after a failure.
+  let TA = null, taIcons = 0;
+  const TA_INKS = ["grey", "accent", "danger"], TA_ACTS = ["install", "signIn", "retry", "cancel"], TA_ICONS = ["download", "wifi", "error", "check"];
+  function tasShown() { return !!(TA && TA.show) && !S.st.disabledReason; }
+  function validTa(m) {
+    if (typeof m.show !== "boolean" || !Array.isArray(m.rows) || m.rows.length > 4 || !isStr(m.title, 200) || !isStr(m.body, 400) || !isStr(m.note, 400)) return null;
+    const rows = [];
+    for (const r of m.rows) {
+      if (!r || !["claude", "codex"].includes(r.id) || !isStr(r.name, 60) || !TA_INKS.includes(r.ink) || !isStr(r.status, 200)) return null;
+      const a = r.action && TA_ACTS.includes(r.action.id) && isStr(r.action.label, 60) ? { id: r.action.id, label: r.action.label, strong: !!r.action.strong } : null;
+      rows.push({ id: r.id, name: r.name, icon: TA_ICONS.includes(r.icon) ? r.icon : "", ink: r.ink, status: r.status, animate: r.animate === true,
+                  note: isStr(r.note, 300) ? r.note : "", manual: isStr(r.manual, 80) ? r.manual : "", action: a });
+    }
+    return { show: m.show, title: m.title, body: m.body, note: m.note, accent: /^#[0-9A-Fa-f]{6}$/.test(m.accent || "") ? m.accent : "", hint: isStr(m.hint, 200) ? m.hint : "", rows };
+  }
+  // « Installation… »: the Downloads button's morph (design/lottie/download-progress.py: the same strokes, frames and loop —
+  // the tray's arms curl into a ring in 233 ms while the arrow drops in, then the arrow bobs 12 units in 1.3 s), drawn in
+  // SVG in the row's ink; a clear band is cut around the arrow where it crosses the ring. Reduced motion: the still icon.
+  function installingIcon() {
+    if (isReduced()) return icon("ta-download", "tas-i");
+    const id = "tasCut" + (++taIcons);   // no « - »: SMIL reads « a-b.end » as an offset
+    const el = (tag, attrs, ...kids) => { const n = document.createElementNS(SVGNS, tag); for (const k in attrs) n.setAttribute(k, attrs[k]); for (const c of kids) n.appendChild(c); return n; };
+    const TRAY = "M216 144C216 144 216 208 216 208C216 208 128 208 128 208C128 208 40 208 40 208C40 208 40 144 40 144";
+    const RING = "M128 40C176.601 40 216 79.399 216 128C216 176.601 176.601 216 128 216C79.399 216 40 176.601 40 128C40 79.399 79.399 40 128 40";
+    const SETTLE = ".45 0 .15 1", SINE = ".45 0 .55 1";
+    const arrow = (w, tag) => el("g", {}, el("path", { d: "M128 32L128 140", "stroke-width": w }), el("path", { d: "M88 100L128 140L168 100", "stroke-width": w }),
+      el("animateTransform", { attributeName: "transform", type: "translate", values: "0 0;0 30", dur: "0.2333s", fill: "freeze", calcMode: "spline", keyTimes: "0;1", keySplines: SETTLE, id: id + tag.slice(1) }),
+      el("animateTransform", { attributeName: "transform", type: "translate", values: "0 30;0 42;0 30", keyTimes: "0;0.5;1", dur: "1.3s", begin: id + tag.slice(1) + ".end", repeatCount: "indefinite", calcMode: "spline", keySplines: SINE + ";" + SINE }));
+    const mask = el("mask", { id, maskUnits: "userSpaceOnUse", x: "0", y: "0", width: "256", height: "256" }, el("rect", { width: "256", height: "256", fill: "#FFFFFF" }),
+      el("g", { stroke: "#000000", fill: "none", "stroke-linecap": "round", "stroke-linejoin": "round" }, arrow("46", "-m")));
+    return el("svg", { viewBox: "0 0 256 256", class: "i tas-i tas-anim", "aria-hidden": "true", focusable: "false" }, el("defs", {}, mask),
+      el("g", { mask: "url(#" + id + ")", fill: "none", stroke: "currentColor", "stroke-width": "24", "stroke-linecap": "round", "stroke-linejoin": "round" },
+        el("path", { d: TRAY }, el("animate", { attributeName: "d", values: TRAY + ";" + RING, dur: "0.2333s", fill: "freeze", calcMode: "spline", keyTimes: "0;1", keySplines: SETTLE }))),
+      el("g", { fill: "none", stroke: "currentColor", "stroke-linecap": "round", "stroke-linejoin": "round" }, arrow("24", "-a")));
+  }
+  function stateIcon(r) {
+    if (!r.icon) return null;
+    if (r.animate) return installingIcon();
+    return icon(r.icon === "check" ? "check" : "ta-" + r.icon, "tas-i");
+  }
+  function renderTas() {
+    const keep = tasEl.contains(document.activeElement) ? document.activeElement.dataset.tas : "";   // a click keeps its place
+    const was = new Map(Array.from(tasEl.querySelectorAll("[data-row]")).map((n) => [n.dataset.row, { key: n.dataset.st, icon: n.querySelector("svg.tas-anim") }]));
+    clear(tasEl); const t = TA; if (!t) return;
+    if (t.accent) tasEl.style.setProperty("--ta-accent", t.accent); else tasEl.style.removeProperty("--ta-accent");
+    const rows = t.rows.map((r) => {
+      const key = r.icon + "|" + r.animate + "|" + r.ink, before = was.get(r.id);
+      // the morph keeps running when the same state is sent again (the host resends the whole block on every change)
+      const ic = r.animate && before && before.key === key && before.icon ? before.icon : stateIcon(r);
+      return h("div", { class: "tas-row", role: "listitem", "data-row": r.id, "data-st": key },
+        h("span", { class: "tas-logo" }, icon(r.id, "tas-l")),
+        h("span", { class: "tas-tx" }, h("span", { class: "tas-nm", text: r.name }),
+          h("span", { class: "tas-st " + r.ink }, ic, h("span", { text: r.status })),
+          r.note ? h("span", { class: "tas-rn", text: r.note }) : null,
+          r.manual ? h("button", { class: "tas-link", type: "button", "data-tas": "manual-" + r.id, onclick: () => post("agents.setup.manual", { agentId: r.id }) }, r.manual) : null),
+        r.action ? h("button", { class: "tas-btn" + (r.action.strong ? " strong" : ""), type: "button", "data-tas": r.id, "aria-label": r.action.label + " " + r.name,
+                                 onclick: () => post("agents.setup.act", { agentId: r.id, action: r.action.id }) }, r.action.label) : null);
+    });
+    tasEl.append(h("h2", { class: "tas-h", id: "tas-h", text: t.title }), h("p", { class: "tas-sub", text: t.body }), h("div", { class: "tas-card", role: "list" }, rows));
+    tasEl.setAttribute("aria-labelledby", "tas-h");   // only once its title is there (the audit: no label pointing at nothing)
+    tasEl.append(h("p", { class: "tas-note", text: t.note }));
+    if (keep) { const b = tasEl.querySelector("[data-tas='" + keep + "']"); if (b) b.focus({ preventScroll: true }); }
+  }
+  REQ["agents.setup"] = (m) => !!validTa(m);
+  H["agents.setup"] = (m) => {
+    // The block shows or goes, or changes while shown: the view and the dock follow (it leaves once an agent is ready:
+    // the empty chat follows). Otherwise nothing is redrawn — only the send hint's words — so a bubble opening publishes
+    // its size once, with its conversation (journeys C1, night of 25/11: it flashed empty at 105 px, then 256 px).
+    const shownBefore = tasShown();
+    // 2nd defect of 25 Nov (Fix's « absent » check: typed, « Installer », « Se connecter », ready, Entrée did nothing): the
+    // keys were on the block's button, gone with the block — Entrée fell on the page's body. The block leaving takes the
+    // keys back to the input when they were on it or nowhere: Entrée sends what waited there.
+    const keysOnBlock = tasEl.contains(document.activeElement) || document.activeElement === document.body || !document.activeElement;
+    TA = validTa(m);
+    if (shownBefore || tasShown()) { updateView(); renderDock(); } else updateSend();
+    if (shownBefore && !tasShown() && keysOnBlock && cin.isConnected) {
+      cin.focus({ preventScroll: true }); const s = window.getSelection(); if (s) { s.selectAllChildren(cin); s.collapseToEnd(); }
+    }
+  };
+
   // ---------------------------------------------------------------- global keys
   document.addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === "/") { e.preventDefault(); if (modelBtn.offsetParent) openModelMenu(modelBtn); return; }
     if (e.key !== "Escape" || e.defaultPrevented) return;
+    if (e.repeat) { e.preventDefault(); return; }   // O10: a held Échap does one thing — it never goes on to the next card, to « stop », to « close »
     if (S.menu) { e.preventDefault(); closeMenu(!S.menu.combo); return; }
     if (BUB()) {   // B 1.8: Échap never stops the agent nor refuses a request — it closes what is open, then the bubble
       e.preventDefault();

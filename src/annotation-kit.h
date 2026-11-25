@@ -1,11 +1,11 @@
 #pragma once
 #include "i18n.h"
-// Annotation mode — shared native kit for the annotation surfaces (banner, note popover,
-// launcher + card, onboarding). Nothing here exists before the mode is first used:
+// Annotation mode — shared native kit for the annotation surfaces (banner, connect modal,
+// selection frame, onboarding). Nothing here exists before the mode is first used:
 //  - Ink: one process-wide Direct2D/DirectWrite/WIC set (bundled Inter Display, system
 //    monospace for selectors/CSS/config), created at the first surface's creation.
 //  - Layer: a per-pixel-alpha window (UpdateLayeredWindow): antialiased corners, fully
-//    transparent pixels pass the mouse through (the launcher never steals a click outside
+//    transparent pixels pass the mouse through (a surface never steals a click outside
 //    its shape), child of the browser window (above the WebView) or owned popup.
 //  - Animator: ONE message-only window + ONE FrameClock for every annotation surface.
 //    The clock thread starts at the first animation and is dormant (blocked, INFINITE)
@@ -52,7 +52,6 @@ inline D2D1_COLOR_F WithAlpha(D2D1_COLOR_F c, float a) { c.a *= a; return c; }
 namespace Ink_ {
 inline constexpr std::uint32_t canvas = 0x171717FF, raised = 0x292929FF, hover = 0x333333FF, pressed = 0x3E3E3EFF, danger = 0xFF7B6EFF;
 inline constexpr std::uint32_t claude = 0xD97757FF, page = 0xF4F4F3FF;
-inline constexpr std::uint32_t amber = 0xE6AC3DFF;   // V3 (Paper 5.5, token profile-ambre): « … n'a pas pu la traiter »
 }
 
 // ---- Phosphor (bold) glyphs, exact Paper exports ---------------------------------------
@@ -79,14 +78,6 @@ inline constexpr Glyph mark{"M46.008 256.187L46.082 241.973C46.085 241.297 46.66
 inline constexpr Glyph tree{"M145 67.5H87.5V57.5h2.5a12.5 12.5 0 0 0 12.5-12.5V25a12.5 12.5 0 0 0-12.5-12.5H70A12.5 12.5 0 0 0 57.5 25V45a12.5 12.5 0 0 0 12.5 12.5h2.5v10H15a7.5 7.5 0 0 0 0 15H32.5v15H30a12.5 12.5 0 0 0-12.5 12.5v20a12.5 12.5 0 0 0 12.5 12.5H50a12.5 12.5 0 0 0 12.5-12.5V110a12.5 12.5 0 0 0-12.5-12.5H47.5V82.5H112.5v15h-2.5a12.5 12.5 0 0 0-12.5 12.5v20a12.5 12.5 0 0 0 12.5 12.5h20a12.5 12.5 0 0 0 12.5-12.5V110a12.5 12.5 0 0 0-12.5-12.5h-2.5V82.5h17.5a7.5 7.5 0 0 0 0-15ZM72.5 27.5h15V42.5H72.5ZM47.5 127.5H32.5V112.5H47.5Zm80 0H112.5V112.5h15Z", 0, 0, 160, 160};
 inline constexpr Glyph infoLocal{"M47.25 36.751a7 7 0 1 1 7 7A7 7 0 0 1 47.25 36.751Zm56 19.25A47.25 47.25 0 1 1 56 8.751 47.302 47.302 90 0 1 103.25 56.001Zm-10.5 0a36.75 36.75 0 1 0-36.75 36.75A36.789 36.789 90 0 0 92.75 56.001Zm-31.5 16.047V57.751a8.75 8.75 0 0 0-8.75-8.75 5.25 5.25 0 0 0-1.75 10.202V73.501a8.75 8.75 0 0 0 8.75 8.75 5.25 5.25 0 0 0 1.75-10.203Z", 0, 0, 112, 112};
 inline constexpr Glyph warningCircle{"M128,20A108,108,0,1,0,236,128,108.12,108.12,0,0,0,128,20Zm0,192a84,84,0,1,1,84-84A84.09,84.09,0,0,1,128,212Zm-12-80V80a12,12,0,0,1,24,0v52a12,12,0,0,1-24,0Zm28,40a16,16,0,1,1-16-16A16,16,0,0,1,144,172Z", 0, 0, 256, 256};
-inline constexpr Glyph globe{"M128,20A108,108,0,1,0,236,128,108.12,108.12,0,0,0,128,20Zm83.13,96H172.7c-2.08-31.31-12.9-56.83-27.61-73.22A84.24,84.24,0,0,1,211.13,116ZM128,212c-11.36-12.3-22.41-36.53-24.67-72h49.34C150.41,175.47,139.36,199.7,128,212Zm-24.67-96c2.26-35.47,13.31-59.7,24.67-72,11.36,12.3,22.41,36.53,24.67,72Zm7.58-73.22C96.2,59.17,85.38,84.69,83.3,116H44.87A84.24,84.24,0,0,1,110.91,42.78ZM44.87,140H83.3c2.08,31.31,12.9,56.83,27.61,73.22A84.24,84.24,0,0,1,44.87,140Zm100.22,73.22c14.71-16.39,25.53-41.91,27.61-73.22h38.43A84.24,84.24,0,0,1,145.09,213.22Z", 0, 0, 256, 256};
-inline constexpr Glyph dots{"M144,128a16,16,0,1,1-16-16A16,16,0,0,1,144,128ZM60,112a16,16,0,1,0,16,16A16,16,0,0,0,60,112Zm136,0a16,16,0,1,0,16,16A16,16,0,0,0,196,112Z", 0, 0, 256, 256};
-inline constexpr Glyph caretLeft{"M168.49,199.51a12,12,0,0,1-17,17l-80-80a12,12,0,0,1,0-17l80-80a12,12,0,0,1,17,17L97,128Z", 0, 0, 256, 256};
-// Phosphor « eye » (bold), Paper 5.5 « Lue par Claude ».
-inline constexpr Glyph eye{"M251,123.13c-.37-.81-9.13-20.26-28.48-39.61C196.63,57.67,164,44,128,44S59.37,57.67,33.51,83.52C14.16,102.87,5.4,122.32,5,123.13a12.08,12.08,0,0,0,0,9.75c.37.82,9.13,20.26,28.49,39.61C59.37,198.34,92,212,128,212s68.63-13.66,94.48-39.51c19.36-19.35,28.12-38.79,28.49-39.61A12.08,12.08,0,0,0,251,123.13Zm-46.06,33C183.47,177.27,157.59,188,128,188s-55.47-10.73-76.91-31.88A130.36,130.36,0,0,1,29.52,128,130.45,130.45,0,0,1,51.09,99.89C72.54,78.73,98.41,68,128,68s55.46,10.73,76.91,31.89A130.36,130.36,0,0,1,226.48,128,130.45,130.45,0,0,1,204.91,156.12ZM128,84a44,44,0,1,0,44,44A44.05,44.05,0,0,0,128,84Zm0,64a20,20,0,1,1,20-20A20,20,0,0,1,128,148Z", 0, 0, 256, 256};
-inline constexpr Glyph history{"M140,80v41.21l34.17,20.5a12,12,0,1,1-12.34,20.58l-40-24A12,12,0,0,1,116,128V80a12,12,0,0,1,24,0ZM128,28A99.38,99.38,0,0,0,57.24,57.34c-4.69,4.74-9,9.37-13.24,14V64a12,12,0,0,0-24,0v40a12,12,0,0,0,12,12H72a12,12,0,0,0,0-24H57.77C63,86,68.37,80.22,74.26,74.26a76,76,0,1,1,1.58,109,12,12,0,0,0-16.48,17.46A100,100,0,1,0,128,28Z", 0, 0, 256, 256};
-// Launcher « tiroir » (corbeille à courrier): stroked outline, Paper viewBox 0 0 24 24, stroke 2, round caps/joins.
-inline constexpr Glyph tray{"M4 13.5V18a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4.5M4 13.5 6.2 5.6A2 2 0 0 1 8.1 4h7.8a2 2 0 0 1 1.9 1.6L20 13.5M4 13.5h4.5l1.2 2h4.6l1.2-2H20", 0, 0, 24, 24};
 // Agent logos (Simple Icons 13.21.0, CC0), exact Paper paths: Claude #D97757, OpenAI (Codex) white.
 inline constexpr Glyph claude{"M4.452 15.736l4.455-2.5 0.075-0.218-0.075-0.12h-0.218l-0.745-0.046-2.547-0.069-2.207-0.092-2.139-0.114-0.539-0.115-0.504-0.665 0.051-0.333 0.454-0.304 0.648 0.058 1.433 0.097 2.151 0.15 1.559 0.091 2.311 0.241h0.367l0.052-0.149-0.126-0.092-0.098-0.091L6.586 9.956l-2.409-1.594-1.262-0.918-0.682-0.464-0.344-0.436-0.149-0.952 0.619-0.682 0.831 0.573 0.213 0.573 0.843 0.648 1.8 1.393 2.351 1.732 0.344 0.287 0.138-0.098 0.017-0.069-0.155-0.258-1.279-2.311-1.365-2.35-0.607-0.975-0.161-0.585c-0.057-0.241-0.097-0.441-0.097-0.688L5.938 0.793 6.328 0.667l0.94 0.126 0.396 0.344 0.585 1.336 0.946 2.105 1.468 2.861 0.43 0.849 0.229 0.786 0.086 0.241h0.149v-0.138l0.121-1.611 0.223-1.979 0.218-2.546 0.075-0.717 0.355-0.86 0.705-0.464 0.551 0.264 0.453 0.648-0.631 0.418-0.269 1.749-0.528 2.741-0.344 1.835h0.201l0.229-0.23 0.929-1.232 1.559-1.949 0.688-0.774 0.803-0.855 0.516-0.407h0.974l0.717 1.066-0.321 1.102-1.004 1.273-0.831 1.077-1.193 1.606-0.746 1.284 0.069 0.104 0.178-0.018 2.694-0.573 1.457-0.264 1.737-0.298 0.786 0.367 0.86 0.373-0.31 0.762-1.858 0.459-2.178 0.436-3.246 0.768-0.401 0.029 0.459 0.057 1.462 0.138 0.625 0.034h1.531l2.851 0.212 0.745 0.493 0.447 0.603-0.746 0.459-1.146 0.585-1.548-0.367-3.613-0.861-1.238-0.309h-0.172v0.103l1.032 1.01 1.892 1.708 2.368 2.202 0.12 0.545-0.304 0.429-0.321-0.046-2.081-1.565-0.803-0.705-1.818-1.531h-0.121v0.161l0.419 0.614 2.214 3.325 0.114 1.021-0.16 0.332-0.574 0.201-0.63-0.115-1.296-1.818L13.581 17.628l-1.078-1.835-0.131 0.074-0.637 6.852-0.298 0.35-0.688 0.263-0.574-0.435-0.304-0.706 0.305-1.393 0.367-1.818 0.298-1.445 0.269-1.794 0.16-0.597-0.011-0.04-0.132 0.017-1.353 1.858-2.059 2.781-1.628 1.744-0.39 0.155-0.677-0.35 0.063-0.625 0.379-0.556 2.254-2.868 1.359-1.777 0.877-1.027-0.006-0.149h-0.051l-5.986 3.887-1.067 0.138-0.458-0.43 0.057-0.705 0.219-0.23 1.8-1.238Z", 0.667f, 1.6f, 21.333f, 21.333f};
 inline constexpr Glyph openai{"M19.806 10.063a5.32 5.32 0 0 0-0.458-4.365 5.374 5.374 0 0 0-5.787-2.578A5.391 5.391 0 0 0 4.428 5.051a5.32 5.32 0 0 0-3.554 2.577 5.374 5.374 0 0 0 0.66 6.309 5.316 5.316 0 0 0 0.454 4.365 5.379 5.379 0 0 0 5.791 2.578A5.32 5.32 0 0 0 11.787 22.667a5.383 5.383 0 0 0 5.13-3.739 5.324 5.324 0 0 0 3.554-2.578 5.383 5.383 0 0 0-0.664-6.287z m-8.019 11.207a3.979 3.979 0 0 1-2.557-0.925l0.126-0.072 4.248-2.451a0.707 0.706 90 0 0 0.349-0.606v-5.988l1.795 1.039a0.063 0.063 0 0 1 0.034 0.046v4.963a4.004 4.004 0 0 1-3.996 3.995z m-8.588-3.666a3.974 3.974 0 0 1-0.475-2.68l0.126 0.076 4.252 2.452a0.686 0.685 0 0 0 0.694 0l5.193-2.995v2.073a0.715 0.071 0 0 1-0.295 0.055L8.658 19.067a3.999 3.999 0 0 1-5.459-1.463zM2.081 8.352a3.987 3.987 0 0 1 2.102-1.754V11.644a0.681 0.681 0 0 0 0.345 0.602l5.168 2.982-1.796 1.039a0.673 0.068 0 0 1-0.063 0l-4.293-2.478A4.004 4.004 0 0 1 2.081 8.331z m14.752 3.428L11.648 8.768 13.439 7.733a0.673 0.068 0 0 1 0.063 0l4.294 2.481a3.995 3.995 0 0 1-0.602 7.204v-5.046a0.702 0.702 0 0 0-0.361-0.593z m1.788-2.688l-0.127-0.075-4.243-2.473a0.69 0.69 90 0 0-0.698 0L8.364 9.538V7.464a0.588 0.059 0 0 1 0.025-0.055l4.293-2.477a3.999 3.999 0 0 1 5.938 4.142zM7.383 12.767l-1.795-1.035a0.715 0.071 0 0 1-0.034-0.05V6.732a3.999 3.999 0 0 1 6.556-3.07l-0.126 0.072L7.737 6.186a0.707 0.706 90 0 0-0.349 0.605z m0.976-2.102l2.313-1.333 2.317 1.333v2.666l-2.308 1.333-2.317-1.333Z", 0, 1.6f, 21.333f, 21.333f};
@@ -134,9 +125,6 @@ struct FontLoader final : IDWriteFontCollectionLoader {
 };
 }
 
-// Thumbnail of the capture (already cropped and reduced by the caller, off the UI thread):
-// premultiplied BGRA. `mark` = the annotated element inside it, in thumbnail pixels.
-struct Shot { unsigned width = 0, height = 0; std::vector<std::uint32_t> pixels; D2D1_RECT_F mark{0, 0, 0, 0}; };
 
 class Ink {
     ID2D1Factory* factory_ = nullptr; IDWriteFactory* write_ = nullptr; Detail::FontLoader* loader_ = nullptr;
@@ -148,8 +136,6 @@ class Ink {
         bool operator<(const Key& o) const { return std::tie(text, size, line, tracking, width, weight, mono, tabular, plain, wrap, align, system) < std::tie(o.text, o.size, o.line, o.tracking, o.width, o.weight, o.mono, o.tabular, o.plain, o.wrap, o.align, o.system); } };
     std::map<Key, IDWriteTextLayout*> layouts_;
     std::map<ID2D1RenderTarget*, ID2D1SolidColorBrush*> brushes_;
-    struct BitmapKey { ID2D1RenderTarget* target; const void* shot; const void* data; bool operator<(const BitmapKey& o) const { return std::tie(target, shot, data) < std::tie(o.target, o.shot, o.data); } };
-    std::map<BitmapKey, ID2D1Bitmap*> bitmaps_;
     ID2D1RenderTarget* target_ = nullptr; ID2D1SolidColorBrush* brush_ = nullptr; ID2D1StrokeStyle* round_ = nullptr;
     unsigned long long layoutsCreated_ = 0;
 
@@ -198,7 +184,6 @@ public:
         return CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic_));
     }
     void Dispose() {
-        for (auto& b : bitmaps_) Release(b.second); bitmaps_.clear();
         for (auto& b : brushes_) Release(b.second); brushes_.clear();
         for (auto& l : layouts_) Release(l.second); layouts_.clear();
         for (auto& g : geometries_) Release(g.second); geometries_.clear();
@@ -219,11 +204,8 @@ public:
     }
     void Forget(ID2D1RenderTarget* t) {
         auto it = brushes_.find(t); if (it != brushes_.end()) { Release(it->second); brushes_.erase(it); }
-        for (auto b = bitmaps_.begin(); b != bitmaps_.end();) { if (b->first.target == t) { Release(b->second); b = bitmaps_.erase(b); } else ++b; }
         if (target_ == t) { target_ = nullptr; brush_ = nullptr; }
     }
-    // Drops the cached thumbnails of a target (new data: the old pixel buffers are gone).
-    void ForgetBitmaps(ID2D1RenderTarget* t) { for (auto b = bitmaps_.begin(); b != bitmaps_.end();) { if (!t || b->first.target == t) { Release(b->second); b = bitmaps_.erase(b); } else ++b; } }
     // Longest prefix of `text` that fits `lines` lines of `width` with an ellipsis (« … ») appended.
     std::wstring Clamp(const std::wstring& text, const Font& f, float width, int lines, const std::wstring& before = L"", const std::wstring& after = L"") {
         if (Lines(before + text + after, f, width) <= lines) return before + text + after;
@@ -248,7 +230,6 @@ public:
         if (rr > 0) target_->DrawRoundedRectangle(D2D1::RoundedRect(s, rr, rr), Brush(c), width); else target_->DrawRectangle(s, Brush(c), width);
     }
     void Line(float x0, float y0, float x1, float y1, D2D1_COLOR_F c, float width = 1) { if (target_) target_->DrawLine({x0, y0}, {x1, y1}, Brush(c), width); }
-    void Disc(float cx, float cy, float r, D2D1_COLOR_F c) { if (target_ && c.a > 0) target_->FillEllipse(D2D1::Ellipse({cx, cy}, r, r), Brush(c)); }
     void Ring(float cx, float cy, float r, D2D1_COLOR_F c, float width) { if (target_ && c.a > 0) target_->DrawEllipse(D2D1::Ellipse({cx, cy}, r - width / 2, r - width / 2), Brush(c), width); }
     // Soft glow (Paper box-shadow 0 0 8px accent 50 %): stacked rings, decreasing alpha.
     void Glow(D2D1_RECT_F r, float radius, D2D1_COLOR_F c, float blur = 8) {
@@ -289,17 +270,6 @@ public:
         const float sx = (box.right - box.left) / g.w, sy = (box.bottom - box.top) / g.h;
         target_->SetTransform(D2D1::Matrix3x2F::Translation(-g.x, -g.y) * D2D1::Matrix3x2F::Scale(sx, sy) * D2D1::Matrix3x2F::Translation(box.left, box.top) * base);
         target_->DrawGeometry(geometry, Brush(c), strokeUnits, round_);
-        target_->SetTransform(base);
-    }
-    // A glyph with a halo of `halo` colour around it (Paper « paint-order: stroke », empty state).
-    void IconHalo(const Glyph& g, D2D1_RECT_F box, D2D1_COLOR_F fill, D2D1_COLOR_F halo, float haloUnits) {
-        auto* geometry = Geometry(g); if (!geometry || !target_) return;
-        if (!round_) { const auto p = D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_LINE_JOIN_ROUND); factory_->CreateStrokeStyle(p, nullptr, 0, &round_); }
-        D2D1_MATRIX_3X2_F base; target_->GetTransform(&base);
-        const float sx = (box.right - box.left) / g.w, sy = (box.bottom - box.top) / g.h;
-        target_->SetTransform(D2D1::Matrix3x2F::Translation(-g.x, -g.y) * D2D1::Matrix3x2F::Scale(sx, sy) * D2D1::Matrix3x2F::Translation(box.left, box.top) * base);
-        target_->DrawGeometry(geometry, Brush(halo), haloUnits, round_);
-        target_->FillGeometry(geometry, Brush(fill));
         target_->SetTransform(base);
     }
     // ---- text ----
@@ -367,29 +337,6 @@ public:
         std::wstring head = text.substr(0, cut == std::wstring::npos ? text.size() / 2 : cut);
         while (!head.empty() && Width(head + L"…" + tail, f) > width) head.pop_back();
         return head + L"…" + tail;
-    }
-    // The capture thumbnail, cover-fitted and clipped to a rounded box. contain (V3, retours §11): the whole image,
-    // centred on the neutral page colour, never cropped and never enlarged beyond its own pixels.
-    void Thumbnail(const Shot* shot, D2D1_RECT_F box, float radius, float opacity = 1, bool contain = false) {
-        if (!shot || !shot->width || !shot->height || shot->pixels.size() < size_t(shot->width) * shot->height || !target_) return;
-        auto& bitmap = bitmaps_[{target_, shot, shot->pixels.data()}];
-        if (!bitmap) target_->CreateBitmap(D2D1::SizeU(shot->width, shot->height), shot->pixels.data(), shot->width * 4,
-            D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)), &bitmap);
-        if (!bitmap) return;
-        const float bw = box.right - box.left, bh = box.bottom - box.top;
-        float dpiX = 96, dpiY = 96; target_->GetDpi(&dpiX, &dpiY);
-        const float k = contain ? std::min({bw / shot->width, bh / shot->height, 96.f / std::max(1.f, dpiX)}) : std::max(bw / shot->width, bh / shot->height);
-        if (contain) Fill(box, radius, WithAlpha(Hex(Ink_::page), opacity));
-        const float w = shot->width * k, h = shot->height * k, x = box.left + (bw - w) / 2, y = box.top + (bh - h) / 2;
-        ID2D1RoundedRectangleGeometry* clip = nullptr; ID2D1Layer* layer = nullptr;
-        if (FAILED(factory_->CreateRoundedRectangleGeometry(D2D1::RoundedRect(box, radius, radius), &clip)) || FAILED(target_->CreateLayer(nullptr, &layer))) { Release(clip); return; }
-        target_->PushLayer(D2D1::LayerParameters(box, clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(), opacity), layer);
-        target_->DrawBitmap(bitmap, {x, y, x + w, y + h}, 1, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
-        if (shot->mark.right > shot->mark.left) {
-            const D2D1_RECT_F m{x + shot->mark.left * k, y + shot->mark.top * k, x + shot->mark.right * k, y + shot->mark.bottom * k};
-            Stroke(m, 3, Accent(), 1);
-        }
-        target_->PopLayer(); Release(layer); Release(clip);
     }
     // Opacity group (fades of whole surfaces).
     bool PushOpacity(float opacity, ID2D1Layer*& layer) {

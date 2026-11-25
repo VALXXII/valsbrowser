@@ -3,23 +3,88 @@
 namespace Chat {
 
 void ProcessQueue(); bool TakeShownAside(); void AttachQueuedAnchor(Queued& q); void ApplyMark(const char* state, const std::string& selector); void AfterTurnPage(const std::vector<std::string>& paths); void ArmAgentIdle(); void StopTurn();
-void StartTurn(const std::string& text, const std::vector<std::string>& elementIds, const std::vector<std::string>& attachmentIds, bool batch = false);
-// « Traiter les annotations » (chat-host-batch.h)
-SJ::Value BatchItemJson(const BatchItem& i, bool withStatus); void BatchToolDone(ChatTools::Ours tool, const std::string& annotation, const std::string& rawInput); void BatchTurnEnded(const std::string& stopReason);
-void StartBatchTurn(const std::string& precision, const std::string& batchId, const std::vector<std::string>& ids); void PoseBatch(const wchar_t* from); void ShowAnnotation(const std::string& id);
+void StartTurn(const std::string& text, const std::vector<std::string>& elementIds, const std::vector<std::string>& attachmentIds);
 void DisposeSession(const wchar_t* why);
 void SendPrompt(); void ModeSettled(); void ModeRefused(const Acp::Event& e);   // SEC-13
+void ReleaseHeldQueue(const wchar_t* why);   // « Ton agent »: the messages held behind an agent that stopped
+void MaybeReadModels();                      // #128 v2: an agent's model list read before its first chat
+void ChatSetupReady(AgentStatus::Agent a);   // « Ton agent »: an agent set up from the chat's block is ready (src/chat-ton-agent.h)
+void ModelReadBusy();                        // « Ton agent » × #128 v2: a start event — the read waits for a calm chat
+void StopModelReadForStart();                // the chat's own session starts: a read still running stops
 
-// ---------------------------------------------------------------- detection and preparation (off the UI thread)
-void ApplyDetection(const std::string& id, const AgentRuntime::Detection& d) {
-    auto& a = agentInfo[id]; a.known = true; a.cli = d.Usable(); a.prepared = !d.NeedsPrepare();
+// ---------------------------------------------------------------- « Ton agent »: the agents' one status (src/agent-status.h)
+// The chat never detects agents on its own any more: it shows AgentStatus (src/chat-agent-status.h maps it), the same
+// status the tutorial, Réglages › Agents and the band read. Started once with the browser (ChatAgentsStartup, main).
+std::wstring ChatAgentText(ChatAgentStatus::Text t) {
+    using T = ChatAgentStatus::Text;
+    switch (t) {
+    case T::NotInstalled: return TR(chat_agent_not_installed);
+    case T::TooOld: return TR(chat_agent_too_old);
+    case T::NotConnected: return TR(chat_agent_not_connected);
+    case T::Starting: return TR(chat_agent_starting);
+    case T::Installing: return TR(agents_installing);
+    case T::SigningIn: return TR(agents_status_signing_in);
+    case T::Installed: return TR(chat_agent_installed);
+    case T::FirstUse: return TR(chat_agent_first_use);
+    case T::None: break;
+    }
+    return L"";
+}
+void ApplyStatus(const std::string& id, const AgentStatus::Status& s) {
+    auto& a = agentInfo[id]; const auto v = ChatAgentStatus::Of(s);
+    a.known = v.known; a.cli = v.cli; a.prepared = s.runtimeReady;
+    if (s.state == AgentStatus::State::Ready) a.signedIn = true;   // lot R (530a287): « jamais connecté » vs « plus connecté »
     if (sessionReady && id == agentId) return;   // a live session says more than a detection
     if (sessionStarting && id == agentId) return;
-    if (d.cli.state == AgentRuntime::CliState::Missing) { a.status = "notInstalled"; a.detail = TR(chat_agent_not_installed); }
-    else if (d.cli.state == AgentRuntime::CliState::TooOld) { a.status = "error"; a.detail = TR(chat_agent_too_old); }
-    else if (d.login == AgentRuntime::Login::SignedOut) { a.status = "notConnected"; a.detail = TR(chat_agent_not_connected); }
-    else { a.status = "ready"; a.detail = a.prepared ? TR(chat_agent_installed) : TR(chat_agent_first_use); }
-    a.progress = -1;
+    if (preparing && a.status == "preparing" && s.state != AgentStatus::State::Installing) return;   // the chat's own download shows its progress
+    a.status = v.status; a.detail = ChatAgentText(v.text); a.progress = -1;
+}
+// The agent is chosen without a screen: this site's last one or the user's pick (agentChosen); else, once BOTH agents are
+// detected (never the one whose detection answered first: the hub tells them one by one), a ready one — Claude Code
+// first —, else an installed one. Never under a conversation, a session or a turn; a ready current agent is kept.
+void ChooseInstalledAgent() {
+    if (agentChosen || turn.active || !convo.data.items.empty() || session) return;
+    for (const auto& def : Agents) if (AgentStatus::Get(def.rt).state == AgentStatus::State::Unknown) return;
+    const AgentDef* best = nullptr;
+    for (const auto& def : Agents) if (AgentStatus::Get(def.rt).Ready()) { best = &def; break; }
+    if (!best) for (const auto& def : Agents) if (agentInfo[def.id].cli) { best = &def; break; }
+    const AgentDef* now = AgentOf(agentId);
+    if (!best || best == now || (now && AgentStatus::Get(now->rt).Ready()) || (now && agentInfo[agentId].cli && !AgentStatus::Get(best->rt).Ready())) return;
+    agentId = best->id; convo.data.head.agentId = agentId;
+    ::Log(std::wstring(L"AGENTS the chat's agent chosen by itself (") + (AgentStatus::Get(best->rt).Ready() ? L"ready" : L"the only one installed") + L"): " + W(best->id));   // i18n-exempt: log detail; may run before any chat opening: never « CHAT »
+}
+void ApplyAllStatuses() { for (const auto& def : Agents) ApplyStatus(def.id, AgentStatus::Get(def.rt)); }
+void StartSession();
+// A sign-in that ended well (from the chat's « Se connecter », the « Ton agent » screen or Réglages): the chat's agent starts
+// again, as it did when its own sign-in console closed.
+std::map<AgentRuntime::Agent, AgentStatus::State> lastAgentState;
+void AfterAgentChange(const AgentStatus::Status& s, AgentStatus::State before) {
+    if (before != AgentStatus::State::SigningIn || !s.Ready()) return;
+    for (const auto& def : Agents)
+        if (def.rt == s.agent && def.id == agentId && !sessionReady) {
+            Diag(L"sign-in " + W(def.id) + L" over: the agent starts again");   // i18n-exempt: log detail
+            session.reset(); sessionStarting = false; if (Usable()) StartSession();
+        }
+}
+void EnsureAgentStatus() {
+    static bool started = false; if (started) return; started = true;
+    AgentStatus::Host h;
+    h.dataRoot = Ann::DataRoot();
+    h.run = [](std::function<void()> work, std::function<void()> done) { Ann::Run(std::move(work), std::move(done)); };
+    h.log = [](const std::wstring& s) { ::Log(s); };   // its own lines (« AGENTS … »), never « CHAT »: the hub starts with the browser, the chat does nothing before it is used (chat_qa_run « rest »)
+    h.environment = [] { return RtEnv(); };
+    // Every change (an install from the tutorial, a sign-in from Réglages…) reaches the panel at once.
+    AgentStatus::Subscribe([](const AgentStatus::Status& s) {
+        const auto seen = lastAgentState.find(s.agent); const auto before = seen == lastAgentState.end() ? AgentStatus::State::Unknown : seen->second;
+        lastAgentState[s.agent] = s.state;
+        for (const auto& def : Agents) if (def.rt == s.agent) ApplyStatus(def.id, s);
+        ChooseInstalledAgent(); SendState();
+        AfterAgentChange(s, before);
+        if (s.Ready()) for (const auto& def : Agents) if (def.rt == s.agent && def.id == agentId) ReleaseHeldQueue(L"the agent is ready again");   // i18n-exempt: log detail
+        if (s.Ready() && before != AgentStatus::State::Ready) ChatSetupReady(s.agent);   // set up from the chat's block: the keys back to its input
+        MaybeReadModels();   // #128 v2: an agent just ready (an install, a sign-in, a detection elsewhere) may have its models read
+    });
+    AgentStatus::Init(std::move(h));
 }
 // #128 v2 (chat-model-probe.h): the model list of an agent that never had a session here, read from the agent itself —
 // installed and signed in, models unknown, no session of it starting or running; its adapter prepared first (downloaded as
@@ -27,18 +92,32 @@ void ApplyDetection(const std::string& id, const AgentRuntime::Detection& d) {
 // of its own (never the UI thread, never the annotations' pool); the answer comes back through AcpWake. Once per launch
 // when it works; a failure is tried again at the next detection (the next opening of the chat / start of the mode), at
 // most ChatModelProbe::MaxTries times per launch. The menu meanwhile shows the built-in list (chat-known-models.h).
-std::map<std::string, AgentRuntime::Login> loginSeen;   // the last detection's login per agent
 struct ModelRead { std::set<std::string> done; std::map<std::string, int> failures; std::string agent; bool prepare = false; } modelRead;   // UI thread only
 // the read's answer, handed over by its thread (never freed: a read still running when the browser exits finds it)
 struct ModelReadMail { std::mutex mu; std::shared_ptr<ChatModelProbe::Result> result; };
 ModelReadMail& ModelMail() { static auto* m = new ModelReadMail; return *m; }
 void SaveOptionsCache();   // chat-host-ui.h
+// The calm gate (ChatModelProbe::Calm): every start event pushes the read CalmMs further; the timer comes back then.
+ChatModelProbe::Calm modelReadCalm;
+std::shared_ptr<std::atomic<bool>> modelReadCancel;   // the running read's (its thread holds it too)
+void ModelReadBusy() {
+    modelReadCalm.Busy(GetTickCount64());
+    if (post) SetTimer(post, ModelReadTimer, ChatModelProbe::CalmMs, nullptr);   // re-armed: counted from the last start event
+}
+void StopModelReadForStart() {
+    if (!modelRead.agent.empty() && modelReadCancel && !modelReadCancel->exchange(true)) Diag(L"models of " + W(modelRead.agent) + L": the read stops for the chat's own start (again once calm)");   // i18n-exempt: log detail
+    ModelReadBusy();
+}
 void MaybeReadModels() {
     if (!modelRead.agent.empty() || !post) return;
+    if (const auto now = GetTickCount64(); !modelReadCalm.Ready(now, sessionStarting || preparing, turn.active)) {   // a start, a turn: later
+        SetTimer(post, ModelReadTimer, std::max(500u, modelReadCalm.Wait(now)), nullptr); return;
+    }
     for (const auto& def : Agents) {
         const auto& a = agentInfo[def.id];
         ChatModelProbe::Facts f;
-        f.installed = a.cli; f.prepared = a.prepared; f.signedIn = loginSeen.count(def.id) && loginSeen[def.id] == AgentRuntime::Login::SignedIn;
+        const auto& st = AgentStatus::Get(def.rt);   // « Ton agent »: the agents' one status — signed in as its CLI says (not « unknown »)
+        f.installed = a.cli; f.prepared = a.prepared; f.signedIn = st.Ready() && st.signedIn;
         f.modelsKnown = Acp::FindModelOption(a.options) != nullptr; f.readThisLaunch = modelRead.done.count(def.id) > 0;
         f.sessionOfThisAgent = (session || sessionStarting) && agentId == def.id;
         const auto action = ChatModelProbe::Decide(f);
@@ -50,9 +129,10 @@ void MaybeReadModels() {
         o.clientVersion = BROWSER_VERSION_TEXT;
 #endif
         const HWND target = post; const bool prepare = modelRead.prepare;
+        auto cancel = std::make_shared<std::atomic<bool>>(false); modelReadCancel = cancel;
         if (prepare) Diag(L"prepare " + W(def.id) + L" in the background, for its model list (first use: the private Node and its adapter are downloaded into <data>\\agents)");   // i18n-exempt: log detail
         Diag(L"reading the models of " + W(std::string(def.name)) + L" (installed, signed in, never started here): a session opened and closed in a temporary folder, no message");   // i18n-exempt: log detail
-        std::thread([o, target, prepare, env, rt]() mutable {
+        std::thread([o, target, prepare, env, rt, cancel]() mutable {
             auto r = std::make_shared<ChatModelProbe::Result>();
             std::function<bool(std::string&)> ready;
             if (prepare) ready = [env, rt](std::string& log) {   // as PrepareAgent does it (same pins, same folder), without its progress strip
@@ -62,7 +142,7 @@ void MaybeReadModels() {
             };
             const std::wstring dir = ChatModelProbe::MakeFolder();
             if (dir.empty()) r->why = "no temporary folder";
-            else { o.cwd = U8(dir); *r = ChatModelProbe::Read(std::move(o), 90000, ready); if (!ChatModelProbe::RemoveFolder(dir)) r->why += r->why.empty() ? "temporary folder left" : ", temporary folder left"; }
+            else { o.cwd = U8(dir); *r = ChatModelProbe::Read(std::move(o), 90000, ready, cancel.get()); if (!ChatModelProbe::RemoveFolder(dir)) r->why += r->why.empty() ? "temporary folder left" : ", temporary folder left"; }
             { auto& m = ModelMail(); std::lock_guard<std::mutex> g(m.mu); m.result = r; }
             PostMessageW(target, AcpWake, 0, 0);
         }).detach();
@@ -77,40 +157,54 @@ void PumpModelRead() {
     auto& a = agentInfo[id];
     if (r->prepareTried) {   // logged as the panel's own preparation is (PrepareAgent)
         Diag(L"prepare " + W(id) + L": " + W(r->prepareLog) + L" (in the background, for its model list)");   // i18n-exempt: log detail
-        if (r->prepared) { a.prepared = true; if (a.status == "ready") a.detail = TR(chat_agent_installed); }
+        if (r->prepared) {
+            a.prepared = true; if (a.status == "ready") a.detail = TR(chat_agent_installed);
+            if (const auto* def = AgentOf(id)) AgentStatus::Refresh(def->rt);   // « Ton agent »: the one status learns its runtime is here (else a later change would say « first use » again)
+        }
     }
     const auto* mo = Acp::FindModelOption(r->options);
     if (r->ok && mo && !Acp::FindModelOption(a.options)) {   // a real session of it that started meanwhile says more: kept
         a.options = r->options; SaveOptionsCache();
         Diag(L"models of " + W(id) + L" read: " + std::to_wstring(mo->choices.size()) + L" (the agent stopped)");   // i18n-exempt: log detail
     } else Diag(L"models of " + W(id) + L" not read: " + (r->ok ? std::wstring(mo ? L"already known" : L"the agent gave no model list") : W(r->why)));   // i18n-exempt: log detail
-    if (!r->ok) ++modelRead.failures[id];
-    if (ChatModelProbe::Settled(r->ok, modelRead.failures[id])) modelRead.done.insert(id);
-    else Diag(L"models of " + W(id) + L": tried again at the next opening of the chat or start of the mode (" + std::to_wstring(modelRead.failures[id]) + L" / " + std::to_wstring(ChatModelProbe::MaxTries) + L")");   // i18n-exempt: log detail
+    modelReadCancel.reset();
+    if (r->cancelled) { Diag(L"models of " + W(id) + L": stopped for the chat's own start, read again once the chat is calm"); ModelReadBusy(); }   // i18n-exempt: log detail
+    else {
+        if (!r->ok) ++modelRead.failures[id];
+        if (ChatModelProbe::Settled(r->ok, modelRead.failures[id])) modelRead.done.insert(id);
+        else { Diag(L"models of " + W(id) + L": tried again once the chat is calm (" + std::to_wstring(modelRead.failures[id]) + L" / " + std::to_wstring(ChatModelProbe::MaxTries) + L")"); ModelReadBusy(); }   // i18n-exempt: log detail; never at once, never in a loop
+    }
     SendState();   // the menu, open or not, shows the agent's own list now (or keeps the one it had)
     MaybeReadModels();
 }
 void DetectAgents(std::function<void()> then = nullptr) {
-    auto out = std::make_shared<std::vector<AgentRuntime::Detection>>();
-    Ann::Run([out] { const auto env = RtEnv(); for (const auto& def : Agents) out->push_back(AgentRuntime::Detect(env, def.rt)); },
-             [out, then] {
-                 for (std::size_t i = 0; i < out->size() && i < std::size(Agents); ++i) {
-                     const auto& d = (*out)[i]; ApplyDetection(Agents[i].id, d); loginSeen[Agents[i].id] = d.login;
-                     Diag(std::wstring(L"agent ") + W(Agents[i].id) + L": cli " + (d.Usable() ? L"found " : L"missing ") + W(d.cli.version) + L" (" + W(d.cli.source) + L"), node " + (d.nodeReady ? L"ready" : L"absent") + L", adapter " + (d.adapterReady ? L"ready" : L"absent"));
-                 }
-                 // The agent is chosen without a screen: this site's last one or the user's pick; else Claude Code when it
-                 // is installed; else the first agent that is.
-                 if (!agentChosen && !turn.active && convo.data.items.empty() && !session && !agentInfo[agentId].cli)
-                     for (const auto& def : Agents) if (agentInfo[def.id].cli) { agentId = def.id; convo.data.head.agentId = agentId; Diag(std::wstring(L"agent chosen by itself (the only one installed): ") + W(def.id)); break; }
-                 SendState(); if (then) then();
-                 MaybeReadModels();   // #128 v2: after `then` (a session it starts is not read)
-             });
+    EnsureAgentStatus();
+    AgentStatus::Refresh([then] {
+        ApplyAllStatuses();
+        for (const auto& def : Agents) { const auto& s = AgentStatus::Get(def.rt); Diag(std::wstring(L"agent ") + W(def.id) + L": " + W(AgentStatus::StateName(s.state)) + (s.version.empty() ? L"" : L" " + W(s.version)) + L", runtime " + (s.runtimeReady ? L"ready" : L"absent")); }
+        ChooseInstalledAgent(); SendState(); if (then) then();
+        MaybeReadModels();   // #128 v2: after `then` (a session it starts is not read)
+    });
 }
 void StartSession();
 // Downloads the private Node and the adapter (pinned fingerprints), with the progress in the panel, then starts.
 std::shared_ptr<std::atomic<bool>> prepareCancel;
 void PrepareAgent(const std::string& id, std::function<void(bool)> then) {
     const auto* def = AgentOf(id); if (!def || preparing) { if (then) then(false); return; }
+    // « Ton agent » (Val's decision via Fix, 24/11): without a usable CLI — missing, too old, Claude Desktop only, a failed
+    // install — the chat's runtime download is useless (about 60 MB). The CLI is looked for again (it may just have been
+    // installed); still none → the « Ton agent » screen, which installs only on its strong button's click. Nothing downloaded.
+    if (const auto& st = AgentStatus::Get(def->rt); st.state != AgentStatus::State::Unknown && !st.Installed()) {
+        Diag(L"prepare " + W(id) + L": no usable CLI (" + W(AgentStatus::StateName(st.state)) + L") — looked for again, nothing downloaded");   // i18n-exempt: log detail
+        const auto rt = def->rt;
+        DetectAgents([id, then, rt] {
+            if (AgentStatus::Get(rt).Installed()) { PrepareAgent(id, then); return; }
+            Diag(L"prepare " + W(id) + L": still no usable CLI — the « Ton agent » screen");   // i18n-exempt: log detail
+            OpenTonAgent(TonAgentFrom::Chat);
+            if (then) then(false);
+        });
+        return;
+    }
     preparing = true; prepareCancel = std::make_shared<std::atomic<bool>>(false);
     // no bar until something really moves: « Préparation de Claude… » alone (never an empty grey bar)
     SetAgentStatus(id, "preparing", TRF(chat_agent_prepare_start, AgentShort(id)), -1);
@@ -139,9 +233,14 @@ void PrepareAgent(const std::string& id, std::function<void(bool)> then) {
             preparing = false;
             const bool ok = shared->result.Ok();
             Diag(L"prepare " + W(id) + L": " + W(AgentRuntime::PrepareErrorName(shared->result.error)) + (shared->result.detail.empty() ? L"" : L" — " + W(shared->result.detail)));
-            auto& a = agentInfo[id]; a.prepared = ok; a.progress = -1;
-            if (ok) { a.status = "ready"; a.detail = TR(chat_agent_installed); }
-            else if (shared->result.error == AgentRuntime::PrepareError::Cancelled) { a.status = "ready"; a.detail = TR(chat_agent_first_use); }
+            auto& a = agentInfo[id]; a.progress = -1;
+            if (ok || shared->result.error == AgentRuntime::PrepareError::Cancelled) {
+                // « Ton agent » (the « Installé » bug): this download is only the chat's own runtime (private Node + adapter);
+                // whether the agent is installed is the agents' one status — never « Installé » while claude.exe / codex.exe is
+                // missing. A new detection follows (it also learns that the runtime is in place).
+                if (const auto* def = AgentOf(id)) { AgentStatus::Status s = AgentStatus::Get(def->rt); s.runtimeReady = ok; ApplyStatus(id, s); AgentStatus::Refresh(def->rt); }
+                a.prepared = ok;
+            }
             else { a.status = "error"; a.detail = TR(chat_agent_unavailable);
                 if (!turn.active) { Acp::Error e; e.code = Acp::ErrorCode::NeedsPrepare; SendError(ProblemFor(e, id), std::string(AgentRuntime::PrepareErrorName(shared->result.error)) + " " + shared->result.detail); } }   // a waiting turn says it itself
             SendState(); if (then) then(ok);
@@ -298,10 +397,11 @@ void GiveOwedChoices() {
 }
 void OnStarted(const Acp::StartResult& r) {
     sessionStarting = false; auto& info = agentInfo[agentId]; started = r;
+    ModelReadBusy();   // the chat just started: a model read waits until it is calm
     Diag(std::wstring(L"session start: ") + (r.state == Acp::StartState::Ready ? (r.resumed ? L"ready (resumed)" : L"ready (new)") : W(Acp::ErrorCodeName(r.error.code))) + (r.error.detail.empty() ? L"" : L" — " + W(ClipUtf8(r.error.detail, 300))));
     switch (r.state) {
     case Acp::StartState::Ready: {
-        sessionReady = true; info.status = "ready"; info.detail = TR(chat_agent_installed); info.progress = -1; info.auth.clear(); info.cli = info.prepared = true;
+        sessionReady = true; info.status = "ready"; info.detail = TR(chat_agent_installed); info.progress = -1; info.auth.clear(); info.cli = info.prepared = true; info.signedIn = true;
         info.options = r.configOptions; info.modes = r.modes; info.caps = r.capabilities; info.commands = r.commands;
         if (const auto* mo = Acp::FindModelOption(info.options); mo && !agentFirstModel.count(agentId)) agentFirstModel[agentId] = mo->currentValue;
         { void SaveOptionsCache(); SaveOptionsCache(); }   // R13: shown from the next launch's first opening
@@ -332,16 +432,21 @@ void OnStarted(const Acp::StartResult& r) {
 void StartSession() {
     if (session && !sessionReady && !sessionStarting) { session->Dispose(); disposed.push_back(std::move(session)); session.reset(); }   // an object left by AuthRequired
     if (session || sessionStarting || !Usable()) return;
+    StopModelReadForStart();   // « Ton agent » × #128 v2: never a model read's session next to the chat's own start
     const auto* def = AgentOf(agentId); if (!def) return;
     session = std::make_unique<Acp::Session>();
     const HWND target = post; session->SetWake([target] { if (target) PostMessageW(target, AcpWake, 0, 0); });
     Acp::StartOptions o; o.resolve = AgentRuntime::MakeResolver(RtEnv(), def->rt); o.cwd = U8(folder);
+    o.instructions = ChatPrompt::Instructions();   // lot 5 (Codex in « Demander »): an edit that needs the user's approval is asked for, never refused — sent only to an agent that takes instructions
     o.resumeSessionId = convo.data.head.agentId == agentId ? convo.data.head.sessionId : std::string();
     o.clientName = "browser";
 #ifdef BROWSER_VERSION_TEXT
     o.clientVersion = BROWSER_VERSION_TEXT;
 #endif
-    {   // our MCP bridge over the annotation store, restricted to this site: the agent can list / claim / resolve annotations
+    // our MCP bridge over the annotation store, restricted to this site: the agent can list / claim / resolve annotations.
+    // Never for a local FILE (lot R): the store has no site for it, the bridge would not be restricted (« --site » with
+    // no origin = every site).
+    if (!site.file) {
         const auto target2 = Ann::ConnectTarget();
         if (GetFileAttributesW(target2.bridgeExe.c_str()) != INVALID_FILE_ATTRIBUTES) {
             Acp::McpServer m; m.name = Ann::ServerName(); m.command = U8(target2.bridgeExe); m.args = {"--store", U8(target2.storeRoot), "--site", site.origin}; o.mcpServers.push_back(std::move(m));
@@ -411,10 +516,17 @@ void AppendText(const std::string& id, const std::string& more) {
     t->string += more;
     if (t->string.size() > MaxKeptText) t->string = ClipUtf8(t->string, MaxKeptText);
 }
+// A step the agent names by a fixed English title we know is said in the browser's language, with the same sentence in
+// the thread and on the card (Designer, 25 Nov 2026) — codex-acp's « Additional sandbox permissions »: « Codex demande plus
+// d'accès à cet ordinateur ». Empty for every other title: what the agent sends stays as it is.
+std::wstring KnownStepTitle(const std::string& title) {
+    return ChatTools::SameTitle(title, "Additional sandbox permissions") ? TRF(chat_perm_sandbox, AgentShort(agentId)) : std::wstring();
+}
 SJ::Value ToolJson(const Acp::ToolCall& t, bool update) {
     SJ::Value m = SJ::Value::Obj(); m.Set("id", Str(t.id));
-    if (!update || t.hasTitle) m.Set("title", Str(ClipUtf8(t.title.empty() ? t.kind : t.title, 400)));
-    if (!update) m.Set("kind", Str(t.kind.empty() || t.kind == "switch_mode" ? std::string("other") : t.kind));
+    const std::wstring known = KnownStepTitle(t.title);   // the sentence is the whole step: its kind's own wording (« A lancé … ») must not replace it
+    if (!update || t.hasTitle) m.Set("title", known.empty() ? Str(ClipUtf8(t.title.empty() ? t.kind : t.title, 400)) : Str(known));
+    if (!update) m.Set("kind", Str(!known.empty() || t.kind.empty() || t.kind == "switch_mode" ? std::string("other") : t.kind));
     if (!update || t.hasStatus) m.Set("status", Str(t.status.empty() ? std::string("pending") : t.status));
     if (t.hasLocations || (!update && !t.locations.empty())) { SJ::Value ls = SJ::Value::Arr(); for (const auto& l : t.locations) { if (ls.items.size() >= 20) break; SJ::Value o = SJ::Value::Obj(); o.Set("path", Str(RelPath(l.path))); if (l.line >= 0) o.Set("line", SJ::Value::Int(l.line)); ls.Push(std::move(o)); } m.Set("locations", std::move(ls)); }
     if (!t.diffs.empty()) {   // SEC-14: kept with the conversation: a file that may hold secrets (.env, *.pem, .npmrc…) keeps its name and counts, never its lines
@@ -430,7 +542,6 @@ std::wstring NoteOf(const std::string& annotation) {
     if (annotation.empty()) return L"";
     for (const auto& e : turn.elements) if (e.annId == annotation) return W(ChatPrompt::OneLine(turn.text, 40));
     if (auto it = annotationNotes.find(annotation); it != annotationNotes.end()) return W(ChatPrompt::OneLine(it->second, 40));
-    if (auto it = Ann::historyEntries.find(annotation); it != Ann::historyEntries.end()) return W(ChatPrompt::OneLine(it->second.annotation.note, 40));
     return L"";
 }
 // What one of our annotation tools does (asked: the infinitive of the card and of a running step) or did (the step once done).
@@ -500,6 +611,9 @@ std::wstring PermissionTitle(const Acp::ToolCall& t) {
     const auto mcp = ChatTools::ParseMcpName(t.title);
     if (const auto ours = ChatTools::OurTool(mcp, Ann::ServerName()); ours != ChatTools::Ours::None) return OurToolTitle(ours, ChatTools::AnnotationIdOf(t.rawInput), false);
     if (mcp.mcp) return TRF(chat_perm_mcp, who, W(mcp.tool), W(mcp.server));   // another MCP server: its tool and its name, as they are
+    // Codex asks to leave its sandbox for a step (codex-acp: « Additional sandbox permissions », options allow_permissions_turn /
+    // allow_permissions_session / reject_permissions): said in the browser's language, whatever kind the step has
+    if (const std::wstring known = KnownStepTitle(t.title); !known.empty()) return known;
     if (!t.diffs.empty()) file = FileName(t.diffs.front().path); else if (!t.locations.empty()) file = FileName(t.locations.front().path);
     if (t.kind == "edit" && !file.empty()) return TRF(chat_perm_edit, who, W(file));
     if (t.kind == "delete" && !file.empty()) return TRF(chat_perm_delete, who, W(file));
@@ -540,7 +654,6 @@ std::vector<Acp::PlanEntry> PlanFromText(const std::string& text) {
 }
 // The step line of one of our annotation tools: what it does while it runs, what it did once done (« A lu 2 annotations »).
 void WordOurCall(Turn::OurCall& call, const Acp::ToolCall& t, SJ::Value& message) {
-    if (!t.rawInput.empty() && t.rawInput != "{}") call.input = t.rawInput;
     if (t.hasContent || !t.text.empty()) { LearnNotes(t.text); if (call.tool == ChatTools::Ours::List) { const int n = ChatTools::ListCount(t.text); if (n >= 0) call.count = n; } }
     if (t.hasStatus || !t.status.empty()) call.done = t.status == "completed";
     message.Set("title", Str(OurToolTitle(call.tool, call.annotation, call.done, call.count)));
@@ -548,8 +661,21 @@ void WordOurCall(Turn::OurCall& call, const Acp::ToolCall& t, SJ::Value& message
     // (« A lu 1 fichier »). An annotation is not a file: the folded line says « 1 étape », the step itself says the rest.
     message.Set("kind", Str(std::string("other")));
     if (call.done) message.Set("summary", OurToolSummary(call.tool, call.annotation, call.count));
-    // a batch turn: the call that just succeeded moves its annotation's line of the card (once)
-    if (call.done && !call.reported) { call.reported = true; BatchToolDone(call.tool, call.annotation, call.input); }
+}
+// The step a request was for, once the request is over without an agreement. Refused by the user: the step never happened
+// — it is kept as `refused` in the conversation and the page says nothing of it (no « A modifié », no « échec »), now and
+// when the conversation is opened again. Withdrawn unanswered (the turn stopped while the card waited): the same, once
+// the agent reports the step as failed.
+void MarkRefused(const std::string& toolId) {
+    if (toolId.empty() || !turn.refusedTools.insert(toolId).second) return;
+    if (auto it = turn.itemOf.find("tool:" + toolId); it != turn.itemOf.end()) convo.data.items[it->second].Set("refused", SJ::Value::Bool(true));
+    SJ::Value m = SJ::Value::Obj(); m.Set("id", Str(toolId)); m.Set("refused", SJ::Value::Bool(true)); Send("toolCallUpdate", std::move(m));
+}
+std::string AskedTool(const SJ::Value& asked) { const auto* t = asked.Get("toolCallId"); return t && t->IsString() ? t->string : std::string(); }
+bool RefusingOption(const SJ::Value& asked, const std::string& option) {
+    const auto* opts = asked.Get("options"); if (!opts || !opts->IsArray()) return false;
+    for (const auto& o : opts->items) { const auto* id = o.Get("optionId"); const auto* kind = o.Get("kind"); if (id && kind && id->IsString() && kind->IsString() && id->string == option) return kind->string.rfind("reject", 0) == 0; }
+    return false;
 }
 void OnPermission(const Acp::PermissionRequest& p) {
     if (!turn.active) { if (session) session->RespondPermission(p.requestId, ""); return; }
@@ -566,7 +692,7 @@ void OnPermission(const Acp::PermissionRequest& p) {
     if (const auto ours = ChatTools::OurTool(mcp, Ann::ServerName()); ours != ChatTools::Ours::None && session && ChatTools::LooksLikeOurs(ours, p.toolCall.kind, p.toolCall.rawInput)) {   // SEC-28: not on the title alone
         for (const auto& o : p.options) if (o.kind == "allow_once" && ChatStore::ValidId(o.id)) {
             session->RespondPermission(p.requestId, o.id);
-            if (!p.toolCall.id.empty() && !turn.ourCalls.count(p.toolCall.id)) { auto& call = turn.ourCalls[p.toolCall.id]; call.tool = ours; call.annotation = ChatTools::AnnotationIdOf(p.toolCall.rawInput); call.input = p.toolCall.rawInput; }
+            if (!p.toolCall.id.empty() && !turn.ourCalls.count(p.toolCall.id)) { auto& call = turn.ourCalls[p.toolCall.id]; call.tool = ours; call.annotation = ChatTools::AnnotationIdOf(p.toolCall.rawInput); }
             Diag(L"annotation tool allowed without a card: " + W(mcp.tool));
             return;
         }
@@ -619,6 +745,7 @@ void OnEvent(const Acp::Event& e) {
         if (!turn.active || !ChatStore::ValidId(e.tool.id)) break;
         CloseThought(); turn.lastMessageId.clear(); NoteAgentFiles(e.tool);
         SJ::Value m = ToolJson(e.tool, false); m.Set("turnId", Str(turn.id));
+        if (turn.refusedTools.count(e.tool.id)) m.Set("refused", SJ::Value::Bool(true));
         if (const auto ours = OurToolOf(e.tool); ours != ChatTools::Ours::None) {   // one of our annotation tools: the step says it in words
             auto& call = turn.ourCalls[e.tool.id]; call.tool = ours; if (call.annotation.empty()) call.annotation = ChatTools::AnnotationIdOf(e.tool.rawInput);
             WordOurCall(call, e.tool, m);
@@ -630,18 +757,21 @@ void OnEvent(const Acp::Event& e) {
         if (!turn.active || !ChatStore::ValidId(e.tool.id)) break;
         NoteAgentFiles(e.tool);
         SJ::Value m = ToolJson(e.tool, true);
+        if (e.tool.status == "failed" && turn.droppedTools.count(e.tool.id)) turn.refusedTools.insert(e.tool.id);   // its request was withdrawn unanswered: it never happened
+        if (turn.refusedTools.count(e.tool.id)) m.Set("refused", SJ::Value::Bool(true));
         if (auto call = turn.ourCalls.find(e.tool.id); call != turn.ourCalls.end() && call->second.tool != ChatTools::Ours::None) {
             if (call->second.annotation.empty()) call->second.annotation = ChatTools::AnnotationIdOf(e.tool.rawInput);
             WordOurCall(call->second, e.tool, m);
         }
         if (auto it = turn.itemOf.find("tool:" + e.tool.id); it != turn.itemOf.end()) { auto& item = convo.data.items[it->second]; for (const auto& f : m.members) if (f.first != "diff") item.Set(f.first, f.second); }
-        else { SJ::Value full = ToolJson(e.tool, false); full.Set("turnId", Str(turn.id)); turn.itemOf["tool:" + e.tool.id] = Keep("toolCall", full); Send("toolCall", std::move(full)); break; }
+        else { SJ::Value full = ToolJson(e.tool, false); full.Set("turnId", Str(turn.id)); if (turn.refusedTools.count(e.tool.id)) full.Set("refused", SJ::Value::Bool(true)); turn.itemOf["tool:" + e.tool.id] = Keep("toolCall", full); Send("toolCall", std::move(full)); break; }
         Send("toolCallUpdate", std::move(m));
         break; }
     case T::Plan: if (turn.active) { turn.lastPlan = e.plan; SendPlan(e.plan, false); } break;
     case T::PermissionRequest: OnPermission(e.permission); break;
     case T::PermissionDismissed: {
         if (e.permission.requestId == turn.planPermission) { turn.planPermission.clear(); break; }
+        if (const auto w = waitingPermissions.find(e.permission.requestId); w != waitingPermissions.end()) if (const std::string tool = AskedTool(w->second); !tool.empty()) turn.droppedTools.insert(tool);
         waitingPermissions.erase(e.permission.requestId);
         SJ::Value m = SJ::Value::Obj(); m.Set("requestId", Str(e.permission.requestId)); Send("permission.cancel", std::move(m)); break; }
     case T::ModesChanged: info.modes = e.modes; KeepModeAfterPlan(); SendState(); ModeSettled(); break;
@@ -667,7 +797,9 @@ void OnEvent(const Acp::Event& e) {
     case T::Exited:
         Diag(L"agent exited (" + std::to_wstring(e.exitCode) + L"): " + W(ClipUtf8(e.error.detail, 300)));
         sessionReady = sessionStarting = false; modeAwaited.clear(); modeRefused = false; if (session) { disposed.push_back(std::move(session)); session.reset(); }
-        if (turn.active) { turn.failure = e.error; FinishTurn("error"); } else { info.status = "ready"; info.detail = TR(chat_agent_installed); SendState(); }
+        // idle: the agent's state is the one status again (« Ton agent »: never « Installé » by itself), checked anew
+        if (turn.active) { turn.failure = e.error; FinishTurn("error"); }
+        else if (const auto* def = AgentOf(agentId)) { ApplyStatus(agentId, AgentStatus::Get(def->rt)); AgentStatus::Refresh(def->rt); SendState(); }
         break;
     }
 }
@@ -688,6 +820,8 @@ void WriteAnnotations(std::vector<Element>& elements, const std::string& note) {
     for (auto& e : elements) {
         BA::Annotation a = e.pending; a.note = ClipUtf8(note, 3900); a.id = BA::NewAnnotationId(); a.site = origin;
         a.source.profileId = U8(pid); a.source.profileName = U8(pname); BA::Sanitize(a);
+        // a private window: listed in its ledger first (erased when the window closes); no line, no annotation
+        if (privateWindow && !Ann::RecordPrivate(a)) { Diag(L"private window: the ledger could not be written, the element is not stored"); continue; }
         auto png = e.png.empty() ? nullptr : std::make_shared<std::string>(e.png);
         if (png) { a.screenshot.scale = e.shotScale; a.screenshot.crop = e.shotCrop; }
         e.annId = a.id;
@@ -701,14 +835,12 @@ void WriteAnnotations(std::vector<Element>& elements, const std::string& note) {
             [out, elementId, turnId, id = a.id] {
                 Diag(L"annotation " + W(id) + L": write " + W(BA::CodeName(out->write.code)) + L", claim " + W(BA::CodeName(out->claim.code)));
                 if (!out->write.ok()) return;
-                Ann::sessionIds.insert(id); Ann::seenWorking.insert(id); Ann::seenDone.insert(id);   // the chat shows its own progress: no launcher card for it
                 auto settle = [&](Element& el) { el.annSite = out->siteKey; el.token = out->claim.ok() ? out->lease.token : std::string(); };
                 if (turn.active && turn.id == turnId) { for (auto& el : turn.elements) if (el.id == elementId) settle(el); }
                 else for (auto it = orphanAnnotations.begin(); it != orphanAnnotations.end(); ++it) if (it->annId == id) {   // its turn is over: close it now
                     settle(*it); const Element late = *it; orphanAnnotations.erase(it);
                     if (!late.token.empty()) CloseAnnotations({late}, late.closeResolved, late.closeSummary);
                     break; }
-                Ann::RefreshStatus();
             });
     }
 }
@@ -719,7 +851,7 @@ void CloseAnnotations(const std::vector<Element>& elements, bool resolved, const
         if (e.annSite.empty() || e.token.empty()) { Element late = e; late.closeResolved = resolved; late.closeSummary = summary; late.png.clear(); orphanAnnotations.push_back(std::move(late)); continue; }   // still being written: closed when its write comes back
         const std::string site2 = e.annSite, id = e.annId, token = e.token; auto r = std::make_shared<BA::Outcome>();
         Ann::Run([=] { std::lock_guard<std::mutex> g(Ann::writeLock); *r = resolved ? Ann::Store().Resolve(site2, id, token, "resolved", summary, actor) : Ann::Store().Release(site2, id, token, actor, summary); },
-                 [=] { Diag(L"annotation " + W(id) + (resolved ? L": resolved " : L": released ") + W(BA::CodeName(r->code))); Ann::RefreshStatus(); if (Ann::launcher.HistoryVisible()) Ann::LoadHistory(false, false); });
+                 [=] { Diag(L"annotation " + W(id) + (resolved ? L": resolved " : L": released ") + W(BA::CodeName(r->code))); });
     }
 }
 std::string LastParagraph(const std::string& text) {
@@ -729,7 +861,7 @@ std::string LastParagraph(const std::string& text) {
 }
 
 // ---------------------------------------------------------------- one turn
-std::shared_ptr<CS::Store> Snapshots() { if (!snapshots) snapshots = std::make_shared<CS::Store>(Ann::DataRoot() + L"\\" + CS::StoreFolderName); return snapshots; }
+std::shared_ptr<CS::Store> Snapshots() { if (!snapshots) snapshots = std::make_shared<CS::Store>(ChatFilesRoot() + L"\\" + CS::StoreFolderName); return snapshots; }
 // SEC-13: the prompt goes only in the mode the browser asked (« Demander » unless the user chose another one). false: held
 // (the mode's confirmation sends it: ModeSettled) or the turn ended in error.
 bool PromptModeReady() {
@@ -803,13 +935,10 @@ void BeginSnapshotThenPrompt() {
                  SendPrompt();
              });
 }
-// `batch`: « Traiter les annotations » — `text` is then what the user added (it may be empty); the agent gets the
-// batch's instruction (activeBatch, set by StartBatchTurn) and the user's message carries the card.
-void StartTurn(const std::string& text, const std::vector<std::string>& elementIds, const std::vector<std::string>& attachmentIds, bool batch) {
+void StartTurn(const std::string& text, const std::vector<std::string>& elementIds, const std::vector<std::string>& attachmentIds) {
     if (turn.active) return;
     if (!Usable()) { Diag(L"send ignored: no project folder or not a local site"); return; }
-    turn = Turn{}; turn.active = true; turn.id = "t" + std::to_string(++convo.turnSeq); turn.batch = batch; turn.text = batch ? activeBatch.instruction : text; turn.startedMs = Ann::NowMs();
-    if (activeStrips.count("batch")) ClearStrip("batch");
+    turn = Turn{}; turn.active = true; turn.id = "t" + std::to_string(++convo.turnSeq); turn.text = text; turn.startedMs = Ann::NowMs();
     for (const auto& id : elementIds) if (auto it = composerElements.find(id); it != composerElements.end()) { turn.elements.push_back(std::move(it->second)); composerElements.erase(it); }
     for (const auto& id : attachmentIds) if (auto it = composerAttachments.find(id); it != composerAttachments.end()) { turn.attachments.push_back(std::move(it->second)); composerAttachments.erase(it); }
     if (auto t = ChatTab()) turn.navStamp = t->navStamp;
@@ -817,7 +946,6 @@ void StartTurn(const std::string& text, const std::vector<std::string>& elementI
     // the user's own words: the request without the chips' labels (they sit in the text where they were typed)
     std::string words = text; for (const auto& e : turn.elements) for (auto at = words.find(e.label); !e.label.empty() && at != std::string::npos; at = words.find(e.label)) words.erase(at, e.label.size());
     while (!words.empty() && (words.back() == ' ' || words.back() == '\n' || words.back() == '\r' || words.back() == '\t')) words.pop_back();
-    if (head.title.empty() && batch) head.title = T8(I18n::Id::chat_batch_title);
     if (head.title.empty()) {   // the first request names the conversation
         head.title = ChatPrompt::OneLine(words, 44); if (head.title.empty() && !turn.elements.empty()) head.title = ChatPrompt::OneLine(U8(AH::ElementLabel(turn.elements.front().pending.target)), 44);
     }
@@ -825,12 +953,7 @@ void StartTurn(const std::string& text, const std::vector<std::string>& elementI
     {   SJ::Value m = SJ::Value::Obj(); m.Set("id", Str("u" + turn.id)); m.Set("text", Str(text));
         SJ::Value els = SJ::Value::Arr(); for (const auto& e : turn.elements) els.Push(ElementRef(e)); m.Set("elements", std::move(els));
         SJ::Value ats = SJ::Value::Arr(); for (const auto& a : turn.attachments) ats.Push(AttachmentRef(a)); m.Set("attachments", std::move(ats));
-        if (batch) {   // the card « Traiter N annotations » (contract B 1.4): the lines, and the exact instruction for « Voir la consigne »
-            SJ::Value an = SJ::Value::Obj(); an.Set("batchId", Str(activeBatch.id));
-            SJ::Value items = SJ::Value::Arr(); for (const auto& i : activeBatch.items) items.Push(BatchItemJson(i, true));
-            an.Set("items", std::move(items)); an.Set("instruction", Str(activeBatch.instruction)); m.Set("annotations", std::move(an));
-        }
-        m.Set("at", Str(Iso(now))); const std::size_t at = Keep("message.user", m); if (batch) { activeBatch.item = at; activeBatch.userId = "u" + turn.id; }
+        m.Set("at", Str(Iso(now))); Keep("message.user", m);
         Send("message.user", std::move(m)); }
     const auto& info = agentInfo[agentId];
     {   // D6: the header says at once what the composer shows — the choice made before the session (pending), else the
@@ -854,6 +977,36 @@ void StartTurn(const std::string& text, const std::vector<std::string>& elementI
     EnsureSession([] { BeginSnapshotThenPrompt(); });
     Diag(L"turn " + W(turn.id) + L" started");
 }
+// « Ton agent »: a failed turn's card. When the agent stopped answering (its CLI closed — « Query closed before response
+// received » —, the process ended, a sign-in refused) the agents' one status is asked again first: ONE card then says the real
+// cause with its action (src/chat-agent-status.h FailureCause) — never the generic « Quelque chose n'a pas fonctionné ».
+// The messages waiting behind that turn wait on (held, still in the queue): sent to an agent that is gone, each would only
+// add the same card. They go once the agent is ready again (still ready after the check, a sign-in, an install), or at
+// « Envoyer maintenant ».
+bool queueHeldForAgent = false;
+void ReleaseHeldQueue(const wchar_t* why) {
+    if (!queueHeldForAgent) return;
+    queueHeldForAgent = false; Diag(std::wstring(L"the waiting messages go on: ") + why);   // i18n-exempt: log detail
+    ProcessQueue();
+}
+void ShowTurnFailure(const Acp::Error& failure, const std::string& agent, const std::string& turnId) {
+    auto show = [agent, turnId](const Acp::Error& e) {
+        SendError(ProblemFor(e, agent), e.detail, "thread", true, turnId);
+        if (e.code == Acp::ErrorCode::AuthRequired) Strip("auth", "danger", TRF(chat_strip_disconnected, W(Agent().name)), "connect", TR(chat_action_connect));
+    };
+    const auto* def = AgentOf(agent);
+    if (!def || !ChatAgentStatus::Rechecked(failure.code)) { show(failure); return; }
+    const auto rt = def->rt;
+    Diag(L"turn failed (" + W(Acp::ErrorCodeName(failure.code)) + L"): the agent is checked again before saying why");   // i18n-exempt: log detail
+    queueHeldForAgent = true;   // until the check says: the next waiting message must not fail the same way first
+    AgentStatus::Refresh([failure, rt, show] {
+        Acp::Error e = failure; e.code = ChatAgentStatus::FailureCause(AgentStatus::Get(rt), failure.code);
+        Diag(L"turn failure shown as " + W(Acp::ErrorCodeName(e.code)) + L" (agent " + W(AgentStatus::StateName(AgentStatus::Get(rt).state)) + L")");   // i18n-exempt: log detail
+        show(e);
+        if (AgentStatus::Get(rt).Ready()) ReleaseHeldQueue(L"the agent is still ready");   // i18n-exempt: log detail
+        else if (!queue.empty()) Diag(L"the waiting messages are held until the agent is ready again");   // i18n-exempt: log detail
+    });
+}
 void CompleteTurn(const std::string& stopReason, const CS::TurnSummary* summary, const std::vector<std::pair<std::string, CS::FileDiff>>* diffs = nullptr) {
     const bool failed = stopReason == "error"; const double ms = Ann::NowMs() - turn.startedMs;
     if (stopReason == "end_turn" && !turn.lastPlan.empty() && turn.planPermission.empty() && CurrentModeKind() == "plan") SendPlan(turn.lastPlan, true);   // Paper 6.12: « Plan proposé » waits for « Lancer le plan »
@@ -872,19 +1025,24 @@ void CompleteTurn(const std::string& stopReason, const CS::TurnSummary* summary,
     } else m.Set("undoable", SJ::Value::Bool(false));
     if (!turn.summaryText.empty()) m.Set("copyText", Str(ClipUtf8(turn.summaryText, 60000)));
     Keep("turn.end", m); Send("turn.end", std::move(m));
-    if (failed) { if (!turn.problem.title.empty()) SendError(turn.problem, ""); else { const auto p = ProblemFor(turn.failure, agentId); SendError(p, turn.failure.detail);
-            if (turn.failure.code == Acp::ErrorCode::AuthRequired) Strip("auth", "danger", TRF(chat_strip_disconnected, W(Agent().name)), "connect", TR(chat_action_connect)); } }
+    if (failed) { if (!turn.problem.title.empty()) SendError(turn.problem, ""); else ShowTurnFailure(turn.failure, agentId, turn.id); }
     const bool done = stopReason == "end_turn";
-    const bool planned = done && !changed && CurrentModeKind() == "plan";   // a plan is not a change: the annotation goes back to waiting, with the reason
-    CloseAnnotations(turn.elements, done && !planned, done && !planned ? (LastParagraph(turn.summaryText).empty() ? U8(TRF(chat_resolve_default, AgentShort(agentId))) : LastParagraph(turn.summaryText))
-                                               : U8(planned ? std::wstring(TR(chat_release_planned)) : stopReason == "cancelled" ? std::wstring(TR(chat_release_stopped)) : std::wstring(TR(chat_release_failed))));
+    // Lot 5's real Codex trial: an annotation is « resolved » only when the turn changed something (a plan, an answer, a
+    // refusal are not a change: it goes back to waiting, with the reason). Without a snapshot, the files the agent's own
+    // edit calls named are the only sign there is.
+    const bool worked = summary ? changed : !turn.agentFiles.empty();
+    const auto outcome = ChatOptions::AnnotationOutcome(stopReason, worked, CurrentModeKind() == "plan");
+    const bool resolved = outcome == ChatOptions::AnnotationEnd::Resolved;
+    if (done && !resolved) Diag(std::wstring(L"the turn changed nothing: its annotation is given back, not resolved (") + (outcome == ChatOptions::AnnotationEnd::Planned ? L"a plan" : L"no file changed") + L")");   // i18n-exempt: log detail
+    CloseAnnotations(turn.elements, resolved, resolved ? (LastParagraph(turn.summaryText).empty() ? U8(TRF(chat_resolve_default, AgentShort(agentId))) : LastParagraph(turn.summaryText))
+                                               : U8(outcome == ChatOptions::AnnotationEnd::Planned ? std::wstring(TR(chat_release_planned)) : outcome == ChatOptions::AnnotationEnd::Unchanged ? std::wstring(TR(chat_release_unchanged))
+                                                    : outcome == ChatOptions::AnnotationEnd::Stopped ? std::wstring(TR(chat_release_stopped)) : std::wstring(TR(chat_release_failed))));
     Diag(L"turn " + W(turn.id) + L" ended: " + W(stopReason) + L" in " + Ann::Ms(ms) + L" ms" + (summary ? L", " + std::to_wstring(summary->changes.size()) + L" file(s) changed (+" + std::to_wstring(summary->additions) + L" -" + std::to_wstring(summary->deletions) + L")" : L", no snapshot"));
     FillTurnHeader();   // D6: kept with the turn (given back after a reload, in the history)
-    const std::string markSelector = turn.markSelector; turnNavStamp = turn.navStamp; const bool wasBatch = turn.batch;
+    const std::string markSelector = turn.markSelector; turnNavStamp = turn.navStamp;
     turn = Turn{}; doneMarkSelector = changed && done ? markSelector : std::string();
     GiveOwedChoices();   // M / E3: chosen aside while this turn ran
     SendState(); SyncChromeBits(); SaveConvo();
-    if (wasBatch) BatchTurnEnded(stopReason);   // the card's last word: what the store says, and what is left
     {   SJ::Value p = SJ::Value::Obj(); p.Set("active", SJ::Value::Bool(picking && Open() && !Ann::s.paused)); Send("pick.state", std::move(p)); }
     {   std::vector<std::string> paths; if (summary) for (const auto& c : summary->changes) paths.push_back(c.path);
         AfterTurnPage(paths); }   // R36: the transition picks its way from the files changed
@@ -926,11 +1084,11 @@ void StopTurn() {
 void ProcessQueue() {
     if (!turn.active && queue.empty()) TakeShownAside();   // C2: nothing waits — the conversation shown becomes the engine's
     if (turn.active || queue.empty()) { SendQueue(); return; }
+    if (queueHeldForAgent) { SendQueue(); return; }   // « Ton agent »: the agent stopped (ShowTurnFailure) — they wait for it
     // Mode Commentaire: the next message may belong to another element's conversation — it becomes the engine's first
     if (const std::string c = queue.front().convId; !c.empty() && c != convo.data.head.id && !SwitchEngineTo(c)) { queue.pop_front(); ProcessQueue(); return; }
     Queued q = std::move(queue.front()); queue.pop_front(); SendQueue(); RefreshWaitStrip();
-    if (q.annotations.empty()) AttachQueuedAnchor(q);   // queue #63: queued before its element was ready — its element (image, source) joins it now
-    if (!q.annotations.empty()) { StartBatchTurn(q.text, q.batchId, q.annotations); if (!turn.active) ProcessQueue(); return; }   // a batch replaced since is dropped: the next one runs
+    AttachQueuedAnchor(q);   // queue #63: queued before its element was ready — its element (image, source) joins it now
     StartTurn(q.text, q.elements, q.attachments);
 }
 
@@ -989,3 +1147,7 @@ void ViewChanges(const std::string& panelTurn, const std::string& path) {
 }
 
 } // namespace Chat
+
+// « Ton agent » (design/ton-agent-interface.md): the agents' status starts with the browser, its work stops with it.
+void ChatAgentsStartup() { Chat::EnsureAgentStatus(); }
+void ChatAgentsShutdown() { AgentStatus::Shutdown(); }

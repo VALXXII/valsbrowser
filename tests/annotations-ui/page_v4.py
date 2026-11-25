@@ -411,6 +411,27 @@ try:
     check(st[0] == c0 + 1 and st[1] == n0 and st[2] == "default", "R31 (defect 2): Ctrl held, a click without the Ctrl flag: the site's click, nothing selected, still the page's cursor", st[:2] + [st[2][:30]])
     cdp.call("Input.dispatchKeyEvent", type="keyUp", key="Control", code="ControlLeft", windowsVirtualKeyCode=17, modifiers=0); frames(cdp)
     check(cdp.js("getComputedStyle(document.querySelector('.btn')).cursor") == cur0, "R31 (defect 2): Ctrl released: the aiming cursor back at once (same cursor value)")
+    # C1 (journeys of 25 Nov 2026: the first click after the mode's start opened the link): Ctrl known ONLY from one pointer
+    # move's flag — no key in the page, the host never said it was held (a shortcut released while the page moved under a
+    # still pointer) — then a click WITHOUT the flag and without a move: a selection, never the site's click
+    load(1.0)
+    mouse(cdp, 760, 440, "mouseMoved", mods=2); frames(cdp)
+    stale = cdp.js("getComputedStyle(document.querySelector('.btn')).cursor")
+    n0 = cdp.js("window.__msgs.filter(m=>m.op==='selecting'||m.op==='select').length"); c0 = cdp.js("window.__clicked||0")
+    mouse(cdp, 760, 440, "mousePressed", mods=0, button="left", clicks=1); mouse(cdp, 760, 440, "mouseReleased", mods=0, button="left", clicks=1); frames(cdp, 3)
+    st = cdp.js("[window.__clicked||0, window.__msgs.filter(m=>m.op==='selecting'||m.op==='select').length, getComputedStyle(document.querySelector('.btn')).cursor]")
+    check(stale == "default" and st[0] == c0 and st[1] > n0 and st[2] != "default",
+          "C1: Ctrl seen only on a pointer move's flag (no key, not the host's), a click without the flag and without a move: selected, the site never gets it, the aiming cursor back",
+          [stale[:20], st[:2], st[2][:30]])
+    cdp.js(f"{H}.cmd('resume')")
+    # ... and the host's Ctrl (its keyboard) still wins over a click without the flag (final pass 1)
+    load(1.0)
+    mouse(cdp, 760, 440, "mouseMoved", mods=2); cdp.js(f"{H}.cmd('ctrl', true)"); frames(cdp)
+    n0 = cdp.js("window.__msgs.filter(m=>m.op==='selecting'||m.op==='select').length"); c0 = cdp.js("window.__clicked||0")
+    mouse(cdp, 760, 440, "mousePressed", mods=0, button="left", clicks=1); mouse(cdp, 760, 440, "mouseReleased", mods=0, button="left", clicks=1); frames(cdp, 3)
+    st = cdp.js("[window.__clicked||0, window.__msgs.filter(m=>m.op==='selecting'||m.op==='select').length]")
+    check(st == [c0 + 1, n0], "C1: Ctrl said held by the host: a click without the flag is still the site's (nothing selected)", st)
+    cdp.js(f"{H}.cmd('ctrl', false)"); frames(cdp)
 
     # ---------------- R37: glued while scrolling, transition only for values
     load(1.25)

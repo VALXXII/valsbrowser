@@ -6,7 +6,8 @@ runtime data that must never be packaged nor modified, manifest parsing, the pub
 first-run ZIP (exact staged entries and bytes, checksums, release-info), the
 publisher end to end against an in-memory fake GitHub (positive and negative cases),
 and the workflow file's security-relevant properties; the « Nouveautés » notes of the release
-(release-notes/notes.json: the committed file is valid, the rules of release-notes/README.md, the generated header).
+(release-notes/notes.json: the committed file is valid, the rules of release-notes/README.md, the history per version
+read from git, the cumulative selection, the generated header).
 """
 from __future__ import annotations
 import contextlib, hashlib, io, json, os, re, shutil, subprocess, sys, tempfile, unittest, zipfile
@@ -1042,7 +1043,7 @@ class ReleaseNotesFile(unittest.TestCase):
     def test_rules(self):
         def errors(mutate):
             data = json.loads(json.dumps(self.GOOD)); mutate(data); return R.check(data)
-        self.assertTrue(errors(lambda d: d['ajouts'].extend([self.GOOD['ajouts'][0]] * 4)))           # 5 lines
+        self.assertTrue(errors(lambda d: d['ajouts'].extend([self.GOOD['ajouts'][0]] * R.MAX_ITEMS)))  # one line too many
         self.assertTrue(errors(lambda d: d['ajouts'][0].update(fr='x' * (R.MAX_CHARS + 1))))          # too long
         self.assertTrue(errors(lambda d: d['ajouts'][0].update(fr="L'onglet.")))                       # straight apostrophe
         self.assertTrue(errors(lambda d: d['ajouts'][0].update(en=d['ajouts'][0]['fr'])))              # not translated
@@ -1057,20 +1058,97 @@ class ReleaseNotesFile(unittest.TestCase):
 
     def test_header_is_ascii_and_escaped(self):
         notes = {'ajouts': [('Guillemets " et \\ et ?? et « é » ’ 😀', 'Quote " ok')], 'corrections': []}
-        text = R.header(notes)
+        text = R.header([{'build': 950, 'version': '0.3.950', 'commit': None, 'notes': notes, 'id': R.notes_id(notes)}])
         text.encode('ascii')
-        self.assertIn(f'#define BROWSER_RELEASE_NOTES_ID "{R.notes_id(notes)}"', text)
+        self.assertIn(f'{{"0.3.950", "{R.notes_id(notes)}", kAdded0, kFixed0}},', text)
         self.assertIn('L"Guillemets \\" et \\\\ et \\?\\? et \\u00AB \\u00E9 \\u00BB \\u2019 \\U0001F600"', text)
-        self.assertIn('#define BROWSER_RELEASE_NOTES_FIXED \n', text)
-        empty = R.header({'ajouts': [], 'corrections': []})
-        self.assertIn('#define BROWSER_RELEASE_NOTES_ID ""', empty)
+        self.assertIn('inline const Line kFixed0[] = { {nullptr, nullptr}};', text)
+        self.assertIn('#define BROWSER_RELEASE_NOTES_HISTORY 1', text)
+        empty = R.header([])
+        self.assertIn('{nullptr, nullptr, nullptr, nullptr},', empty)
+
+    def repo(self, tmp):
+        """A small repository whose main grows like the real one: direct commits and --no-ff merges."""
+        root = Path(tmp)
+        def git(*args):
+            subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.com', *args], cwd=root, check=True, capture_output=True)
+        def notes(tag, n=1):
+            return json.dumps({'ajouts': [{'fr': f'{tag} n° {k}.', 'en': f'{tag} no. {k}.'} for k in range(n)], 'corrections': []}, ensure_ascii=False)
+        def commit(message, text=None, other=None):
+            if text is not None:
+                (root / 'release-notes').mkdir(exist_ok=True); (root / R.REL).write_text(text, encoding='utf-8')
+            if other is not None:
+                (root / 'other.txt').write_text(other, encoding='utf-8')
+            git('add', '-A'); git('commit', '-q', '-m', message)
+        git('init', '-q', '-b', 'main')
+        commit('1 other', other='a')                                   # 1
+        commit('2 notes A', text=notes('A', 2))                        # 2: version 0.3.2
+        git('checkout', '-q', '-b', 'feature')
+        commit('3 notes B on a branch', text=notes('B'))               # 3 (branch)
+        git('checkout', '-q', 'main')
+        commit('4 other on main', other='b')                           # 4
+        git('merge', '-q', '--no-ff', 'feature', '-m', '5 merge B')    # 5: version 0.3.5, not 0.3.3
+        commit('6 no notes change', other='c')                         # 6: no entry
+        commit('7 bad notes', text='{"ajouts": [{"fr": "x", "en": "x"}], "corrections": []}')   # 7: invalid, skipped
+        commit('8 notes C', text=notes('C', 3))                        # 8: version 0.3.8
+        return root, notes
+
+    def test_history_per_version_from_git(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, notes = self.repo(tmp)
+            warned = []
+            h = R.history(root, warn=warned.append)
+            self.assertEqual([e['version'] for e in h], ['0.3.8', '0.3.5', '0.3.2'], 'one entry per version that changed the notes, the merge (first parent) giving the version')
+            self.assertEqual(h[1]['notes']['ajouts'], [('B n° 0.', 'B no. 0.')])
+            self.assertTrue(any('0.3.7' in w for w in warned), 'an invalid old version is skipped, said')
+            self.assertEqual([e['version'] for e in R.history(root, head='HEAD~3', worktree=False)], ['0.3.5', '0.3.2'])
+            # Not committed yet: the next release's notes (after HEAD), or this build's own (a build of this tree).
+            (root / R.REL).write_text(notes('D'), encoding='utf-8')
+            self.assertEqual([e['version'] for e in R.history(root)], ['0.3.9', '0.3.8', '0.3.5', '0.3.2'])
+            self.assertEqual([e['version'] for e in R.history(root, build=8)][:2], ['0.3.8', '0.3.5'])
+            self.assertEqual(R.history(root, build=8)[0]['notes']['ajouts'], [('D n° 0.', 'D no. 0.')])
+            # The generated header holds every version up to the build.
+            with contextlib.redirect_stdout(io.StringIO()):
+                entries = R.write_header(root / 'gen' / 'release-notes-data.h', 5, root)
+            self.assertEqual([e['version'] for e in entries], ['0.3.5', '0.3.2'])
+            text = (root / 'gen' / 'release-notes-data.h').read_text(encoding='ascii')
+            self.assertIn('{"0.3.5", "', text); self.assertNotIn('"0.3.8"', text)
+
+    def test_cumulative_selection(self):
+        def entry(build, added, fixed=()):
+            n = {'ajouts': [(a, a + ' (en)') for a in added], 'corrections': [(f, f + ' (en)') for f in fixed]}
+            return {'build': build, 'version': R.version_text(build), 'commit': None, 'notes': n, 'id': R.notes_id(n)}
+        h = [entry(842, ['Print', 'Share', 'Emoji'], ['Bubble']), entry(898, ['Side tabs']), entry(950, ['Focus', 'Print'], ['Downloads', 'History'])]
+        firsts = lambda sel, s: [p[0] for p in sel[s]]
+        sel = R.select(h, 646, 950)
+        self.assertEqual(firsts(sel, 'ajouts'), ['Focus', 'Print', 'Side tabs', 'Share', 'Emoji'], 'newest first, once')
+        self.assertEqual(firsts(R.select(h, 646, 950, 4), 'ajouts'), ['Focus', 'Print', 'Side tabs', 'Share'], 'a cap keeps the newest')
+        self.assertEqual(R.DISPLAY_LINES, 10)
+        self.assertEqual(firsts(sel, 'corrections'), ['Downloads', 'History', 'Bubble'])
+        self.assertEqual(firsts(R.select(h, 898, 950), 'ajouts'), ['Focus', 'Print'], 'only what was not seen')
+        self.assertEqual(firsts(R.select(h, 898, 920), 'ajouts'), [], 'versions without notes: nothing (no card)')
+        self.assertEqual(firsts(R.select(h, None, 900), 'ajouts'), ['Side tabs', 'Print', 'Share', 'Emoji'], 'never newer than the build')
+        self.assertEqual(len(R.select(h, None, 950, 0)['ajouts']), 5)
+
+    def test_real_history_has_the_published_notes(self):
+        try:
+            h = R.history(head='5056b8b71e7d26f05b55fcd253b2353c2232eec3', worktree=False)   # main at 0.3.898
+        except SystemExit:
+            self.skipTest('no full history here')
+        if not h:
+            self.skipTest('no full history here')
+        self.assertEqual([e['version'] for e in h], ['0.3.898', '0.3.842'], 'the two releases that carried notes.json')
 
     def test_build_generates_the_header(self):
         with tempfile.TemporaryDirectory() as tmp:
             gen = Path(tmp)
-            with contextlib.redirect_stdout(io.StringIO()):
-                B.write_release_notes(gen, V.identity(42, SHA, 'dev'))
-            self.assertEqual((gen / 'release-notes-data.h').read_text(encoding='ascii'), R.header(R.load()))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                B.write_release_notes(gen, V.identity(842, SHA, 'dev'))
+            text = (gen / 'release-notes-data.h').read_text(encoding='ascii')
+            self.assertIn('#define BROWSER_RELEASE_NOTES_HISTORY 1', text)
+            self.assertNotIn('"0.3.898"', text, 'nothing newer than the build')
+            self.assertIn('Release notes:', out.getvalue())
 
     def test_release_build_warns_when_the_merge_kept_the_notes(self):
         for same, warned in ((True, True), (False, False)):
@@ -1080,7 +1158,6 @@ class ReleaseNotesFile(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmp, mock.patch.object(B.version_mod, 'git', git), contextlib.redirect_stdout(out):
                 B.write_release_notes(Path(tmp), V.identity(42, SHA, 'release'))
             self.assertEqual('unchanged by this merge' in out.getvalue(), warned, out.getvalue())
-
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

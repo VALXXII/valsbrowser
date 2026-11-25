@@ -1,17 +1,86 @@
 {
   "ajouts": [
     {
+      "fr": "Mode Focus : la page prend toute la place, les onglets se cachent.",
+      "en": "Focus mode: the page fills the window, the tabs step aside."
+    },
+    {
+      "fr": "Ton agent : installez et connectez Claude ou Codex depuis le navigateur.",
+      "en": "Your agent: install and sign in to Claude or Codex from the browser."
+    },
+    {
+      "fr": "Mode Annotation : un tutoriel, la bulle Commentaire ou le chat en panneau.",
+      "en": "Annotation mode: a tutorial, the Comment bubble or the chat panel."
+    },
+    {
       "fr": "Onglets sur le côté : en panneau ou en colonne compacte.",
       "en": "Tabs on the side: as a panel or a compact column."
     },
     {
-      "fr": "Le Mode Focus marche aussi avec les onglets sur le côté.",
-      "en": "Focus mode also works with tabs on the side."
+      "fr": "Nouvelles fenêtres : impression avec aperçu, pages d’erreur, onglet planté.",
+      "en": "New windows: print with preview, error pages, a crashed tab."
     },
     {
-      "fr": "Les coins de la page restent arrondis, même fenêtre agrandie.",
-      "en": "The page keeps its rounded corners, even when maximized."
+      "fr": "Mots de passe et infos enregistrées proposés sous les champs.",
+      "en": "Passwords and saved info suggested under form fields."
+    },
+    {
+      "fr": "Pastille « Local » pour les projets ouverts depuis cet ordinateur.",
+      "en": "A “Local” pill for projects opened from this computer."
+    },
+    {
+      "fr": "Menu des modèles : Claude et Codex réunis, avec leurs vrais modèles.",
+      "en": "Model menu: Claude and Codex together, with their real models."
+    },
+    {
+      "fr": "Partage d’écran : un site peut être bloqué une fois pour toutes.",
+      "en": "Screen sharing: a site can be blocked for good."
+    },
+    {
+      "fr": "Emoji en couleur dans les favoris, les onglets et les menus.",
+      "en": "Colour emoji in bookmarks, tabs and menus."
     }
   ],
-  "corrections": []
+  "corrections": [
+    {
+      "fr": "Un téléchargement en attente se garde ou se supprime en un clic.",
+      "en": "A download waiting for approval can be kept or deleted in one click."
+    },
+    {
+      "fr": "La bulle d’annotation suit son élément et n’est plus coupée.",
+      "en": "The annotation bubble follows its element and is no longer cut off."
+    },
+    {
+      "fr": "Historique instantané, même avec des milliers de pages.",
+      "en": "Instant history, even with thousands of pages."
+    },
+    {
+      "fr": "Plus d’éclair sur la page quand un panneau s’ouvre.",
+      "en": "No more flash over the page when a panel opens."
+    },
+    {
+      "fr": "Les favoris importés retrouvent leurs icônes.",
+      "en": "Imported bookmarks get their icons."
+    },
+    {
+      "fr": "Les vérifications anti-robot de certains sites passent à nouveau.",
+      "en": "Some sites’ anti-bot checks pass again."
+    },
+    {
+      "fr": "Premier lancement sans blocage, onglets rouverts après une mise à jour.",
+      "en": "No freeze on first launch, tabs reopen after an update."
+    },
+    {
+      "fr": "La fenêtre se redimensionne par ses bords, même avec le chat ouvert.",
+      "en": "The window resizes from its edges, even with the chat open."
+    },
+    {
+      "fr": "Le chat trouve le bon dossier de votre projet.",
+      "en": "The chat finds your project’s folder."
+    },
+    {
+      "fr": "L’agent demande toujours avant d’agir.",
+      "en": "The agent always asks before acting."
+    }
+  ]
 }

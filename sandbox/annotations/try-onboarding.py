@@ -6,9 +6,11 @@
 1. copie le build dans un dossier temporaire neuf (%TEMP%\\browser-essai-onboarding-annotation\\app) : profil, réglages et
    session vides, donc un nouvel utilisateur. --keep garde la copie de l'essai précédent : l'onboarding, déjà vu ou passé,
    ne revient pas (c'est la règle « une seule fois »).
-2. sert une COPIE de la page de démonstration de la sandbox (la « Boutique ») sur http://127.0.0.1:5173/ depuis ce
-   processus : un agent connecté qui modifie la page modifie la copie, jamais le dépôt. Écrit aussi une page en fichier
-   local (…\\fichier-local\\index.html).
+2. sert une COPIE de la page de démonstration de la sandbox (la « Boutique ») sur http://127.0.0.1:5173/, par un
+   serveur à part (serve.py copié à côté) dont le dossier de travail est la copie : le navigateur, qui reconnaît le
+   dossier du projet au processus qui sert la page, ne voit que la copie. Un agent connecté qui modifie la page modifie
+   la copie, jamais le dépôt. Si le port 5173 est déjà pris (un autre essai, un autre serveur), l'essai refuse de
+   démarrer. Écrit aussi une page en fichier local (…\\fichier-local\\index.html).
 3. ouvre le navigateur avec trois onglets : la page locale (Annoter allumé), le fichier local (allumé) et
    https://example.com/ (site en ligne : Annoter éteint, grisé, avec son info-bulle). --private ouvre une fenêtre privée
    sur la page locale (même règle). --welcome commence par la fenêtre d'accueil d'une nouvelle installation (« --onboarding ») :
@@ -29,7 +31,6 @@ import socket
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -71,6 +72,30 @@ def wait_port(host: str, port: int, timeout: float = 10.0) -> bool:
     return False
 
 
+def stop_orphan_server(script: pathlib.Path) -> bool:
+    """Port 5173 held by THIS trial's own demo server (the copy of serve.py beside it) whose launcher is gone — its console
+    closed with the cross before --parent existed: that server only, by its process id. Anything else keeps the port (and
+    the trial refuses to start)."""
+    if sys.platform != 'win32':
+        return False
+    ps = ("$c = Get-NetTCPConnection -LocalAddress 127.0.0.1 -LocalPort 5173 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; "
+          "if ($c) { $p = Get-CimInstance Win32_Process -Filter \"ProcessId=$($c.OwningProcess)\"; "
+          "$alive = [bool](Get-Process -Id $p.ParentProcessId -ErrorAction SilentlyContinue); \"$($p.ProcessId)`t$alive`t$($p.CommandLine)\" }")
+    try:
+        out = subprocess.run(['powershell', '-NoProfile', '-Command', ps], capture_output=True, text=True, timeout=30).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    parts = out.split('\t', 2)
+    if len(parts) != 3 or not parts[0].isdigit() or parts[1] != 'False' or str(script).lower() not in parts[2].lower():
+        return False
+    subprocess.run(['taskkill', '/F', '/PID', parts[0]], capture_output=True)
+    for _ in range(30):
+        if not port_open('127.0.0.1', 5173):
+            return True
+        time.sleep(0.1)
+    return False
+
+
 def prepare_agents(root: pathlib.Path) -> None:
     """Faux dossiers de configuration de Claude et Codex (la détection regarde leur présence)."""
     claude = root / 'AppData' / 'Roaming' / 'Claude'
@@ -83,6 +108,79 @@ def prepare_agents(root: pathlib.Path) -> None:
     toml = codex / 'config.toml'
     if not toml.exists():
         toml.write_text('# config.toml de TEST (essai de l\'onboarding) : vos vrais réglages Codex ne sont pas ici\n', encoding='utf-8', newline='\n')
+
+
+# « Ton agent » (design/ton-agent-interface.md): a FAKE agents profile for the browser — the folders it looks in for
+# claude.exe / codex.exe (USERPROFILE, LOCALAPPDATA, APPDATA, PATH) point at temporary ones, the official installer is
+# replaced by sandbox/agents/fake-install.ps1 and the user PATH by a test key: nothing of the real Windows account is used.
+#   present  Claude Code installed and signed in, Codex installed and signed out
+#   absent   neither installed (the installs run the fake installer)
+#   desktop  Claude Desktop only (its folders, no claude.exe): Claude Code « not installed »
+#   real     the REAL detection and the REAL official installers (only with Val's consent: the click « Installer … »)
+REPO = HERE.parents[1]
+FAKE_PATH_KEY = r'Software\BrowserTests\TonAgentTrial'
+
+
+def fake_cli() -> pathlib.Path:
+    exe = REPO / 'build' / 'acp-test' / 'fake-cli.exe'
+    if not exe.is_file():   # the tests' fake CLI (tests/acp/fake_cli.cpp): --version, auth/login status, auth login / login
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        gxx = REPO / 'tools' / 'w64devkit' / 'bin' / 'g++.exe'
+        subprocess.run([str(gxx), '-std=c++17', '-O2', '-static', '-municode', str(REPO / 'tests' / 'acp' / 'fake_cli.cpp'), '-o', str(exe)], check=True)
+    return exe
+
+
+def put_cli(folder: pathlib.Path, name: str, version: str, login: str, cli: pathlib.Path) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(cli, folder / name)
+    (folder / (name + '.version')).write_text(version, encoding='ascii')
+    (folder / (name + '.login')).write_text(login, encoding='ascii')
+
+
+def agents_environment(root: pathlib.Path, profile: str, fresh: bool, mode: str, delay_ms: int, app: pathlib.Path) -> dict[str, str]:
+    if profile == 'real':
+        return {}
+    home, local, roaming = root / 'home', root / 'local', root / 'roaming'
+    if fresh and root.exists():
+        shutil.rmtree(root)
+    for d in (home, local, roaming):
+        d.mkdir(parents=True, exist_ok=True)
+    cli = fake_cli()
+    if fresh:
+        if profile == 'present':
+            put_cli(home / '.local' / 'bin', 'claude.exe', '2.1.325 (Claude Code)', '0', cli)
+            put_cli(local / 'Programs' / 'OpenAI' / 'Codex' / 'bin', 'codex.exe', 'codex-cli 0.166.0', '1', cli)
+        elif profile == 'desktop':
+            (local / 'AnthropicClaude').mkdir(parents=True, exist_ok=True)
+            (roaming / 'Claude').mkdir(parents=True, exist_ok=True)
+        import winreg
+        try:
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, FAKE_PATH_KEY)
+        except OSError:
+            pass
+    system = os.environ.get('SystemRoot', r'C:\Windows')
+    return {
+        'USERPROFILE': str(home), 'LOCALAPPDATA': str(local), 'APPDATA': str(roaming),
+        'PATH': ';'.join([system + r'\System32', system, system + r'\System32\WindowsPowerShell\v1.0']),
+        'BROWSER_AGENT_INSTALL_SCRIPT': str(REPO / 'sandbox' / 'agents' / 'fake-install.ps1'),
+        'BROWSER_AGENT_PATH_KEY': FAKE_PATH_KEY,
+        'BROWSER_FAKE_CLI': str(cli),
+        'BROWSER_FAKE_INSTALL_MODE': mode,
+        'BROWSER_FAKE_INSTALL_DELAY_MS': str(delay_ms),
+        **fake_agent(app),
+    }
+
+
+def fake_agent(app: pathlib.Path) -> dict[str, str]:
+    """An honest simulated profile: the chat's session runs the tests' fake ACP agent (it answers « (essai) Réponse simulée »)
+    instead of the fake CLI, which cannot hold a session. Launch only (BROWSER_CHAT_FAKE_AGENT_LAUNCH_ONLY): the detection,
+    the runtime download and the sign-in stay the browser's real code on the fake profile."""
+    exe = app.parent / (app.name + '-test') / 'fake-acp-agent.exe'   # tools/release/build.py: <out>-test/fake-acp-agent.exe
+    if not exe.is_file():
+        print(f"Agent simulé introuvable ({exe}) : le chat de ce profil factice ne pourra pas répondre.")
+        return {}
+    return {'BROWSER_CHAT_FAKE_AGENT': f'"{exe}" --reply "(essai) Réponse simulée : avec un vrai agent, sa réponse apparaîtrait ici."',
+            'BROWSER_CHAT_FAKE_AGENT_LAUNCH_ONLY': '1'}
 
 
 def write_session(run: pathlib.Path, urls: list[str]) -> None:
@@ -98,6 +196,11 @@ def main() -> int:
     ap.add_argument('--private', action='store_true', help="une fenêtre privée sur la page locale (reprend l'essai précédent s'il existe)")
     ap.add_argument('--welcome', action='store_true', help="comme une nouvelle installation : la fenêtre d'accueil d'abord (son étape « Mode Annotation » propose le tutoriel)")
     ap.add_argument('--english', action='store_true', help='interface en anglais')
+    ap.add_argument('--agents', choices=('present', 'absent', 'desktop', 'real'),
+                    help="« Ton agent » : un profil d'agents factice (present, absent, desktop) ou la détection et les installateurs RÉELS (real)")
+    ap.add_argument('--install-mode', default='ok', choices=('ok', 'nocli', 'policy', 'inuse', 'network', 'fail', 'hang'),
+                    help="--agents factice : ce que fait le faux installateur (ok par défaut ; les autres : les erreurs)")
+    ap.add_argument('--install-delay-ms', type=int, default=4000, help="--agents factice : durée du faux installateur (pour voir l'animation)")
     ap.add_argument('--local-pill', action='store_true', help="essai de la pastille « Local » de l'adresse (#127) : 127.0.0.1, localhost, un fichier, un site en http et en https")
     ap.add_argument('--dry-run', action='store_true', help='tout préparer (copie, pages) sans ouvrir le navigateur (vérification sans écran)')
     ap.add_argument('--layout', choices=('top', 'side', 'compact'), help="#127 : disposition des onglets pour ce lancement (--tab-layout, rien n'est enregistré)")
@@ -113,6 +216,13 @@ def main() -> int:
         print(f'Build introuvable : {app}\\browser.exe', file=sys.stderr)
         return 1
     home = pathlib.Path(tempfile.gettempdir()) / ('browser-essai-pastille-local' if a.local_pill else a.name)
+    if port_open('127.0.0.1', 5173) and stop_orphan_server(home / 'serveur' / 'serve.py'):
+        print("Le serveur d'un essai précédent (sa fenêtre fermée) tenait encore la page de démonstration : arrêté.")
+    if port_open('127.0.0.1', 5173):
+        # Never reuse a server already there: it may serve the repository's own files, which the agent would then edit.
+        print("Le port 5173 est déjà pris (un autre essai ou un autre serveur est ouvert) : fermez-le, puis relancez.\n"
+              "L'essai ne démarre pas, pour que l'agent ne modifie jamais d'autres fichiers que la copie de la page.", file=sys.stderr)
+        return 1
     run, agents, site, files = home / 'app', home / 'agents', home / 'site', home / 'fichier-local'
     keep = a.keep or a.private
     fresh = not keep or not (run / 'browser.exe').is_file()
@@ -141,28 +251,26 @@ def main() -> int:
     if a.english:
         (run / 'ui-language').write_text('browser-ui-language 1\nlanguage=en\n', encoding='utf-8', newline='\n')   # src/ui-language.h
     prepare_agents(agents)
-    # The demo page is served from this process (serve.py's handlers) unless another trial already serves it; the page's
-    # cross-origin iframe (127.0.0.2:5174) only when that address can be bound — it is not needed here.
-    servers = []
-    if not port_open('127.0.0.1', 5173):
-        sys.path.insert(0, str(HERE))
-        import serve
-        servers.append(serve.make(serve.MAIN, site, serve.SpaHandler))
-        threading.Thread(target=servers[0].serve_forever, daemon=True).start()
-        def cross() -> None:
-            try:
-                srv = serve.make(serve.CROSS, HERE / 'cross', serve.Handler); servers.append(srv); srv.serve_forever()
-            except OSError:
-                pass
-        threading.Thread(target=cross, daemon=True).start()
+    # The demo page: a server of its own, started from a copy of serve.py beside the trial with the served copy as its
+    # working folder — its command line and folder name only the copy, so the browser picks the copy as the project's
+    # folder (never this repository, where try-onboarding.py runs). No cross-origin iframe: it is not needed here.
+    server_dir = home / 'serveur'
+    server_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(HERE / 'serve.py', server_dir / 'serve.py')
+    server = subprocess.Popen([sys.executable, '-I', str(server_dir / 'serve.py'), '--site', str(site), '--no-cross', '--parent', str(os.getpid())], cwd=str(site),
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     try:
-        if not wait_port('127.0.0.1', 5173):
-            print('La page de démonstration ne démarre pas.', file=sys.stderr)
+        if not wait_port('127.0.0.1', 5173) or server.poll() is not None:
+            print('La page de démonstration ne démarre pas (port 5173 pris entre-temps ?).', file=sys.stderr)
             return 1
         env = dict(os.environ)
         env['BROWSER_ANNOTATIONS_CONNECT_ROOT'] = str(agents)
         env['BROWSER_ANNOTATIONS_TEST'] = '1'   # garde-fou : aucune écriture dans les vrais dossiers, même si la redirection échouait
         env.pop('BROWSER_ANNOTATIONS_CONNECT_PATH', None)
+        if a.agents:
+            env.update(agents_environment(home / 'agents-profile', a.agents, fresh, a.install_mode, a.install_delay_ms, app))
+            print(f'Agents        : profil « {a.agents} »' + (' — DÉTECTION ET INSTALLATEURS RÉELS (votre compte Windows)' if a.agents == 'real'
+                  else f' (factice : dossiers sous {home / "agents-profile"}, faux installateur « {a.install_mode} »)'))
         print(f'Navigateur     : {run}\\browser.exe' + (' (fenêtre privée)' if a.private else ''))
         print(f'Page locale    : {URL}   (Annoter allumé)')
         print(f'Fichier local  : {file_url}   (Annoter allumé)')
@@ -180,8 +288,12 @@ def main() -> int:
         proc.wait()
         return 0
     finally:
-        for srv in list(servers):
-            srv.shutdown(); srv.server_close()
+        if server.poll() is None:   # our own server, by its handle (never by its command line)
+            server.terminate()
+            try:
+                server.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                server.kill()
 
 
 if __name__ == '__main__':

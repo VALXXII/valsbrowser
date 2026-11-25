@@ -395,64 +395,13 @@ inline std::string OriginOf(const std::wstring& url) {
     return scheme + "://" + auth;
 }
 // ---------------------------------------------------------------- texts
-inline std::wstring SinceText(std::int64_t seconds) {
-    if (seconds < 60) return TR(age_now_cap);
-    if (seconds < 3600) return TRF(since_minutes_cap, std::to_wstring(seconds / 60));
-    if (seconds < 86400) return TRF(since_hours_cap, std::to_wstring(seconds / 3600));
-    return TRF(since_days_cap, std::to_wstring(seconds / 86400));
-}
-// Short form for the card header (« Il y a 3 min »): the long one does not fit beside the agent's name.
-inline std::wstring AgoShort(std::int64_t seconds) {
-    if (seconds < 60) return TR(age_now_cap);
-    if (seconds < 3600) return TRF(ago_minutes_cap, std::to_wstring(seconds / 60));
-    if (seconds < 86400) return TRF(ago_hours_cap, std::to_wstring(seconds / 3600));
-    return TRF(ago_days_short_cap, std::to_wstring(seconds / 86400));
-}
 inline std::wstring AgoText(std::int64_t seconds) {
     if (seconds < 60) return TR(ago_seconds);
     if (seconds < 3600) return TRF(ago_minutes, std::to_wstring(seconds / 60));
     if (seconds < 86400) return TRF(ago_hours, std::to_wstring(seconds / 3600));
     return TRF(ago_days_short, std::to_wstring(seconds / 86400));
 }
-inline std::wstring Monogram(const std::wstring& name) {
-    for (wchar_t c : name) if (iswalnum(c)) return std::wstring(1, wchar_t(towupper(c)));
-    return L"A";
-}
-// Card 3.2 « Claude s'en occupe · depuis 2 min » (lower case: it follows the title).
-inline std::wstring SinceLower(std::int64_t seconds) {
-    if (seconds < 60) return TR(ago_now);
-    if (seconds < 3600) return TRF(since_minutes, std::to_wstring(seconds / 60));
-    if (seconds < 86400) return TRF(since_hours, std::to_wstring(seconds / 3600));
-    return TRF(since_days, std::to_wstring(seconds / 86400));
-}
-// History row age, right-aligned: « 2 min », « 3 h », « Hier », a weekday within the week, else « 12 nov. ».
-// `localDays` = whole local days between the two dates (0 = same day); weekday 0 = dimanche.
-inline std::wstring AgeLabel(std::int64_t seconds, int localDays, int weekday, int day, int month) {
-    using I = I18n::Id;
-    static const I days[] = {I::weekday_0, I::weekday_1, I::weekday_2, I::weekday_3, I::weekday_4, I::weekday_5, I::weekday_6};
-    static const I months[] = {I::month_short_1, I::month_short_2, I::month_short_3, I::month_short_4, I::month_short_5, I::month_short_6,
-                               I::month_short_7, I::month_short_8, I::month_short_9, I::month_short_10, I::month_short_11, I::month_short_12};
-    if (seconds < 60) return TR(age_now_cap);
-    if (localDays <= 0 && seconds < 3600) return TRF(age_minutes, std::to_wstring(seconds / 60));
-    if (localDays <= 0) return TRF(age_hours, std::to_wstring(seconds / 3600));
-    if (localDays == 1) return TR(age_yesterday_cap);
-    if (localDays < 7 && weekday >= 0 && weekday < 7) return I18n::T(days[weekday]);
-    return TRF(history_date, month >= 1 && month <= 12 ? std::wstring(I18n::T(months[month - 1])) : std::wstring(), std::to_wstring(day));
-}
-// What the agent is called on cards and rows: « Claude », « Codex », else its own label (clipped).
-inline std::wstring AgentDisplay(const std::string& agent) {
-    std::string low; for (char c : agent) low += char(std::tolower(static_cast<unsigned char>(c)));
-    if (low.find("claude") != std::string::npos) return L"Claude";
-    if (low.find("codex") != std::string::npos) return L"Codex";
-    std::wstring w = Wide(agent); if (w.empty()) return TR(agent_someone);
-    if (w.size() > 24) { w.resize(23); w += L"…"; }
-    return w;
-}
-inline int AgentKindOf(const std::string& agent) {   // 0 Claude, 1 Codex, 2 other (AUI::AgentKind)
-    std::string low; for (char c : agent) low += char(std::tolower(static_cast<unsigned char>(c)));
-    return low.find("claude") != std::string::npos ? 0 : low.find("codex") != std::string::npos ? 1 : 2;
-}
-// The element in words for « Ce que l'agent verra » (2.2): « Bouton « Payer 48,00 € » ».
+// The element in words (the chat's chip and bubble title): « Bouton « Payer 48,00 € » ».
 inline std::wstring ElementLabel(const BA::Target& t) {
     const std::string tag = t.tag, role = t.role;
     std::wstring noun;
@@ -496,42 +445,5 @@ inline std::wstring StyleSummary(const BA::Target& t) {
     const std::string sp = BA::SpacingText(t.spacing);
     if (!sp.empty()) return Wide(sp);
     return t.styles.empty() ? std::wstring() : std::wstring(TR(note_style_summary));
-}
-inline std::wstring StylesText(const std::vector<BA::NamedValue>& styles) {
-    static const char* keep[] = {"display", "position", "width", "height", "margin", "padding", "font-size", "font-weight", "color", "background-color", "border-radius", "text-align"};
-    std::wstring o; int n = 0;
-    for (const char* k : keep) for (const auto& s : styles) if (s.name == k && n < 6) { if (n++) o += L"\n"; o += Wide(s.name) + L": " + Wide(s.value); }
-    return o;
-}
-
-// ---------------------------------------------------------------- agent status
-struct AgentStatus {
-    int claimed = 0;                       // claimed annotations (badge)
-    std::optional<BA::Entry> working;      // most recently claimed
-    std::optional<BA::Entry> resolved;     // most recent resolution/question/dismissal newer than `since`
-    std::int64_t claimedAt = 0;
-};
-inline std::int64_t ClaimTime(const BA::Entry& e) {
-    for (auto it = e.state.events.rbegin(); it != e.state.events.rend(); ++it) if (it->to == "claimed") return it->at;
-    return e.state.updatedAt;
-}
-inline AgentStatus Summarize(const std::vector<BA::Entry>& entries, std::int64_t resolvedSince) {
-    AgentStatus s;
-    for (const auto& e : entries) {
-        if (e.draft) continue;
-        if (e.state.status == BA::Status::Claimed) {
-            ++s.claimed; const auto at = ClaimTime(e);
-            if (!s.working || at > s.claimedAt) { s.working = e; s.claimedAt = at; }
-        } else if (e.state.resolution && e.state.resolution->at >= resolvedSince &&
-                   (e.state.status == BA::Status::Resolved || e.state.status == BA::Status::NeedsInfo || e.state.status == BA::Status::Dismissed)) {
-            if (!s.resolved || e.state.resolution->at > s.resolved->state.resolution->at) s.resolved = e;
-        }
-    }
-    return s;
-}
-inline std::wstring OutcomeHeadline(const BA::Entry& e) {
-    if (e.state.status == BA::Status::NeedsInfo) return TR(outcome_question_from);
-    if (e.state.status == BA::Status::Dismissed) return TR(outcome_dismissed_by);
-    return TR(outcome_resolved_by);
 }
 } // namespace AnnotationHost
