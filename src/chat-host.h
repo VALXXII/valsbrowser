@@ -55,6 +55,14 @@ namespace CS = ChangeSnapshots;
 
 // ---------------------------------------------------------------- small helpers
 inline constexpr float PanelWidthDip = 380, PanelMinDip = 320, PageMinDip = 320;
+// #127 side panel layouts (Paper « Annotation · panneau · 2 chat ouvert à droite » 1YEN-0, « compact · 6 » 1ZIY-0,
+// « fenêtre étroite · 7 » 1ZOP-0): the chat is a card 4 DIP from the window's right and bottom edges (radius 8, border
+// 1 #262626) and the page stops 4 DIP before it. Designer's two default proposals, Val decides while trying:
+//   DrawerOverChat: a drawer opened while the chat is open goes OVER the chat (the chat is back when it closes);
+//                   false: the chat moves left of the drawer;
+//   ChatOverlayBelow: in a window narrower than this, the chat opens over the page instead of pushing it.
+inline constexpr bool DrawerOverChat = NativeChrome::FocusMode::drawerOverChat;   // one rule with Mode Focus
+inline constexpr float ChatOverlayBelow = NativeChrome::Sidebar::chatOverlayBelow, CardInset = NativeChrome::FocusMode::chatInset, CardRadius = 8;
 inline constexpr int SlideInMs = 220, SlideOutMs = 160;
 unsigned EnvMs(const wchar_t* name, unsigned fallback) { const std::wstring v = Ann::EnvVar(name); if (v.empty()) return fallback; const unsigned long n = wcstoul(v.c_str(), nullptr, 10); return n >= 50 && n <= 3600000 ? unsigned(n) : fallback; }
 unsigned PanelIdleMs() { static const unsigned v = EnvMs(L"BROWSER_CHAT_PANEL_IDLE_MS", 60000); return v; }    // closed panel -> WebView destroyed
@@ -218,7 +226,9 @@ bool Shown() { return panelState != PanelState::Closed; }
 bool Usable() { return site.local && !site.file && !folder.empty(); }
 const AgentDef& Agent() { const auto* a = AgentOf(agentId); return a ? *a : Agents[0]; }
 float PanelDip() { return std::min(PanelWidthDip, std::max(PanelMinDip, chrome.ClientWidth() - PageMinDip)); }   // the window's width (Mode Focus: chrome.width is the floating panel's)
-float InsetDip() { return Shown() && !InFullscreen() && !PageFullscreenActive() ? PanelDip() : 0.f; }
+// The page's room taken by the panel (0 while it is over the page: a narrow window in a side panel layout).
+bool OverPage() { return chrome.sidebar && chrome.ClientWidth() < ChatOverlayBelow; }
+float InsetDip() { return Shown() && !InFullscreen() && !PageFullscreenActive() && !OverPage() ? PanelDip() + (chrome.sidebar ? CardInset : 0.f) : 0.f; }
 
 // ---------------------------------------------------------------- host -> panel
 void OnHiddenPermission();

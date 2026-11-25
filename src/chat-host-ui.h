@@ -590,21 +590,28 @@ RECT PanelRect(float shown) {   // client pixels; shown 0 (off the right edge) .
         const int left = right - w + int(std::lround((1 - shown) * (w + in)));
         return {left, S(card.top), left + w, S(card.bottom)};
     }
+    if (chrome.sidebar) {   // #127: the card (CardInset from the right and bottom; left of an open drawer unless DrawerOverChat)
+        const int in = S(CardInset), right = c.right - in - (DrawerOverChat || chrome.sidebarReserve <= 0 ? 0 : S(chrome.sidebarReserve + CardInset));
+        const int left = right - w + int(std::lround((1 - shown) * (w + in)));
+        return {left, S(chrome.ContentTop()), left + w, c.bottom - in + (AnnotationBandSliding() ? S(chrome.annotationBand) : 0)};
+    }
     const int left = c.right - w + int(std::lround((1 - shown) * w));
     return {left, S(chrome.ContentTop()), left + w, c.bottom + (AnnotationBandSliding() ? S(chrome.annotationBand) : 0)};
 }
-// Mode Focus chat card (src/focus-mode.h chatRadius / chatBorder / chatBorderRgb; Paper 203J-0 / 20MM-0): four layered
-// masks over the card's corners, like the page's: the canvas outside the radius-6 arc and the 1 DIP #262626 ring,
-// antialiased (no window region); the chat's WebView sits 1 DIP inside the frame, the chrome painting the ring's straight
-// sides (Chrome::chatFrame). The same mechanism as #127's side panel card (radius 8): one of the two adopts the other.
-bool CardOn() { return chrome.floating; }
-std::vector<HWND> chatMasks; int chatMaskSize = 0; UINT chatMaskDpi = 0;
+// The chat card, one helper for Mode Focus (src/focus-mode.h chatRadius / chatBorder / chatBorderRgb; Paper 203J-0 /
+// 20MM-0: radius 6) and the side panel layouts (#127, Paper 1YJQ-0: radius 8, src/chat-host.h CardRadius): four layered
+// masks over the card's corners, like the page's: the canvas outside the arc and the 1 DIP #262626 ring, antialiased (no
+// window region); the chat's WebView sits 1 DIP inside the frame, the chrome painting the ring's straight sides
+// (Chrome::chatFrame / DrawChatFrame).
+bool CardOn() { return chrome.floating || chrome.sidebar; }
+float CardRadiusDip() { return chrome.floating ? NativeChrome::FocusMode::chatRadius : CardRadius; }
+std::vector<HWND> chatMasks; int chatMaskSize = 0; UINT chatMaskDpi = 0; float chatMaskRadius = 0;
 void RenderChatCorner(HWND g, int k, int size, UINT dpi) {
     namespace FM = NativeChrome::FocusMode;
     BITMAPINFO bi{}; bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER); bi.bmiHeader.biWidth = size; bi.bmiHeader.biHeight = -size; bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
     HDC screen = GetDC(nullptr); HDC mem = CreateCompatibleDC(screen); void* bits = nullptr; HBITMAP bmp = CreateDIBSection(mem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
     if (!bmp || !bits) { if (bmp) DeleteObject(bmp); DeleteDC(mem); ReleaseDC(nullptr, screen); return; }
-    HGDIOBJ old = SelectObject(mem, bmp); auto* px = static_cast<std::uint32_t*>(bits); const float s = dpi / 96.f, r = FM::chatRadius * s, b = FM::chatBorder * s;
+    HGDIOBJ old = SelectObject(mem, bmp); auto* px = static_cast<std::uint32_t*>(bits); const float s = dpi / 96.f, r = CardRadiusDip() * s, b = FM::chatBorder * s;
     const float canvas = GetRValue(BG), ring = (FM::chatBorderRgb >> 16) & 255; const bool right = (k & 1) != 0, bottom = (k & 2) != 0;
     for (int y = 0; y < size; ++y) for (int x = 0; x < size; ++x) {
         const float ex = right ? size - (x + .5f) : x + .5f, ey = bottom ? size - (y + .5f) : y + .5f;
@@ -618,24 +625,25 @@ void RenderChatCorner(HWND g, int k, int size, UINT dpi) {
 void SyncChatCorners() {
     const auto f = chrome.chatFrame; const bool on = window && !halted && CardOn() && f.right > f.left && f.bottom > f.top;
     if (!on) { for (HWND g : chatMasks) if (GetWindowLongW(g, GWL_STYLE) & WS_VISIBLE) ShowWindow(g, SW_HIDE); return; }
-    const UINT dpi = GetDpiForWindow(window); const int size = int(std::ceil(NativeChrome::FocusMode::chatRadius * dpi / 96.f)) + 1;
+    const UINT dpi = GetDpiForWindow(window); const int size = int(std::ceil(CardRadiusDip() * dpi / 96.f)) + 1;
     while (chatMasks.size() < 4) {
         WNDCLASSW wc{}; wc.lpfnWndProc = CornerProc; wc.hInstance = instance ? instance : GetModuleHandleW(nullptr); wc.lpszClassName = L"BrowserPageCorner"; RegisterClassW(&wc);   // fails harmlessly once registered
         HWND g = CreateWindowExW(WS_EX_LAYERED | WS_EX_NOACTIVATE, L"BrowserPageCorner", L"", WS_CHILD, 0, 0, 1, 1, window, nullptr, wc.hInstance, nullptr); if (!g) return; chatMasks.push_back(g); chatMaskSize = 0;
     }
-    const bool fresh = size != chatMaskSize || dpi != chatMaskDpi; chatMaskSize = size; chatMaskDpi = dpi;
+    const bool fresh = size != chatMaskSize || dpi != chatMaskDpi || CardRadiusDip() != chatMaskRadius; chatMaskSize = size; chatMaskDpi = dpi; chatMaskRadius = CardRadiusDip();
     for (int k = 0; k < 4; ++k) {
         const int x = (k & 1) ? S(f.right) - size : S(f.left), y = (k & 2) ? S(f.bottom) - size : S(f.top);
         SetWindowPos(chatMasks[k], HWND_TOP, x, y, size, size, SWP_NOACTIVATE | SWP_SHOWWINDOW); if (fresh) RenderChatCorner(chatMasks[k], k, size, dpi);
     }
 }
-// The WebView's place inside the card (1 DIP in from its frame, for the ring); the frame itself outside focus mode.
+// The WebView's place inside the card (1 DIP in from its frame, for the ring); the frame itself without a card (top bar).
 RECT CardView(RECT r) { if (!CardOn()) return r; const int b = S(NativeChrome::FocusMode::chatBorder); return {r.left + b, r.top + b, r.right - b, r.bottom - b}; }
-// The card's frame for the chrome painter (the ring) and its corner masks; empty outside focus mode. Called after the
+// The card's frame and radius for the chrome painter (the ring) and its corner masks; empty without a card. Called after the
 // WebView is placed: the masks go back above it.
 void SyncCardFrame(RECT r) {
     D2D1_RECT_F f{};
     if (CardOn() && Shown() && r.right > r.left) { const float d = GetDpiForWindow(window) / 96.f; f = {r.left / d, r.top / d, r.right / d, r.bottom / d}; }
+    chrome.chatRadius = CardRadiusDip();
     if (f.left != chrome.chatFrame.left || f.top != chrome.chatFrame.top || f.right != chrome.chatFrame.right || f.bottom != chrome.chatFrame.bottom) { chrome.chatFrame = f; InvalidateRect(window, nullptr, FALSE); }
     SyncChatCorners();
     ::SyncResizeGrips();   // the window's resize border back above the chat's WebView (src/resize-border.h)
@@ -644,14 +652,14 @@ void FinishClose();
 struct SlideClient : AUI::Animator::Client {
     bool Frame(NativeChrome::Motion::Time now) override {
         if (!Shown()) return false;
-        { const RECT r = PanelRect(slide.Value(now)); view.Place(CardView(r)); SyncCardFrame(r); }
+        { const RECT r = PanelRect(slide.Value(now)); view.Place(CardView(r)); ::KeepChatAbovePages(); SyncCardFrame(r); }
         if (slide.Moving(now)) return true;
         if (panelState == PanelState::Opening) { panelState = PanelState::Open; Diag(L"panel in place " + Ann::Ms(Ann::NowMs() - stats.requestedAt) + L" ms after the request"); }
         else if (panelState == PanelState::Closing) FinishClose();
         return false;
     }
 } slideClient;
-void Layout() { if (Shown() && view.Exists()) { const RECT r = PanelRect(slide.Value(NativeChrome::Motion::Now())); view.Place(CardView(r)); SyncCardFrame(r); } else SyncCardFrame({}); if (BubbleOpen()) PlaceBubble(); }
+void Layout() { if (Shown() && view.Exists()) { const RECT r = PanelRect(slide.Value(NativeChrome::Motion::Now())); view.Place(CardView(r)); ::KeepChatAbovePages(); SyncCardFrame(r); } else SyncCardFrame({}); if (BubbleOpen()) PlaceBubble(); }
 void SyncChromeBits() {
     if (!Ann::uiReady) return;
     Ann::banner.SetChat(Ann::s.active && AskAvailable(Ann::ModeTab()), CommentLayout());   // Paper 1AYP-0: the layout switch
@@ -1119,5 +1127,9 @@ void Shutdown() {
 
 // ---------------------------------------------------------------- host entry points (declared at the top of main.cpp)
 float ChatInsetDip() { return Chat::InsetDip(); }
+// src/main.cpp KeepChatAbovePages: the chat's WebView window while it is the panel in the browser window, and its corner
+// masks back above it.
+HWND ChatHostWindow() { return Chat::Shown() && Chat::view.Exists() && Chat::view.Parent() == window ? Chat::view.HostWindow() : nullptr; }
+void ChatCornersOnTop() { Chat::SyncChatCorners(); }
 void ChatNavigationCompleted(const std::shared_ptr<Tab>& t) { if (Chat::rearmOwed && t && Chat::ChatTab() == t) Chat::DoRearm(); }
 void ChatShutdown() { Chat::Shutdown(); }
