@@ -1083,6 +1083,11 @@ void Shutdown() {
     }
     if (session) { session->Dispose(); disposed.push_back(std::move(session)); session.reset(); }
     for (auto& s : disposed) s->WaitStopped(3000);
+    // Lot R, private window (found 25 Nov 2026, hidden-desktop run): a turn still open when the window closes kept the
+    // snapshot store's « turn.lock » open in the window's own folder — the folder could not be removed, so the conversation's
+    // folder and the ledger stayed until the next start instead of going with the window. The store lets go here (its
+    // open turn is left « interrupted », as when the browser stops), before AnnotationShutdown erases.
+    snapshots.reset(); checkpointOfTurn.clear(); snapshotOfTurn.clear();
     disposed.clear(); view.Destroy(); panelReady = false; panelState = PanelState::Closed;
     if (post) { DestroyWindow(post); post = nullptr; }
 }

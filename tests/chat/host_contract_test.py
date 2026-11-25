@@ -461,6 +461,14 @@ check('o.instructions = ChatPrompt::Instructions();' in ss and 'if (caps.systemP
       'lot 5 (Codex): the session is given the approval rule as appended instructions, only when the agent advertises that it takes some')
 check('m.ask = {"read-only"};' in rt_cpp and 'm.automatic = {"agent", "workspace-write"};' in rt_cpp and 'm.never = {"agent-full-access"};' in rt_cpp,
       'lot 5 (Codex): « Demander » stays Codex\'s « read-only » (the only mode where an edit waits for the user), « Auto » its « agent » / « workspace-write »; full access is never offered')
+# Lot R, private window closed in the middle of a turn (found 25 Nov 2026, hidden-desktop run): the snapshot store kept its
+# « turn.lock » open in the window's own folder, which could then not be removed — conversation and ledger stayed until the
+# next start. The chat lets go of the store when it shuts down, and it shuts down BEFORE the private window's files are erased.
+sd = block_after(ui, 'void Shutdown() {')
+main_all = (SRC / 'main.cpp').read_text(encoding='utf-8')
+check(0 <= sd.find('for (auto& s : disposed) s->WaitStopped(3000);') < sd.find('snapshots.reset();') < sd.find('view.Destroy();')
+      and 0 <= main_all.find('case WM_DESTROY:ChatShutdown();') < main_all.find('AnnotationShutdown();', main_all.find('case WM_DESTROY:ChatShutdown();')),
+      'lot R (private window): at the close the chat stops its agent, lets go of the snapshot store, then the window\'s notes and folder are erased')
 cn = block_after(ui, 'void Connect(const std::string& id, const std::string& methodId) {')
 check('if (!method && info.auth.empty() && info.status == "notConnected" && info.cli) { own = AgentRuntime::DefaultTerminalSignIn(def->rt); method = &own;' in cn
       and 'else if (id != agentId) DetectAgents();' in cn,
