@@ -357,6 +357,52 @@ int wmain(int argc, wchar_t** argv) {
             Check(std::abs(l0 - 0x17) <= 2 && std::abs(lineAt() - 0x54) <= 2, compact ? "§4 compact: the new pair's line fades in (120 ms)" : "§4 panel: the new pair's line fades in (120 ms)");
         }
     }
+    {   // Val 25 nov. (« like Dia »): the complete grid's tiles fill the row edge to edge (the address field's margins), fewer
+        // bookmarks than a row holds share it, a short last row keeps the tile width on the left; 220 / 280 / 360 at 100 and
+        // 125 %, then grid B folded / unfolded at 280. Pixels: each tile's two sides are the tile (#FFFFFF0A on #171717 ≈ #20),
+        // the gaps and a short row's empty end the canvas.
+        std::ofstream fill(std::filesystem::path(out + L"\\grille.txt"));
+        auto grid = [&](UINT dpi, float panel, int n, bool open) {
+            Chrome c; Check(SUCCEEDED(c.InitOffscreen(root, dpi, 1178, 738)), "offscreen chrome (grid fill)");
+            c.sidebar = true; c.keyboardModality = true; c.bandShown = true; c.annotateShown = true;
+            Design::Accent::Set(0x1A8641); Design::Accent::SetInk(0x6FD087);
+            c.SetProfileButton(L"Travail", ProfileIcons::Fill(L"briefcase"), D2D1::ColorF(0x6F / 255.f, 0xD0 / 255.f, 0x87 / 255.f), false);
+            c.address = AddressBar::Describe(L"https://x.com/", false);
+            bookmarksN(c, n); if (n > 2) { c.bandItems[2].folder = true; c.bandItems[2].image = nullptr; }   // a folder tile, as in the capture
+            c.sidebarWidth = c.sidebarColumn = panel; c.sidebarGridOpen = open;
+            c.SetFavicons(icons); c.sideHome.assign(5, false); c.sideDetails.assign(5, L"");
+            c.Paint(titles, 0, L"https://x.com/", false, 0, 0);
+            wchar_t name[80]; std::swprintf(name, 80, L"grille-%d-%02d%ls-%d", (int)panel, n, open ? L"-deplie" : (n > 2 * Sidebar::Columns(panel - 16) ? L"-replie" : L""), (int)dpi);
+            Check(SUCCEEDED(c.SavePng((out + L"\\" + name + L".png").c_str())), "snapshot (grid fill)");
+            const auto& L = c.side; const auto& g = L.grid; const float l = L.address.left, r = L.address.right;
+            auto grey = [&](float x, float y) { return (int)((c.SurfacePixel(x, y) >> 8) & 255); };
+            bool ok = !g.tiles.empty() && Near(c.sidebarColumn, panel) && g.columns == std::min(n, Sidebar::Columns(r - l));
+            for (int i = 0; ok && i < (int)g.tiles.size(); ++i) {
+                const auto& t = g.tiles[i]; if (t.top >= g.view.bottom) break;
+                const float y = (t.top + t.bottom) / 2; const bool rowEnd = i % g.columns == g.columns - 1 || i + 1 == (int)g.tiles.size();
+                ok = std::abs(grey(t.left + 3, y) - 0x20) <= 2 && std::abs(grey(t.right - 3, y) - 0x20) <= 2 && Near(t.Width(), g.tiles[0].Width());
+                if (!rowEnd) ok = ok && std::abs(grey(t.right + 3, y) - 0x17) <= 1;
+                if (i % g.columns == g.columns - 1) ok = ok && Near(t.right, r);                                   // a full row ends on the address' edge
+                else if (i + 1 == (int)g.tiles.size()) ok = ok && std::abs(grey(r - 3, y) - 0x17) <= 1;          // a short last row: the rest is canvas
+                if (i % g.columns == 0) ok = ok && Near(t.left, l);
+            }
+            char line[200]; std::snprintf(line, sizeof line, "%ls columns %d tile %.2f x %.2f row %.1f .. %.1f address %.1f .. %.1f\n", name, g.columns, g.tiles[0].Width(), g.tiles[0].Height(), g.tiles[0].left, g.tiles[std::min((int)g.tiles.size(), g.columns) - 1].right, l, r);
+            fill << line;
+            char what[160]; std::snprintf(what, sizeof what, "grid fill %ls: tiles edge to edge, gaps and a short row's end on the canvas", name);
+            Check(ok, what);
+            return L;
+        };
+        for (UINT dpi : {96u, 120u}) for (float panel : {220.f, 280.f, 360.f}) for (int n : {1, 4, 5, 9}) grid(dpi, panel, n, false);
+        const auto folded = grid(96, 280, 20, false), unfolded = grid(96, 280, 20, true);
+        Check(!folded.gridOpen && folded.grid.tiles.size() == 10 && !folded.gridToggle.Empty() && unfolded.gridOpen && unfolded.grid.tiles.size() == 20 && !unfolded.manage.Empty() && Near(unfolded.grid.tiles[0].Width(), folded.grid.tiles[0].Width()), "grid B at 280: folded 2 x 5 + « Tous les favoris (20) », unfolded 4 rows of 5 + « Réduire »");
+        grid(120, 280, 20, false); grid(120, 280, 20, true);
+        // The compact column does not change (icons only): its tiles stay 40 x 36 at the column's edges.
+        Chrome c; Check(SUCCEEDED(c.InitOffscreen(root, 96, 1178, 738)), "offscreen chrome (grid fill, compact)");
+        c.sidebar = true; c.bandShown = true; bookmarksN(c, 3); c.sidebarWidth = 360; c.sidebarMode = Sidebar::Mode::Compact; c.sidebarColumn = Sidebar::Compact::width; c.sidebarTitles = 0;
+        c.Paint(titles, 0, L"", false, 0, 0);
+        Check(c.side.tiles.size() == 3 && c.side.grid.tiles.empty() && Near(c.side.tiles[0].left, 0) && Near(c.side.tiles[0].right, 40) && Near(c.side.tiles[2].Height(), 36), "compact: three 40 x 36 tiles in a column, unchanged");
+        Check(SUCCEEDED(c.SavePng((out + L"\\grille-compact-03-96.png").c_str())), "snapshot (grid fill, compact)");
+    }
     std::printf("sidebar_render_test: %d checks passed\n", checks);
     return 0;
 }

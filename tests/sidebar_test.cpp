@@ -70,6 +70,64 @@ int main() {
     }
     {   // 300 and 360 wide columns: 6 then 7 per row (« panneau 300 / 360 »).
         Check(S::Columns(232) == 5 && S::Columns(284) == 6 && S::Columns(344) == 7, "about 42 DIP tiles: 5 / 6 / 7 per row (1W1T-0, 1W4Z-0)");
+        // The resize boards' notes: « Minimum 220 (4 favoris par rangée) », « 6 par rangée dès 296 », « 360 = 7 ».
+        Check(S::Columns(204) == 4 && S::Columns(279) == 5 && S::Columns(280) == 6 && S::Columns(344) == 7 && S::Columns(345) == 7, "4 at 220, 6 from 296, 7 at 360 (1Y82-0, 1XWT-0, 1Y0T-0)");
+    }
+    {   // Val 25 nov. (« like Dia »): the tiles fill the row edge to edge with the address field's margins; fewer bookmarks than a
+        // row holds share it (3 in 232: no empty slots on the right); a last row that is not full keeps the rows' tile width,
+        // left-aligned. Every panel width a drag can give at 100 / 125 / 150 / 175 / 200 % (a device pixel at a time, 220 ..
+        // 360 DIP), folded and unfolded (grid B), 1 to 21 bookmarks.
+        const auto L3 = S::Compute(Complete(3));
+        Check(L3.grid.columns == 3 && L3.grid.tiles.size() == 3 && Same(L3.grid.tiles[0], 8, 92, 8 + 220 / 3.f, 132) && Same(L3.grid.tiles[2], 240 - 220 / 3.f, 92, 240, 132), "3 bookmarks in 248: three tiles of 73.3 share the row (owner's capture)");
+        const auto L1 = S::Compute(Complete(1));
+        Check(L1.grid.columns == 1 && Same(L1.grid.tiles[0], 8, 92, 240, 132) && Same(L1.gridBlock, 8, 92, 240, 132), "1 bookmark: the whole row");
+        const auto L6 = S::Compute(Complete(6));
+        Check(L6.grid.columns == 5 && Same(L6.grid.tiles[5], 8, 138, 49.6f, 178) && Near(L6.grid.tiles[5].Width(), L6.grid.tiles[0].Width()), "6 in 248: 5 + 1, the last one keeps the width, on the left");
+        int cases = 0, bad = 0, lastColumns = 0; const float scales[] = {1, 1.25f, 1.5f, 1.75f, 2};
+        for (float s : scales) {
+            lastColumns = 0;
+            for (int px = static_cast<int>(std::ceil(220 * s - 1e-3f)); px <= static_cast<int>(std::floor(360 * s + 1e-3f)); ++px)
+                for (int n = 1; n <= 21; ++n) for (int open = 0; open < 2; ++open) {
+                    auto in = Complete(n); in.panel = px / s; in.gridOpen = open != 0; const auto L = S::Compute(in); ++cases;
+                    const float l = L.address.left, r = L.address.right, w = r - l;
+                    const int fit = std::max(1, static_cast<int>(std::floor((w + 6) / (41.6f + 6) + 1e-3f))), cols = std::min(fit, n);
+                    const bool folds = n > 2 * fit, shown = !folds || open;
+                    const int count = shown ? n : 2 * fit;
+                    bool ok = L.grid.columns == cols && static_cast<int>(L.grid.tiles.size()) == count && L.gridOpen == (folds && open) && L.gridToggle.Empty() == !folds && L.manage.Empty() == !(folds && open);
+                    ok = ok && Near(l, 8) && Near(r, px / s - 8) && Near(L.grid.view.left, l) && Near(L.grid.view.right, r);
+                    const float tw = (w - 6 * (cols - 1)) / cols;
+                    for (int i = 0; ok && i < count; ++i) {
+                        const S::Box& t = L.grid.tiles[i]; const int c = i % cols, row = i / cols;
+                        ok = Near(t.Width(), tw, 1e-3f) && Near(t.Height(), 40) && Near(t.left, l + c * (tw + 6), 1e-3f) && Near(t.top + L.grid.scroll, L.grid.view.top + row * 46, 1e-3f);
+                        if (c == cols - 1) ok = ok && Near(t.right, r, 1e-3f) && std::lround(t.right * s) == std::lround(r * s);   // edge to edge, in device pixels too
+                        if (c == 0) ok = ok && std::lround(t.left * s) == std::lround(l * s);
+                    }
+                    if (fit < lastColumns) ok = false;   // a wider panel never holds fewer per row
+                    if (n == 21 && !open) lastColumns = fit;
+                    if (!ok && ++bad <= 5) std::printf("  grid fill: scale %.2f, %d px (%.2f DIP), %d bookmarks, %s: columns %d (%d), tiles %d (%d)\n", s, px, px / s, n, open ? "unfolded" : "folded", L.grid.columns, cols, static_cast<int>(L.grid.tiles.size()), count);
+                }
+        }
+        std::printf("grid fill: %d layouts checked (220 .. 360 at 100 .. 200 %%, 1 .. 21 bookmarks, folded / unfolded)\n", cases);
+        Check(bad == 0, "the grid fills the row at every width and scale; a short last row keeps the tile width");
+        for (int n : {20, 9}) for (float panel : {220.f, 280.f, 360.f}) {   // expand / collapse (variant B) at the three widths
+            auto in = Complete(n); in.panel = panel; const auto F = S::Compute(in); in.gridOpen = true; const auto O = S::Compute(in);
+            const int cols = S::Columns(panel - 16), folds = n > 2 * cols;
+            bool ok = F.grid.columns == std::min(cols, n) && O.grid.columns == F.grid.columns && !F.gridOpen && F.gridToggle.Empty() == !folds;
+            if (folds) ok = ok && static_cast<int>(F.grid.tiles.size()) == 2 * cols && O.gridOpen && static_cast<int>(O.grid.tiles.size()) == n && !O.manage.Empty() && Near(O.grid.tiles.back().left, 8 + ((n - 1) % cols) * (O.grid.tiles[0].Width() + 6)) && Near(O.grid.tiles.back().Width(), F.grid.tiles[0].Width()) && O.gridBlock.bottom > F.gridBlock.bottom;
+            else ok = ok && static_cast<int>(O.grid.tiles.size()) == n && !O.gridOpen && Same(O.gridBlock, F.gridBlock.left, F.gridBlock.top, F.gridBlock.right, F.gridBlock.bottom);
+            char what[120]; std::snprintf(what, sizeof what, "%d bookmarks at %.0f: fold / unfold keeps %d per row", n, panel, std::min(cols, n));
+            Check(ok, what);
+        }
+        // The compact column does not change: icons only, 40 x 36 tiles, gap 4, whatever the count and the stored width; its
+        // « » » popover keeps five per row (a sixth bookmark starts a second row at the same width).
+        bool compactOk = true;
+        for (int n = 1; n <= 9; ++n) for (float panel : {220.f, 280.f, 360.f}) {
+            auto in = Compact(n); in.panel = panel; const auto K = S::Compute(in);
+            compactOk = compactOk && Near(K.column, 40) && static_cast<int>(K.tiles.size()) == std::min(n, 5) && K.more == (n > 5) && K.grid.tiles.empty();
+            for (int i = 0; compactOk && i < static_cast<int>(K.tiles.size()); ++i) compactOk = Same(K.tiles[i], 0, 76 + i * 40.f, 40, 112 + i * 40.f);
+        }
+        const auto P6 = S::ComputePopover(40, S::Box{0, 236, 40, 272}, 6, 0, 738);
+        Check(compactOk && P6.grid.columns == 5 && P6.grid.tiles.size() == 6 && Near(P6.grid.tiles[5].left, P6.grid.tiles[0].left) && Near(P6.grid.tiles[5].Width(), (230 - 4 * 6) / 5.f), "compact unchanged (1WDI-0) and its popover keeps five per row");
     }
     {   // « Toujours » with no bookmark: one full row tile.
         const auto L = S::Compute(Complete(0));

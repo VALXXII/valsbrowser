@@ -48,9 +48,11 @@ inline constexpr float row = 32, rowGap = 6, toggle = 28;
 inline constexpr float address = 32, addressPad = 8, addressGap = 6, addressGlyph = 14, addressFont = 16;
 // Bookmarks grid, variant B (Paper « Favoris · 10 / 20 · B / 40 · B replié / déplié / panneau 300 / 360 »): tiles 40
 // high, radius 8, #FFFFFF0A (hover #FFFFFF14), gap 6, as many columns as keep a tile about 42 wide (5 in 232, 6 in 284,
-// 7 in 344); favicon 18, a folder's glyph 16 white 70 %. Folded: two rows, then the 24 DIP row « Tous les favoris (N) »
-// with a caret (1WKW-0: padding 6, gap 6, 13/16 white 50 %, caret 12 white 50 %) when there are more. Unfolded: up to 5
-// rows (224) in a viewport that scrolls (a 32 DIP canvas fade at its bottom, a 3 DIP #FFFFFF33 bar radius 2 at its
+// 7 in 344); favicon 18, a folder's glyph 16 white 70 %. The tiles share the row edge to edge (Paper: flex 1, basis 0)
+// within the address field's margins; fewer bookmarks than a row holds share it too (3 in 232: 73.3 each; Val 25 nov.,
+// « like Dia »); a last row that is not full keeps the rows' tile width, left-aligned. Folded: two rows, then the 24 DIP
+// row « Tous les favoris (N) » with a caret (1WKW-0: padding 6, gap 6, 13/16 white 50 %, caret 12 white 50 %) when
+// there are more. Unfolded: up to 5 rows (224) in a viewport that scrolls (a 32 DIP canvas fade at its bottom, a 3 DIP #FFFFFF33 bar radius 2 at its
 // right, 4 from its top: 1WRB-0 / 1WRC-0), then the row « Réduire » (caret up); the tabs keep at least half the height.
 inline constexpr float tile = 40, tileGap = 6, tileNominal = 41.6f, toggleRow = 24, togglePad = 6, toggleFont = 13, toggleGlyph = 12;
 inline constexpr int foldedRows = 2, openRows = 5;
@@ -319,9 +321,10 @@ struct Grid {
 inline int Columns(float width) { return std::max(1, static_cast<int>(std::floor((width + Complete::tileGap) / (Complete::tileNominal + Complete::tileGap) + 1e-3f))); }
 // `n` tiles in rows of Columns(w) inside [left, left + w], from `top`, `visibleRows` rows tall at most (then scrolling),
 // `maxHeight` at most (the viewport may cut a row: the fade covers it).
-// `columns` > 0: that many per row (the popover's five in 230, Paper 1WSC-0 / 1YX2-0), else Columns(w).
+// `columns` > 0: that many per row (the popover's five in 230, Paper 1WSC-0 / 1YX2-0), else Columns(w), or `n` when
+// fewer: a single row of them spans the width (no empty slots on its right).
 inline Grid MakeGrid(float left, float top, float w, int n, int visibleRows, float scroll, float maxHeight = 1e9f, int columns = 0) {
-    namespace C = Complete; Grid g; g.columns = columns > 0 ? columns : Columns(w);
+    namespace C = Complete; Grid g; g.columns = columns > 0 ? columns : std::max(1, std::min(Columns(w), n));
     g.rows = n <= 0 ? 0 : (n + g.columns - 1) / g.columns;
     const auto height = [](int r) { return r <= 0 ? 0.f : r * C::tile + (r - 1) * C::tileGap; };
     const float viewH = std::min(height(std::min(g.rows, visibleRows)), std::max(C::tile, maxHeight));
