@@ -342,7 +342,9 @@ def scenario_update(name, lang, previous, expect, data=None):
         ix, iy = corner_inset(d, hwnd)
         check(abs(ix - 14) <= 1 and abs(iy - 14) <= 1, f'{name}: the Full view stays in the bottom-right corner ({ix:.1f} / {iy:.1f} DIP)')
         u = ps(PS_DIALOG.format(hwnd=int(d)))
-        check('showall' not in u and u.get('offscreen') == '0', f'{name}: Full view: no Voir tout, every item on screen')
+        # Designer's catch-up card (Paper 26KK-0 / 26MU-0, 25 Nov): the Full view is 480 DIP at most and scrolls with a fade,
+        # so with many notes some items are below the fold (reachable by scrolling, read by UIA): no Voir tout, height capped.
+        check('showall' not in u and h2 <= 481, f'{name}: Full view: no Voir tout, at most 480 DIP (it scrolls; {u.get("offscreen")} item(s) below the fold)')
         shoot(f'{name}-full-{dpi}', d, dpi)
         u32.PostMessageW(d, 0x0100, 0x1B, 0)   # WM_KEYDOWN Échap
         time.sleep(0.8)
