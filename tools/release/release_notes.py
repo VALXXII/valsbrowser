@@ -11,7 +11,7 @@ tools/release/build.py calls write_header() on every build: the current file is 
 the history is read, and every entry up to this build is compiled into browser.exe through
 <out>-obj/gen/release-notes-data.h (src/release-notes.h includes it). After an update the browser shows
 the notes of every version newer than the last one whose notes the user saw (cumulative, newest first,
-de-duplicated, at most DISPLAY_LINES per section for now): select() below mirrors that choice.
+de-duplicated, at most DISPLAY_LINES per section, the Full view scrolling past 480 DIP): select() below mirrors that choice.
 
   python tools/release/release_notes.py            check release-notes/notes.json, print it and the history
   python tools/release/release_notes.py --header F --build N   write the generated header (what build.py does)
@@ -29,8 +29,8 @@ REL = 'release-notes/notes.json'
 NOTES = ROOT / REL
 SECTIONS = ('ajouts', 'corrections')   # « Ajouts » / « Corrections » (Paper p-L-0 142E-0 / 144O-0)
 LANGS = ('fr', 'en')
-MAX_ITEMS = 10      # per section in the file (a catch-up can list more than the card shows)
-DISPLAY_LINES = 4   # per section on the card, for now (same constant in src/release-notes.h; design question)
+MAX_ITEMS = 10      # per section in the file
+DISPLAY_LINES = 10  # per section on a card gathering several versions (src/release-notes.h DisplayLines, Paper 26KJ-0)
 MAX_CHARS = 80      # per line and language: two lines of the 343 DIP card (≈ 70 recommended)
 
 
@@ -223,9 +223,8 @@ def main() -> int:
     for section, title in zip(SECTIONS, ('Ajouts', 'Corrections')):
         if notes[section]:
             print(title)
-            for k, (fr, en) in enumerate(notes[section], 1):
-                hidden = '   [pas affichée pour l’instant : 4 par section]' if k > DISPLAY_LINES else ''
-                print(f'  + {fr}  ({len(fr)}){hidden}\n    {en}  ({len(en)})')
+            for fr, en in notes[section]:
+                print(f'  + {fr}  ({len(fr)})\n    {en}  ({len(en)})')
     entries = history()
     print('\nVersions avec des notes, la plus récente d’abord (ajouts + corrections) :')
     for e in entries:

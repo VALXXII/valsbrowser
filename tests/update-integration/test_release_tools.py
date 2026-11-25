@@ -1121,7 +1121,9 @@ class ReleaseNotesFile(unittest.TestCase):
         h = [entry(842, ['Print', 'Share', 'Emoji'], ['Bubble']), entry(898, ['Side tabs']), entry(950, ['Focus', 'Print'], ['Downloads', 'History'])]
         firsts = lambda sel, s: [p[0] for p in sel[s]]
         sel = R.select(h, 646, 950)
-        self.assertEqual(firsts(sel, 'ajouts'), ['Focus', 'Print', 'Side tabs', 'Share'], 'newest first, once, 4 per section')
+        self.assertEqual(firsts(sel, 'ajouts'), ['Focus', 'Print', 'Side tabs', 'Share', 'Emoji'], 'newest first, once')
+        self.assertEqual(firsts(R.select(h, 646, 950, 4), 'ajouts'), ['Focus', 'Print', 'Side tabs', 'Share'], 'a cap keeps the newest')
+        self.assertEqual(R.DISPLAY_LINES, 10)
         self.assertEqual(firsts(sel, 'corrections'), ['Downloads', 'History', 'Bubble'])
         self.assertEqual(firsts(R.select(h, 898, 950), 'ajouts'), ['Focus', 'Print'], 'only what was not seen')
         self.assertEqual(firsts(R.select(h, 898, 920), 'ajouts'), [], 'versions without notes: nothing (no card)')

@@ -13,7 +13,10 @@
 //     onShown only when really shown, UIA nodes, logo clock only while shown, reduced motion poster,
 //     short windows (Full scrolls), FR / EN, 96 / 144 / 192 DPI — on the Paper sample text;
 //  E. the build's own notes (release-notes/notes.json and its history, when the runner compiled them in): every
-//     line of every version on at most two lines of the card, FR and EN; renders of the card a catch-up shows.
+//     line of every version on at most two lines of the card, FR and EN; renders of the card a catch-up shows;
+//  F. the catch-up card (Paper 26KK-0 Full / 26MU-0 Mini): « Depuis la version … » under the title only for several
+//     versions, the fixed head and its rule, at most 480 high, body scrolling to 40 above the bottom under the 48 fade,
+//     the thin bar only while scrolling, « Voir les N nouveautés » / « Voir la nouveauté », FR / EN, UIA.
 // Usage: release_notes_test.exe <repo root> <output dir>
 #include <windows.h>
 #include <wincodec.h>
@@ -125,9 +128,19 @@ int wmain(int argc, wchar_t** argv) {
             const auto one = RN::Unseen(H, "0.3.898", "0.3.950");
             Check(one.id == "0.3.950" && frs(one.added) == L"Mode Focus.|Impression avec aperçu.|" && frs(one.fixed) == L"Téléchargements fiables.|Historique instantané.|", "unseen: one version");
             const auto all = RN::Unseen(H, "0.3.646", "0.3.950");
-            Check(frs(all.added) == L"Mode Focus.|Impression avec aperçu.|Onglets sur le côté.|Partage d’écran.|" && frs(all.fixed) == L"Téléchargements fiables.|Historique instantané.|La bulle suit l’élément.|",
-                  "unseen: several versions merged, newest first, the repeated line once, 4 per section (the oldest extra line left out)");
-            Check(RN::Unseen(H, "0.3.646", "0.3.950", 0).added.size() == 5, "unseen: no cap = every line once");
+            Check(frs(all.added) == L"Mode Focus.|Impression avec aperçu.|Onglets sur le côté.|Partage d’écran.|Emoji en couleur.|" && frs(all.fixed) == L"Téléchargements fiables.|Historique instantané.|La bulle suit l’élément.|",
+                  "unseen: several versions merged, newest first, the repeated line once");
+            Check(all.versions == 3 && all.since == "0.3.646" && one.versions == 1 && one.since == "0.3.898", "unseen: how many versions, since which one");
+            Check(frs(RN::Unseen(H, "0.3.646", "0.3.950", 4).added) == L"Mode Focus.|Impression avec aperçu.|Onglets sur le côté.|Partage d’écran.|", "unseen: a cap keeps the newest lines (the oldest extra line left out)");
+            Check(RN::DisplayLines == 10 && RN::Unseen(H, "0.3.646", "0.3.950", 0).added.size() == 5, "unseen: 10 lines per section (Paper 26KJ-0); no cap = every line once");
+            const auto latest = RN::Latest(H);
+            Check(latest.id == "0.3.950" && latest.versions == 1 && latest.since.empty() && frs(latest.added) == L"Mode Focus.|Impression avec aperçu.|", "latest (À propos): the newest version alone");
+            I18n::SetForProcess(I18n::Locale::Fr);
+            Check(RN::Subtitle(all) == L"Depuis la version 0.3.646" && RN::Subtitle(one).empty() && RN::Subtitle(latest).empty() && RN::Subtitle(RN::Unseen(H, "", "0.3.950")).empty(),
+                  "subtitle FR: « Depuis la version 0.3.646 » for several versions; one version or no known start: none (Paper 26KJ-0)");
+            I18n::SetForProcess(I18n::Locale::En);
+            Check(RN::Subtitle(all) == L"Since version 0.3.646", "subtitle EN: « Since version 0.3.646 »");
+            I18n::SetForProcess(I18n::Locale::Fr);
             Check(frs(RN::Unseen(H, "", "0.3.900").added) == L"Onglets sur le côté.|Impression avec aperçu.|Partage d’écran.|Emoji en couleur.|", "unseen: nothing newer than the build itself");
             Check(RN::Unseen(H, "0.3.950", "0.3.960").Empty() && RN::Unseen(H, "", "dev").Empty() && RN::Unseen({}, "", "0.3.950").Empty(), "unseen: none after the last notes, a dev build, no history");
         }
@@ -143,21 +156,21 @@ int wmain(int argc, wchar_t** argv) {
         RN::Content card;
         Check(RN::Decide(true, none, "0.3.950", missing, H, &card) == D::Baseline && card.Empty(), "decide: fresh install -> no card, this version recorded as seen (baseline)");
         Check(RN::Decide(true, none, "0.3.950", st("0.3.898"), H) == D::Hidden, "decide: fresh install over an existing state -> nothing");
-        Check(RN::Decide(true, p840, "0.3.950", st("0.3.840"), H, &card) == D::Show && card.id == "0.3.950" && card.added.size() == 4 && card.fixed.size() == 3,
+        Check(RN::Decide(true, p840, "0.3.950", st("0.3.840"), H, &card) == D::Show && card.id == "0.3.950" && card.added.size() == 5 && card.fixed.size() == 3 && card.versions == 3 && card.since == "0.3.840",
               "decide: update skipping several versions (0.3.840 -> 0.3.950) -> one card with 0.3.842 + 0.3.898 + 0.3.950");
-        Check(RN::Decide(true, inst, "0.3.950", st(RN::LegacyId), H, &card) == D::Show && frs(card.added) == L"Mode Focus.|Impression avec aperçu.|Onglets sur le côté.|Partage d’écran.|",
+        Check(RN::Decide(true, inst, "0.3.950", st(RN::LegacyId), H, &card) == D::Show && frs(card.added) == L"Mode Focus.|Impression avec aperçu.|Onglets sur le côté.|Partage d’écran.|Emoji en couleur.|" && card.since == "0.3.646",
               "decide: the owner's case (fixed id of 0.3.646 seen, update from 0.3.898) -> everything since 0.3.646");
         Check(RN::Decide(true, inst, "0.3.950", st("notes-hash898"), H, &card) == D::Show && frs(card.added) == L"Mode Focus.|Impression avec aperçu.|",
               "decide: notes of 0.3.898 seen (hash of builds 0.3.842-0.3.898) -> only 0.3.950");
         Check(RN::Decide(true, inst, "0.3.920", st("0.3.898"), H, &card) == D::Hidden && card.Empty(), "decide NEGATIVE: versions without notes since the last seen -> no card (generic notification)");
         Check(RN::Decide(true, inst, "0.3.950", st("0.3.898"), H, &card) == D::Show && frs(card.added) == L"Mode Focus.|Impression avec aperçu.|", "decide: 0.3.898 -> 0.3.950 over a version without notes -> 0.3.950's notes");
-        Check(RN::Decide(true, inst, "0.3.950", missing, H, &card) == D::Show && frs(card.added) == L"Mode Focus.|Impression avec aperçu.|", "decide: no state -> what is newer than the previous installed version");
+        Check(RN::Decide(true, inst, "0.3.950", missing, H, &card) == D::Show && frs(card.added) == L"Mode Focus.|Impression avec aperçu.|" && card.since == "0.3.898", "decide: no state -> what is newer than the previous installed version");
         Check(RN::Decide(true, inst, "0.3.950", st("notes-unknown"), H, &card) == D::Show && frs(card.added) == L"Mode Focus.|Impression avec aperçu.|", "decide: unknown seen id -> newer than the previous installed version");
         Check(RN::Decide(true, p950, "0.3.960", missing, H) == D::Hidden, "decide NEGATIVE: nothing newer than the previous installed version -> no card");
         Check(RN::Decide(true, inst, "0.3.950", st("0.3.950"), H) == D::Hidden && RN::Decide(true, inst, "0.3.950", st("0.3.960"), H) == D::Hidden, "decide NEGATIVE: already seen up to this version (or later)");
         Check(RN::Decide(true, p840, "0.3.900", st("0.3.840"), H, &card) == D::Show && card.id == "0.3.900" && frs(card.added) == L"Onglets sur le côté.|Impression avec aperçu.|Partage d’écran.|Emoji en couleur.|",
               "decide: notes newer than the running build are never shown");
-        Check(RN::Decide(true, port, "0.3.950", missing, H, &card) == D::Show && card.added.size() == 4, "decide: update from a portable copy -> the most recent notes");
+        Check(RN::Decide(true, port, "0.3.950", missing, H, &card) == D::Show && card.added.size() == 5 && card.since.empty() && RN::Subtitle(card).empty(), "decide: update from a portable copy -> every version's notes, no « Depuis » (start unknown)");
         Check(RN::Decide(true, inst, "0.3.950", missing, {}) == D::Hidden, "decide NEGATIVE: a build without notes -> no card (generic notification)");
         Check(RN::Decide(false, inst, "0.3.950", missing, H) == D::Hidden, "decide NEGATIVE: ordinary launch / another window (no Installed at start)");
         Check(RN::Decide(true, inst, "dev", missing, H) == D::Hidden, "decide NEGATIVE: dev build (no M.m.B version)");
@@ -173,10 +186,11 @@ int wmain(int argc, wchar_t** argv) {
         Check(fr.size() == 2 && fr[0].kind == RN::Kind::Added && fr[0].items.size() == 2 && fr[1].kind == RN::Kind::Fixed && fr[1].items.size() == 3, "content: Ajouts 2 + Corrections 3");
         Check(fr[0].title == L"Ajouts" && fr[1].title == L"Corrections" && fr[0].items[0] == L"Mode Commentaire : discutez d’un élément de la page avec votre agent." && fr[0].items[1] == L"Infobulles centrées, enfin visibles dans les panneaux."
               && fr[1].items[0] == L"Un téléchargement n’affiche plus de page d’erreur." && fr[1].items[1] == L"Ctrl+A sélectionne tout dans chaque champ." && fr[1].items[2] == L"Saisie sans scintillement dans les champs de texte.", "content FR: the validated text verbatim");
-        Check(std::wstring(TR(release_notes_title)) == L"Nouveautés" && std::wstring(TR(release_notes_show_all)) == L"Voir tout", "content FR: title and Voir tout");
+        Check(std::wstring(TR(release_notes_title)) == L"Nouveautés" && TRP(release_notes_show_count, 20) == L"Voir les 20 nouveautés" && TRP(release_notes_show_count, 1) == L"Voir la nouveauté",
+              "content FR: title, « Voir les 20 nouveautés », « Voir la nouveauté » (Paper 26MU-0)");
         I18n::SetForProcess(I18n::Locale::En);
         auto en = RN::Sections(Sample());
-        Check(en.size() == 2 && en[0].items.size() == 2 && en[1].items.size() == 3 && en[0].title == L"Added" && en[1].title == L"Fixed" && std::wstring(TR(release_notes_show_all)) == L"Show all", "content EN: same structure, English text");
+        Check(en.size() == 2 && en[0].items.size() == 2 && en[1].items.size() == 3 && en[0].title == L"Added" && en[1].title == L"Fixed" && TRP(release_notes_show_count, 20) == L"See all 20 updates" && TRP(release_notes_show_count, 1) == L"See the update", "content EN: same structure, « See all 20 updates » / « See the update », English text");
         bool differ = true; for (size_t s = 0; s < 2; ++s) for (size_t i = 0; i < en[s].items.size(); ++i) differ = differ && en[s].items[i] != fr[s].items[i];
         Check(differ, "content EN: every item translated");
         const auto spoken = RN::Spoken(en);
@@ -397,8 +411,8 @@ int wmain(int argc, wchar_t** argv) {
     // ---- E. the release's own notes -----------------------------------------------------------------------
     if (!RN::History().empty()) {
         const auto& h = RN::History();
-        const RN::Content every = RN::Unseen(h, "", h.front().version, 0), shown = RN::Unseen(h, "", h.front().version);
-        Check(shown.added.size() <= RN::DisplayLines && shown.fixed.size() <= RN::DisplayLines, "release notes: the card shows at most 4 lines per section");
+        const RN::Content every = RN::Unseen(h, "", h.front().version, 0), shown = RN::Unseen(h, RN::LegacyVersion, h.front().version);   // the owner's card
+        Check(shown.added.size() <= RN::DisplayLines && shown.fixed.size() <= RN::DisplayLines, "release notes: the card shows at most 10 lines per section");
         for (I18n::Locale lang : {I18n::Locale::Fr, I18n::Locale::En}) {
             I18n::SetForProcess(lang); const std::wstring tag = lang == I18n::Locale::Fr ? L"fr" : L"en";
             const auto sections = RN::Sections(every);
@@ -415,16 +429,85 @@ int wmain(int argc, wchar_t** argv) {
             char what[220]; std::snprintf(what, sizeof what, "release notes %ls: every line of every version fits two lines of the card (%zu lines, tallest %.0f DIP)", tag.c_str(), every.added.size() + every.fixed.size(), worst);
             Check(shape && at == blocks.size() && twoLines, what);
             d.Abort(); d.FinishAnimationsForTest();
-            d.Show(NotesSpecOf(shown, root, false), area, [](const Modal::Result&) {}); d.FinishAnimationsForTest(); Pump(20);
-            { char full[160]; std::snprintf(full, sizeof full, "release notes %ls: Full view of the card rendered (%.0f DIP)", tag.c_str(), d.HeightForTest());
+            SetWindowPos(owner, nullptr, 100, 100, 1000, 1100, SWP_NOZORDER | SWP_NOACTIVATE);
+            const RECT tall{100, 100, 1100, 1200};
+            { auto es = NotesSpecOf(shown, root, false); es.notes.subtitle = RN::Subtitle(shown); d.Show(es, tall, [](const Modal::Result&) {}); } d.FinishAnimationsForTest(); Pump(20);
+            { char full[200]; std::snprintf(full, sizeof full, "release notes %ls: the owner's catch-up card rendered (%zu lines, %.0f DIP, scrolls %.0f)", tag.c_str(), shown.Lines(), d.HeightForTest(), d.ScrollMaxForTest());
               Check(d.RenderForTest(out + L"\\release-full-" + tag + L"-144.png", 144), full); }
+            d.ScrollForTestBy(1e4f);
+            Check(d.RenderForTest(out + L"\\release-full-end-" + tag + L"-144.png", 144), "release notes: the same card scrolled to its end rendered");
             d.Abort(); d.FinishAnimationsForTest();
-            d.Show(NotesSpecOf(shown, root, true), area, [](const Modal::Result&) {}); d.FinishAnimationsForTest();
+            d.Show(NotesSpecOf(shown, root, true), tall, [](const Modal::Result&) {}); d.FinishAnimationsForTest();
             Check(d.RenderForTest(out + L"\\release-mini-" + tag + L"-144.png", 144) && std::fabs(d.HeightForTest() - 218) < .01f, "release notes: Mini 343 x 218 rendered");
             d.Abort(); d.FinishAnimationsForTest();
+            SetWindowPos(owner, nullptr, 100, 100, 1000, 700, SWP_NOZORDER | SWP_NOACTIVATE);
         }
         I18n::SetForProcess(I18n::Locale::Fr);
     } else std::printf("note release notes: none compiled in (run through test-release-notes.ps1 to check release-notes/notes.json)\n");
+    // ---- F. the catch-up card (Paper 26KK-0 / 26MU-0) -----------------------------------------------------------------
+    {
+        // 10 + 10 lines of the size of a real catch-up, from 3 versions.
+        static const wchar_t* frLines[] = {L"Mode Focus : la page prend toute la place, les onglets se cachent.", L"Mode Annotation : un tutoriel, la bulle Commentaire ou le chat en panneau.",
+            L"Onglets sur le côté : en panneau ou en colonne compacte.", L"Nouvelles fenêtres : impression avec aperçu, pages d’erreur, onglet planté.", L"Mots de passe et infos enregistrées proposés sous les champs.",
+            L"Pastille « Local » pour les projets ouverts depuis cet ordinateur.", L"Menu des modèles : Claude et Codex réunis, avec leurs vrais modèles.", L"Partage d’écran : un site peut être bloqué une fois pour toutes.",
+            L"Emoji en couleur dans les favoris, les onglets et les menus.", L"La fenêtre s’anime quand vous la réduisez ou l’agrandissez."};
+        static std::vector<RN::Line> lines; lines.clear();
+        for (const auto* l : frLines) lines.push_back({l, l});
+        RN::Content big; big.id = "0.3.950"; big.since = "0.3.646"; big.versions = 3; big.added = lines; big.fixed = lines;
+        RN::Content single = big; single.versions = 1; single.since.clear();
+        SetWindowPos(owner, nullptr, 100, 100, 1000, 1100, SWP_NOZORDER | SWP_NOACTIVATE);
+        const RECT tall{100, 100, 1100, 1200};
+        for (I18n::Locale lang : {I18n::Locale::Fr, I18n::Locale::En}) {
+            I18n::SetForProcess(lang); const bool fr = lang == I18n::Locale::Fr; const std::wstring tag = fr ? L"fr" : L"en";
+            auto spec = NotesSpecOf(big, root, false); spec.notes.subtitle = RN::Subtitle(big);
+            Check(spec.notes.subtitle == (fr ? L"Depuis la version 0.3.646" : L"Since version 0.3.646"), "catch-up: subtitle text");
+            d.Show(spec, tall, [](const Modal::Result&) {}); d.FinishAnimationsForTest(); Pump(20);
+            const auto sub = d.NoteSubtitleForTest(), rule = d.NoteHeadRuleForTest(); const auto blocks = d.NoteBlocksForTest();
+            char what[220];
+            std::snprintf(what, sizeof what, "catch-up %ls: subtitle at 41 (18 high, text at 43), head rule at 79, body from 80, first heading at 96 (got %.1f %.1f %.1f %.1f %.1f)", tag.c_str(), sub.top, sub.bottom - sub.top, rule.top, d.NotesBodyTopForTest(), blocks.empty() ? -1.f : blocks[0].top);
+            Check(std::fabs(sub.top - 41) < .01f && std::fabs(sub.bottom - sub.top - 18) < .01f && std::fabs(sub.left - 17) < .01f && std::fabs(rule.top - 79) < .01f && std::fabs(rule.bottom - 80) < .01f
+                  && std::fabs(d.NotesBodyTopForTest() - 80) < .01f && !blocks.empty() && std::fabs(blocks[0].top - 96) < .01f, what);
+            std::snprintf(what, sizeof what, "catch-up %ls: 343 x 480 (Paper max), the body scrolls (%.0f DIP more)", tag.c_str(), d.ScrollMaxForTest());
+            Check(std::fabs(d.WidthForTest() - 343) < .01f && std::fabs(d.HeightForTest() - 480) < .01f && d.ScrollMaxForTest() > 0, what);
+            const auto now = Motion::Now();
+            Check(d.NotesBarAlphaForTest(now) == 0, "catch-up: no scroll bar before scrolling");
+            Check(d.RenderForTest(out + L"\\catchup-full-" + tag + L"-144.png", 144), "catch-up: render (top)");
+            d.ScrollForTestBy(60);
+            const auto t1 = Motion::Now();
+            Check(d.NotesBarAlphaForTest(t1) == 1 && d.NotesBarAlphaForTest(t1 + Motion::Milliseconds(1500)) == 0 && d.NextWake(t1).delay.has_value(), "catch-up: the thin bar shows while scrolling, then goes (a wake is armed)");
+            Check(d.RenderForTest(out + L"\\catchup-scrolling-" + tag + L"-144.png", 144), "catch-up: render while scrolling (bar)");
+            d.ScrollForTestBy(1e4f);
+            const auto end = d.NoteBlocksForTest(); const float lastBottom = end.back().bottom - d.ScrollForTest();
+            std::snprintf(what, sizeof what, "catch-up %ls: at the end the last line stops 40 above the bottom edge, under the 48 fade (%.1f, card %.0f)", tag.c_str(), lastBottom, d.HeightForTest());
+            Check(std::fabs(lastBottom - (480 - 1 - 40)) < .51f, what);
+            Check(d.RenderForTest(out + L"\\catchup-end-" + tag + L"-144.png", 144), "catch-up: render (end)");
+            auto nodes = d.NodesForTest(); bool subNode = false; for (auto& n : nodes) if (n.role == Accessibility::Role::Text && n.name == spec.notes.subtitle) subNode = true;
+            Check(subNode, "catch-up: the subtitle is a UIA text node");
+            d.Abort(); d.FinishAnimationsForTest();
+
+            // Mini (26MU-0): unchanged but its button; no subtitle there.
+            auto mini = NotesSpecOf(big, root, true); mini.notes.subtitle = RN::Subtitle(big);
+            Check(mini.notes.showAll == (fr ? L"Voir les 20 nouveautés" : L"See all 20 updates"), "catch-up Mini: « Voir les 20 nouveautés » (every line of the card)");
+            d.Show(mini, tall, [](const Modal::Result&) {}); d.FinishAnimationsForTest();
+            Check(std::fabs(d.HeightForTest() - 218) < .01f && d.NoteSubtitleForTest().bottom == 0, "catch-up Mini: 343 x 218, no subtitle");
+            Check(d.RenderForTest(out + L"\\catchup-mini-" + tag + L"-144.png", 144), "catch-up Mini: render");
+            d.ActivateForTest(D::NotesExpandHit);
+            Check(!d.NotesCollapsedForTest() && std::fabs(d.HeightForTest() - 480) < .01f && std::fabs(d.NoteSubtitleForTest().top - 41) < .01f, "catch-up: Voir les 20 nouveautés expands in place to the 480 card with its subtitle");
+            d.Abort(); d.FinishAnimationsForTest();
+
+            // One version: no subtitle, the card as before (144O-0) — still at most 480 when it is that long.
+            d.Show(NotesSpecOf(single, root, false), tall, [](const Modal::Result&) {}); d.FinishAnimationsForTest();
+            const auto sb = d.NoteBlocksForTest();
+            Check(d.NoteSubtitleForTest().bottom == 0 && sb.size() > 2 && std::fabs(sb[0].top - 53) < .01f && std::fabs(sb[1].top - 70) < .01f && std::fabs(d.HeightForTest() - 480) < .01f,
+                  "one long version: no subtitle, the rule at 53 and heading at 70 as before, at most 480");
+            d.Abort(); d.FinishAnimationsForTest();
+            RN::Content one; one.id = "0.3.950"; one.versions = 1; one.added = {lines[0]};
+            auto oneMini = NotesSpecOf(one, root, true);
+            Check(oneMini.notes.showAll == (fr ? L"Voir la nouveauté" : L"See the update"), "one line: « Voir la nouveauté » / « See the update »");
+        }
+        I18n::SetForProcess(I18n::Locale::Fr);
+        SetWindowPos(owner, nullptr, 100, 100, 1000, 700, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
     d.Dispose(); DestroyWindow(owner); CoUninitialize();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

@@ -19,11 +19,12 @@
 //     (UpdateCore engine view == Installed at start, once per install) AND <installRoot>\previous records a
 //     different installed version or a portable copy, AND at least one version newer than the one last seen
 //     (else: newer than the previous installed version) and not newer than this build has notes. The card
-//     shows those versions' notes together (newest first, de-duplicated, DisplayLines per section for now).
+//     shows those versions' notes together (newest first, de-duplicated, at most DisplayLines per section) and,
+//     when they come from several versions, « Depuis la version <last seen> » under its title (Paper 26KK-0).
 //     No unseen notes: no card, the generic « Mise à jour installée » notification. A first install, a repair
 //     of the same version, a dev/portable run, another window or a normal launch never get it.
-//   * Manual: À propos › « Notes de version » opens the Full view of the most recent notes (never writes the
-//     state); a build without notes opens the release's GitHub page instead.
+//   * Manual: À propos › « Notes de version » opens the Full view of the most recent version's notes (never
+//     writes the state); a build without notes opens the release's GitHub page instead.
 #include <algorithm>
 #include <string>
 #include <vector>
@@ -70,19 +71,22 @@ struct RawEntry { const char* version; const char* id; const Line* added; const 
 #endif
 namespace ReleaseNotes {
 
-// Lines per section the card shows for now (Paper 142E-0 / 144O-0 show 2 and 3 and define no scroll area):
-// the newest, most important ones first. A design question (design/release-notes-cumul-report.md).
-inline constexpr std::size_t DisplayLines = 4;
+// Lines per section a card holds (Paper 26KJ-0, owner's decision 2026-11-25: 10 per group, the Full view scrolls
+// past 480 DIP): the newest, most important ones first.
+inline constexpr std::size_t DisplayLines = 10;
 // The fixed id builds up to 0.3.840 recorded, and the version whose notes it stood for (seen at 0.3.646).
 inline constexpr const char* LegacyId = "2026-11-comment-tooltips-download-selectall-typing";
 inline constexpr const char* LegacyVersion = "0.3.646";
 
 struct Entry { std::string version, id; std::vector<Line> added, fixed; };   // id: « notes-<hash> » of its text
 // What one card shows. `id`: the version it brings the user up to (written as « seen » once shown).
+// `since`: the version whose notes were seen last ("" unknown); `versions`: how many versions the lines come from.
 struct Content {
-    std::string id;
+    std::string id, since;
     std::vector<Line> added, fixed;   // « Ajouts » / « Corrections »; an empty one is not drawn
+    int versions = 0;
     bool Empty() const { return !ValidId(id) || (added.empty() && fixed.empty()); }
+    std::size_t Lines() const { return added.size() + fixed.size(); }
 };
 namespace Detail {
 inline void Append(std::vector<Line>& out, const Line* lines) { for (; lines && lines->fr && lines->en; ++lines) out.push_back(*lines); }
@@ -114,7 +118,7 @@ inline const std::vector<Entry>& History() {
 inline Content Unseen(const std::vector<Entry>& history, const std::string& after, const std::string& upTo, std::size_t perSection = DisplayLines) {
     Content c;
     if (!ValidVersion(upTo) || (!after.empty() && !ValidVersion(after))) return c;
-    c.id = upTo;
+    c.id = upTo; c.since = after;
     std::vector<std::wstring> taken;
     const auto take = [&](std::vector<Line>& out, const Line& l) {
         const std::wstring fr = l.fr;
@@ -123,10 +127,27 @@ inline Content Unseen(const std::vector<Entry>& history, const std::string& afte
     };
     for (const auto& e : history) {
         if (!ValidVersion(e.version) || CompareVersions(e.version, upTo) > 0 || (!after.empty() && CompareVersions(e.version, after) <= 0)) continue;
+        ++c.versions;
         for (const auto& l : e.added) take(c.added, l);
         for (const auto& l : e.fixed) take(c.fixed, l);
     }
     return c;
+}
+// The most recent version's notes alone (À propos › Notes de version).
+inline Content Latest(const std::vector<Entry>& history) {
+    if (history.empty()) return Content{};
+    const std::string& newest = history.front().version;
+    std::string before;
+    for (const auto& e : history) if (CompareVersions(e.version, newest) < 0) { before = e.version; break; }
+    Content c = Unseen(history, before, newest);
+    c.since.clear();   // one version: no « Depuis la version » line
+    return c;
+}
+// « Depuis la version 0.3.646 » under the title of a card that gathers several versions (Paper 26KS-0); one version,
+// or no known starting version: none (the card as it was, 144O-0).
+inline std::wstring Subtitle(const Content& content) {
+    if (content.versions < 2 || content.since.empty()) return L"";
+    return TRF(release_notes_since, std::wstring(content.since.begin(), content.since.end()));
 }
 // The card's sections in the process language (Paper p-L-0 142E-0 / 144O-0: « Ajouts » then « Corrections »).
 inline std::vector<Section> Sections(const Content& content) {

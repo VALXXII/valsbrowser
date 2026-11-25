@@ -453,8 +453,9 @@ def run():
         print('a fixture browser is already running: close it first'); return 2
     os.makedirs(SHOTS, exist_ok=True)
     print(f'build {SRC} version {version()} notes {NOTES}', flush=True)
-    fr = {'title': 'Nouveautés', 'showall': 'Voir tout', 'close': 'Fermer', 'last': LAST[0]}
-    en = {'title': 'What’s new', 'showall': 'Show all', 'close': 'Close', 'last': LAST[1]}
+    n = len(LINES)   # the Mini's button counts the card's lines (Paper 26MU-0)
+    fr = {'title': 'Nouveautés', 'showall': f'Voir les {n} nouveautés' if n > 1 else 'Voir la nouveauté', 'close': 'Fermer', 'last': LAST[0]}
+    en = {'title': 'What’s new', 'showall': f'See all {n} updates' if n != 1 else 'See the update', 'close': 'Close', 'last': LAST[1]}
     scenario_update('owner-0.3.840', 'fr', 'installed 0.3.837\n', fr, data={'release-notes': f'browser-release-notes 1\nseen={OLD_FIXED_ID}\n'})
     first = scenario_update('update-fr', 'fr', 'installed 0.3.379\n', fr)
     scenario_quiet('restart', fix_root=first)

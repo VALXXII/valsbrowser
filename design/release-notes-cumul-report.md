@@ -18,16 +18,15 @@ Les notes de 0.3.842 avaient été remplacées par celles de 0.3.898.
   - l'empreinte écrite par les versions 0.3.842 à 0.3.898 vaut la version de ces notes.
 - Pas d'état : ce qui est plus récent que la version installée avant la mise à jour compte comme nouveau. Première installation : pas de carte, la version est retenue.
 - Aucune note pas encore vue : pas de carte, la notification « Mise à jour installée ».
-- **Affichage provisoire :** 4 lignes par section au plus, comme aujourd'hui. Ce sont les premières lignes de la version la plus récente, puis celles des versions plus anciennes.
-  Le fichier peut contenir jusqu'à 10 lignes par section, pour qu'un rattrapage soit complet le jour où la carte saura en montrer plus (§ 3).
-- « À propos › Notes de version » ouvre les notes les plus récentes, avec la même limite.
+- **Affichage :** 10 lignes par section au plus (maquette validée, § 5). Ce sont les premières lignes de la version la plus récente, puis celles des versions plus anciennes.
+- « À propos › Notes de version » ouvre les notes de la version la plus récente qui en a.
 
 ## 2. Le texte de la carte de rattrapage (sortie de 19 h 30)
 
-Pour quelqu'un qui n'a rien vu depuis 0.3.646, ce qui est le cas de Val, la carte montre les 4 premières lignes de chaque section.
-Les autres lignes sont gardées dans le fichier pour la suite.
+Pour quelqu'un qui n'a rien vu depuis 0.3.646, ce qui est le cas de Val (son installation est encore en 0.3.840 avec l'ancien identifiant), la carte montre les 20 lignes ci-dessous.
+Elle affiche « Depuis la version 0.3.646 » sous le titre, et le bouton de la petite carte dit « Voir les 20 nouveautés ».
 
-**Ajouts** (affichées : 1 à 4)
+**Ajouts**
 
 | # | Français | English |
 | --- | --- | --- |
@@ -42,7 +41,7 @@ Les autres lignes sont gardées dans le fichier pour la suite.
 | 9 | Emoji en couleur dans les favoris, les onglets et les menus. | Colour emoji in bookmarks, tabs and menus. |
 | 10 | La fenêtre s’anime quand vous la réduisez ou l’agrandissez. | The window animates when you minimize or maximize it. |
 
-**Corrections** (affichées : 1 à 4)
+**Corrections**
 
 | # | Français | English |
 | --- | --- | --- |
@@ -85,7 +84,7 @@ Aujourd'hui, le code coupe à 4 lignes par section : la carte complète fait env
 4. **Mini.** Montre-t-elle toujours seulement le haut, avec « Voir tout » ? Faut-il un compte, par exemple « Voir les 20 nouveautés » ?
 5. **Limites.** 10 lignes par section dans le fichier et 80 caractères par ligne : est-ce que ça va ?
 
-Dès que Designer répond, l'affichage change à un seul endroit (`ReleaseNotes::DisplayLines` et la vue complète de `src/modal.h`). Les données sont déjà complètes.
+Réponse : la proposition A, validée par Val le 25/11 et dessinée par Designer. Elle est livrée, voir § 5.
 
 ## 4. Vérifications (sans écran)
 
@@ -108,3 +107,35 @@ Dès que Designer répond, l'affichage change à un seul endroit (`ReleaseNotes:
   Les 28 lignes de toutes les versions tiennent sur deux lignes de la carte, en français et en anglais. Les rendus sont dans `build/release-notes/release-{full,mini}-{fr,en}-144.png`.
 - `python -I tools/i18n/check_strings.py` : 0 constat. Build complet (`tools/release/build.py`) : voir le compte rendu de la branche.
 - `tests/e2e/release_notes_e2e.py` (vrai navigateur) : mis à jour, la carte attendue est calculée depuis l'historique. Il demande de vraies fenêtres : à lancer pendant la tournée.
+
+## 5. La maquette validée, livrée (25/11 après-midi)
+
+Valeurs lues dans Paper, page « Notes de version — modale » : planches « Nouveautés · rattrapage de plusieurs versions (maquette prête) » (26KK-0) et « Nouveautés · Mini · rattrapage » (26MU-0).
+
+- **Carte complète :** 343 de large, **480 de haut au plus**. L'en-tête reste fixe :
+  - le titre ;
+  - 4 plus bas, le sous-titre (13/18, blanc 50 %, décalé de 26 comme le titre) ;
+  - 4 + 12 + 4, la ligne de séparation à 79.
+  Le corps commence à 80 et défile sous l'en-tête. Au bout du défilement, la dernière ligne s'arrête 40 au-dessus du bord bas, sous un **fondu de 48** (#171717, de transparent à opaque).
+  Une **barre fine** (3 de large, #3A3A3A, arrondi 2, à 4 du bord droit, 5 sous la ligne de l'en-tête) n'apparaît que pendant le défilement. Elle disparaît 0,7 s après, en 0,2 s, ou d'un coup en mouvement réduit : ces deux durées ne sont pas dans Paper.
+- **Sous-titre :** « Depuis la version 0.3.646 » (EN : « Since version 0.3.646 »), seulement quand la carte réunit **plusieurs versions**. La version est celle dont la personne a vu les notes en dernier.
+  Une seule version, ou une version de départ inconnue (copie portable) : pas de sous-titre, la carte comme avant.
+- **Petite carte :** inchangée, sauf son bouton : « Voir les 20 nouveautés » (le nombre de lignes de la carte), « Voir la nouveauté » pour une seule ligne. EN : « See all 20 updates » / « See the update ».
+  Le bouton ouvre la carte complète sur place, avec le sous-titre.
+- **10 lignes par groupe**, deux groupes toujours (« Ajouts », « Corrections »), sans intertitre par version.
+- Les couleurs du titre, des groupes, des lignes et des séparateurs restent celles de la carte actuelle (144O-0 et la Mini 26MU-0, comme le dit la maquette).
+  La planche 26KK-0 donne des couleurs aplaties à peine différentes (#E8E8E8, #8B8B8B) : je ne les ai pas reprises, pour que la Mini et sa carte complète gardent le même texte.
+- **Choix de ma part, à valider :** la hauteur de 480 vaut aussi pour une seule version très longue. Sans cela, la carte prendrait toute la hauteur de la fenêtre.
+- Lecteurs d'écran : le sous-titre est un élément de texte de la carte complète, et la description de la carte commence par lui.
+
+Vérifié sans écran (`test-release-notes.ps1`, bureau caché, section F) :
+- positions de l'en-tête (41 / 79 / 80 / 96) ;
+- hauteur 480 ;
+- bas du défilement à 40 du bord ;
+- barre absente au repos, visible au défilement, puis cachée ;
+- sous-titre FR / EN, présent pour plusieurs versions, absent pour une seule ;
+- bouton « Voir les 20 nouveautés » / « Voir la nouveauté » / EN ;
+- ouverture sur place ;
+- élément de texte pour les lecteurs d'écran.
+
+Rendus : `build/release-notes/catchup-{full,scrolling,end,mini}-{fr,en}-144.png`, et la carte réelle de Val dans `release-full[-end]-{fr,en}-144.png` / `release-mini-*`.
