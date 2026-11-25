@@ -66,6 +66,21 @@ navigateur sur bureau caché 45 / 45 (et le parcours clavier du lot 2, bulle : 3
 - Le parcours clavier du lot 2 pour le **panneau** ne tourne pas sur la base du lot R (26 / 33) : le chat est déjà ouvert à
   l'entrée du mode et le clavier n'y est pas donné sur le bureau caché. À reprendre par le lot 2 à sa fusion.
 
+## Réponses de Designer (25 nov.) — faites
+
+- Diff en grand : la réponse sous le diff a les valeurs de la carte normale (champ 12 px, « Refuser » #FFFFFFCC, boutons
+  à 10 px, pas de marge en plus) ; la rangée du mode et d'« Arrêter » s'arrête avant la poignée (12 px + 4).
+- Étape en attente dans la liste dépliée : horloge fixe 12 px et « Attend votre accord », en #A6A6A6, sans anneau.
+- Ligne du panneau « Attend votre accord pour modifier … » alignée sur les planches 8 / 9 (horloge 14 px, #A6A6A6) :
+  non demandé tel quel, dans un commit à part (`f49cb0c7`), à retirer si ce n'est pas voulu.
+- Codex, « Additional sandbox permissions » : « Codex demande plus d'accès à cet ordinateur ».
+- Rien à faire : peu de place (tel que codé), mode sous la carte en icône seule.
+- En attente du propriétaire, non touché : la phrase de portée de « Toujours autoriser » ; Entrée dans le champ « à la
+  place » vide.
+- Restes pour Designer : la planche du diff en grand garde 6 px de marge autour de la réponse (nœud de la réponse) et un
+  crayon à 50 % (40 % sur la carte normale) ; la rangée n'y est pas dessinée avec sa marge de poignée. Pour Codex, le
+  titre de l'étape elle-même dans le fil (celui que Codex envoie) reste tel que Codex l'écrit.
+
 ## Pour Designer et le propriétaire
 
 - **Peu de place** : ce qui cède quand la bulle manque de hauteur n'est pas dessiné. Codé : la rangée sous la carte, puis

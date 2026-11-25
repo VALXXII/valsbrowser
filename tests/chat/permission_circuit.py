@@ -89,6 +89,11 @@ def circuit(j, bubble):
     R.step(f'{j} · point 3 · before the answer the thread reads « {want} » — never « A modifié », never « Modifie… »',
            want in t0 and 'A modifié' not in t0 and 'a modifié' not in t0 and 'Modifie landing' not in t0, t0[-400:].replace('\n', ' | '))
     R.measures[f'{j}-thread-waiting'] = t0[-400:]
+    if not bubble:
+        w = C.panel("(function(){var f=document.querySelector('.log .steps > .fold');if(!f)return null;f.click();var n=document.querySelector('.log .step.want');"
+                    "var o=n?{text:n.textContent,color:getComputedStyle(n).color,spin:!!n.querySelector('.spin'),icon:n.querySelector('svg').getAttribute('viewBox')}:null;f.click();return o})()")
+        R.step(f'{j} · in the opened list the waiting step reads « Attend votre accord » with a still clock, #A6A6A6 (no ring)',
+               w and w['text'] == 'Attend votre accord' and w['color'] == 'rgb(166, 166, 166)' and not w['spin'] and w['icon'] == '0 0 256 256', w)
     # ---- points 2 and 4: a click on the card outside its buttons, then the switch: the card keeps its shape
     g0 = C.panel(GEO)
     C.click_panel(sel + (' .t' if bubble else ' .perm-t')) if not bubble else C.click_panel('.bperm-in .ic')
@@ -137,6 +142,14 @@ def circuit(j, bubble):
             turn_over(D.mark() - 1, 20)
     else:
         R.step(f'{j} · two messages in a row: the first request shows its card', False, D.log_since(m)[-300:])
+    # ---- Codex asks to leave its sandbox (the fake agent sends the title codex-acp sends): said in the browser's language
+    time.sleep(0.6); m, c = ask('mcptool Additional sandbox permissions|{}')
+    R.step(f"{j} · « Additional sandbox permissions » is asked as « … demande plus d'accès à cet ordinateur »",
+           c and c['title'].endswith("demande plus d'accès à cet ordinateur") and 'Additional' not in c['title'], c and c['title'])
+    if c:
+        C.click_panel(sel + ' .btn:not(.primary)'); time.sleep(0.6)
+        R.step(f'{j} · …and « Refuser » refuses it (once)', answered(m) == ['reject'], answered(m))
+        turn_over(m)
 
 
 def bulle():
