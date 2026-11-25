@@ -154,16 +154,38 @@ void OpenChatFor(AgentStatus::Agent a) {
 // (the panel's WebView, or the bubble), never left on the band, the page or the browser's window: a real Entrée sends it.
 // Only while the browser is in front (a sign-in console or an installer may still hold the foreground: then the browser's
 // own return — PanelKeyboardBack / KeyboardToBubble — gives it back).
+// Fix's script (25 Nov): the real Entrée goes to whatever window holds the Windows keyboard. The sign-in console (a process
+// this browser started) took the foreground and closed; for the chat it is « a window of this browser » (OursWindow: r47),
+// so the browser's return is not seen as one (no PanelKeyboardBack) and the keys stayed on the browser's window — Entrée
+// toggled the panel shut. Ready while the console still holds the foreground: the keys go back once the browser is in front
+// again (within KeysBackMs), unless the person is elsewhere by then (the page, the address bar: the focus is theirs).
 std::set<AgentStatus::Agent> setupFromChat;   // install / sign-in / retry started by the block's button
-void KeyboardToBubble(const wchar_t* why);
-void ChatSetupReady(AgentStatus::Agent a) {
-    if (!setupFromChat.erase(a)) return;
-    DWORD pid = 0; const HWND fg = GetForegroundWindow(); if (fg) GetWindowThreadProcessId(fg, &pid);
-    if (!fg || pid != GetCurrentProcessId() || !panelReady) return;
+void KeyboardToBubble(const wchar_t* why); void PanelKeyboardBack(); bool MouseDown();
+inline constexpr unsigned long long KeysBackMs = 8000;
+struct KeysBack { bool pending = false; AgentStatus::Agent agent{}; unsigned long long until = 0; } keysBack;
+bool BrowserInFront() { DWORD pid = 0; const HWND fg = GetForegroundWindow(); if (fg) GetWindowThreadProcessId(fg, &pid); return fg && pid == GetCurrentProcessId(); }
+void KeysBackNow(AgentStatus::Agent a) {
+    if (!panelReady || MouseDown()) return;
     if (BubbleOpen()) { KeyboardToBubble(L"its agent is ready"); return; }   // i18n-exempt: log detail
     if (!Open()) return;
-    SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus();
     Diag(L"Ton agent: " + W(TonAgentId(a)) + L" is ready: the keyboard goes back to the input");   // i18n-exempt: log detail
+    SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus();
+    PanelKeyboardBack();   // checked and given again (M4 panel's retries): the browser's own activation may take it back
+}
+void ChatSetupReady(AgentStatus::Agent a) {
+    if (!setupFromChat.erase(a)) return;
+    if (BrowserInFront()) { KeysBackNow(a); return; }
+    keysBack = KeysBack{true, a, GetTickCount64() + KeysBackMs};
+    if (post) SetTimer(post, KeysBackTimer, 100, nullptr);
+    Diag(L"Ton agent: " + W(TonAgentId(a)) + L" is ready while another window is in front (its sign-in console): the keyboard goes back to the input when the browser is");   // i18n-exempt: log detail
+}
+void KeysBackTick() {
+    if (!keysBack.pending || GetTickCount64() > keysBack.until) { keysBack.pending = false; if (post) KillTimer(post, KeysBackTimer); return; }
+    if (!BrowserInFront()) return;
+    keysBack.pending = false; if (post) KillTimer(post, KeysBackTimer);
+    const HWND f = GetFocus();
+    if (f && f != ::window) { Diag(L"Ton agent: the browser is back with the keyboard elsewhere (the person's choice): left there"); return; }   // i18n-exempt: log detail
+    KeysBackNow(keysBack.agent);
 }
 // page → host. True: it was one of the block's messages.
 bool TonAgentMessage(const std::string& type, const SJ::Value& v) {

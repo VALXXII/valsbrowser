@@ -158,7 +158,7 @@ struct Turn {
 };
 struct Convo { ChatStore::Conversation data; int turnSeq = 0; bool preambleSent = false; std::string recap; };   // recap (R42): given with the next prompt to the agent that took the chat over
 ChatPanelView::View view; PanelState panelState = PanelState::Closed; bool panelReady = false, uiInit = false, picking = false;
-HWND post = nullptr; constexpr UINT AcpWake = WM_APP + 21; constexpr UINT_PTR DestroyTimer = 1, AgentIdleTimer = 2, RearmTimer = 3, MarkTimer = 4, FolderTimer = 5, HoverTimer = 6, WarmTimer = 7, StopTimer = 8, HeldTimer = 9, PanelFocusTimer = 10, LimitTimer = 11, ModelReadTimer = 12;
+HWND post = nullptr; constexpr UINT AcpWake = WM_APP + 21; constexpr UINT_PTR DestroyTimer = 1, AgentIdleTimer = 2, RearmTimer = 3, MarkTimer = 4, FolderTimer = 5, HoverTimer = 6, WarmTimer = 7, StopTimer = 8, HeldTimer = 9, PanelFocusTimer = 10, LimitTimer = 11, ModelReadTimer = 12, KeysBackTimer = 13;
 // QA (C1, Q's « c1_prechauffage_retarde »): BROWSER_CHAT_TEST_WARM_DELAY_MS=<ms>, read only with BROWSER_ANNOTATIONS_TEST=1, holds
 // back the creation in advance of the bubble's and the panel's WebView by that long (a click lands before the page is ready).
 unsigned WarmDelayMs() {

@@ -526,10 +526,14 @@ check('SetTimer(bubble.hwnd, 0xB2, 300, nullptr)' in block_after(comment, 'void 
 # « Ton agent », 2nd defect of 25 Nov (Fix's « absent » check): an agent installed / signed in from the chat's block turns
 # ready — the keyboard goes back to the input where the text waits (the browser in front only).
 tas = (SRC / 'chat-ton-agent.h').read_text(encoding='utf-8'); csr = block_after(tas, 'void ChatSetupReady(AgentStatus::Agent a) {')
-check('if (started && act != "cancel") setupFromChat.insert(a);' in tas and 'setupFromChat.erase(a)' in csr and 'GetCurrentProcessId()' in csr
-      and 'Send("focus", std::move(f)); view.Focus();' in csr and 'KeyboardToBubble(' in csr
+kbn = block_after(tas, 'void KeysBackNow(AgentStatus::Agent a) {'); kbt = block_after(tas, 'void KeysBackTick() {')
+check('if (started && act != "cancel") setupFromChat.insert(a);' in tas and 'setupFromChat.erase(a)' in csr and 'if (BrowserInFront()) { KeysBackNow(a); return; }' in csr
+      and 'Send("focus", std::move(f)); view.Focus();' in kbn and 'KeyboardToBubble(' in kbn and 'PanelKeyboardBack();' in kbn
       and 'if (s.Ready() && before != AgentStatus::State::Ready) ChatSetupReady(s.agent);' in turn,
-      '« Ton agent »: an agent set up from the chat\'s block turns ready — the keyboard back to the input (panel or bubble), only with the browser in front')
+      '« Ton agent »: an agent set up from the chat\'s block turns ready — the keyboard back to the input (panel or bubble), the browser in front')
+check('SetTimer(post, KeysBackTimer, 100, nullptr)' in csr and 'if (!BrowserInFront()) return;' in kbt and 'if (f && f != ::window)' in kbt and 'GetTickCount64() > keysBack.until' in kbt
+      and 'if (w == KeysBackTimer) { void KeysBackTick(); KeysBackTick(); return 0; }' in ui,
+      '« Ton agent »: ready while its sign-in console holds the foreground — the keys go back once the browser is in front again (never over the person\'s own focus, bounded in time)')
 
 
 print(f'{sum(checks)} / {len(checks)} host contracts')
