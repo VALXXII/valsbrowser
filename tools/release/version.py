@@ -29,7 +29,7 @@ MAIN_REFS = ('origin/main', 'main')
 
 def git(*args: str, repo: Path = ROOT) -> str:
     return subprocess.run(['git', *args], cwd=repo, check=True, capture_output=True,
-                          text=True).stdout.strip()
+                          text=True, encoding='utf-8').stdout.strip()   # UTF-8 always: notes.json read through git show (CI runner's code page is cp1252)
 
 
 def identity(build: int | None = None, commit: str | None = None,
