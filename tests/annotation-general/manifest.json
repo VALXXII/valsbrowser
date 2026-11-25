@@ -511,6 +511,40 @@
       "pendingMerge": "VALXXII/annotation-lot2"
     },
     {
+      "id": "permission-circuit-bulle",
+      "title": "Circuit des autorisations (essai 0.3.952), vrai navigateur : bulle",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/permission_circuit.py",
+        "--journey",
+        "bulle"
+      ],
+      "timeout": 900,
+      "pendingMerge": "VALXXII/annotation-lot2",
+      "needs": [
+        "tests/chat/lot2_desktop.py"
+      ]
+    },
+    {
+      "id": "permission-circuit-panneau",
+      "title": "Circuit des autorisations (essai 0.3.952), vrai navigateur : panneau",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/permission_circuit.py",
+        "--journey",
+        "panneau"
+      ],
+      "timeout": 900,
+      "pendingMerge": "VALXXII/annotation-lot2",
+      "needs": [
+        "tests/chat/lot2_desktop.py"
+      ]
+    },
+    {
       "id": "lot-r",
       "title": "Lot R : chat ouvert au lancement, 10 éléments, local / en ligne, fichier local, fenêtre privée",
       "part": "night",
