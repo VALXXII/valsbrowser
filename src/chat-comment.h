@@ -35,7 +35,7 @@ struct BubbleState {
     ChatBubble::Edges over, inset;                                   // R3: what the page asks around its surface / where the surface is in the window (CSS px)
     RECT win{}; RECT region{};                                       // R19: the window as placed, its region (window px): changed only when needed
     bool waitingAck = false;                                         // R18: placed and sized, shown once the page acknowledged the opening layout
-    bool away = false;                                               // open, hidden while another application is in front; shown again when the browser comes back
+    bool away = false;                                               // open while another application is in front: it stays where it is (BubbleHidesBehindOthers: hidden), without the keyboard
     ChatBubble::Point click;                                         // R44: where the click was (screen px): the corner of a big element nearest to it
     bool fromBottom = false; ChatBubble::Rect surface;               // R44: the edge that stays; where the surface is (screen px)
     RECT anchorArea{};                                               // M15: the page area the anchor was chosen in
@@ -55,6 +55,10 @@ struct BubbleState {
     bool endAsked = false;                                           // R29: the document's end asked once per opening
     int sizeW = -1, sizeH = -1;                                      // the last bubble.size (a repeat gets no answer: contract §20)
 } bubble;
+// Another application in front: the bubble stays on screen (decision A of 24 Nov 2026, see BubbleAway). true = the
+// behaviour of 21 Nov 2026 (9bb61780: hidden, shown again with the browser), kept to compare.
+inline constexpr bool BubbleHidesBehindOthers = false;
+bool BubbleHidden() { return BubbleHidesBehindOthers && bubble.away; }
 std::map<std::string, Element> anchorElements;   // conversation id -> its element (image, source): joins every message of its bubble
 std::map<std::string, Convo> parked;             // conversations with a message waiting, neither the engine's nor shown
 std::vector<ChatStore::Header> anchored;         // this site's conversations that belong to an element (index + memory)
@@ -329,7 +333,7 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
         // R39b: the window moves AND its region changes (the element passes under an edge of the page area). Between the two
         // calls the old region would ride with the window over the browser's bars for an image: first the part both regions
         // share (inside the page area at the old place and at the new one), then the move, then the new region.
-        if (regionChanges && !bubble.away) {
+        if (regionChanges && !BubbleHidden()) {
             RECT both{}; if (!IntersectRect(&both, &bubble.region, &rg)) both = RECT{};
             SetWindowRgn(bubble.hwnd, CreateRectRgn(both.left, both.top, both.right, both.bottom), FALSE);
         }
@@ -338,7 +342,7 @@ void PlaceBubble(bool scrolling) {   // scrolling (R39): the element moved — t
         if (sized) { UiSlow slowBounds("the WebView's new size"); view.Place({0, 0, wr.right - wr.left, wr.bottom - wr.top}); }
     }
     if (bubble.waitingAck) bubble.region = rg;   // R18: kept for the reveal; the window shows nothing until then
-    else if (regionChanges) { bubble.region = rg; if (!bubble.away) SetWindowRgn(bubble.hwnd, CreateRectRgn(rg.left, rg.top, rg.right, rg.bottom), FALSE); }   // R41: no repaint for a region (no flash); the system owns it now
+    else if (regionChanges) { bubble.region = rg; if (!BubbleHidden()) SetWindowRgn(bubble.hwnd, CreateRectRgn(rg.left, rg.top, rg.right, rg.bottom), FALSE); }   // R41: no repaint for a region (no flash); the system owns it now
     if (!scrolling && (sideChanged || insetChanged) && panelReady && !bubble.opening) SendLayout(false);   // lot 1b: an opening sends its own layout (OpenBubble)
 }
 // R39 (measured frame by frame): the page posts « anchor » from its scroll listener, before the compositor's image of
@@ -399,9 +403,14 @@ void FollowLater() {
 RECT BubbleScreenRect() { RECT r{}; if (bubble.hwnd) GetWindowRect(bubble.hwnd, &r); return r; }
 // M10: what of the bubble is on screen and takes the clicks (its region: surface + overflow asked), screen px
 RECT BubbleRegionScreen() { const RECT w = BubbleScreenRect(); return RECT{w.left + bubble.region.left, w.top + bubble.region.top, w.left + bubble.region.right, w.top + bubble.region.bottom}; }
-// Another application in front (test réel: a window of another program took the foreground): the bubble is not closed
-// any more — it is hidden, still open (its conversation, its draft, its place), and shown again as it was as soon as a
-// window of this browser is in front. One state: open + away = hidden; every opening, closing and click clears it.
+// Another application in front (test réel: a window of another program took the foreground): the bubble is not closed —
+// it stays open (its conversation, its draft, its place). One state: open + away; every opening, closing and click clears it.
+// Owner's trial 0.3.952 (24 Nov 2026, decision A): it is NOT hidden any more. Hidden, the click that brought the browser
+// back where the bubble had been fell on the page: another element was selected, the request being answered left with
+// the bubble and came back at the next click on its element (« asked twice »). The bubble is a window owned by the
+// browser's: it stays on it and goes behind the other application with it, like the chat panel. While `away` it never
+// takes the foreground nor the keyboard (KeyboardTry, WM_APP + 2); the browser coming back gives them back (BubbleBack).
+// (BubbleHidesBehindOthers / BubbleHidden: declared with the bubble's state, above.)
 void KeyboardToBubble(const wchar_t* why); bool MouseDown();
 // r47 (Q's real window): a click on « Autoriser » in the bubble put the foreground on a window of the WebView2 process
 // (Chrome_WidgetWin_1, another pid): taken for another application, the bubble was hidden and the click lost. A window of
@@ -425,16 +434,17 @@ bool OursWindow(HWND h) {
 }
 void BubbleAway(const wchar_t* who) {
     if (!bubble.open || bubble.away || !bubble.hwnd) return;
-    bubble.away = true; SetWindowRgn(bubble.hwnd, CreateRectRgn(0, 0, 0, 0), TRUE);   // an empty region, not SW_HIDE: hiding the active window would give the activation back to the browser (« back » at once)
-    Diag(std::wstring(L"the bubble lost the foreground to another application (") + who + L"): hidden, shown again when the browser is back in front");
+    bubble.away = true;
+    if (BubbleHidesBehindOthers) SetWindowRgn(bubble.hwnd, CreateRectRgn(0, 0, 0, 0), TRUE);   // an empty region, not SW_HIDE: hiding the active window would give the activation back to the browser (« back » at once)
+    Diag(std::wstring(L"the bubble lost the foreground to another application (") + who + (BubbleHidesBehindOthers ? L"): hidden, shown again when the browser is back in front" : L"): it stays where it is, without the keyboard"));
 }
 void BubbleBack(const wchar_t* why) {
     if (!bubble.open || !bubble.away || !bubble.hwnd) return;
     bubble.away = false;
     PlaceBubble();   // the page may have moved meanwhile
-    if (!bubble.waitingAck) { const RECT rg = bubble.region; SetWindowRgn(bubble.hwnd, CreateRectRgn(rg.left, rg.top, rg.right, rg.bottom), TRUE); ShowWindow(bubble.hwnd, SW_SHOWNA); }
+    if (BubbleHidesBehindOthers && !bubble.waitingAck) { const RECT rg = bubble.region; SetWindowRgn(bubble.hwnd, CreateRectRgn(rg.left, rg.top, rg.right, rg.bottom), TRUE); ShowWindow(bubble.hwnd, SW_SHOWNA); }
     if (bubble.hadKeyboard && !bubble.waitingAck && !MouseDown()) KeyboardToBubble(L"shown again");   // M4 (a): checked and retried   // i18n-exempt: log detail
-    Diag(std::wstring(L"the bubble is shown again (") + why + L")");
+    Diag(std::wstring(BubbleHidesBehindOthers ? L"the bubble is shown again (" : L"the browser is back with its bubble (") + why + L")");
 }
 // M4 (Q's real window, twice): the keyboard given to the bubble is checked — the browser's own activation may take it back
 // right after (its last focused window): up to 3 tries, 60 ms apart, until the bubble is the foreground window; logged.
@@ -477,7 +487,7 @@ void CALLBACK ForegroundChanged(HWINEVENTHOOK, DWORD, HWND fg, LONG, LONG, DWORD
     // M4, panel (Q's monkey): « Chat à droite » open, back from another application (not a click): its composer gets the keys
     if (cameBack && Open() && !bubble.open && panelReady && !MouseDown()) PanelKeyboardBack();   // M4 panel (1 and 2)
     if (!bubble.open || !fg || !bubble.hwnd) return;
-    {   wchar_t cls[64] = L""; GetClassNameW(fg, cls, 64); Diag(std::wstring(L"foreground: ") + cls + (ours ? (cameBack ? L" (the browser, back)" : L" (the browser)") : L" (another application)") + (bubble.away ? L", bubble hidden" : L"") + (MouseDown() ? L", mouse button down" : L"")); }   // case 3 diagnostics   // i18n-exempt: log detail
+    {   wchar_t cls[64] = L""; GetClassNameW(fg, cls, 64); Diag(std::wstring(L"foreground: ") + cls + (ours ? (cameBack ? L" (the browser, back)" : L" (the browser)") : L" (another application)") + (bubble.away ? (BubbleHidesBehindOthers ? L", bubble hidden" : L", bubble without the keyboard") : L"") + (MouseDown() ? L", mouse button down" : L"")); }   // case 3 diagnostics   // i18n-exempt: log detail
     if (ours) {
         if (bubble.away) BubbleBack(L"the browser is back in front");   // i18n-exempt: log detail
         // M4 (Q's real window): back from another application — whatever window of the browser it activates (the harness's
@@ -669,7 +679,7 @@ void OpenBubble(const std::string& conv, const RECT* element, const std::string&
 // One truth: an open bubble that is neither hidden (another application) nor waiting for its page IS on screen — window
 // visible, region not empty. Checked after every opening; a mismatch is repaired (placed again from scratch) and logged.
 void CheckBubbleShown() {
-    if (!bubble.open || bubble.away || bubble.waitingAck || !bubble.hwnd) return;
+    if (!bubble.open || BubbleHidden() || bubble.waitingAck || !bubble.hwnd) return;
     const bool visible = IsWindowVisible(bubble.hwnd) != FALSE, empty = IsRectEmpty(&bubble.region) != FALSE;
     const RECT a = PageArea(); const bool whole = !bubble.known || ChatBubble::FullyVisible(bubble.surface, ChatBubble::Rect{a.left, a.top, a.right, a.bottom});   // R44
     if (visible && !empty && whole) return;
@@ -719,7 +729,7 @@ void RevealBubble(const wchar_t* why) {
     if (bubble.holdForMeasure) { Diag(L"bubble ready, held until the page measures its element"); return; }   // H2 6e60162: never shown on a stale rectangle   // i18n-exempt: log detail
     UiSlow slow("reveal");
     bubble.waitingAck = false; KillTimer(bubble.hwnd, 0xB2);
-    if (bubble.away) { Diag(L"bubble ready at its place, hidden while another application is in front"); return; }   // BubbleBack shows it
+    if (BubbleHidden()) { Diag(L"bubble ready at its place, hidden while another application is in front"); return; }   // BubbleBack shows it
     const RECT rg = bubble.region; SetWindowRgn(bubble.hwnd, CreateRectRgn(rg.left, rg.top, rg.right, rg.bottom), TRUE);   // the surface appears, at its place
     ShowWindow(bubble.hwnd, SW_SHOWNA);   // opening time (24 ms in a real window): the foreground is taken right after, with the keyboard (WM_APP + 2)
     PostMessageW(bubble.hwnd, WM_APP + 2, 0, 0);   // the caret to the bubble

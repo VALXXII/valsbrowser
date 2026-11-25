@@ -163,9 +163,7 @@ class Monkey:
         with F.OtherApp() as o:
             time.sleep(0.5)
             self.inv.m.hidden_by_other = bool(self.inv.m.open)
-            shown, _ = F.bubble_shown()
-            if shown and o.in_front():
-                self.R.step(f'#{a["i"]} invariant: another application in front hides the bubble', False, {'shown': shown})
+            # decision A (24 Nov 2026): the bubble is no longer hidden behind another application — nothing is asserted on it here
             if a['r'][0] < 0.4 and self.inv.m.layout == 'comment':
                 vis = self.visible_elements()
                 if vis:

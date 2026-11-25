@@ -116,10 +116,20 @@
       ]
     },
     "perm-bulle-clic-de-retour": {
-      "gap": {
-        "lot": "perm (vraie fenêtre)",
-        "why": "essai 0.3.952 : la bulle est masquée quand une autre application passe devant ; le clic qui ramène le navigateur tombe sur la page (autre élément sélectionné, la carte disparaît puis revient) — correctif côté hôte (src/chat-comment.h) à faire et à vérifier en vraie fenêtre"
-      }
+      "tests": [
+        {
+          "suite": "journeys",
+          "what": "perm_clic_de_retour (vraie fenêtre : une demande attend, une autre application devant, le clic de retour sur « Autoriser » répond — une demande, une réponse)"
+        },
+        {
+          "suite": "journeys",
+          "what": "e4_autre_application (« the bubble stays where it is, not closed »)"
+        },
+        {
+          "suite": "chat-units",
+          "what": "host_contract_test.py — les quatre contrats « A: … » (la bulle garde sa région, ne prend ni premier plan ni clavier tant qu'une autre application est devant)"
+        }
+      ]
     },
     "perm-essai-reel-par-agent": {
       "gap": {

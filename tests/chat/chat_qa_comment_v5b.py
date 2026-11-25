@@ -189,7 +189,7 @@ def run_main():
         with OtherApp():
             time.sleep(0.8)
             b = V.bubble_hwnd(); hidden = b and (not u32.IsWindowVisible(b[0][0]) or region_box(b[0][0]) is None)
-            step('E4 · another application in front: the bubble is hidden (not closed)', hidden and 'bubble closed' not in C.log_text()[m:],
+            step('E4 · another application in front: the bubble stays where it is (not closed; decision A, 24 Nov 2026: no longer hidden)', not hidden and 'bubble closed' not in C.log_text()[m:],
                  {'otherInFront': u32.GetForegroundWindow() == self_h(), 'log': [l for l in C.log_text()[m:].splitlines() if 'bubble' in l][:4]})
             real_click('#qa-a', front=False)
             wait_shown('#qa-a', 'conversation-A', 'E4 · back with a click on A: A on screen as it was')

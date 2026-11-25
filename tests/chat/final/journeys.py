@@ -208,7 +208,7 @@ def j_e4(j):
     with F.OtherApp() as o:
         time.sleep(0.8)
         shown, rb = F.bubble_shown()
-        j.step('E4 · another application in front: the bubble is hidden, not closed', o.in_front() and not shown and 'bubble closed' not in C.log_text()[-3000:], {'shown': shown, 'front': o.in_front()})
+        j.step('E4 · another application in front: the bubble stays where it is, not closed (decision A, 24 Nov 2026: no longer hidden)', o.in_front() and shown and 'bubble closed' not in C.log_text()[-3000:], {'shown': shown, 'front': o.in_front()})
         j.inv.m.hidden_by_other = True
         j.check('other application in front')
     F.front(); time.sleep(0.8); j.inv.m.hidden_by_other = False
@@ -221,6 +221,35 @@ def j_e4(j):
         time.sleep(0.6)
         j.open_on('h1.hero-title', 'other application in front, a click on B (no conversation)', front=False)
     j.check('B on screen')
+
+
+@journey('perm_clic_de_retour', 'owner 0.3.952 (a request waits, another application in front, the click that brings the browser back falls on « Autoriser »: one request, one answer)')
+def j_perm_retour(j):
+    # The owner's trial: the card was on screen, a capture tool then another application came in front, the click back
+    # where « Autoriser » was fell on the PAGE (the bubble was hidden): another element was selected, the card left and came
+    # back at the next click on its element — « asked twice ». Decision A: the bubble stays on screen, the click is its own.
+    j.open_on('h1.hero-title', 'title')
+    m = F.log_mark(); F.type_and_send('vrai-autorisation jetonretour', 'bubble'); j.inv.m.conv['h1.hero-title'] = 'jetonretour'
+    j.step('the permission is asked', F.wait_log(r'CHAT permission asked', m, 20)); time.sleep(1.0)
+    p = F.chat_point(text='Autoriser')
+    j.step('« Autoriser » is on screen', bool(p), p)
+    answered = None
+    with F.OtherApp() as o:
+        time.sleep(0.8)
+        shown, region = F.bubble_shown()
+        j.step('another application in front: the bubble and its card stay on screen (not hidden, not closed)',
+               o.in_front() and shown and 'bubble closed' not in C.log_text()[m:], {'shown': shown, 'region': region, 'front': o.in_front()})
+        j.R.capture('autre-application-devant')
+        if p:
+            F.click_at(*p)   # the click that brings the browser back, on the button the user sees
+            answered = F.wait_log(r'CHAT permission answered', m, 4)
+    since = C.log_text()[m:]
+    j.step('the click back on « Autoriser » answers the request — asked once, answered once, no other element selected',
+           bool(answered) and len(re.findall(r'CHAT permission asked', since)) == 1 and len(re.findall(r'CHAT permission answered', since)) == 1
+           and 'a click on another element' not in since and 'bubble opened on' not in since,
+           [l for l in since.splitlines() if re.search(r'permission|click on another|bubble opened|foreground', l)][-8:])
+    j.step('the turn ends', F.wait_log(r'CHAT turn t\d+ ended', m, 20))
+    F.front(); time.sleep(0.5); j.check('after the answer')
 
 
 @journey('abab', 'R6 R18 (A → B → A → B, slow then fast)')

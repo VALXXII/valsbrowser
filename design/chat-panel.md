@@ -862,6 +862,13 @@ Défauts vus par le propriétaire (« Ton agent » sur le lot R) et ce qui vaut 
   suffit pas, cèdent dans l'ordre : la rangée sous la carte (en dessous de 231 px), le fil (en dessous de 191 px, la carte
   seule : 142 px), puis le champ « à la place » (en dessous de 142 px : 102 px ; l'hôte offre au moins 120 px). Non dessiné :
   à confirmer par Designer.
+- **Une autre application devant (décision A, en attente de la réponse du propriétaire et d'une vérification en vraie
+  fenêtre).** La bulle n'est plus masquée quand une autre application prend le premier plan : fenêtre possédée par celle
+  du navigateur, elle reste sur lui et passe derrière l'autre application avec lui, comme le panneau. Masquée (comportement
+  du 21 nov.), le clic qui ramenait le navigateur à l'endroit de la bulle tombait sur la page : un autre élément était
+  sélectionné, la carte partait puis revenait au clic suivant sur son élément — la « double demande » de la bulle. Tant
+  qu'une autre application est devant, la bulle ne prend ni le premier plan ni le clavier ; le retour du navigateur les lui
+  rend (`BubbleHidesBehindOthers` dans `src/chat-comment.h` : `true` rend l'ancien comportement).
 - **Ce que les réponses veulent dire pour l'agent** (ACP : `allow_once` / `allow_always` / `reject_once`). « Autoriser » =
   l'option `allow_once`. L'interrupteur (« Toujours autoriser » / « Auto. ») n'existe que si l'agent propose une option
   `allow_always`, et « toujours » n'est envoyé qu'interrupteur allumé (SEC-23). Sa portée est celle de l'agent, la carte ne
