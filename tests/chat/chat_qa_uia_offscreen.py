@@ -220,8 +220,11 @@ def main():
         tree = Tree(); tree.step('page loaded, mode off')
         m = F.log_mark(); post_key(h, ord('A'), ctrl=True, shift=True)
         check('mode on (posted Ctrl+Maj+A)', wait_log(r'ANNOTATE mode on', m, 10)); time.sleep(1.2)
-        for d in our_windows('BrowserModalDialog'):   # the connection screen: Échap (« plus tard » / « fermer »)
-            post_key(d, 0x1B)
+        # the connection screen, only if it is shown: Échap (« plus tard » / « fermer »). With « Ton agent » it no longer opens at
+        # the mode's start, and an Échap with nothing to close QUITS the mode (« ANNOTATE mode off (escape) », night of 25/11)
+        for d in our_windows('BrowserModalDialog'):
+            if u32.IsWindowVisible(d):
+                post_key(d, 0x1B)
         time.sleep(0.8)
         check("comment layout (the banner's posted activation)", layout(BANNER_COMMENT))
         tree.step('comment layout, nothing open (warm bubble)')
