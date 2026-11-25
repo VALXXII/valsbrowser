@@ -645,6 +645,14 @@ void KeepChatAbovePages(){
     if(!chat||GetParent(chat)!=window||!(GetWindowLongW(chat,GWL_STYLE)&WS_VISIBLE)||!ChatOverlaysPage())return;
     SetWindowPos(chat,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER);ChatCornersOnTop();
 }
+// Fullscreen switch trace (user report 25/11, « the window jumps several times »): for 2 s after the window enters or
+// leaves fullscreen (ApplyFullscreen), every window size change (WM_SIZE, with its show state) and every page bounds or
+// visibility change is one log line « FULLSCREEN step +<ms> ms … ». A clean switch is ONE window line and one line per
+// page on screen (tests/fullscreen/fullscreen_jump_test.cpp, tests/e2e/fullscreen_e2e.py).
+ULONGLONG fullscreenTraceAt=0;
+std::wstring RectText(const RECT& r){return std::to_wstring(r.left)+L","+std::to_wstring(r.top)+L" "+std::to_wstring(r.right-r.left)+L"x"+std::to_wstring(r.bottom-r.top);}
+void FullscreenTraceBegin(bool on){fullscreenTraceAt=GetTickCount64();RECT r{};if(window)GetWindowRect(window,&r);Log(std::wstring(L"FULLSCREEN switch ")+(on?L"in":L"out")+L" from window "+RectText(r)+(window&&IsZoomed(window)?L" maximized":L" normal"));}
+void FullscreenStep(const std::wstring& what){if(!fullscreenTraceAt)return;const ULONGLONG ms=GetTickCount64()-fullscreenTraceAt;if(ms>2000){fullscreenTraceAt=0;return;}Log(L"FULLSCREEN step +"+std::to_wstring(ms)+L" ms "+what);}
 void ApplyPages(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
     if(!window||halted)return;
     DissolveSmallGroups();if(!ResizePreviewValid())ClearResizePreview();auto v=CurrentSplit();auto active=Active();
@@ -665,11 +673,14 @@ void ApplyPages(){if(WorkspaceParked())return; /* a hidden profile's event: the 
         if(show&&t->sleeping){t->sleeping=false;Com<ICoreWebView2_3> v3;if(t->view.p&&SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_3,(void**)&v3.p))&&v3.p)v3->Resume();}
         t->shown=show;
         if(t->controller.p&&!halted){
+            // A page leaving the screen is hidden BEFORE it is resized: a split panel set aside for a page's fullscreen
+            // was stretched to the whole monitor while still shown, over the page that asked (fullscreen trace, 25/11).
+            if(!show&&t->placedVisible==1){if(!Check(t->controller->put_IsVisible(FALSE),L"put_IsVisible")){if(under)ReleaseDC(window,under);return;}t->placedVisible=0;FullscreenStep(L"page "+std::to_wstring(t->serial)+L" hidden");} /* i18n-exempt: fullscreen log trace */
             if(!t->frozen&&!EqualRect(&bounds,&t->placed)){
                 if(!under)under=GetDCEx(window,nullptr,DCX_CACHE|DCX_CLIPSIBLINGS);
                 if(under){RECT both;UnionRect(&both,&bounds,IsRectEmpty(&t->placed)?&bounds:&t->placed);FillRect(under,&both,paper);}
-                if(!Check(t->controller->put_Bounds(bounds),L"put_Bounds")){if(under)ReleaseDC(window,under);return;}t->placed=bounds;}
-            if(t->placedVisible!=(int)show){if(!Check(t->controller->put_IsVisible(show),L"put_IsVisible"))return;t->placedVisible=show;}
+                if(!Check(t->controller->put_Bounds(bounds),L"put_Bounds")){if(under)ReleaseDC(window,under);return;}t->placed=bounds;FullscreenStep(L"page "+std::to_wstring(t->serial)+L" "+RectText(bounds)+(show?L"":L" (hidden)"));} /* i18n-exempt: fullscreen log trace */
+            if(t->placedVisible!=(int)show){if(!Check(t->controller->put_IsVisible(show),L"put_IsVisible"))return;t->placedVisible=show;FullscreenStep(L"page "+std::to_wstring(t->serial)+(show?L" shown":L" hidden"));} /* i18n-exempt: fullscreen log trace */
         }
     }
     if(under)ReleaseDC(window,under);
@@ -4540,7 +4551,7 @@ case 'Y':if(historyDismissClick){historyDismissClick=false;break;}ToggleHistory(
 case PrintActive:if(t&&!t->home)PrintPage(t);break; // like the tab menu: nothing to print on a home tab
 case CheckUpdatesCommand:CheckForUpdates();break;
 case 'm':ShowWindow(window,SW_MINIMIZE);break;
-case 'M':ShowWindow(window,IsZoomed(window)?SW_RESTORE:SW_MAXIMIZE);break;
+case 'M':if(InFullscreen())break; /* the window covers its monitor; its show state comes back as it was on leaving (ApplyFullscreen) */ShowWindow(window,IsZoomed(window)?SW_RESTORE:SW_MAXIMIZE);break;
 case 'X':PostMessageW(window,WM_CLOSE,0,0);break;
 case 'C':if(t&&!t->home&&!t->uri.empty()&&OpenClipboard(window)){auto bytes=(t->uri.size()+1)*sizeof(wchar_t);HGLOBAL mem=GlobalAlloc(GMEM_MOVEABLE,bytes);if(mem){void* data=GlobalLock(mem);if(data){memcpy(data,t->uri.c_str(),bytes);GlobalUnlock(mem);EmptyClipboard();if(SetClipboardData(CF_UNICODETEXT,mem)){auto now=NativeChrome::Motion::Now();motion.CopySucceeded(now);chrome.lottie.CopySucceeded(now);InvalidateChrome();ScheduleMotion(now);AnnounceCopied();}else GlobalFree(mem);}else GlobalFree(mem);}CloseClipboard();}break;
 case 'D':if(downloadDismissClick){downloadDismissClick=false;break;}ToggleDownloads();break;
@@ -5355,8 +5366,9 @@ constexpr UINT ImportIconsMessage=WM_APP+44;void ImportIconsArrived();
 HMONITOR MaximizedMonitor(HWND h){if(HMONITOR m=MonitorFromWindow(h,MONITOR_DEFAULTTONULL))return m;WINDOWPLACEMENT p{sizeof(p)};return GetWindowPlacement(h,&p)?MonitorFromRect(&p.rcNormalPosition,MONITOR_DEFAULTTONEAREST):MonitorFromWindow(h,MONITOR_DEFAULTTONEAREST);}
 LRESULT CALLBACK ChromeProc(HWND h,UINT msg,WPARAM w,LPARAM l){LRESULT frameResult;
     // Maximized with WS_CAPTION, Windows pushes the window past the monitor by its frame thickness: the client
-    // is the monitor's work area exactly (nothing cut at the edges, the taskbar left visible).
-    if(msg==WM_NCCALCSIZE&&w&&IsZoomed(h)){MONITORINFO mi{sizeof(mi)};if(GetMonitorInfoW(MaximizedMonitor(h),&mi)){reinterpret_cast<NCCALCSIZE_PARAMS*>(l)->rgrc[0]=mi.rcWork;return 0;}}
+    // is the monitor's work area exactly (nothing cut at the edges, the taskbar left visible). In fullscreen a maximized
+    // window stays maximized (elements-integration.h ApplyFullscreen): its client is the whole monitor.
+    if(msg==WM_NCCALCSIZE&&w&&IsZoomed(h)){MONITORINFO mi{sizeof(mi)};if(GetMonitorInfoW(MaximizedMonitor(h),&mi)){reinterpret_cast<NCCALCSIZE_PARAMS*>(l)->rgrc[0]=InFullscreen()?mi.rcMonitor:mi.rcWork;return 0;}}
     // WS_CAPTION makes DefWindowProc paint a classic caption straight onto the window when the title or icon changes
     // (and through the undocumented uxtheme caption / frame messages): the title and icon are stored with the caption
     // style briefly cleared, so nothing is drawn (NativeUI::DefWindowProcNoCaption); the two theme messages draw nothing.
@@ -5373,7 +5385,11 @@ LRESULT CALLBACK ChromeProc(HWND h,UINT msg,WPARAM w,LPARAM l){LRESULT frameResu
 case WM_CREATE:window=h;address=CreateWindowExW(0,L"EDIT",L"",WS_CHILD|WS_TABSTOP|ES_AUTOHSCROLL,0,0,1,1,h,nullptr,instance,nullptr); NativeUI::SelectAllOnCtrlA(address);SendMessageW(address,EM_SETLIMITTEXT,8192,0);SendMessageW(address,EM_SETMARGINS,EC_LEFTMARGIN|EC_RIGHTMARGIN,0);SetWindowSubclass(address,AddressProc,1,0);addressSelection.Attach(address,AddressSelectionColors);accessibility.Attach(AccessibleHost());tooltip=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP,0,0,0,0,h,nullptr,instance,nullptr);NativeUI::StripTooltipShadow(tooltip);return 0;
 // Alt alone (or F10) asks for the menu bar; this window has none, and the system-menu state it starts instead freezes
 // the WebView that had the keyboard (page or chat panel) until the next key. Alt+Espace (lParam = the key) still opens the system menu.
-case WM_SYSCOMMAND:if((w&0xFFF0)==SC_KEYMENU&&l==0)return 0;break;
+case WM_SYSCOMMAND:if((w&0xFFF0)==SC_KEYMENU&&l==0)return 0;
+    // Fullscreen covers the monitor in the window's own show state (ApplyFullscreen): Agrandir / Restaurer / Déplacer /
+    // Taille from the system menu or the shell would leave it half-sized with no chrome. Restoring it from the taskbar
+    // after a minimize stays allowed.
+    if(InFullscreen()&&!IsIconic(h)){const WPARAM c=w&0xFFF0;if(c==SC_MAXIMIZE||c==SC_RESTORE||c==SC_MOVE||c==SC_SIZE)return 0;}break;
 case WM_NCHITTEST:{if(InFullscreen())return HTCLIENT;POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(h,&p);RECT r;GetClientRect(h,&r);int edge=S(4);if(!IsZoomed(h)){bool left=p.x<edge,right=p.x>=r.right-edge,top=p.y<S(3),bottom=p.y>=r.bottom-edge;if(top&&left)return HTTOPLEFT;if(top&&right)return HTTOPRIGHT;if(bottom&&left)return HTBOTTOMLEFT;if(bottom&&right)return HTBOTTOMRIGHT;if(left)return HTLEFT;if(right)return HTRIGHT;if(top)return HTTOP;if(bottom)return HTBOTTOM;}float x=p.x*96.f/GetDpiForWindow(h),y=p.y*96.f/GetDpiForWindow(h);int id=chrome.Hit(x,y);if(id=='M')return HTMAXBUTTON;if(chrome.sidebar){if(!id&&SidebarCaption(x,y))return HTCAPTION;return HTCLIENT;}
     if(chrome.Local(x,y)&&y<44&&!id)return HTCAPTION; /* the tab row's empty space (Mode Focus: only while the floating panel shows it) */return HTCLIENT;}
 case WM_NCLBUTTONDOWN:if(w==HTMAXBUTTON){Command('M');return 0;}break;
@@ -5383,13 +5399,16 @@ case WM_MOUSEACTIVATE:{if(!RequestChipOpen())break;POINT p;GetCursorPos(&p);Scre
 case WM_NCMOUSEMOVE:if(w==HTMAXBUTTON){UpdateInteraction('M',0);TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE|TME_NONCLIENT,h,0};TrackMouseEvent(&track);return 0;}break;
 case WM_NCMOUSELEAVE:UpdateInteraction(0,0);return 0;
 case WM_NCLBUTTONDBLCLK:if(w==HTCAPTION){Command('M');return 0;}break;
-case WM_GETMINMAXINFO:{auto info=(MINMAXINFO*)l;info->ptMinTrackSize={S(560),S(300)};MONITORINFO monitor{sizeof(monitor)};if(GetMonitorInfoW(MaximizedMonitor(h),&monitor)){info->ptMaxPosition={monitor.rcWork.left-monitor.rcMonitor.left,monitor.rcWork.top-monitor.rcMonitor.top};info->ptMaxSize={monitor.rcWork.right-monitor.rcWork.left,monitor.rcWork.bottom-monitor.rcWork.top};}return 0;}
-case WM_DPICHANGED:{contentTransition.Cancel();auto r=(RECT*)l;SetWindowPos(h,nullptr,r->left,r->top,r->right-r->left,r->bottom-r->top,SWP_NOZORDER|SWP_NOACTIVATE);UpdateFont();Layout();RepositionElementSurfaces();
+// Maximized in fullscreen (ApplyFullscreen keeps the show state): the maximized place is the whole monitor, so a restore
+// from the taskbar or a work-area change brings it back over the taskbar too.
+case WM_GETMINMAXINFO:{auto info=(MINMAXINFO*)l;info->ptMinTrackSize={S(560),S(300)};MONITORINFO monitor{sizeof(monitor)};if(GetMonitorInfoW(MaximizedMonitor(h),&monitor)){const RECT& to=InFullscreen()?monitor.rcMonitor:monitor.rcWork;info->ptMaxPosition={to.left-monitor.rcMonitor.left,to.top-monitor.rcMonitor.top};info->ptMaxSize={to.right-to.left,to.bottom-to.top};}return 0;}
+// In fullscreen the window keeps covering its monitor (Windows' suggested rectangle is the windowed one scaled).
+case WM_DPICHANGED:{contentTransition.Cancel();auto r=(RECT*)l;const RECT m=InFullscreen()?MonitorScreenRect():*r;SetWindowPos(h,nullptr,m.left,m.top,m.right-m.left,m.bottom-m.top,SWP_NOZORDER|SWP_NOACTIVATE);UpdateFont();Layout();RepositionElementSurfaces();
 #ifdef BROWSER_UPDATES
     LayoutUpdateToast();
 #endif
     return 0;}
-case WM_SIZE:HideSuggestions();FormsHideAll();motionMinimized=w==SIZE_MINIMIZED;contentTransition.Cancel(); /* resize / minimise / maximise */AnnotationWindowState();if(!motionMinimized){Layout();audioPanel.OwnerChanged();downloadDrawer.Reposition();settingsDrawer.Reposition();historyDrawer.Reposition();bookmarksDrawer.Reposition();bookmarkToast.Reposition();RepositionElementSurfaces();}else{CloseDownloadSurfaces(false);audioPanel.Close(false);settingsDrawer.Hide(false,false);historyDrawer.Hide(false,false);bookmarksDrawer.Hide(false,false);bookmarkPopover.Hide();bookmarkToast.HideNow();}ScheduleMotion(NativeChrome::Motion::Now());
+case WM_SIZE:if(fullscreenTraceAt){RECT r{};GetWindowRect(h,&r);FullscreenStep(L"window "+RectText(r)+(w==SIZE_MAXIMIZED?L" maximized":w==SIZE_MINIMIZED?L" minimized":L" normal"));}HideSuggestions();FormsHideAll();motionMinimized=w==SIZE_MINIMIZED;contentTransition.Cancel(); /* resize / minimise / maximise */AnnotationWindowState();if(!motionMinimized){Layout();audioPanel.OwnerChanged();downloadDrawer.Reposition();settingsDrawer.Reposition();historyDrawer.Reposition();bookmarksDrawer.Reposition();bookmarkToast.Reposition();RepositionElementSurfaces();}else{CloseDownloadSurfaces(false);audioPanel.Close(false);settingsDrawer.Hide(false,false);historyDrawer.Hide(false,false);bookmarksDrawer.Hide(false,false);bookmarkPopover.Hide();bookmarkToast.HideNow();}ScheduleMotion(NativeChrome::Motion::Now()); /* i18n-exempt: fullscreen log trace */
 #ifdef BROWSER_UPDATES
     // Minimised: the toast stops its clock/timer (zero wakes); otherwise SetOwnerVisible(true)
     // re-lays the card out (bottom-left anchor, drawer reserve kept).
