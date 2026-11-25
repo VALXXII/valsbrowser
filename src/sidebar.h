@@ -123,6 +123,9 @@ namespace Timing { inline constexpr double foldResponse = .35, throwResponse = .
 // Below this window width the column is compact by itself (Designer, answer 11): the page keeps about 560. The
 // user's choice is never overwritten; above it, the column comes back to that choice.
 inline constexpr float autoCompactBelow = 800;
+// Under this window width (DIP) the chat card goes over the page instead of pushing it (src/chat-host.h OverPage):
+// its window then stays above the page windows (src/main.cpp KeepChatAbovePages).
+inline constexpr float chatOverlayBelow = 900;
 inline Mode Effective(Mode chosen, float windowWidth) { return windowWidth < autoCompactBelow ? Mode::Compact : chosen; }
 // `panel`: the complete column's width, chosen by dragging its edge (Resize below; 248 by default).
 inline float Width(Mode m, float panel = Complete::width) { return m == Mode::Complete ? panel : Compact::width; }

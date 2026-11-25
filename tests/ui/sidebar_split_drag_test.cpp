@@ -217,8 +217,36 @@ int main() {
       Escape(); EXPECT(!tabDrag.tab && !splitOverlay.Visible() && chrome.liftedIndex == -1 && splitGroups.empty()); }
     motion.SetReducedMotion(false);
 
+    // 12. Fix's real window (25 nov.): under 900 DIP in a side layout the chat card goes over the page, so its WebView window
+    //     must stay above the page's in the sibling order (KeepChatAbovePages). Two stand-in child windows of the browser
+    //     window (no WebView2 here): the page's, put back on top as a page WebView created or re-created would be, and the
+    //     chat's. Crossing below 900, resizing below it, a tab switch, a drawer opening and closing (the real Historique
+    //     drawer, created hidden), compact; crossing back above 900 or the top bar: the chat beside the page, nothing forced.
+    {   motion.SetReducedMotion(false); settings.tabsPosition = BrowserSettings::TabsPosition::Side; ApplyLayout(); chrome.width = 1180; Reset({yt, luma, paper});
+        HWND page = CreateWindowExW(0, L"STATIC", L"page", WS_CHILD | WS_VISIBLE, 300, 50, 600, 600, window, nullptr, nullptr, nullptr);
+        HWND chat = CreateWindowExW(0, L"STATIC", L"chat", WS_CHILD | WS_VISIBLE, 700, 40, 380, 700, window, nullptr, nullptr, nullptr);
+        EXPECT(page && chat);
+        auto above = [&](HWND a, HWND b) { for (HWND h = GetWindow(window, GW_CHILD); h; h = GetWindow(h, GW_HWNDNEXT)) { if (h == a) return true; if (h == b) return false; } return false; };
+        auto pageOnTop = [&] { SetWindowPos(page, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); EXPECT(above(page, chat)); };
+        chatWindowForTest = chat;
+        pageOnTop(); Layout(); EXPECT(!ChatOverlaysPage() && above(page, chat));                       // 1180: beside the page, left alone
+        chrome.width = 880; Layout(); EXPECT(ChatOverlaysPage() && above(chat, page));                 // crossing below 900
+        pageOnTop(); chrome.width = 860; Layout(); EXPECT(above(chat, page));                           // resizing below it
+        pageOnTop(); chrome.width = 820; Layout(); EXPECT(above(chat, page));
+        pageOnTop(); ApplyPages(); EXPECT(above(chat, page));                                           // a page's WebView created (its Layout / ApplyPages)
+        pageOnTop(); Select(1); EXPECT(current == 1 && above(chat, page));                              // a tab switch
+        pageOnTop(); Select(0); EXPECT(above(chat, page));
+        {   wchar_t cwd[MAX_PATH]{}; GetCurrentDirectoryW(MAX_PATH, cwd); base = cwd; CreateHistoryPanel(); EXPECT(historyDrawer.Window() != nullptr);
+            pageOnTop(); ShowHistory(false); SyncDrawerReserve(); EXPECT(historyDrawer.Open() && DrawerReserveDip() > 0 && above(chat, page));   // a drawer opens
+            pageOnTop(); historyDrawer.Hide(false, false); SyncDrawerReserve(); EXPECT(!historyDrawer.Open() && DrawerReserveDip() == 0 && above(chat, page)); }   // and closes
+        SetTabsPosition(BrowserSettings::TabsPosition::Compact); pageOnTop(); Layout(); EXPECT(chrome.sidebar && ChatOverlaysPage() && above(chat, page));   // compact too
+        SetTabsPosition(BrowserSettings::TabsPosition::Side); pageOnTop(); chrome.width = 1180; Layout(); EXPECT(!ChatOverlaysPage() && above(page, chat));   // crossing back above 900
+        SetTabsPosition(BrowserSettings::TabsPosition::Top); chrome.width = 820; pageOnTop(); Layout(); EXPECT(!ChatOverlaysPage() && above(page, chat));   // the top bar: never over the page
+        ShowWindow(chat, SW_HIDE); SetTabsPosition(BrowserSettings::TabsPosition::Side); pageOnTop(); Layout(); EXPECT(above(page, chat));   // the chat closed: nothing to lift
+        chatWindowForTest = nullptr; DestroyWindow(chat); DestroyWindow(page); chrome.width = 1180; }
+
     pages.clear(); splitOverlay.Dispose(); DestroyWindow(window); window = nullptr;
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
-    std::printf("PASS sidebar_split_drag_test: %d checks (%.0f ms): column reorder vs lift at the edge (20 DIP back), 6 DIP threshold, split on drop (panel, compact, narrow column over the page), refusal, Escape home to the row, grid bookmark, tear-off branch, top bar unchanged, motion (x1.02 at the grab point, zone morph 0.2 s, 100 ms fade-out, reduced motion 80 ms fade); renders in build/sidebar-split-qa\n", checks, ms);
+    std::printf("PASS sidebar_split_drag_test: %d checks (%.0f ms): column reorder vs lift at the edge (20 DIP back), 6 DIP threshold, split on drop (panel, compact, narrow column over the page), refusal, Escape home to the row, grid bookmark, tear-off branch, top bar unchanged, the chat above the page under 900 DIP (z-order), motion (x1.02 at the grab point, zone morph 0.2 s, 100 ms fade-out, reduced motion 80 ms fade); renders in build/sidebar-split-qa\n", checks, ms);
     return 0;
 }

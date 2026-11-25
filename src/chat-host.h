@@ -64,7 +64,7 @@ inline constexpr float PanelWidthDip = 380, PanelMinDip = 320, PageMinDip = 320;
 //                   false: the chat moves left of the drawer;
 //   ChatOverlayBelow: in a window narrower than this, the chat opens over the page instead of pushing it.
 inline constexpr bool DrawerOverChat = NativeChrome::FocusMode::drawerOverChat;   // one rule with Mode Focus
-inline constexpr float ChatOverlayBelow = 900, CardInset = NativeChrome::FocusMode::chatInset, CardRadius = 8;
+inline constexpr float ChatOverlayBelow = NativeChrome::Sidebar::chatOverlayBelow, CardInset = NativeChrome::FocusMode::chatInset, CardRadius = 8;
 inline constexpr int SlideInMs = 220, SlideOutMs = 160;
 unsigned EnvMs(const wchar_t* name, unsigned fallback) { const std::wstring v = Ann::EnvVar(name); if (v.empty()) return fallback; const unsigned long n = wcstoul(v.c_str(), nullptr, 10); return n >= 50 && n <= 3600000 ? unsigned(n) : fallback; }
 unsigned PanelIdleMs() { static const unsigned v = EnvMs(L"BROWSER_CHAT_PANEL_IDLE_MS", 60000); return v; }    // closed panel -> WebView destroyed

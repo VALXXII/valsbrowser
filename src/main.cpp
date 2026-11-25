@@ -603,6 +603,19 @@ RECT PixelRect(const SV::Box& b){return {S(b.left),S(b.top),S(b.right),S(b.botto
 // rules (home hidden, a new controller hidden until its first navigation completes);
 // a visible group shows every non-collapsed member at its slot. Hidden tabs start
 // their sleep clock, shown ones wake: a visible site is never suspended.
+// #127 (Fix's real window, 25 nov.): under 900 DIP in a side layout the chat card goes OVER the page (validated rule), so
+// its WebView window must come before every page window in the sibling order: a page WebView created or re-created
+// later lands on top, and nothing else lifts the chat. Run after every placement (ApplyPages: relayout, resize across
+// 900 either way, tab switch, a drawer opening or closing, a page's WebView created) and whenever the chat moves; its
+// corner masks go back above it. Beside the page (wider, or the top bar) the order does not matter; the drawers are
+// popups, above anyway. `chatWindowForTest`: a stand-in window for the chat (tests/ui/sidebar_split_drag_test.cpp).
+HWND chatWindowForTest=nullptr;HWND ChatHostWindow();void ChatCornersOnTop();
+bool ChatOverlaysPage(){return chrome.sidebar&&chrome.ClientWidth()<NativeChrome::Sidebar::chatOverlayBelow;}
+void KeepChatAbovePages(){
+    if(!window)return;HWND chat=chatWindowForTest?chatWindowForTest:ChatHostWindow();
+    if(!chat||GetParent(chat)!=window||!(GetWindowLongW(chat,GWL_STYLE)&WS_VISIBLE)||!ChatOverlaysPage())return;
+    SetWindowPos(chat,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER);ChatCornersOnTop();
+}
 void ApplyPages(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
     if(!window||halted)return;
     DissolveSmallGroups();if(!ResizePreviewValid())ClearResizePreview();auto v=CurrentSplit();auto active=Active();
@@ -632,7 +645,7 @@ void ApplyPages(){if(WorkspaceParked())return; /* a hidden profile's event: the 
     }
     if(under)ReleaseDC(window,under);
     FocusHoles(true); // Mode Focus: Chromium may reset a page window's region when it resizes; the hole goes back at once
-    SyncGrips(v);SyncCornerMasks();SidebarHoles();SyncSplitDecor();SyncStatusBubble();SyncScrollbars();AnnotationLayout();InvalidateRect(window,nullptr,FALSE);
+    SyncGrips(v);SyncCornerMasks();SidebarHoles();SyncSplitDecor();SyncStatusBubble();SyncScrollbars();AnnotationLayout();KeepChatAbovePages();InvalidateRect(window,nullptr,FALSE);
 }
 // Separator grips. Pages are child windows of another process: over them the main
 // window gets no mouse input, so the 4 DIP gap alone would be the target. A layered

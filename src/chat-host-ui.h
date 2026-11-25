@@ -666,14 +666,14 @@ void FinishClose();
 struct SlideClient : AUI::Animator::Client {
     bool Frame(NativeChrome::Motion::Time now) override {
         if (!Shown()) return false;
-        { const RECT r = PanelRect(slide.Value(now)); view.Place(CardView(r)); SyncCardFrame(r); }
+        { const RECT r = PanelRect(slide.Value(now)); view.Place(CardView(r)); ::KeepChatAbovePages(); SyncCardFrame(r); }
         if (slide.Moving(now)) return true;
         if (panelState == PanelState::Opening) { panelState = PanelState::Open; Diag(L"panel in place " + Ann::Ms(Ann::NowMs() - stats.requestedAt) + L" ms after the request"); }
         else if (panelState == PanelState::Closing) FinishClose();
         return false;
     }
 } slideClient;
-void Layout() { if (Shown() && view.Exists()) { const RECT r = PanelRect(slide.Value(NativeChrome::Motion::Now())); view.Place(CardView(r)); SyncCardFrame(r); } else SyncCardFrame({}); if (BubbleOpen()) PlaceBubble(); }
+void Layout() { if (Shown() && view.Exists()) { const RECT r = PanelRect(slide.Value(NativeChrome::Motion::Now())); view.Place(CardView(r)); ::KeepChatAbovePages(); SyncCardFrame(r); } else SyncCardFrame({}); if (BubbleOpen()) PlaceBubble(); }
 void SyncChromeBits() {
     if (!Ann::uiReady) return;
     Ann::banner.SetChat(Ann::s.active && AskAvailable(Ann::ModeTab()), CommentLayout());   // Paper 1AYP-0: the layout switch
@@ -1104,6 +1104,10 @@ void Shutdown() {
 
 // ---------------------------------------------------------------- host entry points (declared at the top of main.cpp)
 float ChatInsetDip() { return Chat::InsetDip(); }
+// src/main.cpp KeepChatAbovePages: the chat's WebView window while it is the panel in the browser window, and its corner
+// masks back above it.
+HWND ChatHostWindow() { return Chat::Shown() && Chat::view.Exists() && Chat::view.Parent() == window ? Chat::view.HostWindow() : nullptr; }
+void ChatCornersOnTop() { Chat::SyncChatCorners(); }
 void ChatNavigationCompleted(const std::shared_ptr<Tab>& t) { if (Chat::rearmOwed && t && Chat::ChatTab() == t) Chat::DoRearm(); }
 void ChatShutdown() { Chat::Shutdown(); }
 
