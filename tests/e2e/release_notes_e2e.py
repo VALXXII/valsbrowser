@@ -13,8 +13,9 @@ real update. Nothing outside the fixture is written: no real install root, no pe
 (the taskbar identity only stamps shortcuts that target the fixture's launcher; none does).
 
 Scenarios:
-  owner-0.3.840   the owner's bug (design/release-notes-fix-report.md): previous installed 0.3.837, the read state
-                  still holding the notes id every build carried until 0.3.840 -> the new notes' Mini, no toast.
+  owner-0.3.840   the owner's case (design/release-notes-fix-report.md, design/release-notes-cumul-report.md): previous
+                  installed 0.3.837, the read state still holding the fixed id of builds up to 0.3.840 (notes seen at
+                  0.3.646) -> the Mini with every version's notes since then, no toast; « seen » = this version.
   update-fr       previous installed 0.3.379 -> Mini FR shown once, seen recorded after display; UIA name, items,
                   Voir tout, Fermer; Tab (posted WM_KEYDOWN) moves focus; Voir tout (UIA Invoke) -> Full in place;
                   Échap (posted) closes; logo frames change between two captures.
@@ -30,9 +31,10 @@ Scenarios:
 Isolation as tests/e2e/language_e2e.py: only processes whose image lives in the fixture are touched; windows are
 never brought to the foreground, no SendInput; captures are PrintWindow of OUR windows only and are gated: an
 all-black capture is reported UNAVAILABLE, never used as visual proof.
-The expected notes (id, last line FR / EN) come from release-notes/notes.json through tools/release/release_notes.py,
-as the build compiled them (build the app with tools/release/build.py from the same checkout).
-Usage: python tests/e2e/release_notes_e2e.py <build dir> [notes id]
+The expected card (its last line FR / EN) is computed by tools/release/release_notes.py from release-notes/notes.json and
+its history, as the build compiled them (build the app with tools/release/build.py from the same checkout); the read
+state records the version the user has seen the notes up to (the app's own version).
+Usage: python tests/e2e/release_notes_e2e.py <build dir>
 """
 import ctypes, ctypes.wintypes as wt, json, os, shutil, struct, subprocess, sys, time, zlib
 sys.stdout.reconfigure(encoding='utf-8')
@@ -49,11 +51,16 @@ unavailable = []
 
 sys.path.insert(0, os.path.join(ROOT, 'tools', 'release'))
 import release_notes as RELEASE_NOTES  # noqa: E402
-NOTES_TEXT = RELEASE_NOTES.load()
-if not RELEASE_NOTES.notes_id(NOTES_TEXT):
-    raise SystemExit('release-notes/notes.json has no notes: nothing to show after an update')
-LAST = [pair for s in RELEASE_NOTES.SECTIONS for pair in NOTES_TEXT[s]][-1]   # (fr, en) of the card's last line
-NOTES = sys.argv[2] if len(sys.argv) > 2 else RELEASE_NOTES.notes_id(NOTES_TEXT)
+BUILD_VERSION = json.load(open(os.path.join(SRC, 'version.json'), encoding='utf-8'))['version'] if os.path.isfile(os.path.join(SRC, 'version.json')) else '0.0.0'
+BUILD_NUMBER = int(BUILD_VERSION.split('.')[2])
+# Every update scenario starts from a version older than every notes entry (0.3.379, 0.3.837 with the 0.3.646 id, portable):
+# the card shows every version's notes up to this build, newest first, at most 4 lines per section.
+CARD = RELEASE_NOTES.select(RELEASE_NOTES.history(build=BUILD_NUMBER), None, BUILD_NUMBER)
+LINES = CARD['ajouts'] + CARD['corrections']
+if not LINES:
+    raise SystemExit('no release notes up to this build: nothing to show after an update')
+LAST = CARD['corrections'][-1] if CARD['corrections'] else CARD['ajouts'][-1]   # (fr, en) of the card's last line
+NOTES = BUILD_VERSION
 OLD_FIXED_ID = '2026-11-comment-tooltips-download-selectall-typing'   # the constant every build carried up to 0.3.840
 SEEN = f'browser-release-notes 1\nseen={NOTES}\n'
 

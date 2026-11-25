@@ -22,7 +22,7 @@ Test tools go to <out>-test (never in a package): the fake ACP agent fake-acp-ag
 non-release channels only; the browser uses it when BROWSER_ANNOTATIONS_TEST=1 and BROWSER_CHAT_FAKE_AGENT name it.
 Intermediates (resources object, generated headers) go to <out>-obj so they can
 never leak into a package. Among them, release-notes-data.h: the « Nouveautés » card's notes, checked and
-generated from release-notes/notes.json (tools/release/release_notes.py, release-notes/README.md).
+generated from release-notes/notes.json and its history on main (tools/release/release_notes.py, release-notes/README.md).
 """
 from __future__ import annotations
 import argparse, json, os, shutil, subprocess, sys
@@ -165,9 +165,9 @@ def bridge_location(channel: str, mode: str, annotations: bool) -> str | None:
 def write_release_notes(gen: Path, info: dict) -> None:
     """The card's notes (refused with a message when notes.json breaks a rule of release-notes/README.md). A release
     whose merge did not change them shows no card after its update: said loudly in the CI log, never an error."""
-    notes = notes_mod.write_header(gen / 'release-notes-data.h')
-    nid = notes_mod.notes_id(notes)
-    print(f'Release notes: {nid or "none (no card after the update)"}', flush=True)
+    entries = notes_mod.write_header(gen / 'release-notes-data.h', info['build'])
+    print(f'Release notes: {len(entries)} version(s) with notes'
+          + (f', newest {entries[0]["version"]}' if entries else ' (no card after an update)'), flush=True)
     if info['channel'] != 'release':
         return
     rel = notes_mod.NOTES.relative_to(ROOT).as_posix()
