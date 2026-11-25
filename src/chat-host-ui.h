@@ -601,7 +601,7 @@ bool EnsurePost() {
 RECT PanelRect(float shown) {   // client pixels; shown 0 (off the right edge) .. 1 (in place)
     RECT c{}; GetClientRect(window, &c); const int w = S(PanelDip());
     if (chrome.floating) {   // Mode Focus (Paper 203J-0): the card, 4 DIP from the window's right and bottom edges, under the banner
-        const auto card = FocusChatCard(PanelDip()); const int in = S(NativeChrome::FocusMode::chatInset), right = c.right - in;
+        const auto card = FocusChatCard(PanelDip()); const int in = S(NativeChrome::FocusMode::chatInset), right = c.right - S(chrome.ClientWidth() - card.right);   // Mode Focus motion: the card's right edge follows the entry / exit (FocusChatCard), W - 4 at rest
         const int left = right - w + int(std::lround((1 - shown) * (w + in)));
         return {left, S(card.top), left + w, S(card.bottom)};
     }
@@ -661,6 +661,7 @@ void SyncCardFrame(RECT r) {
     chrome.chatRadius = CardRadiusDip();
     if (f.left != chrome.chatFrame.left || f.top != chrome.chatFrame.top || f.right != chrome.chatFrame.right || f.bottom != chrome.chatFrame.bottom) { chrome.chatFrame = f; InvalidateRect(window, nullptr, FALSE); }
     SyncChatCorners();
+    ::SyncResizeGrips();   // the window's resize border back above the chat's WebView (src/resize-border.h)
 }
 void FinishClose();
 struct SlideClient : AUI::Animator::Client {
@@ -1097,6 +1098,11 @@ void Shutdown() {
     }
     if (session) { session->Dispose(); disposed.push_back(std::move(session)); session.reset(); }
     for (auto& s : disposed) s->WaitStopped(3000);
+    // Lot R, private window (found 25 Nov 2026, hidden-desktop run): a turn still open when the window closes kept the
+    // snapshot store's « turn.lock » open in the window's own folder — the folder could not be removed, so the conversation's
+    // folder and the ledger stayed until the next start instead of going with the window. The store lets go here (its
+    // open turn is left « interrupted », as when the browser stops), before AnnotationShutdown erases.
+    snapshots.reset(); checkpointOfTurn.clear(); snapshotOfTurn.clear();
     disposed.clear(); view.Destroy(); panelReady = false; panelState = PanelState::Closed;
     if (post) { DestroyWindow(post); post = nullptr; }
 }

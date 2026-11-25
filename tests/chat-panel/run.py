@@ -1224,7 +1224,15 @@ try:
         early = cdp.js("document.documentElement.classList.contains('bub')")
         cdp.js("document.getElementById('composer-input').focus()"); cdp.call("Input.insertText", text="Bonjour"); key("Enter"); time.sleep(.5)
         mid = cdp.js("[document.querySelector('.send').classList.contains('stop'), V('.cin')]")
-        time.sleep(2.2)
+        # The end of the turn is WAITED for, not timed (it was a fixed 2.2 s: on a loaded machine the fake turn's timers ran
+        # late and « fit » was read before the last size — about 1 red in 14 runs on 24 Nov 2026, lot R). Ended = the step
+        # line « done » and the changes bar are there, the last size published is the height drawn, and nothing changed for
+        # 250 ms (the host's answer to that size has been applied). 20 s at most: the checks below then say what is missing.
+        cdp.js("""new Promise(r=>{const t0=performance.now();let last='',since=t0;const f=()=>{const a=document.getElementById('app'),h=Math.round(a.getBoundingClientRect().height),
+          z=window.__posted.filter(m=>m.type==='bubble.size').map(m=>m.height),done=!!document.querySelector('.bt-st.done')&&!!document.querySelector('.bt-bar'),
+          s=document.querySelector('.scroller'),key=z.length+':'+z[z.length-1]+':'+h+':'+done+':'+(s?s.scrollHeight+'/'+s.clientHeight:'');
+          if(key!==last){last=key;since=performance.now()}
+          if((done&&z.length&&z[z.length-1]===h&&performance.now()-since>=250)||performance.now()-t0>20000)r(1);else setTimeout(f,25)};f()})""")
         lv = cdp.js("""(()=>{const a=document.getElementById('app'),s=document.querySelector('.scroller'),z=window.__posted.filter(m=>m.type==='bubble.size').map(m=>m.height);
           return {z,app:Math.round(a.getBoundingClientRect().height),fit:s.scrollHeight<=s.clientHeight,done:!!document.querySelector('.bt-st.done'),bar:!!document.querySelector('.bt-bar'),focus:document.activeElement.id}})()""")
         check(early and mid == [True, 0] and len(set(lv["z"])) >= 4 and lv["z"][-1] == lv["app"] and lv["fit"] and lv["done"] and lv["bar"] and all(a != b for a, b in zip(lv["z"][1:], lv["z"][2:])),

@@ -147,6 +147,22 @@ int main(){
         Expect(SandboxMessage(sb,NativeChrome::DebugSandbox::Url,Message(token,L"modal.alert",L"default"))&&deferredJobs.size()==before+1,"valid command accepted once");
         deferredJobs.clear();
     }
+    // Error page actions (#121): « Réessayer » and the time-out's automatic retry navigate to the failed address again
+    // (night 25/11: the automatic retry was never wired); a page without a countdown never retries by itself.
+    {
+        auto ep=std::make_shared<Tab>();ep->uri=L"https://impots.gouv.fr/";ep->home=false;
+        ep->errorPage.shown=ep->uri;ep->errorPage.token=L"{00000000-0000-4000-8000-000000000121}";ep->errorPage.kind=(int)NativeChrome::ErrorPages::Kind::TimedOut;
+        auto act=[&](const wchar_t* a){return L"{\"token\":\""+ep->errorPage.token+L"\",\"action\":\""+a+L"\"}";};
+        deferredJobs.clear();
+        Expect(ErrorPageMessage(ep,L"about:blank",act(L"autoRetry"))&&deferredJobs.size()==1,"time-out: the automatic retry navigates again");
+        deferredJobs.clear();
+        Expect(ErrorPageMessage(ep,L"about:blank",act(L"retry"))&&deferredJobs.size()==1,"Réessayer navigates again");
+        deferredJobs.clear();
+        ep->errorPage.kind=(int)NativeChrome::ErrorPages::Kind::Refused;
+        Expect(ErrorPageMessage(ep,L"about:blank",act(L"autoRetry"))&&deferredJobs.empty(),"no automatic retry from a page without a countdown");
+        Expect(!ErrorPageMessage(ep,L"https://evil.test/",act(L"retry"))&&deferredJobs.empty(),"an error page message from a site is ignored");
+        deferredJobs.clear();
+    }
     // B01 address-bar chip on the real prompt surface: follows the open permission popover of the
     // active tab and nothing else (merge, answer, navigation, tab switch / close, address editing).
     {

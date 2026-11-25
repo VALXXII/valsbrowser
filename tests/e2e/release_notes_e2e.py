@@ -13,6 +13,8 @@ real update. Nothing outside the fixture is written: no real install root, no pe
 (the taskbar identity only stamps shortcuts that target the fixture's launcher; none does).
 
 Scenarios:
+  owner-0.3.840   the owner's bug (design/release-notes-fix-report.md): previous installed 0.3.837, the read state
+                  still holding the notes id every build carried until 0.3.840 -> the new notes' Mini, no toast.
   update-fr       previous installed 0.3.379 -> Mini FR shown once, seen recorded after display; UIA name, items,
                   Voir tout, Fermer; Tab (posted WM_KEYDOWN) moves focus; Voir tout (UIA Invoke) -> Full in place;
                   Échap (posted) closes; logo frames change between two captures.
@@ -28,6 +30,8 @@ Scenarios:
 Isolation as tests/e2e/language_e2e.py: only processes whose image lives in the fixture are touched; windows are
 never brought to the foreground, no SendInput; captures are PrintWindow of OUR windows only and are gated: an
 all-black capture is reported UNAVAILABLE, never used as visual proof.
+The expected notes (id, last line FR / EN) come from release-notes/notes.json through tools/release/release_notes.py,
+as the build compiled them (build the app with tools/release/build.py from the same checkout).
 Usage: python tests/e2e/release_notes_e2e.py <build dir> [notes id]
 """
 import ctypes, ctypes.wintypes as wt, json, os, shutil, struct, subprocess, sys, time, zlib
@@ -43,16 +47,14 @@ failures = 0
 unavailable = []
 
 
-def notes_id():
-    if len(sys.argv) > 2:
-        return sys.argv[2]
-    for line in open(os.path.join(ROOT, 'src', 'release-notes.h'), encoding='utf-8'):
-        if 'inline constexpr const char* NotesId' in line:
-            return line.split('"')[1]
-    raise SystemExit('NotesId not found')
-
-
-NOTES = notes_id()
+sys.path.insert(0, os.path.join(ROOT, 'tools', 'release'))
+import release_notes as RELEASE_NOTES  # noqa: E402
+NOTES_TEXT = RELEASE_NOTES.load()
+if not RELEASE_NOTES.notes_id(NOTES_TEXT):
+    raise SystemExit('release-notes/notes.json has no notes: nothing to show after an update')
+LAST = [pair for s in RELEASE_NOTES.SECTIONS for pair in NOTES_TEXT[s]][-1]   # (fr, en) of the card's last line
+NOTES = sys.argv[2] if len(sys.argv) > 2 else RELEASE_NOTES.notes_id(NOTES_TEXT)
+OLD_FIXED_ID = '2026-11-comment-tooltips-download-selectall-typing'   # the constant every build carried up to 0.3.840
 SEEN = f'browser-release-notes 1\nseen={NOTES}\n'
 
 
@@ -444,8 +446,9 @@ def run():
         print('a fixture browser is already running: close it first'); return 2
     os.makedirs(SHOTS, exist_ok=True)
     print(f'build {SRC} version {version()} notes {NOTES}', flush=True)
-    fr = {'title': 'Nouveautés', 'showall': 'Voir tout', 'close': 'Fermer', 'last': 'Saisie sans scintillement dans les champs de texte.'}
-    en = {'title': 'What’s new', 'showall': 'Show all', 'close': 'Close', 'last': 'Typing without flicker in text fields.'}
+    fr = {'title': 'Nouveautés', 'showall': 'Voir tout', 'close': 'Fermer', 'last': LAST[0]}
+    en = {'title': 'What’s new', 'showall': 'Show all', 'close': 'Close', 'last': LAST[1]}
+    scenario_update('owner-0.3.840', 'fr', 'installed 0.3.837\n', fr, data={'release-notes': f'browser-release-notes 1\nseen={OLD_FIXED_ID}\n'})
     first = scenario_update('update-fr', 'fr', 'installed 0.3.379\n', fr)
     scenario_quiet('restart', fix_root=first)
     scenario_quiet('first-install', previous=None, expect_state=SEEN, expect_log='RELEASE NOTES baseline recorded (first install)')

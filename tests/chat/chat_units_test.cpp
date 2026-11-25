@@ -811,7 +811,10 @@ static void TestBubble() {
         Check(UnsafeAnchorKey("same-origin", "button.cta", {}) == UnsafeAnchorKey("same-origin", "button.cta", {}) &&
               UnsafeAnchorKey("same-origin", "button.cta", {}) != UnsafeAnchorKey("main", "button.cta", shadow) && !UnsafeAnchorKey("main", "button.cta", shadow).empty(),
               "Q 6: the same element gives the same key; a frame or a shadow root tells it apart");
-        Check(UnsafeAnchorKey("cross-origin", "a", {}).empty() && UnsafeAnchorKey("main", "", {}).empty(), "Q 6: nothing to key (cross-origin, no selector): no key"); }
+        Check(UnsafeAnchorKey("cross-origin", "a", {}).empty() && UnsafeAnchorKey("main", "", {}).empty(), "Q 6: nothing to key (cross-origin, no selector): no key");
+        // lot 1d, case 3: only an element of a same-origin iframe, outside any shadow root, can be found again in the page's frames
+        Check(FrameKey(UnsafeAnchorKey("same-origin", "#o1", {})) && !FrameKey(UnsafeAnchorKey("same-origin", "#o1", shadow)) && !FrameKey(UnsafeAnchorKey("main", "button.cta", shadow))
+              && !FrameKey("") && !FrameKey("same-origin||") && !FrameKey("cross-origin||#o1"), "lot 1d, case 3: the key of an iframe's element (no shadow path) is the only one given back to the page script"); }
     // #130 C rules 9 and 10 (Paper « #130 Bulle sans place dessous · C règles (validées) »): an element with no free side
     {   const Rect area{0, 100, 1200, 900}; const int W = 320, gap = 12, m = 8, lead = 4, minH = 120;
         const Rect title{40, 300, 1160, 360};   // as wide as the page, room below and above

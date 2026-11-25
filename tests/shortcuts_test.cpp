@@ -19,6 +19,7 @@ int main(){
     pages.clear();current=-1;
     Modifiers(true);for(UINT k='1';k<='9';++k)Assert(Key(k)==SelectTabBase+int(k-'1'));
     Assert(Key('L')=='L');Assert(Key(VK_TAB)==']');
+    Assert(Key('P')==PrintActive);   // Ctrl+P: our print window from anywhere, the page included (#121: never the engine's preview)
     Modifiers(true,true);Assert(Key(VK_PRIOR)==MoveTabLeft);Assert(Key(VK_NEXT)==MoveTabRight);Assert(Key(VK_TAB)=='[');Assert(Key('1')==0);Assert(Key('T')=='U');
     Assert(Key('N')=='P');Assert(chrome.Enabled('P'));   // Ctrl+Maj+N: nouvelle fenêtre privée, without any toolbar button
     // #127 layout: the top bar by default; Ctrl+Maj+, folds the side panel only while it is the layout (else the page

@@ -360,8 +360,9 @@ inline State Read(std::istream& in) {
     return s;
 }
 // ---- Site permissions (settings › Autorisations) ----------------------------
-// What a site may use. The host maps these to COREWEBVIEW2_PERMISSION_KIND.
-enum class Permission { Camera, Microphone, Location, Notifications, Clipboard, Other };
+// What a site may use. The host maps these to COREWEBVIEW2_PERMISSION_KIND, except ScreenShare (#121 « Toujours bloquer
+// ce site »): WebView2 has no kind for screen capture, so Browser keeps it (Block only, never Allow) in its own file.
+enum class Permission { Camera, Microphone, Location, Notifications, Clipboard, Other, ScreenShare };
 enum class PermissionState { Ask, Allow, Block };
 struct SitePermission { Permission kind = Permission::Other; PermissionState state = PermissionState::Ask; };
 struct Site { std::wstring origin; std::vector<SitePermission> permissions; };
@@ -372,6 +373,7 @@ inline const wchar_t* PermissionName(Permission p) {
     case Permission::Location: return TR(permission_location);
     case Permission::Notifications: return TR(permission_notifications);
     case Permission::Clipboard: return TR(permission_clipboard);
+    case Permission::ScreenShare: return TR(permission_screen_share);
     default: return TR(permission_kind_misc);
     }
 }

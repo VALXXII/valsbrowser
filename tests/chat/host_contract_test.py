@@ -464,6 +464,14 @@ check('o.instructions = ChatPrompt::Instructions();' in ss and 'if (caps.systemP
       'lot 5 (Codex): the session is given the approval rule as appended instructions, only when the agent advertises that it takes some')
 check('m.ask = {"read-only"};' in rt_cpp and 'm.automatic = {"agent", "workspace-write"};' in rt_cpp and 'm.never = {"agent-full-access"};' in rt_cpp,
       'lot 5 (Codex): « Demander » stays Codex\'s « read-only » (the only mode where an edit waits for the user), « Auto » its « agent » / « workspace-write »; full access is never offered')
+# Lot R, private window closed in the middle of a turn (found 25 Nov 2026, hidden-desktop run): the snapshot store kept its
+# « turn.lock » open in the window's own folder, which could then not be removed — conversation and ledger stayed until the
+# next start. The chat lets go of the store when it shuts down, and it shuts down BEFORE the private window's files are erased.
+sd = block_after(ui, 'void Shutdown() {')
+main_all = (SRC / 'main.cpp').read_text(encoding='utf-8')
+check(0 <= sd.find('for (auto& s : disposed) s->WaitStopped(3000);') < sd.find('snapshots.reset();') < sd.find('view.Destroy();')
+      and 0 <= main_all.find('case WM_DESTROY:ChatShutdown();') < main_all.find('AnnotationShutdown();', main_all.find('case WM_DESTROY:ChatShutdown();')),
+      'lot R (private window): at the close the chat stops its agent, lets go of the snapshot store, then the window\'s notes and folder are erased')
 cn = block_after(ui, 'void Connect(const std::string& id, const std::string& methodId) {')
 check('if (!method && info.auth.empty() && info.status == "notConnected" && info.cli) { own = AgentRuntime::DefaultTerminalSignIn(def->rt); method = &own;' in cn
       and 'else if (id != agentId) DetectAgents();' in cn,
@@ -490,6 +498,21 @@ check('NewAnchoredConversation(env.selector, label, page, "", "", true)' in oe2 
 oe5 = block_after(comment, 'bool OpenEarly(')
 check('const bool areaMoving = Shown();' in oe5 and oe5.count('areaMoving') >= 4 and 'holdForMeasure = stale || areaMoving' in oe5,
       'M5: a click while the chat panel is still on screen — the bubble waits for the first measure of the page')
+
+# Lot 1d (the owner's decisions of 24 Nov 2026 on iframes; Paper « Iframes · cas 1 … A », « Iframes · cas 3 »)
+page_js = (ROOT / 'src' / 'annotation-script.h').read_text(encoding='utf-8')
+fp = block_after(page_js, 'function followPost() {')
+check('stick({ x: r.left + at.x, y: r.top + at.y, w: r.width, h: r.height, vw: innerWidth, vh: innerHeight }, at.edge)' in fp and 'function stick(o, e) {' in page_js
+      and 'edge = cut(edge, x + r.left, y + r.top, r.width, r.height);' in page_js,
+      'lot 1d, case 1 = A: the place given to the host stays in the iframe\'s box (its border box) — the bubble stuck to the edge the element left by')
+check('follow.key ? keyFind(follow.key) : follow.deep ? deepFind(follow.deep)' in fp and '!el.isConnected || !follow.chain' in fp
+      and 'm.el = m.key ? keyFind(m.key) : cmFind(m.selector)' in block_after(page_js, 'function cmPlace(m) {'),
+      'lot 1d, case 3: the page script finds an iframe\'s element again after its iframe reloaded (the bubble\'s element and the marks)')
+fb = block_after(comment, 'void FollowBubbleElement(bool current) {'); sm = block_after(comment, 'void SyncMarks() {')
+check('key = FrameKeyOf(bubble.conv)' in fb and 'f.Set("key", Str(key))' in fb and 'ChatBubble::FrameKey(k) ? k : std::string()' in block_after(comment, 'std::string FrameKeyOf(const std::string& id) {'),
+      'lot 1d, case 3: after a reload of the page the host gives an iframe\'s element back to the script by its key')
+check('!ChatBubble::FrameKey(h.anchorKey) || !marked.insert(h.anchorKey).second' in sm and 'o.Set("key", Str(h.anchorKey))' in sm,
+      'lot 1d, case 3: a conversation of an iframe\'s element has its mark too (by its key); a web component\'s still has none')
 
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

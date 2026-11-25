@@ -28,7 +28,10 @@ int main() {
 
     Check(AdBlockFolder::ManifestVersion(v1.wstring()) == L"2026.1103.1743", "the bundled manifest's version is read");
     std::wstring note;
+    const std::wstring expected = AdBlockFolder::Expected(v1.wstring(), root.wstring());
+    Check(!fs::exists(root / L"extensions"), "Expected() copies nothing");
     const std::wstring first = AdBlockFolder::Stable(v1.wstring(), root.wstring(), &note);
+    Check(expected == first, "Expected() names the very folder Stable() installs from (the browser compares it with its last install)");
     const fs::path expect = root / L"extensions" / L"ublock-lite-2026.1103.1743";
     Check(fs::path(first) == expect, "installs from <data>\\extensions\\ublock-lite-<version>, not from the version folder");
     Check(Read(expect / "rulesets" / "main" / "default.json") == "rules-a" && fs::exists(expect / "manifest.json"), "the whole extension is copied there");
@@ -47,7 +50,24 @@ int main() {
     Bundle(v3, "2026.1201.0900", "rules-b");
     const std::wstring third = AdBlockFolder::Stable(v3.wstring(), root.wstring(), &note);
     Check(fs::path(third) == root / L"extensions" / L"ublock-lite-2026.1201.0900", "a new uBlock version gets its own folder");
+    Check(AdBlockFolder::Expected(v3.wstring(), root.wstring()) == third && third != first, "Expected() follows the version: another folder than the last install's");
     Check(Read(fs::path(third) / "rulesets" / "main" / "default.json") == "rules-b" && fs::exists(expect), "with its own rules; the previous copy is kept");
+
+    // A copy cut short (the browser closed while its background copy ran) left its temporary folder: the next copy
+    // removes it once its process is gone; another window's copy in progress (its process runs) is left alone.
+    const fs::path extensions = root / L"extensions";
+    const fs::path dead = extensions / L"ublock-lite-2026.1201.0900.tmp-4294967292";   // no process has that id
+    const fs::path running = extensions / L"ublock-lite-2026.1201.0900.tmp-4";          // the System process: always there
+    const fs::path other = extensions / L"notes.tmp-4294967292";                       // not ours: never touched
+    Write(dead / "rulesets" / "main" / "default.json", "half"); Write(running / "manifest.json", "{}"); Write(other / "x", "x");
+    const fs::path v5 = work / L"bundle5";
+    Bundle(v5, "2026.1215.1000", "rules-d");
+    const std::wstring fifth = AdBlockFolder::Stable(v5.wstring(), root.wstring(), &note);
+    Check(fs::path(fifth) == extensions / L"ublock-lite-2026.1215.1000", "a new version is copied as before");
+    Check(!fs::exists(dead) && note.find(L"1 unfinished copy removed") != std::wstring::npos, "an unfinished copy of a process that is gone is removed (and logged)");
+    Check(fs::exists(running) && fs::exists(other), "a copy whose process still runs, and a folder that is not a copy, are left alone");
+    Check(AdBlockFolder::Stable(v5.wstring(), root.wstring(), &note) == fifth && note.find(L"kept") == 0, "the next launch keeps the folder: nothing to clean, nothing copied");
+    fs::remove_all(running); fs::remove_all(other);
 
     // A folder left half-written by a crash (no manifest) is never used.
     const fs::path broken = root / L"extensions" / L"ublock-lite-2027.1.1";
@@ -62,6 +82,8 @@ int main() {
     const fs::path none = work / L"none"; Write(none / "manifest.json", "{ \"name\": \"x\" }");
     Check(AdBlockFolder::Stable(none.wstring(), root.wstring(), &note) == none.wstring(), "no version: the bundled folder");
     Check(AdBlockFolder::Stable(v1.wstring(), L"", &note) == v1.wstring(), "no data root: the bundled folder");
+    Check(AdBlockFolder::Expected(v1.wstring(), L"") == v1.wstring() && AdBlockFolder::Expected(odd.wstring(), root.wstring()) == odd.wstring()
+          && AdBlockFolder::Expected(none.wstring(), root.wstring()) == none.wstring(), "Expected(): the bundled folder in those cases too");
     Check(AdBlockFolder::Stable((work / L"missing").wstring(), root.wstring(), &note) == (work / L"missing").wstring(), "no bundled extension: returned unchanged (the caller reports it)");
 
     std::error_code ec; fs::remove_all(work, ec);

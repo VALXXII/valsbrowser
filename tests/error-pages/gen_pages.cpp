@@ -52,6 +52,12 @@ int wmain(int argc, wchar_t** argv) {
     ErrorPages::Extras refused = x; refused.code = L"ERR_CONNECTION_REFUSED"; refused.address = ErrorPages::AddressOf(L"http://localhost:3000/"); refused.tries = ErrorPages::TriesText(2, L"14:32");
     Write(L"refused", ErrorPages::Html(Kind::Refused, L"http://localhost:3000/", token, false, refused));
     Write(L"timeout", ErrorPages::Html(Kind::TimedOut, L"https://impots.gouv.fr/", token, false, x));
+    // Board « compléments » 1SYN-0: the three remaining pages and the time-out with its sheet open (2nd failure).
+    ErrorPages::Extras t2 = x; t2.code = L"ERR_TIMED_OUT"; t2.address = ErrorPages::AddressOf(L"https://impots.gouv.fr/"); t2.tries = ErrorPages::TriesText(2, L"14:32"); t2.triesCount = 2; t2.attempt = 1;
+    Write(L"timeout-open", ErrorPages::Html(Kind::TimedOut, L"https://impots.gouv.fr/", token, false, t2));
+    Write(L"reset", ErrorPages::Html(Kind::Reset, L"https://lemonde.fr/", token, false, x));
+    Write(L"unreachable", ErrorPages::Html(Kind::Unreachable, L"http://intranet.local/", token, false, x));
+    Write(L"generic", ErrorPages::Html(Kind::Generic, L"https://exemple.fr/rapport", token, false, x));
     ErrorPages::Extras back = x; back.restored = true;
     Write(L"restored", ErrorPages::Html(Kind::Offline, L"https://www.lemonde.fr/planete/", token, true, back));
     struct Cert { const wchar_t* name; int status; const wchar_t* host; const wchar_t* issuer; };

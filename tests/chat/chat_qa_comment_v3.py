@@ -122,7 +122,10 @@ def run_main():
         time.sleep(1.0)
         step('D3 · fresh profile, Commentaire, no conversation whose element is gone: no launcher', 'AnnotationLauncher' not in (C.uia('-List') or ''))
         capture('d3-sans-lanceur')
-        warm = logged(r'CHAT (bubble|panel) WebView created in advance', 0, 10)   # O1: in « Chat à droite » the page is made at the mode's start; the bubble reuses it
+        # O1: in « Chat à droite » the page is made at the mode's start; the bubble reuses it. Lot R: the mode's start OPENS the
+        # panel there, so the log says « panel WebView created in N ms » (an opening) instead of « created in advance » — the
+        # page exists just the same before any click (night of 25 Nov: this step read the old wording only)
+        warm = logged(r'CHAT (bubble|panel) WebView created (in advance|in \d+ ms)', 0, 10)
         logged(r'CHAT panel ready', m0, 10); time.sleep(0.8)
         step('R18 · the bubble\'s page is created and loaded as soon as Commentaire is on (before any click)', warm is not None)
 

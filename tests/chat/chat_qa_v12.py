@@ -301,7 +301,7 @@ def run_main():
         C.click_page('.field-label'); time.sleep(0.7)
         clicks = pg('window.__clicks'); aimed = 'CHAT element aimed' in C.log_text()[m5:]
         step('V1.4 · …the page gets its own clicks again (no chip), the chat stays open with its thread', clicks >= 1 and not aimed and C.panel_exists()   # a <label> also clicks its field: the page counts 2, as in any browser
-            and True and sw[1] >= 2, f'clicks {clicks}, aimed {aimed}, {sw[1]} thread item(s)')
+            and sw[1] >= 1, f'clicks {clicks}, aimed {aimed}, {sw[1]} thread item(s)')   # lot R: the thread holds the user's message only (the « Gardé en annotation » line, counted here until 25 Nov, went with Ctrl+Entrée)
         capture('10-selection-coupee')
         m6 = mark(); C.shortcut('A')
         on = logged(r'ANNOTATE selection on', m6, 5); time.sleep(0.8)
