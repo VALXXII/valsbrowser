@@ -2,8 +2,9 @@
 // live-site card (E1b) drawn off screen by the production windows (software Direct2D into WIC, the shader through
 // Direct3D) at 96 and 120 DPI, saved as PNG for the side-by-side audit with the Paper boards
 // (design/annotation-onboarding-evidence/), in the boards' cyan, in violet and in « Personnel »'s blue; plus the checks that
-// need no eyes: Paper geometry, the guided trial (hover, pick, type, send, the button grows), every button and key, A6's
-// connected state, both languages. Never opens a window, never touches a profile.
+// need no eyes: Paper geometry, the guided trial (hover, pick, type, send, the button grows), every button and key, A6
+// « Ton agent » and A7 on the agents' one status (src/agent-status.h, detections injected: never a real CLI), both
+// languages. Never opens a window, never touches a profile. A6's own states: tests/onboarding/ton_agent_test.cpp.
 // Usage: annotation_onboarding_test.exe <repo root> <output dir>
 #ifndef UNICODE
 #define UNICODE
@@ -17,6 +18,20 @@
 #include "../../src/settings.h"
 #include "../../src/annotation-onboarding.h"
 #include "../../src/annotation-local-card.h"
+
+// The agents' one status with injected detections (no CLI, no installer, no console): Claude Code ready, Codex signed out
+// (the boards' « Claude connected, Codex not »), or nothing installed.
+static AgentRuntime::Detection Det(AgentRuntime::Agent a, bool installed, bool signedIn) {
+    AgentRuntime::Detection d; d.agent = a; d.cli.state = installed ? AgentRuntime::CliState::Found : AgentRuntime::CliState::Missing;
+    d.login = signedIn ? AgentRuntime::Login::SignedIn : AgentRuntime::Login::SignedOut; if (installed) { d.cli.version = "2.1.325"; d.cli.path = L"C:\\fake\\cli.exe"; }
+    return d;
+}
+static void Agents(bool claudeReady) {
+    AgentStatus::Host h; h.dataRoot = L"C:\\nonexistent-browser-test-data";
+    h.environment = [] { AgentRuntime::Environment e; e.dataRoot = L"C:\\nonexistent-browser-test-data"; e.freshUserEnvironment = false; return e; };
+    h.detect = [claudeReady](const AgentRuntime::Environment&, AgentRuntime::Agent a) { return a == AgentRuntime::Agent::Claude ? Det(a, claudeReady, true) : Det(a, claudeReady, false); };
+    AgentStatus::Init(h);   // synchronous (no `run`): the statuses are there at once
+}
 
 static int failures = 0, checks = 0;
 static void Expect(bool ok, const char* what) { ++checks; std::printf("%s %s\n", ok ? "ok  " : "FAIL", what); if (!ok) ++failures; }
@@ -45,8 +60,8 @@ static void FlowTests() {
     g.SetText(L"Plus large"); g.Suggest(L"Rends ce bouton plus large"); Expect(g.text() == L"Plus large", "trial: an edited note is kept when the language changes");
     Expect(f.Next() && f.step() == Step::Where, "flow: A4 « Suivant » → A5 « Où ça marche »");
     Expect(f.Back() && f.step() == Step::Result && f.Next(), "flow: A5 « Retour » → A4 once the trial was done");
-    Expect(f.Next() && f.step() == Step::Connect && f.Next() && f.step() == Step::Ready, "flow: A5 → A6 « Connecter » → A7 « Prêt »");
-    Expect(f.Back() && f.step() == Step::Connect && f.Next(), "flow: A7 « Retour » → A6");
+    Expect(f.Next() && f.step() == Step::Connect && f.Later() && f.step() == Step::Ready, "flow: A5 → A6 « Ton agent » → (« Plus tard ») A7 « Prêt »");
+    Expect(f.Back() && f.step() == Step::Connect && f.Later(), "flow: A7 « Retour » → A6");
     Expect(f.Next() && f.step() == Step::Closed && f.ending() == AO::Ending::Finished && !f.open(), "flow: A7 « Terminer » ends it (finished)");
     Expect(!f.Next() && !f.Back() && !f.Skip() && f.ending() == AO::Ending::Finished, "flow: nothing moves once closed");
     AO::Flow s; s.Next(); Expect(s.Next() && s.step() == Step::Where, "flow: A2 « Passer l'essai » → A5");
@@ -65,7 +80,7 @@ static void FlowTests() {
     AO::Launch c; c.chatOpen = true; Expect(!AO::ShouldShow(c), "rule: not while the chat was asked for");
     AO::Launch b; b.busy = true; b.forced = true; Expect(!AO::ShouldShow(b), "rule: not over another modal or the note panel");
     Expect(Onboarding::HasSwitch(L"--annotation-onboarding", AO::Switch) && !Onboarding::HasSwitch(L"--annotation-onboarding-x", AO::Switch), "rule: the switch is matched as a whole argument");
-    Expect(AO::ReaderOf(AO::Link::Connected, AO::Link::Idle) == AO::Reader::Claude && AO::ReaderOf(AO::Link::Idle, AO::Link::Connected) == AO::Reader::Codex && AO::ReaderOf(AO::Link::Working, AO::Link::Failed) == AO::Reader::None, "A7: the connected agent (Claude first), none otherwise");
+    Expect(AO::ReaderOf(true, false) == AO::Reader::Claude && AO::ReaderOf(false, true) == AO::Reader::Codex && AO::ReaderOf(false, false) == AO::Reader::None, "A7: the READY agent (Claude Code first), none otherwise");
     // The setting that remembers it.
     BrowserSettings::State st; Expect(!st.annotationOnboarded, "setting: a new profile has not seen it");
     st.annotationOnboarded = true; std::stringstream out; BrowserSettings::Write(out, st);
@@ -120,9 +135,10 @@ int wmain(int argc, wchar_t** argv) {
     const bool measured = scratch && SUCCEEDED(measure.Init(scratch, argv[1]));
     Expect(measured, "setup: a text measurer");
 
-    const A::AppStatus connected{A::ConnectState::Connected, L""}, idle{};
+    const A::AppStatus connected{A::ConnectState::Connected, L""}, idle{};   // (the MCP status A6 no longer shows)
     Fixture f; f.root = argv[1]; f.out = argv[2];
-    // ---- the seven steps as Paper draws them (cyan; A6 / A7: Claude connected, Codex not) ----
+    Agents(true);
+    // ---- the seven steps as Paper draws them (cyan; A6 / A7: Claude Code ready, Codex to sign in) ----
     f.Setup(connected, idle);
     Expect(f.Shot(L"A1"), "render: A1 « Bienvenue sur le mode Annotation »");
     Expect(f.window.AccentForTest().r == 0x00 && f.window.AccentForTest().g == 0x99 && f.window.AccentForTest().b == 0xA0, "colour: the boards' cyan by default (#0099A0)");
@@ -172,30 +188,30 @@ int wmain(int argc, wchar_t** argv) {
     Expect(f.Shot(L"A5"), "render: A5 « Sur vos projets en cours »");
     f.window.ActivateForTest(UI::Window::Primary);
     Expect(f.window.Flow().step() == Step::Connect, "A5 « Suivant » → A6");
-    Expect(f.Shot(L"A6"), "render: A6 « Connectez votre agent » (Claude connected, Codex to connect)");
+    Expect(f.Shot(L"A6"), "render: A6 « Ton agent » (Claude Code ready, Codex to sign in: Paper « Claude Code · 3 Prêt »)");
     if (measured) {
         const auto claude = f.Item(UI::Window::ClaudeRow, measure), codex = f.Item(UI::Window::CodexRow, measure);
-        Expect(Near(claude.left, 192) && Near(claude.top, 124) && Near(claude.right, 528) && Near(claude.bottom, 164) && Near(codex.top, 172), "A6 geometry: the rows 336 × 40 at (192, 124) and y 172");
+        Expect(Near(claude.left, 172) && Near(claude.top, 152) && Near(claude.right, 355) && Near(claude.bottom, 288) && Near(codex.left, 365) && Near(codex.right, 548), "A6 geometry: the tiles 183 × 136 at (172, 152) and x 365 (card at 140)");
     }
-    f.window.ActivateForTest(UI::Window::ClaudeRow); Expect(f.connects == 0, "A6: « Claude est connecté » does nothing when clicked");
-    f.window.ActivateForTest(UI::Window::CodexRow); Expect(f.connects == 1 && f.asked == A::AgentKind::Codex, "A6: « Connecter avec Codex » asks the host");
-    f.window.SetStatus(A::AgentKind::Codex, {A::ConnectState::Working, L""}); Expect(f.Shot(L"A6-codex-working"), "render: A6 while Codex connects");
-    f.window.SetStatus(A::AgentKind::Codex, {A::ConnectState::Failed, L"config.toml illisible"}); Expect(f.Shot(L"A6-codex-failed"), "render: A6 after a failure");
-    f.window.SetStatus(A::AgentKind::Codex, {A::ConnectState::Connected, TRF(agent_restart_to_enable, L"Codex")}); Expect(f.Shot(L"A6-both-connected"), "render: A6 both connected (restart note)");
-    f.window.SetStatus(A::AgentKind::Codex, idle);
-    f.window.ActivateForTest(UI::Window::Primary);
-    Expect(f.window.Flow().step() == Step::Ready, "A6 « Continuer » → A7");
+    f.window.SetStatus(A::AgentKind::Codex, {A::ConnectState::Connected, L""});   // the MCP status: no longer shown
+    Expect(f.connects == 0 && f.window.SecondaryForTest() == L"Plus tard" && f.window.PrimaryForTest() == L"Continuer" && f.window.PrimaryEnabledForTest(), "A6: Claude Code ready → « Plus tard », « Continuer » (no MCP row)");
+    Expect(f.window.TileNameForTest(AgentStatus::Agent::Codex) == L"Se connecter à Codex" && f.window.TileEnabledForTest(AgentStatus::Agent::Codex) && !f.window.TileEnabledForTest(AgentStatus::Agent::Claude),
+           "A6: the Codex tile's click signs in (« Se connecter à Codex »); the ready Claude Code tile has no click");
+    f.window.ActivateForTest(UI::Window::Secondary);
+    Expect(f.window.Flow().step() == Step::Ready, "A6 « Plus tard » → A7");
     Expect(f.Shot(L"A7"), "render: A7 « Tout est prêt »");
-    Expect(f.window.BodyForTest().find(L"Claude s’occupe du reste.") != std::wstring::npos, "A7: the sentence names the connected agent");
+    Expect(f.window.BodyForTest().find(L"Claude Code s’occupe du reste.") != std::wstring::npos, "A7: the sentence names the READY agent");
     f.window.ActivateForTest(UI::Window::Primary);
     Expect(f.closed == 1 && f.ending == AO::Ending::Finished && !f.window.OpenForTest(), "A7 « Terminer »: closed, finished");
 
     // ---- other states ----
-    f.Setup(idle, idle, Step::Ready); f.closed = 0;
-    Expect(f.Shot(L"A7-no-agent") && f.window.BodyForTest().find(L"Votre agent s’occupe du reste.") != std::wstring::npos, "A7 with no agent: grey dot, « Votre agent »");
+    Agents(false);
+    f.Setup(connected, connected, Step::Ready); f.closed = 0;   // the MCP says « connected »: A7 still says what the chat would say
+    Expect(f.Shot(L"A7-no-agent") && f.window.BodyForTest().find(L"Votre agent s’occupe du reste.") != std::wstring::npos, "A7 with no agent ready (even « connected » by MCP): grey dot, « Aucun agent prêt », « Votre agent »");
     f.window.KeyForTest(VK_ESCAPE); Expect(f.closed == 1 && f.ending == AO::Ending::Skipped, "Échap: closed, skipped");
     f.Setup(idle, idle, Step::Connect); f.closed = 0; f.window.ActivateForTest(UI::Window::Manual);
-    Expect(f.closed == 1 && f.manual && f.ending == AO::Ending::Skipped, "A6 « Autre app ou réglage manuel »: closed, the host opens the manual setup");
+    Expect(f.closed == 0 && !f.manual && f.window.OpenForTest(), "A6: no « Autre app ou réglage manuel » any more (Réglages › Agents)");
+    Agents(true);
     f.Setup(idle, idle, Step::Write); f.closed = 0;
     for (int i = 0; i < 40 && !f.window.Flow().text().empty(); ++i) f.window.EraseForTest();
     Expect(f.window.Flow().text().empty() && !f.window.Flow().CanSend(), "A3 emptied by the person: nothing to send");
@@ -257,13 +273,15 @@ int wmain(int argc, wchar_t** argv) {
     Expect(f.Shot(L"en-A1"), "render: A1 in English");
     f.window.ActivateForTest(UI::Window::Primary); Expect(f.Shot(L"en-A2"), "render: A2 in English");
     f.window.ActivateForTest(UI::Window::Primary); Expect(f.Shot(L"en-A5"), "render: A5 in English");
-    f.window.ActivateForTest(UI::Window::Primary); f.window.ActivateForTest(UI::Window::Primary); Expect(f.Shot(L"en-A7"), "render: A7 in English");
+    f.window.ActivateForTest(UI::Window::Primary); Expect(f.Shot(L"en-A6"), "render: A6 in English");
+    f.Setup(connected, idle, Step::Ready); Expect(f.Shot(L"en-A7"), "render: A7 in English");
     Expect(f.window.BodyForTest().find(L"Ctrl + Shift + A") != std::wstring::npos, "A7 in English: the shortcut's own names");
     f.Setup(connected, idle, Step::Pick); f.window.PointForTest(308, 248, true);
     Expect(f.window.Flow().text() == L"Make this button wider" && f.window.Flow().CanSend(), "A3 in English: « Make this button wider » already written, « Send » on");
     Expect(f.Shot(L"en-A3"), "render: A3 in English « Send the request »");
     I18n::SetForProcess(I18n::Locale::Fr);
 
+    AgentStatus::Shutdown();
     if (scratch) { measure.Dispose(); DestroyWindow(scratch); }
     std::printf("%d checks, %d failures\n", checks, failures);
     CoUninitialize();

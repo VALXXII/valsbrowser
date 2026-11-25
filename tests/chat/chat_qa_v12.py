@@ -231,17 +231,18 @@ def run_main():
         step('the « Connecter un agent » modal is out of the way (fresh profile)', not [w for w in Q.windows() if w[1] == 'BrowserAnnotationVeil'])
         u32.SetForegroundWindow(Q.main_window())
 
-        # ---- 7 (V1.3): chat CLOSED, a click on an element opens the chat: the element is a chip, the caret is there
+        # ---- 7 (lot R): in « Panneau » the chat is open as soon as the mode starts; a click on an element adds it as a chip,
+        #      the caret is there (before lot R the chat opened at this click, and the page moved)
         m1 = mark()
         C.click_page('.title')
         # final QA: the panel is created in advance (O1): its opening by a click may be logged « panel in place » / « panel opened »
-        opened = logged(r'CHAT (a click on an element opens the chat|panel in place|panel opened)', m1, 8)
+        opened = logged(r'CHAT (panel opened with the mode|a click on an element opens the chat|panel in place|panel opened)', 0, 8)
         # the panel's page is created when the mode starts (O1, « Chat à droite »): it says « panel ready » ONCE, usually before
         # this click. Waited for after the click it was never found (15 s lost, step 7 failed on the 20:00 release's pass,
         # ae51111): read from the start of the log — ready by the time the click has opened the chat, whenever it was said
         ready = logged(r'CHAT panel ready', 0, 15)
         time.sleep(0.4)
-        step('7 · chat closed: a click on an element OPENS the chat (no note panel)', opened is not None and ready is not None and not [w for w in Q.windows() if w[1] == 'BrowserAnnotationNote'])
+        step('7 · the chat is open with the mode; a click on an element goes to it (no note panel)', opened is not None and ready is not None and not [w for w in Q.windows() if w[1] == 'BrowserAnnotationNote'])
         has_chip = C.wait_for(chips, 10)
         time.sleep(0.6)
         foc = C.panel("({chip:document.querySelectorAll('.cin .chip').length,label:(document.querySelector('.cin .chip')||{}).textContent||'',active:document.activeElement&&document.activeElement.id,focus:document.hasFocus()})") or {}
@@ -270,7 +271,7 @@ def run_main():
         step('2 · the model button says « Moyen »; no « Default » anywhere in the panel', chip_e == 'Moyen' and 'Default' not in C.panel_text(), f'{chip_e!r} {metas}')
         step('2 · the turn\'s header: model · Moyen · duration', bool(metas) and ' · Moyen · ' in metas[-1], str(metas))
 
-        # ---- V1.3: Ctrl+Entrée keeps an annotation (no agent), read by the MCP agents
+        # ---- lot R: « Garder en annotation » (Ctrl+Entrée) is removed: the send button's bubble has one line
         m2 = mark()
         C.click_page('.hint')
         C.wait_for(chips, 10); time.sleep(0.4)
@@ -278,18 +279,11 @@ def run_main():
         hover(sx, sy, lambda: C.panel("getComputedStyle(document.getElementById('send-tip')).opacity") == '1')
         tip = C.panel("[getComputedStyle(document.getElementById('send-tip')).opacity, document.getElementById('send-tip').innerText]") or ['', '']
         capture('7-infobulle-envoyer')
-        step('the send button\'s bubble: Entrée = ask the agent, Ctrl+Entrée = keep as an annotation', tip[0] == '1' and "Demander à l'agent" in tip[1] and 'Garder en annotation' in tip[1], repr(tip))
+        step('lot R · the send button\'s bubble: « Demander à l\'agent » only (no « Garder en annotation »)', tip[0] == '1' and "Demander à l'agent" in tip[1] and 'Garder' not in tip[1] and 'Ctrl' not in tip[1], repr(tip))
         glide_to(sx, sy, sx - 300, sy - 300, 4); time.sleep(0.3)
-        prompts = len([l for l in flog.read_text(encoding='utf-8', errors='replace').splitlines() if l.startswith('prompt-text ')])
-        C.panel("document.getElementById('composer-input').focus()"); C.type_panel(' Texte trop discret'); time.sleep(0.2)
-        C.key_panel('Enter', 'Enter', 13, modifiers=2)
-        wrote = logged(r'CHAT annotation kept \(Ctrl\+Entrée\) (ann_\w+): write ok', m2, 10)
-        time.sleep(0.6)
-        line = C.panel("(document.querySelector('.kept')||{}).innerText||''") or ''
-        after = len([l for l in flog.read_text(encoding='utf-8', errors='replace').splitlines() if l.startswith('prompt-text ')])
-        step('V1.3 · Ctrl+Entrée: the element and its words become an annotation of the store (open, for the MCP agents)', wrote is not None, wrote.group(0)[5:] if wrote else '')
-        step('V1.3 · …nothing is sent to the agent; the thread says « Gardé en annotation »', after == prompts and 'CHAT turn t2' not in C.log_text()[m2:] and 'Gardé en annotation' in line and 'Texte trop discret' in line, line.replace('\n', ' | '))
-        capture('7-garde-en-annotation')
+        # the chip leaves the composer as the user would remove it (nothing sent, nothing kept)
+        C.panel("(function(){var c=document.getElementById('composer-input');c.innerHTML='';c.dispatchEvent(new Event('input',{bubbles:true}));return 1})()"); time.sleep(0.4)
+        step('lot R · …and nothing is kept as an annotation', 'annotation kept' not in C.log_text()[m2:] and not (C.panel("!!document.querySelector('.kept')") or False))
 
         # ---- V1.4: the aim button switches the page's selection off — the chat stays open with its thread — and on again
         m5 = mark()
@@ -307,7 +301,7 @@ def run_main():
         C.click_page('.field-label'); time.sleep(0.7)
         clicks = pg('window.__clicks'); aimed = 'CHAT element aimed' in C.log_text()[m5:]
         step('V1.4 · …the page gets its own clicks again (no chip), the chat stays open with its thread', clicks >= 1 and not aimed and C.panel_exists()   # a <label> also clicks its field: the page counts 2, as in any browser
-            and True and sw[1] >= 2, f'clicks {clicks}, aimed {aimed}, {sw[1]} thread item(s)')
+            and sw[1] >= 1, f'clicks {clicks}, aimed {aimed}, {sw[1]} thread item(s)')   # lot R: the thread holds the user's message only (the « Gardé en annotation » line, counted here until 25 Nov, went with Ctrl+Entrée)
         capture('10-selection-coupee')
         m6 = mark(); C.shortcut('A')
         on = logged(r'ANNOTATE selection on', m6, 5); time.sleep(0.8)

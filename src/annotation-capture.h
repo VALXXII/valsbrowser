@@ -4,14 +4,13 @@
 //   ProcessViewport  V3: the PNG of the whole viewport from Page.captureScreenshot WITHOUT a clip (a clipped shot
 //                makes the engine re-render the view for the clip: the page's text vanished on screen for ~4
 //                frames at every click, measured). Cropped here to the plan (element + margin), the frame's fill
-//                removed, reduced to the store's limits, encoded; + the thumbnail. Only the rows down to the crop
+//                removed, reduced to the store's limits, encoded. Only the rows down to the crop
 //                are decoded.
 //   ProcessClip  the PNG returned by Page.captureScreenshot (CDP, clip = element + margin, already cropped
 //                and reduced by the engine): kept as is when it fits the store's limits (<= 1600 px,
-//                <= 1.5 MiB; no re-encoding), otherwise reduced and re-encoded; + the popover thumbnail.
+//                <= 1.5 MiB; no re-encoding), otherwise reduced and re-encoded.
 //   Process      fallback: the CapturePreview PNG of the whole viewport, cropped (element + margin, CSS px x
-//                the measured capture/viewport ratio = DPR x zoom), reduced, encoded (WIC) + thumbnail.
-//   Thumbnail    history rows (cover) and detail (V3: contain, never cropped): a stored shot.png (premultiplied BGRA).
+//                the measured capture/viewport ratio = DPR x zoom), reduced, encoded (WIC).
 //   RemoveFill   V3: the page keeps its 8 % accent fill over the element during the shot (nothing may change on
 //                screen); it is removed here: out = page * (1 - a) + accent * a  =>  page = (out - accent * a) / (1 - a),
 //                a = opacity x the pixel's coverage by the fill box (exact at the box's fractional edges).
@@ -32,13 +31,10 @@ struct Result {
     unsigned width = 0, height = 0;      // of `png`
     double scale = 1;                    // png pixels per device pixel of the page
     std::string crop;
-    unsigned thumbW = 0, thumbH = 0; std::vector<std::uint32_t> thumb;   // premultiplied BGRA
-    float markL = 0, markT = 0, markR = 0, markB = 0;                     // element inside the thumbnail
     std::string why;
     int cropX = 0, cropY = 0, cropW = 0, cropH = 0;   // V3: the crop in the viewport image (device px)
     const char* path = "";               // "cdp" | "preview"
 };
-struct Image { unsigned width = 0, height = 0; std::vector<std::uint32_t> pixels; };   // premultiplied BGRA
 // The page's fill to remove: box in image pixels (fractional), colour 0..255, opacity 0..1.
 struct Fill { bool on = false; double x0 = 0, y0 = 0, x1 = 0, y1 = 0; double r = 0, g = 0, b = 0, alpha = 0; };
 // Pure (tests): one channel of a pixel covered at `a` (= opacity x coverage) by `accent`.
@@ -93,24 +89,6 @@ inline bool Decode(IWICImagingFactory* wic, const std::string& png, Ptr<IWICBitm
     if (FAILED(wic->CreateBitmapFromSource(frame.p, WICBitmapCacheOnLoad, &out))) return false;
     out->GetSize(&w, &h); return w && h;
 }
-// Scales `src` (w x h) by k into premultiplied BGRA.
-inline bool Pixels(IWICImagingFactory* wic, IWICBitmapSource* src, UINT tw, UINT th, std::vector<std::uint32_t>& px) {
-    Ptr<IWICBitmapScaler> ts; Ptr<IWICFormatConverter> tc;
-    if (FAILED(wic->CreateBitmapScaler(&ts)) || FAILED(ts->Initialize(src, tw, th, WICBitmapInterpolationModeFant)) ||
-        FAILED(wic->CreateFormatConverter(&tc)) || FAILED(tc->Initialize(ts.p, GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom))) return false;
-    px.resize(size_t(tw) * th);
-    if (FAILED(tc->CopyPixels(nullptr, tw * 4, UINT(px.size() * 4), reinterpret_cast<BYTE*>(px.data())))) { px.clear(); return false; }
-    return true;
-}
-// The popover thumbnail: the crop scaled to cover thumbMax (the popover crops), mark = element in it.
-inline void Thumb(IWICImagingFactory* wic, IWICBitmapSource* src, UINT w, UINT h, double mx, double my, double mw, double mh, unsigned thumbMaxW, unsigned thumbMaxH, Result& r) {
-    const double k = std::min(1.0, std::max(double(thumbMaxW) / w, double(thumbMaxH) / h));
-    const UINT tw = std::max(1u, UINT(std::lround(w * k))), th = std::max(1u, UINT(std::lround(h * k)));
-    if (Pixels(wic, src, tw, th, r.thumb)) {
-        r.thumbW = tw; r.thumbH = th;
-        r.markL = float(mx * k); r.markT = float(my * k); r.markR = float((mx + mw) * k); r.markB = float((my + mh) * k);
-    }
-}
 // Reduces `src` until the PNG fits MaxShotBytes (and maxSide), starting at `scale`.
 inline bool Fit(IWICImagingFactory* wic, IWICBitmapSource* src, UINT w, UINT h, double scale, Result& r) {
     for (int attempt = 0; attempt < 8; ++attempt) {
@@ -128,8 +106,8 @@ inline bool Fit(IWICImagingFactory* wic, IWICBitmapSource* src, UINT w, UINT h, 
 }
 }
 
-// Fallback: capture = the CapturePreview PNG of the viewport; rect/viewport in CSS px; thumbMaxW/H in pixels.
-inline Result Process(const std::string& capture, const BrowserAnnotations::Rect& rect, double viewW, double viewH, unsigned thumbMaxW, unsigned thumbMaxH) {
+// Fallback: capture = the CapturePreview PNG of the viewport; rect/viewport in CSS px.
+inline Result Process(const std::string& capture, const BrowserAnnotations::Rect& rect, double viewW, double viewH) {
     using namespace detail; Result r; r.path = "preview";
     Com com; Ptr<IWICImagingFactory> wic; if (!Factory(wic)) { r.why = "wic"; return r; }
     Ptr<IWICBitmap> full; UINT cw = 0, ch = 0;
@@ -140,7 +118,6 @@ inline Result Process(const std::string& capture, const BrowserAnnotations::Rect
     if (FAILED(wic->CreateBitmapClipper(&clip)) || FAILED(clip->Initialize(full.p, &cr))) { r.why = "clip"; return r; }
     if (!Fit(wic.p, clip.p, UINT(plan.w), UINT(plan.h), plan.scale, r)) return r;
     r.crop = plan.crop;
-    Thumb(wic.p, clip.p, UINT(plan.w), UINT(plan.h), plan.markX, plan.markY, plan.markW, plan.markH, thumbMaxW, thumbMaxH, r);
     r.ok = true; return r;
 }
 
@@ -162,7 +139,7 @@ inline Fill FillIn(const AnnotationHost::ClipPlan& plan, const AnnotationHost::M
     return f;
 }
 // V3: `png` = the whole viewport as on screen (device px). viewportCssW = the page's innerWidth (CSS px).
-inline Result ProcessViewport(const std::string& png, const AnnotationHost::ClipPlan& plan, double viewportCssW, unsigned thumbMaxW, unsigned thumbMaxH,
+inline Result ProcessViewport(const std::string& png, const AnnotationHost::ClipPlan& plan, double viewportCssW,
                               const AnnotationHost::Mark* mark = nullptr, std::uint32_t accentRgb = 0) {
     using namespace detail; Result r; r.path = "cdp";
     Com com; Ptr<IWICImagingFactory> wic; if (!Factory(wic)) { r.why = "wic"; return r; }
@@ -193,13 +170,11 @@ inline Result ProcessViewport(const std::string& png, const AnnotationHost::Clip
     const double scale = std::min(plan.scale > 0 ? plan.scale : 1.0, double(BrowserAnnotations::MaxShotSide) / std::max(w, h));
     if (!Fit(wic.p, img.p, w, h, scale, r)) return r;
     r.scale = r.width / double(w); r.crop = plan.crop;
-    const double px = double(w) / plan.width;   // crop px per CSS px
-    Thumb(wic.p, img.p, w, h, plan.markX * px, plan.markY * px, plan.markW * px, plan.markH * px, thumbMaxW, thumbMaxH, r);
     r.ok = true; return r;
 }
 // Engine clip: `png` is already the element + margin (AnnotationHost::PlanClip), devicePixelRatio = the page's.
 // fill (V3): the page's frame fill to remove (FillIn), then the image is re-encoded.
-inline Result ProcessClip(std::string png, const AnnotationHost::ClipPlan& plan, double devicePixelRatio, unsigned thumbMaxW, unsigned thumbMaxH,
+inline Result ProcessClip(std::string png, const AnnotationHost::ClipPlan& plan, double devicePixelRatio,
                           const AnnotationHost::Mark* mark = nullptr, std::uint32_t accentRgb = 0) {
     using namespace detail; Result r; r.path = "cdp";
     Com com; Ptr<IWICImagingFactory> wic; if (!Factory(wic)) { r.why = "wic"; return r; }
@@ -226,30 +201,7 @@ inline Result ProcessClip(std::string png, const AnnotationHost::ClipPlan& plan,
         r.scale = r.width / device;
     }
     r.crop = plan.crop;
-    const double px = double(w) / plan.width;   // image pixels per CSS px of the clip
-    Thumb(wic.p, img.p, w, h, plan.markX * px, plan.markY * px, plan.markW * px, plan.markH * px, thumbMaxW, thumbMaxH, r);
     r.ok = true; return r;
 }
 
-// A stored shot.png scaled to cover boxW x boxH pixels (centre crop), premultiplied BGRA. contain (V3, the
-// history detail): scaled to fit inside the box instead (never cropped); the caller centres it.
-inline bool Thumbnail(const std::string& png, unsigned boxW, unsigned boxH, Image& out, bool contain = false) {
-    using namespace detail;
-    Com com; Ptr<IWICImagingFactory> wic; if (!Factory(wic) || !boxW || !boxH) return false;
-    Ptr<IWICBitmap> img; UINT w = 0, h = 0;
-    if (!Decode(wic.p, png, img, w, h)) return false;
-    if (contain) {
-        const double c = std::min(1.0, std::min(double(boxW) / w, double(boxH) / h));
-        const UINT cw = std::max(1u, UINT(std::lround(w * c))), ch = std::max(1u, UINT(std::lround(h * c)));
-        if (!Pixels(wic.p, img.p, cw, ch, out.pixels)) return false;
-        out.width = cw; out.height = ch; return true;
-    }
-    const double k = std::max(double(boxW) / w, double(boxH) / h);
-    const UINT sw = std::max(boxW, UINT(std::lround(w * k))), sh = std::max(boxH, UINT(std::lround(h * k)));
-    std::vector<std::uint32_t> px; if (!Pixels(wic.p, img.p, sw, sh, px)) return false;
-    out.width = boxW; out.height = boxH; out.pixels.resize(size_t(boxW) * boxH);
-    const UINT ox = (sw - boxW) / 2, oy = (sh - boxH) / 2;
-    for (UINT y = 0; y < boxH; ++y) std::copy_n(px.begin() + (size_t(y + oy) * sw + ox), boxW, out.pixels.begin() + size_t(y) * boxW);
-    return true;
-}
 } // namespace AnnotationCapture

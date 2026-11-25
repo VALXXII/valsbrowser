@@ -30,7 +30,6 @@
 #include "chat-local.h"
 #include "chat-prompt.h"
 #include "chat-tools.h"
-#include "chat-batch.h"
 #include "chat-options.h"
 #include "chat-bubble.h"
 #if __has_include("chat-transition.h")
@@ -45,6 +44,9 @@
 #include "chat-panel-view.h"
 #include "acp-client.h"
 #include "agent-runtime.h"
+#include "agent-status.h"   // « Ton agent »: the agents' one status (design/ton-agent-interface.md)
+#include "chat-agent-status.h"
+#include "ton-agent-entry.h"   // OpenTonAgent: the chat's « Installer » / « Mettre à jour » of a missing agent open the screen
 #include "change-snapshots.h"
 #include "chat-model-probe.h"   // #128 v2: an agent's model list read before its first chat
 #include "chat-known-models.h"   // #128 v2: the models shown until the agent says its own
@@ -116,6 +118,7 @@ std::wstring AgentShort(const std::string& id) { return id == "codex" ? L"Codex"
 AgentRuntime::Environment RtEnv() { return AgentRuntime::Environment::FromProcess(Ann::DataRoot()); }
 struct AgentInfo {   // what the panel shows for one agent (state.agents)
     std::string status = "starting"; std::wstring detail; double progress = -1; bool cli = false, prepared = false, known = false;
+    bool signedIn = false;   // seen signed in since Browser started (a detection said so, or a session was ready): « plus connecté » is true only then
     std::vector<Acp::AuthMethod> auth; std::vector<Acp::ConfigOption> options; Acp::ModeState modes; Acp::Capabilities caps; std::vector<Acp::Command> commands;
 };
 std::map<std::string, AgentInfo> agentInfo;
@@ -135,11 +138,11 @@ struct Element {   // an aimed element: a chip in the composer, then part of a t
     std::string anchorFor;   // Mode Commentaire: aimed as the element of this conversation's bubble (kept for its messages, never a chip)
 };
 struct Attachment { std::string id, name, mime, base64, thumb; };
-struct Queued { std::string id, text; std::vector<std::string> elements, attachments; std::string batchId; std::vector<std::string> annotations; std::string convId; };   // convId (Mode Commentaire): the conversation it belongs to, "" = the engine's   // annotations: a batch « Traiter N annotations » that waits its turn
-struct Problem { std::wstring title, message; bool retry = true, connect = false, newChat = false, chooseFolder = false; };
+struct Queued { std::string id, text; std::vector<std::string> elements, attachments; std::string convId; };   // convId (Mode Commentaire): the conversation it belongs to, "" = the engine's
+struct Problem { std::wstring title, message; bool retry = true, connect = false, newChat = false, chooseFolder = false;
+                 bool install = false; };   // « Ton agent »: « Installer » opens the agents' screen (its click there is the consent)
 struct Turn {
     bool active = false, cancelled = false, snapshot = false, promptSent = false, ending = false;
-    bool batch = false;   // « Traiter les annotations »: the prompt is the batch's instruction, the card follows our tools
     bool planLaunched = false;   // M: « Lancer le plan » accepted the agent's plan in this turn — the mode it goes to is the user's choice (KeepModeAfterPlan)
     bool modeWait = false, modeFixed = false;   // SEC-13: the prompt waits for the session's mode; the wanted mode was asked again once for this turn
     std::string id, text, snapshotTurn, lastMessageId, thoughtId, summaryText; double startedMs = 0, thoughtStart = 0; int messageSeq = 0, thoughtSeq = 0;
@@ -148,24 +151,15 @@ struct Turn {
     std::size_t startItem = std::size_t(-1);       // D6: its `turn.start` in convo.items (model + effort filled in once known)
     std::string markSelector; std::string planPermission, planId; std::vector<Acp::PlanEntry> lastPlan; std::vector<Acp::PermissionOption> planOptions;
     Acp::Error failure; Problem problem;   // why it failed (an agent error code, or our own sentence)
-    struct OurCall { ChatTools::Ours tool = ChatTools::Ours::None; std::string annotation, input; int count = -1; bool done = false, reported = false; };   // input: its arguments (an update does not repeat them)
+    struct OurCall { ChatTools::Ours tool = ChatTools::Ours::None; std::string annotation; int count = -1; bool done = false; };
     std::map<std::string, OurCall> ourCalls;   // tool call id -> one of our annotation tools (its step line is ours to word)
     std::map<std::string, std::string> toolKinds;   // tool call id -> its ACP kind (an update may not repeat it)
+    std::set<std::string> refusedTools, droppedTools;   // tool call id -> its request was refused by the user / withdrawn unanswered (stop): the step never happened
     std::vector<std::string> agentFiles;            // files the agent's edit / delete / move calls named (relative to the folder): the only ones the turn counts and undoes
 };
 struct Convo { ChatStore::Conversation data; int turnSeq = 0; bool preambleSent = false; std::string recap; };   // recap (R42): given with the next prompt to the agent that took the chat over
-// « Traiter les annotations » (contract B 1.4): one pending annotation of the site, as a line of the block / the card.
-struct BatchItem {
-    std::string id, siteKey, note, element, source, thumb; std::string status = "pending", text;   // text: summary (done) or reason (skipped)
-    bool claimedHere = false;   // this turn's agent took it (its own claim call succeeded): ours to give back if it stops there
-};
-struct Batch {
-    std::string id; std::vector<BatchItem> items;
-    std::string instruction; std::int64_t sentAt = 0;                 // once sent: the exact text the agent got, and when (store seconds)
-    std::string conversation, userId; std::size_t item = std::size_t(-1);   // the user's message that carries the card: which conversation, which item
-};
 ChatPanelView::View view; PanelState panelState = PanelState::Closed; bool panelReady = false, uiInit = false, picking = false;
-HWND post = nullptr; constexpr UINT AcpWake = WM_APP + 21; constexpr UINT_PTR DestroyTimer = 1, AgentIdleTimer = 2, RearmTimer = 3, MarkTimer = 4, FolderTimer = 5, HoverTimer = 6, WarmTimer = 7, StopTimer = 8, HeldTimer = 9, PanelFocusTimer = 10;
+HWND post = nullptr; constexpr UINT AcpWake = WM_APP + 21; constexpr UINT_PTR DestroyTimer = 1, AgentIdleTimer = 2, RearmTimer = 3, MarkTimer = 4, FolderTimer = 5, HoverTimer = 6, WarmTimer = 7, StopTimer = 8, HeldTimer = 9, PanelFocusTimer = 10, LimitTimer = 11, ModelReadTimer = 12;
 // QA (C1, Q's « c1_prechauffage_retarde »): BROWSER_CHAT_TEST_WARM_DELAY_MS=<ms>, read only with BROWSER_ANNOTATIONS_TEST=1, holds
 // back the creation in advance of the bubble's and the panel's WebView by that long (a click lands before the page is ready).
 unsigned WarmDelayMs() {
@@ -207,23 +201,28 @@ std::vector<Element> orphanAnnotations;                // annotations of a turn 
 std::map<std::uint64_t, Element> aiming;                // elements being aimed (by capture serial): image and source still coming
 std::uint64_t turnNavStamp = 0; int rearmTries = 0; std::function<void()> afterTurn; std::function<void(bool)> afterUndo;
 std::map<std::string, SJ::Value> waitingPermissions, activeStrips;   // what the panel must show again when its WebView is (re)created: cards still waiting, strips still true
-Batch composerBatch, activeBatch;   // posed in the composer (not sent yet) / sent: the card of the current or last batch turn
-bool batchOwed = false;             // « Traiter avec l'agent » asked before the panel was ready
 std::map<std::string, std::string> annotationNotes;   // annotation id -> its note, as seen in this session (turns, tool results): the « … » of a step line
-std::wstring pendingAsk;                               // « Demander à l'agent » from the note: the text to send once the element is attached
 std::shared_ptr<CS::Store> snapshots; std::map<std::string, std::string> checkpointOfTurn;   // panel turn id -> checkpoint id
 std::map<std::string, std::string> snapshotOfTurn;                                              // panel turn id -> snapshot turn id
-bool rearmOwed = false; std::string doneMarkSelector; int elementSeq = 0; int pendingAnnotations = 0;
+bool rearmOwed = false; std::string doneMarkSelector; int elementSeq = 0;
 struct OpenStats { double requestedAt = 0, createdAt = 0, readyAt = 0, firstTextAt = 0, sendAt = 0, sessionAt = 0; } stats;
 void FinishTurn(const std::string& stopReason);
 
-std::wstring ProjectsFile() { return Ann::DataRoot() + L"\\annotations-chat\\projects.json"; }
+// Lot R (decision A): where the chat keeps its conversations, its site -> folder memory and its snapshots. A private
+// window has its own folder, erased when it closes (Ann::PrivateData); nothing of it reaches the normal windows' files.
+std::wstring ChatRoot() { return privateWindow ? Ann::PrivateData() : Ann::DataRoot(); }
+// Never an empty root for a file path: a private window whose folder could not be made has no chat (AskAvailable), and
+// what still asks for a path gets one that holds nothing and is never written (the folder is not created).
+std::wstring ChatFilesRoot() { const std::wstring r = ChatRoot(); return r.empty() ? Ann::PrivateDir() + L"\\unavailable" : r; }
+bool openedByMode = false, quietOpening = false;   // lot R: the panel opened by the mode's start in « Panneau » (chat-host-ui.h, OpenAtModeStart)
+std::wstring fileFolder;   // the folder of the local FILE the chat is on (ChatLocal::FolderOfFile); empty on a local project
+std::wstring ProjectsFile() { return ChatFilesRoot() + L"\\annotations-chat\\projects.json"; }
 std::wstring OptionsCacheFile() { return Ann::DataRoot() + L"\\annotations-chat\\agent-options.json"; }   // R13
-ChatStore::History& History() { static ChatStore::History h(Ann::DataRoot()); return h; }
+ChatStore::History& History() { static ChatStore::History h(ChatFilesRoot()); return h; }
 std::shared_ptr<Tab> ChatTab() { return chatTab.lock(); }
 bool Open() { return panelState == PanelState::Opening || panelState == PanelState::Open; }
 bool Shown() { return panelState != PanelState::Closed; }
-bool Usable() { return site.local && !site.file && !folder.empty(); }
+bool Usable() { return site.local && !folder.empty(); }
 const AgentDef& Agent() { const auto* a = AgentOf(agentId); return a ? *a : Agents[0]; }
 float PanelDip() { return std::min(PanelWidthDip, std::max(PanelMinDip, chrome.ClientWidth() - PageMinDip)); }   // the window's width (Mode Focus: chrome.width is the floating panel's)
 // The page's room taken by the panel (0 while it is over the page: a narrow window in a side panel layout).
@@ -234,7 +233,7 @@ float InsetDip() { return Shown() && !InFullscreen() && !PageFullscreenActive() 
 void OnHiddenPermission();
 bool ThreadMessage(const char* type, const SJ::Value& msg) {
     static const char* list[] = {"message.user", "turn.start", "message.agentChunk", "thought", "toolCall", "toolCallUpdate", "plan", "permission.request", "permission.cancel",
-                                 "turn.end", "turn.undone", "annotations.status", "changes.diff", "edit.confirm", "usage", "annotation.kept"};
+                                 "turn.end", "turn.undone", "changes.diff", "edit.confirm", "usage"};
     for (const char* x : list) if (strcmp(x, type) == 0) return true;
     if (strcmp(type, "error") == 0) { const auto* sc = msg.Get("scope"); return !sc || !sc->IsString() || sc->string != "composer"; }
     return false;
@@ -328,13 +327,12 @@ void SendState();
 void SetAgentStatus(const std::string& id, const std::string& status, const std::wstring& detail = L"", double progress = -1) {
     auto& a = agentInfo[id]; a.status = status; a.detail = detail; a.progress = progress; SendState();
 }
-int CountPending();
 void SendState() {
     if (!panelReady) return;
     SJ::Value st = SJ::Value::Obj();
     {   SJ::Value s = SJ::Value::Obj(); s.Set("origin", Str(site.origin)); s.Set("label", Str(site.file ? T8(I18n::Id::chat_site_file) : site.label)); s.Set("local", SJ::Value::Bool(site.local)); st.Set("site", std::move(s)); }
     auto folderObj = [](const std::wstring& path) { SJ::Value f = SJ::Value::Obj(); f.Set("path", Str(path)); f.Set("display", Str(ChatFolder::Display(path))); f.Set("name", Str(ChatFolder::Name(path))); return f; };
-    const bool usableSite = site.local && !site.file;
+    const bool usableSite = site.local;   // a local project, or a local file (lot R: its folder is its site)
     // not a local site: no « where is the code » step (null would show it) — an empty folder, and disabledReason says why
     st.Set("folder", !usableSite ? folderObj(L"") : folder.empty() ? SJ::Value::Null() : folderObj(folder));
     if (usableSite && folder.empty() && !suggestion.folder.empty()) { SJ::Value f = folderObj(suggestion.folder); f.Set("reason", Str(std::string("auto"))); st.Set("folderSuggestion", std::move(f)); }
@@ -345,6 +343,8 @@ void SendState() {
         const auto& info = agentInfo[def.id]; SJ::Value a = SJ::Value::Obj();
         a.Set("id", Str(std::string(def.id))); a.Set("name", Str(std::string(def.name))); a.Set("icon", Str(std::string(def.icon))); a.Set("status", Str(info.status));
         if (!info.detail.empty()) a.Set("detail", Str(info.detail));
+        // owner decision (24 Nov 2026): never signed in reads « Claude Code n'est pas connecté. »; « Vous n'êtes plus connecté à … » only when it was
+        if (info.status == "notConnected") a.Set("notice", Str(info.signedIn ? TRF(chat_agent_signed_out, W(std::string(def.name))) : TRF(chat_agent_never_signed_in, W(std::string(def.name)))));
         if (info.progress >= 0) a.Set("progress", SJ::Value::Num(std::clamp(info.progress, 0.0, 1.0)));
         if (!info.auth.empty()) { SJ::Value ms = SJ::Value::Arr(); for (const auto& m : info.auth) if (ChatStore::ValidId(m.id)) { SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(m.id)); o.Set("label", Str(m.name.empty() ? m.id : m.name)); ms.Push(std::move(o)); } a.Set("authMethods", std::move(ms)); }
         {   const auto* mo = ChatKnownModels::Shown(def.id, info.options, info.known, info.cli); a.Set("models", OptionList(mo, DefaultModelOf(def.id, mo))); }   // #128 v2: never empty for an installed agent
@@ -383,7 +383,6 @@ void SendState() {
         SJ::Value c = SJ::Value::Obj(); c.Set("id", Str(shown.id)); c.Set("title", Str(shown.title.empty() ? T8(I18n::Id::chat_title_new) : shown.title));
         if (!shown.source.empty()) c.Set("source", Str(shown.source)); c.Set("running", SJ::Value::Bool(running)); st.Set("conversation", std::move(c));
         st.Set("running", SJ::Value::Bool(running)); }
-    st.Set("pendingAnnotations", SJ::Value::Int(0));   // R24 (the user: « c'est fini ce concept »): no pending-annotations source any more
     {   SJ::Value sg = SJ::Value::Arr();
         if (Usable()) {
             // R24: no « Traiter les N annotations en attente » suggestion
@@ -391,7 +390,7 @@ void SendState() {
         }
         st.Set("suggestions", std::move(sg)); }
     {   SJ::Value c = SJ::Value::Obj(); c.Set("image", SJ::Value::Bool(info.caps.image || !sessionReady)); c.Set("steering", SJ::Value::Bool(false)); c.Set("commands", SJ::Value::Bool(!info.commands.empty())); st.Set("capabilities", std::move(c)); }
-    st.Set("disabledReason", site.local && !site.file ? SJ::Value::Null() : Str(T8(site.file ? I18n::Id::chat_disabled_file : I18n::Id::chat_disabled_not_local)));
+    st.Set("disabledReason", site.local ? SJ::Value::Null() : Str(T8(I18n::Id::chat_disabled_not_local)));
     Send("state", std::move(st));
 }
 void SendCommands() {
@@ -407,13 +406,14 @@ void SendQueue() {
         if ((q.convId.empty() ? convo.data.head.id : q.convId) != shown) continue;   // Mode Commentaire: the messages of the conversation shown
         SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(q.id));
         if (!q.convId.empty() && q.convId != convo.data.head.id && turn.active) o.Set("after", Str(convo.data.head.anchorLabel.empty() ? ChatPrompt::OneLine(convo.data.head.title, 40) : convo.data.head.anchorLabel));   // contract B 1.8 §19.6
-        if (!q.annotations.empty() && q.text.find_first_not_of(" \t\r\n") == std::string::npos) o.Set("text", Str(TRP(chat_batch_queue, q.annotations.size(), std::to_wstring(q.annotations.size()))));
-        else o.Set("text", Str(ClipUtf8(q.text, 400)));
+        o.Set("text", Str(ClipUtf8(q.text, 400)));
         items.Push(std::move(o));
     }
     {   std::string text;   // queue #70: a message held until its element is ready (image) is shown as waiting, in its bubble
         if (HeldFor(shown, text)) { SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(std::string("held"))); o.Set("text", Str(ClipUtf8(text, 400))); items.Push(std::move(o)); } }
-    SJ::Value m = SJ::Value::Obj(); m.Set("items", std::move(items)); Send("queue", std::move(m));
+    // lot R (validated 2026-11-24): the bubble shows 2 waiting messages at most; the line that counts the others is worded
+    // here, in the interface language (« +{n} en attente »: the page puts the number in)
+    SJ::Value m = SJ::Value::Obj(); m.Set("items", std::move(items)); m.Set("more", Str(TRF(chat_queue_more, L"{n}"))); Send("queue", std::move(m));
 }
 // Context gauge (contract B 1.2): tokens used / window, as the agent last reported them for this conversation.
 void SendUsage() {
@@ -457,8 +457,8 @@ void SaveConvo() {
 Problem ProblemFor(const Acp::Error& e, const std::string& agent) {
     const std::wstring name = W(AgentOf(agent) ? AgentOf(agent)->name : "Claude Code"); Problem p;
     switch (e.code) {
-    case Acp::ErrorCode::NotInstalled: p.title = TRF(chat_err_not_installed_title, name); p.message = TRF(chat_err_not_installed, name); break;
-    case Acp::ErrorCode::CliTooOld: p.title = TRF(chat_err_too_old_title, name); p.message = TRF(chat_err_too_old, name); break;
+    case Acp::ErrorCode::NotInstalled: p.title = TRF(chat_err_not_installed_title, name); p.message = TRF(chat_err_not_installed, name); p.install = true; p.retry = false; break;
+    case Acp::ErrorCode::CliTooOld: p.title = TRF(chat_err_too_old_title, name); p.message = TRF(chat_err_too_old, name); p.install = true; p.retry = false; break;
     case Acp::ErrorCode::NeedsPrepare: p.title = TR(chat_err_prepare_title); p.message = TR(chat_err_prepare); break;
     case Acp::ErrorCode::AuthRequired: p.title = TRF(chat_err_auth_title, name); p.message = TR(chat_err_auth); p.connect = true; p.retry = false; break;
     case Acp::ErrorCode::ProcessExited: case Acp::ErrorCode::SpawnFailed: p.title = TRF(chat_err_exited_title, name); p.message = TR(chat_err_exited); break;
@@ -470,7 +470,8 @@ Problem ProblemFor(const Acp::Error& e, const std::string& agent) {
     }
     return p;
 }
-void SendError(const Problem& p, const std::string& detail, const char* scope = "thread", bool keep = true) {
+// `turnId`: the turn the card belongs to when it is sent after that turn ended (« Ton agent »: a failure re-checked first).
+void SendError(const Problem& p, const std::string& detail, const char* scope = "thread", bool keep = true, const std::string& turnId = "") {
     SJ::Value m = SJ::Value::Obj(); m.Set("id", Str(NewId("err_"))); m.Set("scope", Str(std::string(scope))); m.Set("title", Str(p.title)); m.Set("message", Str(p.message));
     if (!detail.empty()) m.Set("detail", Str(ClipUtf8(detail, 4000)));
     SJ::Value actions = SJ::Value::Arr();
@@ -479,8 +480,9 @@ void SendError(const Problem& p, const std::string& detail, const char* scope = 
     if (p.retry) add("retry", I18n::Id::chat_action_retry, !p.connect);
     if (p.newChat) add("newChat", I18n::Id::chat_title_new, true);
     if (p.chooseFolder) add("chooseFolder", I18n::Id::chat_action_choose_folder, true);
+    if (p.install) add("install", I18n::Id::ton_agent_row_install, true);
     m.Set("actions", std::move(actions));
-    if (turn.active && !turn.id.empty()) m.Set("turnId", Str(turn.id));
+    if (!turnId.empty()) m.Set("turnId", Str(turnId)); else if (turn.active && !turn.id.empty()) m.Set("turnId", Str(turn.id));
     if (keep && std::string(scope) == "thread") Keep("error", m);
     Send("error", std::move(m));
 }
@@ -494,5 +496,4 @@ void SwitchLayout(bool comment); void RefreshAnchored(); std::string BubbleSelec
 } // namespace Chat
 #include "chat-host-turn.h"
 #include "chat-host-ui.h"
-#include "chat-host-batch.h"
 #include "chat-comment.h"

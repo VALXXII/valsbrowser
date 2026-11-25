@@ -85,7 +85,8 @@ void TestVersions() {
     CHECK(AR::ParseAgentId("claude", a) && a == AR::Agent::Claude && AR::ParseAgentId("codex", a) && a == AR::Agent::Codex && !AR::ParseAgentId("gemini", a));
     CHECK(std::strcmp(AR::AgentId(AR::Agent::Codex), "codex") == 0 && std::wstring(AR::AgentDisplayName(AR::Agent::Claude)) == L"Claude Code");
     CHECK(std::wstring(AR::GetInstallHelp(AR::Agent::Claude).install) == L"irm https://claude.ai/install.ps1 | iex");
-    CHECK(std::wstring(AR::GetInstallHelp(AR::Agent::Codex).install) == L"npm install -g @openai/codex");
+    CHECK(std::wstring(AR::GetInstallHelp(AR::Agent::Codex).install) == L"powershell -ExecutionPolicy ByPass -c \"irm https://chatgpt.com/codex/install.ps1 | iex\"");   // « Ton agent »: the official per-user installer
+    CHECK(std::wstring(AR::GetInstallHelp(AR::Agent::Codex).installAlt) == L"npm install -g @openai/codex");
 
     // The pin table is coherent: official sources only, sha512 everywhere, the entry belongs to the adapter.
     CHECK(std::strlen(pins.node.zipSha256) == 64 && std::strlen(pins.node.exeSha256) == 64 && pins.node.zipBytes > (20u << 20) && pins.node.exeBytes > (40u << 20));

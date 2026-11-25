@@ -1,7 +1,8 @@
 // Fake `claude.exe` / `codex.exe` for the agent runtime tests (never the real CLI). Copied under temporary folders.
 // Behaviour comes from files next to the executable:
 //   <exe>.version   text printed by `--version` ("2.1.325 (Claude Code)"); without it: exit 1, nothing printed
-//   <exe>.login     "0" or "1": exit code of `auth status` / `login status`
+//   <exe>.login     "0" or "1": exit code of `auth status` / `login status`; `auth login` / `login` write "0" (signed in)
+//   <exe>.signin    "hang": `auth login` / `login` never finish (a sign-in the person leaves open)
 // Every call appends its arguments to <exe>.calls.
 #include <windows.h>
 
@@ -56,6 +57,17 @@ int wmain(int argc, wchar_t** argv) {
         const std::string secret = "{\"loggedIn\":true,\"email\":\"someone@example.test\"}\n";  // must never be read by the browser
         WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), secret.data(), DWORD(secret.size()), &put, nullptr);
         return login.empty() ? 2 : login[0] - '0';
+    }
+    // « Ton agent » trials (design/ton-agent-interface.md): the sign-in (`claude auth login`, `codex login`) succeeds at once
+    // and is remembered in <exe>.login, as the real CLI would after the web page.
+    if ((first == L"auth" && second == L"login") || (first == L"login" && second != L"status")) {
+        // <exe>.signin "hang": the person never finishes in the web page (the console stays open: « Annuler » closes it)
+        if (Read(exe + L".signin").rfind("hang", 0) == 0) { Sleep(60000); return 1; }
+        HANDLE f = CreateFileW((exe + L".login").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+        if (f != INVALID_HANDLE_VALUE) { DWORD put = 0; WriteFile(f, "0", 1, &put, nullptr); CloseHandle(f); }
+        const std::string done = "Signed in (fake CLI).\n";
+        DWORD put = 0; WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), done.data(), DWORD(done.size()), &put, nullptr);
+        return 0;
     }
     if (first == L"hang") Sleep(60000);
     return 0;

@@ -8,7 +8,8 @@ latéral »: « Annotation + Focus · barre du haut » (203J-0, at rest), « …
   banner x 4 .. W - 4, y 0 .. 32 · page x 4, top 32, 4 DIP before the chat card, bottom H - 4 · chat card 380 wide,
   4 DIP from the window's right and bottom edges, top 32 (its WebView 1 DIP inside its ring) · revealed panel top 36.
 
-Journey A (Annotation then Focus): mode on, chat open in Panneau mode -> Ctrl+Maj+F -> banner and chat present, at their
+Journey A (Annotation then Focus): mode on, chat open in Panneau mode (lot R opens it with the mode, before any click;
+an older build on request: ensure_panel) -> Ctrl+Maj+F -> banner and chat present, at their
 Focus places, the chat answers -> the hover strip under the banner reveals the panel at 36 -> a drawer opens over the chat
 (top 124) -> Ctrl+Maj+F again -> nothing jumps: banner, chat and page go straight back to where they were (one change
 each, sampled every ~10 ms), never hidden meanwhile.
@@ -231,14 +232,31 @@ def drawer_over_chat():
     step('drawer closed: the chat is back', scene().get('chat') is not None, scene())
 
 
+OPENED_WITH_MODE = r'CHAT panel opened with the mode'
+PANEL_UP = r'CHAT panel (in place|opened on)'
+
+
+def ensure_panel(since):
+    """The chat in « Panneau » (on the right), however this build opens it. Lot R (VALXXII/annotation-lotR, 25 Nov) opens it
+    as soon as the mode starts in Panneau, before any element is picked (« panel opened with the mode »); an older build
+    opens it on request (the banner's « Panneau », or Ctrl+Maj+D). Ctrl+Maj+D is pressed only while no chat is on screen:
+    once the chat was asked for, it closes it. `since`: the log mark taken before the mode was turned on.
+    Returns how it came: 'with the mode', 'asked', or None (no chat)."""
+    if C.wait_log(OPENED_WITH_MODE, 3, since) or scene().get('chat'):
+        C.wait_log(r'CHAT panel in place', 3, since)   # the end of its slide (none with reduced motion)
+        return 'with the mode'
+    m = len(C.log_text()); C.invoke('AnnotationAskAgent')   # the banner's switch: « Panneau » (the chat on the right)
+    if not (C.wait_log(PANEL_UP, 8, m) or scene().get('chat')):
+        C.shortcut('D'); C.wait_log(PANEL_UP, 8, m)
+    return 'asked' if scene().get('chat') else None
+
+
 def journey_a():
-    m = len(C.log_text()); C.shortcut('A')
+    m0 = m = len(C.log_text()); C.shortcut('A')
     step('mode on', C.wait_log(r'ANNOTATE mode on', 10, m) is not None); time.sleep(1.2)
     if C.invoke('AnnotationConnectLater') or C.invoke('AnnotationConnectClose'):
         time.sleep(0.6)
-    m = len(C.log_text()); C.invoke('AnnotationAskAgent')   # the banner's switch: « Panneau » (the chat on the right)
-    if not C.wait_log(r'CHAT panel in place', 8, m):
-        C.shortcut('D'); C.wait_log(r'CHAT panel in place', 8, m)
+    report['measures']['A-chat-opened'] = ensure_panel(m0)
     time.sleep(1.0)
     before = scene(); report['measures']['A-before'] = before
     step('before Focus: banner, chat and page on screen', all(before.get(n) for n in ('banner', 'chat', 'page')), before)
@@ -271,11 +289,10 @@ def journey_b():
     m = len(C.log_text()); C.invoke('AnnotationQuit') or Q.post_key(0x1B)
     C.wait_log(r'ANNOTATE mode off', 8, m); time.sleep(1.0)
     m = len(C.log_text()); C.shortcut('F'); step('B · Focus on first', C.wait_log(r'FOCUS mode on', 5, m) is not None); time.sleep(0.8)
-    m = len(C.log_text()); C.shortcut('A'); step('B · then the annotation mode', C.wait_log(r'ANNOTATE mode on', 10, m) is not None); time.sleep(1.4)
-    check_focus_scene('B · Focus then Annotation (Commentaire or chat closed)', scene().get('chat') is not None)
-    m = len(C.log_text()); C.invoke('AnnotationAskAgent')
-    if not C.wait_log(r'CHAT panel in place', 8, m):
-        C.shortcut('D'); C.wait_log(r'CHAT panel in place', 8, m)
+    m0 = m = len(C.log_text()); C.shortcut('A'); step('B · then the annotation mode', C.wait_log(r'ANNOTATE mode on', 10, m) is not None); time.sleep(1.4)
+    # Lot R: in Panneau the chat comes with the mode (its card already on the right); an older build: no chat yet.
+    check_focus_scene('B · Focus then Annotation (the chat as this build opens it with the mode)', scene().get('chat') is not None)
+    report['measures']['B-chat-opened'] = ensure_panel(m0)
     time.sleep(1.0)
     check_focus_scene('B · chat opened in Focus', True); capture('05-focus-then-annotation')
     m = len(C.log_text()); C.invoke('AnnotationQuit') or Q.post_key(0x1B)

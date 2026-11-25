@@ -51,6 +51,9 @@ CHAT_SOURCES = [
     # Chat V1 (C1): ACP v1 client (one agent process in a Job Object) and the agents' runtime (private Node,
     # pinned adapters, CLI detection). Tests: tests/acp/run_tests.py.
     'src/acp-client.cpp', 'src/agent-runtime.cpp',
+    # « Ton agent »: the agents' one status (src/agent-status.h) and their official installers (src/agent-install.h).
+    # Tests: tests/acp/run_tests.py (agent_status_test).
+    'src/agent-install.cpp',
     # Chat V1 (C3): undo by our own file copies, no git, no UI. Tests: tests/snapshots/run_tests.py.
     'src/change-snapshots.cpp']
 CHAT_LIBS = ['-luserenv']   # CreateEnvironmentBlock (the agent gets the user's current environment)

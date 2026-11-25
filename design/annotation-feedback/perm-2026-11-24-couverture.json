@@ -1,0 +1,141 @@
+{
+  "_comment": "Entries proposed by the permission-circuit worker (branch VALXXII/annotation-perm) for tests/annotation-general. « manifest » : two suites to ADD to manifest.json \"suites\" (same shape as permission-keys-bulle / -panneau: real browser on a desktop of its own, lot 2's harness). « lines » : the lines to ADD to coverage.json \"lines\". The other tests live in suites that already exist: chat-panel (tests/chat-panel/run.py, block « perm », alone with --only perm) and chat-units (tests/chat/host_contract_test.py).",
+  "manifest": [
+    {
+      "id": "permission-circuit-bulle",
+      "title": "Circuit des autorisations (essai 0.3.952), vrai navigateur : bulle",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/permission_circuit.py",
+        "--journey",
+        "bulle"
+      ],
+      "timeout": 900,
+      "pendingMerge": "VALXXII/annotation-lot2"
+    },
+    {
+      "id": "permission-circuit-panneau",
+      "title": "Circuit des autorisations (essai 0.3.952), vrai navigateur : panneau",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/permission_circuit.py",
+        "--journey",
+        "panneau"
+      ],
+      "timeout": 900,
+      "pendingMerge": "VALXXII/annotation-lot2"
+    }
+  ],
+  "lines": {
+    "perm-une-demande-une-reponse": {
+      "tests": [
+        {
+          "suite": "chat-panel",
+          "what": "« permission (panel, point 1): ONE real click on « Autoriser » / « Refuser » … », « permission (panel): the same request received twice is one card, one answer », « bubble (point 1): one real click on « Autoriser » answers »"
+        },
+        {
+          "suite": "chat-units",
+          "what": "host_contract_test.py — « permission: one answer per request… », « permission: the agent's request is sent to the page once… »"
+        },
+        {
+          "suite": "permission-circuit-bulle",
+          "what": "« point 1 · ONE request: the host asked once, one card », « point 1 · ONE real click on « Autoriser » answers… », « two messages in a row… never a duplicate »"
+        },
+        {
+          "suite": "permission-circuit-panneau",
+          "what": "idem, panneau"
+        }
+      ]
+    },
+    "perm-carte-garde-sa-forme": {
+      "tests": [
+        {
+          "suite": "chat-panel",
+          "what": "« permission (panel, point 2) », « permission (panel, point 4) », « permission (panel): « Détails » opens under the diff… », « bubble (points 2 and 4) »"
+        },
+        {
+          "suite": "permission-circuit-bulle",
+          "what": "« point 2 · a click on the card outside its buttons… », « point 4 · the switch… »"
+        },
+        {
+          "suite": "permission-circuit-panneau",
+          "what": "idem, panneau"
+        }
+      ]
+    },
+    "perm-veut-modifier-avant-accord": {
+      "tests": [
+        {
+          "suite": "chat-panel",
+          "what": "« thread (point 3) … » (en attente, autorisé, fait, refusé, rejoué), « thread: a step the host marks as refused… », « thread: a request withdrawn unanswered… », « bubble (point 3, Paper « Mode Commentaire 4 ») »"
+        },
+        {
+          "suite": "chat-units",
+          "what": "host_contract_test.py — « permission: a refusal … marks the step it was for », « permission: a refused step is kept as refused in the conversation… », « permission: the agent's later updates of a refused step keep it refused… », « permission: a request withdrawn unanswered… »"
+        },
+        {
+          "suite": "permission-circuit-panneau",
+          "what": "« point 3 · before the answer the thread reads « Veut modifier landing.css » », « once done … « A modifié landing.css » », « refused: nothing is said of the edit », « the host keeps the refused step as refused in the stored conversation »"
+        },
+        {
+          "suite": "permission-circuit-bulle",
+          "what": "« point 3 · … « Attend votre accord… » », « refused: nothing is said… », « the host keeps the refused step as refused… »"
+        }
+      ]
+    },
+    "perm-carte-bulle-vraie-carte": {
+      "tests": [
+        {
+          "suite": "chat-panel",
+          "what": "fidélité c-2-autorisation et c-2-autorisation-diff (planches 1ANU-0 / 19RN-0 redessinées le 24 nov.), « bubble (card, 100 % / 125 % / 150 %) », « bubble (row under the card) … », « bubble (diff of a request, Paper 19RN-0) … », « bubble (diff of a finished turn, 1B19-0): untouched »"
+        },
+        {
+          "suite": "permission-circuit-bulle",
+          "what": "« the mode and « Arrêter » are under the card (12 px below), whole in the bubble », « « Arrêter » under the card stops the agent: the request is withdrawn… »"
+        }
+      ]
+    },
+    "perm-peu-de-place": {
+      "tests": [
+        {
+          "suite": "chat-panel",
+          "what": "« bubble (little room, R47) … », « bubble (little room, plan rule 8): whatever height the host offers (120 px at least) the card and « Refuser » / « Autoriser » are whole »"
+        }
+      ]
+    },
+    "perm-plusieurs-demandes": {
+      "tests": [
+        {
+          "suite": "chat-panel",
+          "what": "« permission (several in a row, SEC-23): a double click on « Autoriser » answers the first request only… », « permission (several in a row): 600 ms later one click answers the second… »"
+        }
+      ]
+    },
+    "perm-bulle-clic-de-retour": {
+      "tests": [
+        {
+          "suite": "journeys",
+          "what": "perm_clic_de_retour (vraie fenêtre : une demande attend, une autre application devant, le clic de retour sur « Autoriser » répond — une demande, une réponse)"
+        },
+        {
+          "suite": "journeys",
+          "what": "e4_autre_application (« the bubble stays where it is, not closed »)"
+        },
+        {
+          "suite": "chat-units",
+          "what": "host_contract_test.py — les quatre contrats « A: … » (la bulle garde sa région, ne prend ni premier plan ni clavier tant qu'une autre application est devant)"
+        }
+      ]
+    },
+    "perm-essai-reel-par-agent": {
+      "gap": {
+        "lot": 5,
+        "why": "une modification acceptée, refusée, « toujours » — Claude Code et Codex réels (dont « Additional sandbox permissions » de Codex, titre encore en anglais)"
+      }
+    }
+  }
+}

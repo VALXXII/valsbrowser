@@ -159,8 +159,8 @@ def run_main():
         u32.SetForegroundWindow(Q.main_window())
 
         # ---- O1: the panel, its first images (the page is created in advance while the mode is in « Chat à droite »)
-        warm = logged(r'CHAT panel WebView created in advance', 0, 10); logged(r'CHAT panel ready', 0, 10); time.sleep(1.0)
-        step('O1 · « Chat à droite »: the panel\'s page is created in advance', warm is not None)
+        warm = logged(r'CHAT panel (WebView created in advance|opened with the mode)', 0, 10); logged(r'CHAT panel ready', 0, 10); time.sleep(1.0)
+        step('O1 · « Chat à droite »: the panel is there as soon as the mode starts (lot R: opened with the mode)', warm is not None)
         texts = []
         m0 = mark(); C.invoke('AnnotationAskAgent'); t0 = time.time()
         while time.time() - t0 < 1.2:

@@ -270,7 +270,7 @@ Performance : un fil long garde `content-visibility: auto` sur chaque élément 
 
 1. **Graisse 600** : l'app n'embarque qu'Inter Display Regular et Medium ; les titres en 600 des planches utilisent Medium (comme les surfaces natives).
 2. **Barre des changements** : les planches mettent « Copier » dans la barre ; la consigne demande « Tout annuler ». La barre porte « Tout annuler » ; Copier reste sur chaque bloc de code et dans les actions de fin de tour. Dépliée, elle liste les fichiers (et le diff si l'hôte fournit `FileChange.diff`).
-3. **Raccourcis visibles** sur la carte d'autorisation (« Refuser Échap », « Autoriser ↵ »), demandés par la consigne, absents de la planche 6.1.
+3. **Raccourci visible** sur la carte d'autorisation : « Autoriser ↵ » seulement (planches « carte d'autorisation · la carte a le clavier » et « · après un message », page « #127 — Panneau latéral », 24/11/2026). La touche : 16 px de haut, rayon 3, blanc à 16 % sur l'accent, texte 11/14 blanc, à 6 px du libellé. Plus de « Échap » dessiné sur « Refuser » (il ne tient pas dans 380 px) ; Échap refuse toujours la carte quand le clavier est dans le chat (dans la page du site, Échap quitte le mode). Décision du 24/11/2026 : « ↵ » (et l'annonce « Autoriser avec Entrée ») n'apparaît que lorsque Entrée autorise vraiment, c'est-à-dire quand la carte a le clavier ; après un message de l'utilisateur, le clavier reste hors de la carte (SEC-23) et le bouton dit seulement « Autoriser ».
 4. **Puce dans la bulle envoyée** : cadre bleu + icône « viseur » (planches 6.10, 6.11, la plus récente série) ; dans la saisie, icône du type d'élément sans cadre (6.5, 6.9, 6.13). Les planches 6.1/6.3/6.6 montrent l'autre variante.
 5. **Date et infos du tour** affichées dès le premier message (règle de 6.6) ; les planches 6.1 et 6.3 ne les montrent pas.
 6. **Étape en cours** : suivie de 6.10 (ligne de l'étape avec indicateur, « Travaille… N s » en dessous) plutôt que 6.6 (indicateur sur « Travaille »).
@@ -464,7 +464,7 @@ Séquence type (planche 1 → 3) : `layout` → 84 (saisie vide) ; l'utilisateur
 | Tour en cours | Le message (bulle bleue, sans puce d'élément *(1.9)*), puis « logo modèle · effort » et l'étape en cours à droite (« Lit checkout.css… »), le texte de l'agent. Tant que l'agent n'a rien écrit, l'étape en cours est à la place du texte, sous « modèle · effort » *(1.9, §20.3)*. En bas : le mode et **Arrêter** (`stop`). Pas de saisie pendant le tour. |
 | Survol de l'étape | Infobulle avec les étapes déjà faites (« A lu index.html », « A utilisé 1 outil MCP » : les appels MCP bruts sont comptés ensemble ; 6 lignes au plus, les plus récentes), 2 px au-dessus de l'étape, bords gauches alignés, 178 px, hors de la bulle s'il le faut *(1.9)* ; l'étape survolée prend un fond blanc 10 % et des coins 4/4/10/10. Clavier : le focus sur l'étape l'ouvre ; un clic ou Entrée l'épingle. |
 | Arrêté (`turn.end` `cancelled`) | « S'est arrêté » à droite du modèle ; la saisie revient (« Que voulez-vous ajouter ? »). |
-| Autorisation (`permission.request`) | Dans la bulle, à la place de la saisie : la ligne « Claude veut modifier checkout.css +6 −2 › », « Dire à Claude quoi faire à la place… », l'interrupteur Auto (= option `allow_always`), Refuser / Autoriser. Le haut du fil s'estompe. |
+| Autorisation (`permission.request`) | Dans la bulle, à la place de la saisie : la ligne « Claude veut modifier checkout.css +6 −2 › », « Dire à Claude quoi faire à la place… », l'interrupteur Auto (= option `allow_always`), Refuser / Autoriser. Le haut du fil s'estompe. *(§27, 24 nov. 2026)* C'est une vraie carte (#292929, bordure, rayon 12) et le mode et **Arrêter** restent dessous pendant toute la demande. |
 | Diff en grand | Clic sur la ligne de fichier (autorisation) ou sur la barre des changements (terminé) : le diff prend la bulle, avec fermer ; sous un tour terminé, « Copier ». La page envoie `checkpoint.viewChanges` et complète avec `changes.diff` quand le diff n'était pas dans `turn.end`. |
 | Erreur (`error` `thread`) | Le texte de l'agent en rouge, « Une erreur est apparue. », « Plus d'infos › » (déplie `detail` en caractères fixes, puis `title` et `message` en clair), **Annuler** (local : la saisie revient) et **Réessayer** (`retry`, ou la première `actions` de l'erreur → `error.action`). |
 | Terminé | « C'est fait… », la barre « 1 fichier modifié +6 −2 › » avec **Copier** (`copy` : le diff des fichiers, ou la réponse s'il n'y a pas de diff), « Historique » à droite du modèle (infobulle : lectures, modifications, outils MCP, commandes de ce tour), la saisie (« Que voulez-vous ajouter de plus ? »). |
@@ -827,3 +827,60 @@ l'hôte.
   l'inset reçu jusqu'à cette valeur : une bulle à bord bas fixe peut grandir d'un coup jusqu'à 1000 px sans que sa surface
   bouge (elle se limitait à 400 px et se déplaçait au-delà).
 
+
+## 27. Circuit des autorisations — essai 0.3.952 (24 nov. 2026)
+
+Défauts vus par le propriétaire (« Ton agent » sur le lot R) et ce qui vaut désormais, panneau et bulle, Claude et Codex.
+
+- **Une demande, une réponse.** Le journal de l'essai montre une seule `permission.request` et une seule réponse par tour côté
+  hôte : la « double demande » était un premier clic perdu. La carte ne change plus de forme pendant qu'un bouton de la
+  souris est enfoncé (le symbole « ↵ » d'« Autoriser » arrive au relâchement) ; la page ne répond qu'à la demande affichée
+  (`requestId` de la carte = première de la file) et l'hôte ignore une réponse à une demande qui n'attend plus. La même
+  `requestId` reçue deux fois reste la même carte : sa place dans la file, ce qui y est écrit, son interrupteur, son délai.
+- **La carte garde sa forme.** La classe qui dit « la carte a le clavier » s'appelle `kbd-on` (elle s'appelait `keys`, le nom
+  de la rangée de raccourcis de la saisie : au premier clic, Tab ou interrupteur, la carte prenait sa mise en page — titre
+  centré, diff hors de la carte).
+- **Le fil dit ce qui est vrai.** `permission.request.toolCallId` relie la demande à son étape. Tant que la demande attend,
+  l'étape se lit « Veut modifier style.css » (les mots de la carte, sans le nom de l'agent : « … veut … » / « … wants to … ») ;
+  après l'accord « Modifie style.css… » ; une fois faite « A modifié style.css ». Dans une ligne repliée : « A lu 2 fichiers,
+  veut modifier style.css ». *(Designer, 25 nov. 2026)* Dans la liste dépliée, l'étape en attente a son état à elle : une
+  horloge fixe de 12 px et « Attend votre accord », en #A6A6A6 (la ligne du panneau des planches 8 / 9 de la carte
+  d'autorisation), sans anneau qui tourne ; dès la réponse elle redevient une étape en cours (anneau) ou refusée. Refusée, l'étape n'est pas affichée (ni « A modifié », ni « (échec) », ni annonce d'échec) :
+  l'hôte la garde avec `refused: true` (`toolCall` rejoué, `toolCallUpdate {id, refused: true}` en direct) et la page la
+  marque elle-même en répondant. Une demande retirée sans réponse (`permission.cancel` : tour arrêté pendant l'attente) dont
+  l'étape échoue ensuite est traitée de même ; si l'agent fait l'étape malgré tout, elle se lit comme faite.
+  Bulle : pendant l'attente, le statut à droite du modèle dit « Attend votre accord… » (Paper « App réelle · Mode Commentaire 4 »).
+- **Bulle : une vraie carte** (Paper `1ANU-0`, carte `26HS-0` ; « Mode Commentaire 4 », `1V51-0`) : #292929, bordure 1 px
+  #FFFFFF14, rayon 12, 10 px autour et entre ses trois lignes ; ligne du fichier sans fond (13 / 18, compteurs en Inter
+  Display, chevron 12 px), champ #1F1F1F rayon 8 haut de 30 (texte 12 / 16), « Auto. » éteint #FFFFFF26, « Refuser »
+  #FFFFFF0F texte #FFFFFFCC, boutons à 10 px de marge. **Le mode et « Arrêter » restent sous la carte** (`26K6-0`, 12 px
+  dessous) tant que la demande attend : l'agent peut être arrêté pendant qu'il attend. « Arrêter » envoie `stop` et ne
+  répond à rien (l'hôte retire la demande).
+- **Bulle, diff en grand d'une demande** (Paper `19RN-0`, carte `26KG-0`) : une seule carte contient le diff et la réponse ;
+  le mode et « Arrêter » sont dessous, dans les 6 px de la bulle. *(Designer, 25 nov. 2026)* La réponse y a les valeurs de la
+  carte normale, sans rien de propre à cet état (champ 12 px, « Refuser » #FFFFFFCC, boutons à 10 px, pas de marge en plus
+  autour) ; la rangée s'arrête 16 px avant le bord droit (la poignée de redimensionnement, 12 px, + 4) : « Arrêter » n'est
+  jamais sous la poignée.
+  Le diff d'un tour terminé (`1B19-0`) ne change pas. Classe `view-perm` sur `#app` ; la rangée (la saisie réduite à son
+  pied) est alors le dernier enfant de la surface, elle revient dans le bas de la bulle à la fermeture du diff.
+- **Peu de place** (règle 8 du plan, R47) : « Refuser » et « Autoriser » sont toujours entiers. Quand la hauteur offerte ne
+  suffit pas, cèdent dans l'ordre : la rangée sous la carte (en dessous de 231 px), le fil (en dessous de 191 px, la carte
+  seule : 142 px), puis le champ « à la place » (en dessous de 142 px : 102 px ; l'hôte offre au moins 120 px). Non dessiné :
+  à confirmer par Designer.
+- **Une autre application devant (décision A, en attente de la réponse du propriétaire et d'une vérification en vraie
+  fenêtre).** La bulle n'est plus masquée quand une autre application prend le premier plan : fenêtre possédée par celle
+  du navigateur, elle reste sur lui et passe derrière l'autre application avec lui, comme le panneau. Masquée (comportement
+  du 21 nov.), le clic qui ramenait le navigateur à l'endroit de la bulle tombait sur la page : un autre élément était
+  sélectionné, la carte partait puis revenait au clic suivant sur son élément — la « double demande » de la bulle. Tant
+  qu'une autre application est devant, la bulle ne prend ni le premier plan ni le clavier ; le retour du navigateur les lui
+  rend (`BubbleHidesBehindOthers` dans `src/chat-comment.h` : `true` rend l'ancien comportement).
+- **Ce que les réponses veulent dire pour l'agent** (ACP : `allow_once` / `allow_always` / `reject_once`). « Autoriser » =
+  l'option `allow_once`. L'interrupteur (« Toujours autoriser » / « Auto. ») n'existe que si l'agent propose une option
+  `allow_always`, et « toujours » n'est envoyé qu'interrupteur allumé (SEC-23). Sa portée est celle de l'agent, la carte ne
+  la dit pas : Claude (adaptateur 0.107.3, option `allow-with-updates`) — pour une modification, « toutes les modifications
+  pendant cette session » (la session passe en `acceptEdits` et le menu des modes le montre ; le mode retenu par le navigateur
+  pour le site ne change pas : une nouvelle conversation redemande) ; pour une commande, « ne plus demander pour ces commandes » (règle écrite dans les réglages locaux du
+  projet, durable). Codex — `allow_for_session` / `allow_permissions_session` (la session) ; sa
+  demande « Additional sandbox permissions » a pour titre « Codex demande plus d'accès à cet ordinateur » (« Codex is asking
+  for more access to this computer »), reconnue à son titre seul, quel que soit le type de l'étape. « Refuser » = `reject_once`
+  (Codex : `cancel` / `reject_permissions`) ; avec des mots dans « à la place », l'hôte les envoie ensuite comme suite.

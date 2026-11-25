@@ -389,7 +389,7 @@ try:
                 spec = FID[name] if isinstance(FID[name], dict) else {"nodes": FID[name]}
                 fidelity[name] = cdp.js("(" + FID_JS + ")(" + json.dumps(spec["nodes"]) + "," + json.dumps(spec.get("root", "#app")) + "," + str(spec.get("dy", 0)) + ")")
             over = cdp.js("(()=>{const s=document.querySelector('.scroller'),a=document.getElementById('app');return [s.scrollHeight-s.clientHeight, s.scrollTop, a.scrollTop, Math.round(a.getBoundingClientRect().height)]})()")
-            if name in ("c-2-autorisation", "c-fil-long", "c-menu-modele-fil-long", "c-autorisation-reouverte", "c-autorisation-courte"): check(over[0] > 0 and over[2] == 0, f"{name}: at its maximum height only the thread scrolls", str(over))
+            if name in ("c-2-autorisation", "c-fil-long", "c-menu-modele-fil-long", "c-autorisation-reouverte", "c-autorisation-courte", "c-autorisation-sans-refus"): check(over[0] > 0 and over[2] == 0, f"{name}: at its maximum height only the thread scrolls", str(over))
             else: check(over[:3] == [0, 0, 0] and size and over[3] == size[1], f"{name}: the window fits the content exactly (nothing scrolls, nothing is cut)", str(over) + " " + str(size))
             out = os.path.join(COMMENT, name + ".png")
             cdp.call("Emulation.setDefaultBackgroundColorOverride", color={"r": 0, "g": 0, "b": 0, "a": 0})
@@ -499,12 +499,9 @@ try:
         host({"type": "layout", "mode": "bubble", "maxWidth": 280, "maxHeight": 60, "open": False})
         check(sizes()[-1] == [280, 84], "bubble: the width follows maxWidth (280)", str(sizes()[-1]))
         host({"type": "layout", "mode": "bubble", "maxWidth": 305, "maxHeight": 520, "open": False})
-        cdp.js("document.getElementById('composer-input').focus()"); cdp.call("Input.insertText", text="Plus grand"); key("Enter", mods=2); time.sleep(.15)
-        ann = of("annotate")
-        cdp.call("Input.insertText", text="Plus grand"); key("Enter"); time.sleep(.15)
+        cdp.js("document.getElementById('composer-input').focus()"); cdp.call("Input.insertText", text="Plus grand"); key("Enter"); time.sleep(.15)
         snd = [{"text": m["text"], "elements": m["elements"]} for m in of("send")]
         check(snd == [{"text": "Plus grand", "elements": []}], "bubble: Entrée sends the words; the element is implicit (elements: [])", json.dumps(snd, ensure_ascii=False))
-        check(len(ann) == 1 and ann[0]["text"] == "Plus grand" and ann[0]["elements"] == [], "bubble: Ctrl+Entrée keeps an annotation with words only (the host adds the anchored element)", json.dumps(ann, ensure_ascii=False)[:160])
 
         # during a turn: the mode and « Arrêter », no input; Échap closes the bubble and never stops the agent
         load("c-2-envoye")
@@ -561,15 +558,18 @@ try:
         p = cdp.js("""(()=>{const a=document.getElementById('app'),s=document.querySelector('.scroller');return {role:document.querySelector('.bperm').getAttribute('role'),title:document.getElementById('perm-t').textContent,
           nums:Array.from(document.querySelectorAll('.bperm-file .num')).map(n=>n.textContent),ph:document.querySelector('.instead').placeholder,auto:document.querySelector('.bperm .always').textContent,
           checked:document.querySelector('.bperm .always').getAttribute('aria-checked'),faded:a.classList.contains('faded'),fade:getComputedStyle(document.querySelector('.b-fade')).opacity,top:s.scrollTop,
-          composer:V('.composer'),rule:V('.b-rule')}})()""")
-        check(p["role"] == "alertdialog" and p["title"] == "Claude veut modifier checkout.css" and p["nums"] == ["+6", "−2"] and p["ph"] == "Dire à Claude quoi faire à la place…" and p["auto"] == "Auto." and p["checked"] == "true"
-              and p["composer"] == 0 and p["rule"] == 1, "bubble (permission): the request is in the bubble, in place of the input", json.dumps(p, ensure_ascii=False)[:300])
+          composer:V('.cin'),rule:V('.b-rule'),foot:[V('.tb.mode'),V('.send.stop'),V('.model')]}})()""")
+        check(p["role"] == "alertdialog" and p["title"] == "Claude veut modifier checkout.css" and p["nums"] == ["+6", "−2"] and p["ph"] == "Dire à Claude quoi faire à la place…" and p["auto"] == "Auto." and p["checked"] == "false"
+              and p["composer"] == 0 and p["rule"] == 1 and p["foot"] == [1, 1, 0],
+              "bubble (permission): the request is in the bubble, in place of the input; the mode and « Arrêter » stay under the card (Paper 1AQU-0, 26K6-0)", json.dumps(p, ensure_ascii=False)[:340])
         check(p["faded"] and p["fade"] == "1" and p["top"] > 0, "bubble (permission): at its maximum height the thread scrolls and its top fades", f"faded {p['faded']}, opacity {p['fade']}, scrollTop {p['top']}")
         check(cdp.js("document.activeElement.classList.contains('bperm')"), "bubble (permission, SEC-23): the card holds the focus, never « Autoriser »", active())
         load("c-2-autorisation"); cdp.js("document.querySelector('.bperm').__shownAt = performance.now()"); key("Enter"); click(".bperm .btn.primary")
         check(not any(x.startswith("permission.respond") for x in posted()), "bubble (permission, SEC-23): Entrée or a click in the card's first 600 ms answers nothing", str(posted()[-3:]))
-        time.sleep(0.7); key("Enter")
+        time.sleep(0.7); click(".bperm .always"); key("Enter")
         check("permission.respond:always" in posted(), "bubble (permission): Entrée = Autoriser (Auto on: the allow_always option)", str(posted()[-3:]))
+        load("c-2-autorisation"); cdp.js("document.querySelector('.bperm').__shownAt = -1e6"); key("Enter")
+        check("permission.respond:allow" in posted() and "permission.respond:always" not in posted(), "bubble (permission, SEC-23): Auto off, Entrée allows this once — never « always » without its switch", str(posted()[-3:]))
         load("c-2-autorisation"); key("Escape")
         t = posted()
         check("close" in t and not any(x.startswith("permission.respond") for x in t), "bubble (permission): Échap closes the bubble and answers nothing (the request waits)", str(t[-3:]))
@@ -580,7 +580,7 @@ try:
         check(len(resp) == 1 and resp[0]["optionId"] == "reject" and resp[0].get("message") == "Garde 240 px", "bubble (permission): « Dire à Claude quoi faire à la place » rejects with the words", json.dumps(resp, ensure_ascii=False))
         load("c-autorisation-grande")
         g = cdp.js("[document.getElementById('app').classList.contains('faded'), document.querySelector('.scroller').scrollTop]")
-        check(sizes()[-1] == [305, 313] and g == [False, 0], "bubble (permission): with more room (maxHeight 520) the bubble grows to its content (313) and nothing fades", f"{sizes()[-1]} {g}")
+        check(sizes()[-1] == [305, 367] and g == [False, 0], "bubble (permission): with more room (maxHeight 520) the bubble grows to its content (367: the card is 118 high, the row under it 28, 12 below) and nothing fades", f"{sizes()[-1]} {g}")
 
         # the diff « en grand »
         load("c-2-autorisation-diff")
@@ -670,6 +670,62 @@ try:
         check(cdp.js("V('.strip')") == 0 and cdp.js("V('.bq-cap')") == 1, "bubble (queue): the host's `wait` strip, which says the same sentence, is not shown twice")
         click(".bq-cap .icon-btn")
         check(q == ["Mets ce titre en gras", "Commencera après le travail en cours sur button.btn-primary", 1] and "queue.remove:q1" in posted(), "bubble (queue): a request written during another element's turn waits, with its discreet line and « × »", str(q))
+        # Lot R (validated by the owner, 24 Nov 2026; O5: 4 waiting messages = 532 px for a 428 px bubble, the input left the
+        # surface): 2 waiting messages at most, each cut at 2 lines under a fade; « +N en attente » opens the whole list
+        # (160 px at most, its own scroll, a fade at its top) and closes it; the input always whole
+        load("c-file-attente-4")
+        QL_JS = """(()=>{const a=document.getElementById('app').getBoundingClientRect(),c=document.querySelector('.composer').getBoundingClientRect(),m=document.querySelector('.bq-more'),l=document.querySelector('.bq-list'),t=Array.from(document.querySelectorAll('.bq-tx'));
+          const first=document.querySelector('.bq');
+          return {n:document.querySelectorAll('.bq').length,more:m?m.innerText.trim():'',exp:m?m.getAttribute('aria-expanded'):'',color:m?getComputedStyle(m).color:'',size:m?getComputedStyle(m).fontSize:'',chevron:!!(m&&m.querySelector('svg')),
+                  texts:t.map(x=>x.textContent.slice(0,9)),heights:t.map(x=>Math.round(x.getBoundingClientRect().height)),cut:t.map(x=>x.classList.contains('cut')),dots:t.some(x=>getComputedStyle(x).textOverflow==='ellipsis'||x.textContent.endsWith('…')),
+                  input:c.height>30&&c.top>=a.top-1&&c.bottom<=a.bottom+1,above:!!(m&&first&&m.getBoundingClientRect().bottom<=first.getBoundingClientRect().top+1),
+                  list:l?Math.round(l.getBoundingClientRect().height):0,scrolls:l?l.scrollHeight>l.clientHeight+1:false,atEnd:l?Math.abs(l.scrollTop+l.clientHeight-l.scrollHeight)<2:false,fade:l?l.classList.contains('scrolled'):false,
+                  focus:document.activeElement?document.activeElement.className:''}})()"""
+        q4 = cdp.js(QL_JS); h4 = sizes()[-1]
+        check(q4["n"] == 2 and q4["texts"] == ["Troisième", "Quatrième"] and q4["more"] == "+2 en attente" and q4["exp"] == "false" and q4["above"] and q4["chevron"],
+              "bubble (queue, lot R): 4 waiting messages — the 2 most recent are shown, « +2 en attente » above them", json.dumps(q4, ensure_ascii=False)[:300])
+        check(q4["color"] == "rgb(166, 166, 166)" and q4["size"] == "13px", "bubble (queue, lot R): « +N en attente » is 13 px, grey #A6A6A6", f"{q4['color']} {q4['size']}")
+        check(max(q4["heights"]) <= 40 and q4["cut"] == [True, False] and not q4["dots"], "bubble (queue, lot R): each waiting message is cut at 2 lines under a fade, never « … »", f"{q4['heights']} {q4['cut']}")
+        check(q4["input"] and h4[1] <= 520, "bubble (queue, lot R): the input stays whole inside the bubble (the queue shrinks, never the input)", f"{h4} {q4['input']}")
+        click(".bq-more"); time.sleep(.25)
+        q5 = cdp.js(QL_JS); h5 = sizes()[-1]
+        check(q5["n"] == 4 and q5["exp"] == "true" and q5["list"] <= 160 and q5["scrolls"] and q5["atEnd"] and q5["fade"] and "bq-more" in q5["focus"],
+              "bubble (queue, lot R): a click on « +2 en attente » opens the whole list — 160 px at most, its own scroll (at its end), a fade at its top; the focus stays on the line", json.dumps(q5, ensure_ascii=False)[:300])
+        check(q5["input"] and h5[1] <= 520, "bubble (queue, lot R): list open, the input is still whole inside the bubble", f"{h5} {q5['input']}")
+        click(".bq-more"); time.sleep(.25)
+        q6 = cdp.js(QL_JS)
+        check(q6["n"] == 2 and q6["exp"] == "false" and sizes()[-1] == h4, "bubble (queue, lot R): a second click closes it (back to 2 messages, same size as before)", f"{q6['n']} {sizes()[-1]} {h4}")
+        # #110 / #185 / #219 (lot 1b's replay, 24 Nov 2026): little height offered (a bubble squeezed between its element and the
+        # window's edge) — the waiting messages take what is left, the input and its buttons stay inside the surface, whole
+        FT_JS = """(()=>{const a=document.getElementById('app').getBoundingClientRect(),b=document.querySelector('.bqs'),l=document.querySelector('.bq-list'),m=document.querySelector('.bq-more');
+          const vis=e=>!!e&&e.getBoundingClientRect().height>0;
+          return {inside:['.cin','.tb.mode','.model .m','.send'].every(s=>{const e=document.querySelector(s);if(!e)return false;const r=e.getBoundingClientRect();return r.height>0&&r.top>=a.top-1&&r.bottom<=a.bottom-11}),
+                  app:Math.round(a.height),list:vis(l)?Math.round(l.getBoundingClientRect().height):0,tight:!!b&&b.classList.contains('tight'),box:vis(b),more:vis(m)?m.innerText.trim():'',off:m?m.disabled:null,
+                  atEnd:vis(l)?Math.abs(l.scrollTop+l.clientHeight-l.scrollHeight)<2:null,fade:vis(l)?l.classList.contains('scrolled'):null,n:document.querySelectorAll('.bq').length}})()"""
+        def offered(hh):
+            host({"type": "layout", "mode": "bubble", "maxWidth": 305, "maxHeight": hh, "side": "right", "element": "h1.title", "open": False}); time.sleep(.2)
+            return cdp.js(FT_JS), sizes()[-1]
+        f0, s0 = offered(520)
+        f1, s1 = offered(269)
+        check(f0["inside"] and not f0["tight"] and f0["list"] > 150 and f1["inside"] and f1["tight"] and 28 <= f1["list"] < f0["list"] and f1["atEnd"] and f1["fade"] and f1["more"] == "+2 en attente" and s1[1] <= 269,
+              "bubble (queue, #110): 269 px offered — the list takes what is left (cut at its top under the fade, the most recent at its end); the input, the mode / model buttons and « envoyer » are whole inside the surface",
+              f"520: {json.dumps(f0, ensure_ascii=False)} {s0} | 269: {json.dumps(f1, ensure_ascii=False)} {s1}"[:420])
+        click(".bq-more"); time.sleep(.25); f1o = cdp.js(FT_JS); click(".bq-more"); time.sleep(.25)
+        check(f1o["inside"] and f1o["n"] == 4 and f1o["list"] <= f1["list"] + 1 and f1o["atEnd"], "bubble (queue, #110): 269 px offered, list opened — it keeps to the room left (never the 160 px that push the input out)", json.dumps(f1o, ensure_ascii=False)[:300])
+        f2, s2 = offered(150)
+        check(f2["inside"] and f2["tight"] and 28 <= f2["list"] < f1["list"] and f2["atEnd"] and f2["more"] == "+2 en attente" and s2[1] <= 150,
+              "bubble (queue, #110): 150 px offered — the list shrinks again (never under a line of it); the input is whole inside the surface", f"{json.dumps(f2, ensure_ascii=False)} {s2}"[:300])
+        f3, s3 = offered(120)
+        check(f3["inside"] and f3["list"] == 0 and f3["more"] == "+4 en attente" and f3["off"] is True and s3[1] <= 120,
+              "bubble (queue, #110): 120 px offered (the least the host offers) — no room for a line of the list: it goes, « +4 en attente » counts them all; the input is whole inside the surface", f"{json.dumps(f3, ensure_ascii=False)} {s3}"[:300])
+        f3b, s3b = offered(104)
+        check(f3b["inside"] and s3b[1] <= 104 and f3b["list"] == 0, "bubble (queue, #110): 104 px (the page's own floor) — the input is still whole inside the surface", f"{json.dumps(f3b, ensure_ascii=False)} {s3b}"[:300])
+        f4, s4 = offered(520)
+        check(f4 == f0 and s4 == s0, "bubble (queue, #110): the room back, the queue is back as validated (2 messages, « +2 en attente », same size)", f"{json.dumps(f4, ensure_ascii=False)} {s4} / {s0}"[:300])
+        host({"type": "queue", "more": "+{n} queued", "items": [{"id": "q1", "text": "Premier", "after": "button.btn-primary"}, {"id": "q2", "text": "Deuxième", "after": "button.btn-primary"}, {"id": "q3", "text": "Troisième", "after": "button.btn-primary"}]})
+        check(cdp.js("document.querySelector('.bq-more').innerText.trim()") == "+1 queued" and cdp.js("document.querySelectorAll('.bq').length") == 2, "bubble (queue, lot R): the count line is worded by the host (interface language): « +1 queued »")
+        host({"type": "queue", "items": [{"id": "q1", "text": "Premier", "after": "button.btn-primary"}, {"id": "q2", "text": "Deuxième", "after": "button.btn-primary"}]})
+        check(cdp.js("!document.querySelector('.bq-more') && document.querySelectorAll('.bq').length") == 2, "bubble (queue, lot R): 2 waiting messages or fewer: no « +N en attente » line")
         # monkey seed 3 #63/#70: in the bubble of an element that already has an exchange, the user writes and presses Entrée while
         # another element's turn runs; the host queues it (queue.items[].after) — the waiting message is seen AT ONCE in this
         # bubble, whole, inside the visible surface: dimmed user bubble, « Commencera après le travail en cours sur … », « × »
@@ -824,8 +880,8 @@ try:
         time.sleep(.3)
         st_ = cdp.js("""(()=>{const t=document.getElementById('send-tip'),r=t.getBoundingClientRect(),b=document.querySelector('.send').getBoundingClientRect(),a=document.getElementById('app').getBoundingClientRect();
           return {on:getComputedStyle(t).opacity,text:t.innerText,top:Math.round(r.top),bottom:Math.round(b.top-r.bottom),right:Math.round(b.right-r.right),w:r.width,cut:t.scrollWidth>t.clientWidth+1,inLayer:t.parentNode.className,above:r.top<a.top}})()""")
-        check(st_["on"] == "1" and "Garder en annotation" in st_["text"] and "Ctrl" in st_["text"] and st_["bottom"] == 6 and st_["right"] == 0 and st_["top"] >= 0 and not st_["cut"] and st_["inLayer"] == "layer" and st_["above"],
-              "bubble (send button, R3): « Demander à l'agent ↵ / Garder en annotation Ctrl ↵ » opens above the button, out of the bubble, never cut", json.dumps(st_, ensure_ascii=False)[:240])
+        check(st_["on"] == "1" and "Demander à l'agent" in st_["text"] and "Garder" not in st_["text"] and "Ctrl" not in st_["text"] and st_["bottom"] == 6 and st_["right"] == 0 and st_["top"] >= 0 and not st_["cut"] and st_["inLayer"] == "layer",
+              "bubble (send button, R3; lot R: one line, « Demander à l'agent ↵ »): opens 6 px above the button, in the layer (it may leave the surface), never cut", json.dumps(st_, ensure_ascii=False)[:240])
         cdp.js("document.activeElement.blur()"); time.sleep(.3)
         check(cdp.js("getComputedStyle(document.getElementById('send-tip')).opacity") == "0" and not any(k.startswith("overflow") for k in of("bubble.size")[-1]), "bubble (send button): it goes with the focus and the window shrinks back")
 
@@ -1109,8 +1165,13 @@ try:
             opening[kind]["jump"] = max(x["jump"] for x in rows)   # every later bubble.size and the height drawn in the end vs the acknowledged one
         report["perf"]["opening"] = opening
         print("     opening (page share, ms):", json.dumps(opening))
-        check(all(0 <= v["ack"] < (8 if k == "neuve" else 16) and v["image"] < 8 and v["jump"] == 0 for k, v in opening.items()),
-              "Q's journeys: the page acknowledges an opening (layout + thread, as H1 sends it) in < 8 ms for a new bubble, < 16 ms with a conversation (also from the panel, M5), its first image right after; the acknowledged height is the one the bubble keeps (no jump)", json.dumps(opening))
+        # The times are an OBJECTIVE (coordinator, 24 Nov 2026, in the spirit of the owner's decision 5: a timing threshold is
+        # measured and said at every pass, never a failed check — 16.3 ms for 16 on a loaded machine, 12.6 ms alone). What
+        # stays a check: the page answered, and the acknowledged height is the one the bubble keeps (no jump).
+        fast = all(0 <= v["ack"] < (8 if k == "neuve" else 16) and v["image"] < 8 for k, v in opening.items())
+        print(f"OBJECTIF accuse-ouverture-16ms {'atteint' if fast else 'manque'} | the page acknowledges an opening in < 8 ms (new bubble) / < 16 ms (with a conversation, also from the panel), first image < 8 ms after | {json.dumps(opening)}", flush=True)
+        check(all(v["ack"] >= 0 and v["jump"] == 0 for v in opening.values()),
+              "Q's journeys: the page acknowledges an opening (layout + thread, as H1 sends it) and the acknowledged height is the one the bubble keeps (no jump); its times are the objective « accuse-ouverture-16ms »", json.dumps(opening))
         load("c-1-vide")
         lat = cdp.js("(" + LAT_JS + ")(40)")
         check(lat["ack"] >= 0 and lat["ack"] < 16, "H1 latency: the opening layout is acknowledged (one bubble.size) with the thread that follows it, within one image, even with a 40-turn thread still drawn and another coming", json.dumps(lat))
@@ -1209,6 +1270,259 @@ try:
               and hs == ["Ce site · boutique", ["1 fichier modifié", "vitrine · 3 fichiers modifiés"]],
               "folder (B 1.8/1.9): the folder's name instead of its path or the site's address (folder screen, history); a sure folder is not in « + »", f"{plus!r} {tile} {hs}"[:300])
 
+    # ---------------------------------------------------------------- 6p. the permission circuit (owner's trial 0.3.952, 24 Nov 2026)
+    # `--only perm` runs this block alone. One request per change, a card that never changes shape, a thread that never
+    # says « A modifié » before the answer.
+    if not ONLY or "perm" in ONLY:
+        p_opts = ("options:[{optionId:'allow',name:'Autoriser',kind:'allow_once'},{optionId:'always',name:'Toujours autoriser',kind:'allow_always'},"
+                  "{optionId:'reject',name:'Refuser',kind:'reject_once'}]")
+        p_diff = ("diff:{path:'style.css',added:1,removed:1,lines:[{op:'@',text:'@@ -1,1 +1,1 @@'},"
+                  "{op:'-',text:'.row button { padding: 6px 12px; border: 1px solid #D9D9D6; border-radius: 6px; font-size: 13px; cursor: pointer; }'},"
+                  "{op:'+',text:'.row button { padding: 6px 12px; border: 1px solid #D9D9D6; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }'}]}")
+        def p_ask(rid="p1", tool="e1", extra=""):
+            cdp.js("window.devHost.send({type:'permission.request',requestId:'%s',turnId:'t1',toolCallId:'%s',title:'Claude veut modifier style.css',kind:'edit',%s,%s%s})"
+                   % (rid, tool, p_diff, p_opts, extra)); time.sleep(.25)
+        def p_tool(status, first=False):
+            if first: cdp.js("window.devHost.send({type:'toolCall',turnId:'t1',id:'e1',title:'Edit style.css',kind:'edit',status:'%s',locations:[{path:'C:\\\\site\\\\style.css'}]})" % status)
+            else: cdp.js("window.devHost.send({type:'toolCallUpdate',id:'e1',status:'%s'})" % status)
+            time.sleep(.2)
+        def p_arm(sel): cdp.js(f"document.querySelector({json.dumps(sel)}).__shownAt = -1e6")
+        def p_center(sel): return cdp.js(f"(()=>{{const n=document.querySelector({json.dumps(sel)});if(!n)return null;const r=n.getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2]}})()")
+        def p_mouse(x, y):   # a real click: pressed and released at the same point, as a hand does
+            cdp.call("Input.dispatchMouseEvent", type="mouseMoved", x=x, y=y)
+            cdp.call("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button="left", clickCount=1); time.sleep(.05)
+            cdp.call("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button="left", clickCount=1); time.sleep(.2)
+        p_resp = lambda: cdp.js("window.__posted.filter(m=>m.type==='permission.respond')")
+        # the card's geometry: every part's box relative to the card, and what leaves it
+        p_geo_js = ("(()=>{const c=document.querySelector('.perm, .bperm');if(!c)return null;const R=c.getBoundingClientRect();const o={w:Math.round(R.width),out:[]};"
+                    "for(const n of c.querySelectorAll('.perm-hd, .perm-t, .diff, .perm-details, .instead, .perm-ft, .always, .btn, .bperm-file, .bperm-in, .bperm-ft')){"
+                    "const r=n.getBoundingClientRect();const k='.'+n.className.split(' ').slice(0,2).join('.')+(n.classList.contains('btn')?':'+n.firstChild.textContent:'');"
+                    "o[k]=[Math.round(r.left-R.left),Math.round(r.top-R.top),Math.round(r.width),Math.round(r.height)];if(r.left<R.left-.5||r.right>R.right+.5)o.out.push(k);}"
+                    "o.doc=document.documentElement.scrollWidth>document.documentElement.clientWidth;return o})()")
+        def p_text(): return cdp.js("document.querySelector('.log').innerText")
+        p_steps = lambda: cdp.js("Array.from(document.querySelectorAll('.log .step, .log .fold, .log .waiting')).map(n=>n.textContent.trim())")
+
+        # --- points 2 and 4 (panel): the card keeps its shape whatever takes the focus in it
+        load("6.10-travaille"); cdp.js("document.getElementById('composer-input').focus()")   # the user was typing: the card does not take the keyboard
+        p_tool("pending", True); p_ask(extra=",tool:{name:'Edit'},input:'{\"file_path\":\"C:/site/style.css\"}'")
+        g0 = cdp.js(p_geo_js)
+        check(g0 and not g0["out"] and not g0["doc"] and g0[".perm-hd"][0] == 12 and g0[".diff"][2] == g0["w"] - 24,
+              "permission (panel): at rest the card is whole — title at the left, the diff as wide as the card (it scrolls inside itself)", json.dumps(g0, ensure_ascii=False)[:400])
+        x, y = p_center(".perm .perm-t"); p_mouse(x, y)                                      # a click on the card, outside its buttons
+        g1 = cdp.js(p_geo_js)
+        # the card's shape: every part but the two buttons, which « ↵ » moves (the keyboard is in the card now) — still right-aligned
+        p_shape = lambda g: [g[k] for k in (".perm-hd", ".perm-t", ".diff", ".perm-details", ".instead", ".perm-ft")] + [g["out"], g["doc"], g["w"], sum(g[".btn.primary:Autoriser"][::2]), g[".btn:Refuser"][1:]]
+        check(p_shape(g1) == p_shape(g0) and not p_resp() and cdp.js("document.querySelector('.perm').classList.contains('kbd-on') && !document.querySelector('.perm').classList.contains('keys')"),
+              "permission (panel, point 2): a click on the card outside its buttons changes nothing of its shape and answers nothing",
+              f"before {json.dumps(g0)[:260]} after {json.dumps(g1)[:260]}")
+        x, y = p_center(".perm .always"); p_mouse(x, y)
+        g2 = cdp.js(p_geo_js); on = cdp.js("document.querySelector('.perm .always').getAttribute('aria-checked')")
+        check(p_shape(g2) == p_shape(g0) and g2 == g1 and on == "true" and not p_resp(), "permission (panel, point 4): « Toujours autoriser » switches on with one click and the card keeps its shape",
+              f"checked {on} after {json.dumps(g2)[:300]}")
+        x, y = p_center(".perm .perm-more"); p_mouse(x, y)
+        g3 = cdp.js(p_geo_js)
+        check(g3 and not g3["out"] and not g3["doc"] and g3[".perm-hd"] == g0[".perm-hd"] and g3[".diff"] == g0[".diff"] and cdp.js("!document.getElementById('perm-details').hidden"),
+              "permission (panel): « Détails » opens under the diff, nothing leaves the card", json.dumps(g3, ensure_ascii=False)[:300])
+        cdp.js("document.querySelector('.perm .instead').focus()"); g4 = cdp.js(p_geo_js)
+        check(g4 == g3 and p_shape(g4)[:3] == p_shape(g0)[:3], "permission (panel): writing in « Dire à Claude quoi faire à la place… » keeps the card's shape", json.dumps(g4)[:300])
+        shot(os.path.join(OUT, "perm-carte-cliquee.png"))
+
+        # --- point 1 (panel): one click on « Autoriser » answers — the first one, wherever the keyboard was
+        p_box = lambda sel: cdp.js(f"(()=>{{const r=document.querySelector({json.dumps(sel)}).getBoundingClientRect();return [r.left,r.top,r.width,r.height]}})()")
+        for btn, want in ((".perm .btn.primary", "allow"), (".perm .btn:not(.primary)", "reject")):
+            got = []
+            for where in (.08, .5, .92):   # near its left edge, its middle, near its right edge
+                load("6.10-travaille"); cdp.js("document.getElementById('composer-input').focus()")   # the keyboard is elsewhere: the card has no « ↵ » yet
+                p_tool("pending", True); p_ask(); p_arm(".perm")
+                bx = p_box(btn); p_mouse(bx[0] + bx[2] * where, bx[1] + bx[3] / 2)
+                r1 = p_resp(); got.append([r1[0]["optionId"] if len(r1) == 1 else len(r1), cdp.js("!document.querySelector('.perm')")])
+            check(got == [[want, True]] * 3, f"permission (panel, point 1): ONE real click on « {'Autoriser' if want == 'allow' else 'Refuser'} » — pressed and released at the same point, near either edge or in the middle — answers; never a second click for the same request", str(got))
+        # the same request sent again by the host (WebView re-created, thread.reset) never makes a second card nor a second answer
+        load("6.10-travaille"); p_tool("pending", True); p_ask(); p_ask(); p_arm(".perm")
+        n = cdp.js("[document.querySelectorAll('.perm').length, !!document.querySelector('.perm-of')]")
+        x, y = p_center(".perm .btn.primary"); p_mouse(x, y)
+        check(n == [1, False] and len(p_resp()) == 1 and cdp.js("!document.querySelector('.perm')"), "permission (panel): the same request received twice is one card, one answer", f"{n} {p_resp()}")
+
+        # --- point 3 (panel): the thread says what is true — « Veut modifier » until the answer, « A modifié » once done, nothing if refused
+        load("6.10-travaille"); p_tool("pending", True); p_ask()
+        s0 = p_steps(); t0 = p_text()
+        check("A modifié" not in t0 and "Modifie style.css" not in t0 and any(s.endswith("eut modifier style.css") for s in s0) and "Attend votre accord pour modifier style.css" in t0,
+              "thread (point 3): while the request waits the step reads « Veut modifier style.css » — never « A modifié », never « Modifie… »", str(s0))
+        # Designer, 25 Nov 2026: in the opened list the waiting step has its own state — a still clock 12 px and « Attend votre
+        # accord », both #A6A6A6 (the panel's line of the boards 8 / 9), no spinning ring
+        cdp.js("document.querySelector('.log .steps > .fold').click()"); time.sleep(.2)
+        w0 = cdp.js("(()=>{const n=document.querySelector('.log .step.want');if(!n)return null;const v=n.querySelector('svg'),c=getComputedStyle(n);return {text:n.textContent,color:c.color,icon:[v.getBoundingClientRect().width,getComputedStyle(v).animationName,"
+                    "getComputedStyle(v.querySelector('path')).fill,v.getAttribute('viewBox')],spin:!!n.querySelector('.spin'),others:Array.from(document.querySelectorAll('.log .steps .step')).map(x=>x.className.replace('step ','')+':'+x.textContent)}})()")
+        check(w0 and w0["text"] == "Attend votre accord" and w0["color"] == "rgb(166, 166, 166)" and w0["icon"] == [12, "none", "rgb(166, 166, 166)", "0 0 256 256"] and not w0["spin"],
+              "thread (Designer 25 Nov): in the opened list a step waiting for the user's agreement reads « Attend votre accord » with a still clock, 12 px, both #A6A6A6 — no spinning ring", json.dumps(w0, ensure_ascii=False)[:400])
+        cdp.js("document.querySelector('.log .steps > .fold').click()"); time.sleep(.15)
+        wl = cdp.js("(()=>{const n=document.querySelector('.log .waiting'),v=n.querySelector('svg'),c=getComputedStyle(n);return [n.textContent,c.color,c.fontSize,c.lineHeight,c.columnGap,v.getBoundingClientRect().width,getComputedStyle(v.querySelector('path')).fill,v.getAttribute('viewBox')]})()")
+        check(wl == ["Attend votre accord pour modifier style.css", "rgb(166, 166, 166)", "13px", "16px", "8px", 14, "rgb(166, 166, 166)", "0 0 256 256"],
+              "thread (Paper, boards 8 / 9 of the permission card): the line « Attend votre accord pour modifier … » — a clock 14 px and the words, both #A6A6A6, 13 / 16, 8 px apart", str(wl))
+        p_arm(".perm"); x, y = p_center(".perm .btn.primary"); p_mouse(x, y)
+        s1 = p_steps(); t1 = p_text()
+        w1 = cdp.js("[!!document.querySelector('.log .step.want'), !!document.querySelector('.log .step.run .spin')]")
+        check(w1 == [False, True], "thread (Designer 25 Nov): once answered the step is a running step again (its ring), no longer a waiting one", str(w1))
+        check("A modifié" not in t1 and "Veut modifier" not in t1 and any(s == "Modifie style.css…" for s in s1), "thread (point 3): allowed, the edit is under way — « Modifie style.css… »", str(s1))
+        p_tool("completed"); s2 = p_steps()
+        check(any("A modifié style.css" in s or "a modifié style.css" in s for s in s2) and "Veut modifier" not in p_text(), "thread (point 3): « A modifié style.css » only once the edit really happened", str(s2))
+        load("6.10-travaille"); p_tool("pending", True); p_ask(); p_arm(".perm")
+        x, y = p_center(".perm .btn:not(.primary)"); p_mouse(x, y); p_tool("failed"); time.sleep(.2)
+        t3 = p_text()
+        check("modifié" not in t3 and "Veut modifier" not in t3 and "Modifie" not in t3 and "échec" not in t3, "thread (point 3): refused, nothing is said of the edit (no « A modifié », no « échec »)", str(p_steps()))
+        # replayed (thread.reset) with the refused step: still nothing
+        cdp.js("window.devHost.send({type:'thread.reset',conversationId:'c1',items:[{type:'message.user',id:'u1',text:'Mets en gras',at:new Date().toISOString()},{type:'turn.start',turnId:'t1',model:'Sonnet 5.5',at:new Date().toISOString()},"
+               "{type:'toolCall',turnId:'t1',id:'r1',title:'Read style.css',kind:'read',status:'completed',locations:[{path:'style.css'}]},"
+               "{type:'toolCall',turnId:'t1',id:'e1',title:'Edit style.css',kind:'edit',status:'failed',refused:true,locations:[{path:'style.css'}]},"
+               "{type:'turn.end',turnId:'t1',stopReason:'end_turn',durationMs:4000}]})"); time.sleep(.3)
+        t4 = p_text()
+        check("A lu style.css" in t4 and "modifié" not in t4 and "échec" not in t4, "thread (point 3): a conversation opened again does not show the refused edit either", str(p_steps()))
+        # no request (mode Auto / Accept edits): a pending edit is simply under way
+        load("6.10-travaille"); p_tool("pending", True)
+        check(any(s == "Modifie style.css…" for s in p_steps()), "thread: without a request (Auto), a pending edit reads « Modifie style.css… »", str(p_steps()))
+
+        # --- the bubble: same rules
+        load("c-2-envoye"); p_tool("pending", True); p_ask(); p_arm(".bperm")
+        b0 = cdp.js("[document.querySelector('#app').innerText, document.querySelectorAll('.bperm').length]")
+        check("Modifie style.css" not in b0[0] and "A modifié" not in b0[0] and "Attend votre accord…" in b0[0] and b0[1] == 1,
+              "bubble (point 3, Paper « Mode Commentaire 4 »): while the request waits the status reads « Attend votre accord… » — never « Modifie style.css… » nor « A modifié »", b0[0][-200:].replace("\n", " | "))
+        gb0 = cdp.js(p_geo_js)
+        x, y = p_center(".bperm .always"); p_mouse(x, y); gb1 = cdp.js(p_geo_js)
+        check(gb0 and gb1 == gb0 and not gb0["out"] and cdp.js("document.querySelector('.bperm .always').getAttribute('aria-checked')") == "true" and not p_resp(),
+              "bubble (points 2 and 4): « Auto. » switches on with one click, the card keeps its shape, nothing leaves it", f"{json.dumps(gb0)[:200]} / {json.dumps(gb1)[:200]}")
+        x, y = p_center(".bperm .btn.primary"); p_mouse(x, y); rb = p_resp()
+        check(len(rb) == 1 and rb[0]["optionId"] == "always" and cdp.js("!document.querySelector('.bperm')"), "bubble (point 1): one real click on « Autoriser » answers (Auto on: allow_always)", json.dumps(rb)[:200])
+        p_tool("in_progress"); bs = cdp.js("document.querySelector('#app').innerText")
+        check("Modifie style.css…" in bs, "bubble (point 3): allowed, the status reads « Modifie style.css… »", bs[-160:].replace("\n", " | "))
+
+        # the host says a step was refused (answered from the other surface, a conversation shown aside): the page follows
+        load("6.10-travaille"); p_tool("pending", True); p_ask()
+        cdp.js("window.devHost.send({type:'toolCallUpdate',id:'e1',refused:true})"); cdp.js("window.devHost.send({type:'permission.cancel',requestId:'p1'})"); p_tool("failed")
+        t5 = p_text()
+        check("modifié" not in t5 and "échec" not in t5 and "Veut modifier" not in t5 and cdp.js("!document.querySelector('.perm')"), "thread: a step the host marks as refused is not shown either", str(p_steps()))
+        # the turn stopped while the card waited: the request is withdrawn, its step fails — nothing is said of the edit
+        load("6.10-travaille"); p_tool("pending", True); p_ask()
+        cdp.js("window.devHost.send({type:'permission.cancel',requestId:'p1'})"); time.sleep(.15); p_tool("failed")
+        t6 = p_text()
+        check("modifié" not in t6 and "échec" not in t6 and cdp.js("!document.querySelector('.perm')"), "thread: a request withdrawn unanswered (turn stopped) whose step fails — nothing is said of the edit", str(p_steps()))
+        # …but a request withdrawn whose step then really runs is said as it is
+        load("6.10-travaille"); p_tool("pending", True); p_ask()
+        cdp.js("window.devHost.send({type:'permission.cancel',requestId:'p1'})"); time.sleep(.15); p_tool("completed")
+        check(any("A modifié style.css" in x for x in p_steps()), "thread: a request withdrawn whose step is then done by the agent reads « A modifié style.css »", str(p_steps()))
+        # --- several requests in a row (SEC-23): a double click on « Autoriser » answers the first only; the second card is armed on its own
+        load("6.10-travaille"); p_tool("pending", True); p_ask("p1"); p_ask("p2", "e2"); p_arm(".perm")
+        of0 = cdp.js("(document.querySelector('.perm-of')||{}).textContent")
+        bx = p_box(".perm .btn.primary"); x, y = bx[0] + bx[2] / 2, bx[1] + bx[3] / 2
+        cdp.call("Input.dispatchMouseEvent", type="mouseMoved", x=x, y=y)
+        for n in (1, 2):
+            cdp.call("Input.dispatchMouseEvent", type="mousePressed", x=x, y=y, button="left", clickCount=n)
+            cdp.call("Input.dispatchMouseEvent", type="mouseReleased", x=x, y=y, button="left", clickCount=n); time.sleep(.06)
+        time.sleep(.2); r2 = p_resp()
+        two = cdp.js("[document.querySelectorAll('.perm').length, !!document.querySelector('.perm-of'), !!document.activeElement.closest('.perm')]")
+        check(of0 == "1 sur 2" and [m["requestId"] for m in r2] == ["p1"] and two == [1, False, True],
+              "permission (several in a row, SEC-23): a double click on « Autoriser » answers the first request only; the next card is there, unanswered, the keyboard in it", f"{of0} {r2} {two}")
+        time.sleep(.65); bx = p_box(".perm .btn.primary"); p_mouse(bx[0] + bx[2] / 2, bx[1] + bx[3] / 2)
+        check([m["requestId"] for m in p_resp()] == ["p1", "p2"] and cdp.js("!document.querySelector('.perm') && document.activeElement.id === 'composer-input'"),
+              "permission (several in a row): 600 ms later one click answers the second; the input is back with the keyboard", str(p_resp()))
+
+        # --- the bubble's card is a real card (Designer, 24 Nov 2026: Paper 1ANU-0 / « App réelle · Mode Commentaire 4 »), whole at
+        # every display scale: #292929, 1 px border, radius 12, 10 px around its three rows, 12 px from the bubble's edges
+        card_js = ("(()=>{const a=document.getElementById('app').getBoundingClientRect(),c=document.querySelector('.bperm'),r=c.getBoundingClientRect(),s=getComputedStyle(c);"
+                   "const q=(x)=>{const b=c.querySelector(x).getBoundingClientRect();return [+(b.left-r.left).toFixed(2),+(b.top-r.top).toFixed(2),+(r.right-b.right).toFixed(2),+(r.bottom-b.bottom).toFixed(2),+b.height.toFixed(2)]};"
+                   "return {edge:[+(r.left-a.left).toFixed(2),+(a.right-r.right).toFixed(2),+(a.bottom-r.bottom).toFixed(2)],h:+r.height.toFixed(2),bg:s.backgroundColor,bw:[s.borderTopWidth,s.borderRightWidth,s.borderBottomWidth,s.borderLeftWidth],"
+                   "bc:s.borderTopColor,radius:s.borderRadius,file:q('.bperm-file'),inp:q('.bperm-in'),ft:q('.bperm-ft'),refuse:q('.btn:not(.primary)'),allow:q('.btn.primary'),dpr:devicePixelRatio,"
+                   "foot:(()=>{const m=document.querySelector('.tb.mode').getBoundingClientRect(),t=document.querySelector('.send.stop').getBoundingClientRect();return Math.abs(t.top-r.bottom-12)<.51&&Math.abs(a.bottom-t.bottom-12)<.51&&Math.abs(a.right-t.right-12)<.51&&Math.abs(m.left-a.left-12)<.51&&t.height===28})(),"
+                   "app:[Math.round(a.width),Math.round(a.height)],scroll:[document.getElementById('app').scrollTop,scrollY]}})()")
+        for dsf in (1, 1.25, 1.5):
+            cdp.call("Emulation.setDeviceMetricsOverride", width=1200, height=1400, deviceScaleFactor=dsf, mobile=False)
+            cdp.events.clear(); cdp.call("Page.navigate", url=f"{BASE}/chat-panel/dev.html?scenario=c-2-autorisation")
+            cdp.js("new Promise(r=>{const t0=performance.now();const f=()=>{if(window.__scenarioDone)r(true);else if(performance.now()-t0>15000)r(false);else setTimeout(f,20)};f()})")
+            cdp.js("document.fonts.ready.then(()=>new Promise(r=>setTimeout(r,350)))")
+            c = cdp.js(card_js); near = lambda v, w, d=.51: abs(v - w) <= d   # half a device pixel at most
+            ok = (c["dpr"] == dsf and c["app"] == [305, 303] and near(c["edge"][0], 12) and near(c["edge"][1], 12) and near(c["edge"][2], 52) and c["foot"] and near(c["h"], 118) and c["bg"] == "rgb(41, 41, 41)" and c["bc"] == "rgba(255, 255, 255, 0.08)"
+                  and all(near(float(w[:-2]), 1, .34) for w in c["bw"]) and c["radius"] == "12px"
+                  and near(c["file"][0], 11) and near(c["file"][1], 11) and near(c["file"][2], 11) and near(c["file"][4], 18)
+                  and near(c["inp"][0], 11) and near(c["inp"][1], 39) and near(c["inp"][4], 30)
+                  and near(c["ft"][1], 79) and near(c["ft"][3], 11) and near(c["ft"][4], 28)
+                  and near(c["allow"][2], 11) and near(c["allow"][3], 11) and near(c["refuse"][3], 11) and c["refuse"][0] > 11 and c["scroll"] == [0, 0])
+            check(ok, f"bubble (card, {int(dsf * 100)} %): a whole card on the bubble — #292929, 1 px border #FFFFFF14, radius 12, 10 px around its rows, 12 px from the bubble's sides, « Refuser » / « Autoriser » whole; the mode and « Arrêter » 12 px under it", json.dumps(c)[:420])
+            ins = cdp.js("window.__inset||{top:0,right:0,bottom:0,left:0}")
+            shot(os.path.join(OUT, f"perm-bulle-{int(dsf * 100)}.png"), {"x": ins["left"] - 8, "y": ins["top"] - 8, "width": 321, "height": 319})
+        viewport(380, 698)
+
+        # --- the row under the card (Paper 1AQU-0 / 19RN-0, 24 Nov 2026): the agent can be stopped while its request waits
+        p_host = lambda m: (cdp.js(f"window.devHost.send({json.dumps(m)})"), time.sleep(.15))
+        foot_js = ("(()=>{const a=document.getElementById('app'),A=a.getBoundingClientRect(),c=document.querySelector('.bperm'),C=c?c.getBoundingClientRect():null,co=document.querySelector('.composer'),"
+                   "m=document.querySelector('.tb.mode'),t=document.querySelector('.send');const vis=(n)=>!!n&&n.getClientRects().length>0;"
+                   "return {home:co&&co.parentNode?(co.parentNode.id||co.parentNode.className):null,mode:vis(m),stop:vis(t)&&t.classList.contains('stop'),input:vis(document.querySelector('.cin')),"
+                   "under:C&&vis(t)?+(t.getBoundingClientRect().top-C.bottom).toFixed(1):null,cardWhole:!!C&&C.top>=A.top-.5&&C.bottom<=A.bottom-11.5,stopWhole:vis(t)&&t.getBoundingClientRect().bottom<=A.bottom-5.5,"
+                   "cls:a.className.split(' ').filter(x=>['view','view-perm','running'].includes(x)).sort().join(' '),h:Math.round(A.height)}})()")
+        load("c-2-autorisation"); f0 = cdp.js(foot_js)
+        check(f0["home"] == "dock has-perm" and f0["mode"] and f0["stop"] and not f0["input"] and f0["under"] == 12 and f0["cardWhole"] and f0["stopWhole"] and f0["cls"] == "running",
+              "bubble (row under the card): the mode and « Arrêter » are under the card, 12 px below it, no input; the card whole", json.dumps(f0))
+        bx = p_box(".send.stop"); p_mouse(bx[0] + bx[2] / 2, bx[1] + bx[3] / 2)
+        st_ = posted()
+        check("stop" in st_ and not p_resp(), "bubble (row under the card): « Arrêter » stops the agent while its request waits — it answers nothing by itself (the host withdraws the request)", str(st_[-3:]))
+        p_host({"type": "permission.cancel", "requestId": "p1"}); p_host({"type": "turn.end", "turnId": "t1", "stopReason": "cancelled", "durationMs": 9000}); p_host({"type": "state", "running": False})
+        f1 = cdp.js(foot_js)
+        check(f1["home"] == "dock" and f1["input"] and not f1["stop"] and f1["cls"] == "" and cdp.js("!document.querySelector('.bperm')"), "bubble (row under the card): stopped, the request is gone and the input is back", json.dumps(f1))
+        # too little height for the card and its row: the card stays whole (plan rule 8), the row gives way — and comes back with the room
+        load("c-2-autorisation")
+        p_host({"type": "layout", "mode": "bubble", "open": False, "maxWidth": 305, "maxHeight": 150, "inset": cdp.js("window.__inset")}); f2 = cdp.js(foot_js)
+        p_host({"type": "layout", "mode": "bubble", "open": False, "maxWidth": 305, "maxHeight": 303, "inset": cdp.js("window.__inset")}); f3 = cdp.js(foot_js)
+        check(f2["h"] == 142 and f2["cardWhole"] and not f2["stop"] and not f2["mode"] and f3["h"] == 303 and f3["stop"] and f3["under"] == 12 and f3["cardWhole"],
+              "bubble (little room, R47): 150 px offered — the card whole and alone (142), the row and the thread give way; with the room of before they are back", f"{json.dumps(f2)} {json.dumps(f3)}")
+        tight = {}
+        for mh in (120, 139, 142, 190, 200, 231):   # the host offers 120 px at least
+            load("c-2-autorisation"); p_host({"type": "layout", "mode": "bubble", "open": False, "maxWidth": 305, "maxHeight": mh, "inset": cdp.js("window.__inset")})
+            tight[mh] = cdp.js("(()=>{const a=document.getElementById('app').getBoundingClientRect(),c=document.querySelector('.bperm').getBoundingClientRect(),v=(x)=>{const n=document.querySelector(x);return !!n&&n.getClientRects().length>0};"
+                               "const b=Array.from(document.querySelectorAll('.bperm .btn')).map(x=>x.getBoundingClientRect());"
+                               "return [Math.round(a.height), c.top>=a.top+11.5&&c.bottom<=a.bottom-11.5&&b.every(x=>x.top>=c.top&&x.bottom<=c.bottom), v('.bperm-in'), v('.bt-model'), v('.send.stop')]})()")
+        check(tight == {120: [102, True, False, False, False], 139: [102, True, False, False, False], 142: [142, True, True, False, False], 190: [142, True, True, False, False],
+                        200: [200, True, True, True, False], 231: [231, True, True, True, True]},
+              "bubble (little room, plan rule 8): whatever height the host offers (120 px at least) the card and « Refuser » / « Autoriser » are whole — the row under the card gives way first, then the thread, then the « à la place » field", str(tight))
+        # the diff « en grand » of a request (19RN-0): one card around the diff and the answer, the row under it in the bubble's 6 px
+        load("c-2-autorisation-diff")
+        v0 = cdp.js("(()=>{const a=document.getElementById('app').getBoundingClientRect(),m=document.querySelector('.main'),M=m.getBoundingClientRect(),s=getComputedStyle(m),q=(x)=>{const n=document.querySelector(x);if(!n)return null;const r=n.getBoundingClientRect();"
+                    "return [Math.round(r.left-a.left),Math.round(r.top-a.top),Math.round(r.width),Math.round(r.height)]};"
+                    "return {card:q('.main'),bg:s.backgroundColor,bw:s.borderTopWidth,radius:s.borderRadius,diff:q('.bview-wrap'),answer:q('.bperm'),stop:q('.send.stop'),mode:q('.tb.mode'),"
+                    "inside:['.bview','.bperm'].every(x=>m.contains(document.querySelector(x)))&&!m.contains(document.querySelector('.composer')),bviewBg:getComputedStyle(document.querySelector('.bview')).backgroundColor}})()")
+        f4 = cdp.js(foot_js)
+        check(v0["card"] == [6, 6, 293, 251] and v0["bg"] == "rgb(41, 41, 41)" and v0["bw"] == "1px" and v0["radius"] == "12px" and v0["inside"] and v0["bviewBg"] == "rgba(0, 0, 0, 0)"
+              and v0["diff"] == [17, 45, 271, 123] and v0["answer"] == [17, 178, 271, 68] and v0["stop"] == [255, 269, 28, 28] and v0["mode"][:2] == [6, 271] and f4["cls"] == "running view view-perm",
+              "bubble (diff of a request, Paper 19RN-0): one card (#292929, 1 px border, radius 12) holds the diff and the answer; the mode and « Arrêter » under it, 12 px below, 6 px from the bubble's edges", json.dumps(v0))
+        # Designer, 25 Nov 2026: under the open diff the answer keeps the NORMAL card's values (no value of its own), and
+        # « Arrêter » leaves the resize grip its corner (the row ends 16 px before the bubble's edge: the grip's 12 px + 4)
+        ans_js = ("(()=>{const g=(x,p,ps)=>{const n=document.querySelector(x);return n?getComputedStyle(n,ps||null)[p]:null};const q=(x)=>{const n=document.querySelector(x);if(!n)return null;const r=n.getBoundingClientRect();return [r.left,r.top,r.right,r.bottom]};"
+                  "return {vals:[g('.bperm-in','height'),g('.bperm-in','paddingLeft'),g('.bperm-in','columnGap'),g('.bperm-in','borderRadius'),g('.bperm-in','backgroundColor'),g('.bperm-in .ic','width'),g('.bperm-in .ic','opacity'),"
+                  "g('.bperm-in .instead','fontSize'),g('.bperm-in .instead','lineHeight'),g('.bperm-in .instead','color','::placeholder'),g('.bperm-ft','paddingLeft'),g('.bperm-ft','columnGap'),g('.bperm .always','flexGrow'),"
+                  "g('.bperm .btn:not(.primary)','paddingLeft'),g('.bperm .btn:not(.primary)','backgroundColor'),g('.bperm .btn:not(.primary)','color'),g('.bperm .btn:not(.primary)','borderRadius'),"
+                  "g('.bperm .btn.primary','paddingLeft'),g('.bperm .btn.primary','borderRadius'),g('.bperm','rowGap')],pad:g('.bperm','paddingLeft'),stop:q('.send.stop'),grip:q('.b-grip'),app:q('#app')}})()")
+        a_view = cdp.js(ans_js)
+        gr, st2, ap = a_view["grip"], a_view["stop"], a_view["app"]
+        load("c-2-autorisation"); cdp.js("document.querySelector('.bperm .always').click()"); time.sleep(.15); a_norm = cdp.js(ans_js)   # the switch on, as the diff scenario has it
+        check(a_view["vals"] == a_norm["vals"] and a_view["vals"][7] == "12px" and a_view["vals"][15] == "rgba(255, 255, 255, 0.8)" and a_view["vals"][13] == "10px" and a_view["pad"] == "0px",
+              "bubble (diff of a request, Designer 25 Nov): the answer under the open diff has the normal card's values — field 12 px, « Refuser » #FFFFFFCC, 10 px in the buttons, same radii, no margin of its own",
+              f"{a_view['vals']} / {a_norm['vals']} pad {a_view['pad']}")
+        check(gr and st2 and round(ap[2] - st2[2]) == 22 and round(gr[2] - gr[0]) == 12 and st2[2] <= gr[0] - 4 and round(ap[2] - gr[2]) == 4,
+              "bubble (diff of a request, Designer 25 Nov): « Arrêter » is never under the resize grip — the row ends 16 px (the grip's 12 + 4) before the bubble's 6 px", f"stop {st2} grip {gr} app {ap}")
+        load("c-2-autorisation-diff")
+        key("Escape"); f5 = cdp.js(foot_js)
+        check(f5["home"] == "dock has-perm" and f5["under"] == 12 and f5["cls"] == "running" and cdp.js("getComputedStyle(document.querySelector('.main')).borderTopWidth") == "0px",
+              "bubble (diff of a request): closed, the card and its row are as before (the row back under the card)", json.dumps(f5))
+        load("c-2-autorisation-diff"); p_arm(".bperm"); bx = p_box(".bperm .btn.primary"); p_mouse(bx[0] + bx[2] / 2, bx[1] + bx[3] / 2)
+        p_host({"type": "turn.end", "turnId": "t1", "stopReason": "end_turn", "durationMs": 9000}); p_host({"type": "state", "running": False}); f6 = cdp.js(foot_js)
+        check(len(p_resp()) == 1 and f6["home"] == "dock" and f6["input"] and f6["cls"] == "" and cdp.js("document.getElementById('bview').hidden && getComputedStyle(document.querySelector('.main')).borderTopWidth === '0px'"),
+              "bubble (diff of a request): answered from the open diff — one answer, the diff closes, the input is back in its place", f"{p_resp()} {json.dumps(f6)}")
+        load("c-2-autorisation-diff"); bx = p_box(".send.stop"); p_mouse(bx[0] + bx[2] / 2, bx[1] + bx[3] / 2)
+        p_host({"type": "permission.cancel", "requestId": "p1"}); p_host({"type": "turn.end", "turnId": "t1", "stopReason": "cancelled", "durationMs": 9000}); p_host({"type": "state", "running": False}); f7 = cdp.js(foot_js)
+        check("stop" in posted() and not p_resp() and f7["home"] == "dock" and f7["input"] and f7["cls"] == "" and cdp.js("document.getElementById('bview').hidden && !document.querySelector('.bperm')"),
+              "bubble (diff of a request): « Arrêter » under the open diff stops the agent — the request and its diff go, the input is back", f"{posted()[-4:]} {json.dumps(f7)}")
+        # the diff of a finished turn (1B19-0) is not a request's: no card around it
+        load("c-3-termine-diff")
+        v1 = cdp.js("[document.getElementById('app').classList.contains('view-perm'), getComputedStyle(document.querySelector('.main')).borderTopWidth, getComputedStyle(document.querySelector('.bview')).backgroundColor]")
+        check(v1 == [False, "0px", "rgba(255, 255, 255, 0.08)"], "bubble (diff of a finished turn, 1B19-0): untouched — no card around it", str(v1))
+
     if not ONLY:
         load("6.1-autorisation")
         check(cdp.js("document.activeElement.classList.contains('perm')"), "keyboard (SEC-23): the permission card holds the focus, never « Autoriser »", active())
@@ -1225,6 +1539,65 @@ try:
         load("6.1-autorisation"); key("Escape")
         check("permission.respond:reject" in posted(), "keyboard: Échap = Refuser", str(posted()[-3:]))
         check(cdp.js("!!document.querySelector('[role=alertdialog]')") is False and cdp.js("document.activeElement.id") == "composer-input", "keyboard: after answering, the input is back and focused")
+        # Owner decision (24 Nov 2026): the card tells the truth — « ↵ » on « Autoriser », its `aria-keyshortcuts` and the
+        # announcement « Autoriser avec Entrée » are there only while Entrée really allows (the keyboard is in the card)
+        keys_js = ("(()=>{const c=document.querySelector('.perm');if(!c)return null;const a=c.querySelector('.btn.primary');"
+                   "return {keys:c.classList.contains('kbd-on'),aria:a.getAttribute('aria-keyshortcuts'),kbd:getComputedStyle(a.querySelector('.kbd')).display!=='none',"
+                   "esc:c.querySelector('.btn:not(.primary)').getAttribute('aria-keyshortcuts'),refuse:c.querySelector('.btn:not(.primary)').textContent,said:document.querySelector('.sr-only[role=alert]').textContent,active:document.activeElement===c}})()")
+        perm_msg = ("{type:'permission.request',requestId:'%s',turnId:'t1',title:'Claude veut modifier checkout.css',kind:'edit',"
+                    "options:[{optionId:'allow',name:'Autoriser',kind:'allow_once'},{optionId:'reject',name:'Refuser',kind:'reject_once'}]}")
+        load("6.10-travaille"); cdp.js("document.activeElement&&document.activeElement.blur()")
+        cdp.js("window.devHost.send(" + perm_msg % "k1" + ")"); time.sleep(.25)
+        k1 = cdp.js(keys_js) or {}
+        check(k1.get("active") and k1.get("keys") and k1.get("aria") == "Enter" and k1.get("kbd") and k1.get("esc") == "Escape" and k1.get("said", "").endswith("Autoriser avec Entrée, refuser avec Échap."),
+              "permission (owner, 24 Nov): the card has the keyboard — « Autoriser ↵ », aria-keyshortcuts=Enter, announced « Autoriser avec Entrée, refuser avec Échap. »", json.dumps(k1, ensure_ascii=False)[:300])
+        # Paper, boards « carte d'autorisation · la carte a le clavier » / « après un message » (24 Nov 2026): the key on
+        # « Autoriser » — 16 high, radius 3, white 16 % on the accent, 11 / 14 white, 6 from the label; no key on « Refuser »
+        kb = cdp.js("(()=>{const a=document.querySelector('.perm .btn.primary'),k=a.querySelector('.kbd'),s=getComputedStyle(k),b=getComputedStyle(a);"
+                    "return [k.textContent,Math.round(k.getBoundingClientRect().height),s.borderRadius,s.backgroundColor,s.color,s.fontSize,s.lineHeight,s.paddingLeft,s.paddingRight,b.columnGap,b.height,b.paddingLeft,document.querySelectorAll('.perm .kbd').length]})()")
+        check(kb == ["↵", 16, "3px", "rgba(255, 255, 255, 0.16)", "rgb(255, 255, 255)", "11px", "14px", "4px", "4px", "6px", "28px", "8px", 1] and k1.get("refuse") == "Refuser",
+              "permission (Paper): the « ↵ » key on « Autoriser » — 16 high, radius 3, white 16 % on the accent, 11 / 14 white, padding 4, 6 from the label; « Refuser » draws no key", f"{kb} {k1.get('refuse')!r}")
+        load("6.1-autorisation")
+        if cdp.js("document.querySelector('.perm .always').getAttribute('aria-checked')") == "true": click(".perm .always")   # the scenario draws it on
+        time.sleep(.3)
+        sw_ = cdp.js("(()=>{const s=document.querySelector('.perm .always .sw');if(!s)return null;const c=getComputedStyle(s),k=getComputedStyle(s.querySelector('i')),p=getComputedStyle(document.querySelector('.perm'));"
+                     "return [c.backgroundColor,c.width,c.height,c.borderRadius,k.backgroundColor,k.width,p.backgroundColor]})()")
+        check(sw_ == ["rgba(255, 255, 255, 0.12)", "28px", "16px", "8px", "rgb(255, 255, 255)", "12px", "rgb(31, 31, 31)"],
+              "permission (Paper): the « Toujours autoriser » switch, off — white 12 % on the card (#3A3A3A on #1F1F1F), 28 x 16, white 12 px knob", str(sw_))
+        load("6.10-travaille"); cdp.js("document.getElementById('composer-input').focus()")
+        cdp.js("window.devHost.send(" + perm_msg % "k2" + ")"); time.sleep(.25)
+        k2 = cdp.js(keys_js) or {}
+        check(k2 and not k2.get("active") and not k2.get("keys") and k2.get("aria") is None and not k2.get("kbd") and k2.get("esc") == "Escape"
+              and "Entrée" not in k2.get("said", "x Entrée") and k2.get("said", "").endswith("checkout.css. Refuser avec Échap."),
+              "permission (owner, 24 Nov): after the user's own message the card has no keyboard — no « ↵ », no aria-keyshortcuts on « Autoriser », « Entrée » is not announced (« Refuser avec Échap. » stays: it is true)", json.dumps(k2, ensure_ascii=False)[:300])
+        cdp.js("document.querySelector('.perm').__shownAt = -1e6"); key("Enter")
+        check(not any(x.startswith("permission.respond") for x in posted()), "permission (SEC-23 unchanged): Entrée answers nothing while the card has no keyboard", str(posted()[-3:]))
+        cdp.js("document.querySelector('.perm').focus()"); k3 = cdp.js(keys_js) or {}
+        cdp.js("document.querySelector('.perm .instead').focus()"); k3b = cdp.js(keys_js) or {}
+        cdp.js("document.querySelector('.perm').focus()"); key("Enter")
+        check(k3.get("keys") and k3.get("aria") == "Enter" and k3.get("kbd") and k3b.get("keys") and k3b.get("kbd") and "permission.respond:allow" in posted(),
+              "permission (owner, 24 Nov): once the card takes the focus, « ↵ » and aria-keyshortcuts come back — and Entrée allows", f"{json.dumps(k3, ensure_ascii=False)[:160]} {posted()[-2:]}")
+        # SEC-23: the host's `focus` (panel opened again, Ctrl+Maj+D) gives the keyboard to the card, never to « Autoriser » —
+        # and takes nothing from the « à la place » field being written
+        load("6.10-travaille"); cdp.js("window.devHost.send(" + perm_msg % "k6" + ")"); time.sleep(.25)
+        cdp.js("document.activeElement&&document.activeElement.blur()"); cdp.js("window.devHost.send({type:'focus',target:'composer'})")
+        f1 =cdp.js("document.activeElement.classList.contains('perm')")
+        cdp.js("document.querySelector('.perm .instead').focus()"); cdp.js("window.devHost.send({type:'focus',target:'composer'})")
+        f2 = cdp.js("document.activeElement.classList.contains('instead')")
+        check(f1 and f2, "permission (SEC-23): the host's `focus` puts the keyboard on the card, never on « Autoriser »; a field of the card being used keeps it", f"{f1} {f2} {active()}")
+        # a second request behind the card shown: neither « Entrée » nor « Échap » is announced for it (they answer the card shown)
+        load("6.10-travaille"); cdp.js("document.activeElement&&document.activeElement.blur()")
+        cdp.js("window.devHost.send(" + perm_msg % "k4" + ")"); time.sleep(.2)
+        cdp.js("window.devHost.send(" + (perm_msg % "k5").replace("modifier checkout.css", "lancer npm test") + ")"); time.sleep(.25)
+        k5 = cdp.js(keys_js) or {}
+        check(k5.get("said") == "Claude veut lancer npm test." and k5.get("keys") and k5.get("active"),
+              "permission (owner, 24 Nov): a request waiting behind the card is announced by its title alone; the card shown keeps the keyboard and its « ↵ »", json.dumps(k5, ensure_ascii=False)[:300])
+        # Owner decision (24 Nov 2026): never signed in reads « Claude Code n'est pas connecté. »; « plus connecté » only when the host says so
+        strip_js = "(()=>{const s=document.querySelector('.strip .tx');return s?s.firstChild.textContent:null})()"
+        load("6.5-7-deconnecte"); was = cdp.js(strip_js)
+        check(was == "Vous n'êtes plus connecté à Claude Code.", "signed out (owner, 24 Nov): the host says the agent was signed in before — « Vous n'êtes plus connecté à Claude Code. »", str(was))
+        load("signe-jamais"); never = cdp.js(strip_js); never_btn = cdp.js("(()=>{const b=document.querySelector('.strip .btn-s');return b?b.textContent:null})()")
+        check(never == "Codex n'est pas connecté." and never_btn == "Se connecter", "signed out (owner, 24 Nov): never signed in — « Codex n'est pas connecté. » with « Se connecter », never « plus connecté »", f"{never!r} {never_btn!r}")
 
         load("6.10-travaille"); cdp.js("document.activeElement&&document.activeElement.blur()"); key("Escape")
         check("stop" in posted(), "keyboard: Échap during a turn sends stop")
@@ -1340,22 +1713,13 @@ try:
         cdp.call("Input.dispatchMouseEvent", type="mousePressed", x=gx[0], y=gx[1], button="left", clickCount=1); cdp.call("Input.dispatchMouseEvent", type="mouseReleased", x=gx[0], y=gx[1], button="left", clickCount=1)
         cdp.call("Input.dispatchMouseEvent", type="mouseMoved", x=gx[0], y=gx[1] + 140); time.sleep(.25)
         check(not tip()[0] and tip()[1] == "0", "gauge (B 1.5): a mouse click on the gauge does not keep the bubble (focus by the pointer is not keyboard focus)", str(tip()))
-        # B 1.6 — Ctrl+Entrée keeps an annotation (no agent), Entrée asks the agent; the send button says both
-        load("garder-annotation")
-        key("Enter", mods=2)   # Ctrl
-        time.sleep(.3)
-        kept = cdp.js("(()=>{const k=document.querySelector('.kept');return {sent:window.__posted.filter(m=>m.type==='annotate').map(m=>({text:m.text,els:m.elements})),"
-                      "send:window.__posted.filter(m=>m.type==='send').length,line:k?k.innerText:'',chip:k?k.querySelectorAll('.chip').length:0,empty:!document.querySelector('.cin .chip')&&!document.querySelector('.cin').textContent.trim()}})()")
-        check(kept["sent"] == [{"text": "h1.title Mets ce titre en gras", "els": ["el-title"]}] and kept["send"] == 0, "keep (B 1.6): Ctrl+Entrée sends `annotate` with the words and the chip, nothing to the agent", json.dumps(kept["sent"], ensure_ascii=False))
-        check("Mets ce titre en gras" in kept["line"] and "Gardé en annotation" in kept["line"] and kept["chip"] == 1 and kept["empty"],
-              "keep (B 1.6): a discreet « Gardé en annotation » line in the thread (words, element), the composer is empty", kept["line"].replace("\n", " | ")[:160])
+        # Lot R: « Garder en annotation » (Ctrl+Entrée, B 1.6) is removed — Ctrl+Entrée sends like Entrée, nothing is kept
         load("6.7a-vide")
         cdp.js("document.getElementById('composer-input').focus()"); cdp.call("Input.insertText", text="Plus grand"); key("Enter", mods=2); time.sleep(.2)
-        h1 = cdp.js("[window.__posted.filter(m=>m.type==='annotate').length, (document.querySelector('.strip')||{}).textContent||'']")
-        load("garder-sans-texte")
-        cdp.js("document.getElementById('composer-input').focus()"); key("Enter", mods=2); time.sleep(.2)
-        h2 = cdp.js("[window.__posted.filter(m=>m.type==='annotate').length, (document.querySelector('.strip')||{}).textContent||'']")
-        check(h1[0] == 0 and "Cliquez un élément" in h1[1] and h2[0] == 0 and "Écrivez ce qu'il faut changer" in h2[1], "keep (B 1.6): no element, or no words: nothing is kept, a short hint says what is missing", f"{h1} / {h2}")
+        h1 = cdp.js("[window.__posted.filter(m=>m.type==='annotate').length, window.__posted.filter(m=>m.type==='send').map(m=>m.text), !!document.querySelector('.kept'), (document.querySelector('.strip')||{}).textContent||'']")
+        check(h1 == [0, ["Plus grand"], False, ""], "lot R: Ctrl+Entrée keeps no annotation — it sends like Entrée; no « Gardé en annotation » line, no hint", str(h1))
+        cdp.js("window.devHost.send({type:'annotation.kept',id:'k1',text:'h1.title Mets ce titre en gras',elements:[],annotations:['ann_1'],at:new Date().toISOString()})"); time.sleep(.1)
+        check(not cdp.js("!!document.querySelector('.kept')") and "Gardé" not in cdp.js("document.getElementById('app').innerText"), "lot R: an old « annotation.kept » line of a saved conversation is ignored (nothing shown)")
         load("envoyer-infobulle")
         sx = cdp.js("(()=>{const r=document.querySelector('.send').getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2]})()")
         cdp.call("Input.dispatchMouseEvent", type="mouseMoved", x=sx[0], y=sx[1]); time.sleep(.5)
@@ -1363,11 +1727,9 @@ try:
                      "above:t.getBoundingClientRect().bottom<=b.getBoundingClientRect().top,inside:t.getBoundingClientRect().left>=0}})()")
         cdp.call("Input.dispatchMouseEvent", type="mouseMoved", x=sx[0] - 200, y=sx[1] - 200); time.sleep(.3)
         off = cdp.js("getComputedStyle(document.getElementById('send-tip')).opacity")
-        check(tip["on"] == "1" and "Demander à l'agent" in tip["text"] and "Garder en annotation" in tip["text"] and "Ctrl" in tip["text"] and tip["above"] and tip["inside"] and off == "0"
-              and tip["keys"] == "Enter Control+Enter" and tip["desc"] == "send-tip" and not tip["title"],
-              "send button (B 1.6): its bubble says « Demander à l'agent ↵ » and « Garder en annotation Ctrl ↵ », above it, inside the panel, gone at the leave", json.dumps(tip, ensure_ascii=False)[:240])
-        load("garde-en-annotation")
-        check(cdp.js("!!document.querySelector('.kept') && document.querySelector('.kept').innerText.includes('Gardé en annotation')"), "keep (B 1.6): the line comes back when the conversation is reopened (thread.reset)")
+        check(tip["on"] == "1" and "Demander à l'agent" in tip["text"] and "Garder" not in tip["text"] and "Ctrl" not in tip["text"] and tip["above"] and tip["inside"] and off == "0"
+              and tip["keys"] == "Enter" and tip["desc"] == "send-tip" and not tip["title"],
+              "send button (lot R): its bubble says « Demander à l'agent ↵ » only, above it, inside the panel, gone at the leave", json.dumps(tip, ensure_ascii=False)[:240])
         # B 1.7 — the aim button is the selection switch: pressed while on, a click switches it off (the chat stays), again on
         load("selection-active")
         sw = lambda: cdp.js("(()=>{const b=document.querySelector('.tb.pick');const cs=getComputedStyle(b);return {pressed:b.getAttribute('aria-pressed'),bg:cs.backgroundColor,keys:b.getAttribute('aria-keyshortcuts'),label:b.getAttribute('aria-label')}})()")
@@ -1442,7 +1804,7 @@ try:
         load("6.3-termine")
         check(cdp.js("document.querySelector('.steps .fold > span').textContent") == "A lu 2 fichiers, en a modifié 1", "steps: real file paths still fold to « A lu 2 fichiers, en a modifié 1 » (6.3)")
 
-        # B 1.4 — folder chip, first-run only when asked, « Traiter les annotations »
+        # B 1.4 — folder chip, first-run only when asked
         load("dossier-puce")
         fb = cdp.js("({chip:!!document.querySelector('.tb.folder, [aria-label^=\"Dossier du projet\"]'),first:!document.querySelector('.first').hidden,tools:document.querySelectorAll('.foot .tools > *').length})")
         cdp.js("document.querySelector('.tools .tb[aria-label=Joindre]').click()")
@@ -1450,28 +1812,29 @@ try:
         check(not fb["chip"] and not fb["first"] and fb["tools"] == 3 and "dossier" not in plus, "folder (V1.2/R5): no folder chip in the composer, no folder screen, and « + » does not offer to change a folder found for sure", json.dumps(fb) + " " + plus)
         load("dossier-demande")
         check(cdp.js("!document.querySelector('.first').hidden && !document.querySelector('.agents')"), "folder: the folder screen shows only when the host asks (askFolder), without the agent list when the agent is ready")
-        # R24 (user's decision): « Traiter les annotations en attente » is gone — no suggestion, no « /annotations », no batch in the input
-        load("annotations-avant")
-        check(cdp.js("!document.querySelector('.batch-row') && document.querySelector('.batch').hidden"), "annotations (R24): an `annotations.batch` from the host is ignored — no batch in the input")
         load("6.7a-vide")
+        # Lot R: « Traiter les annotations » is removed from the page — a batch message of an old host is ignored, no block, no card
+        cdp.js("window.devHost.send({type:'annotations.batch',batchId:'b1',siteLabel:'127.0.0.1:5183',items:[{id:'a-hero',note:'Le texte est trop pâle'}]});window.devHost.send({type:'annotations.status',batchId:'b1',id:'a-hero',status:'working'})"); time.sleep(.1)
+        check(cdp.js("!document.querySelector('.batch') && !document.querySelector('.batch-row') && !document.querySelector('.ann-card')"), "lot R: no batch in the input, no batch card — `annotations.batch` / `annotations.status` are ignored")
         sg = cdp.js("Array.from(document.querySelectorAll('.sug .lb')).map(n=>n.textContent)")
-        check(sg == ["Vérifier cette page sur mobile", "Trouver les textes trop peu contrastés"], "empty chat (R24): no « Traiter les annotations en attente » suggestion, even with pendingAnnotations", str(sg))
-        cdp.js("window.devHost.send({type:'state',suggestions:[{id:'mobile',label:'Vérifier cette page sur mobile'},{id:'mobile',label:'Vérifier cette page sur mobile'},{id:'m2',label:'Vérifier cette page sur mobile'},{id:'annotations',label:'Traiter les 3 annotations en attente'}]})"); time.sleep(.1)
+        # Lot R (lot 5's Narrator pass, 24 Nov 2026): a button is announced as a button, never as « élément de liste »; the
+        # send button's tooltip is its description (aria-describedby) and is itself hidden from the screen reader
+        ax = cdp.call("Accessibility.getFullAXTree").get("nodes", [])
+        role_of = lambda label: [((n.get("role") or {}).get("value"), n.get("ignored")) for n in ax if ((n.get("name") or {}).get("value") or "").strip() == label and not n.get("ignored") and (n.get("role") or {}).get("value") not in ("StaticText", "InlineTextBox")]
+        sug_roles = role_of("Vérifier cette page sur mobile")
+        check(sug_roles and all(r == "button" for r, _ in sug_roles) and not cdp.js("document.querySelectorAll('button[role=listitem]').length"),
+              "screen reader (lot R): a suggestion is announced as a button (no role=listitem on a button)", str(sug_roles))
+        tips = [n for n in ax if (n.get("role") or {}).get("value") == "tooltip" and not n.get("ignored")]
+        desc = [((n.get("description") or {}).get("value") or "") for n in ax if (n.get("role") or {}).get("value") == "button" and "Demander" in ((n.get("description") or {}).get("value") or "")]
+        check(not tips and cdp.js("document.getElementById('send-tip').getAttribute('aria-hidden')") == "true" and cdp.js("document.querySelector('.send').getAttribute('aria-describedby')") == "send-tip" and bool(desc),
+              "screen reader (lot R): the send button's tooltip is hidden from the tree at rest and still read as the button's description", f"{len(tips)} tooltip(s) in the tree, description {desc[:1]}")
+        check(sg == ["Vérifier cette page sur mobile", "Trouver les textes trop peu contrastés"], "empty chat: its two suggestions, no « Traiter les annotations en attente »", str(sg))
+        cdp.js("window.devHost.send({type:'state',suggestions:[{id:'mobile',label:'Vérifier cette page sur mobile'},{id:'mobile',label:'Vérifier cette page sur mobile'},{id:'m2',label:'Vérifier cette page sur mobile'}]})"); time.sleep(.1)
         check(cdp.js("Array.from(document.querySelectorAll('.sug .lb')).map(n=>n.textContent)") == ["Vérifier cette page sur mobile"], "empty chat (R24): a suggestion never shows twice (same id or same words)")
         # R23 (Paper 156O-0 / 1575-0): the empty chat sits at the bottom, right above the input
         load("6.7a-vide")
         e23 = cdp.js("(()=>{const e=document.querySelector('.empty').getBoundingClientRect(),c=document.querySelector('.dock').getBoundingClientRect(),h=document.querySelector('.empty h2').getBoundingClientRect(),l=document.querySelectorAll('.sug');const s=l[l.length-1].getBoundingClientRect();return [Math.round(c.top-s.bottom), Math.round(h.top), Math.round(e.bottom-c.top)]})()")
         check(e23[0] == 16 and e23[1] > 300 and abs(e23[2]) <= 1, "empty chat (R23): « Que voulez-vous changer ? » and its suggestions sit at the bottom, 16 px above the input (Paper 1575-0)", str(e23))
-        load("annotations-statuts")
-        st_ = cdp.js("(()=>{const c=document.querySelector('.ann-card');return {prog:c.querySelector('.ann-prog').textContent,rows:Array.from(c.querySelectorAll('.ann-row')).map(r=>r.className.replace('ann-row is-','')+':'+r.querySelector('.ann-st').textContent.trim())}})()")
-        check(st_["prog"] == "2 sur 2" and st_["rows"] == ["done:Couleur passée au gris secondaire du site.", "working:Claude s'en occupe"], "annotations: rows go En attente → s'en occupe → Terminée with the summary, header « 2 sur 2 »", json.dumps(st_, ensure_ascii=False))
-        cdp.js("document.querySelector(\".ann-row[data-id='a-badge']\").click()")
-        check("annotation.show:a-badge" in posted(), "annotations: a click on a row asks the host to show it on the page")
-        load("annotations-fin")
-        check(cdp.js("document.querySelector('.ann-prog').textContent") == "2 terminées" and cdp.js("!!document.querySelector('.ann-prog.ok svg')"), "annotations: finished card says « ✓ 2 terminées »")
-        load("annotations-non-traitee")
-        nt = cdp.js("(()=>{const r=document.querySelector(\".ann-row[data-id='a-badge'] .ann-st\");return {t:r.textContent,c:getComputedStyle(r).color,prog:document.querySelector('.ann-prog').textContent,inst:!document.querySelector('.ann-card .detail').hidden}})()")
-        check(nt["t"].startswith("Non traitée : le badge") and nt["c"] == "rgb(230, 172, 61)" and nt["prog"] == "1 terminée · 1 non traitée" and nt["inst"], "annotations: a skipped one is amber with its reason; the instruction unfolds", json.dumps(nt, ensure_ascii=False))
         load("6.7a-vide"); cdp.js("document.getElementById('composer-input').focus()"); key("/", "Slash", 0, "/"); time.sleep(.15)
         check(not cdp.js("Array.from(document.querySelectorAll('#combo [role=option]')).some(o=>o.textContent.startsWith('/annotations'))"), "annotations (R24): « /annotations » is no longer in the / menu")
 
