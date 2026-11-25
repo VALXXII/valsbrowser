@@ -167,7 +167,10 @@ class Monkey:
             if a['r'][0] < 0.4 and self.inv.m.layout == 'comment':
                 vis = self.visible_elements()
                 if vis:
-                    sel = vis[int(a['r'][1] * len(vis))]; p = F.element_point(sel)
+                    # decision A: a bubble still shown over the page (another conversation) is not the page — never aim under it
+                    # (monkey seed 2 on the release of 25 Nov, #211: the point fell on the bubble, the click opened that one)
+                    shown, rb = F.bubble_shown()
+                    sel = vis[int(a['r'][1] * len(vis))]; p = F.element_point(sel, avoid=rb if shown and isinstance(rb, tuple) else None)
                     m = F.log_mark(); t = F.click_at(*p, settle=0.04)
                     # point=p: monkey seed 2 on ae51111 (#261, O3 « click without a bubble »: the click reached the browser, the
                     # page posted nothing) — the failure now records the window under the click, as the other clicks do
