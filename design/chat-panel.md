@@ -857,7 +857,8 @@ Défauts vus par le propriétaire (« Ton agent » sur le lot R) et ce qui vaut 
   dessous) tant que la demande attend : l'agent peut être arrêté pendant qu'il attend. « Arrêter » envoie `stop` et ne
   répond à rien (l'hôte retire la demande).
 - **Bulle, diff en grand d'une demande** (Paper `19RN-0`, carte `26KG-0`) : une seule carte contient le diff et la réponse ;
-  le mode et « Arrêter » sont dessous, dans les 6 px de la bulle. *(Designer, 25 nov. 2026)* La réponse y a les valeurs de la
+  le mode et « Arrêter » sont dessous. La bulle y garde ses 12 px de marge, comme avec la carte normale (planche réalignée le
+  25 nov. ; le diff d'un tour terminé reste à 6 px). *(Designer, 25 nov. 2026)* La réponse y a les valeurs de la
   carte normale, sans rien de propre à cet état (champ 12 px, « Refuser » #FFFFFFCC, boutons à 10 px, pas de marge en plus
   autour) ; la rangée s'arrête 16 px avant le bord droit (la poignée de redimensionnement, 12 px, + 4) : « Arrêter » n'est
   jamais sous la poignée.
@@ -882,5 +883,7 @@ Défauts vus par le propriétaire (« Ton agent » sur le lot R) et ce qui vaut 
   pour le site ne change pas : une nouvelle conversation redemande) ; pour une commande, « ne plus demander pour ces commandes » (règle écrite dans les réglages locaux du
   projet, durable). Codex — `allow_for_session` / `allow_permissions_session` (la session) ; sa
   demande « Additional sandbox permissions » a pour titre « Codex demande plus d'accès à cet ordinateur » (« Codex is asking
-  for more access to this computer »), reconnue à son titre seul, quel que soit le type de l'étape. « Refuser » = `reject_once`
+  for more access to this computer »), reconnue à son titre seul, quel que soit le type de l'étape. La même phrase est le titre
+  de l'étape dans le fil (l'hôte l'envoie à la place du titre anglais, avec le type `other` pour que la page l'affiche telle
+  quelle) ; les autres titres envoyés par Codex restent tels quels. « Refuser » = `reject_once`
   (Codex : `cancel` / `reject_permissions`) ; avec des mots dans « à la place », l'hôte les envoie ensuite comme suite.

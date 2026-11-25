@@ -76,11 +76,58 @@ def stored_refused():
     return out
 
 
+def only_the_fake_agent():
+    """Safety rule of 25 Nov 2026 — fake agent only. True when the agent this browser talks to is the fake one: its file is
+    there, ITS log holds this browser's « initialize », the browser's log shows no real CLI version, and no process named
+    like a real agent (claude, codex, node) lives under OUR browser. Returns (ok, what was seen)."""
+    import subprocess
+    seen = {'fake file': (B.tools / 'fake-acp-agent.exe').is_file(), 'fake log has initialize': '"method":"initialize"' in fake_log()}
+    seen['real CLI in the browser log'] = re.findall(r'CHAT agent (?:claude|codex): ready \d[^,\n]*', D.log_since(0))[:3]
+    kids = []
+    try:
+        out = subprocess.run(['powershell', '-NoProfile', '-Command', 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Json -Compress'],
+                             capture_output=True, text=True, timeout=40).stdout
+        procs = json.loads(out) if out.strip() else []
+        under = {B.pid}; grew = True
+        while grew:
+            grew = False
+            for q in procs:
+                if q['ParentProcessId'] in under and q['ProcessId'] not in under:
+                    under.add(q['ProcessId']); grew = True
+        kids = [(q['ProcessId'], q['Name']) for q in procs if q['ProcessId'] in under and re.match(r'(claude|codex|node)(\.exe)?$', q['Name'] or '', re.I)]
+        seen['fake agent under the browser'] = [q['Name'] for q in procs if q['ProcessId'] in under and 'fake-acp-agent' in (q['Name'] or '')][:2]
+    except Exception as e:   # the list could not be read: not a pass
+        seen['process list'] = repr(e)[:120]; kids = [('?', 'unknown')]
+    seen['real agent processes under the browser'] = kids
+    ok = seen['fake file'] and seen['fake log has initialize'] and not seen['real CLI in the browser log'] and not kids
+    return ok, seen
+
+
+def stored_titles():
+    """The stored conversation's tool calls: (has the French sentence as a title, has the agent's English title as a title)."""
+    out = []
+    for root in (B.app, B.work):
+        for f in root.rglob('*'):
+            try:
+                if f.is_file() and f.stat().st_size < 4_000_000 and f.suffix.lower() in ('', '.json', '.jsonl', '.txt'):
+                    t = f.read_text(encoding='utf-8', errors='ignore')
+                    if '"toolCall"' in t and 'mcptool' in t:
+                        titles = re.findall(r'"title"\s*:\s*"((?:[^"\\]|\\.)*)"', t)
+                        out.append((any('demande plus d' in x for x in titles), any('Additional sandbox permissions' in x for x in titles)))
+            except OSError:
+                pass
+    return out
+
+
 def circuit(j, bubble):
     sel = '.bperm' if bubble else '.perm'
     # ---- one request, asked once; the thread before the answer
     n0 = len(outcomes()); m, c = ask('vrai-autorisation svp')
     R.step(f'{j} · the agent\'s request shows its card', c, D.log_since(m)[-300:])
+    safe, seen = only_the_fake_agent()
+    R.step(f'{j} · SAFETY · the agent is the fake one (its file, its log, no claude / codex / node under this browser)', safe, seen)
+    if not safe:
+        raise RuntimeError('a real agent may be running under the test browser: stopped (' + json.dumps(seen, ensure_ascii=False)[:300] + ')')
     if not c:
         return
     time.sleep(0.5); t0 = text()
@@ -147,9 +194,17 @@ def circuit(j, bubble):
     R.step(f"{j} · « Additional sandbox permissions » is asked as « … demande plus d'accès à cet ordinateur »",
            c and c['title'].endswith("demande plus d'accès à cet ordinateur") and 'Additional' not in c['title'], c and c['title'])
     if c:
-        C.click_panel(sel + ' .btn:not(.primary)'); time.sleep(0.6)
-        R.step(f'{j} · …and « Refuser » refuses it (once)', answered(m) == ['reject'], answered(m))
+        C.click_panel(sel + ' .btn.primary'); time.sleep(0.6)
+        R.step(f'{j} · …and « Autoriser » allows it (once)', answered(m) == ['allow'], answered(m))
         turn_over(m)
+        # the step itself, in the thread: the card's sentence too — never the English title the agent sent
+        kept = stored_titles()
+        R.measures[f'{j}-codex-step'] = kept
+        R.step(f"{j} · the step is kept by the host as « … demande plus d'accès à cet ordinateur » (kind « other »), not as « Additional sandbox permissions »",
+               any(fr and not en for fr, en in kept), kept)
+        if not bubble:
+            lines = C.panel("Array.from(document.querySelectorAll('.log .step, .log .steps > .fold')).map(function(n){return n.textContent.trim()})") or []
+            R.step(f"{j} · …and the thread shows that sentence as the step's line", any("demande plus d'accès à cet ordinateur" in l for l in lines) and not any('Additional' in l for l in lines), lines[-4:])
 
 
 def bulle():

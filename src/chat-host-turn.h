@@ -514,10 +514,17 @@ void AppendText(const std::string& id, const std::string& more) {
     t->string += more;
     if (t->string.size() > MaxKeptText) t->string = ClipUtf8(t->string, MaxKeptText);
 }
+// A step the agent names by a fixed English title we know is said in the browser's language, with the same sentence in
+// the thread and on the card (Designer, 25 Nov 2026) — codex-acp's « Additional sandbox permissions »: « Codex demande plus
+// d'accès à cet ordinateur ». Empty for every other title: what the agent sends stays as it is.
+std::wstring KnownStepTitle(const std::string& title) {
+    return ChatTools::SameTitle(title, "Additional sandbox permissions") ? TRF(chat_perm_sandbox, AgentShort(agentId)) : std::wstring();
+}
 SJ::Value ToolJson(const Acp::ToolCall& t, bool update) {
     SJ::Value m = SJ::Value::Obj(); m.Set("id", Str(t.id));
-    if (!update || t.hasTitle) m.Set("title", Str(ClipUtf8(t.title.empty() ? t.kind : t.title, 400)));
-    if (!update) m.Set("kind", Str(t.kind.empty() || t.kind == "switch_mode" ? std::string("other") : t.kind));
+    const std::wstring known = KnownStepTitle(t.title);   // the sentence is the whole step: its kind's own wording (« A lancé … ») must not replace it
+    if (!update || t.hasTitle) m.Set("title", known.empty() ? Str(ClipUtf8(t.title.empty() ? t.kind : t.title, 400)) : Str(known));
+    if (!update) m.Set("kind", Str(!known.empty() || t.kind.empty() || t.kind == "switch_mode" ? std::string("other") : t.kind));
     if (!update || t.hasStatus) m.Set("status", Str(t.status.empty() ? std::string("pending") : t.status));
     if (t.hasLocations || (!update && !t.locations.empty())) { SJ::Value ls = SJ::Value::Arr(); for (const auto& l : t.locations) { if (ls.items.size() >= 20) break; SJ::Value o = SJ::Value::Obj(); o.Set("path", Str(RelPath(l.path))); if (l.line >= 0) o.Set("line", SJ::Value::Int(l.line)); ls.Push(std::move(o)); } m.Set("locations", std::move(ls)); }
     if (!t.diffs.empty()) {   // SEC-14: kept with the conversation: a file that may hold secrets (.env, *.pem, .npmrc…) keeps its name and counts, never its lines
@@ -604,7 +611,7 @@ std::wstring PermissionTitle(const Acp::ToolCall& t) {
     if (mcp.mcp) return TRF(chat_perm_mcp, who, W(mcp.tool), W(mcp.server));   // another MCP server: its tool and its name, as they are
     // Codex asks to leave its sandbox for a step (codex-acp: « Additional sandbox permissions », options allow_permissions_turn /
     // allow_permissions_session / reject_permissions): said in the browser's language, whatever kind the step has
-    if (ChatTools::SameTitle(t.title, "Additional sandbox permissions")) return TRF(chat_perm_sandbox, who);
+    if (const std::wstring known = KnownStepTitle(t.title); !known.empty()) return known;
     if (!t.diffs.empty()) file = FileName(t.diffs.front().path); else if (!t.locations.empty()) file = FileName(t.locations.front().path);
     if (t.kind == "edit" && !file.empty()) return TRF(chat_perm_edit, who, W(file));
     if (t.kind == "delete" && !file.empty()) return TRF(chat_perm_delete, who, W(file));

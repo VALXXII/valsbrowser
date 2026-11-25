@@ -77,9 +77,13 @@ navigateur sur bureau caché 45 / 45 (et le parcours clavier du lot 2, bulle : 3
 - Rien à faire : peu de place (tel que codé), mode sous la carte en icône seule.
 - En attente du propriétaire, non touché : la phrase de portée de « Toujours autoriser » ; Entrée dans le champ « à la
   place » vide.
-- Restes pour Designer : la planche du diff en grand garde 6 px de marge autour de la réponse (nœud de la réponse) et un
-  crayon à 50 % (40 % sur la carte normale) ; la rangée n'y est pas dessinée avec sa marge de poignée. Pour Codex, le
-  titre de l'étape elle-même dans le fil (celui que Codex envoie) reste tel que Codex l'écrit.
+- Suite du 25 nov. (après-midi) : dans le fil, l'étape Codex « Additional sandbox permissions » se lit avec la phrase de la
+  carte (les autres titres de Codex restent tels quels) ; le diff en grand d'une demande a les 12 px de marge de la bulle
+  comme la planche réalignée ; le crayon du champ y est bien à 40 % (vérifié, déjà le cas).
+- Restes pour Designer : sur la planche du diff en grand, le nœud de la réponse garde 6 px de marge de chaque côté (non
+  codé, selon sa réponse écrite) et la rangée n'y est pas dessinée avec sa marge de poignée (codée : 16 px).
+- Sécurité (règle du 25 nov.) : le parcours en vrai navigateur vérifie à chaque passage que l'agent est le faux (fichier
+  présent, son journal alimenté, aucun claude / codex / node sous le navigateur de test) et s'arrête sinon.
 
 ## Pour Designer et le propriétaire
 
