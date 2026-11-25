@@ -93,7 +93,9 @@ existing `FOCUS column in (left edge)`.
 Pushed state of that branch (3 commits, last 2026-11-25 00:07): it touches `src/main.cpp`, `src/chrome.h`,
 `src/content-transition.h`, `src/focus-motion.h`, tests and design notes. **Only `src/main.cpp` is shared**, in different
 sections (theirs: the top bar's entry / exit, `FocusEvaluate`, `FocusPlace`, `ContentBox`, timers; mine: the body of
-`SideFocusEvaluate` only). `git merge-tree` of the two branches: no conflict. If the side / compact transitions in progress
+`SideFocusEvaluate` only). `git merge-tree`: that branch, as pushed, already conflicts with today's main (4 places in
+`src/main.cpp`, 1 in `src/chrome.h`: it predates the later merges); this branch adds no conflict of its own (the same
+hunks with or without it, none in `SideFocusEvaluate`). If the side / compact transitions in progress
 edit `src/sidebar.h`, the touching points are the `FocusSide` comment (4 lines rewritten here) and the removed
 `FocusSide::edge` constant; the motion values (`enterResponse`, `exitResponse`, `reducedFadeMs`) and `SideRevealChanged`,
 `SideSlideFrame`, `SidePicture*` are untouched.
