@@ -5519,7 +5519,7 @@ case ImportIconsMessage:ImportIconsArrived();return 0;
 // relaunch or the next start. Release also gives up this window's open marker inside the profile lock.
 case WM_ACTIVATEAPP:if(!w)contentTransition.Cancel();AnnotationWindowState();break; /* another application came to the foreground; V3-B: the annotation band's wave stops in the background */
 case WM_CLOSE:OuterDragEnd(true);BandDragEnd(true);if(!CloseWindowAllowed())return 0;windowClosing=true;popups.CancelAll(); /* pending window.open requests: settled before the profiles close */contentTransition.Cancel();SaveSession();ProfilesClosing();if(!smoke&&!privateWindow&&!windowId.empty()&&WindowSessions::Release(dataDir,windowId,closeWithoutPrompt||!sessionReady,windowLive))Log(L"WINDOW closed among others: session removed");SaveDownloads();if(!bookmarksSaveFailed)SaveBookmarks();if(!ClearOnExitAndClose())DestroyWindow(h);return 0;
-case WM_DESTROY:ChatAgentsShutdown();ChatShutdown(); /* the agent's process tree and the panel's WebView go first */AnnotationShutdown(); /* #125: a private window's annotations go with it */contentTransition.Destroy();StopEngineStart();accessibility.Detach();DisposeElementSurfaces();
+case WM_DESTROY:ChatShutdown();ChatAgentsShutdown(); /* the agent's process tree and the panel's WebView go first, then the agents' hub (a running install, a sign-in console) */AnnotationShutdown(); /* #125: a private window's annotations go with it */contentTransition.Destroy();StopEngineStart();accessibility.Detach();DisposeElementSurfaces();
 #ifdef BROWSER_UPDATES
     StopUpdates(); // bounded: cancels transfers; an already launched install helper is a separate process
 #endif

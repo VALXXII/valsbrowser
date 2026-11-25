@@ -48,7 +48,7 @@ void ChooseInstalledAgent() {
     const AgentDef* now = AgentOf(agentId);
     if (!best || best == now || (now && AgentStatus::Get(now->rt).Ready()) || (now && agentInfo[agentId].cli && !AgentStatus::Get(best->rt).Ready())) return;
     agentId = best->id; convo.data.head.agentId = agentId;
-    Diag(std::wstring(L"agent chosen by itself (") + (AgentStatus::Get(best->rt).Ready() ? L"ready" : L"the only one installed") + L"): " + W(best->id));   // i18n-exempt: log detail
+    ::Log(std::wstring(L"AGENTS the chat's agent chosen by itself (") + (AgentStatus::Get(best->rt).Ready() ? L"ready" : L"the only one installed") + L"): " + W(best->id));   // i18n-exempt: log detail; may run before any chat opening: never « CHAT »
 }
 void ApplyAllStatuses() { for (const auto& def : Agents) ApplyStatus(def.id, AgentStatus::Get(def.rt)); }
 void StartSession();
@@ -68,7 +68,7 @@ void EnsureAgentStatus() {
     AgentStatus::Host h;
     h.dataRoot = Ann::DataRoot();
     h.run = [](std::function<void()> work, std::function<void()> done) { Ann::Run(std::move(work), std::move(done)); };
-    h.log = [](const std::wstring& s) { Diag(s); };
+    h.log = [](const std::wstring& s) { ::Log(s); };   // its own lines (« AGENTS … »), never « CHAT »: the hub starts with the browser, the chat does nothing before it is used (chat_qa_run « rest »)
     h.environment = [] { return RtEnv(); };
     // Every change (an install from the tutorial, a sign-in from Réglages…) reaches the panel at once.
     AgentStatus::Subscribe([](const AgentStatus::Status& s) {
