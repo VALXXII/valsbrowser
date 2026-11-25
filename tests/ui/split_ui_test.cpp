@@ -48,7 +48,7 @@ int main() {
     assert(pages[0] == yt && pages[1] == paper && pages[2] == luma);      // the pair sits together, Youtube first
     assert(Active() == paper && yt->shown && paper->shown && !luma->shown && Shown() == 2);
     assert(chrome.split.shown && chrome.split.ring && chrome.split.handles.size() == 1);
-    assert(chrome.split.active.left >= 590 && chrome.split.active.right == 1178);  // Paper on the right (Paper V3: 2 DIP outer outline)
+    assert(chrome.split.active.left >= 590 && chrome.split.active.right == 1176);  // Paper on the right (Paper V3: 2 DIP outer outline; #127: 4 DIP inset)
     // the separator grip: 16 DIP centred on the 4 DIP gap (6 DIP over each page edge); z-order above the
     // real pages is checked by the native --split-test, where WebView2 children exist
     { auto sv = CurrentSplit(); auto g = sv.a.SeparatorBox(sv.a.separators[0]); assert(std::fabs(g.right - g.left - 4) < .01f);
@@ -224,16 +224,16 @@ int main() {
         pages = {yt, luma, paper}; current = 0; yt->title = L"Youtube"; yt->uri = L"https://Youtube.test/"; ApplyPages();
     }
 
-    // 14. Rounded page corners: only the outer bottom ones, single page and split alike.
+    // 14. Rounded page corners: the outer ones, single page and split alike (#127, Val: the four corners in every layout).
     {
         splitGroups.clear(); for (auto& t : pages) t->group = 0; current = 0; ApplyPages();
-        auto cs = PageCorners(); assert(cs.size() == 2 && !cs[0].right && cs[1].right);
+        auto cs = PageCorners(); { int tops = 0; for (auto& c : cs) tops += c.top; assert(cs.size() == 4 && tops == 2 && !cs[0].right && cs[1].right); }
         SV::Target t; t.kind = SV::Kind::Split; t.side = SV::Side::Right; t.orientation = SV::Orientation::Row;
         ApplySplitTarget(pages[1], t, pages[0], CurrentSplit()); auto v = CurrentSplit(); cs = PageCorners();
-        assert(v.members.size() == 2 && cs.size() == 2 && cs[0].page.left == v.a.slots[0].box.left && !cs[0].right && cs[1].page.right == v.a.slots[1].box.right && cs[1].right);
+        assert(v.members.size() == 2 && cs.size() == 4 && cs[0].page.left == v.a.slots[0].box.left && !cs[0].right && cs[2].page.right == v.a.slots[1].box.right && cs[2].right);
         assert(chrome.split.activeBottomLeft != chrome.split.activeBottomRight);  // the ring rounds only the active panel's outer corner
         splitGroups[v.group] = SV::Orientation::Column; ApplyPages(); v = CurrentSplit(); cs = PageCorners();
-        assert(cs.size() == 2 && cs[0].page.top == v.a.slots[1].box.top && cs[1].page.top == v.a.slots[1].box.top);  // stacked: the bottom panel only
+        assert(cs.size() == 4); for (auto& c : cs) assert(c.page.top == v.a.slots[c.top ? 0 : 1].box.top);  // stacked: the top panel's top, the bottom panel's bottom
         QuitGroup(v.group);
     }
 
@@ -291,7 +291,7 @@ int main() {
         assert(!chrome.PanelShown() && !focusBar.Shown() && chrome.Hit(1150, 20) == 0 && chrome.Hit(60, 25) == 0);
         assert(WndProc(window, WM_NCHITTEST, 0, MAKELPARAM(805, 25)) == HTCLIENT);
         // Four round corners (6 DIP) on a single page.
-        { auto cs = PageCorners(); int tops = 0; for (auto& c : cs) tops += c.top; assert(cs.size() == 4 && tops == 2 && PageCornerRadius() == 6); }
+        { auto cs = PageCorners(); int tops = 0; for (auto& c : cs) tops += c.top; assert(cs.size() == 4 && tops == 2 && PageRadiusDip() == 6); }
         // Revealed (the keyboard: at once): the chrome lives in the panel, translated by (5, 5).
         FocusReveal(); assert(focusBar.Shown() && chrome.PanelShown() && focusPlaced == 1);
         assert(chrome.panel.left == 4 && chrome.panel.top == 4 && chrome.panel.right == 1176 && chrome.panel.bottom == 88 && chrome.origin.x == 5 && chrome.origin.y == 5);
@@ -328,10 +328,10 @@ int main() {
         fullscreen.browser = true; relayout();
         assert(!chrome.floating && !chrome.PanelShown()); { auto c = ContentBox(); assert(c.left == 0 && c.top == 0 && c.right == 1180 && c.bottom == 815); }
         fullscreen.browser = false; relayout(); assert(chrome.floating && !focusBar.Shown()); { auto c = ContentBox(); assert(c.top == 4 && c.bottom == 811); }
-        // Off again: the normal chrome exactly as before (inset 2, 81 DIP, bottom corners only, radius 8).
+        // Off again: the normal chrome exactly as before (#127: inset 4, 81 DIP, the four corners, radius 6).
         settings.focusMode = false; relayout();
         assert(!chrome.floating && chrome.width == 1180 && chrome.origin.x == 0 && NativeChrome::Downloads::DrawerLayout::liveTop == 81);
-        { auto c = ContentBox(); assert(c.left == 2 && c.top == 81 && c.right == 1178 && c.bottom == 813); auto cs = PageCorners(); assert(cs.size() == 2 && !cs[0].top && !cs[1].top && PageCornerRadius() == 8); }
+        { auto c = ContentBox(); assert(c.left == 4 && c.top == 81 && c.right == 1176 && c.bottom == 811); auto cs = PageCorners(); int tops = 0; for (auto& k : cs) tops += k.top; assert(cs.size() == 4 && tops == 2 && PageRadiusDip() == 6); }
         assert(chrome.Hit(1172, 20) == 'X');
     }
 
@@ -370,7 +370,7 @@ int main() {
         // Focus off with the annotation mode on: the normal chrome, the banner's height back under the toolbar.
         chrome.annotationBand = 32; settings.focusMode = false; relayout();
         assert(!chrome.floating && chrome.width == 1180 && chrome.panelAbove.banner == 0);
-        { auto c = ContentBox(); assert(c.top == 81 + 32 && c.left == 2); }
+        { auto c = ContentBox(); assert(c.top == 81 + 32 && c.left == 4); }
         assert(DL::liveTop == 81 && DL::liveRight == 0 && DL::liveBottom == 0 && DL::liveRadius == 0);
         chrome.annotationBand = 0; relayout();
     }

@@ -78,6 +78,7 @@ class View {
     Com<ICoreWebView2Controller> controller_; Com<ICoreWebView2> view_; Com<ICoreWebView2Environment> env_;
     Hooks hooks_; std::wstring assets_; bool creating_ = false, visible_ = false; RECT bounds_{}; unsigned generation_ = 0;
     HWND parent_ = nullptr, created_ = nullptr;   // where it should be / where the controller is
+    HWND window_ = nullptr;                       // windowed hosting: the controller's window (HostWindow)
     bool devtools_ = false;
     // ---- visual hosting
     Com<ICoreWebView2CompositionController> comp_; bool visual_ = false;
@@ -285,6 +286,25 @@ public:
         if (controller_.p) controller_->put_Bounds(bounds);
     }
     HWND Parent() const { return parent_; }
+    // Windowed hosting: the controller's own window, a child of `parent_` at `bounds_` (WebView2 gives no handle: found by
+    // its class and place, then kept while it stays under `parent_`). Null in visual hosting or before it exists.
+    HWND HostWindow() {
+        if (visual_ || !controller_.p || !parent_) return nullptr;
+        if (window_ && IsWindow(window_) && GetParent(window_) == parent_) return window_;
+        window_ = nullptr;
+        Find f{parent_, bounds_, nullptr, 0};
+        EnumChildWindows(parent_, FindHost, reinterpret_cast<LPARAM>(&f));
+        if (f.n == 1) window_ = f.found;
+        return window_;
+    }
+    struct Find { HWND parent; RECT want; HWND found; int n; };
+    static BOOL CALLBACK FindHost(HWND h, LPARAM l) {
+            auto& f = *reinterpret_cast<Find*>(l); if (GetParent(h) != f.parent) return TRUE;
+            wchar_t c[64]{}; if (!GetClassNameW(h, c, 64) || wcsncmp(c, L"Chrome_WidgetWin", 16) != 0) return TRUE;
+            RECT r{}; GetWindowRect(h, &r); MapWindowPoints(nullptr, f.parent, reinterpret_cast<POINT*>(&r), 2);
+            if (std::abs(r.left - f.want.left) <= 1 && std::abs(r.top - f.want.top) <= 1 && std::abs(r.right - f.want.right) <= 1 && std::abs(r.bottom - f.want.bottom) <= 1) { f.found = h; ++f.n; }
+            return TRUE;
+    }
     void Show(bool on) {
         visible_ = on; if (controller_.p) controller_->put_IsVisible(on ? TRUE : FALSE);
         if (visual_ && panelHost_ && host_ == panelHost_) ShowWindow(panelHost_, on ? SW_SHOWNA : SW_HIDE);

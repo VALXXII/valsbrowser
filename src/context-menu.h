@@ -32,7 +32,12 @@ namespace ContextMenu {
 // Layout glyph drawn before a label (split view block, Paper p-7-0 "V2"): an 18 x 14
 // outline with the part the dragged site will take filled in.
 enum class Glyph { None, Blank, Right, Left, Top, Bottom, StartRow, EndRow, StartColumn, EndColumn };
-enum class Kind { Command, Header, Note };  // Header / Note: read-only rows, never focused
+enum class Kind { Command, Header, Note, Segmented };  // Header / Note: read-only rows, never focused; Segmented: a row of icon segments
+// One segment of a Segmented row (#127 « Position des onglets », Paper « Clic droit · 3 icônes segmentées » 1XO9-0): its
+// command id, the name shown in a tooltip on hover / keyboard focus, the current choice.
+struct Segment { int id = 0; std::wstring tip; bool active = false; };
+// Paints segment `index` in `box` (state 0 rest, 1 hover, 2 active).
+using SegmentPainter = std::function<void(ID2D1RenderTarget*, ID2D1Factory*, ID2D1SolidColorBrush*, D2D1_RECT_F box, int index, int state)>;
 struct Item {
     int id = 0;                       // returned by Track(); 0 is never returned for an item
     std::wstring description;         // optional second line (choice menus: what the option does)
@@ -43,6 +48,7 @@ struct Item {
     std::shared_ptr<const FaviconImage> image; // optional site icon in the same column (wins over `icon`)
     std::wstring help;                // UI Automation help text (e.g. a bookmark's address)
     std::vector<Item> children;       // non-empty: a submenu
+    std::vector<Segment> segments; SegmentPainter paintSegment;   // Kind::Segmented
     Kind kind = Kind::Command;
     Glyph glyph = Glyph::None;
     std::wstring second;              // a quieter word (50 %) after the label (homonyms: "GitHub  Issues"); header: "· affiché"
@@ -63,6 +69,9 @@ inline Item Header(std::wstring label, std::wstring second, std::vector<std::sha
     Item item; item.kind = Kind::Header; item.label = std::move(label); item.second = std::move(second); item.icons = std::move(icons); item.siteIcon = true; item.enabled = false; item.tag = tag; return item;
 }
 inline Item Note(std::wstring text, bool indent = true) { Item item; item.kind = Kind::Note; item.label = std::move(text); item.enabled = false; item.glyph = indent ? Glyph::Blank : Glyph::None; return item; }
+// A full-width segmented control (1XO9-0): white 4 %, radius 8, padding 2, 28 DIP segments radius 6 (active white 12 %,
+// hover white 4 %), margins 2 / 4 / 4 / 4; icons only, a tooltip names each. `label` is its accessible name.
+inline Item Segmented(std::wstring label, std::vector<Segment> segments, SegmentPainter paint) { Item item; item.kind = Kind::Segmented; item.label = std::move(label); item.segments = std::move(segments); item.paintSegment = std::move(paint); return item; }
 inline Item Command(int id, std::wstring label, std::wstring shortcut = L"", bool enabled = true, bool checked = false) {
     Item item; item.id = id; item.label = std::move(label); item.shortcut = std::move(shortcut); item.enabled = enabled; item.checked = checked; return item;
 }
@@ -82,6 +91,9 @@ namespace Layout {
 inline constexpr float pad = 4, row = 32, separator = 9, padLeft = 8, padRight = 10, shortcutGap = 12;   // label to shortcut / glyph (user: half of the former 24)
 inline constexpr float radius = NativeUI::nativeCornerRadius, rowRadius = 4, text = 14, line = 20, trailing = 16, minWidth = 200, maxWidth = 440;
 inline constexpr float submenuDelayMs = 200;
+// Segmented row (Paper 1XO9-0): margins 2 top, 4 sides and bottom; control radius 8, padding 2, gap 2; segments 28, radius 6.
+inline constexpr float segTop = 2, segSide = 4, segBottom = 4, segPad = 2, segGap = 2, segHeight = 28, segRadius = 8, segInner = 6, segIcon = 16;
+inline constexpr float segRowHeight = segTop + segPad + segHeight + segPad + segBottom;   // 38
 // Leading icon column (only when a row of the level has one): 16 DIP glyph, 8 DIP to the label (Paper c-99tvvr).
 inline constexpr float icon = 16, iconGap = 8, iconOpacity = .7f;
 // Key caps (Paper): one pill per key, 6 DIP sides, 2 DIP tall padding, radius 4, 2 DIP apart.
@@ -132,6 +144,7 @@ class Menu {
         std::vector<float> tops, heights; std::vector<std::vector<std::wstring>> descriptions; // wrapped lines
         float width = Layout::minWidth, height = 0;
         int hover = -1, pressed = -1, child = -1; // child: index whose submenu is open
+        int segment = -1;                         // a Segmented row's highlighted segment (pointer or arrows)
         bool keyboard = false;
         UINT dpi = 96;
         // Opening motion: final window position and the direction it arrives from.
@@ -151,7 +164,30 @@ class Menu {
     static constexpr UINT InvokeMessage = WM_APP + 40; // UIA actions are posted, never run inside the provider call
     static constexpr UINT_PTR FrameTimer = 1, SubmenuTimer = 2;
 
-    static bool Selectable(const Item& item) { return !item.separator && item.enabled && item.kind == Kind::Command; }
+    static bool Selectable(const Item& item) { return !item.separator && item.enabled && (item.kind == Kind::Command || item.kind == Kind::Segmented); }
+    // Segment boxes of a Segmented row (level coordinates).
+    std::vector<D2D1_RECT_F> Segments(const Level& l, size_t i) const {
+        std::vector<D2D1_RECT_F> out; const Item& item = (*l.items)[i]; const size_t n = item.segments.size(); if (!n) return out;
+        const float left = Layout::pad + 1 + Layout::segSide + Layout::segPad, right = l.width - Layout::pad - 1 - Layout::segSide - Layout::segPad, top = l.tops[i] + Layout::segTop + Layout::segPad;
+        const float w = (right - left - Layout::segGap * (n - 1)) / n;
+        for (size_t k = 0; k < n; ++k) { const float x = left + k * (w + Layout::segGap); out.push_back({x, top, x + w, top + Layout::segHeight}); }
+        return out;
+    }
+    int SegmentAt(const Level& l, int row, float x) const {
+        if (row < 0 || (*l.items)[row].kind != Kind::Segmented) return -1; const auto b = Segments(l, static_cast<size_t>(row));
+        for (size_t k = 0; k < b.size(); ++k) if (x >= b[k].left - Layout::segGap / 2 && x < b[k].right + Layout::segGap / 2) return static_cast<int>(k);
+        return -1;
+    }
+    int ActiveSegment(const Item& item) const { for (size_t k = 0; k < item.segments.size(); ++k) if (item.segments[k].active) return static_cast<int>(k); return 0; }
+    // The tooltip of the highlighted segment (host-drawn), in screen pixels; an empty tip hides it.
+    void SegmentTip(Level& l, int row) {
+        if (!onSegment) return;
+        if (row < 0 || row >= static_cast<int>(l.items->size()) || (*l.items)[row].kind != Kind::Segmented || l.segment < 0) { onSegment(RECT{}, L"", false); return; }
+        const auto b = Segments(l, static_cast<size_t>(row))[static_cast<size_t>(l.segment)]; RECT r{Px(l, b.left), Px(l, b.top), Px(l, b.right), Px(l, b.bottom)};
+        RECT w{}; GetWindowRect(l.hwnd, &w); OffsetRect(&r, w.left, w.top);
+        // Under the menu, like the board's tooltip: the target is the segment's column at the menu's bottom edge.
+        r.bottom = std::max(r.bottom, w.bottom); onSegment(r, (*l.items)[row].segments[static_cast<size_t>(l.segment)].tip, l.keyboard);
+    }
     Level* LevelOf(HWND hwnd) { for (int i = 0; i < depth_; ++i) if (levels_[i]->hwnd == hwnd) return levels_[i].get(); return nullptr; }
     int IndexOf(HWND hwnd) const { for (int i = 0; i < depth_; ++i) if (levels_[i]->hwnd == hwnd) return i; return -1; }
     float Scale(const Level& l) const { return l.dpi / 96.f; }
@@ -250,7 +286,7 @@ class Menu {
         for (const auto& item : *l.items) if (!item.separator) l.icons = l.icons || !item.icon.empty() || item.image != nullptr;
         float need = 0;
         for (const auto& item : *l.items) {
-            if (item.separator) continue;
+            if (item.separator || item.kind == Kind::Segmented) continue;
             const float size = item.kind == Kind::Command ? Layout::text : Layout::small;
             float w = l.chrome.TextWidth(Plain(item.label), size) + Lead(item);
             if (!item.second.empty()) w += l.chrome.TextWidth(L"  " + item.second, Layout::small);
@@ -266,7 +302,7 @@ class Menu {
         l.tops.clear(); l.heights.clear(); l.descriptions.clear(); float y = Layout::pad + 1;
         for (const auto& item : *l.items) {
             auto lines = item.description.empty() ? std::vector<std::wstring>{} : Wrap(l, item.description, textWidth);
-            const float h = item.separator ? Layout::separator : item.kind != Kind::Command ? Layout::header : lines.empty() ? Layout::row : Layout::describedTop + Layout::line + 1 + lines.size() * Layout::descriptionLine + Layout::describedBottom;
+            const float h = item.separator ? Layout::separator : item.kind == Kind::Segmented ? Layout::segRowHeight : item.kind != Kind::Command ? Layout::header : lines.empty() ? Layout::row : Layout::describedTop + Layout::line + 1 + lines.size() * Layout::descriptionLine + Layout::describedBottom;
             l.tops.push_back(y); l.heights.push_back(h); l.descriptions.push_back(std::move(lines)); y += h;
         }
         l.height = y + Layout::pad + 1;
@@ -319,6 +355,7 @@ class Menu {
     void Activate(int index, int i, bool ctrl = false, bool shift = false, bool context = false) {
         Level& l = *levels_[index]; if (i < 0 || i >= static_cast<int>(l.items->size())) return;
         const Item& item = (*l.items)[i]; if (!Selectable(item)) return;
+        if (item.kind == Kind::Segmented) { if (context) return; const int k = l.segment >= 0 ? l.segment : ActiveSegment(item); if (k >= 0 && k < static_cast<int>(item.segments.size())) { choice_ = {}; Finish(item.segments[static_cast<size_t>(k)].id); } return; }
         if (context && (!contextRows_ || !item.id)) return;
         if (!item.children.empty() && !context) { l.hover = i; OpenChild(index); if (depth_ > index + 1) Move(index + 1, 1, true); return; }
         choice_ = {}; choice_.ctrl = ctrl; choice_.shift = shift; choice_.context = context;
@@ -327,7 +364,8 @@ class Menu {
     void SetHover(int index, int i, bool keyboard) {
         Level& l = *levels_[index]; l.keyboard = keyboard;
         if (l.hover == i) return;
-        l.hover = i; Interact(l); Highlight();
+        l.hover = i; if (keyboard && i >= 0 && (*l.items)[i].kind == Kind::Segmented) l.segment = ActiveSegment((*l.items)[i]); else if (i < 0 || (*l.items)[i].kind != Kind::Segmented) l.segment = -1;
+        SegmentTip(l, i); Interact(l); Highlight();
         if (keyboard && i >= 0 && l.uia.Listening() && l.announced != i) { l.announced = i; l.uia.Raise(RowKey(i), UIA_AutomationFocusChangedEventId); }
         // Hovering another row of a parent closes its open submenu after the same delay.
         KillTimer(l.hwnd, SubmenuTimer);
@@ -337,13 +375,14 @@ class Menu {
     // branch never holds it. Leaving the row retargets the tween from its current value at once,
     // even mid-entrance of the submenu, which stays open for the trajectory (SubmenuTimer).
     static float RowFill(const Motion::InteractionVisual& v) { return v.hover; }
-    void PointerMove(int index, float y) {
+    void PointerMove(int index, float y, float x = -1) {
         Level& l = *levels_[index]; const int row = HitRow(l, y);
         SetHover(index, row >= 0 && !(*l.items)[row].enabled ? -1 : row, false);
+        const int seg = SegmentAt(l, l.hover, x); if (seg != l.segment && (seg >= 0 || x >= 0)) { l.segment = seg; SegmentTip(l, l.hover); Invalidate(l); }
     }
     // Leaving a level (to its submenu, another level or outside) drops the pointer hover; the
     // submenu stays open. Keyboard focus is not the pointer's to clear.
-    void PointerLeave(int index) { Level& l = *levels_[index]; if (!l.keyboard) SetHover(index, -1, false); }
+    void PointerLeave(int index) { Level& l = *levels_[index]; if (!l.keyboard) { l.segment = -1; SetHover(index, -1, false); } }
     void Interact(Level& l) {
         l.motion.SetInteraction(l.hover + 1, l.pressed >= 0 && l.pressed == l.hover ? l.pressed + 1 : 0, Motion::Now());
         Invalidate(l);
@@ -354,7 +393,7 @@ class Menu {
         for (int k = 0; k < n; ++k) { i = (i + step + n) % n; if (Selectable((*l.items)[i])) { SetHover(index, i, true); return; } }
     }
     int HitRow(const Level& l, float y) const {
-        for (size_t i = 0; i < l.tops.size(); ++i) if (y >= l.tops[i] && y < l.tops[i] + l.heights[i]) return (*l.items)[i].separator || (*l.items)[i].kind != Kind::Command ? -1 : static_cast<int>(i);
+        for (size_t i = 0; i < l.tops.size(); ++i) if (y >= l.tops[i] && y < l.tops[i] + l.heights[i]) return (*l.items)[i].separator || ((*l.items)[i].kind != Kind::Command && (*l.items)[i].kind != Kind::Segmented) ? -1 : static_cast<int>(i);
         return -1;
     }
     // Space before the label: a layout glyph, or a site icon (one, or a group's three).
@@ -433,6 +472,18 @@ class Menu {
         for (size_t i = 0; i < l.items->size(); ++i) {
             const Item& item = (*l.items)[i]; const float top = l.tops[i];
             if (item.separator) { brush->SetColor(D2D1::ColorF(1, 1, 1, .06f)); const float y = top + Layout::separator / 2 - .5f; t->FillRectangle(D2D1::RectF(left + Layout::padLeft, y, right - Layout::padLeft, y + 1), brush); continue; }
+            if (item.kind == Kind::Segmented) {
+                const D2D1_RECT_F control{left + Layout::segSide, top + Layout::segTop, right - Layout::segSide, top + Layout::segTop + 2 * Layout::segPad + Layout::segHeight};
+                brush->SetColor(D2D1::ColorF(1, 1, 1, 0x0A / 255.f)); t->FillRoundedRectangle(D2D1::RoundedRect(control, Layout::segRadius, Layout::segRadius), brush);
+                const auto boxes = Segments(l, i); const bool here = static_cast<int>(i) == l.hover;
+                for (size_t k = 0; k < boxes.size(); ++k) {
+                    const bool active = item.segments[k].active, hot = here && static_cast<int>(k) == l.segment;
+                    if (active || hot) { brush->SetColor(D2D1::ColorF(1, 1, 1, (active ? 0x1F : 0x0A) / 255.f)); t->FillRoundedRectangle(D2D1::RoundedRect(boxes[k], Layout::segInner, Layout::segInner), brush); }
+                    if (hot && l.keyboard) { brush->SetColor(D2D1::ColorF(1, 1, 1, Design::Focus::keyboardOpacity)); t->DrawRoundedRectangle(D2D1::RoundedRect({boxes[k].left + .5f, boxes[k].top + .5f, boxes[k].right - .5f, boxes[k].bottom - .5f}, Layout::segInner - .5f, Layout::segInner - .5f), brush, 1); }
+                    if (item.paintSegment) item.paintSegment(t, l.chrome.Factory(), brush, boxes[k], static_cast<int>(k), active ? 2 : hot ? 1 : 0);
+                }
+                continue;
+            }
             if (item.kind != Kind::Command) {  // header (#FFFFFF99, its tail 35 %) or reason (#FFFFFFB3), 13 DIP, not focusable
                 const float cy = top + Layout::header / 2, y = top + (Layout::header - Layout::line) / 2; float x = left + Layout::padLeft;
                 if (item.kind == Kind::Header) { DrawIcons(l, item, x, cy, Layout::headerIcon, 1); x += Lead(item); }
@@ -505,8 +556,10 @@ class Menu {
         case VK_UP: Move(index, -1); return true;
         case VK_HOME: Move(index, 1, true); return true;
         case VK_END: Move(index, -1, true); return true;
-        case VK_RIGHT: if (l.hover >= 0 && !(*l.items)[l.hover].children.empty()) Activate(index, l.hover); return true;
-        case VK_LEFT: if (index > 0) Back(index); return true;
+        case VK_RIGHT: case VK_LEFT:
+            if (l.hover >= 0 && (*l.items)[l.hover].kind == Kind::Segmented) { const int n = static_cast<int>((*l.items)[l.hover].segments.size()); if (n) { l.keyboard = true; l.segment = std::clamp((l.segment < 0 ? ActiveSegment((*l.items)[l.hover]) : l.segment) + (key == VK_RIGHT ? 1 : -1), 0, n - 1); SegmentTip(l, l.hover); Invalidate(l); } return true; }
+            if (key == VK_RIGHT) { if (l.hover >= 0 && !(*l.items)[l.hover].children.empty()) Activate(index, l.hover); return true; }
+            if (index > 0) Back(index); return true;
         case VK_ESCAPE: if (index > 0) Back(index); else Finish(0); return true;
         case VK_RETURN: case VK_SPACE: if (l.hover >= 0) Activate(index, l.hover, GetKeyState(VK_CONTROL) < 0, GetKeyState(VK_SHIFT) < 0); return true;
         case VK_APPS: if (l.hover >= 0) Activate(index, l.hover, false, false, true); return true;
@@ -555,7 +608,7 @@ class Menu {
                 if (it.id && it.enabled && draggable_(it.id) && (std::abs(p.x - pressAt_.x) > GetSystemMetrics(SM_CXDRAG) || std::abs(p.y - pressAt_.y) > GetSystemMetrics(SM_CYDRAG))) { drag_ = it.id; Finish(0); return 0; }
             }
             TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, h, 0}; TrackMouseEvent(&track);
-            PointerMove(index, GET_Y_LPARAM(lp) / Scale(*l)); return 0;
+            PointerMove(index, GET_Y_LPARAM(lp) / Scale(*l), GET_X_LPARAM(lp) / Scale(*l)); return 0;
         }
         case WM_MOUSELEAVE: if (l && !ignorePointer) PointerLeave(index); return 0;
         case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN: if (l) { l->pressed = HitRow(*l, GET_Y_LPARAM(lp) / Scale(*l)); if (msg == WM_LBUTTONDOWN) { pressAt_ = {GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}; ClientToScreen(h, &pressAt_); } Interact(*l); } return 0;
@@ -564,6 +617,7 @@ class Menu {
             const int row = HitRow(*l, GET_Y_LPARAM(lp) / Scale(*l)); l->pressed = -1; Interact(*l);
             if (row < 0) return 0;
             const Item& item = (*l->items)[row];
+            if (item.kind == Kind::Segmented) { if (msg != WM_LBUTTONUP) return 0; l->segment = SegmentAt(*l, row, GET_X_LPARAM(lp) / Scale(*l)); if (l->segment < 0) return 0; keyedChoice_ = false; Activate(index, row); return 0; }
             // Middle click opens a link row in the background and keeps the menu open, as in every browser.
             if (msg == WM_MBUTTONUP) { if (background_ && Selectable(item) && item.children.empty() && item.id) background_(item.id); return 0; }
             // Right click on a row of a bookmark menu asks for that row's own menu.
@@ -608,6 +662,8 @@ class Menu {
 public:
     // Called when the highlighted command changes (hover or keyboard, any level); nullptr when none.
     std::function<void(const Item*)> onHighlight;
+    // A Segmented row's highlighted segment: show its name under it (screen px; `keyboard`: at once), or hide (empty).
+    std::function<void(RECT, const std::wstring&, bool keyboard)> onSegment;
     bool ignorePointer = false;  // native QA: the real pointer, wherever it is, must not move the highlight
     ~Menu() { Dispose(); }
     void Init(HINSTANCE instance, HWND owner, std::wstring root) {

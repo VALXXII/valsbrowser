@@ -52,6 +52,7 @@
 #include "annotation-onboarding.h"   // #125 v2: the mode's tutorial, in the place of « Connecter un agent » the first time
 #include "annotation-local-card.h"   // #125 v2 E1b: « Annoter marche sur vos projets et fichiers locaux » on a live site
 RECT RegionScreen(int id);           // src/main.cpp: a chrome control in screen pixels (the card sits under the button)
+bool ColumnPopoverAt(int id, float gap, POINT& bottomLeft);   // src/main.cpp (#127): the column's popover place
 #include "annotation-script.h"
 #include "annotation-host.h"
 #include "annotation-capture.h"
@@ -307,6 +308,7 @@ RECT BandRect() {
     // Mode Focus (owner's rule 2026-11-24, Paper « Annotation + Focus · barre du haut » 203J-0): the banner at the very top,
     // 4 DIP in from the window's left and right edges; the tabs and toolbar float under it (src/focus-mode.h).
     if (chrome.floating) { const auto b = NativeChrome::FocusMode::Banner(chrome.ClientWidth(), chrome.annotationBand); return {S(b.left), S(b.top), S(b.right), S(b.bottom)}; }
+    if (chrome.sidebar) return {S(chrome.SidebarZoneLeft()), S(chrome.ContentTop() - chrome.annotationBand), c.right - S(NativeChrome::Sidebar::Zone::inset), S(chrome.ContentTop())};   // #127: over the page's width (answer 6)
     return {0, S(chrome.ContentTop() - chrome.annotationBand), c.right, S(chrome.ContentTop())};
 }
 RECT PageClient(const std::shared_ptr<Tab>& t) {
@@ -1238,7 +1240,8 @@ void ShowLocalCard(const std::shared_ptr<Tab>& t) {
     // card's appearance moves the pointer « over » the button again, which brought the tooltip back on top of the title).
     // Blocked once shown: a card still fading out is finished inside Show, and its own `closed` lifts the block.
     h.closed = [] { ChromeTipBlock(false); };
-    if (localCard.Show(instance, window, base, button, host, accent, Reduced(), std::move(h))) { ChromeTipBlock(true); Log(L"ANNOTATE live-site card shown (the mode is for local projects and files)"); }
+    POINT column{}; const bool fromColumn = ColumnPopoverAt('N', NativeChrome::AnnotationLocalCard::Below, column);   // #127: the button is in the column
+    if (localCard.Show(instance, window, base, button, host, accent, Reduced(), std::move(h), fromColumn ? &column : nullptr)) { ChromeTipBlock(true); Log(L"ANNOTATE live-site card shown (the mode is for local projects and files)"); }
 }
 void Activate(const Start& st) {
     auto t = Active(); std::wstring why;
@@ -1550,6 +1553,8 @@ void AnnotationClearAll(std::function<void(bool, std::size_t)> done) {
         });
 }
 bool AnnotationsCompiled() { return true; }
+// #127 column: Annoter greyed (still shown) where the mode cannot start — same rule as the toolbar button's state.
+bool AnnotationButtonDimmed() { if (Ann::s.active) return false; std::wstring why; return !Ann::Available(Active(), &why); }
 HWND AnnotationBannerWindow() { return Ann::uiReady && Ann::banner.Visible() ? Ann::banner.Window() : nullptr; }   // Mode Focus: kept above the sliding panel
 void AnnotationSettingsChanged() { Ann::LauncherSync(); }
 // Page menu (PageContextMenu / ShowPageMenu): « Annoter l'élément », « Annoter la sélection », Markdown.
@@ -1597,6 +1602,8 @@ bool AnnotationSurfaceFocus() { return false; }
 void AnnotationAccentChanged() {}
 void AnnotationSyncChrome() {}
 void AnnotationLayout() {}
+HWND ChatHostWindow() { return nullptr; }
+void ChatCornersOnTop() {}
 void AnnotationWindowState() {}
 void AnnotationNavigation(const std::shared_ptr<Tab>&) {}
 void AnnotationTabChanged() {}
@@ -1605,6 +1612,7 @@ bool AnnotationPageMessage(const std::shared_ptr<Tab>&, ICoreWebView2WebMessageR
 bool AnnotationCommand(int) { return false; }
 bool AnnotationHistoryAvailable() { return false; }
 bool AnnotationsCompiled() { return false; }
+bool AnnotationButtonDimmed() { return false; }
 HWND AnnotationBannerWindow() { return nullptr; }
 std::wstring AnnotationStoreRoot() { return L""; }
 void AnnotationOpenConnect(bool) {}

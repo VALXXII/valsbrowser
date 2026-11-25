@@ -42,7 +42,8 @@ inline std::vector<Section> BuildSections() {
         {TR(settings_tabs), {
             {TR(tab_new), {L"Ctrl", L"T"}}, {TR(cmd_reopen_tab), {L"Ctrl", shift, L"T"}}, {TR(cmd_close_tab), {L"Ctrl", L"W"}},
             {TR(shortcut_next_tab), {L"Ctrl", L"Tab"}}, {TR(shortcut_previous_tab), {L"Ctrl", shift, L"Tab"}}, {TR(shortcut_go_to_tab), {L"Ctrl", L"1…9"}},
-            {TR(shortcut_move_tab_left), {L"Ctrl", shift, TR(key_page_up)}}, {TR(shortcut_move_tab_right), {L"Ctrl", shift, TR(key_page_down)}}}},
+            {TR(shortcut_move_tab_left), {L"Ctrl", shift, TR(key_page_up)}}, {TR(shortcut_move_tab_right), {L"Ctrl", shift, TR(key_page_down)}},
+            {TR(sidebar_shortcut_fold), {L"Ctrl", shift, L","}}}},
         {TR(a11y_toolbar), {
             {TR(shortcut_go_to_address), {L"Ctrl", L"L"}}, {TR(shortcut_go_to_address), {L"Alt", L"D"}}, {TR(shortcut_content_to_chrome), {L"F6"}},
             {TR(shortcut_reload), {L"Ctrl", L"R"}}, {TR(shortcut_reload), {L"F5"}}, {TR(a11y_back), {L"Alt", L"←"}}, {TR(a11y_forward), {L"Alt", L"→"}}}},
@@ -55,6 +56,9 @@ inline std::vector<Section> BuildSections() {
         {TR(shortcut_section_help), {{TR(shortcuts_title), {L"Ctrl", L"/"}}, {TR(shortcut_sandbox), {L"Ctrl", shift, L"F12"}}}},
     };
 }
+// The fold shortcut (#127) is listed only while the side panel is the window's layout (the host sets it).
+inline bool& SidePanelRows() { static bool shown = false; return shown; }
+inline bool RowShown(const Shortcut& s) { return SidePanelRows() || s.label != TR(sidebar_shortcut_fold); }
 inline const std::vector<Section>& Sections() {
     static std::vector<Section> lists[I18n::LocaleCount];
     auto& list = lists[static_cast<int>(I18n::Current())];
@@ -89,7 +93,7 @@ class Panel {
     void Build() {
         lines_.clear(); const auto q = Query(); float y = 0;
         for (auto& sec : Sections()) {
-            std::vector<const Shortcut*> rows; for (auto& r : sec.rows) if (RowMatches(r, q) || Matches(sec.title, q)) rows.push_back(&r);
+            std::vector<const Shortcut*> rows; for (auto& r : sec.rows) if (RowShown(r) && (RowMatches(r, q) || Matches(sec.title, q))) rows.push_back(&r);
             if (rows.empty()) continue;
             y += Layout::sectionTop; lines_.push_back({true, sec.title, nullptr, y}); y += Layout::heading;
             for (auto* r : rows) { lines_.push_back({false, r->label, r, y}); y += Layout::row; }
@@ -97,7 +101,7 @@ class Panel {
         if (lines_.empty()) { y += Layout::sectionTop; lines_.push_back({true, TR(shortcuts_no_match), nullptr, y}); y += Layout::heading; }
         content_ = y + Layout::bottom; scroll_ = std::clamp(scroll_, 0.f, std::max(0.f, content_ - ListHeight()));
     }
-    float NaturalHeight() const { float y = 0; for (auto& sec : Sections()) y += Layout::sectionTop + Layout::heading + Layout::row * sec.rows.size(); return 1 + ListTop() + y + Layout::bottom; }
+    float NaturalHeight() const { float y = 0; for (auto& sec : Sections()) { size_t n = 0; for (auto& r : sec.rows) if (RowShown(r)) ++n; y += Layout::sectionTop + Layout::heading + Layout::row * n; } return 1 + ListTop() + y + Layout::bottom; }
     void Paint() {
         Chrome& chrome_ = *surface_; // offscreen in RenderForTest
         using namespace Layout;
