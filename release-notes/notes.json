@@ -5,6 +5,10 @@
       "en": "Focus mode: the page fills the window, the tabs step aside."
     },
     {
+      "fr": "Ton agent : installez et connectez Claude ou Codex depuis le navigateur.",
+      "en": "Your agent: install and sign in to Claude or Codex from the browser."
+    },
+    {
       "fr": "Mode Annotation : un tutoriel, la bulle Commentaire ou le chat en panneau.",
       "en": "Annotation mode: a tutorial, the Comment bubble or the chat panel."
     },
@@ -35,10 +39,6 @@
     {
       "fr": "Emoji en couleur dans les favoris, les onglets et les menus.",
       "en": "Colour emoji in bookmarks, tabs and menus."
-    },
-    {
-      "fr": "La fenêtre s’anime quand vous la réduisez ou l’agrandissez.",
-      "en": "The window animates when you minimize or maximize it."
     }
   ],
   "corrections": [
