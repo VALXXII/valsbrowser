@@ -90,17 +90,9 @@ static void TestTurnOutcome() {
     Check(pre.find("\n- " + rule + "\n") != std::string::npos && ChatPrompt::Version == 4, "preamble: the approval rule is one of its rules (version 4: resumed sessions get it again)");
 }
 static void TestAgentStatusText() {
-    namespace AS = AnnotationSettings;
-    const long long now = 1800000000;
-    const auto at = [&](long long ago) { AS::Agent a; a.known = true; a.detected = true; a.connected = true; a.lastReadAt = now - ago; return AS::StatusText(a, now); };
-    I18n::SetForProcess(I18n::Locale::Fr);
-    Check(at(10) == L"Connect\u00E9 \u00B7 actif \u00E0 l'instant" && at(130) == L"Connect\u00E9 \u00B7 actif il y a 2 min" && at(3 * 3600) == L"Connect\u00E9 \u00B7 actif il y a 3 h"
-          && at(30 * 3600) == L"Connect\u00E9 \u00B7 actif hier" && at(3 * 86400) == L"Connect\u00E9 \u00B7 actif il y a 3 jours",
-          "agent status (FR): Connecte - actif a l'instant / il y a 2 min / il y a 3 h / hier / il y a 3 jours");
+    // « Ton agent » (#145, worker C) removed the MCP agents' « Connecté · actif … » line (AnnotationSettings::Agent,
+    // StatusText): what is left to check here is the connect window's texts.
     I18n::SetForProcess(I18n::Locale::En);
-    Check(at(10) == L"Connected \u00B7 active just now" && at(130) == L"Connected \u00B7 active 2 min ago" && at(3 * 3600) == L"Connected \u00B7 active 3 h ago"
-          && at(30 * 3600) == L"Connected \u00B7 active yesterday" && at(3 * 86400) == L"Connected \u00B7 active 3 days ago",
-          "agent status (EN): Connected - active just now / 2 min ago / 3 h ago / yesterday / 3 days ago (the moment is in English too)");
     Check(std::wstring(TR(connect_local_text)).rfind(L"Everything stays on this computer, never on servers.", 0) == 0 && std::wstring(TR(connect_local_text)).find(L"its provider (Anthropic or OpenAI)") != std::wstring::npos,
           "connect window (EN): Everything stays on this computer..., with the provider notice");
     I18n::SetForProcess(I18n::Locale::Fr);

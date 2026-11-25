@@ -38,6 +38,7 @@ import tarfile
 import time
 import zipfile
 import zlib
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')   # -I ignores PYTHONIOENCODING: a redirected run printed agent_status_test's « → » in cp1252 and stopped
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 OUT = ROOT / "build" / "acp-test"
