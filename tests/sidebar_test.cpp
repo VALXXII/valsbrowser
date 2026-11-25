@@ -4,6 +4,7 @@
 // is the artboard's inside (1180 x 740 with its 1 DIP border: 1178 x 738).
 #include "../src/sidebar.h"
 #include "../src/tab-motion.h"   // #127 parity 3: the strip's open / close model on the rows
+#include "../src/viewport-scrollbar.h"   // Mode Focus edge zone: the page's overlay scrollbar strip it leaves alone
 #include <cstdio>
 #include <cmath>
 
@@ -329,16 +330,105 @@ int main() {
         in.reserve = 0; in.mode = S::Mode::Compact; L = S::Compute(in);
         { S::Input d = in; d.hidden = false; d.top = 0; d.band = 0; const auto D = S::Compute(d);
           Check(Near(L.column, 40) && Same(L.page, 4, 32, 1176, 736) && Near(L.profile.top, D.profile.top + 32) && Near(L.tabs[0].top, D.tabs[0].top + 32), "Focus compact: the 40 column under the banner (20EJ-0)"); }
+    }
+    // ---- Mode Focus: the edge that recalls the column (EdgeZone, owner 25 nov.: « too hard to hit »). Hit test.
+    namespace E = S::EdgeZone; using K = E::Kind;
+    static_assert(E::reach - E::gutter == NativeChrome::Scrollbar::hitBand, "the page's part of the edge is as wide as the overlay scrollbar's strip");
+    static_assert(E::restMs == 400 && E::edgeMs == 120 && E::pinnedMs == 60 && E::graceMs == 300 && E::beyond == 24 && E::holdMargin == 24, "the chosen values");
+    const auto at = [](float depth, bool restored = false, bool scrollbar = false, bool pinned = false) {
+        E::Sample s; s.pointer = s.front = true; s.depth = depth; s.y = 300; s.top = 0; s.bottom = 736; s.restored = restored; s.scrollbar = scrollbar; s.pinned = pinned; return s; };
+    {
+        Check(E::Classify(at(0)) == K::Edge && E::Classify(at(3.9f)) == K::Edge && E::Classify(at(4)) == K::Rest && E::Classify(at(15.9f)) == K::Rest && E::Classify(at(16)) == K::None, "maximized: the 4 DIP gutter is the edge, the page's first 12 DIP the rest part, 16 nothing");
+        Check(E::Classify(at(-.1f)) == K::Edge && E::Classify(at(-24)) == K::Edge && E::Classify(at(-24.1f)) == K::None, "the 24 DIP beyond the window's edge (the next monitor) are the edge");
+        Check(E::Classify(at(0, false, false, true)) == K::Pinned && E::Classify(at(0, true, false, true)) == K::Pinned, "held on the monitor's outer pixel: pinned (maximized or snapped)");
+        Check(E::Classify(at(0, true)) == K::Rest && E::Classify(at(3.9f, true)) == K::Rest && E::Classify(at(-10, true)) == K::Edge, "restored: the gutter is the resize border (rest), beyond the window's edge stays quick");
+        Check(E::Classify(at(0, false, true)) == K::Rest && E::Classify(at(3.9f, false, true)) == K::Rest && E::Classify(at(-10, false, true)) == K::Rest && E::Classify(at(0, false, true, true)) == K::Rest, "the scrollbar's side: the edge, the monitor's edge and beyond wait 400 ms");
+        Check(E::Classify(at(4, false, true)) == K::None && E::Classify(at(10, false, true)) == K::None && E::Classify(at(15.9f, false, true)) == K::None, "the scrollbar's side: its 12 DIP strip is never the edge's");
+        auto s = at(0); s.y = -1; Check(E::Classify(s) == K::None && !E::Holds(s, 249), "above the column's rows (the annotation banner): nothing");
+        s.y = 736; Check(E::Classify(s) == K::None && !E::Holds(s, 249), "under the window: nothing");
+        s = at(0); s.front = false; Check(E::Classify(s) == K::None && !E::Holds(s, 249), "another app in front: nothing, and nothing held");
+        s = at(0); s.pointer = false; Check(E::Classify(s) == K::None, "no pointer (secure desktop): nothing");
+        Check(E::Holds(at(0), 249) && E::Holds(at(272.9f), 249) && !E::Holds(at(273), 249) && E::Holds(at(-24), 249) && !E::Holds(at(-24.1f), 249), "complete (248 + border): held up to 24 DIP past it and 24 beyond the window's edge");
+        Check(E::Holds(at(64.9f), 41) && !E::Holds(at(65), 41), "compact (40 + border): held up to 24 DIP past it");
+        Check(E::Holds(at(39.9f), 0) && !E::Holds(at(40), 0), "a column not measured yet: the edge zone + 24");
+    }
+    // Device pixels -> DIP (per-monitor DPI), left and right, the monitor's edge.
+    {
+        E::Pixels p; p.right = 2400; p.bottom = 1500; p.monitorRight = 2400; p.dpi = 120; p.y = 400;   // maximized at 125 %
+        auto m = [&](int x, E::Side side = E::Side::Left) { p.x = x; return E::Measure(side, p, true, true, 0, false); };
+        Check(Near(m(4).depth, 3.2f) && E::Classify(m(4)) == K::Edge && E::Classify(m(5)) == K::Rest && E::Classify(m(19)) == K::Rest && E::Classify(m(20)) == K::None, "125 %: 5 pixels of edge, 20 of zone");
+        Check(m(0).pinned && E::Classify(m(0)) == K::Pinned && !m(1).pinned, "125 %: the monitor's outer pixel, nothing beyond: pinned");
+        Check(Near(m(400).y, 320) && Near(m(400).bottom, 1200), "rows in DIP");
+        p.monitorBeyond = true; Check(!m(0).pinned && E::Classify(m(0)) == K::Edge, "another monitor on the left: the edge pixel is not a wall");
+        p.monitorLeft = -1440; p.monitorRight = 0; p.monitorBeyond = false;   // the pointer crossed onto the left monitor
+        Check(Near(m(-30).depth, -24) && E::Classify(m(-30)) == K::Edge && E::Classify(m(-31)) == K::None && !m(-1440).pinned, "on the next monitor: 30 pixels (24 DIP of the window's) are the edge");
+        p.monitorLeft = 0; p.monitorRight = 2400;
+        Check(Near(m(2399, E::Side::Right).depth, 0) && Near(m(2396, E::Side::Right).depth, 2.4f) && m(2399, E::Side::Right).scrollbar && m(2399, E::Side::Right).pinned, "right: the last pixel is depth 0, the scrollbar's side");
+        Check(E::Classify(m(2399, E::Side::Right)) == K::Rest && E::Classify(m(2395, E::Side::Right)) == K::Rest && E::Classify(m(2394, E::Side::Right)) == K::None && E::Classify(m(2380, E::Side::Right)) == K::None, "right: 5 pixels of edge at 125 %, then the scrollbar's strip");
+        p.monitorBeyond = true; p.monitorRight = 2400; Check(!m(2399, E::Side::Right).pinned && E::Classify(m(2410, E::Side::Right)) == K::Rest && E::Classify(m(2429, E::Side::Right)) == K::Rest && E::Classify(m(2430, E::Side::Right)) == K::None, "right: beyond the window's edge, 24 DIP (30 px)");
+        p.monitorBeyond = true;   // a monitor on each side: the pointer can go past the window's edges
+        for (const unsigned dpi : {96u, 120u, 144u, 192u}) {
+            p.dpi = dpi; const int inside = static_cast<int>(std::lround(16 * dpi / 96.0)), past = static_cast<int>(std::lround(24 * dpi / 96.0)), gutter = static_cast<int>(std::lround(4 * dpi / 96.0));
+            Check(E::Classify(m(gutter - 1)) == K::Edge && E::Classify(m(gutter)) == K::Rest && E::Classify(m(inside - 1)) == K::Rest && E::Classify(m(inside)) == K::None && E::Classify(m(-past)) == K::Edge && E::Classify(m(-past - 1)) == K::None, "every DPI: 4 DIP of edge, 16 DIP in, 24 DIP beyond, in device pixels");
+            Check(E::Classify(m(2399 - gutter + 1, E::Side::Right)) == K::Rest && E::Classify(m(2399 - gutter, E::Side::Right)) == K::None && E::Classify(m(2399 - inside + 1, E::Side::Right)) == K::None, "every DPI, right: only the edge, never the scrollbar's strip");
+        }
+        // A restored window in the middle of the monitor: no wall, its gutter is the resize border, the desktop beside it the edge.
+        p.dpi = 96; p.left = 500; p.right = 1700; p.top = 100; p.bottom = 900;
+        Check(!m(500).pinned && E::Measure(E::Side::Left, p, true, true, 0, true).restored && E::Classify(E::Measure(E::Side::Left, p, true, true, 0, true)) == K::Rest, "restored: the window's edge pixel is the resize border");
+        p.x = 480; Check(E::Classify(E::Measure(E::Side::Left, p, true, true, 0, true)) == K::Edge, "restored: 20 DIP left of it, on the desktop, the edge");
+        p.y = 99; Check(E::Classify(E::Measure(E::Side::Left, p, true, true, 0, true)) == K::None, "restored: above its rows, nothing");
+        // A window pushed half off the monitor: the monitor's edge is deep inside its column, not its edge.
+        p.y = 400; p.left = -300; p.right = 900; p.monitorBeyond = false; Check(m(0).pinned && E::Classify(m(0)) == K::None, "half off screen: the monitor's edge is not the column's");
+    }
+    // Timers: how long each part waits, the sweep to the next monitor, presses, the grace.
+    {
         S::FocusReveal r;
-        Check(!r.Pointer(0, true, false, false) && !r.Pointer(399, true, false, false) && r.Pointer(400, true, false, false) && r.open && !r.pinned, "left band 400 ms: the column comes");
-        Check(!r.Pointer(410, false, true, false) && r.open, "over the column: it stays");
-        Check(!r.Pointer(420, false, false, true) && r.open, "held (a drawer opened from it, a menu): it stays");
-        Check(r.Pointer(430, false, false, false) && !r.open, "the pointer leaves it: it goes");
-        Check(!r.Pointer(500, true, false, false) && !r.Pointer(600, false, false, false) && !r.Pointer(1000, true, false, false) && r.Remaining(1200) > 0 && !r.open, "leaving the band restarts the 400 ms");
-        r.Toggle(); Check(r.open && r.pinned && !r.Pointer(1300, false, false, false) && r.open, "Ctrl+Maj+,: in, and the pointer leaving keeps it");
+        Check(!r.Pointer(0, K::Edge, true, false, false) && !r.Pointer(90, K::Edge, true, false, false) && r.Pointer(120, K::Edge, true, false, false) && r.open && !r.pinned && r.by == K::Edge, "the edge: 120 ms");
+        Check(!r.Pointer(200, K::None, true, false, false) && !r.Pointer(2000, K::Rest, true, false, false) && r.open, "over the column or its margin: it stays");
+        Check(!r.Pointer(2010, K::None, false, false, true) && !r.Pointer(3000, K::None, false, false, true) && r.open, "held (a drawer opened from it, a menu, a drag): it stays");
+        Check(!r.Pointer(3010, K::None, false, false, false) && !r.Pointer(3309, K::None, false, false, false) && r.open && r.Pointer(3310, K::None, false, false, false) && !r.open, "the pointer gone: it leaves after 300 ms");
+        Check(r.armed, "left by the grace: the edge stays armed");
+        r = S::FocusReveal{}; r.Pointer(0, K::Edge, true, false, false); r.Pointer(120, K::Edge, true, false, false);
+        Check(r.open && !r.Pointer(200, K::None, false, false, false) && !r.Pointer(450, K::None, true, false, false) && !r.Pointer(500, K::None, false, false, false) && !r.Pointer(750, K::None, false, false, false) && r.open && r.Pointer(800, K::None, false, false, false), "back within the grace: it stays, and the grace starts again");
+        r = S::FocusReveal{};
+        Check(!r.Pointer(0, K::Pinned, true, false, false) && !r.Pointer(30, K::Pinned, true, false, false) && r.Pointer(60, K::Pinned, true, false, false) && r.by == K::Pinned, "held on the monitor's edge: 60 ms (two samples)");
+        r = S::FocusReveal{};
+        Check(!r.Pointer(0, K::Rest, true, false, false) && !r.Pointer(399, K::Rest, true, false, false) && r.Pointer(400, K::Rest, true, false, false) && r.by == K::Rest, "the page's first 12 DIP: 400 ms");
+        r = S::FocusReveal{};
+        Check(!r.Pointer(0, K::Rest, true, false, false) && !r.Pointer(100, K::Rest, true, false, false) && !r.Pointer(130, K::Edge, true, false, false) && !r.Pointer(249, K::Edge, true, false, false) && r.Pointer(250, K::Edge, true, false, false), "the edge's 120 ms start on the edge, not on the page before it");
+        r = S::FocusReveal{};
+        Check(!r.Pointer(0, K::Rest, true, false, false) && !r.Pointer(300, K::Edge, true, false, false) && r.Pointer(400, K::Edge, true, false, false) && r.by == K::Edge, "400 ms in the zone, whatever part: it comes");
+        r = S::FocusReveal{};   // a sweep to the left monitor at 250 DIP/s: 16 DIP of zone, then 24 beyond, in 160 ms
+        Check(!r.Pointer(0, K::Rest, true, false, false) && !r.Pointer(30, K::Rest, true, false, false) && !r.Pointer(60, K::Edge, true, false, false) && !r.Pointer(90, K::Edge, true, false, false) && !r.Pointer(120, K::Edge, true, false, false) && !r.Pointer(150, K::Edge, true, false, false) && !r.Pointer(170, K::None, false, false, false) && !r.open, "crossing to the next monitor: it does not come");
+        r = S::FocusReveal{};
+        Check(!r.Pointer(0, K::Edge, true, false, false) && !r.Pointer(100, K::None, false, false, false) && !r.Pointer(130, K::Edge, true, false, false) && !r.Pointer(240, K::Edge, true, false, false) && r.Pointer(250, K::Edge, true, false, false), "leaving the zone starts the wait again");
+        // Presses: a scrollbar drag (or any press) never brings it; released on the edge, the pointer must leave it first.
+        r = S::FocusReveal{};
+        Check(!r.Pointer(0, K::Rest, true, true, false) && !r.Pointer(500, K::Edge, true, true, false) && !r.Pointer(600, K::Edge, true, false, false) && !r.Pointer(2000, K::Edge, true, false, false) && !r.open && !r.armed, "a drag released on the edge: nothing, however long it stays");
+        Check(!r.Pointer(2030, K::None, false, false, false) && r.armed && !r.Pointer(2060, K::Edge, true, false, false) && r.Pointer(2180, K::Edge, true, false, false), "off the edge, then back: it comes");
+        r = S::FocusReveal{};
+        Check(!r.Pointer(0, K::None, false, true, false) && !r.Pointer(30, K::Edge, true, true, false) && !r.Pointer(60, K::Edge, true, false, false) && !r.Pointer(400, K::Edge, true, false, false) && !r.open, "a press in the page carried to the edge (a scrollbar drag, a selection): nothing");
+        r = S::FocusReveal{}; r.Pointer(0, K::Edge, true, false, false); r.Pointer(120, K::Edge, true, false, false);
+        Check(!r.Pointer(150, K::None, true, true, false) && r.open, "a press on the column: it stays");
+        Check(r.Pointer(200, K::None, false, true, false) && !r.open && !r.armed, "a press outside it: it leaves at once");
+        Check(!r.Pointer(230, K::None, false, true, true) && !r.open, "still pressed: nothing");
+        r = S::FocusReveal{}; r.Pointer(0, K::Edge, true, false, false); r.Pointer(120, K::Edge, true, false, false);
+        Check(!r.Pointer(150, K::None, false, true, true) && r.open, "a press outside while something holds it (a menu): it stays");
+        // Échap / the shortcut with the pointer on the edge: it does not come straight back.
+        r.Close(); Check(!r.open && !r.Pointer(200, K::Edge, true, false, false) && !r.Pointer(1000, K::Edge, true, false, false) && !r.open, "Échap with the pointer on the edge: it stays away");
+        Check(!r.Pointer(1030, K::None, false, false, false) && !r.Pointer(1060, K::Edge, true, false, false) && r.Pointer(1180, K::Edge, true, false, false), "off the edge and back: it comes");
+        r = S::FocusReveal{};
+        r.Toggle(); Check(r.open && r.pinned && !r.Pointer(1300, K::None, false, false, false) && !r.Pointer(5000, K::None, false, true, false) && r.open, "Ctrl+Maj+,: in, and neither the pointer leaving nor a press sends it");
         r.Toggle(); Check(!r.open && !r.pinned, "Ctrl+Maj+, again: out");
         r.ForAddress(true); Check(r.open && r.pinned && r.wide, "the address in compact: the complete column, pinned");
-        r.Close(); Check(!r.open && !r.wide, "Échap: out");
+        r.Close(); Check(!r.open && !r.wide && !r.pinned, "Échap: out");
+        // The whole chain on samples: maximized at 125 % with a monitor on the left, the pointer through to it and back.
+        r = S::FocusReveal{}; E::Pixels p; p.right = 2400; p.bottom = 1500; p.monitorLeft = -1440; p.monitorRight = 0; p.dpi = 120; p.y = 600;
+        const auto step = [&](double t, int x, bool front = true) { p.x = x; const auto s = E::Measure(E::Side::Left, p, true, front, 0, false); return r.Pointer(t, E::Classify(s), E::Holds(s, 249), false, false); };
+        Check(!step(0, -12) && !step(30, -14) && !step(90, -16) && step(120, -16) && r.open, "slammed onto the left monitor, resting 120 ms 13 pixels past: the column comes");
+        Check(!step(150, 200) && !step(400, 330) && !step(700, 340) && r.open, "back over the column and its margin (272 DIP = 340 px): it stays");
+        Check(!step(730, 342) && !step(1029, 342) && step(1030, 342) && !r.open, "past the margin for 300 ms: it goes");
+        Check(!step(1100, -10, false) && !step(1500, -10, false) && !r.open, "another app in front: the edge does nothing");
     }
     if (failures) { std::printf("%d failure(s)\n", failures); return 1; }
     std::printf("sidebar_test: ok\n");
