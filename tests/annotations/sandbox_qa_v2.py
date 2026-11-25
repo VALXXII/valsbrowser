@@ -334,6 +334,9 @@ def prepare_agents():
     return claude / 'claude_desktop_config.json', codex / 'config.toml'
 
 
+_agent_guard = None   # the agent guard's watch of the browser launch() started
+
+
 def launch(extra_env=None, fresh=True):
     APP.mkdir(parents=True, exist_ok=True)
     for f in Q.SRC.iterdir():
@@ -362,10 +365,22 @@ def launch(extra_env=None, fresh=True):
     env.update(extra_env or {})
     # Never launch a copy that could reach the real configurations (incident 14 Nov 2026).
     assert env.get('BROWSER_ANNOTATIONS_TEST') == '1' and pathlib.Path(env['BROWSER_ANNOTATIONS_CONNECT_ROOT']).resolve().is_relative_to(ROOT / 'build'), 'unsafe environment'
+    # Nor the computer's own Claude Code / Codex (incident 25 Nov 2026, tests/agent-guard/agent_guard.py): no fake agent
+    # named = the browser refuses every agent; one named = checked first. Keys stripped, « user » folders and PATH
+    # redirected; a watch stops this browser (and the run) if an agent that is not the fake one appears under it.
+    sys.path.insert(0, str(ROOT / 'tests' / 'agent-guard'))
+    import agent_guard as G
+    env = G.secure_env(env, work=QA, exe=APP / 'browser.exe', agent=bool(env.get('BROWSER_CHAT_FAKE_AGENT')))
     p = subprocess.Popen([str(APP / 'browser.exe')], cwd=str(APP), env=env)
     (APP / 'qa.pid').write_text(str(p.pid))
+    global _agent_guard
+    if _agent_guard:
+        _agent_guard.stop()
+    _agent_guard = G.watch(p.pid, env, log=APP / 'prototype.log', work=QA)
     reloads = 0
     for i in range(160):
+        if _agent_guard.caught:
+            break
         try:
             Q.page_ws(); break
         except BaseException:   # page_ws raises SystemExit while the page is about:blank or an error page
@@ -375,6 +390,7 @@ def launch(extra_env=None, fresh=True):
             if 'ERROR PAGE' in log_text() and reloads < 3 and i % 10 == 9:
                 reload_any(); reloads += 1
     time.sleep(1.5)
+    _agent_guard.check()   # the wait above swallows every exception: what the watch caught stops the run here
     return p
 
 

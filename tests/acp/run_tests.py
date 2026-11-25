@@ -18,7 +18,8 @@
   --real               also probe the REAL adapters with the user's own claude / codex CLI: initialize + session/new in
                        an empty temporary folder, never session/prompt (nothing is consumed), once as the user is and
                        once with the CLI's configuration redirected to an empty folder (what "signed out" looks like).
-                       Report: build/acp-test/real-adapters.json
+                       Report: build/acp-test/real-adapters.json. Refused unless the person at the keyboard set
+                       BROWSER_TEST_REAL_AGENT=yes-use-my-account in their own shell (tests/agent-guard/agent_guard.py)
   --real-only          only that probe
 
 Everything runs with BROWSER_ANNOTATIONS_TEST=1, in build/acp-test. The real Claude / Codex configuration files are
@@ -40,6 +41,8 @@ import zipfile
 import zlib
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tests" / "agent-guard"))
+import agent_guard as G  # noqa: E402  (--real: only with the person's own BROWSER_TEST_REAL_AGENT)
 OUT = ROOT / "build" / "acp-test"
 TMP = OUT / "tmp"
 GXX = str(ROOT / "tools" / "w64devkit" / "bin" / "g++.exe")
@@ -82,9 +85,12 @@ def fingerprints():
 
 
 def test_env():
-    env = dict(os.environ)
+    """The tests' environment: test mode, no fake agent preset (each test names its own), no switch to this computer's
+    agents, no API key or agent credential (tests/agent-guard/agent_guard.py)."""
+    env, _stripped = G.scrub(dict(os.environ), keep_locations=True)
     env["BROWSER_ANNOTATIONS_TEST"] = "1"
     env.pop("BROWSER_CHAT_FAKE_AGENT", None)
+    env.pop(G.REAL_AGENT_SWITCH, None)
     return env
 
 
@@ -322,6 +328,9 @@ def main():
     parser.add_argument("--real", action="store_true")
     parser.add_argument("--real-only", action="store_true")
     args = parser.parse_args()
+    # The real adapters with the user's own CLI and account: refused (before anything is built or started) unless the
+    # person at the keyboard set BROWSER_TEST_REAL_AGENT=yes-use-my-account in their own shell (agent guard).
+    real = G.real_env(dict(os.environ, BROWSER_ANNOTATIONS_TEST="1")) if (args.real or args.real_only) else None
     OUT.mkdir(parents=True, exist_ok=True)
     before = fingerprints()
     env = test_env()
@@ -346,7 +355,7 @@ def main():
             if args.no_console:
                 print("acp: 1 test skipped (--no-console): the terminal sign-in, which opens a visible console")
         if args.real or args.real_only:
-            real_probe(env)
+            real_probe(real)
     finally:
         time.sleep(0.5)
         left = leftover_processes()

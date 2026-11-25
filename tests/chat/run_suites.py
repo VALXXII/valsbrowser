@@ -63,6 +63,12 @@ def main() -> int:
     results = json.loads(results_file.read_text(encoding='utf-8')) if results_file.exists() and only else {}
     env = dict(os.environ)   # each suite sets its own guards (BROWSER_ANNOTATIONS_TEST would switch tests/annotations' connection tests to their « test mode » branch)
     env.pop('BROWSER_ANNOTATIONS_TEST', None)
+    # agent guard (tests/agent-guard/agent_guard.py): no API key or agent credential, no switch to this computer's agents
+    sys.path.insert(0, str(ROOT / 'tests' / 'agent-guard'))
+    import agent_guard as G
+    env, _stripped = G.scrub(env, keep_locations=True)
+    for k in (G.REAL_AGENT_SWITCH, G.REAL_OPT_IN[0], 'BROWSER_CHAT_FAKE_AGENT'):
+        env.pop(k, None)
     for name, cmd, limit in SUITES:
         if only and name not in only:
             continue

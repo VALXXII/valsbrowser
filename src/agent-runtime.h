@@ -76,9 +76,20 @@ struct Environment {
     std::wstring registry = L"https://registry.npmjs.org";      // official npm registry
     bool freshUserEnvironment = true;  // the agent gets the user's environment rebuilt from the registry (tests: false)
     // Test hook, filled by FromProcess only when BROWSER_ANNOTATIONS_TEST is set and the build is not a release:
-    // BROWSER_CHAT_FAKE_AGENT=<fake-acp-agent.exe> [args...] replaces both agents (no CLI, no download).
+    // BROWSER_CHAT_FAKE_AGENT=<absolute path of fake-acp-agent.exe> [args...] replaces both agents (no CLI, no
+    // download). Never a silent fall back: a path that is not there refuses every agent (agentsRefused below).
     std::wstring fakeAgentExe;
     std::vector<std::wstring> fakeAgentArgs;
+    // Test guard (incident of 25 Nov 2026: a fake agent path that did not exist made a test browser fall back to the
+    // computer's own, signed-in Claude Code). Set by FromProcess only when BROWSER_ANNOTATIONS_TEST is set: every
+    // agent is refused when BROWSER_CHAT_FAKE_AGENT names a program that is not there (or not by an absolute path,
+    // or in a release build, which has no fake-agent hook), and when it names none at all unless
+    // BROWSER_CHAT_REAL_AGENT=1 asks for this computer's agents (the sandbox and the real-agent QA, run by hand).
+    // A refused environment looks for nothing, runs nothing and downloads nothing: Detect says Missing (source
+    // "refused"), Prepare fails (PrepareError::Refused), ResolveLaunch fails (NotInstalled), RunTerminalSignIn starts
+    // nothing. Normal use (no BROWSER_ANNOTATIONS_TEST) is unchanged.
+    bool agentsRefused = false;
+    std::string refusedWhy;      // for the log (English, may hold the missing path)
     const Pins* pins = nullptr;  // nullptr = BuiltInPins() (tests pass altered pins)
 
     static Environment FromProcess(const std::wstring& dataRoot);
@@ -104,7 +115,7 @@ struct CliInfo {
     CliState state = CliState::Missing;
     std::wstring path;      // the executable used
     std::string version;    // "2.1.325"; "" when it could not be read
-    std::string source;     // "path" | "installer" | "npm" | "winget" | "test"
+    std::string source;     // "path" | "installer" | "npm" | "winget" | "test" | "refused" (test guard: nothing looked for)
 };
 struct Detection {
     Agent agent = Agent::Claude;
@@ -145,6 +156,7 @@ enum class PrepareError {
     Integrity,   // a download did not match its pinned fingerprint: nothing was installed
     Disk,        // could not write under <data>\agents
     Archive,     // an archive we could not read, or with an entry that leaves its folder
+    Refused,     // test guard: Environment::agentsRefused (nothing downloaded)
 };
 const char* PrepareErrorName(PrepareError error);  // stable identifier
 struct PrepareResult {

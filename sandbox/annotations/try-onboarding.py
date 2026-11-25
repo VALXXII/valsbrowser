@@ -163,6 +163,10 @@ def main() -> int:
         env['BROWSER_ANNOTATIONS_CONNECT_ROOT'] = str(agents)
         env['BROWSER_ANNOTATIONS_TEST'] = '1'   # garde-fou : aucune écriture dans les vrais dossiers, même si la redirection échouait
         env.pop('BROWSER_ANNOTATIONS_CONNECT_PATH', None)
+        # Essai à la main : le chat garde les agents de cet ordinateur. Sans ce réglage, le mode test du navigateur les
+        # refuse tous (garde-fou des tests, src/agent-runtime.cpp) — un test, lui, n'utilise que le faux agent.
+        env.pop('BROWSER_CHAT_FAKE_AGENT', None)
+        env['BROWSER_CHAT_REAL_AGENT'] = '1'
         print(f'Navigateur     : {run}\\browser.exe' + (' (fenêtre privée)' if a.private else ''))
         print(f'Page locale    : {URL}   (Annoter allumé)')
         print(f'Fichier local  : {file_url}   (Annoter allumé)')

@@ -113,7 +113,32 @@ const AgentDef* AgentOf(const std::string& id) { for (const auto& a : Agents) if
 std::wstring AgentShort(const std::string& id) { return id == "codex" ? L"Codex" : L"Claude"; }
 // Everything the runtime looks up outside (CLI, <data>gents, the test hook BROWSER_CHAT_FAKE_AGENT). Reads the
 // registry: built off the UI thread, or once per panel opening.
-AgentRuntime::Environment RtEnv() { return AgentRuntime::Environment::FromProcess(Ann::DataRoot()); }
+// Test guard (src/agent-runtime.h, Environment::agentsRefused): under BROWSER_ANNOTATIONS_TEST the log says which agent
+// this browser may start — the fake agent by its full path, or that every agent is refused and why — each time that
+// changes; tests/agent-guard reads these lines to prove that only the fake agent ran. Any thread (the log is serialized).
+AgentRuntime::Environment RtEnv() {
+    auto env = AgentRuntime::Environment::FromProcess(Ann::DataRoot());
+    if (TestMode()) {
+        static std::mutex mu; static std::wstring said;
+        const std::wstring line = env.agentsRefused ? L"agent runtime (test): every agent refused: " + W(env.refusedWhy)    // i18n-exempt: log detail
+                                : !env.fakeAgentExe.empty() ? L"agent runtime (test): fake agent \"" + env.fakeAgentExe + L"\""   // i18n-exempt: log detail
+                                : std::wstring(L"agent runtime (test): this computer's agents (BROWSER_CHAT_REAL_AGENT=1)");     // i18n-exempt: log detail
+        std::lock_guard<std::mutex> g(mu);
+        if (line != said) { said = line; Diag(line); }
+    }
+    return env;
+}
+// The runtime's resolver; in test mode every launch is logged with the program it starts (a user's log never gets it).
+Acp::Resolver AgentResolver(AgentRuntime::Environment env, AgentRuntime::Agent rt) {
+    auto inner = AgentRuntime::MakeResolver(std::move(env), rt);
+    if (!TestMode()) return inner;
+    return [inner](const Acp::ResolveContext& c) {
+        Acp::Resolution r = inner(c);
+        if (r.error.Ok()) Diag(L"agent launch (test): \"" + r.launch.exe + L"\"");   // i18n-exempt: log detail
+        else Diag(L"agent launch refused (test): " + W(r.error.detail));            // i18n-exempt: log detail
+        return r;
+    };
+}
 struct AgentInfo {   // what the panel shows for one agent (state.agents)
     std::string status = "starting"; std::wstring detail; double progress = -1; bool cli = false, prepared = false, known = false;
     std::vector<Acp::AuthMethod> auth; std::vector<Acp::ConfigOption> options; Acp::ModeState modes; Acp::Capabilities caps; std::vector<Acp::Command> commands;

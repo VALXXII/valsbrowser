@@ -91,7 +91,24 @@ def foreground_ours():
     q = W.DWORD(); u32.GetWindowThreadProcessId(u32.GetForegroundWindow(), ctypes.byref(q)); return q.value == Q.our_pid()
 
 
+def guarded_env():
+    """The browser's environment, checked by the agent guard (tests/agent-guard/agent_guard.py) before anything is copied
+    or started: the fake agent exists under build/, keys stripped, the « user » folders and PATH redirected."""
+    fake = C.TOOLS / 'fake-acp-agent.exe'
+    env = dict(os.environ)
+    env['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = (f'--remote-debugging-port={Q.PORT} --remote-allow-origins=http://127.0.0.1:{Q.PORT} '
+                                                    '--disable-features=CalculateNativeWinOcclusion --disable-backgrounding-occluded-windows')
+    env['BROWSER_ANNOTATIONS_CONNECT_ROOT'] = str(C.AGENTS); env['BROWSER_ANNOTATIONS_TEST'] = '1'
+    env.pop('BROWSER_ANNOTATIONS_CONNECT_PATH', None)
+    env['BROWSER_CHAT_PANEL_IDLE_MS'] = '60000'; env['BROWSER_CHAT_AGENT_IDLE_MS'] = '600000'
+    env['BROWSER_CHAT_FAKE_AGENT'] = f'"{fake}" --resume --claude-like --start-mode auto --log "{C.WORK / "fake-agent.log"}"'
+    env = C.G.secure_env(env, work=C.WORK, exe=C.APP / 'browser.exe', fake=fake)
+    assert pathlib.Path(env['BROWSER_ANNOTATIONS_CONNECT_ROOT']).resolve().is_relative_to(ROOT / 'build'), 'unsafe environment'
+    return env
+
+
 def launch():
+    env = guarded_env()   # the agent guard first: when it refuses, nothing is copied or started
     app = C.APP; app.mkdir(parents=True, exist_ok=True); C.WORK.mkdir(parents=True, exist_ok=True)
     keep = ('profile', 'session', 'sessions', 'annotations', 'prototype.log', 'downloads', 'bookmarks', 'settings', 'history',
             'annotations-connect', 'annotations-chat', 'chat-snapshots', 'agents', 'profiles', 'profiles.txt', 'favicons', 'extensions')
@@ -113,18 +130,16 @@ def launch():
     server = subprocess.Popen([sys.executable, str(ROOT / 'sandbox' / 'chat' / 'serve.py'), '--root', str(C.SITE), '--port', str(C.PORT_PAGE)],
                               cwd=str(C.SITE), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     (C.WORK / 'server.pid').write_text(str(server.pid))
-    fake = C.TOOLS / 'fake-acp-agent.exe'; assert fake.is_file(), f'missing {fake}'
-    env = dict(os.environ)
-    env['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = (f'--remote-debugging-port={Q.PORT} --remote-allow-origins=http://127.0.0.1:{Q.PORT} '
-                                                    '--disable-features=CalculateNativeWinOcclusion --disable-backgrounding-occluded-windows')
-    env['BROWSER_ANNOTATIONS_CONNECT_ROOT'] = str(C.AGENTS); env['BROWSER_ANNOTATIONS_TEST'] = '1'
-    env.pop('BROWSER_ANNOTATIONS_CONNECT_PATH', None)
-    env['BROWSER_CHAT_PANEL_IDLE_MS'] = '60000'; env['BROWSER_CHAT_AGENT_IDLE_MS'] = '600000'
-    env['BROWSER_CHAT_FAKE_AGENT'] = f'"{fake}" --resume --claude-like --start-mode auto --log "{C.WORK / "fake-agent.log"}"'
-    assert pathlib.Path(env['BROWSER_ANNOTATIONS_CONNECT_ROOT']).resolve().is_relative_to(ROOT / 'build'), 'unsafe environment'
     si = subprocess.STARTUPINFO(); si.dwFlags = 1; si.wShowWindow = 0   # STARTF_USESHOWWINDOW, SW_HIDE
+    try:
+        log_start = (app / 'prototype.log').stat().st_size
+    except OSError:
+        log_start = 0
     p = subprocess.Popen([str(app / 'browser.exe')], cwd=str(app), env=env, startupinfo=si)
     (app / 'qa.pid').write_text(str(p.pid))
+    # the agent guard's watch, kept by chat_qa (its quit_all reads what it caught and the log of this launch)
+    C._guard_env, C._guard_log_start = env, log_start
+    C._guard = C.G.watch(p.pid, env, log=C.LOG, work=C.WORK)
     ok = C.wait_for(lambda: C.ws_for(C.URL) is not None, timeout=60, every=0.3)
     h = next(iter(our_windows('LisiereBrowser')), None)
     vx, vy = u32.GetSystemMetrics(76), u32.GetSystemMetrics(77)

@@ -523,6 +523,129 @@ void TestFakeAgentHook() {
     CHECK(AR::PreferredSignIn(methods) == nullptr && AR::PreferredSignIn({}) == nullptr);
 }
 
+// ---------------------------------------------------------------- test guard: never a fall back to this computer's agents
+// Incident of 25 Nov 2026: a test named a fake agent that was not there, and the browser started the computer's own,
+// signed-in Claude Code. Here working, signed-in CLIs (the fake CLI, which writes down every call it gets) sit on PATH
+// and at the installer's place of the process environment: with BROWSER_ANNOTATIONS_TEST set, a missing, relative or
+// empty fake agent, a folder, or no fake agent at all must refuse every agent — nothing looked for, nothing run, nothing
+// downloaded, no console. Windowless: a refused environment never reaches CreateProcess.
+struct SavedVar {
+    std::wstring name, value;
+    bool set = false;
+};
+SavedVar SaveVar(const wchar_t* name) {
+    std::vector<wchar_t> b(32768);
+    SetLastError(ERROR_SUCCESS);
+    const DWORD n = GetEnvironmentVariableW(name, b.data(), DWORD(b.size()));
+    SavedVar v;
+    v.name = name;
+    v.set = n != 0 || GetLastError() != ERROR_ENVVAR_NOT_FOUND;
+    if (n && n < b.size()) v.value.assign(b.data(), n);
+    return v;
+}
+void RestoreVar(const SavedVar& v) { SetEnvironmentVariableW(v.name.c_str(), v.set ? v.value.c_str() : nullptr); }
+
+void TestFakeAgentMissing() {
+    const AR::Pins& pins = AR::BuiltInPins();
+    const std::wstring root = g_tmp + L"\\guard", bin = root + L"\\bin", profile = root + L"\\profile", local = root + L"\\local",
+                       roaming = root + L"\\roaming";
+    RemoveTree(root);
+    for (const auto& dir : {bin, profile, local, roaming}) CHECK(MakeDirs(dir));
+    const std::wstring onPath = bin + L"\\claude.exe", installed = profile + L"\\.local\\bin\\claude.exe", codex = bin + L"\\codex.exe";
+    const std::string claudeVersion = std::string(pins.claude.cliLine) + " (Claude Code)";
+    FakeCli(onPath, claudeVersion.c_str(), "0");  // signed in: exactly what a fall back would find and start
+    FakeCli(installed, claudeVersion.c_str(), "0");
+    FakeCli(codex, (std::string("codex-cli ") + pins.codex.minCliVersion).c_str(), "0");
+    const auto untouched = [&] { return !Exists(onPath + L".calls") && !Exists(installed + L".calls") && !Exists(codex + L".calls"); };
+
+    std::vector<SavedVar> saved;
+    for (const wchar_t* name : {L"PATH", L"USERPROFILE", L"LOCALAPPDATA", L"APPDATA", L"BROWSER_ANNOTATIONS_TEST", L"BROWSER_CHAT_FAKE_AGENT",
+                                L"BROWSER_CHAT_REAL_AGENT"})
+        saved.push_back(SaveVar(name));
+    SetEnvironmentVariableW(L"PATH", bin.c_str());
+    SetEnvironmentVariableW(L"USERPROFILE", profile.c_str());
+    SetEnvironmentVariableW(L"LOCALAPPDATA", local.c_str());
+    SetEnvironmentVariableW(L"APPDATA", roaming.c_str());
+    SetEnvironmentVariableW(L"BROWSER_CHAT_REAL_AGENT", nullptr);
+
+    const std::wstring missing = root + L"\\not-built\\fake-acp-agent.exe";
+    const std::wstring missingSpec = L"\"" + missing + L"\" --resume --claude-like --log \"" + root + L"\\fake.log\"";
+    const std::wstring relativeSpec = L"fake-acp-agent.exe --resume", emptySpec = L"\"\" --resume", folderSpec = L"\"" + bin + L"\" --resume";
+    const struct {
+        const wchar_t* spec;  // nullptr: BROWSER_CHAT_FAKE_AGENT unset
+        const char* label;
+    } cases[] = {{missingSpec.c_str(), "missing"}, {relativeSpec.c_str(), "relative"}, {emptySpec.c_str(), "empty"},
+                 {folderSpec.c_str(), "folder"}, {nullptr, "none"}};
+    for (const auto& c : cases) {
+        SetEnvironmentVariableW(L"BROWSER_ANNOTATIONS_TEST", L"1");
+        SetEnvironmentVariableW(L"BROWSER_CHAT_FAKE_AGENT", c.spec);
+        const AR::Environment env = AR::Environment::FromProcess(root + L"\\data");
+        const bool refused = env.agentsRefused && env.fakeAgentExe.empty() && !env.refusedWhy.empty();
+        if (!refused) std::printf("  guard case %s: not refused (%s)\n", c.label, env.refusedWhy.c_str());
+        CHECK(refused);
+        if (!refused) continue;  // never go on with an environment that could start a CLI of this machine
+        if (c.spec == missingSpec.c_str()) CHECK(Contains(env.refusedWhy, Narrow(missing)));  // the log names what is missing
+        if (!c.spec) CHECK(Contains(env.refusedWhy, "BROWSER_CHAT_REAL_AGENT"));
+        for (const AR::Agent agent : {AR::Agent::Claude, AR::Agent::Codex}) {
+            const AR::Detection d = AR::Detect(env, agent);
+            CHECK(d.cli.state == AR::CliState::Missing && !d.Usable() && d.cli.source == "refused" && d.cli.path.empty() && d.login == AR::Login::Unknown);
+            const Acp::Resolution r = AR::ResolveLaunch(env, agent, {});
+            CHECK(r.error.code == Acp::ErrorCode::NotInstalled && r.launch.exe.empty() && Contains(r.error.detail, "refused"));
+            const AR::PrepareResult p = AR::Prepare(env, agent);
+            CHECK(p.error == AR::PrepareError::Refused && std::strcmp(AR::PrepareErrorName(p.error), "refused") == 0);
+            std::string why;
+            CHECK(!AR::RunTerminalSignIn(env, agent, AR::DefaultTerminalSignIn(agent), &why).Started() && why == "refused");
+        }
+        CHECK(!Exists(env.dataRoot));  // nothing downloaded, nothing written
+        Acp::Session session;  // a whole start, as the chat does it: refused before any process exists
+        Acp::StartOptions o;
+        o.resolve = AR::MakeResolver(env, AR::Agent::Claude);
+        o.cwd = Narrow(root);
+        CHECK(session.Start(o));
+        bool notInstalled = false;
+        std::vector<Acp::Event> events;
+        for (int i = 0; i < 100 && !notInstalled; ++i) {
+            session.WaitForEvents(100);
+            session.Poll(events);
+            for (const auto& e : events)
+                if (e.type == Acp::Event::Type::Started) notInstalled = e.started.state == Acp::StartState::NotInstalled;
+            events.clear();
+        }
+        CHECK(notInstalled);
+        session.Dispose();
+        CHECK(session.WaitStopped(10000));
+        CHECK(untouched());  // no CLI of « this computer » was even asked its version
+    }
+
+    // Normal use is unchanged: without BROWSER_ANNOTATIONS_TEST the test hook and its guard are not read at all.
+    SetEnvironmentVariableW(L"BROWSER_ANNOTATIONS_TEST", nullptr);
+    SetEnvironmentVariableW(L"BROWSER_CHAT_FAKE_AGENT", missingSpec.c_str());
+    {
+        const AR::Environment env = AR::Environment::FromProcess(root + L"\\data");
+        CHECK(!env.agentsRefused && env.refusedWhy.empty() && env.fakeAgentExe.empty() && env.freshUserEnvironment);
+    }
+    // Asked for by name (the sandbox, the real-agent QA run by hand): this computer's agents, as before. The fake CLI of
+    // this folder is found and asked its version: the refusals above were the guard's, not an empty machine's.
+    SetEnvironmentVariableW(L"BROWSER_ANNOTATIONS_TEST", L"1");
+    SetEnvironmentVariableW(L"BROWSER_CHAT_FAKE_AGENT", nullptr);
+    SetEnvironmentVariableW(L"BROWSER_CHAT_REAL_AGENT", L"1");
+    {
+        const AR::Environment env = AR::Environment::FromProcess(root + L"\\data");
+        CHECK(!env.agentsRefused && env.fakeAgentExe.empty() && !env.freshUserEnvironment);
+        AR::DetectOptions quick;
+        quick.checkLogin = false;
+        const AR::Detection d = AR::Detect(env, AR::Agent::Claude, quick);
+        CHECK(d.Usable() && d.cli.path == installed && Exists(installed + L".calls"));
+    }
+    // A fake agent that is there wins over everything (the chat suites' case).
+    SetEnvironmentVariableW(L"BROWSER_CHAT_FAKE_AGENT", (L"\"" + g_agent + L"\" --resume").c_str());
+    {
+        const AR::Environment env = AR::Environment::FromProcess(root + L"\\data");
+        CHECK(!env.agentsRefused && env.fakeAgentExe == g_agent && AR::ResolveLaunch(env, AR::Agent::Codex, {}).launch.exe == g_agent);
+    }
+    for (const auto& v : saved) RestoreVar(v);
+}
+
 // ---------------------------------------------------------------- real downloads (official servers, temporary folder)
 std::string RunAndCapture(const std::wstring& exe, const std::wstring& args) {
     SECURITY_ATTRIBUTES sa{sizeof sa, nullptr, TRUE};
@@ -704,6 +827,7 @@ int wmain(int argc, wchar_t** argv) {
         {"detection", TestDetection, false},
         {"launch + stale", TestLaunch, false},
         {"fake agent hook + terminal sign-in", TestFakeAgentHook, false},
+        {"test guard: missing fake agent refuses every agent", TestFakeAgentMissing, false},
         {"real downloads", TestRealDownloads, true},
     };
     for (const auto& t : tests) {

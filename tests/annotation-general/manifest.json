@@ -190,6 +190,17 @@
       ]
     },
     {
+      "id": "agent-guard",
+      "title": "Garde-fou des agents : faux agent manquant = rien ne démarre, clés retirées, aucun vrai Claude / Codex sous un navigateur de test",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/agent-guard/run_tests.py"
+      ],
+      "timeout": 300
+    },
+    {
       "id": "real-trial-records",
       "title": "O9 : comptes rendus des deux essais réels (Claude Code, Codex) — toutes les étapes passées, aucune configuration réelle modifiée",
       "part": "day",

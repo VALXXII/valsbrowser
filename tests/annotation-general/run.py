@@ -21,7 +21,9 @@ The rules (plan §4.1) — why this file exists:
   7. the report lists the test files changed since the last green run;
   8. safety: every suite runs in a Job Object (KILL_ON_JOB_CLOSE): nothing survives it, a process left behind is a failure;
      a browser.exe started from anywhere but this repository's build/ folder is a failure (never the installed browser,
-     never the owner's profile); the real Claude / Codex configuration files are fingerprinted before and after.
+     never the owner's profile); the real Claude / Codex configuration files are fingerprinted before and after;
+     agent guard (tests/agent-guard/agent_guard.py): no API key or agent credential is passed to the suites, and a
+     claude / codex / node / npx… process that is not a test's own program under build/ stops the suite at once.
 
 Pause (the owner needs the screen): create the file build/annotation-general/PAUSE. The suite that runs is finished, the
 next one waits until the file is removed; the wait is no one's time limit. A suite that was running when the file appeared
@@ -47,6 +49,8 @@ import time
 
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
+sys.path.insert(0, str(ROOT / 'tests' / 'agent-guard'))
+import agent_guard as G   # noqa: E402  (rule 8: no agent of this computer in any suite)
 OUT = ROOT / 'build' / 'annotation-general'
 BUILD_NAME = 'annotation-general-app'           # build/annotation-general-app (+ -test: the fake agent)
 PY = sys.executable
@@ -298,12 +302,16 @@ def run_suite(suite, part, env, logs):
                 break
             except subprocess.TimeoutExpired:
                 pass
-            for pid in job.pids():   # rule 8: which browser is it?
+            agent = None
+            for pid in job.pids():   # rule 8: which browser is it? which agent?
                 image = image_of(pid)
                 if image and os.path.basename(image).lower() == 'browser.exe' and not any(image.lower().startswith(a) for a in allowed):
                     foreign.add(image)
+                agent = agent or (G.runner_verdict(os.path.basename(image), image) if image else None)
             if foreign:
                 status = 'fail'; result['why'] = 'a browser.exe that is not a test build (neither under build/ nor under %TEMP%) was started'; job.kill(); break
+            if agent:   # the agent guard (tests/agent-guard): a real Claude / Codex / node… in a suite — stopped at once
+                status = 'fail'; result['why'] = 'agent guard: ' + agent; job.kill(); break
             if time.time() - started > limit:
                 status = 'timeout'; result['why'] = f'not finished after {limit} s'; job.kill(); break
         # what the suite left behind (up to 10 s to end by itself), then nothing survives
@@ -466,6 +474,12 @@ def main():
     folder = OUT / part; logs = folder / 'logs'; logs.mkdir(parents=True, exist_ok=True)
     idn = identity(); started = time.time(); before = fingerprints()
     env = dict(os.environ); env.pop('BROWSER_ANNOTATIONS_TEST', None)   # each suite sets its own guards (as tests/chat/run_suites.py)
+    # rule 8, agent guard: no API key or agent credential reaches any suite, nor a switch to this computer's agents
+    env, stripped = G.scrub(env, keep_locations=True)
+    for k in (G.REAL_AGENT_SWITCH, G.REAL_OPT_IN[0], 'BROWSER_CHAT_FAKE_AGENT'):
+        env.pop(k, None)
+    if stripped:
+        print('agent guard: stripped from the suites\' environment:', ', '.join(stripped))
     env['CHAT_QA_BUILD'] = BUILD_NAME; env['PYTHONIOENCODING'] = 'utf-8'
     outer = Job()   # rule 8: this run and everything it starts die together
     k32.AssignProcessToJobObject(outer.h, k32.GetCurrentProcess())

@@ -186,6 +186,17 @@ dans le paquet). Scénarios choisis par un mot dans le message : `reply` (défau
 `BROWSER_CHAT_FAKE_AGENT=<chemin de fake-acp-agent.exe> [options]`, `Environment::FromProcess` remplace les deux
 agents par le faux (aucune CLI, aucun téléchargement). Ignoré dans une build `--channel release`.
 
+**Garde-fou des tests (incident du 25/11/2026 : un faux agent introuvable a fait démarrer le vrai Claude Code de la
+machine, connecté)** : avec `BROWSER_ANNOTATIONS_TEST`, jamais de repli. Un faux agent nommé mais absent (ou par un
+chemin relatif, ou dans une build release), ou aucun faux agent nommé, refuse **tous** les agents
+(`Environment::agentsRefused`) : aucune CLI cherchée, lancée ni téléchargée ; `Detect` → Missing (source `refused`),
+`Prepare` → `refused`, `ResolveLaunch` → NotInstalled, connexion « terminal » refusée. Seul
+`BROWSER_CHAT_REAL_AGENT=1` rend les agents de la machine (bacs à sable et essai réel lancés à la main). Le journal dit
+`CHAT agent runtime (test): fake agent "<chemin complet>"` (ou `… every agent refused: <raison>`) et, à chaque
+lancement, `CHAT agent launch (test): "<programme>"`. Côté tests : `tests/agent-guard/agent_guard.py` (vérifie le faux
+agent avant le lancement, retire les clés, redirige les dossiers, surveille les processus et le journal). Sans
+`BROWSER_ANNOTATIONS_TEST` (usage normal), rien ne change.
+
 **Le mot du scénario est cherché dans le DERNIER bloc de texte du prompt seulement** (le message de l'utilisateur) :
 un préambule ou une description d'élément placés avant ne déclenchent jamais un scénario.
 
