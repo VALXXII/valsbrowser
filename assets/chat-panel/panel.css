@@ -310,6 +310,31 @@ svg.i { display: block; flex-shrink: 0; }
 .sug .ct { display: flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 4px; background: #3E67FF33; color: var(--accent-ink); font-size: 11px; font-weight: 500; line-height: 14px; }
 @media (hover: hover) { .sug:hover { background: var(--fill4); border-color: var(--line2); } }
 
+/* « Ton agent » (worker B): the first message's block while no agent is ready (Paper 22N3-0) — at the bottom, right above the
+   input, like the empty chat. Rows: the state as an icon and its words (the Designer's rule for Réglages › Agents: no coloured
+   dot); ONE strong button on the missing action in the profile's accent (--ta-accent, sent by the host; #0099A0 on the board). */
+.tas { display: flex; flex-direction: column; justify-content: flex-end; gap: 12px; padding: 16px 12px; flex: 1; min-height: 100%; }
+.tas-h { margin: 0; font-size: 16px; font-weight: 600; line-height: 22px; color: #FFFFFF; }
+.tas-sub, .tas-note { margin: 0; font-size: 12px; line-height: 17px; color: #A6A6A6; }
+.tas-note { color: #8C8C8C; }
+.tas-card { display: flex; flex-direction: column; gap: 2px; padding: 4px; border: 1px solid #262626; border-radius: 12px; background: #1C1C1C; }
+.tas-row { display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 10px; }
+.tas-logo { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 32px; height: 32px; border-radius: 8px; background: #262626; }
+.tas-logo .tas-l { width: 16px; height: 16px; color: #FFFFFF; }
+.tas-tx { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; flex: 1; min-width: 0; }
+.tas-nm { font-size: 14px; font-weight: 500; line-height: 18px; color: #FFFFFF; }
+.tas-st { display: flex; align-items: center; gap: 4px; font-size: 12px; line-height: 16px; color: #A6A6A6; }
+.tas-st.accent { color: #2FD1D9; }
+.tas-st.danger { color: var(--danger); }
+.tas-st .tas-i { width: 14px; height: 14px; }
+.tas-rn { font-size: 13px; line-height: 17px; color: #8C8C8C; }
+.tas-btn { display: flex; align-items: center; flex-shrink: 0; height: 28px; padding: 0 10px; border-radius: 6px; background: #2A2A2A; color: #FFFFFF; font-size: 13px; font-weight: 500; line-height: 16px; white-space: pre; }
+.tas-btn.strong { background: var(--ta-accent, var(--accent)); }
+@media (hover: hover) { .tas-btn:not(.strong):hover { background: var(--hover); } .tas-btn.strong:hover { filter: brightness(1.08); } }
+.tas-link { color: #E6E6E6; font-size: 13px; font-weight: 500; line-height: 17px; text-decoration: underline 1px; text-underline-position: from-font; border-radius: 4px; }
+@media (hover: hover) { .tas-link:hover { color: #FFFFFF; } }
+.bub .tas { min-height: 0; padding: 0; flex: 0 0 auto; }
+
 /* new steps pill */
 .newsteps { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px;
   border-radius: 14px; background: #2A2A2A; color: var(--w90); font-size: 12px; font-weight: 500; line-height: 16px; white-space: pre; box-shadow: 0 4px 16px #00000066; z-index: 2; }
@@ -389,6 +414,9 @@ svg.i { display: block; flex-shrink: 0; }
 .send.stop svg { opacity: 1; }
 @media (hover: hover) { .send.ready:hover { background: #5579FF; } }
 .keys { display: flex; align-items: center; gap: 12px; padding: 2px 0 0 4px; }
+/* « Ton agent »: « Connectez un agent pour envoyer » under the input (no board yet: the keys row's look, provisional) */
+.send-hint { padding: 2px 0 0 4px; color: var(--w50); font-size: 12px; line-height: 16px; }
+.send-hint[hidden] { display: none; }
 .keys span.k { display: flex; align-items: center; gap: 6px; color: var(--w50); font-size: 12px; line-height: 16px; }
 .kc { display: inline-flex; align-items: center; justify-content: center; height: 20px; min-width: 20px; padding: 2px 6px; border-radius: 4px; background: var(--fill6); color: var(--w50); font-size: 12px; line-height: 16px; }
 .kcs { display: flex; gap: 2px; }
@@ -551,38 +579,32 @@ svg.i { display: block; flex-shrink: 0; }
 .mi[data-sub] { gap: 8px; }
 .menu.models .mi[aria-checked="true"] { background: var(--fill6); }
 .menu.models .mi .lead { margin-top: 0; }
-/* #128 model menu, variant A (Paper « #128 Menu des modèles · A liste groupée (validée) »), panel and bubble alike: 280 px,
-   #242424, border white 8 %, radius 8, padding 4, no shadow, rows touching. A provider's header 28 px (logo 14, 12/16 Medium
-   at 50 %, 8 apart); not ready: 32 px, « Codex · non connecté » and its accent button (24 px, 0 8, radius 6, 12/16 Medium
-   white). Model rows 32 px, 0 8, radius 6, 14/20 at 90 %; « Par défaut » 11/14 at 60 % on white 8 % (1/5, radius 4), 8 px
-   after the name; hover white 8 %, chosen white 6 % with the accent check (14); greyed 32 %. Another provider's model
-   (hover, keyboard focus): 44 px, its hint 12/16 at 50 % 2 px under the name. Separators white 6 %, 4 px / 8 px. Effort:
-   14/20 at 90 %, its level 13/18 at 50 %, chevron 12 at 50 %, 6 apart. */
-.menu.models.mm-list { border-color: var(--line); border-radius: 8px; padding: 4px; gap: 0; }
-.menu.mm-list .sep { background: var(--fill6); margin: 4px 8px; }
-.mm-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 28px; padding: 0 8px; flex-shrink: 0; }
-.mm-head.mm-off { height: 32px; padding: 0 4px 0 8px; }
-.mm-hl { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* #128 v2 (Paper « #128 Menu des modèles · v2 ancien menu + groupes (maquette prête) »): the old menu above, as it was
+   (6.4, 17US-0 / 17VU-0: 300 px, #242424, border #3A3A3A, radius 12, padding 6, rows 13/18 Medium 6/10 radius 8, hover and
+   chosen row #313131 with the check #8FA9FF, « Par défaut » on #353535 (#414141 on a filled row), dividers #363636 4/10,
+   « Plus de modèles › » and « Effort  Élevé › » at the bottom, sub-menus 214 px), and ONE addition — a header per agent:
+   its logo 14 + its name 12/16 Medium #929292, 8 apart, padding 6 10 2, not clickable; an agent not ready: « Codex · non
+   connecté » and its accent button at the right (22 px, 0 8, radius 6, 12/16 Medium white), its models greyed (32 %). The
+   back row of the panel's views (« ‹ Plus de modèles », « ‹ Effort »): chevron 11 #929292, 8 apart, the label white.
+   Another agent's model shows, on hover / keyboard focus, that it opens a new chat (12/16 at 50 %, 1 px under its name). */
+/* the board writes the old translucent whites as their opaque equivalents on the menu's #242424 (#3A3A3A, #313131, #353535 /
+   #414141, #363636: the same pixels) — the old values stay (6.4's other boards are measured with them); only the badge's
+   text is the board's own #C6C6C6 */
+.menu.models .mi .tag { color: #C6C6C6; }
+.mm-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px 2px; flex-shrink: 0; }
+.mm-hl { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; }
 .mm-hl .mm-logo { width: 14px; height: 14px; color: #FFFFFF; }
-.mm-hn { color: var(--w50); font-size: 12px; font-weight: 500; line-height: 16px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
-.mm-act { display: flex; align-items: center; height: 24px; padding: 0 8px; border-radius: 6px; background: var(--accent); color: #FFFFFF; font-size: 12px; font-weight: 500; line-height: 16px; white-space: pre; flex-shrink: 0; }
+.mm-hn { color: #929292; font-size: 12px; font-weight: 500; line-height: 16px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+.mm-act { display: flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 6px; background: var(--accent); color: #FFFFFF; font-size: 12px; font-weight: 500; line-height: 16px; white-space: pre; flex-shrink: 0; }
 @media (hover: hover) { .mm-act:hover { background: #5579FF; } }
-.menu.mm-list .mi.mm-row, .menu.mm-list .mi.mm-eff { height: 32px; padding: 0 8px; border-radius: 6px; gap: 6px; color: var(--w90); font-size: 14px; font-weight: 400; line-height: 20px; flex-shrink: 0; }
-.menu.mm-list .mi.mm-row .grow { gap: 2px; }
-.menu.mm-list .mi.mm-row .row1 { gap: 8px; }
-.menu.mm-list .mi.mm-row .tag { height: auto; padding: 1px 5px; color: var(--w60); font-size: 11px; font-weight: 400; line-height: 14px; }
-.menu.mm-list .mi.mm-row[aria-disabled="true"] { opacity: .32; }
-.mm-hint { display: none; color: var(--w50); font-size: 12px; line-height: 16px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
-.menu.mm-list .mi.mm-x:focus-visible { height: 44px; }
-.menu.mm-list .mi.mm-x:focus-visible .mm-hint { display: block; }
-.menu.mm-list .mi.mm-eff .val { color: var(--w50); font-size: 13px; line-height: 18px; }
-.menu.mm-list .mi.mm-eff .sub { width: 12px; height: 12px; }
-.menu.mm-list .mi:focus-visible { border-radius: 6px; }
+.menu.models .mi[aria-disabled="true"] { opacity: .32; }
+.menu.models .mi.back { color: #FFFFFF; gap: 8px; }
+.menu.models .mi .lead.backi { opacity: .5; margin: 0; }
+.mm-hint { display: none; color: var(--w50); font-size: 12px; font-weight: 400; line-height: 16px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+.menu.models .mi.mm-x:focus-visible .mm-hint { display: block; }
 @media (hover: hover) {
-  .menu.mm-list .mi.mm-row:not([aria-disabled="true"]):hover, .menu.mm-list .mi.mm-eff:hover { background: var(--fill8); }
-  .menu.mm-list .mi.mm-row[aria-disabled="true"]:hover { background: none; }
-  .menu.mm-list .mi.mm-x:hover { height: 44px; }
-  .menu.mm-list .mi.mm-x:hover .mm-hint { display: block; }
+  .menu.models .mi[aria-disabled="true"]:hover { background: none; }
+  .menu.models .mi.mm-x:hover .mm-hint { display: block; }
 }
 .menu .btn-s.primary { background: var(--accent); }
 @media (hover: hover) { .menu .btn-s.primary:hover { background: #5579FF; } }

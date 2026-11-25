@@ -39,6 +39,7 @@ FILES = C.WORK / 'lot-r-fichiers' / 'Mon site'          # a local « project » 
 PORT_ALL = 5187                                           # 127.0.0.1: 127.x, localhost, *.localhost and the names / address mapped to it
 LAN = '192.168.77.77'                                     # a LAN address, mapped to 127.0.0.1 by the resolver rule
 PORT_V6 = 5186                                            # ::1
+PORT_PRIVATE = 5188                                       # the private window's site, served as the sandbox's own (its pages name their files)
 PRIVATE = C.APP / 'annotations-private'
 report = {'steps': [], 'measures': {}, 'captures': []}
 servers = []
@@ -108,6 +109,15 @@ def serve(bind, port, root):
     p = subprocess.Popen([sys.executable, '-m', 'http.server', str(port), '--bind', bind], cwd=str(root), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     servers.append(p)
     return p
+
+
+def serve_site(port):
+    """The sandbox site as tests/chat/chat_qa.py serves it (sandbox/chat/serve.py, from the site's own folder): its pages name
+    their files, so the project folder is found « without asking » — as for a real dev server."""
+    p = subprocess.Popen([sys.executable, str(C.ROOT / 'sandbox' / 'chat' / 'serve.py'), '--root', str(C.SITE), '--port', str(port)], cwd=str(C.SITE),
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    servers.append(p)
+    time.sleep(1.0)
 
 
 def env_for(extra):
@@ -335,7 +345,12 @@ def part_queue():
 
 
 def part_private():
-    url = f'http://127.0.0.1:{PORT_ALL}/'
+    # Night of 25 Nov 2026 (first real-window run of this suite): the window was opened on this script's plain file server
+    # (PORT_ALL). Its pages name no file, so the folder could not be found without asking: the bubble kept « Choisissez le
+    # dossier du projet pour commencer. », nothing was sent, and the two steps about what is stored failed — the script's
+    # hole, not the product's. The site is now served as the sandbox's own, and the script says so before it sends.
+    serve_site(PORT_PRIVATE)
+    url = f'http://127.0.0.1:{PORT_PRIVATE}/'
     before_store, before_convs = store_entries(), normal_conversations()
     for how in ('closed', 'killed'):
         p = launch_private(url)
@@ -350,12 +365,17 @@ def part_private():
             r = at(url[:24], "(function(){var r=document.querySelector('.title').getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2]})()")
             for kind in ('mouseMoved', 'mousePressed', 'mouseReleased'):
                 ws.call('Input.dispatchMouseEvent', {'type': kind, 'x': r[0], 'y': r[1], 'button': 'none' if kind == 'mouseMoved' else 'left', 'clickCount': 0 if kind == 'mouseMoved' else 1})
-            C.wait_for(lambda: chips() >= 1, 10)
+            # a private window writes nothing to the browser's log (src/main.cpp, Log): everything is read in the chat's page
+            C.wait_for(lambda: chips() >= 1 or 'Demander' in (C.panel_text() or ''), 10)   # a chip (« Panneau ») or the element's bubble (« Commentaire », the layout of the last window)
+            time.sleep(1.0); txt = C.panel_text() or ''
+            step(f'4 · …its project folder is found without asking, as in a normal window ({how})', 'Choisissez le dossier' not in txt and 'Où est le code' not in txt, ' '.join(txt.split())[:200])
             C.panel("document.getElementById('composer-input').focus()"); C.type_panel(' Message privé jetonPrive'); time.sleep(0.2); C.enter_panel()
-            C.wait_for(lambda: 'Refuser' in C.panel_text() or 'jetonPrive' in C.panel_text(), 20)
-            if 'Refuser' in C.panel_text():
-                C.click_panel(text='Refuser')
-            time.sleep(2.5)
+            sent_js = "(function(){var c=document.getElementById('composer-input');var own=c?c.innerText:'';return document.body.innerText.split('jetonPrive').length-1-(own.indexOf('jetonPrive')>=0?1:0)})()"
+            step(f'4 · …a request starts a turn: the message is in the thread ({how})', bool(C.wait_for(lambda: (C.panel(sent_js) or 0) >= 1, 20)), ' '.join((C.panel_text() or '').split())[:200])
+            # the turn is LEFT RUNNING (the fake agent's request is not answered): a private window closed in the middle of a
+            # turn must erase everything too (25 Nov 2026: the snapshot store's lock kept the folder until the next start)
+            C.wait_for(lambda: 'Refuser' in (C.panel_text() or ''), 20)
+            time.sleep(1.5)
             data = PRIVATE / datas[0] if datas else None
             convs = sorted(f.name for f in (data / 'annotations-chat' / 'conversations').glob('*.json')) if data and (data / 'annotations-chat' / 'conversations').exists() else []
             step(f'4 · …its conversation is kept in that folder, not with the normal windows\' ({how})', len(convs) >= 1 and normal_conversations() == before_convs, f'{convs} / normal {normal_conversations()}')

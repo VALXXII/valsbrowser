@@ -414,7 +414,9 @@ op = block_after(ui, 'void OpenPanel() {')
 check('if (quietOpening) quietOpening = false;' in op and 'if (quietOpening && !BubbleOpen()) quietOpening = false;' in block_after(ui, 'if (type == "ready")'),
       'lot R: opened by the mode, the panel takes no keyboard focus (neither at once nor when its page is ready)')
 act = block_after(mode, 'void Activate(const Start& st) {')
-check('first.chatOpen = Chat::AskedFor();' in act and 'if (Chat::AskedFor()) {' in act and 'return Open() && !openedByMode;' in line_of(ui, 'bool AskedFor() {'),
+# « Ton agent »: « Connecter un agent » no longer opens by itself (the tutorial the first time, the band's reminder else):
+# the tutorial's rule is the one left to read « no chat asked ».
+check('first.chatOpen = Chat::AskedFor();' in act and 'return Open() && !openedByMode;' in line_of(ui, 'bool AskedFor() {'),
       'lot R: the launch rules (tutorial, « Connecter un agent ») still see « no chat asked » when the mode opened the panel itself')
 # « 10 éléments au maximum » (validated 2026-11-24): the strip, 4 s, and no frame nor shot for the click
 ts = block_after(ui, 'bool TakeSelection(const std::shared_ptr<Tab>& t, std::uint64_t serial, bool captureImpossible) {')
@@ -441,8 +443,9 @@ check('I18N(chat_agent_never_signed_in, L"{0} n\'est pas connecté.", L"{0} is n
       'signed out: the two sentences, FR and EN (never signed in / no longer signed in)')
 check('if (info.status == "notConnected") a.Set("notice", Str(info.signedIn ? TRF(chat_agent_signed_out, W(std::string(def.name))) : TRF(chat_agent_never_signed_in, W(std::string(def.name)))));' in host,
       'signed out: the state carries the sentence in the interface language — « plus connecté » only when the agent was seen signed in')
-ad = block_after(turn, 'void ApplyDetection(const std::string& id, const AgentRuntime::Detection& d) {')
-check(0 <= ad.find('if (d.login == AgentRuntime::Login::SignedIn) a.signedIn = true;') < ad.find('if (sessionReady && id == agentId) return;')
+# « Ton agent »: the chat reads the agents' one status (src/agent-status.h): « ready » is the detection that says signed in
+ad = block_after(turn, 'void ApplyStatus(const std::string& id, const AgentStatus::Status& s) {')
+check(0 <= ad.find('if (s.state == AgentStatus::State::Ready) a.signedIn = true;') < ad.find('if (sessionReady && id == agentId) return;')
       and turn.count('signedIn = true') == 2 and 'info.cli = info.prepared = true; info.signedIn = true;' in turn and 'bool signedIn = false;' in host,
       'signed out: « seen signed in » is set by a detection that says so and by a ready session, nowhere else; false at start')
 # Lot 5's real trial with Codex (24 Nov 2026): « Demander » = Codex's « read-only »; it refused instead of asking, and the
@@ -461,6 +464,14 @@ check('o.instructions = ChatPrompt::Instructions();' in ss and 'if (caps.systemP
       'lot 5 (Codex): the session is given the approval rule as appended instructions, only when the agent advertises that it takes some')
 check('m.ask = {"read-only"};' in rt_cpp and 'm.automatic = {"agent", "workspace-write"};' in rt_cpp and 'm.never = {"agent-full-access"};' in rt_cpp,
       'lot 5 (Codex): « Demander » stays Codex\'s « read-only » (the only mode where an edit waits for the user), « Auto » its « agent » / « workspace-write »; full access is never offered')
+# Lot R, private window closed in the middle of a turn (found 25 Nov 2026, hidden-desktop run): the snapshot store kept its
+# « turn.lock » open in the window's own folder, which could then not be removed — conversation and ledger stayed until the
+# next start. The chat lets go of the store when it shuts down, and it shuts down BEFORE the private window's files are erased.
+sd = block_after(ui, 'void Shutdown() {')
+main_all = (SRC / 'main.cpp').read_text(encoding='utf-8')
+check(0 <= sd.find('for (auto& s : disposed) s->WaitStopped(3000);') < sd.find('snapshots.reset();') < sd.find('view.Destroy();')
+      and 0 <= main_all.find('case WM_DESTROY:ChatShutdown();') < main_all.find('AnnotationShutdown();', main_all.find('case WM_DESTROY:ChatShutdown();')),
+      'lot R (private window): at the close the chat stops its agent, lets go of the snapshot store, then the window\'s notes and folder are erased')
 cn = block_after(ui, 'void Connect(const std::string& id, const std::string& methodId) {')
 check('if (!method && info.auth.empty() && info.status == "notConnected" && info.cli) { own = AgentRuntime::DefaultTerminalSignIn(def->rt); method = &own;' in cn
       and 'else if (id != agentId) DetectAgents();' in cn,
@@ -506,6 +517,22 @@ check('turn.droppedTools.insert(tool)' in block_after(turn, 'case T::PermissionD
 on_perm = block_after(turn, 'void OnPermission(const Acp::PermissionRequest& p) {')
 check(on_perm.count('Send("permission.request"') == 1 and 'waitingPermissions[p.requestId] = m;' in on_perm and 'm.Set("toolCallId"' in on_perm,
       'permission: the agent\'s request is sent to the page once, with its tool call, and kept while it waits')
+
+# Lot 1d (the owner's decisions of 24 Nov 2026 on iframes; Paper « Iframes · cas 1 … A », « Iframes · cas 3 »)
+page_js = (ROOT / 'src' / 'annotation-script.h').read_text(encoding='utf-8')
+fp = block_after(page_js, 'function followPost() {')
+check('stick({ x: r.left + at.x, y: r.top + at.y, w: r.width, h: r.height, vw: innerWidth, vh: innerHeight }, at.edge)' in fp and 'function stick(o, e) {' in page_js
+      and 'edge = cut(edge, x + r.left, y + r.top, r.width, r.height);' in page_js,
+      'lot 1d, case 1 = A: the place given to the host stays in the iframe\'s box (its border box) — the bubble stuck to the edge the element left by')
+check('follow.key ? keyFind(follow.key) : follow.deep ? deepFind(follow.deep)' in fp and '!el.isConnected || !follow.chain' in fp
+      and 'm.el = m.key ? keyFind(m.key) : cmFind(m.selector)' in block_after(page_js, 'function cmPlace(m) {'),
+      'lot 1d, case 3: the page script finds an iframe\'s element again after its iframe reloaded (the bubble\'s element and the marks)')
+fb = block_after(comment, 'void FollowBubbleElement(bool current) {'); sm = block_after(comment, 'void SyncMarks() {')
+check('key = FrameKeyOf(bubble.conv)' in fb and 'f.Set("key", Str(key))' in fb and 'ChatBubble::FrameKey(k) ? k : std::string()' in block_after(comment, 'std::string FrameKeyOf(const std::string& id) {'),
+      'lot 1d, case 3: after a reload of the page the host gives an iframe\'s element back to the script by its key')
+check('!ChatBubble::FrameKey(h.anchorKey) || !marked.insert(h.anchorKey).second' in sm and 'o.Set("key", Str(h.anchorKey))' in sm,
+      'lot 1d, case 3: a conversation of an iframe\'s element has its mark too (by its key); a web component\'s still has none')
+
 
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

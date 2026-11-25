@@ -15,6 +15,21 @@ int main(){
         State s;s.bookmarksBar=bar;s.accent=0xA054CB;std::stringstream io;Write(io,s);assert(Read(io)==s);
     }
     {std::istringstream invalid("browser-settings 1\nbookmarks-bar=invalid\naccent=#XYZXYZ\n");assert(Read(invalid)==State{});}
+    // « Position des onglets » (#127): En haut by default (new installs, files without the key); the three values round
+    // trip; unknown values are ignored; the trial builds' two keys migrate (layout + sidebar), never written back.
+    {assert(State{}.tabsPosition==TabsPosition::Top&&!SidePanel(TabsPosition::Top)&&SidePanel(TabsPosition::Side)&&SidePanel(TabsPosition::Compact));
+     for(int i=0;i<TabsPositionCount;++i){State s;s.tabsPosition=static_cast<TabsPosition>(i);std::stringstream io;Write(io,s);const std::string text=io.str();assert(text.find("tabs-position=")!=std::string::npos&&text.find("layout=")==std::string::npos&&text.find("sidebar=")==std::string::npos);assert(Read(io)==s);}
+     {std::istringstream f("browser-settings 1\nengine=bing\n");assert(Read(f).tabsPosition==TabsPosition::Top);}
+     {std::istringstream f("browser-settings 1\r\ntabs-position=compact\r\ntabs-position=diagonal\r\n");assert(Read(f).tabsPosition==TabsPosition::Compact);}
+     {std::istringstream f("browser-settings 1\nlayout=side-panel\nsidebar=compact\n");assert(Read(f).tabsPosition==TabsPosition::Compact);}
+     {std::istringstream f("browser-settings 1\nsidebar=complete\nlayout=side-panel\n");assert(Read(f).tabsPosition==TabsPosition::Side);}
+     {std::istringstream f("browser-settings 1\nlayout=top-bar\nsidebar=compact\n");assert(Read(f).tabsPosition==TabsPosition::Top);}
+     {std::istringstream f("browser-settings 1\nsidebar=compact\n");assert(Read(f).tabsPosition==TabsPosition::Top);}
+     {std::istringstream f("browser-settings 1\nlayout=side-panel\ntabs-position=top\n");assert(Read(f).tabsPosition==TabsPosition::Top);}
+     // The side panel's width (#127 « Redimensionner »): 248 by default, written, read back, held between 220 and 360.
+     {State d;assert(d.sideWidth==248);for(int w:{220,248,301,360}){State s;s.sideWidth=w;std::stringstream io;Write(io,s);assert(io.str().find("side-width="+std::to_string(w))!=std::string::npos);assert(Read(io)==s);}
+      auto width=[](const char* v){std::istringstream f(std::string("browser-settings 1\nside-width=")+v+"\n");return Read(f).sideWidth;};
+      assert(width("100")==220&&width("999")==360&&width("290")==290&&width("")==248&&width("wide")==248&&width("-5")==248&&width("12345")==248);}}
     // Annotations: prompt on, no « Plus tard », 30 days by default (V3: no launcher setting).
     {State d;assert(d.annotationConnectPrompt&&d.annotationConnectDeclines==0&&d.annotationRetentionDays==30&&ConnectPromptActive(d));
      // Round trip of every value.

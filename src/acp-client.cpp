@@ -434,12 +434,24 @@ ErrorCode PlainFailure(std::string_view text) {
     return ErrorCode::None;
 }
 
+// « Ton agent »: the adapter is alive but the agent's CLI behind it closed before answering — the Claude Agent SDK says
+// « Query closed before response received » (the CLI quit: an expired sign-in, a crash, an antivirus, an update replacing
+// it). Not an unknown agent error: the host checks the agent again and says the real cause (chat-host-turn.h).
+bool LooksLikeCliClosed(std::string_view text) {
+    const std::string t = Lower(text);
+    // i18n-exempt-begin: wording matched in the agents' own (English) error text
+    return HasAny(t, {"query closed before response", "closed before response received", "process exited unexpectedly",
+                      "claude code process exited", "cli process exited", "process exited with code"});
+    // i18n-exempt-end
+}
+
 Error ClassifyAgentError(int rpcCode, const std::string& message, const std::string& dataDetail) {
     Error e;
     e.rpcCode = rpcCode;
     // Many agents put the useful part in `data` behind a generic "Internal error".
     e.detail = Clip(ValidText(Trim(dataDetail).empty() ? Trim(message) : Trim(dataDetail)), MaxDetailBytes);
     if (rpcCode == -32000 || LooksLikeAuthError(e.detail) || LooksLikeAuthError(message)) e.code = ErrorCode::AuthRequired;
+    else if (LooksLikeCliClosed(e.detail) || LooksLikeCliClosed(message)) e.code = ErrorCode::ProcessExited;
     else if (const ErrorCode plain = PlainFailure(e.detail); plain != ErrorCode::None) e.code = plain;
     else e.code = ErrorCode::AgentError;
     return e;

@@ -2,6 +2,7 @@
 
 // Native-only, header-only C++17 motion model. All calls belong to the UI thread.
 // Pass the same steady-clock timestamp to model updates, sampling and scheduling.
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -107,15 +108,22 @@ public:
 // velocity "brick wall". Unclamped: callers clamp where a range matters.
 // Settled values report the exact target, so a static layout is bit-exact.
 class Spring {
-    float target_ = 0, offset_ = 0, velocity_ = 0, omega_ = 0, epsilon_;
+    float target_ = 0, offset_ = 0, velocity_ = 0, omega_ = 0, epsilon_, zeta_ = 1;
     Time begin_{};
     bool active_ = false;
     void Evaluate(Time now, float& value, float& velocity) const noexcept {
         if (!active_) { value = target_; velocity = 0; return; }
         double t = std::chrono::duration<double>(now-begin_).count();
         if (t < 0) t = 0;
-        const double c1 = offset_, c2 = velocity_+omega_*c1, e = std::exp(-omega_*t);
-        const double x = (c1+c2*t)*e, v = (c2-omega_*(c1+c2*t))*e;
+        double x, v;
+        if (zeta_ >= .9999f) {   // critically damped (Apple's damping 1.0): no overshoot
+            const double c1 = offset_, c2 = velocity_+omega_*c1, e = std::exp(-omega_*t);
+            x = (c1+c2*t)*e; v = (c2-omega_*(c1+c2*t))*e;
+        } else {                 // under-damped (damping < 1): a slight overshoot, for gestures that carried momentum
+            const double z = zeta_, wd = omega_*std::sqrt(1-z*z), c1 = offset_, c2 = (velocity_+z*omega_*c1)/wd, e = std::exp(-z*omega_*t);
+            const double cs = std::cos(wd*t), sn = std::sin(wd*t);
+            x = e*(c1*cs+c2*sn); v = e*((c2*wd-z*omega_*c1)*cs-(c1*wd+z*omega_*c2)*sn);
+        }
         if (std::fabs(x) < epsilon_ && std::fabs(v) < epsilon_*omega_) { value = target_; velocity = 0; return; }
         value = static_cast<float>(target_+x); velocity = static_cast<float>(v);
     }
@@ -136,8 +144,19 @@ public:
         if (target == target_) return;
         float x, v; Evaluate(now, x, v);
         target_ = target; offset_ = x-target; velocity_ = v; begin_ = now;
-        omega_ = static_cast<float>(6.283185307179586/response);
+        omega_ = static_cast<float>(6.283185307179586/response); zeta_ = 1;
         active_ = offset_ != 0 || velocity_ != 0;
+    }
+    // Apple's two parameters (Designing Fluid Interfaces): `damping` 1 = no bounce, < 1 overshoots; `response` (s). From
+    // the presented value; `velocity` (units/s) replaces the presented velocity when given (a gesture's release: the
+    // animation continues at the pointer's speed, no seam).
+    void Throw(float target, Time now, float response, float damping, float velocity, bool reduced = false) noexcept {
+        if (reduced || response <= 0) { Snap(target); return; }
+        float x, v; Evaluate(now, x, v);
+        target_ = target; offset_ = x-target; velocity_ = velocity; begin_ = now;
+        omega_ = static_cast<float>(6.283185307179586/response); zeta_ = std::clamp(damping, .05f, 1.f);
+        active_ = offset_ != 0 || velocity_ != 0;
+        (void)v;
     }
 };
 

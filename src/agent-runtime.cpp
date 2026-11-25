@@ -899,6 +899,7 @@ Environment Environment::FromProcess(const std::wstring& dataRoot) {
                 }
                 LocalFree(argv);
             }
+        env.fakeAgentLaunchOnly = !env.fakeAgentExe.empty() && Var(entries, L"BROWSER_CHAT_FAKE_AGENT_LAUNCH_ONLY") == L"1";
     }
 #endif
     return env;
@@ -1001,7 +1002,7 @@ bool SignInArgsAllowed(Agent agent, const std::vector<std::wstring>& args) {
 Detection Detect(const Environment& env, Agent agent, const DetectOptions& options) {
     Detection d;
     d.agent = agent;
-    if (!env.fakeAgentExe.empty()) {  // test hook: the fake agent stands for both agents
+    if (!env.fakeAgentExe.empty() && !env.fakeAgentLaunchOnly) {  // test hook: the fake agent stands for both agents
         d.cli.state = CliState::Found;
         d.cli.path = env.fakeAgentExe;
         d.cli.source = "test";
@@ -1044,7 +1045,9 @@ InstallHelp GetInstallHelp(Agent agent) {
     if (agent == Agent::Claude)
         return {L"irm https://claude.ai/install.ps1 | iex", L"winget install Anthropic.ClaudeCode", L"claude update",
                 L"https://code.claude.com/docs/en/setup"};
-    return {L"npm install -g @openai/codex", L"", L"npm install -g @openai/codex@latest", L"https://github.com/openai/codex#quickstart"};
+    // « Ton agent »: the official per-user installer first (the same as AgentStatus::ManualInstall), npm as the other way.
+    return {L"powershell -ExecutionPolicy ByPass -c \"irm https://chatgpt.com/codex/install.ps1 | iex\"", L"npm install -g @openai/codex",
+            L"powershell -ExecutionPolicy ByPass -c \"irm https://chatgpt.com/codex/install.ps1 | iex\"", L"https://github.com/openai/codex"};
     // i18n-exempt-end
 }
 
@@ -1065,7 +1068,7 @@ PrepareResult Prepare(const Environment& env, Agent agent, const std::function<v
     Throttle report{progress};
     Progress p;
     report.Report(p, true);
-    if (env.fakeAgentExe.empty() && (!NodeReady(env) || !AdapterReady(env, agent))) {
+    if ((env.fakeAgentExe.empty() || env.fakeAgentLaunchOnly) && (!NodeReady(env) || !AdapterReady(env, agent))) {
         if (!IsAbsolute(env.dataRoot)) return Fail(PrepareError::Disk, "dataRoot");
         Http http;
         if (!NodeReady(env)) {
@@ -1100,7 +1103,7 @@ void RemoveStale(const Environment& env) {
 // ================================================================ launch
 Acp::Resolution ResolveLaunch(const Environment& env, Agent agent, const Acp::ResolveContext& context) {
     Acp::Resolution r;
-    if (!env.fakeAgentExe.empty()) {
+    if (!env.fakeAgentExe.empty() && !env.fakeAgentLaunchOnly) {
         r.launch.exe = env.fakeAgentExe;
         r.launch.args = env.fakeAgentArgs;
         r.launch.freshUserEnvironment = false;
@@ -1134,6 +1137,13 @@ Acp::Resolution ResolveLaunch(const Environment& env, Agent agent, const Acp::Re
             r.error.detail = "node.exe sha256";
             return r;
         }
+    }
+    if (!env.fakeAgentExe.empty()) {  // test hook, launch only: everything above was the real code
+        r.launch.exe = env.fakeAgentExe;
+        r.launch.args = env.fakeAgentArgs;
+        r.launch.freshUserEnvironment = false;
+        if (!context.signIn) r.launch.env.emplace_back(L"BROWSER", L"none");
+        return r;
     }
     r.launch.exe = NodeExe(env);
     r.launch.args = {AdapterEntry(env, agent)};
@@ -1206,7 +1216,7 @@ SignIn RunTerminalSignIn(const Environment& env, Agent agent, const Acp::AuthMet
     if (!method.terminal) return fail("not_terminal");
     std::wstring exe;
     std::vector<std::wstring> args;
-    if (!env.fakeAgentExe.empty()) {
+    if (!env.fakeAgentExe.empty() && !env.fakeAgentLaunchOnly) {
         exe = env.fakeAgentExe;
         args = env.fakeAgentArgs;
         for (const auto& a : method.terminalArgs) args.push_back(Widen(a));
@@ -1240,7 +1250,8 @@ SignIn RunTerminalSignIn(const Environment& env, Agent agent, const Acp::AuthMet
     PROCESS_INFORMATION pi{};
     const std::wstring cwd = DirExists(env.userProfile) ? env.userProfile : std::wstring();
     // A console of its own, visible: the CLI says what it is doing and opens the user's web browser.
-    if (!CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
+    // (tests: env.signInConsoleHidden runs it without a window — a headless test must not show a console)
+    if (!CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, (env.signInConsoleHidden ? CREATE_NO_WINDOW : CREATE_NEW_CONSOLE) | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
                         block.data(), cwd.empty() ? nullptr : cwd.c_str(), &si, &pi)) {
         const DWORD code = GetLastError();
         if (job) CloseHandle(job);

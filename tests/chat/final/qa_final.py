@@ -423,6 +423,35 @@ EMBEDDED_BOX = {'#qa-frame': "(function(){var f=document.getElementById('qa-fram
                 '#qa-card': "(function(){var b=document.getElementById('qa-card').shadowRoot.getElementById('qa-sh').getBoundingClientRect();return [b.left,b.top,b.right,b.bottom]})()"}
 
 
+def bubble_frame_box():
+    '''The frame the page draws around the bubble's element (`.bf`, in the page script's closed shadow root, read through
+    DevTools as chat_qa_comment.conv_marks does): [left, top, right, bottom] in CSS px of the page's viewport. None: not drawn.'''
+    ws = C.ws_for(C.URL)
+    if not ws:
+        return None
+    try:
+        ws.call('DOM.enable'); doc = ws.call('DOM.getDocument', {'depth': -1, 'pierce': True})['root']
+    except Exception:
+        return None
+    found = []
+
+    def walk(n):
+        a = n.get('attributes', []); d = dict(zip(a[::2], a[1::2]))
+        if 'bf' in d.get('class', '').split():
+            found.append(n['nodeId'])
+        for k in n.get('children', []) + n.get('shadowRoots', []):
+            walk(k)
+    walk(doc)
+    if not found:
+        return None
+    try:
+        q = ws.call('DOM.getBoxModel', {'nodeId': found[-1]})['model']['border']
+    except Exception:
+        return None   # no box: hidden
+    xs, ys = q[0::2], q[1::2]
+    return [min(xs), min(ys), max(xs), max(ys)]
+
+
 def inject_embedded():
     """The iframe (same origin) and the web component; again after a reload (they are not in the site's files)."""
     r = page(EMBED_JS); time.sleep(0.5 if r else 0); return r

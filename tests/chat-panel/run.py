@@ -785,10 +785,10 @@ try:
           ask:window.__posted.filter(x=>x.type==='bubble.size').pop(),inset:window.__inset}})()"""
         load("c-menu-modele")
         g = cdp.js(geo_js)
-        check(g["mBottom"] <= g["aTop"] + 84 and g["mTop"] < g["aTop"] and g["mTop"] >= 0 and g["mBottom"] <= g["winH"] and g["mLeft"] >= 0 and g["mRight"] <= g["winW"] and g["scroll"] <= 0 and g["aH"] == 84 and g["w"] == 280,
-              "bubble (menu, R3): the model menu (280 px, #128) opens above its button, out of the bubble, whole (nothing cut, nothing scrolled); the surface keeps its 84 px", json.dumps(g)[:300])
-        check(g["ask"]["height"] == 84 and g["ask"].get("overflowTop", 0) >= g["aTop"] - g["mTop"] and g["aTop"] == g["inset"]["top"] and g["shadow"] == "none" and g["gap"] == "0px",
-              "bubble (menu, R3): `bubble.size` keeps the height and asks `overflowTop`; the surface is drawn at the granted inset; Paper #128 A (1USM-0): no shadow, rows touching", json.dumps(g["ask"]) + " " + json.dumps(g["inset"]))
+        check(g["mBottom"] <= g["aTop"] + 84 and g["mTop"] < g["aTop"] and g["mTop"] >= 0 and g["mBottom"] <= g["winH"] and g["mLeft"] >= 0 and g["mRight"] <= g["winW"] and g["scroll"] <= 0 and g["aH"] == 84 and g["w"] == 300,
+              "bubble (menu, R3): the model menu (300 px, #128 v2) opens above its button, out of the bubble, whole (nothing cut, nothing scrolled); the surface keeps its 84 px", json.dumps(g)[:300])
+        check(g["ask"]["height"] == 84 and g["ask"].get("overflowTop", 0) >= g["aTop"] - g["mTop"] and g["aTop"] == g["inset"]["top"] and g["shadow"] == "none" and g["gap"] == "1px",
+              "bubble (menu, R3): `bubble.size` keeps the height and asks `overflowTop`; the surface is drawn at the granted inset; Paper #128 v2 (265R-0, the old 17US-0): no shadow, rows 1 px apart", json.dumps(g["ask"]) + " " + json.dumps(g["inset"]))
         key("Escape")
         last = sizes()[-1]; lastm = of("bubble.size")[-1]
         check(cdp.js("!document.querySelector('.menu')") and last == [305, 84] and not any(k.startswith("overflow") for k in lastm) and "close" not in posted() and cdp.js("Math.round(document.getElementById('app').getBoundingClientRect().top)") == cdp.js("window.__inset.top"),
@@ -818,12 +818,14 @@ try:
         load("c-menu-modele")
         c = center(".menu .mi[data-key=effort]"); move(*c); time.sleep(.4)
         hv = cdp.js("[!!document.querySelector('.sub-menu'), document.activeElement.closest('.sub-menu')?1:0]")
-        c2 = center(".menu .mi.mm-row"); move(*c2); time.sleep(.5)   # #128: the first model row (the list starts with a provider's header)
+        c2 = center(".menu .mi[role=menuitemradio]"); move(*c2); time.sleep(.5)   # #128: the first model row (the list starts with a provider's header)
         check(hv == [True, 0] and cdp.js("!document.querySelector('.sub-menu')"), "sub-menu: hovering « Effort » opens it (the focus stays), moving to another row closes it", str(hv))
-        load("c-menu-autres")   # #128 (Paper A): every model in the list — the 4th Claude model too, no « Autres modèles » sub-menu
-        sa = cdp.js("(()=>({rows:Array.from(document.querySelectorAll('.menu.mm-list .mi .lb')).map(n=>n.textContent),sub:!!document.querySelector('.sub-menu')}))()")
-        check(sa["rows"] == ["Opus 5.5", "Sonnet 5.5", "Haiku 5.5", "Opus 4.1", "6.1 Sol", "6.1 Terra", "6.1 Luna", "Effort"] and not sa["sub"],
-              "sub-menu (#128): no « Autres modèles » — a 4th model is in the list itself, nothing opens beside it", json.dumps(sa, ensure_ascii=False)[:240])
+        load("c-menu-autres")   # #128 v2: the latest models first; an older one under « Plus de modèles », which opens beside the menu
+        sa = cdp.js(sub_js)
+        mr = cdp.js("Array.from(document.querySelectorAll('.menu.models:not(.sub-menu) .mi .lb')).map(n=>n.textContent)")
+        check(sa and mr == ["Opus 5.5", "Sonnet 5.5", "Haiku 5.5", "6.1 Sol", "6.1 Terra", "6.1 Luna", "Plus de modèles", "Effort"] and sa["rows"] == ["Opus 4.1"] and sa["gapR"] == 4 and sa["top"] == 0
+              and sa["w"] == 214 and sa["back"] == 0 and sa["exp"] == "more" and sa["focus"] == "Opus 4.1",
+              "sub-menu (#128 v2): an older model (Opus 4.1) is under « Plus de modèles », which opens beside the menu (4 px, tops aligned, 214 px), focus on it", json.dumps([mr, sa], ensure_ascii=False)[:300])
         load("c-menu-effort-gauche")
         sl = cdp.js(sub_js)
         check(sl and sl["gapL"] == 4 and sl["top"] == 0 and sl["inWin"] and (sl["ask"].get("overflowRight") or 0) == 0 and (sl["ask"].get("overflowLeft") or 0) > 0,
@@ -994,7 +996,7 @@ try:
         first_ask = union[0] if union else {}
         time.sleep(.35)
         m1 = cdp.js("(()=>{const ms=document.querySelectorAll('.menu');const r=ms[0].getBoundingClientRect();return [ms.length, ms[0].getAttribute('aria-label'), Math.round(r.width), ms[0].style.transform, ms[0].classList.contains('morph-in')]})()")
-        check(len(mid) == 2 and "menu-ghost" in mid[0][0] and mid[0][1] == "" and "morph-in" in mid[1][0] and 280 <= mid[1][2] <= 290 and m1 == [1, "Mode", 290, "", False],   # #128: from 280
+        check(len(mid) == 2 and "menu-ghost" in mid[0][0] and mid[0][1] == "" and "morph-in" in mid[1][0] and 290 <= mid[1][2] <= 300 and m1 == [1, "Mode", 290, "", False],   # #128 v2: from 300
               "bubble (cv5 R41): model menu → mode menu: the old one stays as a ghost (no surface, content fading), the new one grows from its box to 290 px in 200 ms; then a single menu", f"{mid} {m1}")
         final = cdp.js("(()=>{const a=document.getElementById('app').getBoundingClientRect(),r=document.querySelector('.menu').getBoundingClientRect();return [Math.round(a.top-r.top)+32, Math.round(r.right-a.right)+48]})()")
         during = of("bubble.size")[n0:]
@@ -1223,7 +1225,15 @@ try:
         early = cdp.js("document.documentElement.classList.contains('bub')")
         cdp.js("document.getElementById('composer-input').focus()"); cdp.call("Input.insertText", text="Bonjour"); key("Enter"); time.sleep(.5)
         mid = cdp.js("[document.querySelector('.send').classList.contains('stop'), V('.cin')]")
-        time.sleep(2.2)
+        # The end of the turn is WAITED for, not timed (it was a fixed 2.2 s: on a loaded machine the fake turn's timers ran
+        # late and « fit » was read before the last size — about 1 red in 14 runs on 24 Nov 2026, lot R). Ended = the step
+        # line « done » and the changes bar are there, the last size published is the height drawn, and nothing changed for
+        # 250 ms (the host's answer to that size has been applied). 20 s at most: the checks below then say what is missing.
+        cdp.js("""new Promise(r=>{const t0=performance.now();let last='',since=t0;const f=()=>{const a=document.getElementById('app'),h=Math.round(a.getBoundingClientRect().height),
+          z=window.__posted.filter(m=>m.type==='bubble.size').map(m=>m.height),done=!!document.querySelector('.bt-st.done')&&!!document.querySelector('.bt-bar'),
+          s=document.querySelector('.scroller'),key=z.length+':'+z[z.length-1]+':'+h+':'+done+':'+(s?s.scrollHeight+'/'+s.clientHeight:'');
+          if(key!==last){last=key;since=performance.now()}
+          if((done&&z.length&&z[z.length-1]===h&&performance.now()-since>=250)||performance.now()-t0>20000)r(1);else setTimeout(f,25)};f()})""")
         lv = cdp.js("""(()=>{const a=document.getElementById('app'),s=document.querySelector('.scroller'),z=window.__posted.filter(m=>m.type==='bubble.size').map(m=>m.height);
           return {z,app:Math.round(a.getBoundingClientRect().height),fit:s.scrollHeight<=s.clientHeight,done:!!document.querySelector('.bt-st.done'),bar:!!document.querySelector('.bt-bar'),focus:document.activeElement.id}})()""")
         check(early and mid == [True, 0] and len(set(lv["z"])) >= 4 and lv["z"][-1] == lv["app"] and lv["fit"] and lv["done"] and lv["bar"] and all(a != b for a, b in zip(lv["z"][1:], lv["z"][2:])),
@@ -1734,10 +1744,14 @@ try:
         unk = cdp.js(mm_js)
         check(["Codex", ""] in unk["heads"] and unk["rows"][3] == "Modèle par défaut" and "Codex" not in unk["rows"],
               "model menu (#128, R13): a connected provider whose models are not known yet — its header, then one row naming the model its agent will use", json.dumps(unk, ensure_ascii=False)[:300])
-        load("6.4-autres-modeles-long")   # the scenario opens the menu (its « Autres modèles » click finds nothing now)
+        load("6.4-autres-modeles-long")   # the scenario opens the menu, then « Plus de modèles »
         more = cdp.js(mm_js)
-        check(more["rows"][:5] == ["Opus 5.5", "Sonnet 5.5Par défaut", "Haiku 5.5", "Sonnet 4.5", "Opus 4.1"] and [h[0] for h in more["heads"]] == ["Claude Code", "Codex"]
-              and not any(r.startswith("Autres modèles") for r in more["rows"]), "model menu (#128): every model in the list, by provider — no « Autres modèles » beyond 3", json.dumps(more, ensure_ascii=False)[:300])
+        check(more["rows"] == ["Plus de modèles", "Sonnet 4.5", "Opus 4.1"] and [h[0] for h in more["heads"]] == ["Claude Code"] and cdp.js("document.querySelectorAll('.menu .mi.back').length") == 1,
+              "model menu (#128 v2, panel): the older models (Sonnet 4.5, Opus 4.1) are under « Plus de modèles », whose list replaces the menu (« ‹ Plus de modèles », then the group)", json.dumps(more, ensure_ascii=False)[:300])
+        key("ArrowLeft")
+        back = cdp.js("(()=>({rows:Array.from(document.querySelectorAll('.menu .mi')).map(b=>b.textContent.trim()),focus:document.activeElement.dataset.key||''}))()")
+        check(back["rows"][:3] == ["Opus 5.5", "Sonnet 5.5Par défaut", "Haiku 5.5"] and "Plus de modèles" in back["rows"] and back["focus"] == "more",
+              "model menu (#128 v2, panel): ← goes back to the latest models, focus on « Plus de modèles »", json.dumps(back, ensure_ascii=False)[:300])
         load("effort-adaptateur")
         eff2 = cdp.js("(()=>({rows:Array.from(document.querySelectorAll('.menu .mi[role=menuitemradio]')).map(b=>b.textContent.trim()),checked:(document.querySelector('.menu .mi[aria-checked=true]')||{}).textContent,"
                       "chip:document.querySelector('.model .e').textContent,metas:Array.from(document.querySelectorAll('.turn .meta')).map(m=>m.textContent),w:document.querySelector('.menu').getBoundingClientRect().width}))()")

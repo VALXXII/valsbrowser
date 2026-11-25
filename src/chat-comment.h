@@ -613,6 +613,7 @@ void EnsureOnScreen(const wchar_t* why) {
 void OpenBubble(const std::string& conv, const RECT* element, const std::string& selector, bool followCurrent, const std::string& label) {
     auto t = Active(); if (!t || !Ann::s.active || Ann::ModeTab() != t || halted || !AskAvailable(t)) return;
     UiSlow slowStart("opening: the panel's close and the window");   // monkey 0.3.561: host -> opened 40-50 ms right after a switch
+    ModelReadBusy();   // « Ton agent » × #128 v2: a bubble opens — no model read before the chat is calm
     if (Open()) ClosePanel();
     if (panelState == PanelState::Closing) FinishClose();   // M5 (review R): the panel's slide ends now — it would move and hide the view the bubble takes
     EnsureInit(); if (!EnsureBubbleWindow()) return;
@@ -688,15 +689,29 @@ void FinishOpening() {
     MaybeStartSession(); step("agent start");   // R13: its agent starts now (model list, model · effort), as the panel's does
     if (!slow.empty()) Diag(L"opening: slow steps on the UI thread:" + slow);   // i18n-exempt: log detail
 }
+// The key of a conversation whose element is inside a same-origin iframe (« same-origin||<selector> », no shadow path):
+// what the page script can find again in the page's frames. "" for anything else.
+std::string FrameKeyOf(const std::string& id) {
+    std::string k;
+    if (const auto* h = AnchoredOf(id)) k = h->anchorKey;
+    else if (convo.data.head.id == id) k = convo.data.head.anchorKey;
+    else if (aside.on && aside.c.data.head.id == id) k = aside.c.data.head.anchorKey;
+    else if (const auto it = parked.find(id); it != parked.end()) k = it->second.data.head.anchorKey;
+    return ChatBubble::FrameKey(k) ? k : std::string();
+}
 void FollowBubbleElement(bool current) {
     auto t = ChatTab(); if (!t) t = Active(); if (!t || !bubble.open) return;
     std::string sel = bubble.selector;
     if (sel.empty()) if (const auto* h = AnchoredOf(bubble.conv)) sel = h->anchorSelector;
     if (sel.empty() && convo.data.head.id == bubble.conv) sel = convo.data.head.anchorSelector;
-    SJ::Value f = SJ::Value::Obj(); if (current) f.Set("current", SJ::Value::Bool(true)); else f.Set("selector", Str(sel));
+    // Lot 1d, case 3 (Paper « Iframes · cas 3 · l'iframe se recharge »): an element of a same-origin iframe has no selector of
+    // the page — after a reload of the page it is given back to the script by its key (found again in the page's frames).
+    std::string key; if (!current && sel.empty()) key = FrameKeyOf(bubble.conv);
+    SJ::Value f = SJ::Value::Obj(); if (current) f.Set("current", SJ::Value::Bool(true)); else if (!sel.empty()) f.Set("selector", Str(sel)); else if (!key.empty()) f.Set("key", Str(key));
     SJ::Value d = SJ::Value::Obj(); d.Set("label", Str(bubble.label)); f.Set("draw", std::move(d));   // D1: the element's frame + its two labels
-    if (!current && sel.empty()) { Diag(L"the bubble's element has no selector: not followed"); return; }
-    Query(t, L"follow", W(SJ::Serialize(f)), [current](const std::string& r) { if (!current) Diag(L"the bubble's element followed by its selector: " + std::wstring(r == "true" ? L"found" : L"not found (" + W(r.substr(0, 40)) + L")")); });
+    if (!current && sel.empty() && key.empty()) { Diag(L"the bubble's element has no selector: not followed"); return; }
+    const bool byKey = !current && sel.empty();
+    Query(t, L"follow", W(SJ::Serialize(f)), [current, byKey](const std::string& r) { if (!current) Diag(std::wstring(L"the bubble's element followed by its ") + (byKey ? L"key (an iframe's element): " : L"selector: ") + std::wstring(r == "true" ? L"found" : L"not found (" + W(r.substr(0, 40)) + L")")); });
 }
 // R18: the window appears once, already at its place and size (the page plays its entrance slide).
 void RevealBubble(const wchar_t* why) {
@@ -1010,7 +1025,14 @@ void SyncMarks() {
         for (const auto* hp : all) { const auto& h = *hp;
             if (h.origin != here.origin || h.anchorPage != page) continue;
             if (bubble.open && bubble.conv == h.id) { found0.insert(h.id); continue; }   // D1: its bubble is open: the frame + labels, not the icon
-            if (h.anchorSelector.empty()) { found0.insert(h.id); continue; }   // Q 6: an element in a frame / web component: no mark drawn by selector
+            if (h.anchorSelector.empty()) {   // Q 6: an element in a frame / web component: no selector of the page
+                // lot 1d, case 3 (Paper « Iframes · cas 3 »): inside a same-origin iframe it has its mark too, found by its key in the
+                // page's frames — and found again after the iframe reloads; anything else (a web component): no mark, as before
+                if (!ChatBubble::FrameKey(h.anchorKey) || !marked.insert(h.anchorKey).second) { found0.insert(h.id); continue; }
+                SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(h.id)); o.Set("key", Str(h.anchorKey)); o.Set("state", Str(MarkState(h.id)));
+                if (MarkState(h.id) == "waiting") o.Set("waitLabel", Str(T8(I18n::Id::chat_mark_waiting)));
+                list.Push(std::move(o)); continue;
+            }
             if ((bubble.open && h.anchorSelector == bubble.selector) || !marked.insert(h.anchorSelector).second) { found0.insert(h.id); continue; }   // #128: its element already has its frame or its mark
             SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(h.id)); o.Set("selector", Str(h.anchorSelector)); o.Set("state", Str(MarkState(h.id)));
             if (MarkState(h.id) == "waiting") o.Set("waitLabel", Str(T8(I18n::Id::chat_mark_waiting)));
@@ -1184,6 +1206,7 @@ bool KeepAnchorElement(Element& e) {
 // ---------------------------------------------------------------- the layout switch of the band (Paper 1AYP-0)
 void SwitchLayout(bool comment) {
     const bool was = CommentLayout();
+    ModelReadBusy();   // « Ton agent » × #128 v2: the warm bubble's page / the panel comes — no model read before it is calm
     if (!comment) ForgetUnsent(convo.data.head.id);   // M6: the panel never shows an element's unsent conversation
     if (comment != was) { projects.layout = comment ? "comment" : "panel"; SaveProjects(); Diag(comment ? L"layout: Commentaire (a bubble on the element)" : L"layout: Panneau (the chat at the right)"); }
     if (comment) {

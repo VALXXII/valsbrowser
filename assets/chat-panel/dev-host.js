@@ -445,12 +445,68 @@
     "stream": [st(Object.assign({ running: true }, conv("Texte en flux", { running: true }))), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Explique tout en détail.", null, []), { type: "turn.start", turnId: "t1", model: "Sonnet 5.5", effort: "Élevé" }] }],
   };
   Object.assign(SC, C_SCENARIOS);
+  // « Ton agent » (worker B): the first message's block while no agent is ready (Paper 22N3-0), from `agents.setup` as
+  // src/chat-ton-agent.h sends it (the words are the host's catalogue). `ta(...)` builds one; the rows from the agents' one status.
+  const TA_ROW = {
+    absent: () => ({ icon: "download", ink: "grey", status: "Pas installé", action: { id: "install", label: "Installer", strong: true } }),
+    desktop: () => ({ icon: "download", ink: "grey", status: "Pas installé", note: "L'appli Claude est installée, mais le chat a besoin de Claude Code (même compte).", action: { id: "install", label: "Installer", strong: true } }),
+    old: () => ({ icon: "download", ink: "grey", status: "Version trop ancienne", action: { id: "install", label: "Mettre à jour", strong: true } }),
+    installing: () => ({ icon: "download", ink: "accent", animate: true, status: "Installation…" }),
+    signedOut: () => ({ icon: "wifi", ink: "grey", status: "Pas connecté", action: { id: "signIn", label: "Se connecter", strong: true } }),
+    signingIn: () => ({ icon: "wifi", ink: "accent", status: "Connexion…", action: { id: "cancel", label: "Annuler", strong: false } }),
+    failed: () => ({ icon: "error", ink: "danger", status: "Échec de l'installation", manual: "Installer moi-même ↗", action: { id: "retry", label: "Réessayer", strong: false } }),
+    signInFailed: () => ({ icon: "error", ink: "danger", status: "Échec de la connexion", action: { id: "retry", label: "Réessayer", strong: false } }),
+  };
+  const RAF2 = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));   // the next message in a frame of its own
+  const MARK = () => { window.__mark = posted.length; };   // a scenario's checkpoint: what the page posted until then
+  const ta = (claude, codex, over) => Object.assign({ type: "agents.setup", show: true, title: "Choisissez votre agent", body: "Le chat utilise Claude Code ou Codex, installés sur cet ordinateur.",
+    note: "Claude Code demande un compte Claude payant (Pro, Max, Team ou Enterprise).", accent: "#0099A0", hint: "Connectez un agent pour envoyer",
+    rows: [Object.assign({ id: "claude", name: "Claude Code" }, TA_ROW[claude]()), Object.assign({ id: "codex", name: "Codex" }, TA_ROW[codex]())] }, over || {});
+  // the chat's own view of the same status (A's src/chat-agent-status.h)
+  const TA_AGENTS = { agents: [Object.assign({}, CLAUDE, { status: "notInstalled", detail: "Pas installé", models: [] }), Object.assign({}, CODEX, { status: "notConnected", detail: "Pas connecté", models: [] })], agentId: "claude-code" };
+  Object.assign(SC, {
+    "ta-premier-message": [st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("absent", "signedOut")],
+    "ta-installation": [st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("installing", "signedOut")],
+    "ta-erreur": [st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("failed", "signedOut")],
+    "ta-desktop": [st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("desktop", "absent")],
+    "ta-connexion": [st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("old", "signingIn")],
+    "ta-connexion-echec": [st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("absent", "signInFailed")],
+    "ta-pret": [st(), { type: "thread.reset", conversationId: "new", items: [] }, ta("absent", "signedOut", { show: false })],
+    "ta-fil": [st(TA_AGENTS), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Plus grand")] }, ta("absent", "signedOut")],
+    "c-ta-premier-message": [LAY(), st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("absent", "signedOut")],
+    "c-ta-erreur": [LAY(), st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("failed", "signedOut")],
+    // A bubble opening as the host sends it, each message in its own frame (journeys C1, night of 25/11): the block's
+    // message must never publish the bubble's size before the conversation is in (it flashed empty at 105 px, then 256).
+    // the host's opening order since: state, thread, then the block; then the block sent again (an agent's state changed)
+    // (MARK: what was posted until then; the block's messages after it must post no size)
+    "c-ta-ouverture-pret": [LAY(), st(), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Plus grand")] }, RAF2, MARK,
+                            ta("absent", "signedOut", { show: false }), RAF2, ta("absent", "signedOut", { show: false }), RAF2],
+    "c-ta-ouverture-pas-pret": [LAY(), st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("absent", "signedOut"), RAF2, MARK,
+                                ta("absent", "signedOut"), RAF2, ta("absent", "signedOut"), RAF2],
+    "ta-ouverture-pret": [st(), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Plus grand")] }, ta("absent", "signedOut", { show: false }), RAF2, ta("absent", "signedOut", { show: false }), RAF2],
+  });
 
-  // #128 (Paper « #128 Menu des modèles · A liste groupée (validée) »): the model menu as one list grouped by provider, in
-  // the panel and in the comment bubble. The model names are this fake host's agents' (the board's Codex names are only
-  // examples): the page writes none of its own. tests/chat-panel/model_menu_128.py drives these.
-  const CODEX_A = Object.assign({}, CODEX, { models: [{ id: "gpt-5.5", label: "GPT-5.5" }, { id: "gpt-5.5-mini", label: "GPT-5.5 mini" }] });
-  const AGENTS_A = (codex) => ({ agents: [CLAUDE, Object.assign({}, CODEX_A, codex || {})] });
+  // #128 v2 (Paper « #128 Menu des modèles · v2 ancien menu + groupes (maquette prête) »): the old menu with a header per
+  // agent, the latest models first, the others under « Plus de modèles », in the panel and in the comment bubble. The model
+  // names are this fake host's agents' (the board's names are only examples): the page writes none of its own.
+  // tests/chat-panel/model_menu_128.py drives these.
+  const CLAUDE_A = Object.assign({}, CLAUDE, { models: [{ id: "opus", label: "Opus 5.5" }, { id: "sonnet", label: "Sonnet 5.5", isDefault: true }, { id: "fable", label: "Fable 5.2" }, { id: "haiku", label: "Haiku 5.5" },
+    { id: "opus-5", label: "Opus 5" }, { id: "sonnet-5", label: "Sonnet 5" }, { id: "opus-4.6", label: "Opus 4.6" }, { id: "sonnet-4.6", label: "Sonnet 4.6" }, { id: "haiku-4.5", label: "Haiku 4.5" }] });
+  const CODEX_A = Object.assign({}, CODEX, { models: [{ id: "gpt-5.5", label: "GPT-5.5" }, { id: "gpt-5.5-mini", label: "GPT-5.5 mini" },
+    { id: "gpt-5.4", label: "GPT-5.4" }, { id: "gpt-5.4-mini", label: "GPT-5.4 mini" }, { id: "gpt-5.3-codex", label: "GPT-5.3-Codex" }] });
+  const AGENTS_A = (codex) => ({ agents: [CLAUDE_A, Object.assign({}, CODEX_A, codex || {})] });
+  // the bubble at an edge of the page area: `room` (CSS px from the surface to the page area's edges, as the host measures
+  // it) and the window's margin there (window.__grant caps the inset, as a screen edge does)
+  const EDGE = {
+    haut: { room: { top: 8, right: 700, bottom: 620, left: 300 }, grant: { top: 8 } },
+    bas: { room: { top: 620, right: 700, bottom: 8, left: 300 }, grant: { bottom: 8 } },
+    gauche: { room: { top: 300, right: 900, bottom: 300, left: 8 }, grant: { left: 8 } },
+    droite: { room: { top: 300, right: 8, bottom: 300, left: 900 }, grant: { right: 8 } },
+    // Val's trial (0.3.833): near the banner, little room under it either (a short window): above nor under holds it
+    serre: { room: { top: 24, right: 700, bottom: 200, left: 300 }, grant: { top: 24 } },
+  };
+  const edge = (k, then) => [() => { window.__grant = EDGE[k].grant; }, LAY({ maxWidth: 320, room: EDGE[k].room }), st(Object.assign(AGENTS_A(), conv("Bouton de paiement"))),
+    { type: "thread.reset", conversationId: "c1", items: cDoneItems() }].concat([wait(30), click(".model .m"), wait(80)], then || []);
   const OFF = { status: "notConnected", detail: "Pas connecté", authMethods: [{ id: "chatgpt", label: "ChatGPT" }] };
   const withChat = (over) => [st(Object.assign(AGENTS_A(), conv("Bouton de paiement"), over || {})), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", ASK)].concat(doneTurn("t1")) }];
   const openModels = [wait(30), click(".model .m"), wait(80)];
@@ -471,6 +527,15 @@
     "c-128-bulle-effort": [LAY({ maxWidth: 320 }), st(Object.assign(AGENTS_A(), conv("Bouton de paiement"))), { type: "thread.reset", conversationId: "c1", items: cDoneItems() }].concat(openModels, [click(".menu .mi[data-key=effort]"), wait(120)]),
     "c-128-modeles-inconnus": [LAY({ maxWidth: 320 }), st({ agents: [Object.assign({}, CLAUDE, { models: [] }), Object.assign({}, CODEX, { models: [] })], model: null, efforts: [], effort: null }),
       { type: "thread.reset", conversationId: "new", items: [] }].concat(openModels),
+    // #128 v2: « Plus de modèles » — the panel's list replaces the menu; the bubble's opens beside it
+    "128-panneau-plus": withChat().concat(openModels, [click(".menu .mi[data-key='more']"), wait(80)]),
+    "c-128-bulle-plus": [LAY({ maxWidth: 320 }), st(Object.assign(AGENTS_A(), conv("Bouton de paiement"))), { type: "thread.reset", conversationId: "c1", items: cDoneItems() }].concat(openModels, [click(".menu .mi[data-key=more]"), wait(120)]),
+    // #128: the bubble at each edge of the page area, its menu then each sub-menu (never cut by the bubble)
+    "c-128-bord-haut": edge("haut"), "c-128-bord-bas": edge("bas"), "c-128-bord-gauche": edge("gauche"), "c-128-bord-droite": edge("droite"), "c-128-bord-serre": edge("serre"),
+    "c-128-bord-haut-plus": edge("haut", [click(".menu .mi[data-key=more]"), wait(120)]), "c-128-bord-bas-plus": edge("bas", [click(".menu .mi[data-key=more]"), wait(120)]),
+    "c-128-bord-gauche-plus": edge("gauche", [click(".menu .mi[data-key=more]"), wait(120)]), "c-128-bord-droite-plus": edge("droite", [click(".menu .mi[data-key=more]"), wait(120)]),
+    "c-128-bord-serre-plus": edge("serre", [click(".menu .mi[data-key=more]"), wait(120)]),
+    "c-128-bord-droite-effort": edge("droite", [click(".menu .mi[data-key=effort]"), wait(120)]), "c-128-bord-bas-effort": edge("bas", [click(".menu .mi[data-key=effort]"), wait(120)]),
   });
   function bigThread(n) {
     const out = [];

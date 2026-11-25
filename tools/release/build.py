@@ -21,7 +21,8 @@ Output layout (the application directory, exactly the release payload):
 Test tools go to <out>-test (never in a package): the fake ACP agent fake-acp-agent.exe (tests/acp), built for
 non-release channels only; the browser uses it when BROWSER_ANNOTATIONS_TEST=1 and BROWSER_CHAT_FAKE_AGENT name it.
 Intermediates (resources object, generated headers) go to <out>-obj so they can
-never leak into a package.
+never leak into a package. Among them, release-notes-data.h: the « Nouveautés » card's notes, checked and
+generated from release-notes/notes.json (tools/release/release_notes.py, release-notes/README.md).
 """
 from __future__ import annotations
 import argparse, json, os, shutil, subprocess, sys
@@ -30,6 +31,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import version as version_mod  # noqa: E402
+import release_notes as notes_mod  # noqa: E402
 
 BIN = ROOT / 'tools/w64devkit/bin'
 SDK = ROOT / 'deps/webview2/build/native'
@@ -49,6 +51,9 @@ CHAT_SOURCES = [
     # Chat V1 (C1): ACP v1 client (one agent process in a Job Object) and the agents' runtime (private Node,
     # pinned adapters, CLI detection). Tests: tests/acp/run_tests.py.
     'src/acp-client.cpp', 'src/agent-runtime.cpp',
+    # « Ton agent »: the agents' one status (src/agent-status.h) and their official installers (src/agent-install.h).
+    # Tests: tests/acp/run_tests.py (agent_status_test).
+    'src/agent-install.cpp',
     # Chat V1 (C3): undo by our own file copies, no git, no UI. Tests: tests/snapshots/run_tests.py.
     'src/change-snapshots.cpp']
 CHAT_LIBS = ['-luserenv']   # CreateEnvironmentBlock (the agent gets the user's current environment)
@@ -157,6 +162,26 @@ def bridge_location(channel: str, mode: str, annotations: bool) -> str | None:
     return None if mode == 'off' else BRIDGE_NAME
 
 
+def write_release_notes(gen: Path, info: dict) -> None:
+    """The card's notes (refused with a message when notes.json breaks a rule of release-notes/README.md). A release
+    whose merge did not change them shows no card after its update: said loudly in the CI log, never an error."""
+    notes = notes_mod.write_header(gen / 'release-notes-data.h')
+    nid = notes_mod.notes_id(notes)
+    print(f'Release notes: {nid or "none (no card after the update)"}', flush=True)
+    if info['channel'] != 'release':
+        return
+    rel = notes_mod.NOTES.relative_to(ROOT).as_posix()
+    try:
+        before = version_mod.git('show', f'{info["commit"]}^1:{rel}')
+        now = version_mod.git('show', f'{info["commit"]}:{rel}')
+    except subprocess.CalledProcessError:
+        return
+    if before == now:
+        prefix = '::warning title=Release notes::' if os.environ.get('GITHUB_ACTIONS') == 'true' else 'WARNING: '
+        print(f'{prefix}{rel} unchanged by this merge: users updating from the previous build get the generic '
+              '"Mise a jour installee" notification, not the "Nouveautes" card (release-notes/README.md).', flush=True)
+
+
 def release_annotation_defines(channel: str, bridge: str | None, annotations: bool) -> list[str]:
     """src/main.cpp compiles the annotation mode into a --channel release build only with
     BROWSER_RELEASE_ANNOTATIONS, which is passed only when the bridge ships at RELEASE_BRIDGE."""
@@ -197,6 +222,7 @@ def build(out: Path, info: dict, repo: str, preview: bool = False, bridge: str |
         shutil.rmtree(obj)
     out.mkdir(parents=True, exist_ok=True)
     write_build_info(obj / 'gen', info, repo)
+    write_release_notes(obj / 'gen', info)
     res, helper_res, bridge_res = obj / 'browser-res.o', obj / 'update-helper-res.o', obj / 'mcp-bridge-res.o'
     # Both executables embed the channel's app icon (src/app-icon.rc): the helper is also the
     # stable launcher <root>\browser.exe that the Start Menu shortcut targets.

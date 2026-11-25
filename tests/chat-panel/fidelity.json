@@ -1741,373 +1741,480 @@
   ]
  ],
  "c-128-bulle": {
-  "note": "#128 : le menu des modèles est la liste groupée de la planche validée « #128 Menu des modèles · A liste groupée (validée) », colonne bulle (1USM-0), à la place de 17US-0 et de son « Autres modèles ». Scénario c-128-bulle (les modèles de la planche). Boîtes déduites des tailles fixes du JSX Paper (get_jsx, 24 nov. ; la page Paper n'était pas mesurée) ; non comparés ici : la pastille « Par défaut » et le niveau d'effort (leur x dépend de la largeur du texte), le logo Codex (Paper : carré « C » provisoire) — mesurés par tests/chat-panel/model_menu_128.py.",
-  "root": ".menu.mm-list",
+  "note": "#128 v2 : le menu des modèles est l'ancien menu (6.4, 17US-0) avec un en-tête par agent, planche « #128 Menu des modèles · v2 ancien menu + groupes (maquette prête) », menu 265R-0 (bulle et panneau ont le même menu). Scénario c-128-bulle (les modèles de la planche). Boîtes déduites des valeurs fixes du JSX Paper (get_jsx / get_computed_styles, 24 nov. ; la page Paper n'était pas mesurée). Non comparés ici : la pastille « Par défaut » et le niveau d'effort (leur x dépend de la largeur du texte) ; les fonds de la ligne choisie (#313131), des filets (#363636) et de « Plus de modèles » survolé (#313131) — la planche écrit en opaque les blancs translucides de l'ancien menu (6 %, 8 % sur #242424 : mêmes pixels), que ce tableau compose sur #171717 ; ils sont comparés au pixel par tests/chat-panel/model_menu_128.py (rendus à côté des exports Paper).",
+  "root": ".menu.models:not(.sub-menu)",
   "paper": {
-   "1USM-0": {
+   "265R-0": {
     "name": "Menu des modèles",
-    "w": 280,
-    "h": 276,
+    "w": 300,
+    "h": 331,
     "x": 0,
     "y": 0,
     "st": {
-     "width": "280px",
+     "width": "300px",
      "dir": "column",
-     "radius": "8px",
-     "padding": "4px",
-     "gap": "0px",
+     "radius": "12px",
+     "padding": "6px",
+     "gap": "1px",
      "bg": "#242424"
     }
    },
-   "1UTF-0": {
+   "265S-0": {
     "name": "Frame",
-    "w": 270,
-    "h": 28,
-    "x": 5,
-    "y": 5,
+    "w": 286,
+    "h": 24,
+    "x": 7,
+    "y": 7,
     "st": {
-     "height": "28px",
-     "paddingInline": "8px",
+     "paddingTop": "6px",
+     "paddingBottom": "2px",
+     "paddingInline": "10px",
      "gap": "8px"
     }
    },
-   "1UTH-0": {
+   "265U-0": {
     "name": "SVG",
     "w": 14,
     "h": 14,
-    "x": 13,
-    "y": 12,
+    "x": 17,
+    "y": 14,
     "st": {}
    },
-   "1UTG-0": {
+   "265W-0": {
     "name": "Claude Code",
     "w": 70,
     "h": 16,
-    "x": 35,
-    "y": 11,
+    "x": 39,
+    "y": 13,
     "st": {
      "size": "12px",
      "lh": "16px",
      "weight": "500",
-     "color": "#FFFFFF80"
+     "color": "#929292"
     }
    },
-   "1UTD-0": {
+   "265X-0": {
     "name": "Frame",
-    "w": 270,
-    "h": 32,
-    "x": 5,
-    "y": 33,
+    "w": 286,
+    "h": 30,
+    "x": 7,
+    "y": 32,
     "st": {
-     "radius": "6px",
-     "paddingInline": "8px"
+     "radius": "8px",
+     "paddingBlock": "6px",
+     "paddingInline": "10px",
+     "gap": "10px"
     }
    },
-   "1UTE-0": {
+   "265Z-0": {
     "name": "Opus 5.5",
-    "w": 60,
-    "h": 20,
-    "x": 13,
-    "y": 39,
+    "w": 56,
+    "h": 18,
+    "x": 17,
+    "y": 38,
     "st": {
-     "size": "14px",
-     "lh": "20px",
-     "weight": "400",
-     "color": "#FFFFFFE6"
+     "size": "13px",
+     "lh": "18px",
+     "weight": "500",
+     "color": "#FFFFFF"
     }
    },
-   "1UT6-0": {
+   "2660-0": {
     "name": "Frame",
-    "w": 270,
-    "h": 32,
-    "x": 5,
-    "y": 65,
+    "w": 286,
+    "h": 30,
+    "x": 7,
+    "y": 63,
     "st": {
-     "radius": "6px",
-     "paddingInline": "8px",
-     "bg": "#FFFFFF0F"
+     "radius": "8px",
+     "paddingBlock": "6px",
+     "paddingInline": "10px",
+     "gap": "10px"
     }
    },
-   "1UTC-0": {
+   "2662-0": {
     "name": "Sonnet 5.5",
     "w": 70,
-    "h": 20,
-    "x": 13,
-    "y": 71,
+    "h": 18,
+    "x": 17,
+    "y": 69,
     "st": {
-     "size": "14px",
-     "lh": "20px",
-     "weight": "400",
-     "color": "#FFFFFFE6"
+     "size": "13px",
+     "lh": "18px",
+     "weight": "500",
+     "color": "#FFFFFF"
     }
    },
-   "1UT7-0": {
+   "2665-0": {
     "name": "SVG",
     "w": 14,
     "h": 14,
-    "x": 253,
-    "y": 74,
+    "x": 269,
+    "y": 71,
     "st": {}
    },
-   "1UT4-0": {
+   "2667-0": {
     "name": "Frame",
-    "w": 270,
-    "h": 32,
-    "x": 5,
-    "y": 97,
+    "w": 286,
+    "h": 30,
+    "x": 7,
+    "y": 94,
     "st": {
-     "radius": "6px",
-     "paddingInline": "8px"
+     "radius": "8px",
+     "paddingBlock": "6px",
+     "paddingInline": "10px",
+     "gap": "10px"
     }
    },
-   "1UT5-0": {
+   "2669-0": {
+    "name": "Fable 5.2",
+    "w": 58,
+    "h": 18,
+    "x": 17,
+    "y": 100,
+    "st": {
+     "size": "13px",
+     "lh": "18px",
+     "weight": "500",
+     "color": "#FFFFFF"
+    }
+   },
+   "266A-0": {
+    "name": "Frame",
+    "w": 286,
+    "h": 30,
+    "x": 7,
+    "y": 125,
+    "st": {
+     "radius": "8px",
+     "paddingBlock": "6px",
+     "paddingInline": "10px",
+     "gap": "10px"
+    }
+   },
+   "266C-0": {
     "name": "Haiku 5.5",
     "w": 60,
-    "h": 20,
-    "x": 13,
-    "y": 103,
+    "h": 18,
+    "x": 17,
+    "y": 131,
     "st": {
-     "size": "14px",
-     "lh": "20px",
-     "weight": "400",
-     "color": "#FFFFFFE6"
+     "size": "13px",
+     "lh": "18px",
+     "weight": "500",
+     "color": "#FFFFFF"
     }
    },
-   "1UT3-0": {
+   "266D-0": {
     "name": "Rectangle",
-    "w": 254,
+    "w": 266,
     "h": 1,
-    "x": 13,
-    "y": 133,
-    "st": {
-     "bg": "#FFFFFF0F"
-    }
+    "x": 17,
+    "y": 160,
+    "st": {}
    },
-   "1USZ-0": {
+   "266E-0": {
     "name": "Frame",
-    "w": 270,
-    "h": 28,
-    "x": 5,
-    "y": 138,
+    "w": 286,
+    "h": 24,
+    "x": 7,
+    "y": 166,
     "st": {
-     "height": "28px",
-     "paddingInline": "8px",
+     "paddingTop": "6px",
+     "paddingBottom": "2px",
+     "paddingInline": "10px",
      "gap": "8px"
     }
    },
-   "1UT0-0": {
+   "266G-0": {
+    "name": "SVG",
+    "w": 14,
+    "h": 14,
+    "x": 17,
+    "y": 173,
+    "st": {}
+   },
+   "266I-0": {
     "name": "Codex",
     "w": 34,
     "h": 16,
-    "x": 35,
-    "y": 144,
+    "x": 39,
+    "y": 172,
     "st": {
      "size": "12px",
      "lh": "16px",
      "weight": "500",
-     "color": "#FFFFFF80"
+     "color": "#929292"
     }
    },
-   "1USW-0": {
+   "266J-0": {
     "name": "Frame",
-    "w": 270,
-    "h": 32,
-    "x": 5,
-    "y": 166,
+    "w": 286,
+    "h": 30,
+    "x": 7,
+    "y": 191,
     "st": {
-     "radius": "6px",
-     "paddingInline": "8px"
+     "radius": "8px",
+     "paddingBlock": "6px",
+     "paddingInline": "10px",
+     "gap": "10px"
     }
    },
-   "1USY-0": {
+   "266L-0": {
     "name": "GPT-5.5",
-    "w": 50,
-    "h": 20,
-    "x": 13,
-    "y": 172,
+    "w": 52,
+    "h": 18,
+    "x": 17,
+    "y": 197,
     "st": {
-     "size": "14px",
-     "lh": "20px",
-     "weight": "400",
-     "color": "#FFFFFFE6"
+     "size": "13px",
+     "lh": "18px",
+     "weight": "500",
+     "color": "#FFFFFF"
     }
    },
-   "1USU-0": {
+   "266M-0": {
     "name": "Frame",
-    "w": 270,
-    "h": 32,
-    "x": 5,
-    "y": 198,
+    "w": 286,
+    "h": 30,
+    "x": 7,
+    "y": 222,
     "st": {
-     "radius": "6px",
-     "paddingInline": "8px"
+     "radius": "8px",
+     "paddingBlock": "6px",
+     "paddingInline": "10px",
+     "gap": "10px"
     }
    },
-   "1USV-0": {
+   "266O-0": {
     "name": "GPT-5.5 mini",
-    "w": 80,
-    "h": 20,
-    "x": 13,
-    "y": 204,
+    "w": 82,
+    "h": 18,
+    "x": 17,
+    "y": 228,
     "st": {
-     "size": "14px",
-     "lh": "20px",
-     "weight": "400",
-     "color": "#FFFFFFE6"
+     "size": "13px",
+     "lh": "18px",
+     "weight": "500",
+     "color": "#FFFFFF"
     }
    },
-   "1UST-0": {
+   "266P-0": {
     "name": "Rectangle",
-    "w": 254,
+    "w": 266,
     "h": 1,
-    "x": 13,
-    "y": 234,
-    "st": {
-     "bg": "#FFFFFF0F"
-    }
+    "x": 17,
+    "y": 257,
+    "st": {}
    },
-   "1USN-0": {
+   "266Q-0": {
     "name": "Frame",
-    "w": 270,
-    "h": 32,
-    "x": 5,
-    "y": 239,
+    "w": 286,
+    "h": 30,
+    "x": 7,
+    "y": 263,
     "st": {
-     "radius": "6px",
-     "paddingInline": "8px"
+     "radius": "8px",
+     "paddingBlock": "6px",
+     "paddingInline": "10px",
+     "gap": "8px"
     }
    },
-   "1USS-0": {
+   "266R-0": {
+    "name": "Plus de modèles",
+    "w": 100,
+    "h": 18,
+    "x": 17,
+    "y": 269,
+    "st": {
+     "size": "13px",
+     "lh": "18px",
+     "weight": "500",
+     "color": "#FFFFFF"
+    }
+   },
+   "266S-0": {
+    "name": "SVG",
+    "w": 11,
+    "h": 11,
+    "x": 272,
+    "y": 272.5,
+    "st": {}
+   },
+   "266U-0": {
+    "name": "Frame",
+    "w": 286,
+    "h": 30,
+    "x": 7,
+    "y": 294,
+    "st": {
+     "radius": "8px",
+     "paddingBlock": "6px",
+     "paddingInline": "10px",
+     "gap": "8px"
+    }
+   },
+   "266V-0": {
     "name": "Effort",
     "w": 40,
-    "h": 20,
-    "x": 13,
-    "y": 245,
+    "h": 18,
+    "x": 17,
+    "y": 300,
     "st": {
-     "size": "14px",
-     "lh": "20px",
-     "weight": "400",
-     "color": "#FFFFFFE6"
+     "size": "13px",
+     "lh": "18px",
+     "weight": "500",
+     "color": "#FFFFFF"
     }
    },
-   "1USP-0": {
+   "266X-0": {
     "name": "SVG",
-    "w": 12,
-    "h": 12,
-    "x": 255,
-    "y": 249,
+    "w": 11,
+    "h": 11,
+    "x": 272,
+    "y": 303.5,
     "st": {}
    }
   },
   "nodes": [
    [
-    "1USM-0",
-    ".menu.mm-list",
+    "265R-0",
+    ".menu.models:not(.sub-menu)",
     "f"
    ],
    [
-    "1UTF-0",
-    ".menu.mm-list > :nth-child(1)",
+    "265S-0",
+    ".menu.models:not(.sub-menu) > :nth-child(1)",
     "f"
    ],
    [
-    "1UTH-0",
-    ".menu.mm-list > :nth-child(1) .mm-logo",
+    "265U-0",
+    ".menu.models:not(.sub-menu) > :nth-child(1) .mm-logo",
     "f"
    ],
    [
-    "1UTG-0",
-    ".menu.mm-list > :nth-child(1) .mm-hn",
+    "265W-0",
+    ".menu.models:not(.sub-menu) > :nth-child(1) .mm-hn",
     "t"
    ],
    [
-    "1UTD-0",
-    ".menu.mm-list > :nth-child(2)",
+    "265X-0",
+    ".menu.models:not(.sub-menu) > :nth-child(2)",
     "f"
    ],
    [
-    "1UTE-0",
-    ".menu.mm-list > :nth-child(2) .lb",
+    "265Z-0",
+    ".menu.models:not(.sub-menu) > :nth-child(2) .lb",
     "t"
    ],
    [
-    "1UT6-0",
-    ".menu.mm-list > :nth-child(3)",
+    "2660-0",
+    ".menu.models:not(.sub-menu) > :nth-child(3)",
     "f"
    ],
    [
-    "1UTC-0",
-    ".menu.mm-list > :nth-child(3) .lb",
+    "2662-0",
+    ".menu.models:not(.sub-menu) > :nth-child(3) .lb",
     "t"
    ],
    [
-    "1UT7-0",
-    ".menu.mm-list > :nth-child(3) .ck",
+    "2665-0",
+    ".menu.models:not(.sub-menu) > :nth-child(3) .ck",
     "f"
    ],
    [
-    "1UT4-0",
-    ".menu.mm-list > :nth-child(4)",
+    "2667-0",
+    ".menu.models:not(.sub-menu) > :nth-child(4)",
     "f"
    ],
    [
-    "1UT5-0",
-    ".menu.mm-list > :nth-child(4) .lb",
+    "2669-0",
+    ".menu.models:not(.sub-menu) > :nth-child(4) .lb",
     "t"
    ],
    [
-    "1UT3-0",
-    ".menu.mm-list > :nth-child(5)",
+    "266A-0",
+    ".menu.models:not(.sub-menu) > :nth-child(5)",
     "f"
    ],
    [
-    "1USZ-0",
-    ".menu.mm-list > :nth-child(6)",
-    "f"
-   ],
-   [
-    "1UT0-0",
-    ".menu.mm-list > :nth-child(6) .mm-hn",
+    "266C-0",
+    ".menu.models:not(.sub-menu) > :nth-child(5) .lb",
     "t"
    ],
    [
-    "1USW-0",
-    ".menu.mm-list > :nth-child(7)",
+    "266D-0",
+    ".menu.models:not(.sub-menu) > :nth-child(6)",
     "f"
    ],
    [
-    "1USY-0",
-    ".menu.mm-list > :nth-child(7) .lb",
+    "266E-0",
+    ".menu.models:not(.sub-menu) > :nth-child(7)",
+    "f"
+   ],
+   [
+    "266G-0",
+    ".menu.models:not(.sub-menu) > :nth-child(7) .mm-logo",
+    "f"
+   ],
+   [
+    "266I-0",
+    ".menu.models:not(.sub-menu) > :nth-child(7) .mm-hn",
     "t"
    ],
    [
-    "1USU-0",
-    ".menu.mm-list > :nth-child(8)",
+    "266J-0",
+    ".menu.models:not(.sub-menu) > :nth-child(8)",
     "f"
    ],
    [
-    "1USV-0",
-    ".menu.mm-list > :nth-child(8) .lb",
+    "266L-0",
+    ".menu.models:not(.sub-menu) > :nth-child(8) .lb",
     "t"
    ],
    [
-    "1UST-0",
-    ".menu.mm-list > :nth-child(9)",
+    "266M-0",
+    ".menu.models:not(.sub-menu) > :nth-child(9)",
     "f"
    ],
    [
-    "1USN-0",
-    ".menu.mm-list > :nth-child(10)",
-    "f"
-   ],
-   [
-    "1USS-0",
-    ".menu.mm-list > :nth-child(10) .lb",
+    "266O-0",
+    ".menu.models:not(.sub-menu) > :nth-child(9) .lb",
     "t"
    ],
    [
-    "1USP-0",
-    ".menu.mm-list > :nth-child(10) .sub",
+    "266P-0",
+    ".menu.models:not(.sub-menu) > :nth-child(10)",
+    "f"
+   ],
+   [
+    "266Q-0",
+    ".menu.models:not(.sub-menu) > :nth-child(11)",
+    "f"
+   ],
+   [
+    "266R-0",
+    ".menu.models:not(.sub-menu) > :nth-child(11) .lb",
+    "t"
+   ],
+   [
+    "266S-0",
+    ".menu.models:not(.sub-menu) > :nth-child(11) .sub",
+    "f"
+   ],
+   [
+    "266U-0",
+    ".menu.models:not(.sub-menu) > :nth-child(12)",
+    "f"
+   ],
+   [
+    "266V-0",
+    ".menu.models:not(.sub-menu) > :nth-child(12) .lb",
+    "t"
+   ],
+   [
+    "266X-0",
+    ".menu.models:not(.sub-menu) > :nth-child(12) .sub",
     "f"
    ]
   ]

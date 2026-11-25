@@ -6,39 +6,203 @@ void ProcessQueue(); bool TakeShownAside(); void AttachQueuedAnchor(Queued& q); 
 void StartTurn(const std::string& text, const std::vector<std::string>& elementIds, const std::vector<std::string>& attachmentIds);
 void DisposeSession(const wchar_t* why);
 void SendPrompt(); void ModeSettled(); void ModeRefused(const Acp::Event& e);   // SEC-13
+void ReleaseHeldQueue(const wchar_t* why);   // « Ton agent »: the messages held behind an agent that stopped
+void MaybeReadModels();                      // #128 v2: an agent's model list read before its first chat
+void ModelReadBusy();                        // « Ton agent » × #128 v2: a start event — the read waits for a calm chat
+void StopModelReadForStart();                // the chat's own session starts: a read still running stops
 
-// ---------------------------------------------------------------- detection and preparation (off the UI thread)
-void ApplyDetection(const std::string& id, const AgentRuntime::Detection& d) {
-    auto& a = agentInfo[id]; a.known = true; a.cli = d.Usable(); a.prepared = !d.NeedsPrepare();
-    if (d.login == AgentRuntime::Login::SignedIn) a.signedIn = true;
+// ---------------------------------------------------------------- « Ton agent »: the agents' one status (src/agent-status.h)
+// The chat never detects agents on its own any more: it shows AgentStatus (src/chat-agent-status.h maps it), the same
+// status the tutorial, Réglages › Agents and the band read. Started once with the browser (ChatAgentsStartup, main).
+std::wstring ChatAgentText(ChatAgentStatus::Text t) {
+    using T = ChatAgentStatus::Text;
+    switch (t) {
+    case T::NotInstalled: return TR(chat_agent_not_installed);
+    case T::TooOld: return TR(chat_agent_too_old);
+    case T::NotConnected: return TR(chat_agent_not_connected);
+    case T::Starting: return TR(chat_agent_starting);
+    case T::Installing: return TR(agents_installing);
+    case T::SigningIn: return TR(agents_status_signing_in);
+    case T::Installed: return TR(chat_agent_installed);
+    case T::FirstUse: return TR(chat_agent_first_use);
+    case T::None: break;
+    }
+    return L"";
+}
+void ApplyStatus(const std::string& id, const AgentStatus::Status& s) {
+    auto& a = agentInfo[id]; const auto v = ChatAgentStatus::Of(s);
+    a.known = v.known; a.cli = v.cli; a.prepared = s.runtimeReady;
+    if (s.state == AgentStatus::State::Ready) a.signedIn = true;   // lot R (530a287): « jamais connecté » vs « plus connecté »
     if (sessionReady && id == agentId) return;   // a live session says more than a detection
     if (sessionStarting && id == agentId) return;
-    if (d.cli.state == AgentRuntime::CliState::Missing) { a.status = "notInstalled"; a.detail = TR(chat_agent_not_installed); }
-    else if (d.cli.state == AgentRuntime::CliState::TooOld) { a.status = "error"; a.detail = TR(chat_agent_too_old); }
-    else if (d.login == AgentRuntime::Login::SignedOut) { a.status = "notConnected"; a.detail = TR(chat_agent_not_connected); }
-    else { a.status = "ready"; a.detail = a.prepared ? TR(chat_agent_installed) : TR(chat_agent_first_use); }
-    a.progress = -1;
+    if (preparing && a.status == "preparing" && s.state != AgentStatus::State::Installing) return;   // the chat's own download shows its progress
+    a.status = v.status; a.detail = ChatAgentText(v.text); a.progress = -1;
+}
+// The agent is chosen without a screen: this site's last one or the user's pick (agentChosen); else, once BOTH agents are
+// detected (never the one whose detection answered first: the hub tells them one by one), a ready one — Claude Code
+// first —, else an installed one. Never under a conversation, a session or a turn; a ready current agent is kept.
+void ChooseInstalledAgent() {
+    if (agentChosen || turn.active || !convo.data.items.empty() || session) return;
+    for (const auto& def : Agents) if (AgentStatus::Get(def.rt).state == AgentStatus::State::Unknown) return;
+    const AgentDef* best = nullptr;
+    for (const auto& def : Agents) if (AgentStatus::Get(def.rt).Ready()) { best = &def; break; }
+    if (!best) for (const auto& def : Agents) if (agentInfo[def.id].cli) { best = &def; break; }
+    const AgentDef* now = AgentOf(agentId);
+    if (!best || best == now || (now && AgentStatus::Get(now->rt).Ready()) || (now && agentInfo[agentId].cli && !AgentStatus::Get(best->rt).Ready())) return;
+    agentId = best->id; convo.data.head.agentId = agentId;
+    ::Log(std::wstring(L"AGENTS the chat's agent chosen by itself (") + (AgentStatus::Get(best->rt).Ready() ? L"ready" : L"the only one installed") + L"): " + W(best->id));   // i18n-exempt: log detail; may run before any chat opening: never « CHAT »
+}
+void ApplyAllStatuses() { for (const auto& def : Agents) ApplyStatus(def.id, AgentStatus::Get(def.rt)); }
+void StartSession();
+// A sign-in that ended well (from the chat's « Se connecter », the « Ton agent » screen or Réglages): the chat's agent starts
+// again, as it did when its own sign-in console closed.
+std::map<AgentRuntime::Agent, AgentStatus::State> lastAgentState;
+void AfterAgentChange(const AgentStatus::Status& s, AgentStatus::State before) {
+    if (before != AgentStatus::State::SigningIn || !s.Ready()) return;
+    for (const auto& def : Agents)
+        if (def.rt == s.agent && def.id == agentId && !sessionReady) {
+            Diag(L"sign-in " + W(def.id) + L" over: the agent starts again");   // i18n-exempt: log detail
+            session.reset(); sessionStarting = false; if (Usable()) StartSession();
+        }
+}
+void EnsureAgentStatus() {
+    static bool started = false; if (started) return; started = true;
+    AgentStatus::Host h;
+    h.dataRoot = Ann::DataRoot();
+    h.run = [](std::function<void()> work, std::function<void()> done) { Ann::Run(std::move(work), std::move(done)); };
+    h.log = [](const std::wstring& s) { ::Log(s); };   // its own lines (« AGENTS … »), never « CHAT »: the hub starts with the browser, the chat does nothing before it is used (chat_qa_run « rest »)
+    h.environment = [] { return RtEnv(); };
+    // Every change (an install from the tutorial, a sign-in from Réglages…) reaches the panel at once.
+    AgentStatus::Subscribe([](const AgentStatus::Status& s) {
+        const auto seen = lastAgentState.find(s.agent); const auto before = seen == lastAgentState.end() ? AgentStatus::State::Unknown : seen->second;
+        lastAgentState[s.agent] = s.state;
+        for (const auto& def : Agents) if (def.rt == s.agent) ApplyStatus(def.id, s);
+        ChooseInstalledAgent(); SendState();
+        AfterAgentChange(s, before);
+        if (s.Ready()) for (const auto& def : Agents) if (def.rt == s.agent && def.id == agentId) ReleaseHeldQueue(L"the agent is ready again");   // i18n-exempt: log detail
+        MaybeReadModels();   // #128 v2: an agent just ready (an install, a sign-in, a detection elsewhere) may have its models read
+    });
+    AgentStatus::Init(std::move(h));
+}
+// #128 v2 (chat-model-probe.h): the model list of an agent that never had a session here, read from the agent itself —
+// installed and signed in, models unknown, no session of it starting or running; its adapter prepared first (downloaded as
+// at a first use) when it is not here yet (Val's option A, ChatModelProbe::PrepareForModels); one at a time, in a thread
+// of its own (never the UI thread, never the annotations' pool); the answer comes back through AcpWake. Once per launch
+// when it works; a failure is tried again at the next detection (the next opening of the chat / start of the mode), at
+// most ChatModelProbe::MaxTries times per launch. The menu meanwhile shows the built-in list (chat-known-models.h).
+struct ModelRead { std::set<std::string> done; std::map<std::string, int> failures; std::string agent; bool prepare = false; } modelRead;   // UI thread only
+// the read's answer, handed over by its thread (never freed: a read still running when the browser exits finds it)
+struct ModelReadMail { std::mutex mu; std::shared_ptr<ChatModelProbe::Result> result; };
+ModelReadMail& ModelMail() { static auto* m = new ModelReadMail; return *m; }
+void SaveOptionsCache();   // chat-host-ui.h
+// The calm gate (ChatModelProbe::Calm): every start event pushes the read CalmMs further; the timer comes back then.
+ChatModelProbe::Calm modelReadCalm;
+std::shared_ptr<std::atomic<bool>> modelReadCancel;   // the running read's (its thread holds it too)
+void ModelReadBusy() {
+    modelReadCalm.Busy(GetTickCount64());
+    if (post) SetTimer(post, ModelReadTimer, ChatModelProbe::CalmMs, nullptr);   // re-armed: counted from the last start event
+}
+void StopModelReadForStart() {
+    if (!modelRead.agent.empty() && modelReadCancel && !modelReadCancel->exchange(true)) Diag(L"models of " + W(modelRead.agent) + L": the read stops for the chat's own start (again once calm)");   // i18n-exempt: log detail
+    ModelReadBusy();
+}
+void MaybeReadModels() {
+    if (!modelRead.agent.empty() || !post) return;
+    if (const auto now = GetTickCount64(); !modelReadCalm.Ready(now, sessionStarting || preparing, turn.active)) {   // a start, a turn: later
+        SetTimer(post, ModelReadTimer, std::max(500u, modelReadCalm.Wait(now)), nullptr); return;
+    }
+    for (const auto& def : Agents) {
+        const auto& a = agentInfo[def.id];
+        ChatModelProbe::Facts f;
+        const auto& st = AgentStatus::Get(def.rt);   // « Ton agent »: the agents' one status — signed in as its CLI says (not « unknown »)
+        f.installed = a.cli; f.prepared = a.prepared; f.signedIn = st.Ready() && st.signedIn;
+        f.modelsKnown = Acp::FindModelOption(a.options) != nullptr; f.readThisLaunch = modelRead.done.count(def.id) > 0;
+        f.sessionOfThisAgent = (session || sessionStarting) && agentId == def.id;
+        const auto action = ChatModelProbe::Decide(f);
+        if (action == ChatModelProbe::Action::None) continue;
+        modelRead.agent = def.id; modelRead.prepare = action == ChatModelProbe::Action::PrepareThenRead;
+        const auto env = RtEnv(); const auto rt = def.rt;
+        Acp::StartOptions o; o.resolve = AgentRuntime::MakeResolver(env, rt); o.clientName = "browser";
+#ifdef BROWSER_VERSION_TEXT
+        o.clientVersion = BROWSER_VERSION_TEXT;
+#endif
+        const HWND target = post; const bool prepare = modelRead.prepare;
+        auto cancel = std::make_shared<std::atomic<bool>>(false); modelReadCancel = cancel;
+        if (prepare) Diag(L"prepare " + W(def.id) + L" in the background, for its model list (first use: the private Node and its adapter are downloaded into <data>\\agents)");   // i18n-exempt: log detail
+        Diag(L"reading the models of " + W(std::string(def.name)) + L" (installed, signed in, never started here): a session opened and closed in a temporary folder, no message");   // i18n-exempt: log detail
+        std::thread([o, target, prepare, env, rt, cancel]() mutable {
+            auto r = std::make_shared<ChatModelProbe::Result>();
+            std::function<bool(std::string&)> ready;
+            if (prepare) ready = [env, rt](std::string& log) {   // as PrepareAgent does it (same pins, same folder), without its progress strip
+                const auto p = AgentRuntime::Prepare(env, rt);
+                log = std::string(AgentRuntime::PrepareErrorName(p.error)) + (p.detail.empty() ? "" : " — " + p.detail);
+                return p.Ok();
+            };
+            const std::wstring dir = ChatModelProbe::MakeFolder();
+            if (dir.empty()) r->why = "no temporary folder";
+            else { o.cwd = U8(dir); *r = ChatModelProbe::Read(std::move(o), 90000, ready, cancel.get()); if (!ChatModelProbe::RemoveFolder(dir)) r->why += r->why.empty() ? "temporary folder left" : ", temporary folder left"; }
+            { auto& m = ModelMail(); std::lock_guard<std::mutex> g(m.mu); m.result = r; }
+            PostMessageW(target, AcpWake, 0, 0);
+        }).detach();
+        return;
+    }
+}
+void PumpModelRead() {
+    std::shared_ptr<ChatModelProbe::Result> r;
+    { auto& m = ModelMail(); std::lock_guard<std::mutex> g(m.mu); r = std::move(m.result); m.result.reset(); }
+    if (!r || modelRead.agent.empty()) return;
+    const std::string id = modelRead.agent; modelRead.agent.clear();
+    auto& a = agentInfo[id];
+    if (r->prepareTried) {   // logged as the panel's own preparation is (PrepareAgent)
+        Diag(L"prepare " + W(id) + L": " + W(r->prepareLog) + L" (in the background, for its model list)");   // i18n-exempt: log detail
+        if (r->prepared) {
+            a.prepared = true; if (a.status == "ready") a.detail = TR(chat_agent_installed);
+            if (const auto* def = AgentOf(id)) AgentStatus::Refresh(def->rt);   // « Ton agent »: the one status learns its runtime is here (else a later change would say « first use » again)
+        }
+    }
+    const auto* mo = Acp::FindModelOption(r->options);
+    if (r->ok && mo && !Acp::FindModelOption(a.options)) {   // a real session of it that started meanwhile says more: kept
+        a.options = r->options; SaveOptionsCache();
+        Diag(L"models of " + W(id) + L" read: " + std::to_wstring(mo->choices.size()) + L" (the agent stopped)");   // i18n-exempt: log detail
+    } else Diag(L"models of " + W(id) + L" not read: " + (r->ok ? std::wstring(mo ? L"already known" : L"the agent gave no model list") : W(r->why)));   // i18n-exempt: log detail
+    modelReadCancel.reset();
+    if (r->cancelled) { Diag(L"models of " + W(id) + L": stopped for the chat's own start, read again once the chat is calm"); ModelReadBusy(); }   // i18n-exempt: log detail
+    else {
+        if (!r->ok) ++modelRead.failures[id];
+        if (ChatModelProbe::Settled(r->ok, modelRead.failures[id])) modelRead.done.insert(id);
+        else { Diag(L"models of " + W(id) + L": tried again once the chat is calm (" + std::to_wstring(modelRead.failures[id]) + L" / " + std::to_wstring(ChatModelProbe::MaxTries) + L")"); ModelReadBusy(); }   // i18n-exempt: log detail; never at once, never in a loop
+    }
+    SendState();   // the menu, open or not, shows the agent's own list now (or keeps the one it had)
+    MaybeReadModels();
 }
 void DetectAgents(std::function<void()> then = nullptr) {
-    auto out = std::make_shared<std::vector<AgentRuntime::Detection>>();
-    Ann::Run([out] { const auto env = RtEnv(); for (const auto& def : Agents) out->push_back(AgentRuntime::Detect(env, def.rt)); },
-             [out, then] {
-                 for (std::size_t i = 0; i < out->size() && i < std::size(Agents); ++i) {
-                     const auto& d = (*out)[i]; ApplyDetection(Agents[i].id, d);
-                     Diag(std::wstring(L"agent ") + W(Agents[i].id) + L": cli " + (d.Usable() ? L"found " : L"missing ") + W(d.cli.version) + L" (" + W(d.cli.source) + L"), node " + (d.nodeReady ? L"ready" : L"absent") + L", adapter " + (d.adapterReady ? L"ready" : L"absent"));
-                 }
-                 // The agent is chosen without a screen: this site's last one or the user's pick; else Claude Code when it
-                 // is installed; else the first agent that is.
-                 if (!agentChosen && !turn.active && convo.data.items.empty() && !session && !agentInfo[agentId].cli)
-                     for (const auto& def : Agents) if (agentInfo[def.id].cli) { agentId = def.id; convo.data.head.agentId = agentId; Diag(std::wstring(L"agent chosen by itself (the only one installed): ") + W(def.id)); break; }
-                 SendState(); if (then) then();
-             });
+    EnsureAgentStatus();
+    AgentStatus::Refresh([then] {
+        ApplyAllStatuses();
+        for (const auto& def : Agents) { const auto& s = AgentStatus::Get(def.rt); Diag(std::wstring(L"agent ") + W(def.id) + L": " + W(AgentStatus::StateName(s.state)) + (s.version.empty() ? L"" : L" " + W(s.version)) + L", runtime " + (s.runtimeReady ? L"ready" : L"absent")); }
+        ChooseInstalledAgent(); SendState(); if (then) then();
+        MaybeReadModels();   // #128 v2: after `then` (a session it starts is not read)
+    });
 }
 void StartSession();
 // Downloads the private Node and the adapter (pinned fingerprints), with the progress in the panel, then starts.
 std::shared_ptr<std::atomic<bool>> prepareCancel;
 void PrepareAgent(const std::string& id, std::function<void(bool)> then) {
     const auto* def = AgentOf(id); if (!def || preparing) { if (then) then(false); return; }
+    // « Ton agent » (Val's decision via Fix, 24/11): without a usable CLI — missing, too old, Claude Desktop only, a failed
+    // install — the chat's runtime download is useless (about 60 MB). The CLI is looked for again (it may just have been
+    // installed); still none → the « Ton agent » screen, which installs only on its strong button's click. Nothing downloaded.
+    if (const auto& st = AgentStatus::Get(def->rt); st.state != AgentStatus::State::Unknown && !st.Installed()) {
+        Diag(L"prepare " + W(id) + L": no usable CLI (" + W(AgentStatus::StateName(st.state)) + L") — looked for again, nothing downloaded");   // i18n-exempt: log detail
+        const auto rt = def->rt;
+        DetectAgents([id, then, rt] {
+            if (AgentStatus::Get(rt).Installed()) { PrepareAgent(id, then); return; }
+            Diag(L"prepare " + W(id) + L": still no usable CLI — the « Ton agent » screen");   // i18n-exempt: log detail
+            OpenTonAgent(TonAgentFrom::Chat);
+            if (then) then(false);
+        });
+        return;
+    }
     preparing = true; prepareCancel = std::make_shared<std::atomic<bool>>(false);
     // no bar until something really moves: « Préparation de Claude… » alone (never an empty grey bar)
     SetAgentStatus(id, "preparing", TRF(chat_agent_prepare_start, AgentShort(id)), -1);
@@ -46,6 +210,7 @@ void PrepareAgent(const std::string& id, std::function<void(bool)> then) {
     auto shared = std::make_shared<Shared>(); const auto rt = def->rt; auto cancel = prepareCancel; const HWND target = post;
     Ann::Run([shared, rt, cancel, target] {
             const auto env = RtEnv();
+            std::lock_guard<std::mutex> once(ChatModelProbe::PrepareLock());   // #128 v2: a background preparation of the model read waits or goes first
             shared->result = AgentRuntime::Prepare(env, rt, [&](const AgentRuntime::Progress& p) {
                 // each stage its own label and its own progress (PrepareProgress): Node's download (bytes), then its
                 // unpacking (no measure: no bar), then the adapter's packages (count, and the bytes of the current one)
@@ -66,9 +231,14 @@ void PrepareAgent(const std::string& id, std::function<void(bool)> then) {
             preparing = false;
             const bool ok = shared->result.Ok();
             Diag(L"prepare " + W(id) + L": " + W(AgentRuntime::PrepareErrorName(shared->result.error)) + (shared->result.detail.empty() ? L"" : L" — " + W(shared->result.detail)));
-            auto& a = agentInfo[id]; a.prepared = ok; a.progress = -1;
-            if (ok) { a.status = "ready"; a.detail = TR(chat_agent_installed); }
-            else if (shared->result.error == AgentRuntime::PrepareError::Cancelled) { a.status = "ready"; a.detail = TR(chat_agent_first_use); }
+            auto& a = agentInfo[id]; a.progress = -1;
+            if (ok || shared->result.error == AgentRuntime::PrepareError::Cancelled) {
+                // « Ton agent » (the « Installé » bug): this download is only the chat's own runtime (private Node + adapter);
+                // whether the agent is installed is the agents' one status — never « Installé » while claude.exe / codex.exe is
+                // missing. A new detection follows (it also learns that the runtime is in place).
+                if (const auto* def = AgentOf(id)) { AgentStatus::Status s = AgentStatus::Get(def->rt); s.runtimeReady = ok; ApplyStatus(id, s); AgentStatus::Refresh(def->rt); }
+                a.prepared = ok;
+            }
             else { a.status = "error"; a.detail = TR(chat_agent_unavailable);
                 if (!turn.active) { Acp::Error e; e.code = Acp::ErrorCode::NeedsPrepare; SendError(ProblemFor(e, id), std::string(AgentRuntime::PrepareErrorName(shared->result.error)) + " " + shared->result.detail); } }   // a waiting turn says it itself
             SendState(); if (then) then(ok);
@@ -225,6 +395,7 @@ void GiveOwedChoices() {
 }
 void OnStarted(const Acp::StartResult& r) {
     sessionStarting = false; auto& info = agentInfo[agentId]; started = r;
+    ModelReadBusy();   // the chat just started: a model read waits until it is calm
     Diag(std::wstring(L"session start: ") + (r.state == Acp::StartState::Ready ? (r.resumed ? L"ready (resumed)" : L"ready (new)") : W(Acp::ErrorCodeName(r.error.code))) + (r.error.detail.empty() ? L"" : L" — " + W(ClipUtf8(r.error.detail, 300))));
     switch (r.state) {
     case Acp::StartState::Ready: {
@@ -259,6 +430,7 @@ void OnStarted(const Acp::StartResult& r) {
 void StartSession() {
     if (session && !sessionReady && !sessionStarting) { session->Dispose(); disposed.push_back(std::move(session)); session.reset(); }   // an object left by AuthRequired
     if (session || sessionStarting || !Usable()) return;
+    StopModelReadForStart();   // « Ton agent » × #128 v2: never a model read's session next to the chat's own start
     const auto* def = AgentOf(agentId); if (!def) return;
     session = std::make_unique<Acp::Session>();
     const HWND target = post; session->SetWake([target] { if (target) PostMessageW(target, AcpWake, 0, 0); });
@@ -613,11 +785,14 @@ void OnEvent(const Acp::Event& e) {
     case T::Exited:
         Diag(L"agent exited (" + std::to_wstring(e.exitCode) + L"): " + W(ClipUtf8(e.error.detail, 300)));
         sessionReady = sessionStarting = false; modeAwaited.clear(); modeRefused = false; if (session) { disposed.push_back(std::move(session)); session.reset(); }
-        if (turn.active) { turn.failure = e.error; FinishTurn("error"); } else { info.status = "ready"; info.detail = TR(chat_agent_installed); SendState(); }
+        // idle: the agent's state is the one status again (« Ton agent »: never « Installé » by itself), checked anew
+        if (turn.active) { turn.failure = e.error; FinishTurn("error"); }
+        else if (const auto* def = AgentOf(agentId)) { ApplyStatus(agentId, AgentStatus::Get(def->rt)); AgentStatus::Refresh(def->rt); SendState(); }
         break;
     }
 }
 void PumpEvents() {
+    PumpModelRead();   // #128 v2: the model list read in its own thread
     if (!session) return;
     std::vector<Acp::Event> events; session->Poll(events);
     for (const auto& e : events) { if (!session && e.type != Acp::Event::Type::Started) break; OnEvent(e); }
@@ -790,6 +965,36 @@ void StartTurn(const std::string& text, const std::vector<std::string>& elementI
     EnsureSession([] { BeginSnapshotThenPrompt(); });
     Diag(L"turn " + W(turn.id) + L" started");
 }
+// « Ton agent »: a failed turn's card. When the agent stopped answering (its CLI closed — « Query closed before response
+// received » —, the process ended, a sign-in refused) the agents' one status is asked again first: ONE card then says the real
+// cause with its action (src/chat-agent-status.h FailureCause) — never the generic « Quelque chose n'a pas fonctionné ».
+// The messages waiting behind that turn wait on (held, still in the queue): sent to an agent that is gone, each would only
+// add the same card. They go once the agent is ready again (still ready after the check, a sign-in, an install), or at
+// « Envoyer maintenant ».
+bool queueHeldForAgent = false;
+void ReleaseHeldQueue(const wchar_t* why) {
+    if (!queueHeldForAgent) return;
+    queueHeldForAgent = false; Diag(std::wstring(L"the waiting messages go on: ") + why);   // i18n-exempt: log detail
+    ProcessQueue();
+}
+void ShowTurnFailure(const Acp::Error& failure, const std::string& agent, const std::string& turnId) {
+    auto show = [agent, turnId](const Acp::Error& e) {
+        SendError(ProblemFor(e, agent), e.detail, "thread", true, turnId);
+        if (e.code == Acp::ErrorCode::AuthRequired) Strip("auth", "danger", TRF(chat_strip_disconnected, W(Agent().name)), "connect", TR(chat_action_connect));
+    };
+    const auto* def = AgentOf(agent);
+    if (!def || !ChatAgentStatus::Rechecked(failure.code)) { show(failure); return; }
+    const auto rt = def->rt;
+    Diag(L"turn failed (" + W(Acp::ErrorCodeName(failure.code)) + L"): the agent is checked again before saying why");   // i18n-exempt: log detail
+    queueHeldForAgent = true;   // until the check says: the next waiting message must not fail the same way first
+    AgentStatus::Refresh([failure, rt, show] {
+        Acp::Error e = failure; e.code = ChatAgentStatus::FailureCause(AgentStatus::Get(rt), failure.code);
+        Diag(L"turn failure shown as " + W(Acp::ErrorCodeName(e.code)) + L" (agent " + W(AgentStatus::StateName(AgentStatus::Get(rt).state)) + L")");   // i18n-exempt: log detail
+        show(e);
+        if (AgentStatus::Get(rt).Ready()) ReleaseHeldQueue(L"the agent is still ready");   // i18n-exempt: log detail
+        else if (!queue.empty()) Diag(L"the waiting messages are held until the agent is ready again");   // i18n-exempt: log detail
+    });
+}
 void CompleteTurn(const std::string& stopReason, const CS::TurnSummary* summary, const std::vector<std::pair<std::string, CS::FileDiff>>* diffs = nullptr) {
     const bool failed = stopReason == "error"; const double ms = Ann::NowMs() - turn.startedMs;
     if (stopReason == "end_turn" && !turn.lastPlan.empty() && turn.planPermission.empty() && CurrentModeKind() == "plan") SendPlan(turn.lastPlan, true);   // Paper 6.12: « Plan proposé » waits for « Lancer le plan »
@@ -808,8 +1013,7 @@ void CompleteTurn(const std::string& stopReason, const CS::TurnSummary* summary,
     } else m.Set("undoable", SJ::Value::Bool(false));
     if (!turn.summaryText.empty()) m.Set("copyText", Str(ClipUtf8(turn.summaryText, 60000)));
     Keep("turn.end", m); Send("turn.end", std::move(m));
-    if (failed) { if (!turn.problem.title.empty()) SendError(turn.problem, ""); else { const auto p = ProblemFor(turn.failure, agentId); SendError(p, turn.failure.detail);
-            if (turn.failure.code == Acp::ErrorCode::AuthRequired) Strip("auth", "danger", TRF(chat_strip_disconnected, W(Agent().name)), "connect", TR(chat_action_connect)); } }
+    if (failed) { if (!turn.problem.title.empty()) SendError(turn.problem, ""); else ShowTurnFailure(turn.failure, agentId, turn.id); }
     const bool done = stopReason == "end_turn";
     // Lot 5's real Codex trial: an annotation is « resolved » only when the turn changed something (a plan, an answer, a
     // refusal are not a change: it goes back to waiting, with the reason). Without a snapshot, the files the agent's own
@@ -868,6 +1072,7 @@ void StopTurn() {
 void ProcessQueue() {
     if (!turn.active && queue.empty()) TakeShownAside();   // C2: nothing waits — the conversation shown becomes the engine's
     if (turn.active || queue.empty()) { SendQueue(); return; }
+    if (queueHeldForAgent) { SendQueue(); return; }   // « Ton agent »: the agent stopped (ShowTurnFailure) — they wait for it
     // Mode Commentaire: the next message may belong to another element's conversation — it becomes the engine's first
     if (const std::string c = queue.front().convId; !c.empty() && c != convo.data.head.id && !SwitchEngineTo(c)) { queue.pop_front(); ProcessQueue(); return; }
     Queued q = std::move(queue.front()); queue.pop_front(); SendQueue(); RefreshWaitStrip();
@@ -930,3 +1135,7 @@ void ViewChanges(const std::string& panelTurn, const std::string& path) {
 }
 
 } // namespace Chat
+
+// « Ton agent » (design/ton-agent-interface.md): the agents' status starts with the browser, its work stops with it.
+void ChatAgentsStartup() { Chat::EnsureAgentStatus(); }
+void ChatAgentsShutdown() { AgentStatus::Shutdown(); }

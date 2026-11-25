@@ -2,7 +2,9 @@
 #include "i18n.h"
 // Annotation mode tutorial (#125 v2, validated by Val) — the window. Paper « Browser Design » › « #125 v2 — Tutoriel
 // annotation (validé) »: A1 1RTD-0 Bienvenue, A2 1RVB-0 Essai : choisir, A3 1RZ5-0 Essai : écrire, A4 1RX8-0 Essai : résultat,
-// A5 1S3J-0 Où ça marche, A6 1S4U-0 Connecter, A7 1S62-0 Prêt (cyan); A2 – A4 again in violet (1SAY-0, 1S7Y-0, 1SDI-0).
+// A5 1S3J-0 Où ça marche, A6 « Ton agent » (page « Onboarding agents — Ton agent (maquette prête) », in the place of 1S4U-0
+// Connecter), A7 1S62-0 Prêt (cyan); A2 – A4 again in violet (1SAY-0, 1S7Y-0, 1SDI-0). A6 alone is the « Ton agent »
+// screen of the chat and of the band's reminder (Options::alone; OpenTonAgent, src/chat-ton-agent.h).
 // Flow: src/annotation-onboarding-flow.h. Host: src/annotation-mode.h. Values with their nodes: design/annotation-onboarding-values.md.
 //
 // The first-run onboarding's window family (src/onboarding.h board 6, drawn by the same code: src/onboarding-parts.h):
@@ -32,16 +34,30 @@
 //     h 16, 6 below); « Fait » (pill as above, disc with check 12) 12 right of the button.
 //   A5 three rows (1S3K-0 at (120, 84), 480 wide, gap 14): localhost (on), « Fichier  …/boutique/index.html » (on),
 //     lemonde.fr (off) + the tooltip « Seulement sur vos projets et fichiers locaux ».
-//   A6 the agents' card (v1 A3); A7 the shortcut and the agent's status (v1 A4), « Terminer ».
+//   A6 « Ton agent » (src/annotation-onboarding-agent.h, values design/ton-agent-screen.md): the card 400 wide at x 160,
+//     #171717, radius 16, padding 12, two tiles (gap 10) of radius 12 — at rest #1F1F1F inset 1 #2A2A2A, current #192A2A
+//     inset 1.5 #2FD1D9, failed danger 10 % inset 1.5 danger: logo 34 (26 from the top), name 16/21 600, 10, the mark
+//     (icon 14, 4, 13/13 500 #A6A6A6 — the light ink when current, danger for « Erreur », « ✓ Prêt » 13/17). Its top by
+//     state: centred on y 220 (Choisir, À connecter), 123 (Installation), 140 (Prêt), 72 (Erreur: the two lines 12/16
+//     #A6A6A6 and « Installer moi-même ↗ » 12/16 500 #E6E6E6 underlined, 12 under the tiles); it glides there in 220 ms.
+//     A click on a tile runs its action (Val, Paper 265A-0) and is the consent (AgentStatus::UserClicked); hovered, a tile
+//     with an action shows the hand, #262626 inset 1 #3A3A3A and its mark white; a failed one says « Réessayer » (#FF7B6E).
+//     The footer: « Plus tard », and « Continuer » (accent) once an agent is ready. The mark « Installation… » animates
+//     with the Downloads button's morph (src/download-icon.h) in the light ink; at the end it morphs into the check, or
+//     fades into the error icon (Paper 253G-0); reduced motion: still icons. While a sign-in runs (3b 263M-0): « Connexion
+//     en cours », the tile « Connexion… » cyan, two lines and « Rouvrir la page de connexion ↗ »; the window steps aside
+//     while the sign-in page's tab is in front (TabInFront).
+//   A7 the shortcut and the agent's status (v1 A4: the agents' one status, « Aucun agent prêt » or « X est prêt »), « Terminer ».
 //
 // Window: an owned popup centred over the browser's client area, over the « Connecter un agent » modal's veil
 // (#0000008C); the browser waits behind it (disabled). Motion (the first-run onboarding's): in 150 ms (veil 200 ms),
 // steps change in 220 ms (old content out, new in; the gradient and header stay; between the trial's steps the fake
 // page stays and glides to its place), out 120 ms (180 at the end); the button grows 160 → 260 in 400 ms then « Fait »
 // and the measure fade in (200 ms); reduced motion: 120 ms changes, no growth, still shaders. Hover 120 ms.
-// Keyboard: Tab / Maj+Tab through the step's controls (A2: « Payer »; A3: the note, « Envoyer »; A6: the rows and
-// « Autre app… »), the footer, the language and close buttons; typing goes to A3's note; Entrée = the focused control
-// (A3's note: « Envoyer »), else the main button; Espace = the focused control; Échap = « Plus tard ».
+// Keyboard: Tab / Maj+Tab through the step's controls (A2: « Payer »; A3: the note, « Envoyer »; A6: the tiles with an
+// action (← → between them; Entrée / Espace run it) and the link), the footer, the language and close buttons; typing goes
+// to A3's note; Entrée = the focused control (A3's note: « Envoyer »), else the main button; Espace = the focused
+// control; Échap = « Plus tard ».
 #include <windows.h>
 #include <windowsx.h>
 #include <algorithm>
@@ -61,6 +77,15 @@
 #include "onboarding-parts.h"
 #include "annotation-onboarding-flow.h"
 #include "annotation-connect.h"
+#include <shellapi.h>
+#include "agent-status.h"                  // « Ton agent »: the agents' one status (design/ton-agent-interface.md)
+#include "annotation-onboarding-agent.h"   // what A6 shows for it
+#include "download-icon.h"                 // « Installation… »: the Downloads button's morph
+#include "native-lottie.h"
+
+// The « Ton agent » screen is this window (A6, and A6 alone). OpenTonAgent (src/ton-agent-entry.h) is DEFINED with the chat,
+// in src/chat-ton-agent.h (included at the end of src/annotation-mode.h); this tells annotation-mode.h to drop its stand-in.
+#define BROWSER_TON_AGENT_SCREEN 1
 
 namespace NativeChrome {
 namespace AnnotationOnboardingUI {
@@ -80,32 +105,112 @@ inline constexpr float payH = 36, frameOut = 4, tagH = 18, pillH = 36, pillTop =
 // A5
 inline constexpr float rowsLeft = 120, rowsTop = 84, rowsW = 480, rowH = 48, rowsGap = 14, rowRadius = 12, rowPadL = 16, rowPadR = 8;
 inline constexpr float pickH = 32, pickPad = 10, pickRadius = 8, tipMax = 280;
-// A6
-inline constexpr float cardLeft = 180, cardTop = 112, cardW = 360, cardPad = 12, cardGap = 8, cardRadius = 16, appH = 40, appRadius = 8;
+// A6 « Ton agent »: TonAgent::Card (src/annotation-onboarding-agent.h)
 // A7
 inline constexpr float keysTop = 120, keyH = 56, keyPad = 18, keyGap = 10, keyRadius = 12, keyBorder = 3, keyA = 56, pillGap = 20, statusH = 32, statusPad = 12;
 }
 inline constexpr std::size_t MaxNote = 300;   // A3: what the note takes (the demo does not read it)
 
+// 3b: the sign-in page as the host saw it — opened in a tab of Browser (the default browser), and the page to offer again
+// once that tab is closed ("" = no « Rouvrir la page de connexion ↗ »). Never seen: another browser has it.
+struct SignInPage { bool inTab = false; std::wstring reopen; };
 struct Hooks {
-    std::function<void(A::AgentKind)> connect;                     // A6: « Connecter avec Claude / Codex » (explicit click); the host answers with SetStatus
-    std::function<void(AO::Ending, bool manual)> closed;           // after the window left; manual: « Autre app ou réglage manuel » was the way out
+    std::function<void(A::AgentKind)> connect;                     // (before « Ton agent ») A6's MCP rows: never called now, kept for the host's code
+    std::function<void(AO::Ending, bool manual)> closed;           // after the window left; `manual` is always false now (no « Autre app » link)
     std::function<void(I18n::Locale)> language;                    // the header's language menu: persist the choice
     std::function<void(const std::wstring&)> announce;             // screen reader notifications (host: the browser's)
+    std::function<void(AgentStatus::Agent)> openChat;              // A6 « Ouvrir le chat »: after the window left and `closed`, the agent to use
+    std::function<void(const std::wstring&)> openPage;             // A6 « Installer moi-même ↗ »: the official page (the window copies the command)
+    std::function<SignInPage(AgentStatus::Agent)> signInPage;      // 3b: where the sign-in page is, and the page to offer again
+    std::function<void(AgentStatus::Agent)> reopenSignIn;          // its click: that page in a tab of the browser again
 };
+// What « Continuer » (alone), « Installer moi-même ↗ » and « Rouvrir la page de connexion ↗ » do when the host gave no hook
+// (the tutorial opened by src/annotation-mode.h): set once by the chat (src/chat-ton-agent.h). Empty: nothing (tests set
+// the hooks).
+struct Fallback {
+    std::function<void(AgentStatus::Agent)> openChat; std::function<void(const std::wstring&)> openPage;
+    std::function<SignInPage(AgentStatus::Agent)> signInPage; std::function<void(AgentStatus::Agent)> reopenSignIn;
+};
+inline Fallback& Fallbacks() { static Fallback f; return f; }
 struct Options {
     bool reduced = false;
     Step start = Step::What;       // the welcome window's « Essayer en 1 minute » (E2) starts at A2
+    bool alone = false;            // the « Ton agent » screen by itself (the chat, the band's reminder): A6 only, no progress
     Profiles::Profile tint;        // the colour the boards move to (the profile's; default: the boards' own)
     unsigned accent = 0;           // 0xRRGGBB when the fills must be exactly that colour (« Personnel »: the mode's #3E67FF); 0: from `tint`
-    A::AppStatus claude, codex;    // what A6 / A7 show first; then SetStatus
+    A::AppStatus claude, codex;    // (before « Ton agent ») A6's MCP rows: ignored — A6 and A7 read the agents' one status
     Hooks hooks;
     Options() { tint.hue = K::PaperHue; tint.intensity = K::PaperChroma; tint.neutral = false; }
 };
 
+// A6's icons (Paper, view box 112): ⤓ Installer / Installation…, 📶 Connecter, ☹ Erreur.
+namespace TonGlyph {
+inline constexpr char download[] = "M99.75 63v28a5.25 5.25 0 0 1-5.25 5.25H17.5a5.25 5.25 0 0 1-5.25-5.25V63a5.25 5.25 0 0 1 10.5 0v22.75H89.25V63a5.25 5.25 0 0 1 10.5 0Zm-47.464 3.714a5.25 5.25 0 0 0 7.437 0l17.5-17.5a5.25 5.25 0 0 0-7.437-7.437L61.25 50.313V14a5.25 5.25 0 0 0-10.5 0v36.313L42.214 41.786a5.25 5.25 0 0 0-7.437 7.437Z";
+inline constexpr char wifi[] = "M63 89.25a7 7 0 1 1-7-7A7 7 0 0 1 63 89.25ZM104.829 36.711a77 77 0 0 0-97.658 0 5.25 5.25 0 1 0 6.663 8.115 66.5 66.5 0 0 1 84.332 0 5.25 5.25 0 1 0 6.663-8.115Zm-14.07 15.632a56 56 0 0 0-69.518 0 5.25 5.25 0 0 0 6.518 8.229 45.5 45.5 0 0 1 56.482 0 5.25 5.25 0 0 0 6.518-8.229ZM76.593 67.944a35.022 35.022 0 0 0-41.186 0 5.25 5.25 0 0 0 6.186 8.487 24.5 24.5 0 0 1 28.814 0 5.25 5.25 0 1 0 6.186-8.487Z";
+inline constexpr char error[] = "M56 8.75A47.25 47.25 0 1 0 103.25 56 47.302 47.302 90 0 0 56 8.75Zm0 84a36.75 36.75 0 1 1 36.75-36.75A36.789 36.789 90 0 1 56 92.75Zm24.714-40.464a5.25 5.25 0 0 1-7.437 7.437L70.875 57.313l-2.411 2.414a5.25 5.25 0 0 1-7.437-7.437L63.438 49.875l-2.416-2.411a5.25 5.25 0 0 1 7.438-7.437L70.875 42.438l2.411-2.416a5.25 5.25 0 0 1 7.437 7.438L78.313 49.875Zm-29.75 7.437a5.25 5.25 0 0 1-7.437 0L41.125 57.313l-2.411 2.414a5.25 5.25 0 0 1-7.437-7.437L33.688 49.875l-2.416-2.411a5.25 5.25 0 0 1 7.438-7.437L41.125 42.438l2.411-2.416a5.25 5.25 0 0 1 7.437 7.438L48.563 49.875l2.414 2.411A5.25 5.25 0 0 1 50.964 59.714ZM63 78.75a7 7 0 1 1-7-7A7 7 0 0 1 63 78.75Z";
+inline constexpr float side = 112;
+}
+// « Installation… » (Paper 253G-0): the Downloads button's morph — the same Lottie layers, frames and loop as the
+// toolbar's icon (src/download-icon.h, assets/lottie/download-*.json) — with every layer in one ink, the light accent
+// (#2FD1D9 on the boards): track and fill over the arrow's cut-out, then the arrow (or the success check morph).
+class InstallGlyph {
+    Lottie::Asset track_, fill_, arrow_, cut_, ok_, okCut_; std::wstring root_; unsigned side_ = 0; bool failed_ = false, okReady_ = false;
+    struct Slot { ID2D1Bitmap* bitmap = nullptr; ID2D1RenderTarget* target = nullptr; long long key = -1; } slots_[2];
+    std::vector<uint32_t> px_;
+    bool Load(unsigned side) {
+        const std::wstring dir = root_ + L"\\assets\\lottie\\";
+        failed_ = !(track_.Load(dir + L"download-ring-track.json") && fill_.Load(dir + L"download-ring-fill.json") && arrow_.Load(dir + L"download-arrow.json") && cut_.Load(dir + L"download-arrow-cutout.json"))
+                  || track_.FrameCount() != DownloadIcon::RingFrames || fill_.FrameCount() != DownloadIcon::RingFrames || arrow_.FrameCount() != DownloadIcon::ArrowFrames || cut_.FrameCount() != DownloadIcon::ArrowFrames;
+        okReady_ = ok_.Load(dir + L"download-success.json") && okCut_.Load(dir + L"download-success-cutout.json") && ok_.FrameCount() == DownloadIcon::SuccessFrames && okCut_.FrameCount() == DownloadIcon::SuccessFrames;
+        side_ = side; return !failed_;
+    }
+public:
+    InstallGlyph() = default; InstallGlyph(const InstallGlyph&) = delete; InstallGlyph& operator=(const InstallGlyph&) = delete;
+    ~InstallGlyph() { Drop(); }
+    void Drop() { for (auto& s : slots_) { if (s.bitmap) s.bitmap->Release(); s = Slot{}; } }
+    void SetRoot(const std::wstring& root) { if (root != root_) { root_ = root; side_ = 0; failed_ = false; Drop(); } }
+    bool Success() const { return okReady_; }
+    // The pose (ring / arrow frames, or the success frame >= 0) in `box` (its centre, 14 DIP). False: not drawn (no
+    // assets): the caller draws the still glyph.
+    bool Draw(ID2D1RenderTarget* t, int slot, D2D1_RECT_F box, float scale, const DownloadIcon::Pose& pose, K::Rgb8 ink, float alpha) {
+        if (!t || root_.empty() || alpha <= 0 || slot < 0 || slot > 1) return false;
+        const unsigned side = std::clamp(static_cast<unsigned>(std::ceil(14 * scale)), 1u, 64u);
+        if (side != side_ && !Load(side)) { Drop(); return false; }
+        if (failed_) return false;
+        const bool success = pose.success >= 0 && okReady_;
+        auto& s = slots_[slot];
+        if (s.target != t) { if (s.bitmap) s.bitmap->Release(); s = Slot{}; s.target = t; }
+        const long long key = (((static_cast<long long>(pose.ring) * 256 + (success ? 128 + pose.success : pose.arrow)) * 2 + (success ? 1 : 0)) << 24) | (static_cast<long long>(ink.r) << 16) | (ink.g << 8) | ink.b;
+        if (!s.bitmap || key != s.key) {
+            auto at = [&](Lottie::Asset& a, int frame, int frames) { return a.Sample(static_cast<double>(frame) / (frames - 1), side); };
+            const int ring = success ? DownloadIcon::FillEnd : pose.ring;
+            const auto* tr = at(track_, ring, DownloadIcon::RingFrames); const auto* fi = at(fill_, ring, DownloadIcon::RingFrames);
+            const auto* ar = success ? at(ok_, pose.success, DownloadIcon::SuccessFrames) : at(arrow_, pose.arrow, DownloadIcon::ArrowFrames);
+            const auto* cu = success ? at(okCut_, pose.success, DownloadIcon::SuccessFrames) : at(cut_, pose.arrow, DownloadIcon::ArrowFrames);
+            if (!tr || !fi || !ar || !cu) return false;
+            const std::size_t n = static_cast<std::size_t>(side) * side; px_.resize(n);
+            for (std::size_t i = 0; i < n; ++i) {
+                const float ta = (tr->bgra[i] >> 24) / 255.f, fa = (fi->bgra[i] >> 24) / 255.f, aa = (ar->bgra[i] >> 24) / 255.f, keep = 1 - (cu->bgra[i] >> 24) / 255.f;
+                const float ringA = fa + ta * (1 - fa), a = std::clamp(aa + ringA * keep * (1 - aa), 0.f, 1.f);
+                px_[i] = (static_cast<uint32_t>(std::lround(a * 255)) << 24) | (static_cast<uint32_t>(std::lround(ink.r * a)) << 16) | (static_cast<uint32_t>(std::lround(ink.g * a)) << 8) | static_cast<uint32_t>(std::lround(ink.b * a));
+            }
+            HRESULT hr = S_OK;
+            if (!s.bitmap) hr = t->CreateBitmap(D2D1::SizeU(side, side), px_.data(), side * 4, D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)), &s.bitmap);
+            else hr = s.bitmap->CopyFromMemory(nullptr, px_.data(), side * 4);
+            if (FAILED(hr) || !s.bitmap) { if (s.bitmap) s.bitmap->Release(); s.bitmap = nullptr; return false; }
+            s.key = key;
+        }
+        const float x = (box.left + box.right) / 2 - 7, y = (box.top + box.bottom) / 2 - 7;
+        t->DrawBitmap(s.bitmap, {x, y, x + 14, y + 14}, alpha);
+        return true;
+    }
+};
+
 class Window {
 public:
-    enum Id : int { None = 0, Lang = 1, Close = 2, Primary = 10, Secondary = 11, ClaudeRow = 20, CodexRow = 21, Manual = 22, Payer = 30, Field = 31, Send = 32 };
+    // A6: ClaudeRow / CodexRow are the two tiles, Manual the « Installer moi-même ↗ » link, Reopen « Rouvrir la page de
+    // connexion ↗ » (3b).
+    enum Id : int { None = 0, Lang = 1, Close = 2, Primary = 10, Secondary = 11, ClaudeRow = 20, CodexRow = 21, Manual = 22, Reopen = 23, Payer = 30, Field = 31, Send = 32 };
     static constexpr UINT FrameMessage = WM_APP + 0x4E0;
     static constexpr UINT_PTR CaretTimer = 2;
 private:
@@ -124,6 +229,14 @@ private:
     bool noteActive_ = false;   // A3: the person clicked or edited the written note (the caret shows from then on)
     bool NoteActive() const { return noteActive_ || flow_.text() != flow_.suggestion(); }
     double secondsForTest_ = -1;
+    // ---- A6 « Ton agent » ----
+    using Agent = AgentStatus::Agent; using AState = AgentStatus::State;
+    TonAgent::Screen pick_; int listener_ = 0; AgentStatus::Status seen_[2]; Agent chatAgent_ = Agent::Claude; int manualForTest_ = 0, reopenForTest_ = 0; std::wstring page_;
+    bool aside_ = false;   // 3b: stepped aside while the sign-in page's tab is in front (TabInFront)
+    DownloadIcon::Model install_[2]; Motion::Time ended_[2]{}; int endKind_[2] = {0, 0}; AState endTo_[2] = {AState::Unknown, AState::Unknown};   // the install's end: 1 the success morph, 2 the fade to the error icon
+    float cardFrom_ = -1, cardTo_ = -1; Motion::Time cardAt_{};   // the card glides between its places (Paper: one per state)
+    InstallGlyph installGlyph_; bool morphForTest_ = false; int morphDrawsForTest_ = 0;   // tests: the morph drawn off screen
+    static constexpr float SuccessMs = DownloadIcon::SuccessMorph * 1000.f / 60, SuccessHoldMs = 600, FailMs = 150, GlideMs = 220;
 
     // ---- small helpers ----
     float Scale() const { return dpi_ / 96.f; }
@@ -139,18 +252,21 @@ private:
     K::Rgb8 Accent() const { return options_.accent ? K::FromHex(options_.accent) : K::Accent(Tint()); }
     unsigned AccentHex() const { const auto a = Accent(); return (unsigned(a.r) << 16) | (unsigned(a.g) << 8) | a.b; }
     K::Rgb8 Tone(unsigned paper) const { return K::Rehue(paper, Tint()); }   // #2FD1D9 (check, dot), #0AF4FF (caret), #007D83 (measure)
-    static AO::Link LinkOf(const A::AppStatus& s) {
-        switch (s.state) { case A::ConnectState::Working: return AO::Link::Working; case A::ConnectState::Connected: return AO::Link::Connected; case A::ConnectState::Failed: return AO::Link::Failed; case A::ConnectState::Reconnect: return AO::Link::Reconnect; default: return AO::Link::Idle; }
-    }
     const A::AppStatus& App(A::AgentKind a) const { return a == A::AgentKind::Claude ? claude_ : codex_; }
-    AO::Reader Reader() const { return AO::ReaderOf(LinkOf(claude_), LinkOf(codex_)); }
+    // ---- A6 / A7: the agents' one status (src/agent-status.h) ----
+    static const AgentStatus::Status& St(Agent a) { return AgentStatus::Get(a); }
+    Agent Target() const { return pick_.Target(St(Agent::Claude), St(Agent::Codex)); }
+    const AgentStatus::Status& TargetStatus() const { return St(Target()); }
+    static std::wstring Name(Agent a) { return a == Agent::Codex ? L"Codex" : L"Claude Code"; }   // i18n-exempt: product names
+    AO::Reader Reader() const { return AO::ReaderOf(St(Agent::Claude).Ready(), St(Agent::Codex).Ready()); }
+    bool Alone() const { return flow_.alone(); }
     void Announce(const std::wstring& text) { if (text.empty()) return; if (options_.hooks.announce) options_.hooks.announce(text); else if (uia_.Attached()) uia_.Notify(500, text.c_str(), L"AnnotationOnboarding"); }   // i18n-exempt: UIA activity id
 
     // ---- texts of each step ----
     std::wstring Title(Step s) const {
         switch (s) {
         case Step::Pick: return TR(annotation_onboarding_pick_title); case Step::Write: return TR(annotation_onboarding_write_title); case Step::Result: return TR(annotation_onboarding_result_title);
-        case Step::Where: return TR(annotation_onboarding_where_title); case Step::Connect: return TR(annotation_onboarding_connect_title); case Step::Ready: return TR(annotation_onboarding_ready_title);
+        case Step::Where: return TR(annotation_onboarding_where_title); case Step::Connect: return TonTitle(); case Step::Ready: return TR(annotation_onboarding_ready_title);
         default: return TR(annotation_onboarding_what_title);
         }
     }
@@ -158,25 +274,97 @@ private:
         switch (s) {
         case Step::Pick: return TR(annotation_onboarding_pick_body); case Step::Write: return TR(annotation_onboarding_write_body); case Step::Result: return TR(annotation_onboarding_result_body);
         case Step::Where: return TR(annotation_onboarding_where_body);
-        case Step::Connect: return TR(annotation_onboarding_connect_body);
+        case Step::Connect: return TonBody();
         case Step::Ready: { const auto r = Reader(); return TRF(annotation_onboarding_ready_body, r == AO::Reader::None ? std::wstring(TR(annotation_onboarding_your_agent)) : std::wstring(AO::ReaderName(r))); }
         default: return TR(annotation_onboarding_what_body);
         }
     }
+    // A6: « Choisissez votre agent », « Installation de X », « Connectez X », « X est prêt » (the target's state).
+    std::wstring TonTitle() const {
+        const std::wstring n = Name(Target());
+        switch (TonAgent::HeadingOf(TargetStatus())) {
+        case TonAgent::Heading::Installing: return TRF(ton_agent_installing_title, n);
+        case TonAgent::Heading::SignIn: return TRF(ton_agent_signin_title, n);
+        case TonAgent::Heading::SigningIn: return TR(ton_agent_signing_in_title);
+        case TonAgent::Heading::Ready: return TRF(ton_agent_ready_title, n);
+        default: return TR(ton_agent_choose_title);
+        }
+    }
+    std::wstring TonBody() const {
+        switch (TonAgent::HeadingOf(TargetStatus())) {
+        case TonAgent::Heading::Installing: return TR(ton_agent_installing_body);
+        case TonAgent::Heading::SignIn:   // the paid Claude plan: said here (after a failed sign-in, 25OI-0: in the card's lines)
+            if (Target() == Agent::Codex) return TR(ton_agent_signin_codex_body);
+            return TargetStatus().state == AState::Error ? TR(ton_agent_signin_claude_again_body) : TR(ton_agent_signin_claude_body);
+        case TonAgent::Heading::SigningIn: return PageNow().inTab ? TR(ton_agent_signing_in_body) : TR(ton_agent_signing_in_browser_body);   // a tab of Browser, or another browser
+        case TonAgent::Heading::Ready: return TR(ton_agent_ready_body);
+        default: return TR(ton_agent_choose_body);
+        }
+    }
+    // A tile's action as a screen reader says it (its name), the click running it: « Installer Claude Code », « Se
+    // connecter à Codex », … — empty when it has none (the first detection, Installation…, Connexion…, Prêt).
+    std::wstring TileAction(Agent a) const {
+        const std::wstring n = Name(a); const auto& s = St(a);
+        switch (TonAgent::ActionOf(s)) {
+        case TonAgent::Action::Install: return TRF(ton_agent_button_install, n);
+        case TonAgent::Action::Update: return TRF(ton_agent_tile_update, n);
+        case TonAgent::Action::SignIn: return TRF(ton_agent_button_signin, n);
+        case TonAgent::Action::Retry: return TonAgent::SignInReason(s.reason) ? TRF(ton_agent_tile_retry_signin, n) : TRF(ton_agent_tile_retry_install, n);
+        default: return L"";
+        }
+    }
+    // The mark's word; `retry`: a failed tile hovered (or focused from the keyboard) says what its click does.
+    std::wstring MarkWord(const AgentStatus::Status& s, bool retry = false) const {
+        switch (TonAgent::MarkOf(s)) {
+        case TonAgent::Mark::Install: return TR(ton_agent_mark_install); case TonAgent::Mark::Update: return TR(ton_agent_mark_update);
+        case TonAgent::Mark::Installing: return TR(ton_agent_mark_installing);
+        case TonAgent::Mark::Connect: return TR(ton_agent_mark_connect); case TonAgent::Mark::SigningIn: return TR(ton_agent_mark_signing_in);
+        case TonAgent::Mark::Ready: return TR(ton_agent_mark_ready);
+        case TonAgent::Mark::Error: return retry ? TR(ton_agent_button_retry) : TR(ton_agent_mark_error);
+        case TonAgent::Mark::SignInFailed: return retry ? TR(ton_agent_button_retry) : TR(ton_agent_mark_signin_failed);
+        default: return L"";
+        }
+    }
+    std::wstring TroubleText() const {
+        switch (TonAgent::TroubleOf(TargetStatus())) {
+        case TonAgent::Trouble::Install: return TR(ton_agent_install_failed);
+        case TonAgent::Trouble::SignIn: return Target() == Agent::Claude ? TR(ton_agent_signin_failed_claude) : TR(ton_agent_signin_failed_codex);
+        case TonAgent::Trouble::SigningIn: return PageNow().inTab ? TR(ton_agent_signing_in_note) : TR(ton_agent_signing_in_browser_note);
+        default: return L"";
+        }
+    }
+    // 3b: the target's sign-in page as the host saw it (in a tab of Browser or not; the page to open again).
+    SignInPage PageNow() const {
+        if (TargetStatus().state != AState::SigningIn) return {};
+        const auto& page = options_.hooks.signInPage ? options_.hooks.signInPage : Fallbacks().signInPage;
+        return page ? page(Target()) : SignInPage{};
+    }
+    // « Rouvrir la page de connexion ↗ »: only when the page was in a tab of Browser, that tab closed since; "" = no link.
+    std::wstring ReopenPage() const { const auto p = PageNow(); return p.inTab ? p.reopen : std::wstring(); }
+    // The link under the two lines: « Installer moi-même ↗ » (an install failed), « Rouvrir la page de connexion ↗ » (3b).
+    int LinkId() const {
+        const auto t = TonAgent::TroubleOf(TargetStatus());
+        if (t == TonAgent::Trouble::Install) return Manual;
+        return t == TonAgent::Trouble::SigningIn && !ReopenPage().empty() ? static_cast<int>(Reopen) : static_cast<int>(None);
+    }
+    std::wstring LinkText() const { const int l = LinkId(); return l == Manual ? TR(ton_agent_manual) : l == Reopen ? TR(ton_agent_reopen_signin) : L""; }
+    bool CanContinue() const { return TonAgent::CanContinue(St(Agent::Claude), St(Agent::Codex)); }
+    static bool TileClickable(Agent a) { return TonAgent::Clickable(St(a), St(TonAgent::Other(a))); }
+    Agent ReadyAgent() const { if (TargetStatus().Ready()) return Target(); const auto r = AgentStatus::FirstReady(); return r ? *r : Target(); }
     static int Lines(const std::wstring& text) { return 1 + static_cast<int>(std::count(text.begin(), text.end(), L'\n')); }
-    std::wstring SecondaryLabel(Step s) const { return s == Step::What ? TR(common_later) : s == Step::Result ? TR(annotation_onboarding_restart) : TR(common_back); }
+    std::wstring SecondaryLabel(Step s) const {
+        if (s == Step::Connect) return TR(common_later);   // A6: « Plus tard » (on to A7; alone: the screen closes), ready or not
+        return s == Step::What ? TR(common_later) : s == Step::Result ? TR(annotation_onboarding_restart) : TR(common_back);
+    }
     std::wstring PrimaryLabel(Step s) const {
         switch (s) {
         case Step::Pick: case Step::Write: return TR(annotation_onboarding_skip_trial);
-        case Step::Connect: return TR(onboarding_continue);
+        case Step::Connect: return TR(onboarding_continue);   // only once an agent is ready (Arrange)
         case Step::Ready: return TR(annotation_onboarding_finish);
         default: return TR(annotation_onboarding_next);
         }
     }
     static bool TextPrimary(Step s) { return s == Step::Pick || s == Step::Write; }   // « Passer l'essai »: no fill
-    std::wstring AppLabel(A::AgentKind a) const { return A::AppButtonLabel(a, App(a)); }
-    // The message under an app's row (the modal's): a failure, or a note once connected (« Redémarrez Claude pour l'activer »).
-    std::wstring AppMessage(A::AgentKind a) const { const auto& s = App(a); return s.state == A::ConnectState::Failed || s.state == A::ConnectState::Connected ? s.detail : std::wstring(); }
 
     // ---- the fake page (A2 – A4) ----
     static float SiteLeft(Step s) { return s == Step::Write ? Layout::siteLeftWrite : Layout::siteLeft; }
@@ -213,18 +401,37 @@ private:
     static D2D1_RECT_F CloseBox() { return Box(Layout::closeLeft, Layout::headerTop, P::HeaderSize, P::HeaderSize); }
     D2D1_RECT_F SecondaryBox(Step s) { return Box(Layout::barLeft, Layout::barTop, P::ButtonWidth(*c_, SecondaryLabel(s), 500), P::ButtonHeight); }
     D2D1_RECT_F PrimaryBox(Step s) { const float w = P::ButtonWidth(*c_, PrimaryLabel(s), 500); return Box(Layout::barRight - w, Layout::barTop, w, P::ButtonHeight); }
-    struct Card { D2D1_RECT_F card, claude, codex, claudeMsg, codexMsg, manual; };
-    Card CardLayout() {
-        Card k{}; const float inner = Layout::cardLeft + Layout::cardPad, w = Layout::cardW - 2 * Layout::cardPad; float y = Layout::cardTop + Layout::cardPad;
-        for (A::AgentKind a : {A::AgentKind::Claude, A::AgentKind::Codex}) {
-            const D2D1_RECT_F row = Box(inner, y, w, Layout::appH); y += Layout::appH + Layout::cardGap;
-            D2D1_RECT_F msg{};
-            if (!AppMessage(a).empty()) { msg = Box(inner, y, w, 16); y += 16 + Layout::cardGap; }
-            (a == A::AgentKind::Claude ? k.claude : k.codex) = row; (a == A::AgentKind::Claude ? k.claudeMsg : k.codexMsg) = msg;
+    // A6's card at `top`: the tiles, the two lines under them (a failure, 3b) and their link.
+    struct TonCard { D2D1_RECT_F card, tile[2], trouble, link; TonAgent::Trouble kind; };
+    static TonAgent::Mark MarkNow(Agent a) { return TonAgent::MarkOf(St(a)); }
+    float TonHeight() const { return TonAgent::Card::Height(MarkNow(Agent::Claude), MarkNow(Agent::Codex), TonAgent::TroubleOf(TargetStatus()), LinkId() != None); }
+    float TonTop() const { return TonAgent::Card::Top(TargetStatus(), TonHeight()); }
+    float CardTopAt(Motion::Time now) const {
+        if (cardTo_ < 0) return TonTop();
+        if (cardFrom_ < 0 || offscreen_ || options_.reduced) return cardTo_;
+        return cardFrom_ + (cardTo_ - cardFrom_) * EaseOut(Ms(cardAt_, now) / GlideMs);
+    }
+    bool CardGliding() const { return cardFrom_ >= 0 && !offscreen_ && !options_.reduced && Ms(cardAt_, Motion::Now()) < GlideMs; }
+    // The card goes to its place for the state (from where it is shown now).
+    void GlideCard(Motion::Time now) {
+        const float want = TonTop();
+        if (cardTo_ < 0 || offscreen_ || options_.reduced || flow_.step() != Step::Connect) { cardTo_ = want; cardFrom_ = -1; return; }
+        if (std::fabs(want - cardTo_) < .01f) return;
+        cardFrom_ = CardTopAt(now); cardTo_ = want; cardAt_ = now;
+    }
+    TonCard TonLayout(float top) {
+        namespace C = TonAgent::Card; TonCard k{};
+        const float tileW = (C::width - 2 * C::pad - C::gap) / 2, tileH = C::TileHeight(MarkNow(Agent::Claude), MarkNow(Agent::Codex));
+        k.tile[0] = Box(C::left + C::pad, top + C::pad, tileW, tileH); k.tile[1] = Box(C::left + C::pad + tileW + C::gap, top + C::pad, tileW, tileH);
+        k.kind = TonAgent::TroubleOf(TargetStatus());
+        float bottom = top + C::pad + tileH + C::pad;
+        if (k.kind != TonAgent::Trouble::None) {
+            const float y = top + C::pad + tileH + C::troubleGap; const bool link = LinkId() != None;
+            k.trouble = Box(C::left + C::pad, y, C::width - 2 * C::pad, 2 * C::troubleLine);
+            if (link) { const float w = K::Width(*c_, LinkText(), {12, 16, 500, 0}); k.link = Box(std::round(Layout::width / 2 - w / 2), y + 2 * C::troubleLine + C::troubleLinkGap, w, C::troubleLine); }
+            bottom = top + C::Height(MarkNow(Agent::Claude), MarkNow(Agent::Codex), k.kind, link);
         }
-        const K::Font f{12, 16, 400, 0}; const float tw = K::Width(*c_, TR(settings_manual_connect), f);
-        y += 4; k.manual = Box(Layout::width / 2 - tw / 2, y, tw, 16); y += 16 + Layout::cardPad;
-        k.card = {Layout::cardLeft, Layout::cardTop, Layout::cardLeft + Layout::cardW, y};
+        k.card = {C::left, top, C::left + C::width, bottom};
         return k;
     }
     void Arrange() { Arrange(flow_.step()); }
@@ -233,14 +440,19 @@ private:
         if (s == Step::Closed) return;
         if (s == Step::Pick) items_.push_back({Payer, PartBox(Part::Pay, Layout::siteLeft, AO::PayFrom)});
         if (s == Step::Write) { items_.push_back({Field, Grow(NoteField(), 4)}); items_.push_back({Send, P::DemoNoteSend(Layout::noteLeft, Layout::noteTop, NoteTextHeight())}); }
-        if (s == Step::Connect) { const auto k = CardLayout(); items_.push_back({ClaudeRow, k.claude}); items_.push_back({CodexRow, k.codex}); items_.push_back({Manual, {k.manual.left - 6, k.manual.top - 4, k.manual.right + 6, k.manual.bottom + 4}}); }
-        items_.push_back({Secondary, SecondaryBox(s)}); items_.push_back({Primary, PrimaryBox(s)});
+        if (s == Step::Connect) {
+            const auto k = TonLayout(std::floor(CardTopAt(Motion::Now()))); items_.push_back({ClaudeRow, k.tile[0]}); items_.push_back({CodexRow, k.tile[1]});
+            if (const int link = LinkId()) items_.push_back({link, {k.link.left - 6, k.link.top - 4, k.link.right + 6, k.link.bottom + 4}});
+        }
+        items_.push_back({Secondary, SecondaryBox(s)});
+        if (s != Step::Connect || CanContinue()) items_.push_back({Primary, PrimaryBox(s)});   // A6: « Continuer » only once an agent is ready
         items_.push_back({Lang, LangBox()}); items_.push_back({Close, CloseBox()});
     }
     D2D1_RECT_F Rect(int id) const { for (const auto& i : items_) if (i.id == id) return i.r; return {}; }
     bool Enabled(int id) const {
-        if (id == ClaudeRow) return AO::Connectable(LinkOf(claude_));
-        if (id == CodexRow) return AO::Connectable(LinkOf(codex_));
+        if (id == Manual || id == Reopen) return flow_.step() == Step::Connect && LinkId() == id;
+        if (id == Primary) return flow_.step() != Step::Connect || CanContinue();
+        if (id == ClaudeRow || id == CodexRow) return flow_.step() == Step::Connect && !aside_ && TileClickable(id == ClaudeRow ? Agent::Claude : Agent::Codex);   // no hover, no click while busy, ready or waiting
         if (id == Send) return flow_.CanSend();
         return true;
     }
@@ -249,8 +461,8 @@ private:
         std::vector<int> o; const Step s = flow_.step(); if (s == Step::Closed) return o;
         if (s == Step::Pick) o.push_back(Payer);
         if (s == Step::Write) { o.push_back(Field); if (Enabled(Send)) o.push_back(Send); }
-        if (s == Step::Connect) { if (Enabled(ClaudeRow)) o.push_back(ClaudeRow); if (Enabled(CodexRow)) o.push_back(CodexRow); o.push_back(Manual); }
-        o.push_back(Secondary); o.push_back(Primary); o.push_back(Lang); o.push_back(Close);
+        if (s == Step::Connect) { if (Enabled(ClaudeRow)) o.push_back(ClaudeRow); if (Enabled(CodexRow)) o.push_back(CodexRow); if (const int l = LinkId()) o.push_back(l); }
+        o.push_back(Secondary); if (Enabled(Primary)) o.push_back(Primary); o.push_back(Lang); o.push_back(Close);
         return o;
     }
 
@@ -264,10 +476,20 @@ private:
         return std::chrono::duration<double>(now - opened_).count();
     }
     float Change(Motion::Time now) const { return changing_ ? Motion::Clamp(Ms(changed_, now) / static_cast<float>(Onboarding::TransitionMs(options_.reduced))) : 1.f; }
-    bool Spinning() const { return !options_.reduced && (flow_.step() == Step::Connect || shown_ == Step::Connect) && (claude_.state == A::ConnectState::Working || codex_.state == A::ConnectState::Working); }
+    // A6 moves: the card gliding, an « Installation… » morph looping, an install's end (success morph, fade to the error).
+    float EndMs(int i) const { return endKind_[i] == 2 ? FailMs : endTo_[i] == AState::Ready ? SuccessMs : SuccessMs + SuccessHoldMs; }
+    bool Ending(int i, Motion::Time now) const { return endKind_[i] != 0 && Ms(ended_[i], now) < EndMs(i); }
+    bool TonMoving() const {
+        if (offscreen_ || (flow_.step() != Step::Connect && shown_ != Step::Connect)) return false;
+        if (CardGliding()) return true;
+        if (options_.reduced) return false;
+        const auto now = Motion::Now();
+        for (int i = 0; i < 2; ++i) if (St(TonAgent::AllAgentsAt(i)).state == AState::Installing || Ending(i, now)) return true;
+        return false;
+    }
     bool Growing() const { return flow_.step() == Step::Result && grewAt_ != Motion::Time{} && Ms(grewAt_, Motion::Now()) < AO::GrowMs + AO::ShowDoneMs + 20; }
     bool Animating() const {
-        if (changing_ || entering_ || leaving_ || Spinning() || Growing()) return true;
+        if (changing_ || entering_ || leaving_ || TonMoving() || Growing()) return true;
         for (const auto& g : glow_) { const float want = g.first == hover_ ? 1.f : 0.f; if (std::fabs(g.second - want) > .001f) return true; }
         return false;
     }
@@ -303,6 +525,7 @@ private:
         grewAt_ = now == Step::Result ? changed_ : Motion::Time{};
         focus_ = now == Step::Write ? static_cast<int>(Field) : keyboard_ ? static_cast<int>(Primary) : static_cast<int>(None); hover_ = None; pressed_ = None; part_ = Part::None; noteActive_ = false;
         Blink(now == Step::Write);
+        if (now == Step::Connect) { cardTo_ = -1; GlideCard(changed_); AgentStatus::Refresh(); }   // the screen shown: the agents detected again
         Arrange(); Invalidate(); RequestFrame();
         if (uia_.Attached()) uia_.ChildrenChanged(0);
         Announce(Title(now) + L". " + Body(now));
@@ -316,10 +539,15 @@ private:
         if (hwnd_) { clock_.Stop(); KillTimer(hwnd_, 1); KillTimer(hwnd_, CaretTimer); ShowWindow(hwnd_, SW_HIDE); }
         if (veil_) ShowWindow(veil_, SW_HIDE);
         Dispose();
-        const AO::Ending ending = flow_.ending(); const bool manual = manual_, silent = silent_;
+        const AO::Ending ending = flow_.ending(); const bool manual = manual_, silent = silent_, chat = flow_.chat(); const Agent who = chatAgent_;
+        const auto openChat = options_.hooks.openChat ? options_.hooks.openChat : Fallbacks().openChat;   // copied: `closed` may reopen this window
+        const auto openPage = options_.hooks.openPage ? options_.hooks.openPage : Fallbacks().openPage; const std::wstring page = page_; page_.clear();
         if (!silent && options_.hooks.closed) options_.hooks.closed(ending, manual);
+        if (!silent && chat && openChat) openChat(who);   // A6 « Ouvrir le chat »: once the window is gone and the host knows
+        if (!silent && !page.empty()) { if (openPage) openPage(page); else if (!offscreen_) ShellExecuteW(nullptr, L"open", page.c_str(), nullptr, nullptr, SW_SHOWNORMAL); }   // « Installer moi-même ↗ »
     }
     void Dispose() {
+        Unlisten(); installGlyph_.Drop();
         if (uia_.Attached()) uia_.Detach();
         menu_.Dispose(); grain_.Drop(); trame_.Drop(); gpu_.Dispose(); gpuTried_ = false; glyphs_.Clear();
         if (hwnd_) { chrome_.Dispose(); DestroyWindow(hwnd_); hwnd_ = nullptr; }
@@ -351,17 +579,111 @@ private:
         switch (id) {
         case Lang: LanguageMenu(keyboard); return;
         case Close: flow_.Skip(); break;
-        case Secondary: if (before == Step::What) flow_.Skip(); else flow_.Back(); break;
-        case Primary: flow_.Next(); break;
+        case Secondary:
+            if (before == Step::What) flow_.Skip();
+            else if (before == Step::Connect) flow_.Later();   // A6 « Plus tard »: on to A7 (alone: the screen closes)
+            else flow_.Back();
+            break;
+        case Primary:
+            if (before == Step::Connect) { if (Alone()) { chatAgent_ = ReadyAgent(); flow_.OpenChat(); } else flow_.Next(); break; }   // « Continuer »: A7; alone, the chat with the ready agent
+            flow_.Next(); break;
         case Payer: flow_.Pick(Part::Pay); break;
         case Field: focus_ = Field; noteActive_ = true; Blink(true); Invalidate(); return;
         case Send: flow_.Send(); break;
-        case ClaudeRow: case CodexRow: if (before == Step::Connect && options_.hooks.connect) options_.hooks.connect(id == ClaudeRow ? A::AgentKind::Claude : A::AgentKind::Codex); return;
-        case Manual: if (before != Step::Connect) return; manual_ = true; flow_.Skip(); break;
+        case ClaudeRow: case CodexRow: if (before == Step::Connect) TileAct(id == ClaudeRow ? Agent::Claude : Agent::Codex); return;
+        case Manual: if (before != Step::Connect) return; InstallMyself(); break;   // the screen goes, the official page shows
+        case Reopen: if (before == Step::Connect) ReopenSignIn(); return;          // the page in a tab: the window steps aside
         default: return;
         }
         Changed(before);
     }
+    // ---- A6 « Ton agent » ----
+    // A click on a tile (Entrée / Espace on it): its action at once (Val, Paper 265A-0) — Installer, Mettre à jour, Se
+    // connecter, Réessayer. That click IS the consent of an install (AgentStatus::UserClicked): only here. The agent
+    // becomes the target (the text above the footer follows it); the hub's listener (OnStatus) announces its new state.
+    void TileAct(Agent a) {
+        if (!TileClickable(a)) return;
+        const auto act = TonAgent::ActionOf(St(a));
+        pick_.Pick(a);   // before the action: its first change already concerns the target
+        switch (act) {
+        case TonAgent::Action::Install: case TonAgent::Action::Update: AgentStatus::Install(AgentStatus::UserClicked(a)); break;   // too old: installing again updates it
+        case TonAgent::Action::SignIn: AgentStatus::SignIn(a); break;
+        case TonAgent::Action::Retry: AgentStatus::Retry(AgentStatus::UserClicked(a)); break;
+        default: break;
+        }
+        if (hover_ && !Enabled(hover_)) hover_ = None;   // the tile is busy now: no hover left on it
+        GlideCard(Motion::Now()); Arrange(); Invalidate(); RequestFrame();
+        if (uia_.Attached()) uia_.ChildrenChanged(500);
+    }
+    // 3b « Rouvrir la page de connexion ↗ »: the sign-in page again in a tab of the browser (the host's tab change then puts
+    // this window aside: TabInFront).
+    void ReopenSignIn() {
+        ++reopenForTest_;
+        const auto& reopen = options_.hooks.reopenSignIn ? options_.hooks.reopenSignIn : Fallbacks().reopenSignIn;
+        if (reopen) reopen(Target());
+    }
+    // « Connexion dans un autre onglet » (Paper note 265A-0): hidden with its veil and the browser given back, so nothing
+    // covers the sign-in page; the window stays open (the host keeps it) until its tab is in front again.
+    void StepAside() {
+        aside_ = true; hover_ = pressed_ = None;
+        if (offscreen_) return;
+        if (hwnd_ && GetCapture() == hwnd_) ReleaseCapture();
+        if (hwnd_) ShowWindow(hwnd_, SW_HIDE);
+        if (veil_) ShowWindow(veil_, SW_HIDE);
+        if (owner_) EnableWindow(owner_, TRUE);
+    }
+    // Back on the tab it was opened over: « Ton agent » again over the browser (modal), the agents detected again — signed
+    // in meanwhile: « Prêt » at once (the hub's sign-in check, AgentStatus::Refresh).
+    void ComeBack(RECT ownerClient) {
+        aside_ = false;
+        if (!offscreen_ && hwnd_) {
+            if (veil_) { SetWindowPos(veil_, nullptr, ownerClient.left, ownerClient.top, ownerClient.right - ownerClient.left, ownerClient.bottom - ownerClient.top, SWP_NOZORDER | SWP_NOACTIVATE); SetVeil(1); ShowWindow(veil_, SW_SHOWNOACTIVATE); }
+            Place(ownerClient);
+            SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+            if (owner_) EnableWindow(owner_, FALSE);
+            SetForegroundWindow(hwnd_); SetFocus(hwnd_);
+        }
+        cardTo_ = -1; GlideCard(Motion::Now()); Arrange(); Invalidate(); RequestFrame();
+        if (uia_.Attached()) uia_.ChildrenChanged(0);
+        Announce(Title(flow_.step()) + L". " + Body(flow_.step()));
+        AgentStatus::Refresh();
+    }
+    static bool SignInRunning() { for (Agent a : AgentStatus::AllAgents) if (St(a).state == AState::SigningIn) return true; return false; }
+    // « Installer moi-même ↗ »: the official command to the clipboard (to paste in PowerShell); the screen closes (skipped)
+    // and the official page opens once it is gone (in a tab of the browser: the modal would hide it).
+    void InstallMyself() {
+        const auto m = AgentStatus::ManualInstall(Target()); ++manualForTest_; page_ = m.url;
+        if (hwnd_ && !offscreen_ && OpenClipboard(hwnd_)) {
+            EmptyClipboard(); const std::wstring text = m.command; const SIZE_T bytes = (text.size() + 1) * sizeof(wchar_t);
+            if (HGLOBAL g = GlobalAlloc(GMEM_MOVEABLE, bytes)) { if (void* p = GlobalLock(g)) { memcpy(p, text.c_str(), bytes); GlobalUnlock(g); if (!SetClipboardData(CF_UNICODETEXT, g)) GlobalFree(g); } else GlobalFree(g); }
+            CloseClipboard();
+        }
+        Announce(TR(ton_agent_manual_done));
+        flow_.Skip();
+    }
+    // The agents' status changed (a listener, UI thread): the tiles, the text, the button and the card's place follow;
+    // an install that began starts the morph, one that ended plays its end.
+    void OnStatus(const AgentStatus::Status& s) {
+        const int i = TonAgent::Index(s.agent); const AState was = seen_[i].state; const auto now = Motion::Now();
+        if (s.state == AState::Installing && was != AState::Installing) { install_[i] = DownloadIcon::Model{}; install_[i].Update(true, 0, false, now, options_.reduced || offscreen_); endKind_[i] = 0; }
+        if (was == AState::Installing && s.state != AState::Installing) { install_[i] = DownloadIcon::Model{}; endKind_[i] = s.state == AState::Error || s.state == AState::NotInstalled ? 2 : 1; endTo_[i] = s.state; ended_[i] = now; }
+        seen_[i] = s;
+        if (!open_) return;
+        GlideCard(now);
+        if ((focus_ == Manual || focus_ == Reopen) && !Enabled(focus_)) focus_ = keyboard_ ? static_cast<int>(Secondary) : static_cast<int>(None);
+        if (hover_ && !Enabled(hover_)) hover_ = None;
+        Arrange(); Invalidate(); RequestFrame();
+        if (uia_.Attached()) uia_.ChildrenChanged(500);
+        if (flow_.step() == Step::Connect && s.agent == Target() && was != s.state && s.state != AState::Unknown) {
+            if (hwnd_) SetWindowTextW(hwnd_, TonTitle().c_str());
+            Announce(s.state == AState::Error ? TonTitle() + L". " + TroubleText() : TonTitle() + L". " + TonBody());
+        }
+    }
+    void Listen() {
+        for (Agent a : AgentStatus::AllAgents) seen_[TonAgent::Index(a)] = St(a);
+        if (!listener_) listener_ = AgentStatus::Subscribe([this](const AgentStatus::Status& s) { OnStatus(s); });
+    }
+    void Unlisten() { if (listener_) { AgentStatus::Unsubscribe(listener_); listener_ = 0; } }
     void Focus(int id, bool keyboard) { keyboard_ = keyboard; focus_ = id; if (hwnd_ && GetFocus() != hwnd_ && !offscreen_) SetFocus(hwnd_); Invalidate(); if (uia_.Attached()) uia_.Raise(id, UIA_AutomationFocusChangedEventId); }
     void TabTo(bool back) {
         const auto order = TabOrder(); if (order.empty()) return;
@@ -404,6 +726,7 @@ private:
         }
         if (key == VK_SPACE && focus_ != None && !typing) { Activate(focus_, true); return true; }
         if ((key == VK_DOWN || key == VK_F4) && focus_ == Lang) { Activate(Lang, true); return true; }
+        if ((key == VK_LEFT || key == VK_RIGHT) && (focus_ == ClaudeRow || focus_ == CodexRow)) { const int other = focus_ == ClaudeRow ? CodexRow : ClaudeRow; if (Enabled(other)) Focus(other, true); return true; }   // A6: between the tiles with an action
         return false;
     }
 
@@ -427,6 +750,7 @@ private:
         } else P::FooterButton(*c_, p, PrimaryLabel(s), AccentHex(), true, 500, glow_[Primary], pressed_ == Primary && hover_ == Primary ? 1.f : 0.f, true, focus_ == Primary && keyboard_, alpha);
     }
     void DrawDots(Step s, float alpha) {
+        if (Alone()) return;   // « Ton agent » alone: no tutorial, no progress
         const int current = AO::Index(s); const float total = Layout::dotWide + (AO::StepCount - 1) * (Layout::dot + Layout::dotGap); float x = Layout::width / 2 - total / 2;
         const float top = Layout::dotsCentre - Layout::dot / 2;
         for (int i = 0; i < AO::StepCount; ++i) {
@@ -552,58 +876,93 @@ private:
         K::Text(*c_, t1, {r.left + 11, r.top + 7, r.right - 11, r.top + 25}, tip, PopupKit::White((0xE6 / 255.f) * alpha), DWRITE_TEXT_ALIGNMENT_LEADING, false, true);
         K::Text(*c_, t2, {r.left + 11, r.top + 27, r.right - 11, r.top + 45}, tip, PopupKit::White(.5f * alpha), DWRITE_TEXT_ALIGNMENT_LEADING, false, true);
     }
-    void Logo(A::AgentKind a, D2D1_RECT_F box, float alpha) {
-        const auto& g = a == A::AgentKind::Claude ? A::Glyphs::claude : A::Glyphs::openai;
-        glyphs_.Fill(*c_, g.d, box, g.w, a == A::AgentKind::Claude ? K::Col(0xD97757, alpha) : K::Col(K::Token::text, alpha), g.x, g.y);
+    void Logo(Agent a, D2D1_RECT_F box, float alpha) {
+        const auto& g = a == Agent::Claude ? A::Glyphs::claude : A::Glyphs::openai;
+        glyphs_.Fill(*c_, g.d, box, g.w, a == Agent::Claude ? K::Col(0xD97757, alpha) : K::Col(K::Token::text, alpha), g.x, g.y);
     }
-    // A6's row of an app: the modal's states at this row's size (h 40, radius 8, 14/18 500).
-    void DrawApp(A::AgentKind a, D2D1_RECT_F r, int id, Motion::Time now, float alpha) {
-        const auto& s = App(a); const K::Font f{14, 18, 500, 0}; const std::wstring label = AppLabel(a); const float lw = K::Width(*c_, label, f), cy = (r.top + r.bottom) / 2, cx = (r.left + r.right) / 2;
-        const float glow = Enabled(id) ? glow_[id] : 0, press = Enabled(id) && pressed_ == id && hover_ == id ? 1.f : 0.f;
-        const auto raised = K::Col(K::Lerp(K::Lerp(K::FromHex(K::Token::raised), K::FromHex(K::Token::hover), glow), K::FromHex(K::Token::pressed), press), alpha);
-        auto text = [&](float x, D2D1_COLOR_F col) { K::Text(*c_, label, {x, cy - 9, x + lw + 4, cy + 9}, f, col); };
-        switch (s.state) {
-        case A::ConnectState::Connected: {
-            K::Border(*c_, r, Layout::appRadius, 1, PopupKit::White((0x14 / 255.f) * alpha));
-            const float x = std::round(cx - (16 + 6 + lw + 6 + 14) / 2);
-            Logo(a, Box(x, cy - 8, 16, 16), alpha); text(x + 22, K::Col(K::Token::text, alpha));
-            glyphs_.Fill(*c_, A::Glyphs::check.d, Box(x + 22 + lw + 6, cy - 7, 14, 14), A::Glyphs::check.w, K::Col(Tone(0x2FD1D9), alpha), A::Glyphs::check.x, A::Glyphs::check.y);
-            break; }
-        case A::ConnectState::Working: {
-            K::Fill(*c_, r, Layout::appRadius, PopupKit::White((0x0A / 255.f) * alpha)); K::Border(*c_, r, Layout::appRadius, 1, PopupKit::White((0x14 / 255.f) * alpha));
-            const float x = std::round(cx - (14 + 6 + lw) / 2); auto* t = c_->RenderTarget();
-            D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
-            t->SetTransform(D2D1::Matrix3x2F::Rotation(A::SpinnerAngle(now, options_.reduced || offscreen_), {x + 7, cy}) * base);
-            glyphs_.Fill(*c_, A::Glyphs::ring.d, Box(x, cy - 7, 14, 14), A::Glyphs::ring.w, PopupKit::White((0xB3 / 255.f) * alpha), A::Glyphs::ring.x, A::Glyphs::ring.y);
-            t->SetTransform(base);
-            text(x + 20, PopupKit::White((0xCC / 255.f) * alpha));
-            break; }
-        default: {
-            K::Fill(*c_, r, Layout::appRadius, raised);
-            if (s.state == A::ConnectState::Failed) K::Border(*c_, r, Layout::appRadius, 1, K::Col(K::Token::danger, (0x66 / 255.f) * alpha));
-            const float x = std::round(cx - (lw + 6 + 16) / 2);
-            text(x, K::Col(K::Token::text, alpha)); Logo(a, Box(x + lw + 6, cy - 8, 16, 16), alpha);
+    D2D1_COLOR_F InkColour(TonAgent::Ink ink, float alpha) const {
+        return ink == TonAgent::Ink::Danger ? K::Col(K::Token::danger, alpha) : ink == TonAgent::Ink::Accent ? K::Col(Tone(0x2FD1D9), alpha) : K::Col(0xA6A6A6, alpha);
+    }
+    // The mark under a tile's name, centred in the tile at `top` (Paper: icon 14, gap 4, 13/13 500; « Erreur » 13/17 with
+    // its icon centred; « ✓ Prêt » one text 13/17). « Installation… » plays the Downloads morph; its end plays too.
+    // `lift`: a tile with an action hovered (its grey mark goes white); `retry`: a failed tile hovered says « Réessayer ».
+    void DrawMark(Agent a, D2D1_RECT_F tile, float top, bool target, float lift, bool retry, Motion::Time now, float alpha) {
+        const int i = TonAgent::Index(a); const auto& s = St(a); const TonAgent::Mark m = TonAgent::MarkOf(s);
+        if (m == TonAgent::Mark::Unknown) return;
+        const TonAgent::Ink ink = TonAgent::InkOf(s, target); const float cx = (tile.left + tile.right) / 2;
+        const auto colour = ink == TonAgent::Ink::Grey && lift > 0 ? K::Col(K::Lerp(K::FromHex(0xA6A6A6), K::FromHex(0xFFFFFF), lift), alpha) : InkColour(ink, alpha);
+        const bool animate = morphForTest_ || (!options_.reduced && !offscreen_); const bool ending = animate && Ending(i, now);
+        const float endMs = ending ? Ms(ended_[i], now) : 0;
+        const bool morphing = ending && endKind_[i] == 1 && installGlyph_.Success();   // success: the arrow morphs into the check (then the mark)
+        if (m == TonAgent::Mark::Ready && !morphing) {
+            const std::wstring text = std::wstring(L"\u2713 ") + MarkWord(s); const K::Font f{13, 17, 500, 0}; const float w = K::Width(*c_, text, f);   // i18n-exempt: the check sign
+            K::Text(*c_, text, {std::round(cx - w / 2), top, std::round(cx - w / 2) + w + 2, top + 17}, f, colour);
+            return;
         }
+        const std::wstring word = MarkWord(s, retry); const bool tall = m == TonAgent::Mark::Error || m == TonAgent::Mark::SignInFailed;
+        const K::Font f{13, tall ? 17.f : 13.f, 500, 0}; const float w = K::Width(*c_, word, f), total = TonAgent::Card::markIcon + TonAgent::Card::markGap + w;
+        const float x = std::round(cx - total / 2), iconTop = top + (tall ? 2.f : 0.f), textTop = top + (tall ? 0.f : .5f);   // « Erreur »: its icon centred in 17 (1.5, on the next pixel as drawn)
+        const D2D1_RECT_F icon = Box(x, iconTop, 14, 14);
+        auto still = [&](const char* d, D2D1_COLOR_F col) { glyphs_.Fill(*c_, d, icon, TonGlyph::side, col); };
+        if (morphing) {
+            DownloadIcon::Pose pose; pose.idle = false; pose.ring = DownloadIcon::FillEnd; pose.arrow = DownloadIcon::Morph; pose.success = std::min(DownloadIcon::SuccessMorph, static_cast<int>(endMs * 60 / 1000));
+            if (installGlyph_.Draw(c_->RenderTarget(), i, icon, Scale(), pose, Tone(0x2FD1D9), alpha)) ++morphDrawsForTest_; else still(TonGlyph::download, colour);
+        } else if (m == TonAgent::Mark::Installing && animate) {
+            const auto pose = install_[i].At(now);
+            if (!pose.idle && installGlyph_.Draw(c_->RenderTarget(), i, icon, Scale(), pose, Tone(0x2FD1D9), alpha)) ++morphDrawsForTest_; else still(TonGlyph::download, colour);
+        } else if (m == TonAgent::Mark::Error && ending && endKind_[i] == 2) {   // the install failed: the icon fades into the error icon
+            const float u = Motion::Clamp(endMs / FailMs);
+            still(TonGlyph::download, K::Col(Tone(0x2FD1D9), (1 - u) * alpha)); still(TonGlyph::error, InkColour(TonAgent::Ink::Danger, u * alpha));
+        } else still(m == TonAgent::Mark::Connect || m == TonAgent::Mark::SigningIn ? TonGlyph::wifi : tall ? TonGlyph::error : TonGlyph::download, colour);
+        K::Text(*c_, word, {x + 18, textTop, x + 18 + w + 2, textTop + f.line}, f, colour);
+    }
+    // A tile's hover (Paper 265A-0, 22ZR-0, 24YO-0): only a tile with an action that is not waiting; 0 at rest, 1 hovered.
+    float TileLift(int id) const {
+        if (!Enabled(id)) return 0.f;
+        const auto g = glow_.find(id); const float glow = g == glow_.end() ? 0.f : g->second;
+        return std::max(glow, pressed_ == id && hover_ == id ? 1.f : 0.f);
+    }
+    // The other tile while one agent installs or signs in: 32 % (Val; Designer, boards 2 Installation and 3b: opacity .32).
+    static float TileAlpha(Agent a) { return TonAgent::Waits(St(TonAgent::Other(a))) ? K::Token::disabled : 1.f; }
+    // A tile (Paper 2351-0 at rest, 24YR-0 hovered, 235O-0 current, 236S-0 failed): the frame, the logo, the name, the mark.
+    void DrawTile(Agent a, D2D1_RECT_F r, bool target, Motion::Time now, float alpha) {
+        namespace C = TonAgent::Card; const int id = a == Agent::Claude ? ClaudeRow : CodexRow; const auto look = TonAgent::LookOf(St(a), target);
+        const float lift = TileLift(id); alpha *= TileAlpha(a);
+        if (look == TonAgent::Look::Current) { K::Fill(*c_, r, C::tileRadius, K::Col(Tone(0x192A2A), alpha)); K::Border(*c_, r, C::tileRadius, 1.5f, K::Col(Tone(0x2FD1D9), alpha)); }
+        else if (look == TonAgent::Look::Danger) { K::Fill(*c_, r, C::tileRadius, K::Col(K::Token::danger, K::Token::focus * alpha)); K::Border(*c_, r, C::tileRadius, 1.5f, K::Col(K::Token::danger, alpha)); }
+        else {   // at rest #1F1F1F inset 1 #2A2A2A; hovered #262626 inset 1 #3A3A3A
+            K::Fill(*c_, r, C::tileRadius, K::Col(K::Lerp(K::FromHex(0x1F1F1F), K::FromHex(0x262626), lift), alpha));
+            K::Border(*c_, r, C::tileRadius, 1, K::Col(K::Lerp(K::FromHex(0x2A2A2A), K::FromHex(0x3A3A3A), lift), alpha));
         }
-        if (focus_ == id && keyboard_) PopupKit::InsetRing(*c_, r, Layout::appRadius);
+        const float cx = (r.left + r.right) / 2;
+        {   // the logo in its 34 box, clipped to it like the board's <svg> (Claude Code's top rays leave its view box)
+            const D2D1_RECT_F box = Box(std::floor(cx - C::logo / 2), r.top + C::tilePadTop, C::logo, C::logo);
+            if (auto* t = c_->RenderTarget()) { t->PushAxisAlignedClip(box, D2D1_ANTIALIAS_MODE_ALIASED); Logo(a, box, alpha); t->PopAxisAlignedClip(); }
+        }
+        K::Text(*c_, Name(a), {r.left, r.top + C::tilePadTop + C::logo + 10, r.right, r.top + C::tilePadTop + C::logo + 10 + C::nameH}, {16, 21, 600, 0}, K::Col(K::Token::text, alpha), DWRITE_TEXT_ALIGNMENT_CENTER);
+        const bool retry = TonAgent::ActionOf(St(a)) == TonAgent::Action::Retry && Enabled(id) && (hover_ == id || (focus_ == id && keyboard_));
+        DrawMark(a, r, r.top + C::markTop, target, look == TonAgent::Look::Rest ? lift : 0.f, retry, now, alpha);
+        if (focus_ == id && keyboard_) PopupKit::InsetRing(*c_, r, C::tileRadius);
     }
-    void DrawAppMessage(A::AgentKind a, D2D1_RECT_F r, float alpha) {
-        const std::wstring m = AppMessage(a); if (m.empty() || r.right <= r.left) return;
-        const K::Font f{12, 16, 400, 0};
-        if (App(a).state == A::ConnectState::Failed) {
-            const float w = std::min(K::Width(*c_, m, f), r.right - r.left - 19), x = std::round((r.left + r.right) / 2 - (13 + 6 + w) / 2);
-            glyphs_.Fill(*c_, A::Glyphs::warningCircle.d, Box(x, r.top + 1.5f, 13, 13), A::Glyphs::warningCircle.w, K::Col(K::Token::danger, alpha), A::Glyphs::warningCircle.x, A::Glyphs::warningCircle.y);
-            K::Text(*c_, m, {x + 19, r.top, x + 19 + w + 1, r.bottom}, f, K::Col(K::Token::danger, alpha), DWRITE_TEXT_ALIGNMENT_LEADING, false, true);
-        } else K::Text(*c_, m, r, f, PopupKit::White((0x99 / 255.f) * alpha), DWRITE_TEXT_ALIGNMENT_CENTER, false, true);
-    }
-    void DrawConnect(Motion::Time now, float alpha) {
-        const auto k = CardLayout();
-        K::Fill(*c_, k.card, Layout::cardRadius, K::Col(K::Token::canvas, alpha));
-        DrawApp(A::AgentKind::Claude, k.claude, ClaudeRow, now, alpha); DrawAppMessage(A::AgentKind::Claude, k.claudeMsg, alpha);
-        DrawApp(A::AgentKind::Codex, k.codex, CodexRow, now, alpha); DrawAppMessage(A::AgentKind::Codex, k.codexMsg, alpha);
-        const float lift = glow_[Manual] * (0xB3 - 0x80) / 255.f;   // hover: the link comes up to the modal's #FFFFFFB3
-        K::Text(*c_, TR(settings_manual_connect), {k.manual.left, k.manual.top, k.manual.right + 4, k.manual.bottom}, {12, 16, 400, 0}, PopupKit::White((0x80 / 255.f + lift) * alpha));
-        if (focus_ == Manual && keyboard_) PopupKit::InsetRing(*c_, Rect(Manual), 6);
+    // A6 « Ton agent » (Paper 22ZR-0 … 251H-0).
+    void DrawTon(Motion::Time now, float alpha) {
+        namespace C = TonAgent::Card;
+        const auto k = TonLayout(std::floor(CardTopAt(now))); const Agent target = Target();   // on a whole pixel, as the boards draw it (141.5 → 141)
+        K::Fill(*c_, k.card, C::radius, K::Col(K::Token::canvas, alpha));
+        DrawTile(Agent::Claude, k.tile[0], target == Agent::Claude, now, alpha);
+        DrawTile(Agent::Codex, k.tile[1], target == Agent::Codex, now, alpha);
+        if (k.kind == TonAgent::Trouble::None) return;
+        K::Text(*c_, TroubleText(), k.trouble, {12, 16, 400, 0}, K::Col(0xA6A6A6, alpha), DWRITE_TEXT_ALIGNMENT_CENTER, true);
+        const int id = LinkId(); if (!id) return;
+        // « Installer moi-même ↗ » (Paper 2378-0) / « Rouvrir la page de connexion ↗ » (263P-0): 12/16 500 #E6E6E6, underlined
+        // from the font; hover: white.
+        const std::wstring link = LinkText();
+        if (auto* layout = K::MakeLayout(*c_, link, k.link.right - k.link.left + 4, {12, 16, 500, 0}, false, DWRITE_TEXT_ALIGNMENT_LEADING, false)) {
+            layout->SetUnderline(TRUE, {0, static_cast<UINT32>(link.size())});
+            if (auto* b = c_->SolidBrush()) { b->SetColor(PopupKit::White((0xE6 / 255.f + glow_[id] * (1 - 0xE6 / 255.f)) * alpha)); c_->RenderTarget()->DrawTextLayout(D2D1::Point2F(k.link.left, k.link.top), layout, b, D2D1_DRAW_TEXT_OPTIONS_NONE); }
+            layout->Release();
+        }
+        if (focus_ == id && keyboard_) PopupKit::InsetRing(*c_, Rect(id), 6);
     }
     // A key cap: #171717 with a 3 DIP #0B0B0B bottom border, radius 12 (the inner edge's bottom corners 12 × 9).
     void DrawKey(D2D1_RECT_F r, const std::wstring& label, float alpha) {
@@ -644,7 +1003,7 @@ private:
         auto join = [&] { K::Text(*c_, L"+", {x, top + (Layout::keyH - 24) / 2, x + wp + 2, top + (Layout::keyH + 24) / 2}, plus, K::Col(Tone(0x0B3B3D), alpha)); x += wp + Layout::keyGap; };   // i18n-exempt: a symbol
         cap(ctrl, wc); join(); cap(shift, ws); join(); cap(letter, Layout::keyA);
         const auto r = Reader(); const K::Font f{13, 16, 500, 0};
-        const std::wstring status = r == AO::Reader::None ? std::wstring(TR(annotation_no_agent_connected)) : TRF(connect_is_connected, AO::ReaderName(r));
+        const std::wstring status = r == AO::Reader::None ? std::wstring(TR(ton_agent_none_ready)) : TRF(ton_agent_ready_title, AO::ReaderName(r));   // the agents' one status
         const float pw = Layout::statusPad + 8 + 8 + K::Width(*c_, status, f) + Layout::statusPad, py = top + Layout::keyH + Layout::pillGap;
         const D2D1_RECT_F pill = Box(std::round(Layout::width / 2 - pw / 2), py, pw, Layout::statusH);
         K::Fill(*c_, pill, 16, K::Col(K::Token::canvas, alpha));
@@ -657,7 +1016,7 @@ private:
         case Step::What: P::AnnotationDemo(*c_, glyphs_, Accent(), alpha); break;
         case Step::Pick: case Step::Write: case Step::Result: DrawTrial(s, now, alpha, !siteDrawn); break;
         case Step::Where: DrawWhere(alpha); break;
-        case Step::Connect: DrawConnect(now, alpha); break;
+        case Step::Connect: DrawTon(now, alpha); break;
         case Step::Ready: DrawReady(alpha); break;
         default: break;
         }
@@ -712,16 +1071,21 @@ private:
             if (s == Step::Result) text(603, TR(annotation_onboarding_done));
             if (s == Step::Where) { text(600, TR(annotation_onboarding_local_only)); text(601, TR(annotation_onboarding_local_hint)); }
             if (s == Step::Connect) {
-                for (A::AgentKind a : {A::AgentKind::Claude, A::AgentKind::Codex}) {
-                    const int id = a == A::AgentKind::Claude ? ClaudeRow : CodexRow; const auto i = button(id, AppLabel(a), a == A::AgentKind::Claude ? L"AnnotationOnboardingClaude" : L"AnnotationOnboardingCodex");
-                    const auto st = App(a).state; nodes[i].status = st == A::ConnectState::Working ? TR(demo_in_progress) : st == A::ConnectState::Connected ? TR(agent_connected) : st == A::ConnectState::Failed ? TR(downloads_failed) : L"";
-                    nodes[i].help = AppMessage(a);
+                // A tile with an action is a button named by it (« Installer Claude Code »; waiting: disabled, said why);
+                // without one (Installation…, Connexion…, Prêt) a text: its name and its mark.
+                for (Agent a : AgentStatus::AllAgents) {
+                    const int id = a == Agent::Claude ? ClaudeRow : CodexRow; const wchar_t* automation = a == Agent::Claude ? L"AnnotationOnboardingClaude" : L"AnnotationOnboardingCodex";
+                    const std::wstring action = TileAction(a);
+                    if (action.empty()) { Accessibility::Node n; n.key = id; n.parent = 500; n.role = Accessibility::Role::Text; n.name = Name(a); n.status = MarkWord(St(a)); n.focusable = false; n.automationId = automation; n.bounds = bounds(Rect(id)); nodes.push_back(n); continue; }
+                    const auto i = button(id, action, automation); nodes[i].status = MarkWord(St(a));
+                    if (!Enabled(id)) nodes[i].help = TR(ton_agent_tile_waits);
                 }
-                button(Manual, TR(settings_manual_connect), L"AnnotationOnboardingManual");
+                if (TonAgent::TroubleOf(TargetStatus()) != TonAgent::Trouble::None) { std::wstring t = TroubleText(); std::replace(t.begin(), t.end(), L'\n', L' '); text(604, t); }
+                if (const int l = LinkId()) button(l, LinkText(), l == Manual ? L"AnnotationOnboardingManual" : L"AnnotationOnboardingReopen");
             }
-            if (s == Step::Ready) { const auto r = Reader(); text(602, r == AO::Reader::None ? std::wstring(TR(annotation_no_agent_connected)) : TRF(connect_is_connected, AO::ReaderName(r))); }
+            if (s == Step::Ready) { const auto r = Reader(); text(602, r == AO::Reader::None ? std::wstring(TR(ton_agent_none_ready)) : TRF(ton_agent_ready_title, AO::ReaderName(r))); }
             button(Secondary, SecondaryLabel(s), L"AnnotationOnboardingSecondary");
-            const auto primary = button(Primary, PrimaryLabel(s), L"AnnotationOnboardingPrimary"); if (!TextPrimary(s)) nodes[primary].accelerator = TR(key_enter);
+            if (Rect(Primary).right > Rect(Primary).left) { const auto primary = button(Primary, PrimaryLabel(s), L"AnnotationOnboardingPrimary"); if (!TextPrimary(s) && Enabled(Primary)) nodes[primary].accelerator = TR(key_enter); }
             const auto lang = button(Lang, TR(language_label), L"AnnotationOnboardingLanguage"); nodes[lang].value = UiLanguage::Autonym(I18n::Current()); nodes[lang].expand = 1;
             const auto close = button(Close, TR(common_close), L"AnnotationOnboardingClose"); nodes[close].accelerator = TR(key_escape);
             return nodes;
@@ -776,6 +1140,7 @@ private:
                 POINT p{}; GetCursorPos(&p); ScreenToClient(h, &p); const float x = p.x / s, y = p.y / s;
                 if (flow_.step() == Step::Pick && In(SiteBox(Layout::siteLeft), x, y)) { SetCursor(nullptr); return TRUE; }   // the mode's crosshair is drawn instead
                 if (flow_.step() == Step::Write && In(Rect(Field), x, y)) { SetCursor(LoadCursor(nullptr, IDC_IBEAM)); return TRUE; }
+                if (flow_.step() == Step::Connect) { const int id = Hit(x, y); if (id == ClaudeRow || id == CodexRow) { SetCursor(LoadCursor(nullptr, IDC_HAND)); return TRUE; } }   // a tile with an action (265A-0)
             }
             break;
         case WM_MOUSEMOVE: {
@@ -798,15 +1163,22 @@ private:
         case WM_CHAR: if (flow_.step() == Step::Write && (focus_ == Field || focus_ == None) && w >= 0x20 && !(GetKeyState(VK_CONTROL) < 0 && GetKeyState(VK_MENU) >= 0)) { const wchar_t ch = static_cast<wchar_t>(w); Type(std::wstring(1, ch)); } return 0;
         case WM_SYSKEYDOWN: if (w == VK_F4) { Activate(Close, true); return 0; } break;
         case WM_MOUSEACTIVATE: return MA_ACTIVATE;
-        case WM_ACTIVATE: if (LOWORD(w) != WA_INACTIVE && open_) SetFocus(h); return 0;
+        case WM_ACTIVATE: if (LOWORD(w) != WA_INACTIVE && open_) { SetFocus(h); if (flow_.step() == Step::Connect) AgentStatus::Refresh(); } return 0;   // A6: back from the web page or PowerShell
         case WM_DPICHANGED: { dpi_ = HIWORD(w); const RECT* r = reinterpret_cast<const RECT*>(l); SetWindowPos(h, nullptr, r->left, r->top, Px(Layout::width), Px(Layout::height), SWP_NOZORDER | SWP_NOACTIVATE); NativeUI::ConfigureShadowlessPopup(h, Layout::radius); chrome_.Resize(); grain_.Drop(); trame_.Drop(); Arrange(); Invalidate(); return 0; }
         case WM_CLOSE: Activate(Close, false); return 0;
         }
         return DefWindowProcW(h, msg, w, l);
     }
+    // A new opening: no tile picked, nothing moving; the statuses as they are now, followed from here on.
+    void ResetTon() {
+        pick_.Reset(); chatAgent_ = Agent::Claude; manualForTest_ = reopenForTest_ = 0; page_.clear(); cardFrom_ = cardTo_ = -1; aside_ = false;
+        for (int i = 0; i < 2; ++i) { install_[i] = DownloadIcon::Model{}; endKind_[i] = 0; endTo_[i] = AState::Unknown; }
+        Listen();
+        for (Agent a : AgentStatus::AllAgents) if (St(a).state == AState::Installing) install_[TonAgent::Index(a)].Update(true, 0, false, Motion::Now(), options_.reduced || offscreen_);   // already installing (opened again)
+    }
 public:
     Window() = default; Window(const Window&) = delete; Window& operator=(const Window&) = delete;
-    ~Window() { if (open_) { silent_ = true; Finish(); } }
+    ~Window() { if (open_) { silent_ = true; Finish(); } Unlisten(); }
     HWND Handle() const { return hwnd_; }
     bool Visible() const { return open_; }
     const AO::Flow& Flow() const { return flow_; }
@@ -815,7 +1187,8 @@ public:
     bool Open(HINSTANCE instance, HWND owner, const std::wstring& root, RECT ownerClient, Options options) {
         if (open_) return true;
         instance_ = instance; owner_ = owner; root_ = root; options_ = std::move(options); claude_ = options_.claude; codex_ = options_.codex;
-        flow_ = AO::Flow(options_.start); flow_.Suggest(TR(annotation_onboarding_write_hint)); noteActive_ = false; manual_ = silent_ = false; offscreen_ = false; focus_ = hover_ = pressed_ = None; keyboard_ = false; glow_.clear(); part_ = Part::None;
+        flow_ = AO::Flow(options_.start, options_.alone); flow_.Suggest(TR(annotation_onboarding_write_hint)); noteActive_ = false; manual_ = silent_ = false; offscreen_ = false; focus_ = hover_ = pressed_ = None; keyboard_ = false; glow_.clear(); part_ = Part::None;
+        ResetTon(); installGlyph_.SetRoot(root_);
         if (!PopupKit::Register(instance, L"BrowserAnnotationOnboarding", Proc) || !PopupKit::Register(instance, L"BrowserAnnotationOnboardingVeil", VeilProc)) return false;
         veil_ = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"BrowserAnnotationOnboardingVeil", L"", WS_POPUP, ownerClient.left, ownerClient.top, ownerClient.right - ownerClient.left, ownerClient.bottom - ownerClient.top, owner, nullptr, instance, nullptr);
         if (veil_) SetLayeredWindowAttributes(veil_, 0, 0, LWA_ALPHA);
@@ -835,32 +1208,39 @@ public:
         SetForegroundWindow(hwnd_); SetFocus(hwnd_); RequestFrame();
         if (uia_.Attached()) uia_.Raise(500, UIA_Window_WindowOpenedEventId);
         Announce(Title(flow_.step()) + L". " + Body(flow_.step()));
+        if (flow_.step() == Step::Connect) AgentStatus::Refresh();   // A6 shown: the agents detected again
         return true;
     }
+    // Brought back to the front (the band's reminder or the chat asked again while it is open); stepped aside for a sign-in,
+    // it comes back over the browser's client area `ownerClient` (screen pixels).
+    void Raise(RECT ownerClient = RECT{}) {
+        if (!open_ || !hwnd_ || offscreen_) return;
+        if (aside_) { if (ownerClient.right > ownerClient.left) ComeBack(ownerClient); return; }
+        SetForegroundWindow(hwnd_); SetFocus(hwnd_); if (flow_.step() == Step::Connect) AgentStatus::Refresh();
+    }
+    // « Connexion dans un autre onglet » (Paper note 265A-0): after every change of the browser's tab in front, the host
+    // says whether it is the tab this window was opened over. While a sign-in runs and another tab is in front (its page,
+    // Browser being the default browser), the window steps aside; back on its tab, it comes back at « Ton agent » and the
+    // agents are detected again. `ownerClient`: the browser's client area (screen pixels), where it comes back.
+    void TabInFront(bool openedTab, RECT ownerClient) {
+        if (!open_ || leaving_) return;
+        if (!aside_) { if (!openedTab && flow_.step() == Step::Connect && SignInRunning()) StepAside(); return; }
+        if (openedTab) ComeBack(ownerClient);
+    }
+    bool Aside() const { return open_ && aside_; }
+    bool AloneOpen() const { return open_ && flow_.alone(); }
     // The mode ended under it (the page went away): it goes at once and the host is not told (nothing was answered).
     void Dismiss() { if (!open_) return; silent_ = true; leaving_ = false; Finish(); }
-    // From the host's connection work (A6's click) or its detection of the agents.
-    void SetStatus(A::AgentKind a, const A::AppStatus& status) {
-        if (a == A::AgentKind::Other) return;
-        A::AppStatus& slot = a == A::AgentKind::Claude ? claude_ : codex_;
-        if (slot.state == status.state && slot.detail == status.detail) return;
-        slot = status;
-        if (focus_ == ClaudeRow && !Enabled(ClaudeRow)) focus_ = keyboard_ ? Primary : None;
-        if (focus_ == CodexRow && !Enabled(CodexRow)) focus_ = keyboard_ ? Primary : None;
-        Arrange(); Invalidate(); RequestFrame();
-        if (uia_.Attached()) uia_.ChildrenChanged(500);
-        if (flow_.step() == Step::Connect) {
-            if (status.state == A::ConnectState::Connected) Announce(TRF(settings_announce_connected, A::AppLong(a)) + (status.detail.empty() ? L"" : L". " + status.detail));
-            else if (status.state == A::ConnectState::Failed) Announce(TRF(connect_failed_announce, status.detail.empty() ? std::wstring(TR(connect_impossible)) : status.detail));
-            else if (status.state == A::ConnectState::Working) Announce(AppLabel(a));
-        }
-    }
-    const A::AppStatus& Status(A::AgentKind a) const { return App(a); }   // what A6 shows now
+    // (before « Ton agent ») the host's MCP connection status for A6's rows: kept as given, never shown — A6 and A7 read
+    // the agents' one status (src/agent-status.h). Left for the host's code (src/annotation-mode.h, worker C).
+    void SetStatus(A::AgentKind a, const A::AppStatus& status) { if (a == A::AgentKind::Other) return; (a == A::AgentKind::Claude ? claude_ : codex_) = status; }
+    const A::AppStatus& Status(A::AgentKind a) const { return App(a); }
 
     // ---- tests: the same drawing code into an offscreen target, and the events without a window ----
     void SetupForTest(const std::wstring& root, Options options) {
         root_ = root; options_ = std::move(options); claude_ = options_.claude; codex_ = options_.codex; offscreen_ = true; open_ = true;
-        flow_ = AO::Flow(options_.start); flow_.Suggest(TR(annotation_onboarding_write_hint)); noteActive_ = false; manual_ = silent_ = false; shown_ = from_ = flow_.step(); changing_ = leaving_ = false; focus_ = hover_ = pressed_ = None; keyboard_ = false; part_ = Part::None; pointer_ = {-100, -100};
+        ResetTon(); installGlyph_.SetRoot(root_);
+        flow_ = AO::Flow(options_.start, options_.alone); flow_.Suggest(TR(annotation_onboarding_write_hint)); noteActive_ = false; manual_ = silent_ = false; shown_ = from_ = flow_.step(); changing_ = leaving_ = false; focus_ = hover_ = pressed_ = None; keyboard_ = false; part_ = Part::None; pointer_ = {-100, -100};
         if (flow_.step() == Step::Write) focus_ = Field;
     }
     bool OpenForTest() const { return open_; }
@@ -881,6 +1261,36 @@ public:
     void SetShaderSecondsForTest(double seconds) { secondsForTest_ = seconds; }
     std::vector<std::pair<int, D2D1_RECT_F>> ItemsForTest(Chrome& chrome) { Chrome* keep = c_; c_ = &chrome; Arrange(); c_ = keep; std::vector<std::pair<int, D2D1_RECT_F>> out; for (const auto& i : items_) out.push_back({i.id, i.r}); return out; }
     std::wstring BodyForTest() const { return Body(flow_.step()); }
+    std::wstring TitleForTest() const { return Title(flow_.step()); }
+    std::wstring PrimaryForTest() const { return PrimaryLabel(flow_.step()); }
+    std::wstring SecondaryForTest() const { return SecondaryLabel(flow_.step()); }
+    bool PrimaryEnabledForTest() const { return Enabled(Primary); }
+    bool ManualOfferedForTest() const { return Enabled(Manual); }
+    int ManualClicksForTest() const { return manualForTest_; }
+    // « Ton agent »: a tile's click and hover, its name for screen readers, its mark, the link, the window stepping aside.
+    bool TileEnabledForTest(AgentStatus::Agent a) const { return Enabled(a == Agent::Claude ? ClaudeRow : CodexRow); }
+    std::wstring TileNameForTest(AgentStatus::Agent a) const { return TileAction(a); }
+    std::wstring MarkForTest(AgentStatus::Agent a, bool retry = false) const { return MarkWord(St(a), retry); }
+    std::wstring LinkForTest() const { return LinkText(); }
+    int ReopenClicksForTest() const { return reopenForTest_; }
+    void HoverForTest(int id) { for (auto& g : glow_) g.second = 0; hover_ = id && Enabled(id) ? id : None; if (hover_) glow_[hover_] = 1; }
+    float TileLiftForTest(AgentStatus::Agent a) const { return TileLift(a == Agent::Claude ? ClaudeRow : CodexRow); }
+    void TabInFrontForTest(bool openedTab) { TabInFront(openedTab, RECT{}); }
+    bool AsideForTest() const { return Aside(); }
+    std::vector<int> TabOrderForTest() const { return TabOrder(); }
+    AgentStatus::Agent TargetForTest() const { return Target(); }
+    float CardTopForTest() const { return CardTopAt(Motion::Now()); }
+    std::wstring TroubleForTest() const { return TroubleText(); }
+    bool DotsForTest() const { return !Alone(); }
+    // The morph as it is `ms` after the install began (installing) or ended (its end), drawn by the next RenderForTest;
+    // returns how many frames of it were drawn from the Lottie layers so far.
+    void MorphForTest(AgentStatus::Agent a, double ms) {
+        morphForTest_ = true; const int i = TonAgent::Index(a); const auto at = Motion::Now() - std::chrono::duration_cast<Motion::Clock::duration>(std::chrono::duration<double, std::milli>(ms));
+        if (St(a).state == AState::Installing) { install_[i] = DownloadIcon::Model{}; install_[i].Update(true, 0, false, at, false); }
+        else ended_[i] = at;
+    }
+    int MorphDrawsForTest() const { return morphDrawsForTest_; }
+    int EndKindForTest(AgentStatus::Agent a) const { return endKind_[TonAgent::Index(a)]; }
     K::Rgb8 AccentForTest() const { return Accent(); }
     bool RenderForTest(UINT dpi, const wchar_t* path) {
         offscreen_ = true; dpi_ = dpi;

@@ -537,6 +537,10 @@ void Connect(const std::string& id, const std::string& methodId) {
     auto& info = agentInfo[id]; const Acp::AuthMethod* method = nullptr;
     for (const auto& m : info.auth) if (!methodId.empty() && m.id == methodId) method = &m;
     if (!method) method = AgentRuntime::PreferredSignIn(info.auth);
+    // « Ton agent »: the CLI's own sign-in goes through the agents' one status (AgentStatus::SignIn) — the same console, but
+    // every screen sees « Connexion… », « Annuler » works (CancelSignIn) and the chat's session starts again once it is
+    // over (AfterAgentChange). The agent's own non-terminal methods (an API key asked by the session) stay below.
+    if ((!method || method->terminal) && AgentStatus::SignIn(def->rt)) { Diag(L"sign-in " + W(id) + L": the CLI's own, through the agents' status"); return; }   // i18n-exempt: log detail
     // O8 (first launch, signed out): the CLI itself says « signed out » (detection) and no session of this launch has named
     // a sign-in method yet. Starting one only to learn them downloaded Node.js and the adapter first, then came back to the
     // same « Se connecter »: a first click for nothing. The CLI's own sign-in needs neither (AgentRuntime::DefaultTerminalSignIn).
@@ -576,6 +580,7 @@ LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == WM_TIMER) {
         if (w == DestroyTimer) { KillTimer(h, DestroyTimer); if (panelState == PanelState::Closed && !BubbleOpen() && !BubbleWarm() && !Ann::s.active && view.Exists()) { view.Destroy(); panelReady = false; Diag(L"panel WebView destroyed (closed for " + std::to_wstring(PanelIdleMs()) + L" ms)"); } return 0; }
         if (w == LimitTimer) { KillTimer(h, LimitTimer); ClearStrip("limit"); return 0; }   // « 10 éléments au maximum » leaves after 4 s
+        if (w == ModelReadTimer) { KillTimer(h, ModelReadTimer); MaybeReadModels(); return 0; }   // « Ton agent » × #128 v2: the chat is calm (or it re-arms)
         if (w == WarmTimer) { void WarmPanel(); void WarmBubble(); KillTimer(h, WarmTimer); WarmPanel(); WarmBubble(); return 0; }   // QA: the warm-up held back is done now
         if (w == AgentIdleTimer) { KillTimer(h, AgentIdleTimer); if (!turn.active && session) DisposeSession(L"idle"); return 0; }   // i18n-exempt: log reason
         if (w == RearmTimer) { auto t = ChatTab(); if (!rearmOwed || !t) { KillTimer(h, RearmTimer); rearmOwed = false; } else if (t->navInFlight == 0 || ++rearmTries > 60) DoRearm(); return 0; }
@@ -597,25 +602,32 @@ bool EnsurePost() {
 RECT PanelRect(float shown) {   // client pixels; shown 0 (off the right edge) .. 1 (in place)
     RECT c{}; GetClientRect(window, &c); const int w = S(PanelDip());
     if (chrome.floating) {   // Mode Focus (Paper 203J-0): the card, 4 DIP from the window's right and bottom edges, under the banner
-        const auto card = FocusChatCard(PanelDip()); const int in = S(NativeChrome::FocusMode::chatInset), right = c.right - in;
+        const auto card = FocusChatCard(PanelDip()); const int in = S(NativeChrome::FocusMode::chatInset), right = c.right - S(chrome.ClientWidth() - card.right);   // Mode Focus motion: the card's right edge follows the entry / exit (FocusChatCard), W - 4 at rest
         const int left = right - w + int(std::lround((1 - shown) * (w + in)));
         return {left, S(card.top), left + w, S(card.bottom)};
+    }
+    if (chrome.sidebar) {   // #127: the card (CardInset from the right and bottom; left of an open drawer unless DrawerOverChat)
+        const int in = S(CardInset), right = c.right - in - (DrawerOverChat || chrome.sidebarReserve <= 0 ? 0 : S(chrome.sidebarReserve + CardInset));
+        const int left = right - w + int(std::lround((1 - shown) * (w + in)));
+        return {left, S(chrome.ContentTop()), left + w, c.bottom - in + (AnnotationBandSliding() ? S(chrome.annotationBand) : 0)};
     }
     const int left = c.right - w + int(std::lround((1 - shown) * w));
     return {left, S(chrome.ContentTop()), left + w, c.bottom + (AnnotationBandSliding() ? S(chrome.annotationBand) : 0)};
 }
-// Mode Focus chat card (src/focus-mode.h chatRadius / chatBorder / chatBorderRgb; Paper 203J-0 / 20MM-0): four layered
-// masks over the card's corners, like the page's: the canvas outside the radius-6 arc and the 1 DIP #262626 ring,
-// antialiased (no window region); the chat's WebView sits 1 DIP inside the frame, the chrome painting the ring's straight
-// sides (Chrome::chatFrame). The same mechanism as #127's side panel card (radius 8): one of the two adopts the other.
-bool CardOn() { return chrome.floating; }
-std::vector<HWND> chatMasks; int chatMaskSize = 0; UINT chatMaskDpi = 0;
+// The chat card, one helper for Mode Focus (src/focus-mode.h chatRadius / chatBorder / chatBorderRgb; Paper 203J-0 /
+// 20MM-0: radius 6) and the side panel layouts (#127, Paper 1YJQ-0: radius 8, src/chat-host.h CardRadius): four layered
+// masks over the card's corners, like the page's: the canvas outside the arc and the 1 DIP #262626 ring, antialiased (no
+// window region); the chat's WebView sits 1 DIP inside the frame, the chrome painting the ring's straight sides
+// (Chrome::chatFrame / DrawChatFrame).
+bool CardOn() { return chrome.floating || chrome.sidebar; }
+float CardRadiusDip() { return chrome.floating ? NativeChrome::FocusMode::chatRadius : CardRadius; }
+std::vector<HWND> chatMasks; int chatMaskSize = 0; UINT chatMaskDpi = 0; float chatMaskRadius = 0;
 void RenderChatCorner(HWND g, int k, int size, UINT dpi) {
     namespace FM = NativeChrome::FocusMode;
     BITMAPINFO bi{}; bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER); bi.bmiHeader.biWidth = size; bi.bmiHeader.biHeight = -size; bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
     HDC screen = GetDC(nullptr); HDC mem = CreateCompatibleDC(screen); void* bits = nullptr; HBITMAP bmp = CreateDIBSection(mem, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
     if (!bmp || !bits) { if (bmp) DeleteObject(bmp); DeleteDC(mem); ReleaseDC(nullptr, screen); return; }
-    HGDIOBJ old = SelectObject(mem, bmp); auto* px = static_cast<std::uint32_t*>(bits); const float s = dpi / 96.f, r = FM::chatRadius * s, b = FM::chatBorder * s;
+    HGDIOBJ old = SelectObject(mem, bmp); auto* px = static_cast<std::uint32_t*>(bits); const float s = dpi / 96.f, r = CardRadiusDip() * s, b = FM::chatBorder * s;
     const float canvas = GetRValue(BG), ring = (FM::chatBorderRgb >> 16) & 255; const bool right = (k & 1) != 0, bottom = (k & 2) != 0;
     for (int y = 0; y < size; ++y) for (int x = 0; x < size; ++x) {
         const float ex = right ? size - (x + .5f) : x + .5f, ey = bottom ? size - (y + .5f) : y + .5f;
@@ -629,43 +641,45 @@ void RenderChatCorner(HWND g, int k, int size, UINT dpi) {
 void SyncChatCorners() {
     const auto f = chrome.chatFrame; const bool on = window && !halted && CardOn() && f.right > f.left && f.bottom > f.top;
     if (!on) { for (HWND g : chatMasks) if (GetWindowLongW(g, GWL_STYLE) & WS_VISIBLE) ShowWindow(g, SW_HIDE); return; }
-    const UINT dpi = GetDpiForWindow(window); const int size = int(std::ceil(NativeChrome::FocusMode::chatRadius * dpi / 96.f)) + 1;
+    const UINT dpi = GetDpiForWindow(window); const int size = int(std::ceil(CardRadiusDip() * dpi / 96.f)) + 1;
     while (chatMasks.size() < 4) {
         WNDCLASSW wc{}; wc.lpfnWndProc = CornerProc; wc.hInstance = instance ? instance : GetModuleHandleW(nullptr); wc.lpszClassName = L"BrowserPageCorner"; RegisterClassW(&wc);   // fails harmlessly once registered
         HWND g = CreateWindowExW(WS_EX_LAYERED | WS_EX_NOACTIVATE, L"BrowserPageCorner", L"", WS_CHILD, 0, 0, 1, 1, window, nullptr, wc.hInstance, nullptr); if (!g) return; chatMasks.push_back(g); chatMaskSize = 0;
     }
-    const bool fresh = size != chatMaskSize || dpi != chatMaskDpi; chatMaskSize = size; chatMaskDpi = dpi;
+    const bool fresh = size != chatMaskSize || dpi != chatMaskDpi || CardRadiusDip() != chatMaskRadius; chatMaskSize = size; chatMaskDpi = dpi; chatMaskRadius = CardRadiusDip();
     for (int k = 0; k < 4; ++k) {
         const int x = (k & 1) ? S(f.right) - size : S(f.left), y = (k & 2) ? S(f.bottom) - size : S(f.top);
         SetWindowPos(chatMasks[k], HWND_TOP, x, y, size, size, SWP_NOACTIVATE | SWP_SHOWWINDOW); if (fresh) RenderChatCorner(chatMasks[k], k, size, dpi);
     }
 }
-// The WebView's place inside the card (1 DIP in from its frame, for the ring); the frame itself outside focus mode.
+// The WebView's place inside the card (1 DIP in from its frame, for the ring); the frame itself without a card (top bar).
 RECT CardView(RECT r) { if (!CardOn()) return r; const int b = S(NativeChrome::FocusMode::chatBorder); return {r.left + b, r.top + b, r.right - b, r.bottom - b}; }
-// The card's frame for the chrome painter (the ring) and its corner masks; empty outside focus mode. Called after the
+// The card's frame and radius for the chrome painter (the ring) and its corner masks; empty without a card. Called after the
 // WebView is placed: the masks go back above it.
 void SyncCardFrame(RECT r) {
     D2D1_RECT_F f{};
     if (CardOn() && Shown() && r.right > r.left) { const float d = GetDpiForWindow(window) / 96.f; f = {r.left / d, r.top / d, r.right / d, r.bottom / d}; }
+    chrome.chatRadius = CardRadiusDip();
     if (f.left != chrome.chatFrame.left || f.top != chrome.chatFrame.top || f.right != chrome.chatFrame.right || f.bottom != chrome.chatFrame.bottom) { chrome.chatFrame = f; InvalidateRect(window, nullptr, FALSE); }
     SyncChatCorners();
+    ::SyncResizeGrips();   // the window's resize border back above the chat's WebView (src/resize-border.h)
 }
 void FinishClose();
 struct SlideClient : AUI::Animator::Client {
     bool Frame(NativeChrome::Motion::Time now) override {
         if (!Shown()) return false;
-        { const RECT r = PanelRect(slide.Value(now)); view.Place(CardView(r)); SyncCardFrame(r); }
+        { const RECT r = PanelRect(slide.Value(now)); view.Place(CardView(r)); ::KeepChatAbovePages(); SyncCardFrame(r); }
         if (slide.Moving(now)) return true;
         if (panelState == PanelState::Opening) { panelState = PanelState::Open; Diag(L"panel in place " + Ann::Ms(Ann::NowMs() - stats.requestedAt) + L" ms after the request"); }
         else if (panelState == PanelState::Closing) FinishClose();
         return false;
     }
 } slideClient;
-void Layout() { if (Shown() && view.Exists()) { const RECT r = PanelRect(slide.Value(NativeChrome::Motion::Now())); view.Place(CardView(r)); SyncCardFrame(r); } else SyncCardFrame({}); if (BubbleOpen()) PlaceBubble(); }
+void Layout() { if (Shown() && view.Exists()) { const RECT r = PanelRect(slide.Value(NativeChrome::Motion::Now())); view.Place(CardView(r)); ::KeepChatAbovePages(); SyncCardFrame(r); } else SyncCardFrame({}); if (BubbleOpen()) PlaceBubble(); }
 void SyncChromeBits() {
     if (!Ann::uiReady) return;
     Ann::banner.SetChat(Ann::s.active && AskAvailable(Ann::ModeTab()), CommentLayout());   // Paper 1AYP-0: the layout switch
-    if (Ann::s.active && Ann::banner.Visible() && !Ann::connect.Visible()) Ann::banner.SetReminder(!Ann::agents.any() && !Open());   // the MCP reminder steps back while the chat is open
+    Ann::SyncReminder();   // « Ton agent » (worker C): the band's reminder is the chat's, and steps back while the chat is open
 }
 void OnPanelMessage(const std::string& json);
 // R13: the lists each agent announced last, saved after every session start and change, read at the chat's first use:
@@ -715,6 +729,7 @@ std::string preparedNonce;        // the mode's page the chat was last prepared 
 // `force` (the panel's opening): every opening looks again (folder detection: a port is reused by other projects).
 void PrepareChat(const std::shared_ptr<Tab>& t, bool force = false) {
     EnsureInit();
+    ModelReadBusy();   // « Ton agent » × #128 v2: the chat's page / a bubble is being prepared — no model read before it is calm
     const auto now = ChatLocal::SiteOf(U8(t->uri));
     fileFolder = now.file ? W(ChatLocal::FolderOfFile(U8(t->uri)).folder) : std::wstring();
     if (!force && ChatTab() == t && now.origin == site.origin && preparedNonce == Ann::s.nonce) return;
@@ -812,7 +827,7 @@ void OpenAtModeStart() {
     else quietOpening = false;
 }
 bool AskedFor() { return Open() && !openedByMode; }
-void ModeEntered() { SyncChromeBits(); if (CommentLayout()) { if (auto t = Active(); t && AskAvailable(t)) PrepareChat(t); SyncMarks(); } else OpenAtModeStart(); }   // M16: the chat's tab is set at once (a reload before the first click kept the mode off)
+void ModeEntered() { ModelReadBusy(); SyncChromeBits(); if (CommentLayout()) { if (auto t = Active(); t && AskAvailable(t)) PrepareChat(t); SyncMarks(); } else OpenAtModeStart(); }   // M16: the chat's tab is set at once (a reload before the first click kept the mode off)
 void CoolBubble();
 void ModeExited() { openedByMode = quietOpening = false; rearmOwed = false; if (post) { KillTimer(post, RearmTimer); KillTimer(post, MarkTimer); } CloseBubble(false); CoolBubble(); ForgetPage(); if (Open()) ClosePanel(); if (Ann::uiReady) Ann::banner.SetChat(false, false); }
 bool KeepsMode(const std::shared_ptr<Tab>& t) { return (Open() || CommentLayout()) && t && ChatTab() == t; }   // Mode Commentaire: the frames of the page's conversations come back after a reload
@@ -903,6 +918,7 @@ void EditMessage(const std::string& messageId, const std::string& text, bool has
     };
     if (restore && snapshotOfTurn.count(turnId)) { afterUndo = [resend](bool ok) { if (ok) resend(); }; Undo(turnId, ""); } else resend();
 }
+void SendTonAgent(); bool TonAgentMessage(const std::string& type, const SJ::Value& v);   // « Ton agent »: the first message's block (src/chat-ton-agent.h)
 void OnPanelMessage(const std::string& json) {
     SJ::Limits lim; lim.maxBytes = 13u << 20; lim.maxStringBytes = 13u << 20; lim.maxDepth = 12; lim.maxItems = 4096;
     SJ::Value v; if (!SJ::Parse(json, v, nullptr, lim) || !v.IsObject()) { Diag(L"panel message unreadable: ignored"); return; }
@@ -914,7 +930,7 @@ void OnPanelMessage(const std::string& json) {
         Diag((stats.requestedAt > 0 ? L"panel ready " + Ann::Ms(stats.readyAt - stats.requestedAt) + L" ms after the request" : std::wstring(L"panel ready in advance")) + L" (build " + W(m.Text("build", 64)) + L")");
         SJ::Value hello = SJ::Value::Obj(); hello.Set("locale", Str(std::string(I18n::Current() == I18n::Locale::En ? "en" : "fr"))); hello.Set("platform", Str(std::string("windows"))); hello.Set("reducedMotion", SJ::Value::Bool(Ann::Reduced()));
         Send("hello", std::move(hello)); if (BubbleOpen()) SendLayout(true); else SendLayout(false);   // R34: the layout the page needs, always first
-        SendState(); SendThread(); SendCommands(); SendQueue();   // C1 (review R): were left in the comment above — a bubble opened before the page was ready got no thread
+        SendState(); SendThread(); SendTonAgent(); SendCommands(); SendQueue();   // C1 (review R): were left in the comment above — a bubble opened before the page was ready got no thread; « Ton agent »'s block after the thread (journeys C1, night of 25/11: the bubble's size published before its conversation)
         if (!BubbleOpen() && !BubbleWarm())   // R35: the panel's draft (its chips) stays the panel's
             for (const auto& e : composerElements) { SJ::Value a = SJ::Value::Obj(); a.Set("element", ElementRef(e.second)); Send("element.attached", std::move(a)); }
         for (const auto& a : composerAttachments) { SJ::Value x = SJ::Value::Obj(); x.Set("attachment", AttachmentRef(a.second)); Send("attachment.added", std::move(x)); }
@@ -926,6 +942,7 @@ void OnPanelMessage(const std::string& json) {
         return;
     }
     if (!panelReady) return;
+    if (TonAgentMessage(type, v)) return;   // « Ton agent »: agents.setup.*
     if (type == "send") {
         const std::string text = m.Text("text", 400000);
         { auto ids = m.Ids("elements", 10); extern bool HoldForAnchor(const std::string&, const std::vector<std::string>&, const std::vector<std::string>&); if (HoldForAnchor(text, ids, m.Ids("attachments", 10))) return; AddAnchorElement(ids); SendOrQueue(text, ids, m.Ids("attachments", 10)); } return;   // Mode Commentaire: + the bubble's element
@@ -951,7 +968,7 @@ void OnPanelMessage(const std::string& json) {
         return;
     }
     if (type == "stop") { StopTurn(); return; }
-    if (type == "queue.sendNow") { const std::string id = m.Id("id"); for (auto it = queue.begin(); it != queue.end(); ++it) if (it->id == id) { Queued q = std::move(*it); queue.erase(it); queue.push_front(std::move(q)); break; } if (turn.active) StopTurn(); else ProcessQueue(); SendQueue(); return; }
+    if (type == "queue.sendNow") { const std::string id = m.Id("id"); for (auto it = queue.begin(); it != queue.end(); ++it) if (it->id == id) { Queued q = std::move(*it); queue.erase(it); queue.push_front(std::move(q)); break; } queueHeldForAgent = false; if (turn.active) StopTurn(); else ProcessQueue(); SendQueue(); return; }   // « Ton agent »: the person's choice lifts a hold
     if (type == "queue.remove" && m.Id("id") == "held") { void CancelHeld(); CancelHeld(); return; }   // queue: the cross of a held message
     if (type == "queue.remove") { const std::string id = m.Id("id"); queue.erase(std::remove_if(queue.begin(), queue.end(), [&](const Queued& q) { return q.id == id; }), queue.end()); SendQueue(); return; }
     if (type == "permission.respond") {
@@ -1053,6 +1070,7 @@ void OnPanelMessage(const std::string& json) {
         else if (action == "connect") Connect(agentId, "");
         else if (action == "newChat") { if (turn.active) { queue.clear(); afterTurn = [] { NewConversation(); MaybeStartSession(); }; StopTurn(); } else { NewConversation(); MaybeStartSession(); } }   // F3: as the composer's « Nouveau chat »
         else if (action == "chooseFolder") ChooseFolder();   // « Cette page ne semble pas venir de… »
+        else if (action == "install") OpenTonAgent(TonAgentFrom::Chat);   // « Ton agent »: the screen, where the click is the consent
         else if (action == "showWork") ShowEngineWork();   // Mode Commentaire: the work under way asks for a permission
         return;
     }
@@ -1087,6 +1105,11 @@ void Shutdown() {
     }
     if (session) { session->Dispose(); disposed.push_back(std::move(session)); session.reset(); }
     for (auto& s : disposed) s->WaitStopped(3000);
+    // Lot R, private window (found 25 Nov 2026, hidden-desktop run): a turn still open when the window closes kept the
+    // snapshot store's « turn.lock » open in the window's own folder — the folder could not be removed, so the conversation's
+    // folder and the ledger stayed until the next start instead of going with the window. The store lets go here (its
+    // open turn is left « interrupted », as when the browser stops), before AnnotationShutdown erases.
+    snapshots.reset(); checkpointOfTurn.clear(); snapshotOfTurn.clear();
     disposed.clear(); view.Destroy(); panelReady = false; panelState = PanelState::Closed;
     if (post) { DestroyWindow(post); post = nullptr; }
 }
@@ -1094,5 +1117,11 @@ void Shutdown() {
 
 // ---------------------------------------------------------------- host entry points (declared at the top of main.cpp)
 float ChatInsetDip() { return Chat::InsetDip(); }
+// src/main.cpp KeepChatAbovePages: the chat's WebView window while it is the panel in the browser window, and its corner
+// masks back above it.
+HWND ChatHostWindow() { return Chat::Shown() && Chat::view.Exists() && Chat::view.Parent() == window ? Chat::view.HostWindow() : nullptr; }
+void ChatCornersOnTop() { Chat::SyncChatCorners(); }
 void ChatNavigationCompleted(const std::shared_ptr<Tab>& t) { if (Chat::rearmOwed && t && Chat::ChatTab() == t) Chat::DoRearm(); }
 void ChatShutdown() { Chat::Shutdown(); }
+
+#include "chat-ton-agent.h"   // « Ton agent » (worker B): the first message's block, OpenTonAgent

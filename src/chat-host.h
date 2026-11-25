@@ -44,7 +44,12 @@
 #include "chat-panel-view.h"
 #include "acp-client.h"
 #include "agent-runtime.h"
+#include "agent-status.h"   // « Ton agent »: the agents' one status (design/ton-agent-interface.md)
+#include "chat-agent-status.h"
+#include "ton-agent-entry.h"   // OpenTonAgent: the chat's « Installer » / « Mettre à jour » of a missing agent open the screen
 #include "change-snapshots.h"
+#include "chat-model-probe.h"   // #128 v2: an agent's model list read before its first chat
+#include "chat-known-models.h"   // #128 v2: the models shown until the agent says its own
 
 namespace Chat {
 namespace SJ = StrictJson; namespace BA = BrowserAnnotations; namespace AH = AnnotationHost; namespace AUI = NativeChrome::Annotations;
@@ -52,6 +57,14 @@ namespace CS = ChangeSnapshots;
 
 // ---------------------------------------------------------------- small helpers
 inline constexpr float PanelWidthDip = 380, PanelMinDip = 320, PageMinDip = 320;
+// #127 side panel layouts (Paper « Annotation · panneau · 2 chat ouvert à droite » 1YEN-0, « compact · 6 » 1ZIY-0,
+// « fenêtre étroite · 7 » 1ZOP-0): the chat is a card 4 DIP from the window's right and bottom edges (radius 8, border
+// 1 #262626) and the page stops 4 DIP before it. Designer's two default proposals, Val decides while trying:
+//   DrawerOverChat: a drawer opened while the chat is open goes OVER the chat (the chat is back when it closes);
+//                   false: the chat moves left of the drawer;
+//   ChatOverlayBelow: in a window narrower than this, the chat opens over the page instead of pushing it.
+inline constexpr bool DrawerOverChat = NativeChrome::FocusMode::drawerOverChat;   // one rule with Mode Focus
+inline constexpr float ChatOverlayBelow = NativeChrome::Sidebar::chatOverlayBelow, CardInset = NativeChrome::FocusMode::chatInset, CardRadius = 8;
 inline constexpr int SlideInMs = 220, SlideOutMs = 160;
 unsigned EnvMs(const wchar_t* name, unsigned fallback) { const std::wstring v = Ann::EnvVar(name); if (v.empty()) return fallback; const unsigned long n = wcstoul(v.c_str(), nullptr, 10); return n >= 50 && n <= 3600000 ? unsigned(n) : fallback; }
 unsigned PanelIdleMs() { static const unsigned v = EnvMs(L"BROWSER_CHAT_PANEL_IDLE_MS", 60000); return v; }    // closed panel -> WebView destroyed
@@ -126,7 +139,8 @@ struct Element {   // an aimed element: a chip in the composer, then part of a t
 };
 struct Attachment { std::string id, name, mime, base64, thumb; };
 struct Queued { std::string id, text; std::vector<std::string> elements, attachments; std::string convId; };   // convId (Mode Commentaire): the conversation it belongs to, "" = the engine's
-struct Problem { std::wstring title, message; bool retry = true, connect = false, newChat = false, chooseFolder = false; };
+struct Problem { std::wstring title, message; bool retry = true, connect = false, newChat = false, chooseFolder = false;
+                 bool install = false; };   // « Ton agent »: « Installer » opens the agents' screen (its click there is the consent)
 struct Turn {
     bool active = false, cancelled = false, snapshot = false, promptSent = false, ending = false;
     bool planLaunched = false;   // M: « Lancer le plan » accepted the agent's plan in this turn — the mode it goes to is the user's choice (KeepModeAfterPlan)
@@ -145,7 +159,7 @@ struct Turn {
 };
 struct Convo { ChatStore::Conversation data; int turnSeq = 0; bool preambleSent = false; std::string recap; };   // recap (R42): given with the next prompt to the agent that took the chat over
 ChatPanelView::View view; PanelState panelState = PanelState::Closed; bool panelReady = false, uiInit = false, picking = false;
-HWND post = nullptr; constexpr UINT AcpWake = WM_APP + 21; constexpr UINT_PTR DestroyTimer = 1, AgentIdleTimer = 2, RearmTimer = 3, MarkTimer = 4, FolderTimer = 5, HoverTimer = 6, WarmTimer = 7, StopTimer = 8, HeldTimer = 9, PanelFocusTimer = 10, LimitTimer = 11;
+HWND post = nullptr; constexpr UINT AcpWake = WM_APP + 21; constexpr UINT_PTR DestroyTimer = 1, AgentIdleTimer = 2, RearmTimer = 3, MarkTimer = 4, FolderTimer = 5, HoverTimer = 6, WarmTimer = 7, StopTimer = 8, HeldTimer = 9, PanelFocusTimer = 10, LimitTimer = 11, ModelReadTimer = 12;
 // QA (C1, Q's « c1_prechauffage_retarde »): BROWSER_CHAT_TEST_WARM_DELAY_MS=<ms>, read only with BROWSER_ANNOTATIONS_TEST=1, holds
 // back the creation in advance of the bubble's and the panel's WebView by that long (a click lands before the page is ready).
 unsigned WarmDelayMs() {
@@ -211,7 +225,9 @@ bool Shown() { return panelState != PanelState::Closed; }
 bool Usable() { return site.local && !folder.empty(); }
 const AgentDef& Agent() { const auto* a = AgentOf(agentId); return a ? *a : Agents[0]; }
 float PanelDip() { return std::min(PanelWidthDip, std::max(PanelMinDip, chrome.ClientWidth() - PageMinDip)); }   // the window's width (Mode Focus: chrome.width is the floating panel's)
-float InsetDip() { return Shown() && !InFullscreen() && !PageFullscreenActive() ? PanelDip() : 0.f; }
+// The page's room taken by the panel (0 while it is over the page: a narrow window in a side panel layout).
+bool OverPage() { return chrome.sidebar && chrome.ClientWidth() < ChatOverlayBelow; }
+float InsetDip() { return Shown() && !InFullscreen() && !PageFullscreenActive() && !OverPage() ? PanelDip() + (chrome.sidebar ? CardInset : 0.f) : 0.f; }
 
 // ---------------------------------------------------------------- host -> panel
 void OnHiddenPermission();
@@ -299,7 +315,7 @@ SJ::Value OptionList(const Acp::ConfigOption* o, const std::string& defaultValue
         if (!defaultValue.empty() && c.value == defaultValue) v.Set("isDefault", SJ::Value::Bool(true)); arr.Push(std::move(v)); }
     return arr;
 }
-std::string DefaultModelOf(const std::string& id, const Acp::ConfigOption* o) { if (!o) return ""; auto it = agentFirstModel.find(id); return ChatOptions::DefaultModel(o->choices, it == agentFirstModel.end() ? std::string() : it->second); }
+std::string DefaultModelOf(const std::string& id, const Acp::ConfigOption* o) { if (!o) return ""; auto it = agentFirstModel.find(id); return ChatOptions::DefaultModel(o->choices, it == agentFirstModel.end() ? (ChatKnownModels::IsBuiltIn(id, o) ? o->currentValue : std::string()) : it->second); }   // #128 v2: the built-in list's recommended one
 // The current choice's name; an alias is named by the model it stands for (models) or not at all (efforts: no « Default »).
 std::string LabelOf(const Acp::ConfigOption* o, const std::string& agent = "") {
     if (!o) return "";
@@ -331,12 +347,12 @@ void SendState() {
         if (info.status == "notConnected") a.Set("notice", Str(info.signedIn ? TRF(chat_agent_signed_out, W(std::string(def.name))) : TRF(chat_agent_never_signed_in, W(std::string(def.name)))));
         if (info.progress >= 0) a.Set("progress", SJ::Value::Num(std::clamp(info.progress, 0.0, 1.0)));
         if (!info.auth.empty()) { SJ::Value ms = SJ::Value::Arr(); for (const auto& m : info.auth) if (ChatStore::ValidId(m.id)) { SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(m.id)); o.Set("label", Str(m.name.empty() ? m.id : m.name)); ms.Push(std::move(o)); } a.Set("authMethods", std::move(ms)); }
-        {   const auto* mo = Acp::FindModelOption(info.options); a.Set("models", OptionList(mo, DefaultModelOf(def.id, mo))); }
+        {   const auto* mo = ChatKnownModels::Shown(def.id, info.options, info.known, info.cli); a.Set("models", OptionList(mo, DefaultModelOf(def.id, mo))); }   // #128 v2: never empty for an installed agent
         agents.Push(std::move(a));
     }
     st.Set("agents", std::move(agents)); st.Set("agentId", Str(agentId));
     const auto& info = agentInfo[agentId];
-    const auto* model = Acp::FindModelOption(info.options); const auto* effort = Acp::FindEffortOption(info.options);
+    const auto* model = ChatKnownModels::Shown(agentId, info.options, info.known, info.cli); const auto* effort = Acp::FindEffortOption(info.options);   // #128 v2: its built-in list until it says its own
     std::string WantedEffort(const Acp::ConfigOption* e); std::string WantedMode(const ModeView& mv); std::string NewSessionModel(const Acp::ConfigOption* m); std::string NewSessionEffort(const Acp::ConfigOption* e);
     // M (monkey 0.3.561 #78-#81): a conversation shown aside shows what ITS session will get (the user's choice, else the
     // start value) — never the running session of the other element; the session a choice is owed to shows that choice.
@@ -441,8 +457,8 @@ void SaveConvo() {
 Problem ProblemFor(const Acp::Error& e, const std::string& agent) {
     const std::wstring name = W(AgentOf(agent) ? AgentOf(agent)->name : "Claude Code"); Problem p;
     switch (e.code) {
-    case Acp::ErrorCode::NotInstalled: p.title = TRF(chat_err_not_installed_title, name); p.message = TRF(chat_err_not_installed, name); break;
-    case Acp::ErrorCode::CliTooOld: p.title = TRF(chat_err_too_old_title, name); p.message = TRF(chat_err_too_old, name); break;
+    case Acp::ErrorCode::NotInstalled: p.title = TRF(chat_err_not_installed_title, name); p.message = TRF(chat_err_not_installed, name); p.install = true; p.retry = false; break;
+    case Acp::ErrorCode::CliTooOld: p.title = TRF(chat_err_too_old_title, name); p.message = TRF(chat_err_too_old, name); p.install = true; p.retry = false; break;
     case Acp::ErrorCode::NeedsPrepare: p.title = TR(chat_err_prepare_title); p.message = TR(chat_err_prepare); break;
     case Acp::ErrorCode::AuthRequired: p.title = TRF(chat_err_auth_title, name); p.message = TR(chat_err_auth); p.connect = true; p.retry = false; break;
     case Acp::ErrorCode::ProcessExited: case Acp::ErrorCode::SpawnFailed: p.title = TRF(chat_err_exited_title, name); p.message = TR(chat_err_exited); break;
@@ -454,7 +470,8 @@ Problem ProblemFor(const Acp::Error& e, const std::string& agent) {
     }
     return p;
 }
-void SendError(const Problem& p, const std::string& detail, const char* scope = "thread", bool keep = true) {
+// `turnId`: the turn the card belongs to when it is sent after that turn ended (« Ton agent »: a failure re-checked first).
+void SendError(const Problem& p, const std::string& detail, const char* scope = "thread", bool keep = true, const std::string& turnId = "") {
     SJ::Value m = SJ::Value::Obj(); m.Set("id", Str(NewId("err_"))); m.Set("scope", Str(std::string(scope))); m.Set("title", Str(p.title)); m.Set("message", Str(p.message));
     if (!detail.empty()) m.Set("detail", Str(ClipUtf8(detail, 4000)));
     SJ::Value actions = SJ::Value::Arr();
@@ -463,8 +480,9 @@ void SendError(const Problem& p, const std::string& detail, const char* scope = 
     if (p.retry) add("retry", I18n::Id::chat_action_retry, !p.connect);
     if (p.newChat) add("newChat", I18n::Id::chat_title_new, true);
     if (p.chooseFolder) add("chooseFolder", I18n::Id::chat_action_choose_folder, true);
+    if (p.install) add("install", I18n::Id::ton_agent_row_install, true);
     m.Set("actions", std::move(actions));
-    if (turn.active && !turn.id.empty()) m.Set("turnId", Str(turn.id));
+    if (!turnId.empty()) m.Set("turnId", Str(turnId)); else if (turn.active && !turn.id.empty()) m.Set("turnId", Str(turn.id));
     if (keep && std::string(scope) == "thread") Keep("error", m);
     Send("error", std::move(m));
 }

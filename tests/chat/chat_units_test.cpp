@@ -90,17 +90,9 @@ static void TestTurnOutcome() {
     Check(pre.find("\n- " + rule + "\n") != std::string::npos && ChatPrompt::Version == 4, "preamble: the approval rule is one of its rules (version 4: resumed sessions get it again)");
 }
 static void TestAgentStatusText() {
-    namespace AS = AnnotationSettings;
-    const long long now = 1800000000;
-    const auto at = [&](long long ago) { AS::Agent a; a.known = true; a.detected = true; a.connected = true; a.lastReadAt = now - ago; return AS::StatusText(a, now); };
-    I18n::SetForProcess(I18n::Locale::Fr);
-    Check(at(10) == L"Connect\u00E9 \u00B7 actif \u00E0 l'instant" && at(130) == L"Connect\u00E9 \u00B7 actif il y a 2 min" && at(3 * 3600) == L"Connect\u00E9 \u00B7 actif il y a 3 h"
-          && at(30 * 3600) == L"Connect\u00E9 \u00B7 actif hier" && at(3 * 86400) == L"Connect\u00E9 \u00B7 actif il y a 3 jours",
-          "agent status (FR): Connecte - actif a l'instant / il y a 2 min / il y a 3 h / hier / il y a 3 jours");
+    // « Ton agent » (#145, worker C) removed the MCP agents' « Connecté · actif … » line (AnnotationSettings::Agent,
+    // StatusText): what is left to check here is the connect window's texts.
     I18n::SetForProcess(I18n::Locale::En);
-    Check(at(10) == L"Connected \u00B7 active just now" && at(130) == L"Connected \u00B7 active 2 min ago" && at(3 * 3600) == L"Connected \u00B7 active 3 h ago"
-          && at(30 * 3600) == L"Connected \u00B7 active yesterday" && at(3 * 86400) == L"Connected \u00B7 active 3 days ago",
-          "agent status (EN): Connected - active just now / 2 min ago / 3 h ago / yesterday / 3 days ago (the moment is in English too)");
     Check(std::wstring(TR(connect_local_text)).rfind(L"Everything stays on this computer, never on servers.", 0) == 0 && std::wstring(TR(connect_local_text)).find(L"its provider (Anthropic or OpenAI)") != std::wstring::npos,
           "connect window (EN): Everything stays on this computer..., with the provider notice");
     I18n::SetForProcess(I18n::Locale::Fr);
@@ -819,7 +811,10 @@ static void TestBubble() {
         Check(UnsafeAnchorKey("same-origin", "button.cta", {}) == UnsafeAnchorKey("same-origin", "button.cta", {}) &&
               UnsafeAnchorKey("same-origin", "button.cta", {}) != UnsafeAnchorKey("main", "button.cta", shadow) && !UnsafeAnchorKey("main", "button.cta", shadow).empty(),
               "Q 6: the same element gives the same key; a frame or a shadow root tells it apart");
-        Check(UnsafeAnchorKey("cross-origin", "a", {}).empty() && UnsafeAnchorKey("main", "", {}).empty(), "Q 6: nothing to key (cross-origin, no selector): no key"); }
+        Check(UnsafeAnchorKey("cross-origin", "a", {}).empty() && UnsafeAnchorKey("main", "", {}).empty(), "Q 6: nothing to key (cross-origin, no selector): no key");
+        // lot 1d, case 3: only an element of a same-origin iframe, outside any shadow root, can be found again in the page's frames
+        Check(FrameKey(UnsafeAnchorKey("same-origin", "#o1", {})) && !FrameKey(UnsafeAnchorKey("same-origin", "#o1", shadow)) && !FrameKey(UnsafeAnchorKey("main", "button.cta", shadow))
+              && !FrameKey("") && !FrameKey("same-origin||") && !FrameKey("cross-origin||#o1"), "lot 1d, case 3: the key of an iframe's element (no shadow path) is the only one given back to the page script"); }
     // #130 C rules 9 and 10 (Paper « #130 Bulle sans place dessous · C règles (validées) »): an element with no free side
     {   const Rect area{0, 100, 1200, 900}; const int W = 320, gap = 12, m = 8, lead = 4, minH = 120;
         const Rect title{40, 300, 1160, 360};   // as wide as the page, room below and above

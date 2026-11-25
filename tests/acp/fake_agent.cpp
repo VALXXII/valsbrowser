@@ -17,6 +17,7 @@
 //   --child               on session/new start a long-lived child process (Job Object test)
 //   --read-delay <ms>     after answering session/new, do not read stdin for this long (slow reader)
 //   --env-dump <file>     write a few environment variables of this process
+//   --reply <text>        the default scenario answers this text instead of « Bonjour — voici la réponse. »
 //   --edit <spec>         the edit of the "apply" scenario: "<path relative to the session folder>|<find>|<replace>"
 //                         (also %FAKE_AGENT_EDIT%). With it, a message that names no other scenario applies the edit.
 //   --claude-like         the real Claude adapter's option lists: effort "default" (current) + low / medium / high / xhigh / max,
@@ -106,6 +107,7 @@ void Append(const std::wstring& path, const std::string& text) {
 struct Options {
     std::wstring log, authFile, envDump;
     std::string edit;  // --edit / FAKE_AGENT_EDIT: "path|find|replace"
+    std::string reply; // --reply: the default answer's text (« Ton agent » trials: « (essai) Réponse simulée »)
     std::string crashAt;
     bool silent = false, noImages = false, resume = false, garbage = false, child = false;
     bool claudeLike = false;  // --claude-like: the real Claude adapter's lists ("Default" effort first and current, xhigh, max; a "default" model alias)
@@ -864,7 +866,8 @@ void Prompt(const SJ::Value& id, const SJ::Value* params) {
     // With an edit configured, a message that asks for nothing else is a request to apply it.
     if (!opt.edit.empty() && !has("reply") && !has("think") && !has("plan") && !has("mode") && !has("commands") && !has("title") && !has("garbage"))
         return Apply(opt.edit, end);
-    for (const char* part : {"Bonjour", " — voici", " la réponse."}) {
+    if (!opt.reply.empty()) { Chunk("agent_message_chunk", opt.reply); Pump(15); }
+    else for (const char* part : {"Bonjour", " — voici", " la réponse."}) {
         Chunk("agent_message_chunk", part);
         Pump(15);
     }
@@ -1037,6 +1040,7 @@ int wmain(int argc, wchar_t** argv) {
         else if (a == L"--claude-like") { opt.claudeLike = true; effort = "default"; }
         else if (a == L"--codex-like") opt.codexLike = true;
         else if (a == L"--edit") opt.edit = Narrow(value());
+        else if (a == L"--reply") opt.reply = Narrow(value());
         else if (a == L"--cli") cli = true;
         else if (cli && cliVerb.empty()) cliVerb = a;
     }

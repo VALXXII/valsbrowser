@@ -105,6 +105,9 @@ const Event* First(const std::vector<Event>& events, Event::Type type) {
 // ---------------------------------------------------------------- pure helpers
 void TestClassification() {
     using Acp::ErrorCode;
+    // « Ton agent »: the CLI behind the adapter closed before answering — a stopped agent, never an unknown error
+    CHECK(Acp::LooksLikeCliClosed("Query closed before response received") && Acp::ClassifyAgentError(-32603, "Internal error", "Query closed before response received").code == Acp::ErrorCode::ProcessExited);
+    CHECK(!Acp::LooksLikeCliClosed("The query was closed by the user") && Acp::ClassifyAgentError(-32603, "Something odd", "").code == Acp::ErrorCode::AgentError);
     CHECK(Acp::LooksLikeAuthError("Authentication required"));
     CHECK(Acp::LooksLikeAuthError("Auth is required to continue"));
     CHECK(Acp::LooksLikeAuthError("You are not logged in. Please run `claude auth login`."));

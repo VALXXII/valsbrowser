@@ -114,6 +114,7 @@ struct Extras {
     std::wstring code;          // sheet « Code »: ERR_CONNECTION_REFUSED (certificate pages: CertificateCode)
     std::wstring address;       // sheet « Adresse »: the host:port that was tried (AddressOf)
     std::wstring tries;         // sheet « Essai »: « 2e tentative · 14:32 » (TriesText)
+    int triesCount = 0;         // the same attempt as a number: the time-out's row counts down (« 3e tentative · nouvel essai dans 16 s »)
     int attempt = 0;            // automatic retries already made (time-out: 8, 16, 32 s, then none)
     bool restored = false;      // offline page: the network came back, reloading
     bool reducedMotion = false;
@@ -198,13 +199,50 @@ inline Kind Classify(int status, bool online) {
 inline const wchar_t* Code(int status) {
     switch (status) {
     case COREWEBVIEW2_WEB_ERROR_STATUS_HOST_NAME_NOT_RESOLVED: return L"ERR_NAME_NOT_RESOLVED";
-    case COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT: return L"ERR_CONNECTION_REFUSED";
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT: return L"ERR_CONNECTION_FAILED";   // measured (status_probe.py): a refusal is UNKNOWN
     case COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT: return L"ERR_TIMED_OUT";
     case COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET: return L"ERR_CONNECTION_RESET";
     case COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED: return L"ERR_CONNECTION_ABORTED";
     case COREWEBVIEW2_WEB_ERROR_STATUS_SERVER_UNREACHABLE: return L"ERR_ADDRESS_UNREACHABLE";
     case COREWEBVIEW2_WEB_ERROR_STATUS_DISCONNECTED: return L"ERR_INTERNET_DISCONNECTED";
     default: return L"ERR_FAILED";
+    }
+}
+// WebView2 reports a refused connection as UNKNOWN with no HTTP status (WebErrorStatus 0), like ERR_FAILED,
+// ERR_ACCESS_DENIED or ERR_BLOCKED_BY_CLIENT; only ERR_CONNECTION_FAILED is CANNOT_CONNECT (measured on the real
+// engine: tests/error-pages/status_probe.py, 24/11). The engine's own error document (chrome-error:, which no site
+// page can be) names the real error, so main reads it before choosing the page: EngineErrorCodeScript() returns
+// the code it shows (« ERR_CONNECTION_REFUSED »), or "" for any other document.
+inline const wchar_t* EngineErrorCodeScript() {
+    return L"location.protocol==='chrome-error:'&&document.body?((document.body.innerText.match(/\\bERR_[A-Z_]{2,60}\\b/)||[''])[0]):''";
+}
+// The script's JSON result → the code, only when it is exactly ERR_ + capitals / underscores (else "").
+inline std::wstring EngineErrorCode(const std::wstring& json) {
+    if (json.size() < 8 || json.size() > 70 || json.front() != L'"' || json.back() != L'"') return L"";
+    const std::wstring code = json.substr(1, json.size() - 2);
+    if (code.compare(0, 4, L"ERR_") != 0) return L"";
+    for (wchar_t c : code) if (!((c >= L'A' && c <= L'Z') || c == L'_')) return L"";
+    return code;
+}
+// The status the pages use: a refusal the engine left UNKNOWN is a connection that could not be made.
+inline int RefineUnknown(int status, int httpStatusCode, const std::wstring& engineCode) {
+    return status == COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN && httpStatusCode == 0 && engineCode == L"ERR_CONNECTION_REFUSED" ? COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT : status;
+}
+// « HTTPS uniquement »: the https:// attempt failed to connect (DNS, TCP, TLS, certificate, refused, an engine
+// UNKNOWN without any answer): the « Ce site n'est pas sécurisé » page. Offline, cancelled, authentication and a
+// real HTTP answer (UNKNOWN + 4xx/5xx: the site answered over https) keep their own page.
+inline bool UpgradeFallsBack(int status, int httpStatusCode) {
+    switch (status) {
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT: case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CLIENT_CERTIFICATE_CONTAINS_ERRORS: case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_REVOKED:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID: case COREWEBVIEW2_WEB_ERROR_STATUS_SERVER_UNREACHABLE:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT: case COREWEBVIEW2_WEB_ERROR_STATUS_ERROR_HTTP_INVALID_SERVER_RESPONSE:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED: case COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT: case COREWEBVIEW2_WEB_ERROR_STATUS_HOST_NAME_NOT_RESOLVED:
+    case COREWEBVIEW2_WEB_ERROR_STATUS_REDIRECT_FAILED: case COREWEBVIEW2_WEB_ERROR_STATUS_UNEXPECTED_ERROR:
+        return true;
+    case COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN: return httpStatusCode == 0;
+    default: return false;
     }
 }
 // Host shown in the copy: « lemonde.fr » for https://www.lemonde.fr/planete/, port kept
@@ -216,6 +254,19 @@ inline std::wstring HostOf(const std::wstring& url) {
     if (host.size() > 4 && (host.compare(0, 4, L"www.") == 0 || host.compare(0, 4, L"WWW.") == 0)) host = host.substr(4);
     if (host.size() > 253) host = host.substr(0, 253) + L"…";
     return host.empty() ? url.substr(0, 253) : host;
+}
+// « Cette page ne s’est pas chargée » names the page, not only the site (board 1SZ1-0: « exemple.fr/rapport »):
+// the host as HostOf, then the path without query or fragment, no trailing slash, bounded.
+inline std::wstring HostPathOf(const std::wstring& url) {
+    const std::wstring host = HostOf(url);
+    const size_t s = url.find(L"://"); if (s == std::wstring::npos) return host;
+    const size_t p = url.find(L'/', s + 3); if (p == std::wstring::npos) return host;
+    const size_t e = url.find_first_of(L"?#", p);
+    std::wstring path = url.substr(p, e == std::wstring::npos ? std::wstring::npos : e - p);
+    while (!path.empty() && path.back() == L'/') path.pop_back();
+    std::wstring r = host + path;
+    if (r.size() > 120) r = r.substr(0, 120) + L"…";
+    return r;
 }
 // Sheet « Adresse »: the authority that was tried, credentials removed, with its port (the scheme's
 // default when the URL has none): « localhost:3000 », « www.lemonde.fr:443 ». The board's resolved IP and
@@ -290,17 +341,32 @@ inline const wchar_t* IconLockOpen() {   // « Site non sécurisé » 1M69-0: lo
 inline const wchar_t* IconCopy() {
     return LR"SVG(<svg width="14" height="14" viewBox="0 0 256 256" aria-hidden="true" focusable="false"><path d="M216,28H88A12,12,0,0,0,76,40V76H40A12,12,0,0,0,28,88V216a12,12,0,0,0,12,12H168a12,12,0,0,0,12-12V180h36a12,12,0,0,0,12-12V40A12,12,0,0,0,216,28ZM156,204H52V100H156Zm48-48H180V88a12,12,0,0,0-12-12H100V52H204Z" fill="#FFFFFF80"/></svg>)SVG";
 }
+// Board « Erreurs réseau, compléments » (1SYN-0, validated by Val 2026-11-24): the three remaining pages.
+inline const wchar_t* IconPlugDisconnected() {   // « Connexion interrompue » 1T1X-0: plug-disconnected, danger
+    return LR"SVG(<svg width="48" height="48" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><defs><linearGradient id="pd0" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#FF8A7E"/><stop offset="1" stop-color="#E0483A"/></linearGradient></defs><g transform="scale(0.09375)"><path d="M137,168l11.52-11.51a12,12,0,0,0-17-17L120,151l-15-15,11.52-11.51a12,12,0,0,0-17-17L88,119,72.49,103.51a12,12,0,0,0-17,17L59,124,38.54,144.49a36,36,0,0,0,0,50.91l2.55,2.54L15.51,223.51a12,12,0,0,0,17,17l25.57-25.58,2.54,2.55a36.06,36.06,0,0,0,50.91,0L132,197l3.51,3.52a12,12,0,0,0,17-17ZM94.54,200.49a12,12,0,0,1-17,0L55.51,178.43a12,12,0,0,1,0-17L76,141l39,39Zm146-185a12,12,0,0,0-17,0L197.94,41.09l-2.54-2.55a36.05,36.05,0,0,0-50.91,0L124,59l-3.51-3.52a12,12,0,0,0-17,17l80,80a12,12,0,0,0,17-17L197,132l20.49-20.49a36,36,0,0,0,0-50.91l-2.55-2.54,25.58-25.57A12,12,0,0,0,240.49,15.51Zm-40,79L180,115,141,76l20.49-20.49a12,12,0,0,1,17,0l22.06,22.06a12,12,0,0,1,0,17Z" fill="url(#pd0)"/></g></svg>)SVG";
+}
+inline const wchar_t* IconCloudOff() {   // « Site injoignable » 1T26-0: cloud-off, danger
+    return LR"SVG(<svg width="48" height="48" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><defs><linearGradient id="co0" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#FF8A7E"/><stop offset="1" stop-color="#E0483A"/></linearGradient></defs><g transform="scale(0.09375)"><path d="M56.88,31.93A12,12,0,1,0,39.12,48.07L71.79,84A68,68,0,0,0,72,220h88a91.26,91.26,0,0,0,30.66-5.24l8.46,9.31a12,12,0,0,0,17.76-16.14ZM160,196H72a44,44,0,0,1-1.8-87.95A91.91,91.91,0,0,0,68,128a12,12,0,0,0,24,0,68.22,68.22,0,0,1,2.66-18.84l77.88,85.67A68.67,68.67,0,0,1,160,196Zm92-68a91.32,91.32,0,0,1-17.53,54,12,12,0,1,1-19.41-14.11,68,68,0,0,0-89.57-98.53,12,12,0,0,1-12.2-20.66A92,92,0,0,1,252,128Z" fill="url(#co0)"/></g></svg>)SVG";
+}
+inline const wchar_t* IconDocumentError() {   // « Page non chargée » 1T2C-0: document-error, danger
+    return LR"SVG(<svg width="48" height="48" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><defs><linearGradient id="de0" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#FF8A7E"/><stop offset="1" stop-color="#E0483A"/></linearGradient></defs><g transform="scale(0.09375)"><path d="M216.49,79.52l-56-56A12,12,0,0,0,152,20H56A20,20,0,0,0,36,40V216a20,20,0,0,0,20,20H200a20,20,0,0,0,20-20V88A12,12,0,0,0,216.49,79.52ZM183,80H160V57ZM60,212V44h76V92a12,12,0,0,0,12,12h48V212Zm100.49-75.51L145,152l15.52,15.51a12,12,0,0,1-17,17L128,169l-15.51,15.52a12,12,0,0,1-17-17L111,152,95.51,136.49a12,12,0,1,1,17-17L128,135l15.51-15.52a12,12,0,1,1,17,17Z" fill="url(#de0)"/></g></svg>)SVG";
+}
+// The copy button's « Copié » glyph (1T3M-0), shown 1.5 s after a copy.
+inline const wchar_t* IconCopied() {
+    return LR"SVG(<svg class="ok" width="14" height="14" viewBox="0 0 256 256" aria-hidden="true" focusable="false"><path d="M232.49,80.49l-128,128a12,12,0,0,1-17,0l-56-56a12,12,0,1,1,17-17L96,183,215.51,63.51a12,12,0,0,1,17,17Z" fill="#FFFFFF"/></svg>)SVG";
+}
 // i18n-exempt-end
-// The board's icon of each variant. Reset, Unreachable and Generic have no board icon yet (none drawn
-// on the #121 page): they keep the layout without one until the design gives theirs.
+// The board's icon of each variant.
 inline const wchar_t* IconFor(Kind kind) {
     switch (kind) {
     case Kind::Offline: return IconWifiOff();
     case Kind::NameNotResolved: return IconGlobeSearch();
     case Kind::Refused: return IconServerError();
     case Kind::TimedOut: return IconHourglass();
+    case Kind::Reset: return IconPlugDisconnected();
+    case Kind::Unreachable: return IconCloudOff();
     case Kind::Certificate: return IconShieldError();
-    default: return nullptr;
+    default: return IconDocumentError();
     }
 }
 
@@ -339,7 +405,7 @@ button[data-action=retry]{flex-shrink:0}
 @media (max-width:359px){.actions{flex-direction:column;align-items:stretch;width:100%}}
 .primary{background:#FFFFFFE6;color:#171717}.primary:hover{background:#FFFFFF}.primary:active{background:#FFFFFFCC}
 .primary[aria-disabled=true]{opacity:.6;cursor:default}
-.secondary{background:#FFFFFF14;color:#FFFFFFE6}.secondary:hover{background:#333333}.secondary:active{background:#3E3E3E}
+.secondary{background:#FFFFFF14;color:#FFFFFFE6}.secondary[aria-expanded=true]{background:#3E3E3E}.secondary:hover{background:#333333}.secondary:active{background:#3E3E3E}
 )CSS";
     return h;
 }
@@ -359,15 +425,27 @@ inline const wchar_t* SheetCss() {
 .k{flex:none;width:64px;font-size:13px;line-height:18px;color:#FFFFFF66}
 .v{flex:1 1 0;min-width:0;font-size:13px;line-height:18px;color:#FFFFFFCC}
 .v.code{overflow:clip;white-space:pre;font-family:"JetBrains Mono",system-ui,sans-serif;font-size:12px;overflow-wrap:normal}
-.sheet button{flex:none;width:16px;height:18px;padding:0;border-radius:6px;background:none;display:flex;align-items:center;justify-content:center;line-height:0;overflow:visible}
+.cp{position:relative;flex:none;width:16px;height:18px;display:flex;align-items:center;justify-content:center}
+.sheet button{flex:none;width:20px;height:20px;padding:0;border-radius:4px;background:none;display:flex;align-items:center;justify-content:center;line-height:0;overflow:visible}
+.sheet button svg path{fill:#FFFFFF80}.sheet button .ok{display:none}
+.sheet button:hover{background:#FFFFFF14}.sheet button:hover svg path,.sheet button:focus-visible svg path{fill:#FFFFFFCC}
+.sheet button:active,.sheet button.done{background:#FFFFFF24}.sheet button:active svg path,.sheet button.done svg path{fill:#FFFFFF}
+.sheet button.done .cc{display:none}.sheet button.done .ok{display:block}
+.tip{position:absolute;top:calc(100% + 6px);left:50%;transform:translateX(calc(-50% + var(--dx,0px)));height:28px;box-sizing:border-box;padding:0 8px;border:1px solid #FFFFFF0F;border-radius:6px;background:#171717;color:#FFFFFFE6;font-size:14px;line-height:26px;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity 120ms;z-index:1}
+.tip.up{top:auto;bottom:calc(100% + 6px)}
+.cp button:hover+.tip{opacity:1;transition-delay:600ms}.cp button:focus-visible+.tip{opacity:1;transition-delay:0ms}
+.cp button.done+.tip,.tip.hid{opacity:0;transition-delay:0ms}
 )CSS";
 }
 inline std::wstring Sheet(const std::wstring& code, const std::vector<std::pair<std::wstring, std::wstring>>& rows, bool collapsed) {
     const bool wide = code.size() > SheetCodeFit;
     std::wstring h = std::wstring(L"<div") + (collapsed ? L" id=\"details\"" : L"") + L" class=\"sheet" + (wide ? L" wide" : L"") + L"\"" + (collapsed ? L" hidden" : L"") + L">";   // i18n-exempt: HTML attributes
     h += L"<div class=\"row\"><span class=\"k\">" + WebText::Html(TR(error_sheet_code)) + L"</span><span class=\"v code\">" + WebText::Html(code) + L"</span>";
-    h += L"<button type=\"button\" data-action=\"copy\" aria-label=\"" + WebText::Html(TR(error_copy_code)) + L"\">" + IconCopy() + L"</button></div>";
-    for (const auto& row : rows) if (!row.second.empty()) h += L"<i class=\"sep\"></i><div class=\"row\"><span class=\"k\">" + WebText::Html(row.first) + L"</span><span class=\"v\">" + WebText::Html(row.second) + L"</span></div>";
+    // The copy button (states 1T2J-0): 20 x 20 zone, radius 4, in the board's 16 x 18 slot (the rows stay 42 high);
+    // C5-style tooltip « Copier le code » under it after 600 ms of hover, at once on keyboard focus.
+    h += L"<span class=\"cp\"><button type=\"button\" data-action=\"copy\" aria-label=\"" + WebText::Html(TR(error_copy_code)) + L"\">" + std::wstring(IconCopy()).replace(0, 4, L"<svg class=\"cc\"") + IconCopied() + L"</button>";   // i18n-exempt: markup
+    h += L"<span class=\"tip\" aria-hidden=\"true\">" + WebText::Html(TR(error_copy_code)) + L"</span></span></div>";
+    for (const auto& row : rows) if (!row.second.empty()) h += L"<i class=\"sep\"></i><div class=\"row\"><span class=\"k\">" + WebText::Html(row.first) + L"</span><span class=\"v\"" + (row.first == TR(error_sheet_attempt) ? L" id=\"essai\"" : L"") + L">" + WebText::Html(row.second) + L"</span></div>";   // i18n-exempt: markup
     return h + L"</div>";
 }
 
@@ -383,12 +461,14 @@ inline std::wstring Html(Kind kind, const std::wstring& url, const std::wstring&
 .back .status{color:#FFFFFFB3}.back .status i{background:#3E67FF}
 .back .off,body:not(.back) .on{display:none}
 .retry{display:flex;flex-direction:column;align-items:center;gap:8px;padding-top:24px;font-size:14px;line-height:20px;color:#FFFFFF80;font-feature-settings:"tnum"}
+.sheet:not([hidden])~.retry{display:none}
 .track{width:120px;height:2px;border-radius:1px;background:#FFFFFF14;overflow:hidden}.fill{height:2px;border-radius:1px;background:#FFFFFF80;width:0}
 )CSS";
     if (sheet) h += SheetCss();
     h += extras.reducedMotion ? L"" : L"main{animation:in 160ms ease-out}@keyframes in{from{opacity:0;transform:translateY(8px)}}@media (prefers-reduced-motion:reduce){main{animation:none}}";
     // The sentence is escaped first, then the escaped host (in bold) and cause go into it: page text never becomes markup.
-    auto sentence = [&](const wchar_t* text) { return I18n::FormatText(WebText::Html(text).c_str(), {L"<b>" + WebText::Html(host) + L"</b>", WebText::Html(certificate ? CertificateCause(extras.certStatus) : std::wstring())}); };
+    const std::wstring named = kind == Kind::Generic ? HostPathOf(url) : host;   // the generic page names the page (1SZ1-0)
+    auto sentence = [&](const wchar_t* text) { return I18n::FormatText(WebText::Html(text).c_str(), {L"<b>" + WebText::Html(named) + L"</b>", WebText::Html(certificate ? CertificateCause(extras.certStatus) : std::wstring())}); };
     h += std::wstring(L"</style><body") + (restored ? L" class=\"back\"" : L"") + L"><main role=\"main\">";
     // Offline also carries the « Reprise » state (1M20-0: wifi-checkmark, shorter text), shown when the network returns.
     if (offline) h += std::wstring(L"<div class=\"icon off\">") + IconWifiOff() + L"</div><div class=\"icon on\">" + IconWifiCheck() + L"</div>";   // i18n-exempt: CSS classes
@@ -404,7 +484,11 @@ inline std::wstring Html(Kind kind, const std::wstring& url, const std::wstring&
     const std::wstring primaryButton = L"<button id=\"primary\" class=\"primary\" data-action=\"" + std::wstring(ActionName(c.primaryAction)) + L"\"" + (retrying ? L" aria-disabled=\"true\"" : L" autofocus" /* i18n-exempt: HTML attribute */) + L" title=\"" + WebText::Html(primaryLabel) + L"\">" + WebText::Html(primaryLabel) + L"</button>";
     const std::wstring secondaryButton = L"<button id=\"secondary\" class=\"secondary\" data-action=\"" + std::wstring(ActionName(c.secondaryAction)) + L"\"" + (details ? L" aria-expanded=\"false\" aria-controls=\"details\"" : L"") + L">" + WebText::Html(c.secondary) + L"</button>";
     h += L"<div class=\"actions\">" + (PrimaryLast(c) ? secondaryButton + primaryButton : primaryButton + secondaryButton) + L"</div>";
-    if (details) h += Sheet(extras.code.empty() ? std::wstring(TR(error_unknown_code)) : extras.code, {{TR(error_sheet_address), extras.address}, {TR(error_sheet_attempt), extras.tries}}, true);
+    // The time-out's « Essai » row counts down with the retry and names the coming attempt (1T07-0: after the 2nd
+    // failure, « 3e tentative · nouvel essai dans 16 s », the 8 / 16 / 32 s schedule).
+    const std::wstring essayPrefix = delay && extras.triesCount > 0 ? TriesText(extras.triesCount + 1, L"") + L" · " : L"";
+    const std::wstring essay = essayPrefix.empty() ? extras.tries : essayPrefix + TRF(error_retry_in_inline, std::to_wstring(delay));
+    if (details) h += Sheet(extras.code.empty() ? std::wstring(TR(error_unknown_code)) : extras.code, {{TR(error_sheet_address), extras.address}, {TR(error_sheet_attempt), essay}}, true);
     if (certificate) {   // technical facts, escaped and bounded (never page-provided)
         std::wstring issuer = extras.issuer; if (issuer.size() > 200) issuer = issuer.substr(0, 200) + L"…";
         h += Sheet(CertificateCode(extras.certStatus), {{TR(error_sheet_issuer), issuer}}, false);
@@ -414,20 +498,26 @@ inline std::wstring Html(Kind kind, const std::wstring& url, const std::wstring&
     h += L"</main><script>\"use strict\";const T=\"" + WebText::Js(token) + L"\";let busy=" + (retrying ? L"true" : L"false") + L";";
     // Texts the script writes itself, from the catalog (escaped for a JS string), only where the page uses them.
     h += L"const RELOADING=\"" + WebText::Js(TR(error_reloading)) + L"\";";
-    if (delay) h += L"const RETRY_IN=\"" + WebText::Js(TR(error_retry_in)) + L"\";";
+    if (delay) h += L"const RETRY_IN=\"" + WebText::Js(TR(error_retry_in)) + L"\",ESSAI=\"" + WebText::Js(essayPrefix.empty() ? std::wstring() : essayPrefix + TR(error_retry_in_inline)) + L"\";";
     if (offline) h += L"const BACK=\"" + WebText::Js(TR(error_connection_back)) + L"\";";
     h += LR"JS(const send=a=>{try{window.chrome.webview.postMessage(JSON.stringify({token:T,action:a}))}catch(e){}};
 const P=document.getElementById("primary"),S=document.getElementById("secondary"),D=document.getElementById("details");
 const reload=a=>{if(busy)return;busy=true;if(P.dataset.action==="retry"){P.textContent=RELOADING;P.setAttribute("aria-disabled","true")}send(a)};
 P.addEventListener("click",()=>{if(P.dataset.action==="retry")reload("retry");else send(P.dataset.action)});
 S.addEventListener("click",()=>{const a=S.dataset.action;if(a==="details"&&D){const open=D.hidden;D.hidden=!open;S.setAttribute("aria-expanded",String(open));send("details")}else if(a==="retry")reload("retry");else send(a)});
-for(const C of document.querySelectorAll("[data-action=copy]"))C.addEventListener("click",()=>send("copy"));
+for(const C of document.querySelectorAll("[data-action=copy]")){const tip=C.nextElementSibling;
+ const place=()=>{tip.classList.remove("hid");const r=C.getBoundingClientRect(),w=tip.offsetWidth;tip.classList.toggle("up",r.bottom+34>innerHeight-8);
+  const left=r.left+r.width/2-w/2;tip.style.setProperty("--dx",Math.round(Math.min(0,innerWidth-8-(left+w))+Math.max(0,8-left))+"px")};
+ C.addEventListener("mouseenter",place);C.addEventListener("focus",place);C.addEventListener("click",()=>send("copy"))}
+// « Copié »: only once the host has put the code on the clipboard (it answers « copied »), then back to rest after 1.5 s.
+try{window.chrome.webview.addEventListener("message",e=>{if(e.data!=="copied")return;for(const C of document.querySelectorAll("[data-action=copy]")){C.classList.add("done");clearTimeout(C.t);C.t=setTimeout(()=>C.classList.remove("done"),1500)}})}catch(e){}
+addEventListener("keydown",e=>{if(e.key==="Escape")for(const t of document.querySelectorAll(".tip"))t.classList.add("hid")});
 addEventListener("keydown",e=>{if(e.key==="F5"||((e.ctrlKey||e.metaKey)&&(e.key==="r"||e.key==="R"))){e.preventDefault();reload("retry")}});
 )JS";
     if (offline) h += LR"JS(addEventListener("online",()=>{document.body.classList.add("back");document.getElementById("st").textContent=BACK;reload("retry")});)JS";
     if (delay) {
         h += L"{const total=" + std::to_wstring(delay) + L";let left=total;const C=document.getElementById(\"count\"),F=document.getElementById(\"fill\");";
-        h += LR"JS(const tick=()=>{F.style.width=((total-left)/total*120)+"px";C.textContent=RETRY_IN.replace("{0}",left);if(left<=0){if(!busy){busy=true;send("autoRetry")}return}left--;setTimeout(tick,1000)};tick()})JS";
+        h += LR"JS(const E=document.getElementById("essai");const tick=()=>{F.style.width=((total-left)/total*120)+"px";C.textContent=RETRY_IN.replace("{0}",left);if(E&&ESSAI)E.textContent=ESSAI.replace("{0}",left);if(left<=0){if(!busy){busy=true;send("autoRetry")}return}left--;setTimeout(tick,1000)};tick()})JS";
     }
     h += L"</script></html>";
     return h;
