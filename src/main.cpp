@@ -1286,12 +1286,20 @@ void Command(int cmd){if(cmd==MotionLabCommand){if(motionLabMode)motionLab.Toggl
 bool BookmarkPopoverFocus();bool SmokeBookmarks();bool FolderRenameFocus();
 bool EscapeOwnedBySurface(HWND focus); // below, after the surfaces: a drawer or a toolbar popover with the keyboard closes on its own Échap
 bool EscapeLeavesAnnotation(bool modeActive,HWND focus); // below: Key()'s decision for Échap in the annotation mode (tests/shortcuts_test.cpp)
+// The annotation banner is a row of buttons (no text field): with the keyboard on it (Tab / F6, a screen reader, UI
+// Automation) it keeps its own navigation keys — Tab, the arrows, Entrée, Espace, Échap — but never the browser's
+// shortcuts (night 25/11, published 0.3.842: Ctrl+Maj+F did nothing once the banner held the keyboard). The other
+// annotation surfaces (the note, the connect window, the tutorial, the cards) have text: they keep every key.
+bool BannerLetsShortcutThrough(HWND focus,HWND banner,UINT key,bool ctrl,bool alt){
+    if(!focus||!banner||(focus!=banner&&!IsChild(banner,focus)))return false;
+    return ctrl||alt||(key>=VK_F1&&key<=VK_F24);
+}
 int Key(UINT key){
     const bool ctrl=GetKeyState(VK_CONTROL)<0,alt=GetKeyState(VK_MENU)<0,shift=GetKeyState(VK_SHIFT)<0;
     // The bookmark popover's fields keep every key (Ctrl+D, Ctrl+Z… belong to the text there).
     if(BookmarkPopoverFocus())return 0;
     if(FolderRenameFocus())return 0; // the in-place folder name keeps every key (text undo, Ctrl+W, F5…)
-    if(AnnotationSurfaceFocus())return 0; // the note popover, onboarding, launcher and band keep their keys
+    if(AnnotationSurfaceFocus()&&!BannerLetsShortcutThrough(GetFocus(),AnnotationBannerWindow(),key,ctrl,alt))return 0; // the note popover, onboarding, launcher and band keep their keys (the band: not the browser's shortcuts)
     // Modal, prompt and find bar fields keep their keys (Ctrl+W must not close the tab under a dialog).
     {int cmd=0;if(ElementSurfaceKey(key,ctrl,alt,shift,cmd))return cmd;}
     if(motionLabMode&&ctrl&&alt&&shift&&key=='M')return MotionLabCommand;
