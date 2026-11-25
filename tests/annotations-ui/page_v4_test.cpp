@@ -56,7 +56,11 @@ static void Edges() {   // R27: whole device pixels at 100 / 125 / 150 / 200 %
 }
 static void Ctrl() {   // R31: Ctrl never consumed, shortcuts left alone
     const std::wstring js = NativeChrome::Annotations::PageScript();
-    CHECK(js.find(L"if (e.isTrusted && e.key === 'Control') { setCtrl(true); return; }") != std::wstring::npos);
+    CHECK(js.find(L"if (e.isTrusted && e.key === 'Control') { setCtrl(true); keyCtrl = ctrl; return; }") != std::wstring::npos);   // C1: remembered as a key, still never consumed
+    // C1: a Ctrl known only from a pointer event's flag ends at a button event without the flag (never the host's, never a key)
+    CHECK(js.find(L"function staleCtrl(e) { return ctrl && !e.ctrlKey && !hostCtrl && !keyCtrl; }") != std::wstring::npos);
+    {   const auto stop = js.find(L"function stop(e) {"), click = js.find(L"function onClick(e) {"); const std::wstring mark = L"if (staleCtrl(e)) setCtrl(false);   // C1";
+        CHECK(stop != std::wstring::npos && click != std::wstring::npos && js.find(mark, stop) < js.find(L"e.preventDefault()", stop) && js.find(mark, click) < js.find(L"if (ctrl) return;", click)); }
     CHECK(js.find(L"on(window, 'keyup', onKeyUp, true);") != std::wstring::npos);
 }
 // Review M3: the caller hears how the transition ended (a glide too: its « done » mark), once; no WebView2 (stand-ins).
