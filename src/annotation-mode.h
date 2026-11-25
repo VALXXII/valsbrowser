@@ -1602,6 +1602,8 @@ bool AnnotationSurfaceFocus() { return false; }
 void AnnotationAccentChanged() {}
 void AnnotationSyncChrome() {}
 void AnnotationLayout() {}
+HWND ChatHostWindow() { return nullptr; }
+void ChatCornersOnTop() {}
 void AnnotationWindowState() {}
 void AnnotationNavigation(const std::shared_ptr<Tab>&) {}
 void AnnotationTabChanged() {}
