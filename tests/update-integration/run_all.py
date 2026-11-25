@@ -204,8 +204,8 @@ def existing_fixtures() -> None:
     # the four boards drawn off screen by the production window, Paper geometry, buttons, keys, A3's connected state.
     annotation_onboarding_evidence = ROOT / 'build/annotation-onboarding-render'
     annotation_onboarding_evidence.mkdir(parents=True, exist_ok=True)
-    fixture('annotation_onboarding_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/onboarding/annotation_onboarding_test.cpp', 'src/native-lottie.cpp', THORVG,
-            *UI_LIBS, '-loleaut32', '-lshell32'], [ROOT, annotation_onboarding_evidence])
+    fixture('annotation_onboarding_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/onboarding/annotation_onboarding_test.cpp', 'src/native-lottie.cpp', 'src/agent-install.cpp', 'src/agent-runtime.cpp', 'src/acp-client.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32', '-luserenv', '-lwinhttp', '-lbcrypt'], [ROOT, annotation_onboarding_evidence])
 
 
 def peer_suites() -> None:
