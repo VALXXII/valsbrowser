@@ -1348,8 +1348,18 @@ try:
         s0 = p_steps(); t0 = p_text()
         check("A modifié" not in t0 and "Modifie style.css" not in t0 and any(s.endswith("eut modifier style.css") for s in s0) and "Attend votre accord pour modifier style.css" in t0,
               "thread (point 3): while the request waits the step reads « Veut modifier style.css » — never « A modifié », never « Modifie… »", str(s0))
+        # Designer, 25 Nov 2026: in the opened list the waiting step has its own state — a still clock 12 px and « Attend votre
+        # accord », both #A6A6A6 (the panel's line of the boards 8 / 9), no spinning ring
+        cdp.js("document.querySelector('.log .steps > .fold').click()"); time.sleep(.2)
+        w0 = cdp.js("(()=>{const n=document.querySelector('.log .step.want');if(!n)return null;const v=n.querySelector('svg'),c=getComputedStyle(n);return {text:n.textContent,color:c.color,icon:[v.getBoundingClientRect().width,getComputedStyle(v).animationName,"
+                    "getComputedStyle(v.querySelector('path')).fill,v.getAttribute('viewBox')],spin:!!n.querySelector('.spin'),others:Array.from(document.querySelectorAll('.log .steps .step')).map(x=>x.className.replace('step ','')+':'+x.textContent)}})()")
+        check(w0 and w0["text"] == "Attend votre accord" and w0["color"] == "rgb(166, 166, 166)" and w0["icon"] == [12, "none", "rgb(166, 166, 166)", "0 0 256 256"] and not w0["spin"],
+              "thread (Designer 25 Nov): in the opened list a step waiting for the user's agreement reads « Attend votre accord » with a still clock, 12 px, both #A6A6A6 — no spinning ring", json.dumps(w0, ensure_ascii=False)[:400])
+        cdp.js("document.querySelector('.log .steps > .fold').click()"); time.sleep(.15)
         p_arm(".perm"); x, y = p_center(".perm .btn.primary"); p_mouse(x, y)
         s1 = p_steps(); t1 = p_text()
+        w1 = cdp.js("[!!document.querySelector('.log .step.want'), !!document.querySelector('.log .step.run .spin')]")
+        check(w1 == [False, True], "thread (Designer 25 Nov): once answered the step is a running step again (its ring), no longer a waiting one", str(w1))
         check("A modifié" not in t1 and "Veut modifier" not in t1 and any(s == "Modifie style.css…" for s in s1), "thread (point 3): allowed, the edit is under way — « Modifie style.css… »", str(s1))
         p_tool("completed"); s2 = p_steps()
         check(any("A modifié style.css" in s or "a modifié style.css" in s for s in s2) and "Veut modifier" not in p_text(), "thread (point 3): « A modifié style.css » only once the edit really happened", str(s2))
@@ -1476,8 +1486,24 @@ try:
                     "inside:['.bview','.bperm'].every(x=>m.contains(document.querySelector(x)))&&!m.contains(document.querySelector('.composer')),bviewBg:getComputedStyle(document.querySelector('.bview')).backgroundColor}})()")
         f4 = cdp.js(foot_js)
         check(v0["card"] == [6, 6, 293, 251] and v0["bg"] == "rgb(41, 41, 41)" and v0["bw"] == "1px" and v0["radius"] == "12px" and v0["inside"] and v0["bviewBg"] == "rgba(0, 0, 0, 0)"
-              and v0["diff"] == [17, 45, 271, 123] and v0["answer"] == [17, 178, 271, 68] and v0["stop"] == [271, 269, 28, 28] and v0["mode"][:2] == [6, 271] and f4["cls"] == "running view view-perm",
+              and v0["diff"] == [17, 45, 271, 123] and v0["answer"] == [17, 178, 271, 68] and v0["stop"] == [255, 269, 28, 28] and v0["mode"][:2] == [6, 271] and f4["cls"] == "running view view-perm",
               "bubble (diff of a request, Paper 19RN-0): one card (#292929, 1 px border, radius 12) holds the diff and the answer; the mode and « Arrêter » under it, 12 px below, 6 px from the bubble's edges", json.dumps(v0))
+        # Designer, 25 Nov 2026: under the open diff the answer keeps the NORMAL card's values (no value of its own), and
+        # « Arrêter » leaves the resize grip its corner (the row ends 16 px before the bubble's edge: the grip's 12 px + 4)
+        ans_js = ("(()=>{const g=(x,p,ps)=>{const n=document.querySelector(x);return n?getComputedStyle(n,ps||null)[p]:null};const q=(x)=>{const n=document.querySelector(x);if(!n)return null;const r=n.getBoundingClientRect();return [r.left,r.top,r.right,r.bottom]};"
+                  "return {vals:[g('.bperm-in','height'),g('.bperm-in','paddingLeft'),g('.bperm-in','columnGap'),g('.bperm-in','borderRadius'),g('.bperm-in','backgroundColor'),g('.bperm-in .ic','width'),g('.bperm-in .ic','opacity'),"
+                  "g('.bperm-in .instead','fontSize'),g('.bperm-in .instead','lineHeight'),g('.bperm-in .instead','color','::placeholder'),g('.bperm-ft','paddingLeft'),g('.bperm-ft','columnGap'),g('.bperm .always','flexGrow'),"
+                  "g('.bperm .btn:not(.primary)','paddingLeft'),g('.bperm .btn:not(.primary)','backgroundColor'),g('.bperm .btn:not(.primary)','color'),g('.bperm .btn:not(.primary)','borderRadius'),"
+                  "g('.bperm .btn.primary','paddingLeft'),g('.bperm .btn.primary','borderRadius'),g('.bperm','rowGap')],pad:g('.bperm','paddingLeft'),stop:q('.send.stop'),grip:q('.b-grip'),app:q('#app')}})()")
+        a_view = cdp.js(ans_js)
+        gr, st2, ap = a_view["grip"], a_view["stop"], a_view["app"]
+        load("c-2-autorisation"); cdp.js("document.querySelector('.bperm .always').click()"); time.sleep(.15); a_norm = cdp.js(ans_js)   # the switch on, as the diff scenario has it
+        check(a_view["vals"] == a_norm["vals"] and a_view["vals"][7] == "12px" and a_view["vals"][15] == "rgba(255, 255, 255, 0.8)" and a_view["vals"][13] == "10px" and a_view["pad"] == "0px",
+              "bubble (diff of a request, Designer 25 Nov): the answer under the open diff has the normal card's values — field 12 px, « Refuser » #FFFFFFCC, 10 px in the buttons, same radii, no margin of its own",
+              f"{a_view['vals']} / {a_norm['vals']} pad {a_view['pad']}")
+        check(gr and st2 and round(ap[2] - st2[2]) == 22 and round(gr[2] - gr[0]) == 12 and st2[2] <= gr[0] - 4 and round(ap[2] - gr[2]) == 4,
+              "bubble (diff of a request, Designer 25 Nov): « Arrêter » is never under the resize grip — the row ends 16 px (the grip's 12 + 4) before the bubble's 6 px", f"stop {st2} grip {gr} app {ap}")
+        load("c-2-autorisation-diff")
         key("Escape"); f5 = cdp.js(foot_js)
         check(f5["home"] == "dock has-perm" and f5["under"] == 12 and f5["cls"] == "running" and cdp.js("getComputedStyle(document.querySelector('.main')).borderTopWidth") == "0px",
               "bubble (diff of a request): closed, the card and its row are as before (the row back under the card)", json.dumps(f5))

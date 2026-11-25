@@ -168,6 +168,7 @@ svg.i { display: block; flex-shrink: 0; }
 .step.run { color: var(--w80); }
 .step.done svg { opacity: .5; }
 .step.fail { color: var(--w50); }
+.step.want { color: #A6A6A6; }   /* waits for the user's agreement: a still clock, the words and colour of the panel's line (Paper, boards 8 / 9 of the permission card) */
 .step.fail svg { color: var(--danger); }
 .step .fail-tag { color: var(--danger); }
 .spin svg, svg.spin { animation: spin 800ms linear infinite; }
@@ -811,21 +812,15 @@ button.bt-st[aria-describedby="b-tip"] { background: #FFFFFF1A; border-radius: 4
 .bub #app.view .dock { padding: 0 6px 6px; }
 .bub #app.view .dock.has-perm { padding: 0; }
 /* the diff « en grand » of a request (19RN-0, redrawn 24 Nov 2026): ONE card (26KG-0) holds the diff and the answer, the
-   mode and « Arrêter » sit under it (26JW-0), in the bubble's 6 px. The diff of a finished turn (1B19-0) is not this. */
+   mode and « Arrêter » sit under it (26JW-0), in the bubble's 6 px. The diff of a finished turn (1B19-0) is not this.
+   Designer, 25 Nov 2026: the answer keeps the NORMAL card's values (field 12 px, « Refuser » #FFFFFFCC, 10 px in the
+   buttons, nothing more around it) — no value of its own here; the row leaves the resize grip its corner. */
 .bub #app.view .bperm-file { display: none; }
 .bub #app.view-perm { gap: 12px; }
 .bub #app.view-perm .main { gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--raised); }
 .bub #app.view-perm .bview { padding: 0; background: none; }   /* 1ANA-0 */
-.bub #app.view-perm .bperm { gap: 10px; padding: 0 6px; border: 0; border-radius: 0; background: none; }   /* 1AMG-0 */
-.bub #app.view-perm .bperm-in { gap: 6px; padding: 0 8px; }   /* 1AMS-0 */
-.bub #app.view-perm .bperm-in .ic { width: 14px; height: 14px; opacity: .5; }
-.bub #app.view-perm .bperm-in .instead { font-size: 13px; }
-.bub #app.view-perm .bperm-in .instead::placeholder { color: var(--w50); }
-.bub #app.view-perm .bperm-ft { padding-left: 4px; }   /* 1AMU-0 */
-.bub #app.view-perm .bperm .always { flex: 1; margin-right: 0; }
-.bub #app.view-perm .bperm .btn { padding: 0 8px; }
-.bub #app.view-perm .bperm .btn:not(.primary) { color: #FFFFFF; }   /* 1AN0-0 */
-.bub #app.view-perm > .composer { flex-shrink: 0; }
+.bub #app.view-perm .bperm { padding: 0; border: 0; border-radius: 0; background: none; }   /* the card is .main here */
+.bub #app.view-perm > .composer { flex-shrink: 0; margin-right: 16px; }   /* the grip's 12 px + 4: « Arrêter » never under it */
 .bub #app.view .main { flex: 1 1 auto; }
 .bub .bview { display: flex; flex-direction: column; gap: 8px; flex: 1 1 0; min-height: 0; padding: 8px; border-radius: 10px; background: var(--fill8); }
 .bview-hd { display: flex; align-items: center; gap: 8px; padding: 0 2px; flex-shrink: 0; }

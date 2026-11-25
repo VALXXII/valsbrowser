@@ -602,6 +602,9 @@ std::wstring PermissionTitle(const Acp::ToolCall& t) {
     const auto mcp = ChatTools::ParseMcpName(t.title);
     if (const auto ours = ChatTools::OurTool(mcp, Ann::ServerName()); ours != ChatTools::Ours::None) return OurToolTitle(ours, ChatTools::AnnotationIdOf(t.rawInput), false);
     if (mcp.mcp) return TRF(chat_perm_mcp, who, W(mcp.tool), W(mcp.server));   // another MCP server: its tool and its name, as they are
+    // Codex asks to leave its sandbox for a step (codex-acp: « Additional sandbox permissions », options allow_permissions_turn /
+    // allow_permissions_session / reject_permissions): said in the browser's language, whatever kind the step has
+    if (ChatTools::SameTitle(t.title, "Additional sandbox permissions")) return TRF(chat_perm_sandbox, who);
     if (!t.diffs.empty()) file = FileName(t.diffs.front().path); else if (!t.locations.empty()) file = FileName(t.locations.front().path);
     if (t.kind == "edit" && !file.empty()) return TRF(chat_perm_edit, who, W(file));
     if (t.kind == "delete" && !file.empty()) return TRF(chat_perm_delete, who, W(file));

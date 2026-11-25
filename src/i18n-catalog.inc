@@ -1634,6 +1634,7 @@ I18N(chat_perm_fetch, L"{0} veut ouvrir une adresse web", L"{0} wants to open a 
 I18N(chat_perm_read, L"{0} veut lire {1}", L"{0} wants to read {1}")
 I18N(chat_perm_mode, L"{0} veut passer à la suite", L"{0} wants to move on")
 I18N(chat_perm_generic, L"{0} demande votre accord", L"{0} asks for your approval")
+I18N(chat_perm_sandbox, L"{0} demande plus d'accès à cet ordinateur", L"{0} is asking for more access to this computer")
 I18N(chat_err_not_installed_title, L"{0} n'est pas installé", L"{0} is not installed")
 I18N(chat_err_not_installed, L"Installez {0} sur cet ordinateur et connectez-vous, puis réessayez.", L"Install {0} on this computer and sign in, then try again.")
 I18N(chat_err_too_old_title, L"{0} doit être mis à jour", L"{0} needs an update")

@@ -369,6 +369,11 @@ static void TestServed(const std::wstring& root) {
 static void TestTools() {
     using namespace ChatTools;
     const std::string ours = "browser-annotations-preview";
+    // Codex's request to leave its sandbox is recognised by its title alone (its card then says it in the browser's language)
+    Check(SameTitle("Additional sandbox permissions", "Additional sandbox permissions") && SameTitle("  additional Sandbox permissions \n", "Additional sandbox permissions"),
+          "Codex's « Additional sandbox permissions », whatever its case and the spaces around it");
+    Check(!SameTitle("Additional sandbox permissions for npm", "Additional sandbox permissions") && !SameTitle("sandbox permissions", "Additional sandbox permissions") && !SameTitle("", "Additional sandbox permissions"),
+          "…and nothing that only looks like it");
     {   const McpName c = ParseMcpName("mcp__browser-annotations-preview__browser_annotations_list");
         Check(c.mcp && c.server == ours && c.tool == "browser_annotations_list", "Claude Code's form mcp__server__tool is read");
         const McpName x = ParseMcpName("mcp.browser-annotations-preview.browser_annotation_get");

@@ -17,6 +17,17 @@
 
 namespace ChatTools {
 
+// A request the agent names by a fixed English title (codex-acp: « Additional sandbox permissions »): the same title
+// whatever its case and the spaces around it — nothing longer, nothing that only contains it.
+inline bool SameTitle(std::string_view title, std::string_view known) {
+    const auto blank = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
+    while (!title.empty() && blank(title.front())) title.remove_prefix(1);
+    while (!title.empty() && blank(title.back())) title.remove_suffix(1);
+    if (title.size() != known.size()) return false;
+    const auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? char(c + 32) : c; };
+    for (std::size_t i = 0; i < title.size(); ++i) if (lower(title[i]) != lower(known[i])) return false;
+    return true;
+}
 struct McpName {
     bool mcp = false;
     std::string server, tool;   // as written in the title

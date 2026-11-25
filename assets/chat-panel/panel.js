@@ -2411,6 +2411,9 @@
   function stepLine(x) {
     const run = x.status === "in_progress" || x.status === "pending";
     const fail = x.status === "failed";
+    // Designer, 25 Nov 2026: a step whose request waits has its own state — a still clock (no spinning ring) and « Attend
+    // votre accord », like the panel's line under the thread. The answer makes it a running step again, or a refused one.
+    if (wantOf(x)) return h("div", { class: "step want", role: "listitem" }, icon("clock"), h("span", { text: "Attend votre accord" }));
     const ic = run ? h("span", { class: "spin", style: "display:flex" }, icon("spinner")) : fail ? icon("x") : icon("check");
     const label = stepTitle(x);
     return h("div", { class: "step " + (run ? "run" : fail ? "fail" : "done"), role: "listitem" }, ic, h("span", { text: label }), fail ? h("span", { class: "fail-tag", text: " (échec)" }) : null);

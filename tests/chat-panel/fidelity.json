@@ -800,7 +800,7 @@
   ]
  },
  "c-2-autorisation-diff": {
-  "note": "Planche 19ON-0 (bulle 19RN-0) redessinée le 24 nov. 2026 (Designer) : UNE carte (26KG-0 : #292929, bordure 1 px #FFFFFF14, rayon 12, marges et écarts de 10) contient le diff et la réponse ; le champ est #1F1F1F (rayon 8, 30 de haut), « Refuser » #FFFFFF0F ; la rangée du mode et d'« Arrêter » (26JW-0) est sous la carte, dans les 6 px de la bulle. Le relevé de F (carte du diff #FFFFFF14 à 6 px, réponse #1F1F1F dessous) ne vaut plus pour cet état : styles lus dans Paper (get_jsx), boîtes calculées à partir de ces styles et vérifiées sur l'export 4x (page Paper non affichée : pas de mesure directe).",
+  "note": "Planche 19ON-0 (bulle 19RN-0) redessinée le 24 nov. 2026 puis réalignée le 25 (Designer) : UNE carte (26KG-0 : #292929, bordure 1 px #FFFFFF14, rayon 12, marges et écarts de 10) contient le diff et la réponse ; la réponse a les valeurs de la carte normale (champ #1F1F1F rayon 8 haut de 30, texte 12 / 16 #FFFFFF66 ; « Refuser » #FFFFFF0F texte #FFFFFFCC ; boutons à 10 px de marge ; rien de plus autour). Deux décisions de Designer du 25 nov. ne sont pas (encore) sur la planche et sont portées ici : pas de marge de 6 px autour de la réponse (le nœud 1AMG-0 la garde), et la rangée du mode et d'« Arrêter » (26JW-0) s'arrête 16 px avant le bord droit (la poignée de redimensionnement de 12 px + 4) : « Arrêter » est à x = 255 au lieu de 271. Styles lus dans Paper (get_jsx), boîtes calculées à partir de ces styles.",
   "paper": {
    "26KG-0": {
     "name": "Carte (diff + réponse)",
@@ -1016,57 +1016,54 @@
     "y": 178,
     "st": {
      "dir": "column",
-     "gap": "10px",
-     "paddingInline": "6px"
+     "gap": "10px"
     }
    },
    "1AMS-0": {
     "name": "Rediriger",
-    "w": 259,
+    "w": 271,
     "h": 30,
-    "x": 23,
+    "x": 17,
     "y": 178,
     "st": {
      "align": "center",
      "height": "30px",
-     "paddingLeft": "8px",
-     "paddingRight": "8px",
-     "gap": "6px",
+     "paddingInline": "10px",
+     "gap": "8px",
      "radius": "8px",
      "bg": "#1F1F1F"
     }
    },
    "1AMT-0": {
     "name": "Dire à Claude quoi faire à la place…",
-    "w": 197,
+    "w": 182,
     "h": 16,
-    "x": 51,
+    "x": 47,
     "y": 185,
     "st": {
-     "size": "13px",
+     "size": "12px",
      "lh": "16px",
      "weight": "400",
-     "color": "color-mix(#FFFFFF 50%, transparent)",
+     "color": "#FFFFFF66",
      "font": "Inter Display"
     }
    },
    "1AMU-0": {
     "name": "Actions",
-    "w": 259,
+    "w": 271,
     "h": 28,
-    "x": 23,
+    "x": 17,
     "y": 218,
     "st": {
      "align": "center",
-     "gap": "8px",
-     "paddingLeft": "4px"
+     "gap": "8px"
     }
    },
    "1AMW-0": {
     "name": "Interrupteur — activé",
     "w": 28,
     "h": 16,
-    "x": 27,
+    "x": 17,
     "y": 224,
     "st": {
      "width": "28px",
@@ -1080,7 +1077,7 @@
     "name": "Rectangle",
     "w": 12,
     "h": 12,
-    "x": 41,
+    "x": 31,
     "y": 226,
     "st": {
      "width": "12px",
@@ -1093,7 +1090,7 @@
     "name": "Auto.",
     "w": 28,
     "h": 16,
-    "x": 61,
+    "x": 51,
     "y": 224,
     "st": {
      "size": "12px",
@@ -1105,15 +1102,14 @@
    },
    "1AMZ-0": {
     "name": "Frame",
-    "w": 61,
+    "w": 65,
     "h": 28,
-    "x": 144,
+    "x": 142,
     "y": 218,
     "st": {
      "align": "center",
      "height": "28px",
-     "paddingLeft": "8px",
-     "paddingRight": "8px",
+     "paddingInline": "10px",
      "radius": "6px",
      "gap": "6px",
      "bg": "#FFFFFF0F"
@@ -1129,21 +1125,20 @@
      "size": "13px",
      "lh": "16px",
      "weight": "500",
-     "color": "#FFFFFF",
+     "color": "#FFFFFFCC",
      "font": "Inter Display"
     }
    },
    "1AN1-0": {
     "name": "Frame",
-    "w": 69,
+    "w": 73,
     "h": 28,
-    "x": 213,
+    "x": 215,
     "y": 218,
     "st": {
      "align": "center",
      "height": "28px",
-     "paddingLeft": "8px",
-     "paddingRight": "8px",
+     "paddingInline": "10px",
      "radius": "6px",
      "gap": "6px",
      "bg": "#3E67FF"
@@ -1153,7 +1148,7 @@
     "name": "Autoriser",
     "w": 53,
     "h": 16,
-    "x": 221,
+    "x": 225,
     "y": 224,
     "st": {
      "size": "13px",
@@ -1181,7 +1176,7 @@
     "name": "Envoyer",
     "w": 28,
     "h": 28,
-    "x": 271,
+    "x": 255,
     "y": 269,
     "st": {
      "width": "28px",

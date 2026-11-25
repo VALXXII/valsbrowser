@@ -545,5 +545,12 @@ place = block_after(comment, 'void PlaceBubble(bool scrolling) {')
 check('!BubbleHidden()' in place and 'bubble.away' not in place, 'A: the bubble on screen behind another application still follows its element (its region is kept up to date)')
 check('if (BubbleHidden())' in block_after(comment, 'void RevealBubble(const wchar_t* why) {'), 'A: a bubble that becomes ready while another application is in front is shown (never left invisible)')
 
+# Designer, 25 Nov 2026: Codex's « Additional sandbox permissions » is said in the browser's language, before any kind is looked at
+ptitle = block_after(turn, 'std::wstring PermissionTitle(const Acp::ToolCall& t) {')
+catalog = (ROOT / 'src' / 'i18n-catalog.inc').read_text(encoding='utf-8')
+check(0 <= ptitle.find('ChatTools::SameTitle(t.title, "Additional sandbox permissions")) return TRF(chat_perm_sandbox, who);') < ptitle.find('t.kind == "edit"')
+      and "I18N(chat_perm_sandbox, L\"{0} demande plus d'accès à cet ordinateur\", L\"{0} is asking for more access to this computer\")" in catalog,
+      "permission: Codex asking for more access — « Codex demande plus d'accès à cet ordinateur » / « Codex is asking for more access to this computer »")
+
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

@@ -843,7 +843,9 @@ Défauts vus par le propriétaire (« Ton agent » sur le lot R) et ce qui vaut 
 - **Le fil dit ce qui est vrai.** `permission.request.toolCallId` relie la demande à son étape. Tant que la demande attend,
   l'étape se lit « Veut modifier style.css » (les mots de la carte, sans le nom de l'agent : « … veut … » / « … wants to … ») ;
   après l'accord « Modifie style.css… » ; une fois faite « A modifié style.css ». Dans une ligne repliée : « A lu 2 fichiers,
-  veut modifier style.css ». Refusée, l'étape n'est pas affichée (ni « A modifié », ni « (échec) », ni annonce d'échec) :
+  veut modifier style.css ». *(Designer, 25 nov. 2026)* Dans la liste dépliée, l'étape en attente a son état à elle : une
+  horloge fixe de 12 px et « Attend votre accord », en #A6A6A6 (la ligne du panneau des planches 8 / 9 de la carte
+  d'autorisation), sans anneau qui tourne ; dès la réponse elle redevient une étape en cours (anneau) ou refusée. Refusée, l'étape n'est pas affichée (ni « A modifié », ni « (échec) », ni annonce d'échec) :
   l'hôte la garde avec `refused: true` (`toolCall` rejoué, `toolCallUpdate {id, refused: true}` en direct) et la page la
   marque elle-même en répondant. Une demande retirée sans réponse (`permission.cancel` : tour arrêté pendant l'attente) dont
   l'étape échoue ensuite est traitée de même ; si l'agent fait l'étape malgré tout, elle se lit comme faite.
@@ -854,8 +856,11 @@ Défauts vus par le propriétaire (« Ton agent » sur le lot R) et ce qui vaut 
   #FFFFFF0F texte #FFFFFFCC, boutons à 10 px de marge. **Le mode et « Arrêter » restent sous la carte** (`26K6-0`, 12 px
   dessous) tant que la demande attend : l'agent peut être arrêté pendant qu'il attend. « Arrêter » envoie `stop` et ne
   répond à rien (l'hôte retire la demande).
-- **Bulle, diff en grand d'une demande** (Paper `19RN-0`, carte `26KG-0`) : une seule carte contient le diff et la réponse
-  (champ 13 / 16, « Refuser » texte blanc, boutons à 8 px) ; le mode et « Arrêter » sont dessous, dans les 6 px de la bulle.
+- **Bulle, diff en grand d'une demande** (Paper `19RN-0`, carte `26KG-0`) : une seule carte contient le diff et la réponse ;
+  le mode et « Arrêter » sont dessous, dans les 6 px de la bulle. *(Designer, 25 nov. 2026)* La réponse y a les valeurs de la
+  carte normale, sans rien de propre à cet état (champ 12 px, « Refuser » #FFFFFFCC, boutons à 10 px, pas de marge en plus
+  autour) ; la rangée s'arrête 16 px avant le bord droit (la poignée de redimensionnement, 12 px, + 4) : « Arrêter » n'est
+  jamais sous la poignée.
   Le diff d'un tour terminé (`1B19-0`) ne change pas. Classe `view-perm` sur `#app` ; la rangée (la saisie réduite à son
   pied) est alors le dernier enfant de la surface, elle revient dans le bas de la bulle à la fermeture du diff.
 - **Peu de place** (règle 8 du plan, R47) : « Refuser » et « Autoriser » sont toujours entiers. Quand la hauteur offerte ne
@@ -875,5 +880,7 @@ Défauts vus par le propriétaire (« Ton agent » sur le lot R) et ce qui vaut 
   la dit pas : Claude (adaptateur 0.107.3, option `allow-with-updates`) — pour une modification, « toutes les modifications
   pendant cette session » (la session passe en `acceptEdits` et le menu des modes le montre ; le mode retenu par le navigateur
   pour le site ne change pas : une nouvelle conversation redemande) ; pour une commande, « ne plus demander pour ces commandes » (règle écrite dans les réglages locaux du
-  projet, durable). Codex — `allow_for_session` / `allow_permissions_session` (la session). « Refuser » = `reject_once`
+  projet, durable). Codex — `allow_for_session` / `allow_permissions_session` (la session) ; sa
+  demande « Additional sandbox permissions » a pour titre « Codex demande plus d'accès à cet ordinateur » (« Codex is asking
+  for more access to this computer »), reconnue à son titre seul, quel que soit le type de l'étape. « Refuser » = `reject_once`
   (Codex : `cancel` / `reject_permissions`) ; avec des mots dans « à la place », l'hôte les envoie ensuite comme suite.
