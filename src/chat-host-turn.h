@@ -8,6 +8,7 @@ void DisposeSession(const wchar_t* why);
 void SendPrompt(); void ModeSettled(); void ModeRefused(const Acp::Event& e);   // SEC-13
 void ReleaseHeldQueue(const wchar_t* why);   // « Ton agent »: the messages held behind an agent that stopped
 void MaybeReadModels();                      // #128 v2: an agent's model list read before its first chat
+void ChatSetupReady(AgentStatus::Agent a);   // « Ton agent »: an agent set up from the chat's block is ready (src/chat-ton-agent.h)
 void ModelReadBusy();                        // « Ton agent » × #128 v2: a start event — the read waits for a calm chat
 void StopModelReadForStart();                // the chat's own session starts: a read still running stops
 
@@ -80,6 +81,7 @@ void EnsureAgentStatus() {
         ChooseInstalledAgent(); SendState();
         AfterAgentChange(s, before);
         if (s.Ready()) for (const auto& def : Agents) if (def.rt == s.agent && def.id == agentId) ReleaseHeldQueue(L"the agent is ready again");   // i18n-exempt: log detail
+        if (s.Ready() && before != AgentStatus::State::Ready) ChatSetupReady(s.agent);   // set up from the chat's block: the keys back to its input
         MaybeReadModels();   // #128 v2: an agent just ready (an install, a sign-in, a detection elsewhere) may have its models read
     });
     AgentStatus::Init(std::move(h));

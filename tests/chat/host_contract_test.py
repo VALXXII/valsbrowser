@@ -523,6 +523,13 @@ check('if (!panelReady && bubble.open && bubble.waitingAck && Ann::NowMs() - bub
 check('SetTimer(bubble.hwnd, 0xB2, 300, nullptr)' in block_after(comment, 'void BubblePageReady() {')
       and 0 <= ready.find('BubblePageReady();') < ready.find('SendThread();'),
       'C1: the page ready, a bubble that waited for it is shown with the acknowledgement of its opening layout (the thread sent with it)')
+# « Ton agent », 2nd defect of 25 Nov (Fix's « absent » check): an agent installed / signed in from the chat's block turns
+# ready — the keyboard goes back to the input where the text waits (the browser in front only).
+tas = (SRC / 'chat-ton-agent.h').read_text(encoding='utf-8'); csr = block_after(tas, 'void ChatSetupReady(AgentStatus::Agent a) {')
+check('if (started && act != "cancel") setupFromChat.insert(a);' in tas and 'setupFromChat.erase(a)' in csr and 'GetCurrentProcessId()' in csr
+      and 'Send("focus", std::move(f)); view.Focus();' in csr and 'KeyboardToBubble(' in csr
+      and 'if (s.Ready() && before != AgentStatus::State::Ready) ChatSetupReady(s.agent);' in turn,
+      '« Ton agent »: an agent set up from the chat\'s block turns ready — the keyboard back to the input (panel or bubble), only with the browser in front')
 
 
 print(f'{sum(checks)} / {len(checks)} host contracts')

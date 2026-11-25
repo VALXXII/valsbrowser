@@ -149,6 +149,22 @@ void OpenChatFor(AgentStatus::Agent a) {
     Toggle(true);   // Ctrl+Maj+D's way: the mode first if needed, then the panel
     Diag(L"Ton agent: « Ouvrir le chat » with " + W(id));
 }
+// 2nd defect of 25 Nov (Fix's « absent » check: typed, « Installer », « Se connecter », ready, Entrée did nothing): an agent
+// installed or signed in from the chat's block turns ready — the keyboard goes back to the input where the text waits
+// (the panel's WebView, or the bubble), never left on the band, the page or the browser's window: a real Entrée sends it.
+// Only while the browser is in front (a sign-in console or an installer may still hold the foreground: then the browser's
+// own return — PanelKeyboardBack / KeyboardToBubble — gives it back).
+std::set<AgentStatus::Agent> setupFromChat;   // install / sign-in / retry started by the block's button
+void KeyboardToBubble(const wchar_t* why);
+void ChatSetupReady(AgentStatus::Agent a) {
+    if (!setupFromChat.erase(a)) return;
+    DWORD pid = 0; const HWND fg = GetForegroundWindow(); if (fg) GetWindowThreadProcessId(fg, &pid);
+    if (!fg || pid != GetCurrentProcessId() || !panelReady) return;
+    if (BubbleOpen()) { KeyboardToBubble(L"its agent is ready"); return; }   // i18n-exempt: log detail
+    if (!Open()) return;
+    SJ::Value f = SJ::Value::Obj(); f.Set("target", Str(std::string("composer"))); Send("focus", std::move(f)); view.Focus();
+    Diag(L"Ton agent: " + W(TonAgentId(a)) + L" is ready: the keyboard goes back to the input");   // i18n-exempt: log detail
+}
 // page → host. True: it was one of the block's messages.
 bool TonAgentMessage(const std::string& type, const SJ::Value& v) {
     if (type.rfind("agents.setup", 0) != 0) return false;
@@ -163,6 +179,7 @@ bool TonAgentMessage(const std::string& type, const SJ::Value& v) {
         else if (act == "signIn" && s.state == AgentStatus::State::NeedsSignIn) started = AgentStatus::SignIn(a);
         else if (act == "retry" && s.state == AgentStatus::State::Error) started = AgentStatus::Retry(AgentStatus::UserClicked(a));
         else if (act == "cancel" && s.state == AgentStatus::State::SigningIn) started = AgentStatus::CancelSignIn(a);   // the sign-in console closes
+        if (started && act != "cancel") setupFromChat.insert(a); else if (act == "cancel") setupFromChat.erase(a);
         Diag(L"Ton agent (chat): " + W(act) + L" " + W(TonAgentId(a)) + (started ? L" started" : L" refused (state " + W(AgentStatus::StateName(s.state)) + L")"));
         SendTonAgent();
         return true;

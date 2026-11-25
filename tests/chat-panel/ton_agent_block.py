@@ -223,6 +223,21 @@ try:
     n0 = len(posted(["send"])); press_enter()
     sent = posted(["send"])[n0:]
     check(len(sent) == 1 and sent[0].get("text") == "Rends ce bouton plus large", "an agent ready: Entrée sends the text that waited", sent)
+    # 2nd defect of 25 Nov (Fix's « absent » check): the keys on the block's own button (« Se connecter » clicked) when the agent
+    # turns ready — the block leaves, the keys go back to the input; a real Entrée (to the focused element, no focus given by
+    # the test) sends the text that waited, exactly once
+    load("ta-premier-message"); typed("Rends ce bouton plus large")
+    cdp.js("Array.from(document.querySelectorAll('.tas-btn')).find(b=>b.textContent==='Se connecter').focus()")
+    on_btn = cdp.js("document.activeElement && document.activeElement.classList.contains('tas-btn')")
+    cdp.js("devHost.send(" + json.dumps({"type": "state", "agents": [{"id": "claude-code", "name": "Claude Code", "icon": "claude", "status": "ready", "detail": "", "models": []},
+                                                                      {"id": "codex", "name": "Codex", "icon": "codex", "status": "ready", "detail": "", "models": []}], "agentId": "claude-code"}) + ")")
+    cdp.js("devHost.send(" + json.dumps({"type": "agents.setup", "show": False, "title": "Choisissez votre agent", "body": "x", "note": "y", "accent": "#0099A0", "hint": "Connectez un agent pour envoyer", "rows": []}) + ")"); time.sleep(.15)
+    in_cin = cdp.js("document.activeElement === document.querySelector('.cin')")
+    n0 = len(posted(["send"]))
+    for t in ("keyDown", "keyUp"): cdp.call("Input.dispatchKeyEvent", type=t, key="Enter", code="Enter", windowsVirtualKeyCode=13, nativeVirtualKeyCode=13)
+    time.sleep(.15); sent = posted(["send"])[n0:]
+    check(on_btn and in_cin and len(sent) == 1 and sent[0].get("text") == "Rends ce bouton plus large" and send_state()["text"] == "",
+          "the keys on the block's button when the agent turns ready: back in the input, Entrée sends the waiting text once", [on_btn, in_cin, sent])
 
     # ---------------------------------------------------------------- installing: the morph, no button
     load("ta-installation"); b = block()
