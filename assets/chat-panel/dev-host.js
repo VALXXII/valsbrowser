@@ -457,6 +457,8 @@
     failed: () => ({ icon: "error", ink: "danger", status: "Échec de l'installation", manual: "Installer moi-même ↗", action: { id: "retry", label: "Réessayer", strong: false } }),
     signInFailed: () => ({ icon: "error", ink: "danger", status: "Échec de la connexion", action: { id: "retry", label: "Réessayer", strong: false } }),
   };
+  const RAF2 = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));   // the next message in a frame of its own
+  const MARK = () => { window.__mark = posted.length; };   // a scenario's checkpoint: what the page posted until then
   const ta = (claude, codex, over) => Object.assign({ type: "agents.setup", show: true, title: "Choisissez votre agent", body: "Le chat utilise Claude Code ou Codex, installés sur cet ordinateur.",
     note: "Claude Code demande un compte Claude payant (Pro, Max, Team ou Enterprise).", accent: "#0099A0", hint: "Connectez un agent pour envoyer",
     rows: [Object.assign({ id: "claude", name: "Claude Code" }, TA_ROW[claude]()), Object.assign({ id: "codex", name: "Codex" }, TA_ROW[codex]())] }, over || {});
@@ -473,6 +475,15 @@
     "ta-fil": [st(TA_AGENTS), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Plus grand")] }, ta("absent", "signedOut")],
     "c-ta-premier-message": [LAY(), st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("absent", "signedOut")],
     "c-ta-erreur": [LAY(), st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("failed", "signedOut")],
+    // A bubble opening as the host sends it, each message in its own frame (journeys C1, night of 25/11): the block's
+    // message must never publish the bubble's size before the conversation is in (it flashed empty at 105 px, then 256).
+    // the host's opening order since: state, thread, then the block; then the block sent again (an agent's state changed)
+    // (MARK: what was posted until then; the block's messages after it must post no size)
+    "c-ta-ouverture-pret": [LAY(), st(), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Plus grand")] }, RAF2, MARK,
+                            ta("absent", "signedOut", { show: false }), RAF2, ta("absent", "signedOut", { show: false }), RAF2],
+    "c-ta-ouverture-pas-pret": [LAY(), st(TA_AGENTS), { type: "thread.reset", conversationId: "new", items: [] }, ta("absent", "signedOut"), RAF2, MARK,
+                                ta("absent", "signedOut"), RAF2, ta("absent", "signedOut"), RAF2],
+    "ta-ouverture-pret": [st(), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", "Plus grand")] }, ta("absent", "signedOut", { show: false }), RAF2, ta("absent", "signedOut", { show: false }), RAF2],
   });
 
   // #128 v2 (Paper « #128 Menu des modèles · v2 ancien menu + groupes (maquette prête) »): the old menu with a header per

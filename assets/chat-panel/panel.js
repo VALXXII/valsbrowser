@@ -3232,8 +3232,12 @@
   }
   REQ["agents.setup"] = (m) => !!validTa(m);
   H["agents.setup"] = (m) => {
-    TA = validTa(m);   // the block leaves once an agent is ready: the empty chat follows
-    updateView(); renderDock();
+    // The block shows or goes, or changes while shown: the view and the dock follow (it leaves once an agent is ready:
+    // the empty chat follows). Otherwise nothing is redrawn — only the send hint's words — so a bubble opening publishes
+    // its size once, with its conversation (journeys C1, night of 25/11: it flashed empty at 105 px, then 256 px).
+    const shownBefore = tasShown();
+    TA = validTa(m);
+    if (shownBefore || tasShown()) { updateView(); renderDock(); } else updateSend();
   };
 
   // ---------------------------------------------------------------- global keys

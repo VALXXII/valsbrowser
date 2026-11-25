@@ -302,6 +302,25 @@ try:
     check(size2.get("height", 0) > size.get("height", 0), "bubble: its height asked grows with the line", [size, size2])
     r = cdp.js("(()=>{const a=document.getElementById('app').getBoundingClientRect();return {x:a.left,y:a.top,width:a.width,height:a.height}})()")
     shot("bulle-envoi-bloque", r)
+    # a bubble opening (journeys C1, night of 25/11: it showed empty at 105 px, then at 256 px): the host sends the
+    # conversation before the block, and the block's message sent again (an agent's state changed) redraws nothing and
+    # publishes no size when the block neither shows nor goes — one size, with its content, agents ready or not
+    for scen, label in (("c-ta-ouverture-pret", "agents ready, a conversation"), ("c-ta-ouverture-pas-pret", "no agent ready: the block")):
+        load(scen)
+        after = cdp.js("window.__posted.slice(window.__mark).filter(m=>m.type==='bubble.size').map(m=>m.height)")
+        allsz = cdp.js("window.__posted.filter(m=>m.type==='bubble.size').map(m=>m.height)")
+        check(after == [], f"bubble opening ({label}): once its content is in, the block's message sent again publishes no size", [allsz, after])
+    load("c-ta-ouverture-pret")
+    dock0 = cdp.js("(()=>{const c=document.querySelector('.composer');window.__keepNode=c&&c.parentNode;return !!window.__keepNode})()")
+    n0 = cdp.js("window.__posted.filter(m=>m.type==='bubble.size').length")
+    cdp.js("devHost.send(" + json.dumps({"type": "agents.setup", "show": False, "title": "Choisissez votre agent", "body": "x", "note": "y", "accent": "#0099A0", "hint": "Connectez un agent pour envoyer", "rows": []}) + ")"); time.sleep(.2)
+    same = cdp.js("(()=>{const c=document.querySelector('.composer');return !!(c&&c.parentNode===window.__keepNode&&document.querySelector('.dock').contains(c))})()")
+    n1 = cdp.js("window.__posted.filter(m=>m.type==='bubble.size').length")
+    check(dock0 and same and n1 == n0, "agents.setup with no visible change: the dock is not rebuilt, no size published", [dock0, same, n0, n1])
+    load("c-ta-ouverture-pret")
+    check(block() is None and not cdp.js("document.querySelector('.log').hidden"), "bubble opening, agents ready: the conversation, no block")
+    load("ta-ouverture-pret")
+    check(block() is None and not cdp.js("document.querySelector('.log').hidden") and cdp.js("document.querySelector('.empty').hidden"), "panel opening, agents ready: the conversation, no block, no empty screen")
     load("c-ta-erreur"); b = block()
     check(b and b["rows"][0]["link"] == "Installer moi-même ↗", "bubble: after a failure, « Échec de l'installation » and the link", b)
     if b:

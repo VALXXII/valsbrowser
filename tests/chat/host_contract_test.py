@@ -519,5 +519,8 @@ check('!ChatBubble::FrameKey(h.anchorKey) || !marked.insert(h.anchorKey).second'
 ea = block_after(turn, 'void EnsureAgentStatus() {')
 check('h.log = [](const std::wstring& s) { ::Log(s); };' in ea and 'Diag(s)' not in ea,
       '« Ton agent »: the agents\' hub logs its own lines (« AGENTS … »), never through the chat\'s Diag — no chat activity at rest')
+# The bubble's opening sends the thread before the « Ton agent » block (journeys C1, night of 25/11: the size was published
+# before the conversation).
+check('SendState(); SendThread(); SendTonAgent();' in ui, '« Ton agent »: the page ready, the thread goes before the agents\' block (the bubble publishes its size with its conversation)')
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)
