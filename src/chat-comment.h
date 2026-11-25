@@ -22,6 +22,7 @@ namespace Chat {
 
 bool CommentLayout() { LoadProjects(); return projects.layout == "comment"; }
 float Dpi() { return GetDpiForWindow(window) / 96.f; }
+inline constexpr double BubblePageWaitMs = 10000;   // C1: the longest a bubble waits for its page still being created before it shows anyway
 inline constexpr int BubbleWidthCss = 320,   /* R20: the user's decision (Paper: 305) */ BubbleMaxHeightCss = 520, BubbleStartHeightCss = 104, BubbleGapCss = 12, BubbleLeadCss = 4, BubbleMarginCss = 8, BubbleMinRoomCss = 120;   // Paper: 12 px from the element (8 from its selection frame), 4 px above it; #130 C: 8 px from the page area's edges (height at most page area − 16)
 
 struct BubbleState {
@@ -560,7 +561,17 @@ LRESULT CALLBACK BubbleProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == WM_TIMER && w == 0xB5) { KillTimer(h, 0xB5); FlushFollowTrace(); followLastPlaced = FollowPos{}; return 0; }
     if (m == WM_APP + 5) { UiBeat(w); return 0; }   // R39: the UI thread watch
     if (m == WM_TIMER && w == 0xB3) { KeyboardTry(); return 0; }   // M4
-    if (m == WM_TIMER && w == 0xB2) { KillTimer(h, 0xB2); if (bubble.holdForMeasure) { bubble.holdForMeasure = false; Diag(L"no measure from the page: shown on the click's rectangle"); } RevealBubble(L"without acknowledgement (safety delay)"); return 0; }   // i18n-exempt: log detail
+    if (m == WM_TIMER && w == 0xB2) { KillTimer(h, 0xB2);
+        // C1 (« chat page delayed by 4 s », replayed on a hidden desktop): a click before the chat's page exists — its page was
+        // ready 2.1 s after its request on a busy machine, the 2 s safety came first and showed an EMPTY bubble for ~0.1 s.
+        // A page still being created shows nothing: the bubble waits for it (its « ready » sends the opening layout and the
+        // thread, and the surface comes with its acknowledgement: the conversation in its first image), at most
+        // BubblePageWaitMs — then shown as before (a page that never comes).
+        if (!panelReady && bubble.open && bubble.waitingAck && Ann::NowMs() - bubble.openedAt < BubblePageWaitMs) {
+            static double saidFor = 0; if (saidFor != bubble.openedAt) { saidFor = bubble.openedAt; Diag(L"bubble ready to show, its page is still being created: shown with its page"); }   // i18n-exempt: log detail
+            SetTimer(h, 0xB2, 250, nullptr); return 0;
+        }
+        if (bubble.holdForMeasure) { bubble.holdForMeasure = false; Diag(L"no measure from the page: shown on the click's rectangle"); } RevealBubble(L"without acknowledgement (safety delay)"); return 0; }   // i18n-exempt: log detail
     if (m == WM_CLOSE) { CloseBubble(true); return 0; }
     {   LRESULT r = 0; if (view.HostMessage(h, m, w, l, r)) return r; }   // R1: the page is a visual of this window: mouse, cursor, UI Automation
     if (m == WM_ERASEBKGND) return 1;   // no redirection surface: what the page does not paint is see-through
@@ -606,6 +617,9 @@ void CoolBubble() {   // Mode Commentaire left (or the panel chosen): the window
     if (!Open()) { view.Show(false); if (post) SetTimer(post, DestroyTimer, PanelIdleMs(), nullptr); }
 }
 void FinishOpening();
+// C1: the page of a bubble that waited for it is ready (its « ready » just sent the opening layout and the thread): it now
+// answers as a ready page does — the surface with its acknowledgement, the usual short safety after it.
+void BubblePageReady() { if (bubble.open && bubble.waitingAck && bubble.hwnd) SetTimer(bubble.hwnd, 0xB2, 300, nullptr); }
 // R44: a click on the element whose bubble is open never does nothing: the bubble is brought to the front, and placed
 // again (R44 rules) when it is not whole in the visible area.
 void EnsureOnScreen(const wchar_t* why) {

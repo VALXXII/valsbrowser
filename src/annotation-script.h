@@ -133,6 +133,7 @@ var cur = null, down = [], frozen = false, shown = false, keyboard = false, seq 
 var off = false;   // V1.4: selection switched off (« pick » false): the page is the page again
 var ctrl = false;  // R31: Ctrl held = the page is the page again, for as long as it is held
 var hostCtrl = false;   // final pass 1: the host says Ctrl is held (its keyboard: the page's pointer events may not carry the flag)
+var keyCtrl = false;    // C1: Ctrl seen as a KEY in this page (its keydown) — not only as a pointer event's flag
 var peek = null;   // R26: the element of a chip the user rests on (panel / bubble), shown as hovered
 var trackUntil = 0;   // R36: a restyle glides: everything follows the element frame by frame until then
 function idle() { return off || ctrl; }
@@ -760,7 +761,7 @@ function onMove(e) {
 // selected element (note open, bubble) keeps its frame. The Ctrl+... shortcuts are never consumed here (onKey).
 function cursorSheet(on) { try { if (sheet) sheet.replaceSync(on ? '*,*::before,*::after{' + cursorDecl(true) + '}' : ''); } catch (e) {} }
 function setCtrl(v) {
-  v = !!v; if (v === ctrl) return; ctrl = v;
+  v = !!v; if (!v) keyCtrl = false; if (v === ctrl) return; ctrl = v;
   if (off) return;
   if (ctrl) { cursorSheet(false); if (!frozen && !peek) { cur = null; down = []; haveMove = false; place(null); } syncShields(); }
   else { cursorSheet(true); syncShields(); haveMove = px >= 0; schedule(); }
@@ -770,14 +771,21 @@ function onBlur(e) { if (e.target === window && !hostCtrl) setCtrl(false); }
 // Only the user's own input is consumed: the page's synthetic events (el.click(), dispatchEvent) pass.
 // Final pass 1, defect 2: a button event never RELEASES Ctrl (in the real window the click may come without the Ctrl flag
 // while it is held: it was selected). Ctrl ends on its keyup, a window blur, or a pointer move without the flag.
+// C1 (journeys, 25 Nov 2026: the first click after the mode's start opened the link): a Ctrl known ONLY from a pointer
+// event's flag — never a key in this page (keyCtrl), never the host's keyboard (hostCtrl) — is no longer held when a button
+// event comes without the flag: it was the trace of a Ctrl already released (a shortcut that ended while the page moved
+// under a still pointer) and no move came since. The click selects. Defect 2's Ctrl (a key, or the host) is kept.
+function staleCtrl(e) { return ctrl && !e.ctrlKey && !hostCtrl && !keyCtrl; }
 function stop(e) {
   if (!e.isTrusted || off) return;
   if (e.type === 'pointerdown') { dpx = e.clientX; dpy = e.clientY; }   // the press, at the pointer's fractional point (see onClick)
+  if (staleCtrl(e)) setCtrl(false);   // C1
   if (e.ctrlKey) setCtrl(true); if (ctrl) return; e.preventDefault(); e.stopImmediatePropagation();
 }
 var dpx = -1, dpy = -1;
 function onClick(e) {
   if (!e.isTrusted || off) return;
+  if (staleCtrl(e)) setCtrl(false);   // C1
   if (e.ctrlKey) setCtrl(true); if (ctrl) return;   // R31: the site's click
   stop(e);
   if (e.button !== 0) return;
@@ -793,7 +801,7 @@ function onClick(e) {
   cur = info; down = []; frozen = true; place(cur); sendSelect(cur, null, e);
 }
 function onKey(e) {
-  if (e.isTrusted && e.key === 'Control') { setCtrl(true); return; }   // R31 (never consumed: Ctrl+... stay the site's and the host's)
+  if (e.isTrusted && e.key === 'Control') { setCtrl(true); keyCtrl = ctrl; return; }   // R31 (never consumed: Ctrl+... stay the site's and the host's); C1: a key
   if (!e.isTrusted || e.ctrlKey || e.metaKey || idle()) return;
   var k = e.key;
   if (k === 'Escape') { stop(e); post({ op: 'escape' }); return; }

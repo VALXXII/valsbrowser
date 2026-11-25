@@ -587,6 +587,7 @@ LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (w == MarkTimer) { KillTimer(h, MarkTimer); if (!doneMarkSelector.empty()) ApplyMark("done", doneMarkSelector); return 0; }
         if (w == FolderTimer) { KillTimer(h, FolderTimer); AskPageMarks(folderMarksOrigin, folderMarksTries); return 0; }
         if (w == PanelFocusTimer) { void PanelKeyboardTry(); PanelKeyboardTry(); return 0; }   // M4 panel (2)
+        if (w == KeysBackTimer) { void KeysBackTick(); KeysBackTick(); return 0; }   // « Ton agent »: the browser back in front after a sign-in console
         if (w == HeldTimer) { KillTimer(h, HeldTimer); ReleaseHeld(); return 0; }   // M14: the element never came: the message leaves without it
         if (w == StopTimer) { KillTimer(h, StopTimer); if (turn.active && turn.cancelled) { DisposeSession(L"stop not answered"); if (turn.active) FinishTurn("cancelled"); } return 0; }   // M1   // i18n-exempt: log reason
         if (w == HoverTimer) { if ((!Open() && !BubbleOpen()) || !panelReady) { KillTimer(h, HoverTimer); return 0; } if (!PointerInPanel()) { KillTimer(h, HoverTimer); Send("pointer.leave"); Diag(L"pointer left the panel: hover tooltip closed"); } return 0; }
@@ -930,6 +931,7 @@ void OnPanelMessage(const std::string& json) {
         Diag((stats.requestedAt > 0 ? L"panel ready " + Ann::Ms(stats.readyAt - stats.requestedAt) + L" ms after the request" : std::wstring(L"panel ready in advance")) + L" (build " + W(m.Text("build", 64)) + L")");
         SJ::Value hello = SJ::Value::Obj(); hello.Set("locale", Str(std::string(I18n::Current() == I18n::Locale::En ? "en" : "fr"))); hello.Set("platform", Str(std::string("windows"))); hello.Set("reducedMotion", SJ::Value::Bool(Ann::Reduced()));
         Send("hello", std::move(hello)); if (BubbleOpen()) SendLayout(true); else SendLayout(false);   // R34: the layout the page needs, always first
+        if (BubbleOpen()) BubblePageReady();   // C1: a bubble that waited for this page shows with its acknowledgement (never empty)
         SendState(); SendThread(); SendTonAgent(); SendCommands(); SendQueue();   // C1 (review R): were left in the comment above — a bubble opened before the page was ready got no thread; « Ton agent »'s block after the thread (journeys C1, night of 25/11: the bubble's size published before its conversation)
         if (!BubbleOpen() && !BubbleWarm())   // R35: the panel's draft (its chips) stays the panel's
             for (const auto& e : composerElements) { SJ::Value a = SJ::Value::Obj(); a.Set("element", ElementRef(e.second)); Send("element.attached", std::move(a)); }

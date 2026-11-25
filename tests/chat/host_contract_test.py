@@ -557,5 +557,27 @@ check(0 <= ptitle.find('KnownStepTitle(t.title); !known.empty()) return known;')
       and "I18N(chat_perm_sandbox, L\"{0} demande plus d'accès à cet ordinateur\", L\"{0} is asking for more access to this computer\")" in catalog,
       "permission: Codex asking for more access — « Codex demande plus d'accès à cet ordinateur » / « Codex is asking for more access to this computer »")
 
+# C1 (journeys of 25 Nov 2026, « chat page delayed by 4 s », replayed on a hidden desktop): a bubble opened before its page
+# exists is never shown empty — the 2 s safety waits for the page (at most BubblePageWaitMs), the page's « ready » re-arms
+# the short safety and its acknowledgement shows the surface with the conversation.
+b2 = comment[comment.find('if (m == WM_TIMER && w == 0xB2)'):]; b2 = b2[:b2.find('RevealBubble(L"without acknowledgement (safety delay)")')]
+check('if (!panelReady && bubble.open && bubble.waitingAck && Ann::NowMs() - bubble.openedAt < BubblePageWaitMs)' in b2 and 'SetTimer(h, 0xB2, 250, nullptr); return 0;' in b2,
+      'C1: a bubble whose page is still being created is not revealed by the safety delay (it waits for its page, at most BubblePageWaitMs)')
+check('SetTimer(bubble.hwnd, 0xB2, 300, nullptr)' in block_after(comment, 'void BubblePageReady() {')
+      and 0 <= ready.find('BubblePageReady();') < ready.find('SendThread();'),
+      'C1: the page ready, a bubble that waited for it is shown with the acknowledgement of its opening layout (the thread sent with it)')
+# « Ton agent », 2nd defect of 25 Nov (Fix's « absent » check): an agent installed / signed in from the chat's block turns
+# ready — the keyboard goes back to the input where the text waits (the browser in front only).
+tas = (SRC / 'chat-ton-agent.h').read_text(encoding='utf-8'); csr = block_after(tas, 'void ChatSetupReady(AgentStatus::Agent a) {')
+kbn = block_after(tas, 'void KeysBackNow(AgentStatus::Agent a) {'); kbt = block_after(tas, 'void KeysBackTick() {')
+check('if (started && act != "cancel") setupFromChat.insert(a);' in tas and 'setupFromChat.erase(a)' in csr and 'if (BrowserInFront()) { KeysBackNow(a); return; }' in csr
+      and 'Send("focus", std::move(f)); view.Focus();' in kbn and 'KeyboardToBubble(' in kbn and 'PanelKeyboardBack();' in kbn
+      and 'if (s.Ready() && before != AgentStatus::State::Ready) ChatSetupReady(s.agent);' in turn,
+      '« Ton agent »: an agent set up from the chat\'s block turns ready — the keyboard back to the input (panel or bubble), the browser in front')
+check('SetTimer(post, KeysBackTimer, 100, nullptr)' in csr and 'if (!BrowserInFront()) return;' in kbt and 'if (f && f != ::window)' in kbt and 'GetTickCount64() > keysBack.until' in kbt
+      and 'if (w == KeysBackTimer) { void KeysBackTick(); KeysBackTick(); return 0; }' in ui,
+      '« Ton agent »: ready while its sign-in console holds the foreground — the keys go back once the browser is in front again (never over the person\'s own focus, bounded in time)')
+
+
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

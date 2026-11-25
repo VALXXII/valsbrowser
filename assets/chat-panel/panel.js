@@ -3274,8 +3274,15 @@
     // the empty chat follows). Otherwise nothing is redrawn — only the send hint's words — so a bubble opening publishes
     // its size once, with its conversation (journeys C1, night of 25/11: it flashed empty at 105 px, then 256 px).
     const shownBefore = tasShown();
+    // 2nd defect of 25 Nov (Fix's « absent » check: typed, « Installer », « Se connecter », ready, Entrée did nothing): the
+    // keys were on the block's button, gone with the block — Entrée fell on the page's body. The block leaving takes the
+    // keys back to the input when they were on it or nowhere: Entrée sends what waited there.
+    const keysOnBlock = tasEl.contains(document.activeElement) || document.activeElement === document.body || !document.activeElement;
     TA = validTa(m);
     if (shownBefore || tasShown()) { updateView(); renderDock(); } else updateSend();
+    if (shownBefore && !tasShown() && keysOnBlock && cin.isConnected) {
+      cin.focus({ preventScroll: true }); const s = window.getSelection(); if (s) { s.selectAllChildren(cin); s.collapseToEnd(); }
+    }
   };
 
   // ---------------------------------------------------------------- global keys
