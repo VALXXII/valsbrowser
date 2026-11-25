@@ -106,6 +106,16 @@
       "timeout": 1800
     },
     {
+      "id": "page-frames",
+      "title": "Cadre de la bulle pour un élément dans un iframe (script de page, navigateur sans tête)",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "tests/chat/final/page_frames.py"
+      ],
+      "timeout": 900
+    },
+    {
       "id": "fake-agent",
       "title": "Scénarios du faux agent",
       "part": "day",
@@ -180,6 +190,18 @@
       ]
     },
     {
+      "id": "real-trial-records",
+      "title": "O9 : comptes rendus des deux essais réels (Claude Code, Codex) — toutes les étapes passées, aucune configuration réelle modifiée",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/real_trial_record_test.py"
+      ],
+      "timeout": 300,
+      "pendingMerge": "VALXXII/annotation-lot5"
+    },
+    {
       "id": "smoke",
       "title": "Test de fumée du navigateur (test.ps1)",
       "part": "night",
@@ -228,6 +250,17 @@
         "tests/chat/chat_qa_uia_offscreen.py"
       ],
       "timeout": 1800
+    },
+    {
+      "id": "narrator-window",
+      "title": "Lecteur d'écran, vraie fenêtre : ce que le Narrateur reçoit du bandeau, de la bulle et de la carte d'autorisation",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/chat_qa_narrator.py"
+      ],
+      "timeout": 900,
+      "pendingMerge": "VALXXII/annotation-lot5"
     },
     {
       "id": "chat-v1",
@@ -362,6 +395,17 @@
       ],
       "timeout": 900,
       "pendingMerge": "VALXXII/mode-focus-2"
+    },
+    {
+      "id": "o11-idle-bubble",
+      "title": "O11 : processeur au repos avec une bulle ouverte, fil de diagnostic éteint (navigateur publié) puis allumé",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/chat_qa_idle_bubble.py"
+      ],
+      "timeout": 900,
+      "pendingMerge": "VALXXII/annotation-lot5"
     },
     {
       "id": "journeys",

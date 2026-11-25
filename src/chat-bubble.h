@@ -282,6 +282,9 @@ inline std::string UnsafeAnchorKey(const std::string& frameKind, const std::stri
     if (selector.empty() || frameKind == "cross-origin") return "";
     std::string k = frameKind + "|"; for (const auto& s : shadowPath) k += s + ">>"; return k + "|" + selector;
 }
+// Lot 1d, case 3: the key of an element of a same-origin iframe, outside any shadow root (« same-origin||<selector> ») —
+// the only kind the page script can find again in the page's frames (annotation-script.h, keyFind).
+inline bool FrameKey(const std::string& key) { return key.rfind("same-origin||", 0) == 0 && key.size() > 13; }
 // A bubble asked open while one is open: the same one (kept as it is) only for the same conversation — or, when a
 // conversation is not known yet on one side, the same element. Anything else is another element: a new opening.
 inline bool SameBubble(const std::string& openConv, const std::string& openSelector, const std::string& conv, const std::string& selector) {

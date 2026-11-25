@@ -671,3 +671,137 @@ Règles communes :
   Objectif : deux passes complètes par jour, annoncées, en journée aussi.
 - **Arrêter un processus** seulement par son numéro, jamais par son nom ou sa ligne de commande.
 - **Pause** : le fichier `build/annotation-general/PAUSE` quand le propriétaire a besoin de l'écran.
+
+## 11. Lot 1c — cadre de la bulle pour un élément dans un iframe (24/11 soir, branche `VALXXII/annotation-lot1c`)
+
+Défaut vu par le propriétaire sur la page bac à sable : un clic sur « Standard · 3 à 5 jours », dans le bloc « iframe même
+origine », ouvrait la bulle près du clic, mais le cadre de sélection (« div.opt 254x35 ») était dessiné **en haut à gauche de
+la page**, par-dessus le champ e-mail.
+
+### Cause et correction
+
+Le cadre de la bulle est dessiné par le script de page (`src/annotation-script.h`, `bxPlace`). Il utilisait la position de
+l'élément **dans son iframe**, sans ajouter la place de l'iframe dans la page. La position envoyée au navigateur pour placer
+la bulle, elle, ajoutait bien ce décalage — mais celui du moment du clic, jamais relu : la bulle ne suivait donc pas un
+défilement de la page (second défaut, trouvé en écrivant le test).
+
+Corrigé : la place des iframes de l'élément est relue à chaque vérification et à chaque défilement (`frameChain`, `chainAt`) —
+iframes imbriqués, bordure et marge intérieure de l'iframe, page défilée, iframe défilé (son propre défilement est écouté).
+Un élément en partie caché par son iframe n'est encadré que pour sa partie visible ; entièrement caché, aucun cadre n'est
+dessiné par-dessus la page ; un iframe retiré de la page = élément disparu (règle des 500 ms déjà en place).
+
+### Autre origine et canvas : ce que fait le produit
+
+- **Iframe d'une autre origine** : le navigateur ne peut pas lire son contenu (sécurité). Le produit le traite comme **une
+  seule boîte** (règle déjà écrite dans le script : « a cross-origin iframe is annotated as a box ») : survol, sélection et
+  cadre de la bulle entourent l'iframe entier. Vérifié, correct.
+- **Canvas** : une seule boîte aussi, le canvas lui-même (il n'a pas d'éléments à l'intérieur). Vérifié, correct.
+
+### Questions pour Designer (aucune règle validée, rien n'a été inventé)
+
+1. Élément dans un iframe, **sorti de la zone visible de son iframe** (l'iframe a défilé) : le cadre disparaît (fait, c'est
+   la seule chose exacte), mais la bulle reste accrochée à la position de l'élément, donc à côté d'un endroit vide. Doit-elle
+   se comporter comme pour un élément sorti de l'écran (règle 6 de #130 : elle part avec lui) ?
+2. Iframe d'une autre origine : faut-il dire à l'utilisateur pourquoi il ne peut viser que le bloc entier ?
+3. Après un rechargement de la page (modification de l'agent), le cadre d'un élément situé dans un iframe n'est pas redessiné
+   (le navigateur ne retrouve par son nom que les éléments de la page elle-même) ; de même la marque de conversation
+   (« En attente »…) n'est pas dessinée sur ces éléments. Limites d'avant, à décider.
+
+### Tests
+
+- Sans fenêtre : `tests/chat/final/page_frames.py` (suite `page-frames`, partie jour) — 46 contrôles à 100 % et 125 % ; la
+  vérité des positions est celle du moteur (DevTools), pas le calcul du script. Sur l'ancien script : 20 échecs, dont le cadre
+  en haut à gauche ; sur le nouveau : 0.
+- Nuit (vraie fenêtre) : parcours `e1b_cadre_dans_iframe` dans `tests/chat/final/journeys.py` — clic dans l'iframe du site
+  d'essai, cadre autour de l'élément, encore après un défilement de la page ; les invariants habituels vérifient que la
+  bulle suit.
+
+## 12. Lot 1d — la bulle dans les iframes : décisions du propriétaire (24/11 soir, branche `VALXXII/annotation-lot1d`)
+
+Réponses aux questions du §11, planches Paper validées (page « #127 — Panneau latéral », tout en bas).
+
+### Cas 1 = A — l'élément sort de son iframe : la bulle reste collée au bord
+
+Planche « Iframes · cas 1 · l'élément sort de l'iframe · A (maquette prête) ». Quand on fait défiler **l'intérieur** d'un
+iframe et que l'élément choisi en sort, sa bulle ne disparaît pas : elle reste collée au bord de l'iframe, du côté par où
+l'élément est sorti, et ce qu'on est en train d'écrire n'est jamais perdu. Quand l'élément revient, tout redevient normal.
+Dans la page elle-même, rien ne change (un élément sorti de l'écran emporte sa bulle).
+
+Fait dans le script de page (`src/annotation-script.h`, `stick`) : la position donnée au navigateur pour placer la bulle
+est celle de l'élément **tant que l'iframe le montre** — la partie encore visible, puis un point du bord par lequel il est
+sorti. Valeur Paper reprise : le haut de la bulle se trouve 4 px au-dessus du bord haut de l'iframe (c'est le « −4 » habituel
+de la bulle à côté de son élément). Le cadre de sélection, lui, n'est plus dessiné quand l'élément n'est plus visible (§11).
+
+**Un point de la planche n'est pas codé** : la petite flèche « ↑ » dessinée sur le bord de la bulle. La planche ne dit pas
+si c'est un vrai repère à afficher dans le produit ni ses mesures dans la vraie bulle (elle se dessinerait dans la page du
+chat, fichiers du lot R). À confirmer avec Designer avant de la coder.
+
+### Cas 3 — l'iframe se recharge
+
+Planche « Iframes · cas 3 · l'iframe se recharge (maquette prête) ». Avant : l'élément a son cadre et sa marque
+« En attente ». Pendant le rechargement : ils disparaissent un instant. Après : si l'élément est retrouvé, ils reviennent,
+comme après le rechargement de la page ; sinon rien n'est redessiné et la conversation garde sa puce.
+
+Fait :
+- le script de page retrouve un élément d'iframe par son nom **dans** l'iframe, cherché dans tous les iframes de même
+  origine de la page (`deepFind`, `keyFind`) : un seul élément dans un seul iframe, sinon rien ;
+- la marque de conversation (« En attente »…) est maintenant dessinée aussi pour un élément d'iframe (elle ne l'était
+  pas du tout) : le navigateur la demande par la clé de l'élément (`SyncMarks`, `src/chat-comment.h`) ;
+- après le rechargement de la page, le navigateur redonne l'élément de la bulle par cette même clé (`FollowBubbleElement`).
+
+Limites dites clairement : deux iframes qui contiennent le même élément au même nom = élément non retrouvé (rien n'est
+dessiné) ; un élément dans un composant web (shadow DOM) reste sans marque, comme avant ; si le rechargement de l'iframe
+dure plus d'une demi-seconde et que rien n'est en cours dans la bulle, la bulle se ferme comme pour un élément disparu de
+la page (règle déjà en place), sa conversation reste dans l'historique.
+
+### Cas 2 — iframe d'un autre site
+
+Pas codé ici : carte d'explication + « En savoir plus », par Builder, d'après la planche v2.
+
+### Tests
+
+- Sans fenêtre : `tests/chat/final/page_frames.py`, 70 contrôles (cas 1 : sortie par le haut, par le bas, iframe imbriqué,
+  page défilée pendant que la bulle est collée, retour ; cas 3 : cadre et marque retrouvés, élément absent, retour, clé
+  après rechargement de la page, clés refusées). Contrats du navigateur : 4 de plus ; une unité (`FrameKey`).
+- Nuit (vraie fenêtre) : le parcours `e1b_cadre_dans_iframe` a trois étapes de plus — bulle collée au bord haut de
+  l'iframe sans cadre, retour, iframe rechargé.
+
+## 13. Lot 1e — inspecteur d'espacements : la marge d'un enfant à part du gap (branche `VALXXII/annotation-lot1e`)
+
+Question du propriétaire (24/11) : au survol de `form.checkout`, toutes les bandes entre les champs étaient hachurées mais
+une seule portait une valeur, « 6 », alors que la première faisait 26 px de haut. Ce n'était pas un défaut du code : la
+règle validée était « une valeur par valeur distincte », et le code hachurait tout l'espace réel entre deux enfants, marges
+des enfants comprises.
+
+Choix du propriétaire : **B**, planche « 5.3 · Espacements au survol — padding, gap et marges (maquette prête) », page
+« MCP - Design UI UX ». Quand un enfant a sa propre marge, l'espace réel = la marge + le gap, chacun avec sa bande et sa
+valeur :
+
+- **marge de l'enfant** : aplat clair `#FBE3EF`, sans hachures, collé à l'enfant ; valeur dans une pastille de 14 px de
+  haut, fond `#FBE3EF`, contour 1 px `#D63E92`, texte `#B0307A` ;
+- **gap** : les hachures roses habituelles, dans ce qui reste entre les marges, avec sa pastille pleine `#D63E92` ;
+- une valeur par valeur distincte et par axe, pour les marges comme pour le gap ; rien sous 4 px ;
+- la pastille d'une marge se place 12 px après celle du gap quand elles se toucheraient (valeurs de la planche : 192 = 160
+  + 20 + 12).
+
+Sur `form.checkout` : « 20 » en aplat sous le titre, puis « 6 » hachuré, puis « 10 » en aplat au-dessus du libellé.
+
+Fait dans le script de page seulement (`src/annotation-script.h` : `spaceGeometry`, `drawSpace`, `labelPlace`).
+
+Décidé (24/11, 22 h 40) :
+- **Police des valeurs** : on garde Inter Display (décision D8), comme les pastilles voisines ; la planche, qui écrit
+  JetBrains Mono, sera alignée par Designer.
+- La pastille d'une marge ne se déplace que si elle recouvrirait vraiment une autre pastille (elle se met alors 12 px après,
+  valeur de la planche) ; les pastilles de padding et de gap gardent leur règle d'avant.
+- Les marges ne sont montrées qu'entre deux enfants, là où il y a un gap (pas la marge du premier enfant vers le haut du
+  conteneur, ni les conteneurs sans gap) : la planche ne montre que ce cas.
+
+**Suite à prévoir, après la fusion du lot R dans main** : la copie native du cadre au moment du clic. Pendant la capture, le
+cadre et les hachures sont redessinés par le navigateur lui-même (`src/annotation-frame.h`, `src/annotation-host.h`, et
+`src/annotation-mode.h` qui appartient au lot R). Cette copie ne connaît pas encore les marges : elle montre le padding et
+le gap (réduit à sa vraie part), sans l'aplat. Elle devra dessiner l'aplat et sa pastille aussi ; le message de sélection
+garde pour l'instant sa forme (padding, gaps, deux sortes de pastilles), vérifié par le test.
+
+Test sans fenêtre : `tests/chat/final/page_frames.py`, partie « margins » — la carte de la planche au pixel, un formulaire
+comme celui du bac à sable, une rangée, une grille, un conteneur sans marges, et le message de sélection inchangé :
+104 contrôles sur 104 (dont 34 pour cette partie), à 100 % et 125 %.

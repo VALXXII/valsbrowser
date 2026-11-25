@@ -8,12 +8,12 @@ namespace NativeChrome {
 namespace DialogKit {
 // SVG path data (M L H V C S Q T A Z, absolute and relative) to a Direct2D geometry in
 // viewBox units. Nonzero fill like SVG. Returns nullptr on malformed data.
-inline ID2D1PathGeometry* SvgGeometry(ID2D1Factory* factory, const char* d) {
+inline ID2D1PathGeometry* SvgGeometry(ID2D1Factory* factory, const char* d, bool evenOdd = false) {   // evenOdd: SVG fill-rule="evenodd"
     if (!factory || !d) return nullptr;
     ID2D1PathGeometry* path = nullptr; ID2D1GeometrySink* sink = nullptr;
     if (FAILED(factory->CreatePathGeometry(&path))) return nullptr;
     if (FAILED(path->Open(&sink))) { path->Release(); return nullptr; }
-    sink->SetFillMode(D2D1_FILL_MODE_WINDING);
+    sink->SetFillMode(evenOdd ? D2D1_FILL_MODE_ALTERNATE : D2D1_FILL_MODE_WINDING);
     const char* p = d; char cmd = 0; bool open = false, ok = true;
     D2D1_POINT_2F cur{0, 0}, start{0, 0}, ctrl{0, 0}; char last = 0;
     auto skip = [&] { while (*p == ' ' || *p == ',' || *p == '\n' || *p == '\t' || *p == '\r') ++p; };

@@ -759,6 +759,60 @@ def j_e1(j):
         j.R.capture(f'e1-{host[1:]}'); j.close()
 
 
+@journey('e1b_cadre_dans_iframe', 'lot 1c (inside an iframe: the bubble\'s frame is around the element clicked, and follows a scroll of the page)')
+def j_e1b(j):
+    # The owner's trial of 24 Nov 2026 (sandbox page, « Standard · 3 à 5 jours » in the same-origin iframe): the bubble opened
+    # next to the click, its frame was drawn at the TOP LEFT of the page (the element's rectangle in its own frame). Windowless:
+    # tests/chat/final/page_frames.py (nested frames, scrolled frame, another origin, canvas). Here, the real browser.
+    F.inject_embedded(); host = '#qa-frame'
+    F.scroll_into_view(host, 'center'); F.front()
+    p = F.embedded_point(host); m = F.log_mark(); t = F.click_at(*p, settle=0.04)
+    j.n += 1; j.inv.after_element_click(host, t, f'{j.n:02d} lot 1c click inside {host}', mark=m)
+    time.sleep(1.2)
+
+    def framed():
+        bf = F.bubble_frame_box(); el = F.page(F.EMBEDDED_BOX[host])   # the block inside the iframe, in the page's viewport
+        ok = bool(bf and el) and all(abs(a - b) <= 1.5 for a, b in zip(bf, (el[0] - 4, el[1] - 4, el[2] + 4, el[3] + 4)))   # Paper 18QJ-0: 4 px out
+        return ok, {'frame': bf, 'element': el}
+    ok, d = framed()
+    j.step('lot 1c · inside an iframe: the bubble\'s frame is drawn around the element clicked (4 px out), not at the top left of the page', ok, d)
+    j.R.capture('e1b-cadre-iframe')
+    y0 = F.scroll_y(); pg = F.page_area(); F.u32.SetCursorPos(pg[0] + 20, (pg[1] + pg[3]) // 2); time.sleep(0.2)
+    F.wheel(1, 0.05); time.sleep(0.9)
+    ok, d = framed(); d['scrolledPx'] = (F.scroll_y() or 0) - (y0 or 0)
+    j.step('lot 1c · the page scrolled: the frame is still around the element', ok and abs(d['scrolledPx']) > 20, d)
+    j.R.capture('e1b-cadre-iframe-defile')
+    j.check('lot 1c after the scroll (the bubble followed its element)', wheel_moved=True)
+
+    # Lot 1d, case 1 = A (the owner, 24 Nov 2026; Paper « Iframes · cas 1 · l'élément sort de l'iframe · A »): a scroll INSIDE the
+    # iframe takes the element out of it — the bubble stays, stuck to the iframe's edge on the side the element left by (here
+    # the top), its frame is no longer drawn; scrolled back, everything is as before.
+    FR = "document.getElementById('qa-frame')"
+    F.page("(function(){var d=" + FR + ".contentDocument;if(!d.getElementById('qa-tall')){var s=d.createElement('div');s.id='qa-tall';s.style.height='900px';d.body.appendChild(s)}return 1})()")
+    time.sleep(0.4); s0 = F.bubble_surface(); el0 = F.page(F.EMBEDDED_BOX[host]); k = F.dpr()
+    fr = F.page("(function(){var r=" + FR + ".getBoundingClientRect();return [r.left,r.top,r.right,r.bottom]})()")
+    F.page(FR + ".contentWindow.scrollTo(0,400)"); time.sleep(1.0)
+    s1 = F.bubble_surface(); shown = F.bubble_shown()[0]; bf = F.bubble_frame_box()
+    # the element's top was at el0[1]; its place for the host is now the iframe's top edge: the bubble moved up by that much
+    want = (fr[1] - el0[1]) * k if el0 and fr else None; moved = (s1[1] - s0[1]) if s0 and s1 else None
+    j.step('lot 1d · case 1: the element scrolled out of its iframe (by the top) — the bubble is still there, stuck to the iframe\'s top edge, no frame drawn',
+           bool(shown) and bf is None and want is not None and moved is not None and abs(moved - want) <= 3 and abs(s1[0] - s0[0]) <= 2 and 'no longer in the page' not in C.log_text()[m:],
+           {'surface before': s0, 'surface stuck': s1, 'moved px': moved, 'expected px': want, 'iframe': fr, 'frame': bf})
+    j.R.capture('e1b-colle-au-bord')
+    F.page(FR + ".contentWindow.scrollTo(0,0)"); time.sleep(1.0)
+    ok, d = framed(); s2 = F.bubble_surface(); d['surface'] = s2
+    j.step('lot 1d · case 1: scrolled back — the frame is around the element again and the bubble is back where it was', ok and bool(s2 and s0) and abs(s2[1] - s0[1]) <= 3 and abs(s2[0] - s0[0]) <= 2, d)
+
+    # Lot 1d, case 3 (Paper « Iframes · cas 3 · l'iframe se recharge »): the iframe reloads — the bubble's frame comes back around
+    # the element found again (the bubble never closed: « gone » is only said after 500 ms without it).
+    m3 = F.log_mark()
+    F.page("(function(){var f=" + FR + ";f.srcdoc=f.srcdoc;return 1})()"); time.sleep(1.6)
+    ok, d = framed(); d['bubble shown'] = F.bubble_shown()[0]
+    j.step('lot 1d · case 3: the iframe reloaded — the bubble is still open and its frame is back around the element found again', ok and bool(d['bubble shown']), d)
+    j.R.capture('e1b-iframe-recharge')
+    j.check('lot 1d after the iframe reloaded', wheel_moved=True); j.close()
+
+
 @journey('m5_bascule_puis_clic', 'review M5 (the Commentaire switch, then a click on an element 50 ms later, while the panel slides out)')
 def j_m5(j):
     for i in range(3):

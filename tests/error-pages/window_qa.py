@@ -11,9 +11,12 @@ What it does, on its own copy only:
      one (this PC: the portrait one, low on it, away from the floating widgets);
   3. makes each failure happen for real in the tab, with the boards' addresses, WITHOUT any network: DevTools
      Fetch fails the request locally (lemonde.fr offline, lemond.fr not found, localhost:3000 refused, impots.gouv.fr
-     timed out, bibliotheque-municipale.fr's https:// attempt refused → the « non sécurisé » page); the browser then
-     shows our page through its own code path (ShowErrorPage / ShowInsecureInterstitial). « Reprise » and the 5
-     certificate cases come from the sandbox (browser://debug, forced variants, *.sandbox.invalid);
+     timed out, bibliotheque-municipale.fr's https:// attempt refused → the « non sécurisé » page, lemonde.fr reset,
+     intranet.local unreachable, exemple.fr/rapport failed, impots.gouv.fr's 2nd failure with the sheet open); the
+     browser then shows our page through its own code path (NavigationFailed reads the engine's error document for
+     a refusal, ShowErrorPage / ShowInsecureInterstitial). Then the copy button's 5 states (hover, pressed, « Copié »
+     after main's answer, focus). « Reprise » and the 5 certificate cases come from the sandbox (browser://debug,
+     forced variants, *.sandbox.invalid);
   4. per case: the layout against the boards (cases.py), the copy button (the clipboard holds the code), the focus
      on the primary action, a 1x capture of the block compared with the board's PNG, and a screen capture of the
      whole window for the review (needs an unlocked session);
@@ -38,9 +41,13 @@ user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))   # per-monitor v2: re
 SANDBOX = 'https://browser-debug.invalid/'
 # Board address → how DevTools fails its request (CDP Network.ErrorReason). Nothing reaches the network.
 FAIL = {'www.lemonde.fr': 'InternetDisconnected', 'lemond.fr': 'NameNotResolved', 'localhost': 'ConnectionRefused',
-        'impots.gouv.fr': 'TimedOut', 'bibliotheque-municipale.fr': 'ConnectionRefused'}
+        'impots.gouv.fr': 'TimedOut', 'bibliotheque-municipale.fr': 'ConnectionRefused',
+        # board « compléments » 1SYN-0 (24/11): the three remaining pages, with the board's addresses
+        'lemonde.fr': 'ConnectionReset', 'intranet.local': 'AddressUnreachable', 'exemple.fr': 'Failed'}
 REAL = [('offline', 'https://www.lemonde.fr/planete/'), ('dns', 'https://lemond.fr/'), ('refused', 'http://localhost:3000/'),
-        ('timeout', 'https://impots.gouv.fr/'), ('insecure', 'http://bibliotheque-municipale.fr/horaires')]
+        ('timeout', 'https://impots.gouv.fr/'), ('insecure', 'http://bibliotheque-municipale.fr/horaires'),
+        ('reset', 'https://lemonde.fr/'), ('unreachable', 'http://intranet.local/'), ('generic', 'https://exemple.fr/rapport'),
+        ('timeout-open', 'https://impots.gouv.fr/')]   # the 2nd failure (after the 8 s retry), sheet open: then the copy states
 SANDBOXED = [('restored', 'error.offline', 'restored'), ('cert-invalid', 'error.page', 'certInvalid'), ('cert-expired', 'error.page', 'certExpired'),
              ('cert-wrong-name', 'error.page', 'certWrongName'), ('cert-revoked', 'error.page', 'certRevoked'), ('cert-client', 'error.page', 'certClient')]
 
@@ -270,6 +277,56 @@ def run_case(name, cdp, out, dpr, hwnd, rows, failures, sandboxed=False):
     failures += [f'{name}: {d}' for d in layout]
 
 
+def copy_states(cdp, out, dpr, rows, failures):
+    """The copy button's five states in the real window (1T2J-0), on the time-out page with its sheet open: rest,
+    hover (C5 tooltip after 600 ms), pressed, « Copié » once main has put the code on the clipboard (1.5 s, then rest),
+    keyboard focus (the owner's A1 inset ring)."""
+    def measure():
+        return json.loads(cdp.eval(cases.MEASURE_JS))
+
+    def record(state, label, m, shot=False):
+        bad = cases.check_copy(state, m)
+        if shot:
+            try:
+                block_shot(cdp, m, dpr).save(out / f'{label}-block.png')
+            except Exception as e:
+                bad.append(f'capture failed: {e}')
+        rows.append({'name': label, 'layout': bad, 'notes': [], 'pixels': {}})
+        print(f'  {label:16} {"OK" if not bad else "DIFF"}  {m.get("copyState")}')
+        for d in bad:
+            print(f'      {d}')
+        failures.extend(f'{label}: {d}' for d in bad)
+
+    slot = measure().get('copy')
+    if not slot:
+        failures.append('copy states: no copy button on the open time-out sheet'); return
+    x, y = slot['x'] + slot['w'] / 2, slot['y'] + slot['h'] / 2
+    mouse = lambda kind, px, py, **k: cdp.call('Input.dispatchMouseEvent', {'type': kind, 'x': px, 'y': py, **k})
+    mouse('mouseMoved', 5, 5); cdp.pump(1.8)   # run_case's copy test just clicked: let its « Copié » (1.5 s) end
+    record('copy-rest', 'copy-rest', measure())
+    mouse('mouseMoved', x, y); cdp.pump(0.9)
+    record('copy-hover', 'copy-hover', measure(), shot=True)
+    mouse('mousePressed', x, y, button='left', clickCount=1); cdp.pump(0.25)
+    record('copy-pressed', 'copy-pressed', measure(), shot=True)
+    mouse('mouseReleased', x, y, button='left', clickCount=1); cdp.pump(0.3)   # a click: main copies, answers « copied »
+    mouse('mouseMoved', 5, 5); cdp.pump(0.2)
+    m = measure(); record('copy-copied', 'copy-copied', m, shot=True)
+    code = (m.get('code') or [{}])[0].get('text', '')
+    if clipboard_text() != code:
+        failures.append(f'copy-copied: clipboard {clipboard_text()!r}, expected {code!r}')
+    cdp.pump(1.6)
+    record('copy-rest', 'copy-rest-after', measure())   # « Copié » lasts 1.5 s
+    # The window is not brought to the front (no SendInput): without focus emulation a background window's page never
+    # matches :focus-visible (night 25/11: ring « none », no tooltip). The page is told it has the focus, as a front window.
+    cdp.call('Emulation.setFocusEmulationEnabled', {'enabled': True})
+    # The last input was the mouse (the states above): a scripted focus() then never matches :focus-visible. A key first, as
+    # a keyboard user's Tab would (Shift: nothing moves, nothing is typed).
+    for kind in ('keyDown', 'keyUp'):
+        cdp.call('Input.dispatchKeyEvent', {'type': kind, 'key': 'Shift', 'code': 'ShiftLeft', 'windowsVirtualKeyCode': 16})
+    cdp.eval('document.querySelector("[data-action=copy]").focus({focusVisible:true})'); cdp.pump(0.3)
+    record('copy-focus', 'copy-focus', measure(), shot=True)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(); ap.add_argument('--app'); ap.add_argument('--skip-build', action='store_true'); a = ap.parse_args()
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
@@ -319,14 +376,25 @@ def main() -> int:
                 time.sleep(1.0)
         tab.call('Fetch.enable', {'patterns': [{'urlPattern': '*', 'requestStage': 'Request'}]})
         for name, url in REAL:
+            if name == 'timeout-open':   # start the count again (another address), then the 1st failure of impots.gouv.fr
+                mark_old(tab); tab.call('Page.navigate', {'url': 'https://lemond.fr/'}); wait_error_page(tab)
             mark_old(tab); tab.call('Page.navigate', {'url': url})
             if not wait_error_page(tab):
                 failures.append(f'{name}: our page did not appear (title {tab.eval("document.title")!r})'); continue
+            if name == 'timeout-open':   # its automatic retry after 8 s fails again: the 2nd failure, « nouvel essai dans 16 s »
+                mark_old(tab); t0 = time.time()
+                if not wait_error_page(tab, 30):
+                    failures.append('timeout-open: the automatic retry did not bring a new page'); continue
+                print(f'  automatic retry after the 1st time-out: new page {time.time() - t0:.1f} s later (8 s countdown)')
+            if name.startswith('timeout'):   # hold this page's own retry (8 / 16 s) while it is measured: the page stays
+                tab.eval('busy=true')
             if name == 'refused':   # the board shows the second attempt: « Réessayer » once (failed again, locally)
                 mark_old(tab); tab.eval('document.getElementById("primary").click()')
                 if not wait_error_page(tab):
                     failures.append('refused: « Réessayer » did not bring a new page'); continue
             run_case(name, tab, out, dpr, hwnd, rows, failures)
+            if name == 'timeout-open':
+                copy_states(tab, out, dpr, rows, failures)
         if tab.leaked:
             failures.append(f'unexpected requests (failed, never sent): {tab.leaked}')
         print(f'  requests failed locally by DevTools: {len(tab.failed)}')
@@ -338,13 +406,22 @@ def main() -> int:
             before = {t['id'] for t in targets() if t.get('type') == 'page'}
             sandbox.eval(f'document.querySelector(\'[data-command="{command}"][data-variant="{variant}"]\').click()')
             new = None
-            for _ in range(60):
+            for _ in range(120):   # up to 30 s: a tab's engine view can come late
                 fresh = [t for t in targets() if t.get('type') == 'page' and t['id'] not in before]
                 if fresh:
                     new = Cdp(fresh[0]['webSocketDebuggerUrl']); break
                 time.sleep(0.25)
-            if not new or not wait_error_page(new):
-                failures.append(f'{name}: the sandbox tab did not show our page'); continue
+            # The sandbox tab really looks up *.sandbox.invalid: on this PC Windows takes ~11 s to answer « no such
+            # host » (getaddrinfo, VPN DNS) and the engine up to ~25 s, past the old 20 s wait (night 25/11, the page
+            # of each case came at the next command). Up to 75 s here.
+            if not new or not wait_error_page(new, 75):
+                # Night 24/11 these cases were never reached: say what the browser did (its sandbox log, the targets).
+                try:
+                    journal = sandbox.eval('[...document.getElementById("log").children].slice(-4).map(li=>li.textContent).join(" | ")')
+                except Exception as e:
+                    journal = f'unreadable ({e})'
+                seen = [t.get('url', '')[:60] for t in targets() if t.get('type') == 'page']
+                failures.append(f'{name}: the sandbox tab did not show our page (new target: {"yes" if new else "no"}; sandbox log: {journal}; page targets: {seen})'); continue
             run_case(name, new, out, dpr, hwnd, rows, failures, sandboxed=True)
     finally:
         k32.CloseHandle(job)   # KILL_ON_JOB_CLOSE: the browser and its engine end here

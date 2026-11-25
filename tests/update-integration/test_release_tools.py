@@ -5,7 +5,8 @@ decision guards (never regress the feed), payload staging allowlist with canary
 runtime data that must never be packaged nor modified, manifest parsing, the public
 first-run ZIP (exact staged entries and bytes, checksums, release-info), the
 publisher end to end against an in-memory fake GitHub (positive and negative cases),
-and the workflow file's security-relevant properties.
+and the workflow file's security-relevant properties; the « Nouveautés » notes of the release
+(release-notes/notes.json: the committed file is valid, the rules of release-notes/README.md, the generated header).
 """
 from __future__ import annotations
 import contextlib, hashlib, io, json, os, re, shutil, subprocess, sys, tempfile, unittest, zipfile
@@ -18,6 +19,7 @@ import version as V  # noqa: E402
 import publish as P  # noqa: E402
 import package as K  # noqa: E402
 import build as B  # noqa: E402
+import release_notes as R  # noqa: E402
 
 SHA = 'a' * 40
 
@@ -1012,6 +1014,72 @@ class Workflow(unittest.TestCase):
         # publish runs only after build (which runs tests and packaging)
         self.assertIn('needs: build', text)
         self.assertLess(text.index('run_all.py'), text.index('package.py'))
+
+
+class ReleaseNotesFile(unittest.TestCase):
+    """release-notes/notes.json -> <out>-obj/gen/release-notes-data.h (design/release-notes-fix-report.md)."""
+    GOOD = {'ajouts': [{'fr': 'Onglets sur le côté.', 'en': 'Tabs on the side.'}],
+            'corrections': [{'fr': 'La bulle suit l’élément.', 'en': 'The bubble follows the element.'}]}
+
+    def notes(self, data):
+        self.assertEqual(R.check(data), [])
+        return {s: [(i['fr'], i['en']) for i in data[s]] for s in R.SECTIONS}
+
+    def test_committed_notes_are_valid(self):
+        notes = R.load()
+        self.assertTrue(R.notes_id(notes).startswith('notes-'), 'the next release has notes')
+        for section in R.SECTIONS:
+            self.assertLessEqual(len(notes[section]), R.MAX_ITEMS)
+
+    def test_id_follows_the_text(self):
+        a = self.notes(self.GOOD)
+        self.assertRegex(R.notes_id(a), r'^notes-[0-9a-f]{16}$')
+        self.assertEqual(R.notes_id(a), R.notes_id(self.notes(json.loads(json.dumps(self.GOOD)))))
+        changed = json.loads(json.dumps(self.GOOD)); changed['corrections'][0]['en'] = 'The bubble follows the element!'
+        self.assertNotEqual(R.notes_id(a), R.notes_id(self.notes(changed)), 'new text = new id = the card opens again')
+        self.assertEqual(R.notes_id(self.notes({'ajouts': [], 'corrections': []})), '', 'no notes: no card')
+
+    def test_rules(self):
+        def errors(mutate):
+            data = json.loads(json.dumps(self.GOOD)); mutate(data); return R.check(data)
+        self.assertTrue(errors(lambda d: d['ajouts'].extend([self.GOOD['ajouts'][0]] * 4)))           # 5 lines
+        self.assertTrue(errors(lambda d: d['ajouts'][0].update(fr='x' * (R.MAX_CHARS + 1))))          # too long
+        self.assertTrue(errors(lambda d: d['ajouts'][0].update(fr="L'onglet.")))                       # straight apostrophe
+        self.assertTrue(errors(lambda d: d['ajouts'][0].update(en=d['ajouts'][0]['fr'])))              # not translated
+        self.assertTrue(errors(lambda d: d['ajouts'][0].update(en='')))                                # empty
+        self.assertTrue(errors(lambda d: d['ajouts'][0].update(fr='Deux\nlignes.')))                   # control character
+        self.assertTrue(errors(lambda d: d['ajouts'][0].update(fr=' Espace.')))                        # stray space
+        self.assertTrue(errors(lambda d: d['ajouts'][0].update(de='Tabs.')))                           # unknown language
+        self.assertTrue(errors(lambda d: d.update(correction=[])))                                     # misspelt section
+        self.assertTrue(errors(lambda d: d.pop('corrections')))                                        # missing section
+        self.assertTrue(R.check([]))
+        self.assertEqual(errors(lambda d: d.update(ajouts=[])), [], 'an empty section is allowed (not drawn)')
+
+    def test_header_is_ascii_and_escaped(self):
+        notes = {'ajouts': [('Guillemets " et \\ et ?? et « é » ’ 😀', 'Quote " ok')], 'corrections': []}
+        text = R.header(notes)
+        text.encode('ascii')
+        self.assertIn(f'#define BROWSER_RELEASE_NOTES_ID "{R.notes_id(notes)}"', text)
+        self.assertIn('L"Guillemets \\" et \\\\ et \\?\\? et \\u00AB \\u00E9 \\u00BB \\u2019 \\U0001F600"', text)
+        self.assertIn('#define BROWSER_RELEASE_NOTES_FIXED \n', text)
+        empty = R.header({'ajouts': [], 'corrections': []})
+        self.assertIn('#define BROWSER_RELEASE_NOTES_ID ""', empty)
+
+    def test_build_generates_the_header(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            gen = Path(tmp)
+            with contextlib.redirect_stdout(io.StringIO()):
+                B.write_release_notes(gen, V.identity(42, SHA, 'dev'))
+            self.assertEqual((gen / 'release-notes-data.h').read_text(encoding='ascii'), R.header(R.load()))
+
+    def test_release_build_warns_when_the_merge_kept_the_notes(self):
+        for same, warned in ((True, True), (False, False)):
+            def git(*args, **_):
+                return 'same' if same or args[1].startswith(SHA + '^1') else 'changed'
+            out = io.StringIO()
+            with tempfile.TemporaryDirectory() as tmp, mock.patch.object(B.version_mod, 'git', git), contextlib.redirect_stdout(out):
+                B.write_release_notes(Path(tmp), V.identity(42, SHA, 'release'))
+            self.assertEqual('unchanged by this merge' in out.getvalue(), warned, out.getvalue())
 
 
 if __name__ == '__main__':

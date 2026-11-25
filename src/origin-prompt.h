@@ -29,8 +29,16 @@
 
 namespace NativeChrome {
 namespace OriginPrompt {
-enum class Kind { Permission, BasicAuth, ExternalApp, DangerousDownload, ClientCertificate, ScreenShare, KeepFile, PasswordSave, PasswordUpdate, PasswordFill, SiteStatus };
-enum class Action { Dismiss, Allow, AllowOnce, Block, Submit, Cancel, Open, Keep, Delete, Choose, Save, Never, Fill, Manage };
+// ScreenCapture (#121): the real confirmation before the engine's own picker (getDisplayMedia, WebView2
+// ScreenCaptureStarting); ScreenShare is the B08 picker concept (demonstration only).
+// Unresponsive (#121): the tab's page stopped answering (WebView2 ProcessFailed RENDER_PROCESS_UNRESPONSIVE).
+enum class Kind { Permission, BasicAuth, ExternalApp, DangerousDownload, ClientCertificate, ScreenShare, KeepFile, PasswordSave, PasswordUpdate, PasswordFill, SiteStatus, ScreenCapture, Unresponsive };
+enum class Action { Dismiss, Allow, AllowOnce, Block, Submit, Cancel, Open, Keep, Delete, Choose, Save, Never, Fill, Manage, Wait, Reload };
+// Paper 1O1O-0 « Icône — hourglass (Jiggicons, verre, gris) », viewBox 0 0 24 24, exported verbatim: the glass body
+// #3A3A3D, the sand and the two caps on a #B5B5BA -> #7A7A80 gradient (y 2 -> 22).
+namespace Hourglass {   // paid Jiggicons hourglass (glass): one line, declared in tools/public-mirror/paid-icons
+inline constexpr const char *body = "M0 0Z", *sand = "M19.125 7.091V3.75a1.875 1.875 0 0 0 -1.875 -1.875H6.75A1.875 1.875 0 0 0 4.875 3.75V7.125a1.884 1.884 0 0 0 0.75 1.5l4.5 3.375L5.625 15.375a1.884 1.884 0 0 0 -0.75 1.5v3.375a1.875 1.875 0 0 0 1.875 1.875H17.25a1.875 1.875 0 0 0 1.875 -1.875V16.909a1.887 1.887 0 0 0 -0.744 -1.5L13.866 12l4.515 -3.412A1.887 1.887 0 0 0 19.125 7.091ZM16.875 19.875H7.125V17.062l4.875 -3.656 4.875 3.687Zm0 -12.97L12 10.594 7.125 6.938V4.125H16.875Z", *caps = "M0 0Z";
+}
 // COREWEBVIEW2_PERMISSION_KIND values (no WebView2 header needed here).
 namespace Permission {
 inline constexpr int Unknown = 0, Microphone = 1, Camera = 2, Geolocation = 3, Notifications = 4, OtherSensors = 5, ClipboardRead = 6,
@@ -241,6 +249,41 @@ inline Modal::Spec Build(const Spec& s, bool anchored) {
         m.buttons = {button(Id::Cancel, TR(common_cancel), Role::Secondary, false, true, false, L"ShareCancel"), share};
         break;
     }
+    case Kind::ScreenCapture: {
+        // Paper p-V-0 « Proposition — Partage d'écran, confirmation · A » (1LMF-0), the B01 popover family: 340 DIP under
+        // the origin indicator, padding 16, gap 16, border #FFFFFF14, radius 10; head = title 16/20 Medium -0.01em white +
+        // close (14 DIP glyph #FFFFFF82 in 24); one request row (monitor glyph 16 #FFFFFFB3 in the 24 DIP lane inset 4,
+        // « Partager votre écran » 16/20 regular -0.01em white) with its note 4 below on the 36 DIP column (14/20, 50 %);
+        // stretched buttons h 32 radius 6, 14 Medium -0.01em: « Bloquer » #FFFFFFE6 on #292929, « Choisir… » white on
+        // the accent. No remembering check on the board: every request asks again.
+        // Padding 17: Paper's 16 inside the 1 px border (box-sizing border-box), so the content is 306 as drawn.
+        m.automationId = L"ScreenCaptureConfirm"; m.scope = Scope::Anchor; m.width = 340; m.padding = 17; m.closeButton = true;
+        m.title = TRF(share_confirm_title, s.origin);
+        Row row{DialogKit::Glyph::monitor, TR(share_confirm_row)}; row.note = TR(share_confirm_note);
+        m.rows.push_back(row);
+        // « Toujours bloquer ce site » (board 1O5F-0, variant B): unchecked; it only ever remembers « Bloquer ». Its
+        // label in the popovers' secondary-line role, 14/18 at 70 % like « Mémoriser pour ce site » (owner decision).
+        m.checkLabel = TR(share_always_block); m.originCheck = true; m.checkValue = false;
+        m.stretchButtons = true; m.softButtons = true;
+        m.buttons = {button(Id::Cancel, TR(permission_choice_block), Role::Secondary, false, false, false, L"ScreenCaptureBlock"), button(Id::Accept, TR(share_confirm_choose), Role::Primary, true, false, false, L"ScreenCaptureChoose")};
+        m.armMs = 500;   // SEC-22: a click the page arranged cannot land on « Choisir… »
+        break;
+    }
+    case Kind::Unresponsive: {
+        // Paper p-V-0 « Proposition — Page qui ne répond plus · A » (1O1M-0, veil 1NZI-0): 400 wide, padding 20 inside the
+        // 1 px border #FFFFFF14, radius 10, gap 16; the hourglass (32), then the title 16/20 Medium -0.01em white and
+        // the text 14/20 #FFFFFFB3 4 below; the actions right-aligned 8 further down, h 32, padding 12, radius 6:
+        // « Attendre » #FFFFFFCC on #292929, « Recharger » white on the accent. Over the page area veiled with black
+        // 50 % (#00000080) whose bottom corners follow the page's (6); the window centred in the browser window.
+        m.automationId = L"PageUnresponsive"; m.scope = Scope::Page; m.centerInOwner = true; m.scrimAlpha = 0x80 / 255.f; m.scrimBottomRadius = 6;
+        m.width = 400; m.padding = 21;
+        m.hero = {{Hourglass::body, 0x3A3A3D, 0x3A3A3D, 0, 0}, {Hourglass::sand, 0xB5B5BA, 0x7A7A80, 2, 22}, {Hourglass::caps, 0xB5B5BA, 0x7A7A80, 2, 22}};
+        m.title = TRF(hang_title, s.origin); m.body = TR(hang_body);
+        // Échap = « Attendre » (the page keeps its chance); Entrée = « Recharger », armed like every page-originated prompt.
+        m.buttons = {button(Id::Cancel, TR(hang_wait), Role::Secondary, false, true, false, L"UnresponsiveWait"), button(Id::Accept, TR(hang_reload), Role::Primary, true, false, false, L"UnresponsiveReload")};
+        m.armMs = 500;
+        break;
+    }
     case Kind::SiteStatus: {   // B02 EAC-0 / EBA-0: opened from the address-bar chip, never asks anything
         m.automationId = L"SitePermissions"; m.scope = Scope::Anchor; m.width = 340; m.demo = s.demo;
         const bool inUse = !s.active.empty();
@@ -318,6 +361,13 @@ inline Result Map(const Spec& s, const Modal::Result& r) {
     // « Ne pas envoyer » / Échap (the cancel button) = continue without; an abort (tab closed, navigation) = Dismiss.
     case Kind::ClientCertificate: if (r.button == Id::Accept && r.select >= 0) { out.action = Action::Choose; out.choice = r.select; } else out.action = r.button == Id::Cancel ? Action::Cancel : Action::Dismiss; break;
     case Kind::ScreenShare: if (r.button == Id::Accept && r.select >= 0) { out.action = Action::Choose; out.choice = r.select; } else out.action = Action::Cancel; break;
+    // « Choisir… » = the engine's picker opens; « Bloquer » = Block; the close button, Échap, a click outside, the tab
+    // switched, closed or navigated = Dismiss. Block and Dismiss both refuse the capture (the page gets NotAllowedError).
+    // « Toujours bloquer ce site » counts only with « Bloquer ».
+    case Kind::ScreenCapture: out.action = r.button == Id::Accept ? Action::Choose : r.button == Id::Cancel ? Action::Block : Action::Dismiss; out.remember = r.checked && out.action == Action::Block; break;
+    // « Attendre » (or Échap) = Wait; « Recharger » = Reload; closed by the host (the page answered again, the tab
+    // switched, closed or navigated) = Dismiss.
+    case Kind::Unresponsive: out.action = r.button == Id::Accept ? Action::Reload : r.button == Id::Cancel ? Action::Wait : Action::Dismiss; out.remember = false; break;
     case Kind::PasswordSave: case Kind::PasswordUpdate:
         out.action = r.button == Id::Accept ? Action::Save : r.button == Id::Never ? Action::Never : r.button == Id::Later ? Action::Cancel : Action::Dismiss;
         if (r.button == Id::Accept && !r.values.empty()) {
