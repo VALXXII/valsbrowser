@@ -597,7 +597,7 @@ bool EnsurePost() {
 RECT PanelRect(float shown) {   // client pixels; shown 0 (off the right edge) .. 1 (in place)
     RECT c{}; GetClientRect(window, &c); const int w = S(PanelDip());
     if (chrome.floating) {   // Mode Focus (Paper 203J-0): the card, 4 DIP from the window's right and bottom edges, under the banner
-        const auto card = FocusChatCard(PanelDip()); const int in = S(NativeChrome::FocusMode::chatInset), right = c.right - in;
+        const auto card = FocusChatCard(PanelDip()); const int in = S(NativeChrome::FocusMode::chatInset), right = c.right - S(chrome.ClientWidth() - card.right);   // Mode Focus motion: the card's right edge follows the entry / exit (FocusChatCard), W - 4 at rest
         const int left = right - w + int(std::lround((1 - shown) * (w + in)));
         return {left, S(card.top), left + w, S(card.bottom)};
     }
