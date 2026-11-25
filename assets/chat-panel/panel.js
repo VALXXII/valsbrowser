@@ -1366,8 +1366,8 @@
       if (!box) return S.lay.maxH;
       let inner = 12;                                        // a command or a tool's arguments: their own height, never
       for (const c of box.children) inner += c.offsetHeight; // smaller than the bubble of a turn in progress (224)
-      // 12 of padding + the card's border and padding (22) + its title row and gap (28) + the content + 10 + the answer (the dock) + the row under the card
-      return Math.max(224, 72 + inner + dock.offsetHeight + (composer.parentNode === app ? 12 + composer.offsetHeight : 0));
+      // 24 of padding + the card's border and padding (22) + its title row and gap (28) + the content + 10 + the answer (the dock) + the row under the card
+      return Math.max(224, 84 + inner + dock.offsetHeight + (composer.parentNode === app ? 12 + composer.offsetHeight : 0));
     }
     let hgt = 24, n = 0;                                     // 12 px of padding above and under
     const part = (x) => { if (x > 0) { hgt += x; n++; } };

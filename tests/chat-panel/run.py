@@ -102,6 +102,7 @@ JUSTIFIED = {
     ("1B6U-0", "w"): "Paper fige l'étape survolée à 128 px ; la page garde la largeur de son texte (128 px ici, mais un autre libellé change la largeur)",
     ("1B7H-0", "x"): "L'infobulle se cale sur le bord gauche de l'étape survolée, placée comme dans 1B30-0 (voir 1B6U-0)",
     ("1ARB-0", "x"): "Étape en cours : 1ANU-0 dessine un anneau de 12 px collé au bord droit, 1B30-0 un anneau de 14 px en retrait ; une seule variante retenue, 1B30-0 (§19.7.4)",
+    ("1ASE-0", "w"): "Bulle du diff à 12 px de marge (planche réalignée le 25 nov.) : la 3e ligne du diff est plus longue que les 259 px du cadre — dans la page sa bande colorée suit son texte (le cadre défile de côté), Paper coupe le texte au cadre",
     ("1AS9-0", "padding top"): "Les 6 px au-dessus et au-dessous des lignes sont portés par la zone qui défile (.bview-body) plutôt que par son cadre : mêmes positions de lignes (mesurées égales)",
     ("1AS9-0", "padding bottom"): "Même cause que le haut : la marge est dans la zone qui défile",
     ("1B1J-0", "padding top"): "Les 6 px sont portés par la zone qui défile (.bview-body) : mêmes positions de lignes (mesurées égales)",
@@ -1381,6 +1382,16 @@ try:
         load("6.10-travaille"); p_tool("pending", True)
         check(any(s == "Modifie style.css…" for s in p_steps()), "thread: without a request (Auto), a pending edit reads « Modifie style.css… »", str(p_steps()))
 
+        # Codex's « Additional sandbox permissions » (Designer, 25 Nov): the host sends the card's own sentence as the step's title,
+        # kind « other » — the thread shows it as it is, while it runs and once done
+        load("6.10-travaille")
+        cdp.js("window.devHost.send({type:'toolCall',turnId:'t1',id:'sb1',title:\"Codex demande plus d'accès à cet ordinateur\",kind:'other',status:'in_progress'})"); time.sleep(.2)
+        sb0 = p_steps()
+        cdp.js("window.devHost.send({type:'toolCallUpdate',id:'sb1',status:'completed'})"); time.sleep(.2)
+        sb1 = p_steps()
+        check(sb0[-1] == "Codex demande plus d'accès à cet ordinateur…" and sb1[-1] == "Codex demande plus d'accès à cet ordinateur",
+              "thread (Designer 25 Nov): Codex's request for more access is one sentence in the thread, the card's — « Codex demande plus d'accès à cet ordinateur »", f"{sb0[-1:]} {sb1[-1:]}")
+
         # --- the bubble: same rules
         load("c-2-envoye"); p_tool("pending", True); p_ask(); p_arm(".bperm")
         b0 = cdp.js("[document.querySelector('#app').innerText, document.querySelectorAll('.bperm').length]")
@@ -1488,9 +1499,9 @@ try:
                     "return {card:q('.main'),bg:s.backgroundColor,bw:s.borderTopWidth,radius:s.borderRadius,diff:q('.bview-wrap'),answer:q('.bperm'),stop:q('.send.stop'),mode:q('.tb.mode'),"
                     "inside:['.bview','.bperm'].every(x=>m.contains(document.querySelector(x)))&&!m.contains(document.querySelector('.composer')),bviewBg:getComputedStyle(document.querySelector('.bview')).backgroundColor}})()")
         f4 = cdp.js(foot_js)
-        check(v0["card"] == [6, 6, 293, 251] and v0["bg"] == "rgb(41, 41, 41)" and v0["bw"] == "1px" and v0["radius"] == "12px" and v0["inside"] and v0["bviewBg"] == "rgba(0, 0, 0, 0)"
-              and v0["diff"] == [17, 45, 271, 123] and v0["answer"] == [17, 178, 271, 68] and v0["stop"] == [255, 269, 28, 28] and v0["mode"][:2] == [6, 271] and f4["cls"] == "running view view-perm",
-              "bubble (diff of a request, Paper 19RN-0): one card (#292929, 1 px border, radius 12) holds the diff and the answer; the mode and « Arrêter » under it, 12 px below, 6 px from the bubble's edges", json.dumps(v0))
+        check(v0["card"] == [12, 12, 281, 239] and v0["bg"] == "rgb(41, 41, 41)" and v0["bw"] == "1px" and v0["radius"] == "12px" and v0["inside"] and v0["bviewBg"] == "rgba(0, 0, 0, 0)"
+              and v0["diff"] == [23, 51, 259, 111] and v0["answer"] == [23, 172, 259, 68] and v0["stop"] == [249, 263, 28, 28] and v0["mode"][:2] == [12, 265] and f4["cls"] == "running view view-perm",
+              "bubble (diff of a request, Paper 19RN-0): one card (#292929, 1 px border, radius 12) holds the diff and the answer; the mode and « Arrêter » under it, 12 px below, in the bubble's 12 px", json.dumps(v0))
         # Designer, 25 Nov 2026: under the open diff the answer keeps the NORMAL card's values (no value of its own), and
         # « Arrêter » leaves the resize grip its corner (the row ends 16 px before the bubble's edge: the grip's 12 px + 4)
         ans_js = ("(()=>{const g=(x,p,ps)=>{const n=document.querySelector(x);return n?getComputedStyle(n,ps||null)[p]:null};const q=(x)=>{const n=document.querySelector(x);if(!n)return null;const r=n.getBoundingClientRect();return [r.left,r.top,r.right,r.bottom]};"
@@ -1501,11 +1512,12 @@ try:
         a_view = cdp.js(ans_js)
         gr, st2, ap = a_view["grip"], a_view["stop"], a_view["app"]
         load("c-2-autorisation"); cdp.js("document.querySelector('.bperm .always').click()"); time.sleep(.15); a_norm = cdp.js(ans_js)   # the switch on, as the diff scenario has it
-        check(a_view["vals"] == a_norm["vals"] and a_view["vals"][7] == "12px" and a_view["vals"][15] == "rgba(255, 255, 255, 0.8)" and a_view["vals"][13] == "10px" and a_view["pad"] == "0px",
-              "bubble (diff of a request, Designer 25 Nov): the answer under the open diff has the normal card's values — field 12 px, « Refuser » #FFFFFFCC, 10 px in the buttons, same radii, no margin of its own",
+        check(a_view["vals"] == a_norm["vals"] and a_view["vals"][7] == "12px" and a_view["vals"][15] == "rgba(255, 255, 255, 0.8)" and a_view["vals"][13] == "10px" and a_view["pad"] == "0px"
+              and a_view["vals"][5] == "12px" and a_view["vals"][6] == "0.4",
+              "bubble (diff of a request, Designer 25 Nov): the answer under the open diff has the normal card's values — field 12 px, pencil 12 px at 40 %, « Refuser » #FFFFFFCC, 10 px in the buttons, same radii, no margin of its own",
               f"{a_view['vals']} / {a_norm['vals']} pad {a_view['pad']}")
-        check(gr and st2 and round(ap[2] - st2[2]) == 22 and round(gr[2] - gr[0]) == 12 and st2[2] <= gr[0] - 4 and round(ap[2] - gr[2]) == 4,
-              "bubble (diff of a request, Designer 25 Nov): « Arrêter » is never under the resize grip — the row ends 16 px (the grip's 12 + 4) before the bubble's 6 px", f"stop {st2} grip {gr} app {ap}")
+        check(gr and st2 and round(ap[2] - st2[2]) == 28 and round(gr[2] - gr[0]) == 12 and st2[2] <= gr[0] - 4 and round(ap[2] - gr[2]) == 4,
+              "bubble (diff of a request, Designer 25 Nov): « Arrêter » is never under the resize grip — the row ends 16 px (the grip's 12 + 4) before the bubble's 12 px", f"stop {st2} grip {gr} app {ap}")
         load("c-2-autorisation-diff")
         key("Escape"); f5 = cdp.js(foot_js)
         check(f5["home"] == "dock has-perm" and f5["under"] == 12 and f5["cls"] == "running" and cdp.js("getComputedStyle(document.querySelector('.main')).borderTopWidth") == "0px",

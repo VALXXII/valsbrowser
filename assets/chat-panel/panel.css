@@ -813,11 +813,11 @@ button.bt-st[aria-describedby="b-tip"] { background: #FFFFFF1A; border-radius: 4
 .bub #app.view .dock { padding: 0 6px 6px; }
 .bub #app.view .dock.has-perm { padding: 0; }
 /* the diff « en grand » of a request (19RN-0, redrawn 24 Nov 2026): ONE card (26KG-0) holds the diff and the answer, the
-   mode and « Arrêter » sit under it (26JW-0), in the bubble's 6 px. The diff of a finished turn (1B19-0) is not this.
+   mode and « Arrêter » sit under it (26JW-0), in the bubble's 12 px. The diff of a finished turn (1B19-0) is not this.
    Designer, 25 Nov 2026: the answer keeps the NORMAL card's values (field 12 px, « Refuser » #FFFFFFCC, 10 px in the
    buttons, nothing more around it) — no value of its own here; the row leaves the resize grip its corner. */
 .bub #app.view .bperm-file { display: none; }
-.bub #app.view-perm { gap: 12px; }
+.bub #app.view-perm { gap: 12px; padding: 12px; }   /* 19RN-0 aligned on 25 Nov: the bubble's own 12 px, as with the normal card (the finished turn's diff keeps 6) */
 .bub #app.view-perm .main { gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--raised); }
 .bub #app.view-perm .bview { padding: 0; background: none; }   /* 1ANA-0 */
 .bub #app.view-perm .bperm { padding: 0; border: 0; border-radius: 0; background: none; }   /* the card is .main here */

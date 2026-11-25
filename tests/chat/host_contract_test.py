@@ -548,7 +548,12 @@ check('if (BubbleHidden())' in block_after(comment, 'void RevealBubble(const wch
 # Designer, 25 Nov 2026: Codex's « Additional sandbox permissions » is said in the browser's language, before any kind is looked at
 ptitle = block_after(turn, 'std::wstring PermissionTitle(const Acp::ToolCall& t) {')
 catalog = (ROOT / 'src' / 'i18n-catalog.inc').read_text(encoding='utf-8')
-check(0 <= ptitle.find('ChatTools::SameTitle(t.title, "Additional sandbox permissions")) return TRF(chat_perm_sandbox, who);') < ptitle.find('t.kind == "edit"')
+known_title = block_after(turn, 'std::wstring KnownStepTitle(const std::string& title) {'); tool_json = block_after(turn, 'SJ::Value ToolJson(const Acp::ToolCall& t, bool update) {')
+check('ChatTools::SameTitle(title, "Additional sandbox permissions") ? TRF(chat_perm_sandbox, AgentShort(agentId)) : std::wstring()' in known_title
+      and 'const std::wstring known = KnownStepTitle(t.title);' in tool_json and 'known.empty() ? Str(ClipUtf8(t.title.empty() ? t.kind : t.title, 400)) : Str(known)' in tool_json
+      and '!known.empty() || t.kind.empty() || t.kind == "switch_mode" ? std::string("other") : t.kind' in tool_json,
+      "permission: Codex's step « Additional sandbox permissions » reads in the thread as on the card (the same sentence, its kind's wording never replaces it); every other title stays as the agent sends it")
+check(0 <= ptitle.find('KnownStepTitle(t.title); !known.empty()) return known;') < ptitle.find('t.kind == "edit"')
       and "I18N(chat_perm_sandbox, L\"{0} demande plus d'accès à cet ordinateur\", L\"{0} is asking for more access to this computer\")" in catalog,
       "permission: Codex asking for more access — « Codex demande plus d'accès à cet ordinateur » / « Codex is asking for more access to this computer »")
 

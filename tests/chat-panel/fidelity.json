@@ -800,14 +800,14 @@
   ]
  },
  "c-2-autorisation-diff": {
-  "note": "Planche 19ON-0 (bulle 19RN-0) redessinée le 24 nov. 2026 puis réalignée le 25 (Designer) : UNE carte (26KG-0 : #292929, bordure 1 px #FFFFFF14, rayon 12, marges et écarts de 10) contient le diff et la réponse ; la réponse a les valeurs de la carte normale (champ #1F1F1F rayon 8 haut de 30, texte 12 / 16 #FFFFFF66 ; « Refuser » #FFFFFF0F texte #FFFFFFCC ; boutons à 10 px de marge ; rien de plus autour). Deux décisions de Designer du 25 nov. ne sont pas (encore) sur la planche et sont portées ici : pas de marge de 6 px autour de la réponse (le nœud 1AMG-0 la garde), et la rangée du mode et d'« Arrêter » (26JW-0) s'arrête 16 px avant le bord droit (la poignée de redimensionnement de 12 px + 4) : « Arrêter » est à x = 255 au lieu de 271. Styles lus dans Paper (get_jsx), boîtes calculées à partir de ces styles.",
+  "note": "Planche 19ON-0 (bulle 19RN-0) redessinée le 24 nov. 2026 puis réalignée le 25 (Designer) : la bulle garde ses 12 px de marge ; UNE carte (26KG-0 : #292929, bordure 1 px #FFFFFF14, rayon 12, marges et écarts de 10) contient le diff et la réponse ; la réponse a les valeurs de la carte normale (champ #1F1F1F rayon 8 haut de 30, crayon à 40 %, texte 12 / 16 #FFFFFF66 ; « Refuser » #FFFFFF0F texte #FFFFFFCC ; boutons à 10 px de marge ; rien de plus autour). Deux décisions de Designer du 25 nov. ne sont pas sur la planche et sont portées ici : pas de marge de 6 px autour de la réponse (le nœud 1AMG-0 la garde), et la rangée du mode et d'« Arrêter » (26JW-0) s'arrête 16 px avant la marge droite (la poignée de redimensionnement de 12 px + 4) : « Arrêter » est à x = 249 au lieu de 265. Styles lus dans Paper (get_jsx), boîtes calculées à partir de ces styles.",
   "paper": {
    "26KG-0": {
     "name": "Carte (diff + réponse)",
-    "w": 293,
-    "h": 251,
-    "x": 6,
-    "y": 6,
+    "w": 281,
+    "h": 239,
+    "x": 12,
+    "y": 12,
     "st": {
      "dir": "column",
      "radius": "12px",
@@ -820,10 +820,10 @@
    },
    "1ANA-0": {
     "name": "Barre des changements",
-    "w": 271,
-    "h": 151,
-    "x": 17,
-    "y": 17,
+    "w": 259,
+    "h": 139,
+    "x": 23,
+    "y": 23,
     "st": {
      "dir": "column",
      "gap": "8px",
@@ -832,10 +832,10 @@
    },
    "1AS8-0": {
     "name": "Frame",
-    "w": 271.0,
+    "w": 259.0,
     "h": 20.0,
-    "x": 17.0,
-    "y": 17.0,
+    "x": 23.0,
+    "y": 23.0,
     "st": {
      "align": "center",
      "gap": "8",
@@ -847,8 +847,8 @@
     "name": "Claude veut modifier… « Claude veut modifier checkout.css »",
     "w": 205.0,
     "h": 16.0,
-    "x": 19.0,
-    "y": 19.0,
+    "x": 25.0,
+    "y": 25.0,
     "st": {
      "font": "\"Inter Display\"",
      "size": "13px",
@@ -867,8 +867,8 @@
     "name": "+6 « +6 »",
     "w": 15.0,
     "h": 16.0,
-    "x": 226.0,
-    "y": 19.0,
+    "x": 220.0,
+    "y": 25.0,
     "st": {
      "size": "12px",
      "lh": "16px",
@@ -884,8 +884,8 @@
     "name": "−2 « −2 »",
     "w": 15.0,
     "h": 16.0,
-    "x": 243.0,
-    "y": 19.0,
+    "x": 237.0,
+    "y": 25.0,
     "st": {
      "size": "12px",
      "lh": "16px",
@@ -901,8 +901,8 @@
     "name": "Frame",
     "w": 20.0,
     "h": 20.0,
-    "x": 266.0,
-    "y": 17.0,
+    "x": 260.0,
+    "y": 23.0,
     "st": {
      "align": "center",
      "width": "20px",
@@ -914,10 +914,10 @@
    },
    "1AS9-0": {
     "name": "Aperçu",
-    "w": 271.0,
-    "h": 123.0,
-    "x": 17.0,
-    "y": 45.0,
+    "w": 259.0,
+    "h": 111.0,
+    "x": 23.0,
+    "y": 51.0,
     "st": {
      "dir": "column",
      "paddingBlock": "6px",
@@ -929,10 +929,10 @@
    },
    "1ASA-0": {
     "name": "Frame",
-    "w": 271.0,
+    "w": 259.0,
     "h": 18.0,
-    "x": 17.0,
-    "y": 51.0,
+    "x": 23.0,
+    "y": 57.0,
     "st": {
      "paddingInline": "10px",
      "ws": "nowrap",
@@ -943,8 +943,8 @@
     "name": "- width: 240px; « -  width: 240px; »",
     "w": 257.0,
     "h": 18.0,
-    "x": 27.0,
-    "y": 51.0,
+    "x": 33.0,
+    "y": 57.0,
     "st": {
      "size": "12px",
      "lh": "18px",
@@ -956,10 +956,10 @@
    },
    "1ASC-0": {
     "name": "Frame",
-    "w": 271.0,
+    "w": 259.0,
     "h": 18.0,
-    "x": 17.0,
-    "y": 69.0,
+    "x": 23.0,
+    "y": 75.0,
     "st": {
      "paddingInline": "10px",
      "ws": "nowrap",
@@ -970,8 +970,8 @@
     "name": "+  margin-left: auto… « +  margin-left: auto; »",
     "w": 257.0,
     "h": 18.0,
-    "x": 27.0,
-    "y": 69.0,
+    "x": 33.0,
+    "y": 75.0,
     "st": {
      "size": "12px",
      "lh": "18px",
@@ -983,10 +983,10 @@
    },
    "1ASE-0": {
     "name": "Frame",
-    "w": 271.0,
+    "w": 259.0,
     "h": 18.0,
-    "x": 17.0,
-    "y": 87.0,
+    "x": 23.0,
+    "y": 93.0,
     "st": {
      "paddingInline": "10px",
      "ws": "nowrap",
@@ -997,8 +997,8 @@
     "name": "+  width: 100%;  /* … « +  width: 100%;  /* sous 640 px */ »",
     "w": 257.0,
     "h": 18.0,
-    "x": 27.0,
-    "y": 87.0,
+    "x": 33.0,
+    "y": 93.0,
     "st": {
      "size": "12px",
      "lh": "18px",
@@ -1010,10 +1010,10 @@
    },
    "1AMG-0": {
     "name": "Frame",
-    "w": 271,
+    "w": 259,
     "h": 68,
-    "x": 17,
-    "y": 178,
+    "x": 23,
+    "y": 172,
     "st": {
      "dir": "column",
      "gap": "10px"
@@ -1021,10 +1021,10 @@
    },
    "1AMS-0": {
     "name": "Rediriger",
-    "w": 271,
+    "w": 259,
     "h": 30,
-    "x": 17,
-    "y": 178,
+    "x": 23,
+    "y": 172,
     "st": {
      "align": "center",
      "height": "30px",
@@ -1038,8 +1038,8 @@
     "name": "Dire à Claude quoi faire à la place…",
     "w": 182,
     "h": 16,
-    "x": 47,
-    "y": 185,
+    "x": 53,
+    "y": 179,
     "st": {
      "size": "12px",
      "lh": "16px",
@@ -1050,10 +1050,10 @@
    },
    "1AMU-0": {
     "name": "Actions",
-    "w": 271,
+    "w": 259,
     "h": 28,
-    "x": 17,
-    "y": 218,
+    "x": 23,
+    "y": 212,
     "st": {
      "align": "center",
      "gap": "8px"
@@ -1063,8 +1063,8 @@
     "name": "Interrupteur — activé",
     "w": 28,
     "h": 16,
-    "x": 17,
-    "y": 224,
+    "x": 23,
+    "y": 218,
     "st": {
      "width": "28px",
      "height": "16px",
@@ -1077,8 +1077,8 @@
     "name": "Rectangle",
     "w": 12,
     "h": 12,
-    "x": 31,
-    "y": 226,
+    "x": 37,
+    "y": 220,
     "st": {
      "width": "12px",
      "height": "12px",
@@ -1090,8 +1090,8 @@
     "name": "Auto.",
     "w": 28,
     "h": 16,
-    "x": 51,
-    "y": 224,
+    "x": 57,
+    "y": 218,
     "st": {
      "size": "12px",
      "lh": "16px",
@@ -1104,8 +1104,8 @@
     "name": "Frame",
     "w": 65,
     "h": 28,
-    "x": 142,
-    "y": 218,
+    "x": 136,
+    "y": 212,
     "st": {
      "align": "center",
      "height": "28px",
@@ -1119,8 +1119,8 @@
     "name": "Refuser",
     "w": 45,
     "h": 16,
-    "x": 152,
-    "y": 224,
+    "x": 146,
+    "y": 218,
     "st": {
      "size": "13px",
      "lh": "16px",
@@ -1133,8 +1133,8 @@
     "name": "Frame",
     "w": 73,
     "h": 28,
-    "x": 215,
-    "y": 218,
+    "x": 209,
+    "y": 212,
     "st": {
      "align": "center",
      "height": "28px",
@@ -1148,8 +1148,8 @@
     "name": "Autoriser",
     "w": 53,
     "h": 16,
-    "x": 225,
-    "y": 224,
+    "x": 219,
+    "y": 218,
     "st": {
      "size": "13px",
      "lh": "16px",
@@ -1162,8 +1162,8 @@
     "name": "Mode",
     "w": 87,
     "h": 24,
-    "x": 6,
-    "y": 271,
+    "x": 12,
+    "y": 265,
     "st": {
      "align": "center",
      "height": "24px",
@@ -1176,8 +1176,8 @@
     "name": "Envoyer",
     "w": 28,
     "h": 28,
-    "x": 255,
-    "y": 269,
+    "x": 249,
+    "y": 263,
     "st": {
      "width": "28px",
      "height": "28px",
@@ -1186,6 +1186,22 @@
      "radius": "8px",
      "shrink": "0",
      "bg": "color-mix(#FF7B6E 10%, transparent)"
+    }
+   },
+   "19RN-0": {
+    "name": "Frame",
+    "w": 305,
+    "h": 303,
+    "x": 0,
+    "y": 0,
+    "st": {
+     "width": "305px",
+     "dir": "column",
+     "padding": "12px",
+     "radius": "16px",
+     "gap": "12px",
+     "height": "303px",
+     "bg": "#171717"
     }
    }
   },
