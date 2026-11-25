@@ -49,7 +49,7 @@ OUT = C.QA / f'focus-journey-{LAYOUT}'
 report = {'layout': LAYOUT, 'steps': [], 'measures': {}, 'captures': []}
 
 # Paper values (DIP), src/focus-mode.h
-INSET, BANNER, CHAT, GAP, PANEL_TOP, DRAWER_TOP = 4, 32, 380, 4, 36, 124
+INSET, BANNER, CHAT, GAP, PANEL_TOP = 4, 32, 380, 4, 36   # the drawer: 4 under the revealed panel (drawer_over_chat)
 TOL = 1   # px: rounding of DIP to device pixels
 
 
@@ -207,7 +207,7 @@ def reveal_top():
     step('reveal: the hover strip under the banner brings the panel at top 36, over the page only (20MM-0)', ok, {'panel': panel, 'scene': s})
     still = scene()
     step('reveal: the banner and the chat stay where they are', all(near(still.get(n), s.get(n)) for n in ('banner', 'chat')), still)
-    return ok
+    return panel if ok else None
 
 
 def reveal_side():
@@ -215,8 +215,11 @@ def reveal_side():
                               'wire it to #127\'s overlay once #127 is merged (tests/focus/annotation_focus_journey.py, reveal_side)')
 
 
-def drawer_over_chat():
-    """Ctrl+H from the revealed panel: the history drawer at top 124, its right edge on W - 4, over the chat (21OK-0)."""
+def drawer_over_chat(panel):
+    """Ctrl+H from the revealed panel: the history drawer 4 DIP under the panel (124 in 21OK-0, whose panel is 84 high; 164
+    when the bookmarks bar is shown and the panel is 124 high: the night 25/11 runs had it), its right edge on W - 4 over
+    the chat, its bottom 4 DIP above the window's (21OK-0)."""
+    top = (panel[3] if panel else BANNER + 4 + 84) + 4
     h = Q.main_window(); k = Q.scale(h); ox, oy = client_origin(h); w, hh = client_size(h)
     m = len(C.log_text()); Q.post_key(ord('H'), ctrl=True); time.sleep(0.9)
     found = drawer = None
@@ -224,8 +227,8 @@ def drawer_over_chat():
         if cls == 'LisiereHistoryDrawer':
             drawer = hw; found = (r[0] - ox, r[1] - oy, r[2] - ox, r[3] - oy)
     capture('03-drawer-over-chat')
-    ok = found is not None and abs(found[1] - round(DRAWER_TOP * k)) <= TOL and abs(found[2] - (w - round(INSET * k))) <= TOL and abs(found[3] - (hh - round(INSET * k))) <= TOL
-    step('drawer: top 124, right edge W - 4 over the chat, bottom H - 4 (21OK-0)', ok, {'drawer': found, 'client': (w, hh)})
+    ok = found is not None and abs(found[1] - round(top * k)) <= TOL and abs(found[2] - (w - round(INSET * k))) <= TOL and abs(found[3] - (hh - round(INSET * k))) <= TOL
+    step(f'drawer: top {top:.0f} (4 under the panel), right edge W - 4 over the chat, bottom H - 4 (21OK-0)', ok, {'drawer': found, 'expected_top_dip': top, 'client': (w, hh)})
     if drawer:
         Q.post_key(0x1B, target=drawer)   # Escape in the drawer: it closes, the chat is back
     time.sleep(0.8)
@@ -269,7 +272,7 @@ def journey_a():
     step('A · Focus: the chat is usable (its field takes the keyboard)', usable is True, usable)
     capture('02-focus-rest')
     if LAYOUT == 'top':
-        reveal_top(); capture('02b-focus-revealed'); drawer_over_chat()
+        panel = reveal_top(); capture('02b-focus-revealed'); drawer_over_chat(panel)
     else:
         try:
             reveal_side()

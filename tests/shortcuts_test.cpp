@@ -49,5 +49,16 @@ int main(){
         Assert(EscapeLeavesAnnotation(true,window)&&EscapeLeavesAnnotation(true,page)&&!EscapeLeavesAnnotation(true,address));   // from the window (a page, the chat panel): the mode leaves, as before; the address field keeps it
         Assert(!EscapeLeavesAnnotation(false,window)&&!EscapeOwnedBySurface(window)&&!EscapeOwnedBySurface(nullptr));
         DestroyWindow(inner);DestroyWindow(page);}
+    // The annotation banner holding the keyboard (night 25/11, published 0.3.842: Ctrl+Maj+F did nothing then): it keeps its
+    // navigation keys, the browser's shortcuts go through. A child window stands for the banner (its class is a child too).
+    {   HWND banner=CreateWindowExW(0,L"STATIC",L"",WS_CHILD,0,0,10,10,window,nullptr,instance,nullptr),button=CreateWindowExW(0,L"STATIC",L"",WS_CHILD,0,0,4,4,banner,nullptr,instance,nullptr);
+        HWND note=CreateWindowExW(0,L"STATIC",L"",WS_POPUP,0,0,10,10,window,nullptr,instance,nullptr);Assert(banner&&button&&note);
+        Assert(BannerLetsShortcutThrough(banner,banner,'F',true,false)&&BannerLetsShortcutThrough(button,banner,'F',true,false));   // Ctrl+Maj+F (shift is not read: every Ctrl chord)
+        Assert(BannerLetsShortcutThrough(banner,banner,'T',true,false)&&BannerLetsShortcutThrough(banner,banner,'D',false,true)&&BannerLetsShortcutThrough(banner,banner,VK_F6,false,false));
+        Assert(!BannerLetsShortcutThrough(banner,banner,VK_TAB,false,false)&&!BannerLetsShortcutThrough(banner,banner,VK_RETURN,false,false)&&!BannerLetsShortcutThrough(banner,banner,VK_ESCAPE,false,false)&&
+               !BannerLetsShortcutThrough(banner,banner,VK_SPACE,false,false)&&!BannerLetsShortcutThrough(banner,banner,VK_RIGHT,false,false));   // its own keys stay its own
+        Assert(!BannerLetsShortcutThrough(note,banner,'F',true,false)&&!BannerLetsShortcutThrough(window,banner,'F',true,false)&&!BannerLetsShortcutThrough(banner,nullptr,'F',true,false)&&!BannerLetsShortcutThrough(nullptr,banner,'F',true,false));   // only the banner: a note's text keeps Ctrl+…
+        Modifiers(true,true);Assert(Key('F')==FocusModeCommand);   // and Key() itself, with no annotation surface focused, unchanged
+        DestroyWindow(button);DestroyWindow(banner);DestroyWindow(note);}
     Modifiers();pages.clear();std::puts("Keyboard shortcut checks passed");
 }
