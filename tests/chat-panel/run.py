@@ -1356,6 +1356,9 @@ try:
         check(w0 and w0["text"] == "Attend votre accord" and w0["color"] == "rgb(166, 166, 166)" and w0["icon"] == [12, "none", "rgb(166, 166, 166)", "0 0 256 256"] and not w0["spin"],
               "thread (Designer 25 Nov): in the opened list a step waiting for the user's agreement reads « Attend votre accord » with a still clock, 12 px, both #A6A6A6 — no spinning ring", json.dumps(w0, ensure_ascii=False)[:400])
         cdp.js("document.querySelector('.log .steps > .fold').click()"); time.sleep(.15)
+        wl = cdp.js("(()=>{const n=document.querySelector('.log .waiting'),v=n.querySelector('svg'),c=getComputedStyle(n);return [n.textContent,c.color,c.fontSize,c.lineHeight,c.columnGap,v.getBoundingClientRect().width,getComputedStyle(v.querySelector('path')).fill,v.getAttribute('viewBox')]})()")
+        check(wl == ["Attend votre accord pour modifier style.css", "rgb(166, 166, 166)", "13px", "16px", "8px", 14, "rgb(166, 166, 166)", "0 0 256 256"],
+              "thread (Paper, boards 8 / 9 of the permission card): the line « Attend votre accord pour modifier … » — a clock 14 px and the words, both #A6A6A6, 13 / 16, 8 px apart", str(wl))
         p_arm(".perm"); x, y = p_center(".perm .btn.primary"); p_mouse(x, y)
         s1 = p_steps(); t1 = p_text()
         w1 = cdp.js("[!!document.querySelector('.log .step.want'), !!document.querySelector('.log .step.run .spin')]")

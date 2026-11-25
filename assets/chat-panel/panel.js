@@ -2503,7 +2503,7 @@
       if (p && t.running) {
         const what = /veut (.+)$/.exec(p.title);
         const txt = what ? "Attend votre accord pour " + what[1] : "Attend votre accord";
-        if (!t.waitEl) { t.waitEl = h("div", { class: "waiting" }, icon("waiting"), h("span")); t.el.insertBefore(t.waitEl, t.workEl); }
+        if (!t.waitEl) { t.waitEl = h("div", { class: "waiting" }, icon("clock"), h("span")); t.el.insertBefore(t.waitEl, t.workEl); }
         t.waitEl.lastChild.textContent = txt;
         t.workEl.hidden = true;
       } else {
