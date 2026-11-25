@@ -1,7 +1,9 @@
 // « Nouveautés » release notes (src/release-notes.h, src/modal.h Spec::notes, Paper p-L-0 142E-0 / 144O-0).
-//  A. model: read state format, `previous` syntax, automatic decision (positives and the targeted negatives:
-//     first install, dev, ordinary launch / other window, already seen, damaged or future state, a build
-//     without notes, the owner's 0.3.840 case), notes content (sections, languages, the build's own notes);
+//  A. model: read state format, `previous` syntax, the history of notes per version (sorted, empty or invalid
+//     entries left out), « seen up to version X » (a version, the fixed id of builds <= 0.3.840, a notes hash of
+//     builds 0.3.842-0.3.898), the cumulative selection (newest first, de-duplicated, 4 per section), the automatic
+//     decision (fresh install, update skipping several versions, versions without notes, already seen, repair, dev,
+//     ordinary launch, damaged / future state, portable, the owner's case), notes content (sections, languages);
 //  B. read state on disk: written only over a missing or own-format file, never over a damaged/future one;
 //  C. logo: the real assets/lottie/logo-spin.json through the production ThorVG player: refused by the
 //     default limits (other assets keep them), loaded with the opt-in ones, visible ink at several instants
@@ -10,8 +12,8 @@
 //     Paper geometry, balanced wrapping, focus order, « Voir tout », X / Échap, focus restored, done once,
 //     onShown only when really shown, UIA nodes, logo clock only while shown, reduced motion poster,
 //     short windows (Full scrolls), FR / EN, 96 / 144 / 192 DPI — on the Paper sample text;
-//  E. the release's own notes (release-notes/notes.json, when the runner compiled them in): every line on at
-//     most two lines of the card, FR and EN, at most 4 lines per section (release-notes/README.md).
+//  E. the build's own notes (release-notes/notes.json and its history, when the runner compiled them in): every
+//     line of every version on at most two lines of the card, FR and EN; renders of the card a catch-up shows.
 // Usage: release_notes_test.exe <repo root> <output dir>
 #include <windows.h>
 #include <wincodec.h>
@@ -101,35 +103,69 @@ int wmain(int argc, wchar_t** argv) {
         for (const char* bad : {"installed 0.3\n", "installed 0.3.x\n", "installed 0..3\n", "installed 0.3.1.2\n", "installed  0.3.1\n", "portable \n", "repair 0.3.1\n", "installed 0.3.1\nportable x\n", "installed 0.3.1234567\n"})
             Check(RN::ParsePrevious(bad).kind == PK::Invalid, (std::string("previous: invalid syntax refused: ") + bad).c_str());
 
-        const RN::State missing{}, seenOther{"older-notes", RN::Status::Ok}, seenNow{kId, RN::Status::Ok};
-        RN::Previous inst; inst.kind = PK::Installed; inst.version = "0.3.379";
-        RN::Previous same = inst; same.version = "0.3.380";
+        // A history as tools/release/release_notes.py generates it (given unsorted here, with an empty and an invalid entry).
+        static const RN::Line a842[] = {{L"Impression avec aperçu.", L"Print preview."}, {L"Partage d’écran.", L"Screen sharing."}, {L"Emoji en couleur.", L"Colour emoji."}, {nullptr, nullptr}};
+        static const RN::Line f842[] = {{L"La bulle suit l’élément.", L"The bubble follows."}, {nullptr, nullptr}};
+        static const RN::Line a898[] = {{L"Onglets sur le côté.", L"Tabs on the side."}, {nullptr, nullptr}};
+        static const RN::Line none0[] = {{nullptr, nullptr}};
+        static const RN::Line a950[] = {{L"Mode Focus.", L"Focus mode."}, {L"Impression avec aperçu.", L"Print preview."}, {nullptr, nullptr}};
+        static const RN::Line f950[] = {{L"Téléchargements fiables.", L"Reliable downloads."}, {L"Historique instantané.", L"Instant history."}, {nullptr, nullptr}};
+        static const RN::RawEntry raw[] = {{"0.3.898", "notes-hash898", a898, none0}, {"0.3.950", "notes-hash950", a950, f950}, {"0.3.999", "notes-empty", none0, none0},
+                                           {"0.3.x", "notes-bad", a898, none0}, {"0.3.842", "notes-hash842", a842, f842}, {nullptr, nullptr, nullptr, nullptr}};
+        const auto H = RN::FromRaw(raw);
+        Check(H.size() == 3 && H[0].version == "0.3.950" && H[1].version == "0.3.898" && H[2].version == "0.3.842" && H[0].added.size() == 2 && H[0].fixed.size() == 2 && H[1].fixed.empty(),
+              "history: newest first, an entry without lines or with a bad version left out");
+        Check(RN::CompareVersions("0.3.950", "0.3.1000") < 0 && RN::CompareVersions("0.4.1", "0.3.999") > 0 && RN::CompareVersions("0.3.898", "0.3.898") == 0, "versions compared as numbers");
+        const auto st = [](const char* seen) { return RN::State{seen, RN::Status::Ok}; };
+        Check(RN::SeenVersion(st("0.3.898"), H) == "0.3.898" && RN::SeenVersion(st(RN::LegacyId), H) == "0.3.646" && RN::SeenVersion(st("notes-hash842"), H) == "0.3.842"
+              && RN::SeenVersion(st("notes-unknown"), H).empty() && RN::SeenVersion(RN::State{}, H).empty(),
+              "seen up to: a version; the fixed id of builds <= 0.3.840 = 0.3.646; a notes hash = its version; else unknown");
+        const auto frs = [](const std::vector<RN::Line>& v) { std::wstring s; for (const auto& l : v) s += std::wstring(l.fr) + L"|"; return s; };
+        {
+            const auto one = RN::Unseen(H, "0.3.898", "0.3.950");
+            Check(one.id == "0.3.950" && frs(one.added) == L"Mode Focus.|Impression avec aperçu.|" && frs(one.fixed) == L"Téléchargements fiables.|Historique instantané.|", "unseen: one version");
+            const auto all = RN::Unseen(H, "0.3.646", "0.3.950");
+            Check(frs(all.added) == L"Mode Focus.|Impression avec aperçu.|Onglets sur le côté.|Partage d’écran.|" && frs(all.fixed) == L"Téléchargements fiables.|Historique instantané.|La bulle suit l’élément.|",
+                  "unseen: several versions merged, newest first, the repeated line once, 4 per section (the oldest extra line left out)");
+            Check(RN::Unseen(H, "0.3.646", "0.3.950", 0).added.size() == 5, "unseen: no cap = every line once");
+            Check(frs(RN::Unseen(H, "", "0.3.900").added) == L"Onglets sur le côté.|Impression avec aperçu.|Partage d’écran.|Emoji en couleur.|", "unseen: nothing newer than the build itself");
+            Check(RN::Unseen(H, "0.3.950", "0.3.960").Empty() && RN::Unseen(H, "", "dev").Empty() && RN::Unseen({}, "", "0.3.950").Empty(), "unseen: none after the last notes, a dev build, no history");
+        }
+
+        const RN::State missing{}, damaged{"", RN::Status::Invalid};
+        RN::Previous inst; inst.kind = PK::Installed; inst.version = "0.3.898";
+        RN::Previous same = inst; same.version = "0.3.950";
+        RN::Previous p840 = inst; p840.version = "0.3.840";
+        RN::Previous p950 = inst; p950.version = "0.3.950";
         RN::Previous port; port.kind = PK::Portable;
         RN::Previous none, invalid; invalid.kind = PK::Invalid;
         using D = RN::Decision;
-        Check(RN::Decide(true, inst, "0.3.380", missing, kId) == D::Show, "decide: update from an installed version, never seen -> Mini");
-        Check(RN::Decide(true, inst, "0.3.380", seenOther, kId) == D::Show, "decide: update, other notes seen -> Mini");
-        Check(RN::Decide(true, port, "0.3.380", missing, kId) == D::Show, "decide: update from a portable copy -> Mini");
-        Check(RN::Decide(true, inst, "0.3.380", seenNow, kId) == D::Hidden, "decide NEGATIVE: these notes already seen");
-        Check(RN::Decide(false, inst, "0.3.380", missing, kId) == D::Hidden, "decide NEGATIVE: ordinary launch / another window (no Installed at start)");
-        Check(RN::Decide(true, inst, "dev", missing, kId) == D::Hidden, "decide NEGATIVE: dev build (no M.m.B version)");
-        Check(RN::Decide(true, none, "0.3.380", missing, kId) == D::Baseline, "decide NEGATIVE: first install -> baseline only, no modal");
-        Check(RN::Decide(true, none, "0.3.380", seenOther, kId) == D::Hidden, "decide: no previous, state present -> nothing");
-        Check(RN::Decide(true, same, "0.3.380", missing, kId) == D::Hidden, "decide NEGATIVE: previous = this version (repair)");
-        Check(RN::Decide(true, invalid, "0.3.380", missing, kId) == D::Hidden, "decide NEGATIVE: unreadable/invalid previous");
-        Check(RN::Decide(true, inst, "0.3.380", RN::State{"", RN::Status::UnknownVersion}, kId) == D::Hidden, "decide NEGATIVE: future state format");
-        Check(RN::Decide(true, inst, "0.3.380", RN::State{"", RN::Status::Invalid}, kId) == D::Hidden, "decide NEGATIVE: damaged state");
-        Check(RN::Decide(true, inst, "0.3.380", RN::State{"", RN::Status::Unreadable}, kId) == D::Hidden, "decide NEGATIVE: unreadable state");
-        // Notes per release (design/release-notes-fix-report.md).
-        Check(RN::Decide(true, inst, "0.3.380", missing, "") == D::Hidden && RN::Decide(true, inst, "0.3.380", seenOther, "") == D::Hidden, "decide NEGATIVE: a build without notes -> no card (the generic notification stays)");
-        Check(RN::Decide(true, none, "0.3.380", missing, "") == D::Hidden, "decide: first install of a build without notes -> nothing recorded");
-        RN::Previous p837; p837.kind = PK::Installed; p837.version = "0.3.837";
-        const RN::State owner{"2026-11-comment-tooltips-download-selectall-typing", RN::Status::Ok};   // the owner's state file since 0.3.646
-        Check(RN::Decide(true, p837, "0.3.840", owner, "2026-11-comment-tooltips-download-selectall-typing") == D::Hidden, "decide: the 0.3.840 bug reproduced: the same fixed notes id as the one seen -> hidden");
-        Check(RN::Decide(true, p837, "0.3.841", owner, kId) == D::Show, "decide: the owner's case fixed: new release notes -> Mini after the update");
-        RN::Previous p841; p841.kind = PK::Installed; p841.version = "0.3.841";
-        Check(RN::Decide(true, p841, "0.3.842", seenNow, kId) == D::Hidden, "decide NEGATIVE: next release without new notes -> no card, the old notes never again");
-        Check(RN::Decide(true, inst, "0.3.842", seenNow, "notes-fedcba9876543210") == D::Show, "decide: next release with its own notes -> Mini again");
+        RN::Content card;
+        Check(RN::Decide(true, none, "0.3.950", missing, H, &card) == D::Baseline && card.Empty(), "decide: fresh install -> no card, this version recorded as seen (baseline)");
+        Check(RN::Decide(true, none, "0.3.950", st("0.3.898"), H) == D::Hidden, "decide: fresh install over an existing state -> nothing");
+        Check(RN::Decide(true, p840, "0.3.950", st("0.3.840"), H, &card) == D::Show && card.id == "0.3.950" && card.added.size() == 4 && card.fixed.size() == 3,
+              "decide: update skipping several versions (0.3.840 -> 0.3.950) -> one card with 0.3.842 + 0.3.898 + 0.3.950");
+        Check(RN::Decide(true, inst, "0.3.950", st(RN::LegacyId), H, &card) == D::Show && frs(card.added) == L"Mode Focus.|Impression avec aperçu.|Onglets sur le côté.|Partage d’écran.|",
+              "decide: the owner's case (fixed id of 0.3.646 seen, update from 0.3.898) -> everything since 0.3.646");
+        Check(RN::Decide(true, inst, "0.3.950", st("notes-hash898"), H, &card) == D::Show && frs(card.added) == L"Mode Focus.|Impression avec aperçu.|",
+              "decide: notes of 0.3.898 seen (hash of builds 0.3.842-0.3.898) -> only 0.3.950");
+        Check(RN::Decide(true, inst, "0.3.920", st("0.3.898"), H, &card) == D::Hidden && card.Empty(), "decide NEGATIVE: versions without notes since the last seen -> no card (generic notification)");
+        Check(RN::Decide(true, inst, "0.3.950", st("0.3.898"), H, &card) == D::Show && frs(card.added) == L"Mode Focus.|Impression avec aperçu.|", "decide: 0.3.898 -> 0.3.950 over a version without notes -> 0.3.950's notes");
+        Check(RN::Decide(true, inst, "0.3.950", missing, H, &card) == D::Show && frs(card.added) == L"Mode Focus.|Impression avec aperçu.|", "decide: no state -> what is newer than the previous installed version");
+        Check(RN::Decide(true, inst, "0.3.950", st("notes-unknown"), H, &card) == D::Show && frs(card.added) == L"Mode Focus.|Impression avec aperçu.|", "decide: unknown seen id -> newer than the previous installed version");
+        Check(RN::Decide(true, p950, "0.3.960", missing, H) == D::Hidden, "decide NEGATIVE: nothing newer than the previous installed version -> no card");
+        Check(RN::Decide(true, inst, "0.3.950", st("0.3.950"), H) == D::Hidden && RN::Decide(true, inst, "0.3.950", st("0.3.960"), H) == D::Hidden, "decide NEGATIVE: already seen up to this version (or later)");
+        Check(RN::Decide(true, p840, "0.3.900", st("0.3.840"), H, &card) == D::Show && card.id == "0.3.900" && frs(card.added) == L"Onglets sur le côté.|Impression avec aperçu.|Partage d’écran.|Emoji en couleur.|",
+              "decide: notes newer than the running build are never shown");
+        Check(RN::Decide(true, port, "0.3.950", missing, H, &card) == D::Show && card.added.size() == 4, "decide: update from a portable copy -> the most recent notes");
+        Check(RN::Decide(true, inst, "0.3.950", missing, {}) == D::Hidden, "decide NEGATIVE: a build without notes -> no card (generic notification)");
+        Check(RN::Decide(false, inst, "0.3.950", missing, H) == D::Hidden, "decide NEGATIVE: ordinary launch / another window (no Installed at start)");
+        Check(RN::Decide(true, inst, "dev", missing, H) == D::Hidden, "decide NEGATIVE: dev build (no M.m.B version)");
+        Check(RN::Decide(true, same, "0.3.950", missing, H) == D::Hidden, "decide NEGATIVE: previous = this version (repair)");
+        Check(RN::Decide(true, invalid, "0.3.950", missing, H) == D::Hidden, "decide NEGATIVE: unreadable/invalid previous");
+        Check(RN::Decide(true, inst, "0.3.950", RN::State{"", RN::Status::UnknownVersion}, H) == D::Hidden, "decide NEGATIVE: future state format");
+        Check(RN::Decide(true, inst, "0.3.950", damaged, H) == D::Hidden, "decide NEGATIVE: damaged state");
+        Check(RN::Decide(true, inst, "0.3.950", RN::State{"", RN::Status::Unreadable}, H) == D::Hidden, "decide NEGATIVE: unreadable state");
 
         // Content: the Paper text (FR), the same structure in EN.
         I18n::SetForProcess(I18n::Locale::Fr);
@@ -151,10 +187,11 @@ int wmain(int argc, wchar_t** argv) {
         Check(of.size() == 1 && of[0].kind == RN::Kind::Fixed && of[0].title == L"Corrections", "content: an empty section is left out (Corrections only)");
         RN::Content noId = Sample(); noId.id.clear(); RN::Content noLines; noLines.id = kId;
         Check(noId.Empty() && noLines.Empty() && RN::Sections(noId).empty() && RN::Sections(noLines).empty() && !Sample().Empty(), "content: no id or no line = no notes");
-#ifdef BROWSER_RELEASE_NOTES_ID
-        Check(RN::Compiled().id == BROWSER_RELEASE_NOTES_ID && !RN::Compiled().Empty(), "content: the build's notes compiled in (release-notes/notes.json)");
+#ifdef BROWSER_RELEASE_NOTES_HISTORY
+        { bool sorted = !RN::History().empty(); for (size_t i = 1; i < RN::History().size(); ++i) sorted = sorted && RN::CompareVersions(RN::History()[i - 1].version, RN::History()[i].version) > 0;
+          Check(sorted, "content: the build's notes compiled in, one entry per version, newest first (release-notes/notes.json and its history)"); }
 #else
-        Check(RN::Compiled().Empty(), "content: a build without the generated header has no notes");
+        Check(RN::History().empty(), "content: a build without the generated header has no notes");
 #endif
     }
 
@@ -164,6 +201,7 @@ int wmain(int argc, wchar_t** argv) {
         const std::wstring file = RN::PathIn(dir);
         Check(RN::Load(dir).status == RN::Status::Missing, "disk: missing file");
         Check(RN::MarkSeen(dir, kId) && RN::Load(dir).seen == kId && Bytes(file) == RN::Format(kId), "disk: MarkSeen writes the own format");
+        Check(RN::MarkSeen(dir, "0.3.950") && RN::Load(dir).seen == "0.3.950" && Bytes(file) == "browser-release-notes 1\nseen=0.3.950\n", "disk: « seen up to version » in the same format");
         Check(RN::MarkSeen(dir, "next-notes") && RN::Load(dir).seen == "next-notes", "disk: a newer content id replaces the old one");
         bool noTemp = true; for (auto& e : std::filesystem::directory_iterator(std::filesystem::path(dir))) noTemp = noTemp && e.path().filename().wstring().find(L".tmp") == std::wstring::npos;
         Check(noTemp, "disk: no temp file left");
@@ -357,27 +395,31 @@ int wmain(int argc, wchar_t** argv) {
         d.Abort(); d.FinishAnimationsForTest();
     }
     // ---- E. the release's own notes -----------------------------------------------------------------------
-    if (!RN::Compiled().Empty()) {
-        const auto& c = RN::Compiled();
-        Check(c.added.size() <= 4 && c.fixed.size() <= 4, "release notes: at most 4 lines per section");
+    if (!RN::History().empty()) {
+        const auto& h = RN::History();
+        const RN::Content every = RN::Unseen(h, "", h.front().version, 0), shown = RN::Unseen(h, "", h.front().version);
+        Check(shown.added.size() <= RN::DisplayLines && shown.fixed.size() <= RN::DisplayLines, "release notes: the card shows at most 4 lines per section");
         for (I18n::Locale lang : {I18n::Locale::Fr, I18n::Locale::En}) {
             I18n::SetForProcess(lang); const std::wstring tag = lang == I18n::Locale::Fr ? L"fr" : L"en";
-            const auto sections = RN::Sections(c);
-            d.Show(NotesSpecOf(c, root, false), area, [](const Modal::Result&) {}); d.FinishAnimationsForTest(); Pump(20);
+            const auto sections = RN::Sections(every);
+            d.Show(NotesSpecOf(every, root, false), area, [](const Modal::Result&) {}); d.FinishAnimationsForTest(); Pump(20);
             const auto blocks = d.NoteBlocksForTest(); size_t at = 0; bool twoLines = true, shape = true; float worst = 0;
             for (const auto& s : sections) {
                 at += 2;   // rule, heading
                 for (size_t i = 0; i < s.items.size(); ++i, ++at) {
                     if (at >= blocks.size()) { shape = false; break; }
-                    const float h = blocks[at].bottom - blocks[at].top; worst = std::max(worst, h);
-                    if (h > 40.01f) { twoLines = false; std::printf("     too long (%.0f DIP): %ls\n", h, s.items[i].c_str()); }
+                    const float hh = blocks[at].bottom - blocks[at].top; worst = std::max(worst, hh);
+                    if (hh > 40.01f) { twoLines = false; std::printf("     too long (%.0f DIP): %ls\n", hh, s.items[i].c_str()); }
                 }
             }
-            char what[200]; std::snprintf(what, sizeof what, "release notes %ls: every line fits two lines of the card (tallest %.0f DIP), Full view %.0f DIP", tag.c_str(), worst, d.HeightForTest());
+            char what[220]; std::snprintf(what, sizeof what, "release notes %ls: every line of every version fits two lines of the card (%zu lines, tallest %.0f DIP)", tag.c_str(), every.added.size() + every.fixed.size(), worst);
             Check(shape && at == blocks.size() && twoLines, what);
-            Check(d.RenderForTest(out + L"\\release-full-" + tag + L"-144.png", 144), "release notes: Full render");
             d.Abort(); d.FinishAnimationsForTest();
-            d.Show(NotesSpecOf(c, root, true), area, [](const Modal::Result&) {}); d.FinishAnimationsForTest();
+            d.Show(NotesSpecOf(shown, root, false), area, [](const Modal::Result&) {}); d.FinishAnimationsForTest(); Pump(20);
+            { char full[160]; std::snprintf(full, sizeof full, "release notes %ls: Full view of the card rendered (%.0f DIP)", tag.c_str(), d.HeightForTest());
+              Check(d.RenderForTest(out + L"\\release-full-" + tag + L"-144.png", 144), full); }
+            d.Abort(); d.FinishAnimationsForTest();
+            d.Show(NotesSpecOf(shown, root, true), area, [](const Modal::Result&) {}); d.FinishAnimationsForTest();
             Check(d.RenderForTest(out + L"\\release-mini-" + tag + L"-144.png", 144) && std::fabs(d.HeightForTest() - 218) < .01f, "release notes: Mini 343 x 218 rendered");
             d.Abort(); d.FinishAnimationsForTest();
         }

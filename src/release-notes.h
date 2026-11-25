@@ -2,33 +2,33 @@
 // « Nouveautés » release notes (Paper p-L-0: 142E-0 Mini, 144O-0 Full opened). Model and decisions
 // only; the modal draws it (src/modal.h, Spec::notes) and the host wires it (src/elements-integration.h).
 //
-// Contract (design/release-notes-modal-report.md, revised by design/release-notes-fix-report.md):
+// Contract (design/release-notes-modal-report.md, revised by design/release-notes-fix-report.md and
+// design/release-notes-cumul-report.md):
 //   * The notes are compiled into the build: nothing is fetched. Their text lives in
-//     release-notes/notes.json (FR + EN, written for each release, release-notes/README.md);
-//     tools/release/build.py checks it and generates <out>-obj/gen/release-notes-data.h, included below.
-//     A build without that header (test hosts, unstamped builds) has no notes.
-//   * Content::id names THIS text (a hash computed by tools/release/release_notes.py): new text, new id.
-//     A release that does not write new notes keeps the same id, so its update never shows the old
-//     notes again as « new »: the generic « Mise à jour installée » notification is shown instead.
-//   * Automatic Mini, once: only in the process the update helper launched after a successful
-//     update (UpdateCore engine view == Installed at start, which happens exactly once per install)
-//     AND <installRoot>\previous records a different installed version or a portable copy, AND the
-//     build has notes, AND the read state has not seen their id. A first install (no `previous`), a
-//     repair of the same version, a dev/portable run, another window or a normal launch never get it.
-//   * Read state: <global data root>\release-notes « browser-release-notes 1 » / « seen=<id> »,
-//     written atomically only once the modal has REALLY been shown. An unreadable file, a future
-//     format or a damaged one is never overwritten and never triggers the modal.
-//   * Manual: À propos › « Notes de version » opens the Full view (never writes the state); a build
-//     without notes opens the release's GitHub page instead.
+//     release-notes/notes.json (FR + EN, the next release's notes, release-notes/README.md). The notes of
+//     the earlier releases are read back from that file's history on main (tools/release/release_notes.py):
+//     one entry per version that changed it, keyed by that version. tools/release/build.py generates
+//     <out>-obj/gen/release-notes-data.h, included below. A build without it (test hosts) has no notes.
+//   * Read state: <global data root>\release-notes « browser-release-notes 1 » / « seen=<version> », the
+//     version up to which the user has seen the notes. Builds 0.3.842 to 0.3.898 wrote « seen=notes-<hash> »
+//     (mapped back to the version of the entry with that hash) and builds up to 0.3.840 the fixed id
+//     LegacyId (= the notes shown at 0.3.646). Written atomically only once the card has REALLY been shown
+//     (or silently at a first install). An unreadable, future or damaged file is never overwritten and never
+//     triggers the card.
+//   * Automatic Mini, once: only in the process the update helper launched after a successful update
+//     (UpdateCore engine view == Installed at start, once per install) AND <installRoot>\previous records a
+//     different installed version or a portable copy, AND at least one version newer than the one last seen
+//     (else: newer than the previous installed version) and not newer than this build has notes. The card
+//     shows those versions' notes together (newest first, de-duplicated, DisplayLines per section for now).
+//     No unseen notes: no card, the generic « Mise à jour installée » notification. A first install, a repair
+//     of the same version, a dev/portable run, another window or a normal launch never get it.
+//   * Manual: À propos › « Notes de version » opens the Full view of the most recent notes (never writes the
+//     state); a build without notes opens the release's GitHub page instead.
+#include <algorithm>
 #include <string>
 #include <vector>
 #include "i18n.h"
 #include "profile-store.h"
-#if defined(BROWSER_HAS_BUILD_INFO) && defined(__has_include)
-#if __has_include("release-notes-data.h")
-#include "release-notes-data.h"   // generated from release-notes/notes.json (tools/release/release_notes.py)
-#endif
-#endif
 
 namespace ReleaseNotes {
 
@@ -40,31 +40,93 @@ inline bool ValidId(const std::string& id) {
     for (char c : id) if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '.')) return false;
     return true;
 }
+inline bool ValidVersion(const std::string& v) {   // M.m.B, digits only, each part 1..5 digits
+    int parts = 0; std::size_t run = 0;
+    for (char c : v) {
+        if (c >= '0' && c <= '9') { if (++run > 5) return false; }
+        else if (c == '.') { if (!run) return false; ++parts; run = 0; }
+        else return false;
+    }
+    return run && parts == 2;
+}
+// <0, 0, >0 like strcmp, on M.m.B numbers (both must be ValidVersion).
+inline int CompareVersions(const std::string& a, const std::string& b) {
+    long pa[3] = {}, pb[3] = {}; int i = 0, j = 0;
+    for (char c : a) { if (c == '.') ++i; else if (i < 3) pa[i] = pa[i] * 10 + (c - '0'); }
+    for (char c : b) { if (c == '.') ++j; else if (j < 3) pb[j] = pb[j] * 10 + (c - '0'); }
+    for (int k = 0; k < 3; ++k) if (pa[k] != pb[k]) return pa[k] < pb[k] ? -1 : 1;
+    return 0;
+}
 
-// The notes of one release: each line in French and English (release-notes/notes.json).
+// One line of notes, French and English; one version's notes as generated (null-terminated lists).
 struct Line { const wchar_t* fr = nullptr; const wchar_t* en = nullptr; };
+struct RawEntry { const char* version; const char* id; const Line* added; const Line* fixed; };
+
+} // namespace ReleaseNotes
+#if defined(BROWSER_HAS_BUILD_INFO) && defined(__has_include)
+#if __has_include("release-notes-data.h")
+#include "release-notes-data.h"   // ReleaseNotes::Data::kEntries, from release-notes/notes.json and its history
+#endif
+#endif
+namespace ReleaseNotes {
+
+// Lines per section the card shows for now (Paper 142E-0 / 144O-0 show 2 and 3 and define no scroll area):
+// the newest, most important ones first. A design question (design/release-notes-cumul-report.md).
+inline constexpr std::size_t DisplayLines = 4;
+// The fixed id builds up to 0.3.840 recorded, and the version whose notes it stood for (seen at 0.3.646).
+inline constexpr const char* LegacyId = "2026-11-comment-tooltips-download-selectall-typing";
+inline constexpr const char* LegacyVersion = "0.3.646";
+
+struct Entry { std::string version, id; std::vector<Line> added, fixed; };   // id: « notes-<hash> » of its text
+// What one card shows. `id`: the version it brings the user up to (written as « seen » once shown).
 struct Content {
-    std::string id;                       // « notes-<hash> »; empty: this build has no notes
-    std::vector<Line> added, fixed;       // « Ajouts » / « Corrections »; an empty one is not drawn
+    std::string id;
+    std::vector<Line> added, fixed;   // « Ajouts » / « Corrections »; an empty one is not drawn
     bool Empty() const { return !ValidId(id) || (added.empty() && fixed.empty()); }
 };
 namespace Detail {
 inline void Append(std::vector<Line>& out, const Line* lines) { for (; lines && lines->fr && lines->en; ++lines) out.push_back(*lines); }
 }
-// The build's own notes (empty when the build has none).
-inline const Content& Compiled() {
-    static const Content content = [] {
-        Content c;
-#ifdef BROWSER_RELEASE_NOTES_ID
-        static const Line added[] = {BROWSER_RELEASE_NOTES_ADDED {nullptr, nullptr}};
-        static const Line fixed[] = {BROWSER_RELEASE_NOTES_FIXED {nullptr, nullptr}};
-        c.id = BROWSER_RELEASE_NOTES_ID;
-        Detail::Append(c.added, added);
-        Detail::Append(c.fixed, fixed);
+inline std::vector<Entry> FromRaw(const RawEntry* raw) {
+    std::vector<Entry> out;
+    for (; raw && raw->version; ++raw) {
+        if (!ValidVersion(raw->version)) continue;
+        Entry e; e.version = raw->version; e.id = raw->id ? raw->id : "";
+        Detail::Append(e.added, raw->added); Detail::Append(e.fixed, raw->fixed);
+        if (!e.added.empty() || !e.fixed.empty()) out.push_back(std::move(e));
+    }
+    std::stable_sort(out.begin(), out.end(), [](const Entry& a, const Entry& b) { return CompareVersions(a.version, b.version) > 0; });
+    return out;
+}
+// Every version of this build that brought notes, newest first (empty when the build has none).
+inline const std::vector<Entry>& History() {
+    static const std::vector<Entry> history = [] {
+#ifdef BROWSER_RELEASE_NOTES_HISTORY
+        return FromRaw(Data::kEntries);
+#else
+        return std::vector<Entry>{};
 #endif
-        return c;
     }();
-    return content;
+    return history;
+}
+// The notes of every version in (after, upTo] (after empty: from the start), newest first, a line already
+// taken (same French text) not repeated, at most `perSection` lines per section (0: all). Content::id = upTo.
+inline Content Unseen(const std::vector<Entry>& history, const std::string& after, const std::string& upTo, std::size_t perSection = DisplayLines) {
+    Content c;
+    if (!ValidVersion(upTo) || (!after.empty() && !ValidVersion(after))) return c;
+    c.id = upTo;
+    std::vector<std::wstring> taken;
+    const auto take = [&](std::vector<Line>& out, const Line& l) {
+        const std::wstring fr = l.fr;
+        if (std::find(taken.begin(), taken.end(), fr) != taken.end() || (perSection && out.size() >= perSection)) return;
+        taken.push_back(fr); out.push_back(l);
+    };
+    for (const auto& e : history) {
+        if (!ValidVersion(e.version) || CompareVersions(e.version, upTo) > 0 || (!after.empty() && CompareVersions(e.version, after) <= 0)) continue;
+        for (const auto& l : e.added) take(c.added, l);
+        for (const auto& l : e.fixed) take(c.fixed, l);
+    }
+    return c;
 }
 // The card's sections in the process language (Paper p-L-0 142E-0 / 144O-0: « Ajouts » then « Corrections »).
 inline std::vector<Section> Sections(const Content& content) {
@@ -148,15 +210,6 @@ inline bool MarkSeen(const std::wstring& dataRoot, const std::string& id) {
 
 // ---- <installRoot>\previous (written by the update helper; read only here) ----------------------
 struct Previous { enum class Kind { None, Installed, Portable, Invalid } kind = Kind::None; std::string version; };
-inline bool ValidVersion(const std::string& v) {   // M.m.B, digits only, each part 1..5 digits
-    int parts = 0; std::size_t run = 0;
-    for (char c : v) {
-        if (c >= '0' && c <= '9') { if (++run > 5) return false; }
-        else if (c == '.') { if (!run) return false; ++parts; run = 0; }
-        else return false;
-    }
-    return run && parts == 2;
-}
 inline Previous ParsePrevious(const std::string& bytes) {
     Previous p;
     if (bytes.empty()) return p;   // None: never updated through the helper (first install)
@@ -171,18 +224,37 @@ inline Previous ParsePrevious(const std::string& bytes) {
 }
 
 // ---- automatic display ----------------------------------------------------------------------------
-enum class Decision { Hidden, Show, Baseline };   // Baseline: record the notes' id as seen, silently (first install)
+// The version up to which the user has seen the notes, from the read state: a version as such; the fixed id of
+// builds up to 0.3.840 = LegacyVersion; a « notes-<hash> » of builds 0.3.842-0.3.898 = the version of the entry
+// with that text; anything else (or no state): unknown, "".
+inline std::string SeenVersion(const State& state, const std::vector<Entry>& history) {
+    if (state.status != Status::Ok) return "";
+    if (ValidVersion(state.seen)) return state.seen;
+    if (state.seen == LegacyId) return LegacyVersion;
+    for (const auto& e : history) if (!e.id.empty() && e.id == state.seen) return e.version;
+    return "";
+}
+enum class Decision { Hidden, Show, Baseline };   // Baseline: record this version as seen, silently (first install)
 inline const char* DecisionText(Decision d) { return d == Decision::Show ? "show" : d == Decision::Baseline ? "baseline" : "hidden"; }
 // `startupInstalled`: the engine reported Installed at start (the helper-launched process, once).
 // `current`: the running version (« M.m.B »; anything else, such as « dev », never shows).
-// `notesId`: Compiled().id, empty when the build has no notes (never shows: the generic notification stays).
-inline Decision Decide(bool startupInstalled, const Previous& previous, const std::string& current, const State& state, const std::string& notesId) {
-    if (!startupInstalled || !ValidVersion(current) || !ValidId(notesId)) return Decision::Hidden;
+// `history`: History(). `card` receives what to show on Decision::Show (Unseen: id = current).
+inline Decision Decide(bool startupInstalled, const Previous& previous, const std::string& current, const State& state,
+                       const std::vector<Entry>& history, Content* card = nullptr) {
+    if (card) *card = Content{};
+    if (!startupInstalled || !ValidVersion(current)) return Decision::Hidden;
     if (state.status != Status::Ok && state.status != Status::Missing) return Decision::Hidden;   // never guess over a file we cannot trust
-    if (state.status == Status::Ok && state.seen == notesId) return Decision::Hidden;
+    const std::string seen = SeenVersion(state, history);
+    if (!seen.empty() && CompareVersions(seen, current) >= 0) return Decision::Hidden;   // already seen up to here
+    if (previous.kind == Previous::Kind::None) return state.status == Status::Missing ? Decision::Baseline : Decision::Hidden;
     const bool updated = (previous.kind == Previous::Kind::Installed && previous.version != current) || previous.kind == Previous::Kind::Portable;
-    if (updated) return Decision::Show;
-    return state.status == Status::Missing && previous.kind == Previous::Kind::None ? Decision::Baseline : Decision::Hidden;
+    if (!updated) return Decision::Hidden;
+    // Never shown a card here (or an id we cannot place): what the previous installed version had is not new.
+    const std::string after = !seen.empty() ? seen : previous.kind == Previous::Kind::Installed ? previous.version : std::string();
+    Content c = Unseen(history, after, current);
+    if (c.Empty()) return Decision::Hidden;   // no notes since then: the generic notification, never old notes
+    if (card) *card = std::move(c);
+    return Decision::Show;
 }
 
 } // namespace ReleaseNotes
