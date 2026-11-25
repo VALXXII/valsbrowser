@@ -206,7 +206,9 @@ def run_main():
         # the model menu with the bubble placed again (above its element, or slid)
         # While an authorization waits, its card takes the dock's place (panel.js dockBubble, since 18/11): no input, no
         # model button until it is answered — the menu is checked again after « Autoriser ».
-        if C.panel("!!document.querySelector('button.m')"):
+        # Since the permission circuit (choice A, 25 Nov) the dock stays in the page, hidden under the card: a model button
+        # that is not displayed is not there for the person (clicking it, then Échap, closed the bubble).
+        if C.panel("(function(){var b=document.querySelector('button.m');return !!b&&b.offsetParent!==null&&b.getBoundingClientRect().width>0})()"):
             C.click_panel('button.m'); time.sleep(0.6)
             menu_check('#129 / #130 · the bubble placed again: the model menu still opens whole, on top of everything')
             capture('130-menu-modele')
