@@ -28,9 +28,14 @@ Branche `VALXXII/annotation-perm`, partie du bout du lot R (`99c88350`). Faux ag
 | `abd4eb8f` | Bulle : le mode et « Arrêter » restent sous la carte ; diff en grand d'une demande = une seule carte ; carte entière même avec peu de place | prochaine sortie |
 | `305769ed` | Parcours en vrai navigateur (bureau caché) + lignes proposées pour le test général | prochaine sortie |
 
-Reste à corriger : **point 1 côté bulle** (le clic de retour). C'est dans la fenêtre de la bulle (`src/chat-comment.h`),
-pas dans la carte, et cela ne se vérifie qu'en vraie fenêtre. Deux voies : ne plus masquer la bulle quand une autre
-application est devant, ou garder le masquage et ne pas prendre ce clic pour une sélection.
+**Point 1 côté bulle (25 nov.)** : le propriétaire a choisi la voie A. La bulle n'est plus masquée quand une autre
+application passe devant : elle reste sur la fenêtre du navigateur, comme le panneau, sans prendre le clavier ; le retour
+du navigateur le lui rend (`src/chat-comment.h`, commit `9ee08e84`, fusionné dans `16cbf5cf` avec « Ton agent » #145).
+Reste à voir en vraie fenêtre (passe groupée) : `tests/chat/final/journeys.py --only
+perm_clic_de_retour,e4_autre_application,m4_clavier_apres_premier_plan` et `tests/chat/chat_qa_comment_v5b.py`.
+
+État du 25 nov. après fusion de « Ton agent » (`5b6700fe`) : page 1029 / 1029, contrats du navigateur 156 / 156, vrai
+navigateur sur bureau caché 45 / 45 (et le parcours clavier du lot 2, bulle : 31 / 31), build 0.3.1032 sans avertissement.
 
 ## Tests
 
