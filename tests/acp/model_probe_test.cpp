@@ -203,14 +203,14 @@ static void TestCalm() {
 static void TestCancel() {
     const std::wstring dir = ChatModelProbe::MakeFolder();
     {
-        const std::wstring log = g_tmp + L"\probe-cancel-before.log"; DeleteFileW(log.c_str());
+        const std::wstring log = g_tmp + L"\\probe-cancel-before.log"; DeleteFileW(log.c_str());
         Acp::StartOptions o = Options(log, {}); o.cwd = Narrow(dir);
         std::atomic<bool> cancel{true};
         const auto r = ChatModelProbe::Read(o, 20000, nullptr, &cancel);
         CHECK(!r.ok && r.cancelled && r.why == "cancelled" && r.stopped && !Exists(log));   // no agent started at all
     }
     {   // an agent that never answers: stopped at once on the chat's start, long before the read's time limit
-        const std::wstring log = g_tmp + L"\probe-cancel-during.log"; DeleteFileW(log.c_str());
+        const std::wstring log = g_tmp + L"\\probe-cancel-during.log"; DeleteFileW(log.c_str());
         Acp::StartOptions o = Options(log, {L"--silent"}); o.cwd = Narrow(dir);
         std::atomic<bool> cancel{false};
         std::thread later([&cancel] { Sleep(300); cancel.store(true); });
