@@ -30,7 +30,7 @@ static void Anchor() {   // R39: optional sx, sy, t on « anchor »
     CHECK(AH::CheckMessage(head + ",\"sy\":\"x\"}", "n4", 1).env.op == AH::Op::Invalid);
     const std::wstring js = NativeChrome::Annotations::PageScript();
     CHECK(js.find(L"function onScroll() { if (follow) followPost();") != std::wstring::npos);
-    const auto post = js.find(L"var f = followPost();   // posted first"), draw = js.find(L"bxPlace(f ? f.el : null, f ? f.r : null);");
+    const auto post = js.find(L"var f = followPost();   // posted first"), draw = js.find(L"bxPlace(f ? f.el : null, f ? f.r : null, f ? f.at : null);");   // lot 1c: + where its frames are (an element inside an iframe)
     CHECK(post != std::wstring::npos && draw != std::wstring::npos && post < draw);
 }
 static void Selecting() {   // latency: the light message at the click, before the full « select »

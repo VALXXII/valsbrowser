@@ -52,7 +52,16 @@ int main() {
     Require(!ErrorPages::Handles(COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID), "certificate errors are the HTTPS logic's");
     Require(!ErrorPages::Handles(COREWEBVIEW2_WEB_ERROR_STATUS_VALID_AUTHENTICATION_CREDENTIALS_REQUIRED), "auth challenge is not an error page");
     Require(ErrorPages::Handles(COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT), "timeout handled");
-    Require(std::wstring(ErrorPages::Code(COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT)) == L"ERR_CONNECTION_REFUSED", "code");
+    Require(std::wstring(ErrorPages::Code(COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT)) == L"ERR_CONNECTION_FAILED", "code: CANNOT_CONNECT is ERR_CONNECTION_FAILED (measured)");
+    // Night 24/11: the engine reports a refused connection as UNKNOWN without an HTTP status (status_probe.py); its own
+    // error document names it, and that refusal is « connexion refusée » (and « non sécurisé » for an HTTPS-only attempt).
+    Require(ErrorPages::EngineErrorCode(L"\"ERR_CONNECTION_REFUSED\"") == L"ERR_CONNECTION_REFUSED" && ErrorPages::EngineErrorCode(L"\"\"").empty() && ErrorPages::EngineErrorCode(L"\"ERR_<b>\"").empty() && ErrorPages::EngineErrorCode(L"\"FOO_BAR\"").empty() && ErrorPages::EngineErrorCode(L"null").empty(), "engine code: only ERR_ + capitals, from the JSON result");
+    Require(std::wstring(ErrorPages::EngineErrorCodeScript()).find(L"location.protocol==='chrome-error:'") == 0, "engine code read only from the engine's own error document");
+    Require(ErrorPages::RefineUnknown(COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, 0, L"ERR_CONNECTION_REFUSED") == COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT, "a refusal reported UNKNOWN is a connection that could not be made");
+    Require(ErrorPages::Classify(ErrorPages::RefineUnknown(COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, 0, L"ERR_CONNECTION_REFUSED"), true) == Kind::Refused, "refused connection → « Le site a refusé la connexion »");
+    Require(ErrorPages::RefineUnknown(COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, 0, L"ERR_FAILED") == COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN && ErrorPages::RefineUnknown(COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, 0, L"") == COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN && ErrorPages::RefineUnknown(COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, 403, L"ERR_CONNECTION_REFUSED") == COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, "other UNKNOWN failures and real answers unchanged");
+    Require(ErrorPages::UpgradeFallsBack(COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, 0) && ErrorPages::UpgradeFallsBack(COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT, 0) && ErrorPages::UpgradeFallsBack(COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID, 0), "HTTPS uniquement: a failed https:// attempt (refused, unknown, certificate) offers the « non sécurisé » page");
+    Require(!ErrorPages::UpgradeFallsBack(COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN, 404) && !ErrorPages::UpgradeFallsBack(COREWEBVIEW2_WEB_ERROR_STATUS_DISCONNECTED, 0) && !ErrorPages::UpgradeFallsBack(COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED, 0) && !ErrorPages::UpgradeFallsBack(COREWEBVIEW2_WEB_ERROR_STATUS_VALID_AUTHENTICATION_CREDENTIALS_REQUIRED, 0), "HTTPS uniquement: a real https answer, offline, cancelled or authentication keep their own page");
 
     // Host shown as in Paper.
     Require(ErrorPages::HostOf(L"https://www.lemonde.fr/planete/") == L"lemonde.fr", "www stripped");
@@ -79,7 +88,7 @@ int main() {
     Require(Has(refused, L"Le site a refusé la connexion") && Has(refused, L"aria-expanded=\"false\"") && Has(refused, L"ERR_CONNECTION_REFUSED") && !Has(refused, L"Nouvel essai"), "refused: details disclosure, no auto retry");
     // #121 sheet B on « connexion refusée » (1MDG-0): Code (mono, copy) / Adresse / Essai, hidden until « Détails techniques ».
     Require(Has(refused, L"<div id=\"details\" class=\"sheet\" hidden>") && TextAfter(refused, L"class=\"v code\"") == L"ERR_CONNECTION_REFUSED" && Has(refused, L"data-action=\"copy\" aria-label=\"Copier le code\""), "refused: sheet with the code and its copy button");
-    Require(Has(refused, L">Adresse</span><span class=\"v\">localhost:3000</span>") && Has(refused, L">Essai</span><span class=\"v\">2e tentative · 14:32</span>"), "refused: Adresse and Essai rows");
+    Require(Has(refused, L">Adresse</span><span class=\"v\">localhost:3000</span>") && Has(refused, L">Essai</span><span class=\"v\" id=\"essai\">2e tentative · 14:32</span>"), "refused: Adresse and Essai rows");
     Require(Has(refused, L".sheet{width:340px;max-width:100%;box-sizing:border-box;border:1px solid #FFFFFF14;border-radius:8px") && Has(refused, L".row{display:flex;align-items:center;gap:12px;padding:12px}") && Has(refused, L".k{flex:none;width:64px;font-size:13px;line-height:18px;color:#FFFFFF66}") && Has(refused, L".v{flex:1 1 0;min-width:0;font-size:13px;line-height:18px;color:#FFFFFFCC}") && Has(refused, L"font-family:\"JetBrains Mono\",system-ui,sans-serif;font-size:12px") && Has(refused, L".sep{display:block;flex:none;height:1px;margin:0 12px;background:#FFFFFF0D}"), "sheet: the board's frame, rows, label and value styles");
     Require(Has(refused, L"id=\"se\"") && !Has(refused, L"background:#292929"), "refused: server-error icon, the old filled panel is gone");
     Require(ErrorPages::AddressOf(L"https://www.lemonde.fr/planete/") == L"www.lemonde.fr:443" && ErrorPages::AddressOf(L"http://user:pw@[::1]:8080/x") == L"[::1]:8080" && ErrorPages::AddressOf(L"http://exemple.test") == L"exemple.test:80" && ErrorPages::AddressOf(L"pas une adresse").empty(), "Adresse: the authority tried, with its port, never credentials");
@@ -91,7 +100,34 @@ int main() {
         Require(delay == (attempt == 0 ? 8 : attempt == 1 ? 16 : attempt == 2 ? 32 : 0), "8, 16, 32 s then stop");
         Require(Has(page, L"Nouvel essai dans " + std::to_wstring(delay) + L" s") == (delay != 0), "countdown shown only while retries remain");
     }
-    for (Kind k : {Kind::Reset, Kind::Unreachable, Kind::Generic}) { auto p = ErrorPages::Html(k, L"https://exemple.test", token, false); Require(Has(p, L"<h1>") && Has(p, L"Réessayer") && !Has(p, L"<div class=\"icon"), "derived variants render (no board icon yet)"); }
+    // Board « compléments » 1SYN-0: the three remaining pages have their glass icon and the boards' texts.
+    {
+        const auto reset = ErrorPages::Html(Kind::Reset, L"https://lemonde.fr/", token, false), unreachable = ErrorPages::Html(Kind::Unreachable, L"http://intranet.local/", token, false), generic = ErrorPages::Html(Kind::Generic, L"https://exemple.fr/rapport?x=1#y", token, false);
+        Require(Has(reset, L"id=\"pd0\"") && Has(reset, L"<b>lemonde.fr</b> a coupé la connexion pendant le chargement. Réessayez ; si ça recommence, vérifiez votre réseau."), "reset: plug-disconnected and the board's text");
+        Require(Has(unreachable, L"id=\"co0\"") && Has(unreachable, L"Impossible d’atteindre <b>intranet.local</b> depuis ce réseau. Vérifiez que vous êtes sur le bon réseau ou connecté au VPN."), "unreachable: cloud-off and the board's text");
+        Require(Has(generic, L"id=\"de0\"") && Has(generic, L"<h1>Cette page ne s’est pas chargée</h1>") && Has(generic, L"Le chargement de <b>exemple.fr/rapport</b> a échoué. Réessayez dans un instant."), "generic: document-error, the page named (host + path, no query)");
+        Require(ErrorPages::HostPathOf(L"https://www.exemple.fr/") == L"exemple.fr" && ErrorPages::HostPathOf(L"https://exemple.fr/a/b/") == L"exemple.fr/a/b", "HostPathOf: no www, no trailing slash");
+        for (const auto* p : {&reset, &unreachable, &generic}) Require(Has(*p, L"#4A1E1A") && Has(*p, L"data-action=\"details\""), "remaining pages: dark glass part, technical details");
+    }
+    {   // Time-out with its sheet open (1T04-0): the Essai row names the coming attempt and counts down with the retry;
+        // the separate countdown row hides while the sheet is open; « Détails techniques » open is #3E3E3E.
+        ErrorPages::Extras t2; t2.code = L"ERR_TIMED_OUT"; t2.address = ErrorPages::AddressOf(L"https://impots.gouv.fr/"); t2.tries = ErrorPages::TriesText(2, L"14:32"); t2.triesCount = 2; t2.attempt = 1;
+        const auto p = ErrorPages::Html(Kind::TimedOut, L"https://impots.gouv.fr/", token, false, t2);
+        Require(Has(p, L"<span class=\"v\" id=\"essai\">3e tentative · nouvel essai dans 16 s</span>") && Has(p, L"ESSAI=\"3e tentative · nouvel essai dans {0} s\"") && Has(p, L"E.textContent=ESSAI.replace"), "time-out: Essai row counts down (board « 3e tentative · nouvel essai dans 16 s »)");
+        Require(Has(p, L".sheet:not([hidden])~.retry{display:none}") && Has(p, L".secondary[aria-expanded=true]{background:#3E3E3E}.secondary:hover{background:#333333}"), "time-out open: countdown row folded into the sheet, open button #3E3E3E (hover still #333333)");
+        ErrorPages::Extras late = t2; late.triesCount = 4; late.attempt = 3;
+        Require(Has(ErrorPages::Html(Kind::TimedOut, L"https://impots.gouv.fr/", token, false, late), L">2e tentative · 14:32</span>"), "no retry left: the Essai row keeps attempt and time");
+    }
+    {   // Copy button states (1T2J-0): 20 x 20 zone, radius 4, in the 16 x 18 slot; hover #FFFFFF14 / icon CC, pressed and
+        // « Copié » #FFFFFF24 / icon FF, check glyph for 1.5 s after main's « copied »; focus: the owner's A1 inset ring.
+        const auto p = ErrorPages::Html(Kind::Refused, L"http://localhost:3000", token, false, ex);
+        Require(Has(p, L".cp{position:relative;flex:none;width:16px;height:18px") && Has(p, L".sheet button{flex:none;width:20px;height:20px;padding:0;border-radius:4px"), "copy: 20 x 20 radius 4 in the board's 16 x 18 slot");
+        Require(Has(p, L".sheet button:hover{background:#FFFFFF14}") && Has(p, L".sheet button:active,.sheet button.done{background:#FFFFFF24}") && Has(p, L".sheet button svg path{fill:#FFFFFF80}"), "copy: rest / hover / pressed / copied colours");
+        Require(Has(p, L"<svg class=\"cc\"") && Has(p, L"<svg class=\"ok\"") && Has(p, L"M232.49,80.49"), "copy: copy and check glyphs");
+        Require(Has(p, L"if(e.data!==\"copied\")return") && Has(p, L"setTimeout(()=>C.classList.remove(\"done\"),1500)"), "copy: « Copié » only on main's answer, 1.5 s");
+        Require(Has(p, L"<span class=\"tip\" aria-hidden=\"true\">Copier le code</span>") && Has(p, L"transition-delay:600ms") && Has(p, L"top:calc(100% + 6px)") && Has(p, L"border:1px solid #FFFFFF0F;border-radius:6px;background:#171717"), "copy: C5 tooltip after 600 ms, 6 px under");
+        Require(Has(p, L"button:focus-visible{outline:none;box-shadow:inset 0 0 0 1px #FFFFFF80}") && !Has(p, L"#3E67FF;border"), "copy: focus keeps the A1 inset ring (not the board's accent ring)");
+    }
     // #121 icons (Jiggicons glass, tinted on the boards): one per variant, 48 DIP.
     Require(Has(dns, L"id=\"gs\"") && Has(ErrorPages::Html(Kind::TimedOut, L"https://a.test", token, false), L"id=\"hg\"") && Has(dns, L"<svg width=\"48\" height=\"48\" viewBox=\"0 0 24 24\" aria-hidden=\"true\""), "icons: globe-search, hourglass, 48 DIP, hidden from screen readers");
     // #121 layout (1LXI-0): 16 between icon / title+text / buttons / sheet, 8 between title and text; no margins left.
@@ -149,6 +185,7 @@ int main() {
     Require(ErrorPages::ParseMessage(Msg(token, L"network"), token) == Action::NetworkSettings, "network accepted");
     Require(ErrorPages::ParseMessage(Msg(token, L"autoRetry"), token) == Action::AutoRetry, "autoRetry accepted");
     Require(ErrorPages::ParseMessage(Msg(token, L"copy"), token) == Action::Copy, "copy accepted (the host copies the code it shows)");
+    Require(!ErrorPages::ParseMessage(Msg(token, L"copied"), token), "« copied » is the host's answer, never a page action");
     Require(ErrorPages::ParseMessage(L"\"{\\\"token\\\":\\\"" + token + L"\\\",\\\"action\\\":\\\"back\\\"}\"", token) == Action::Back, "JSON form of the posted string accepted");
     Require(ErrorPages::ParseMessage(L" { \"action\" : \"retry\" , \"token\" : \"" + token + L"\" } ", token) == Action::Retry, "whitespace and key order");
     Require(!ErrorPages::ParseMessage(Msg(L"{00000000-0000-0000-0000-000000000000}", L"retry"), token), "wrong token");

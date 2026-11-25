@@ -62,6 +62,11 @@ def existing_fixtures() -> None:
     fixture('focus_mode_test', [*STRICT, 'tests/focus_mode_test.cpp'])
     # Its drawers' antialiased top corners (src/drawer-corners.h): coverage, region cut, layered corner windows.
     fixture('drawer_corners_test', [*STRICT, '-municode', 'tests/drawer_corners_test.cpp', '-lgdi32', '-luser32'])
+    # The window's resize border over the chat panel, the drawers and the layers (src/resize-border.h; trial 0.3.952):
+    # hidden windows only, never shown. The browser's manifest is linked in (layered child windows need Windows 8+ declared).
+    resize_manifest = OUT / 'resize_border_manifest.o'
+    run('windres resize_border_test.rc', [BIN / 'windres.exe', 'tests/resize_border_test.rc', '-O', 'coff', '-o', resize_manifest])
+    fixture('resize_border_test', [*STRICT, '-municode', 'tests/resize_border_test.cpp', resize_manifest, '-lgdi32', '-luser32'])
     # Address field model: display, suggestions, and what a typed text opens (links, local paths and file: URLs, searches).
     fixture('address_test', [*STRICT, 'tests/address_test.cpp'])
     fixture('history_index_test', ['-O2', *STRICT, 'tests/history_index_test.cpp'])
@@ -141,6 +146,9 @@ def existing_fixtures() -> None:
             *UI_LIBS, '-lshell32', '-loleaut32', '-lmsimg32', '-lshcore'], [ROOT, flicker_evidence])
     fixture('shortcuts_test', ['-O0', *TVG, WV2, 'tests/shortcuts_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
     fixture('navigation_errors_test', [*LOOSE, *TVG, WV2, 'tests/navigation_errors_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
+    # #121 crashed-tab page and screen-share confirmation (src/crash-page.h, src/origin-prompt.h ScreenCapture). The engine
+    # facts behind them are measured by tests/crash-screenshare/engine_probe.py (real engine, window never shown).
+    fixture('crash_screenshare_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/crash_screenshare_test.cpp', *UI_LIBS], [ROOT])
     # A navigation the engine turned into a download is never an error page (src/download-navigation.h; real engine:
     # tests/downloads/download_navigation_e2e.py)
     fixture('download_navigation_test', [*STRICT, 'tests/download_navigation_test.cpp'])

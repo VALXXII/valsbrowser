@@ -1,0 +1,38 @@
+{
+  "ajouts": [
+    {
+      "fr": "Nouvelle fenêtre d’impression, avec l’aperçu de vos pages.",
+      "en": "A new print window, with a preview of your pages."
+    },
+    {
+      "fr": "Si une page ne répond plus, vous pouvez attendre ou la recharger.",
+      "en": "If a page stops responding, you can wait or reload it."
+    },
+    {
+      "fr": "Partage d’écran : un site peut être bloqué une fois pour toutes.",
+      "en": "Screen sharing: a site can be blocked for good."
+    },
+    {
+      "fr": "Le menu des modèles montre les vrais modèles de Codex.",
+      "en": "The model menu shows Codex’s real models."
+    }
+  ],
+  "corrections": [
+    {
+      "fr": "Mode Annotation : la bulle suit l’élément, même dans un cadre intégré.",
+      "en": "Annotation mode: the bubble follows elements, even in embedded frames."
+    },
+    {
+      "fr": "Le menu des modèles n’est plus coupé par la bulle.",
+      "en": "The model menu is no longer cut off by the bubble."
+    },
+    {
+      "fr": "Pages d’erreur plus claires : connexion refusée, site non sécurisé.",
+      "en": "Clearer error pages: connection refused, site not secure."
+    },
+    {
+      "fr": "La fenêtre se redimensionne par ses bords, même avec le chat ouvert.",
+      "en": "The window resizes from its edges, even with the chat open."
+    }
+  ]
+}

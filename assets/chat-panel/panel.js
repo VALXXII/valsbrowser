@@ -649,7 +649,7 @@
     menuEl.style.left = left + "px";
     const side = align === "right" ? "right" : "left";
     if (!BUB()) {
-      menuEl.style.bottom = (ar.bottom - r.top + 6) + "px";
+      menuEl.style.top = ""; menuEl.style.bottom = (ar.bottom - r.top + 6) + "px";
       menuEl.style.setProperty("--origin", "bottom " + side);
       return;
     }
@@ -664,13 +664,19 @@
       let x = align === "right" ? r.right - ar.left - width : r.left - ar.left;
       x = Math.max(-lim.left, Math.min(x, W + lim.right - width));
       const aTop = r.top - ar.top, aBot = r.bottom - ar.top;
+      const top = -lim.top, bottom = H + lim.bottom;         // what the window may show around the surface (floatNeed's room)
       let y = null, origin = "bottom";
-      for (const [yy, o] of [[aTop - 6 - mh, "bottom"], [aBot + 6, "top"]]) if (yy >= -lim.top && yy + mh <= H + lim.bottom) { y = yy; origin = o; break; }
-      if (y == null) {                                       // no room outside: inside the surface, its list scrolls
-        menuEl.style.maxHeight = Math.max(80, H - 12) + "px";
-        const h2 = menuEl.offsetHeight;
-        y = Math.max(6, Math.min(aTop - 6 - h2, H - 6 - h2));
-        x = Math.max(6, Math.min(x, W - 6 - width));
+      // #128 v2: redrawn live under the pointer (refreshModelMenu) — its top stays while it still fits, the row under the pointer with it
+      const kept = Number.isFinite(menuEl._keepTop) && menuEl._keepTop >= top && menuEl._keepTop + mh <= bottom ? [[menuEl._keepTop, "top"]] : [];
+      for (const [yy, o] of kept.concat([[aTop - 6 - mh, "bottom"], [aBot + 6, "top"]])) if (yy >= top && yy + mh <= bottom) { y = yy; origin = o; break; }
+      if (y == null) {
+        // #128 (Val's real trial, comment bubble near the banner): neither above nor under its button holds it whole. It was
+        // squeezed into the surface (max-height = the bubble's height − 12: one row and a scrollbar). It now stays a layer
+        // over the bubble, WHOLE: on the side with more room, slid along until it fits the room there is (it may cover its
+        // button); only a menu taller than all that room scrolls, at that height (a window shorter than the menu).
+        if (mh > bottom - top) { menuEl.style.maxHeight = (bottom - top) + "px"; y = top; origin = "top"; }
+        else if (aTop - 6 - top >= bottom - (aBot + 6)) { y = top; origin = "bottom"; }
+        else { y = bottom - mh; origin = "top"; }
       }
       menuEl.style.left = Math.round(x) + "px"; menuEl.style.top = Math.round(y) + "px";
       menuEl.style.setProperty("--origin", origin + " " + side);
@@ -770,14 +776,21 @@
     if (S.menu && !S.menu.el.contains(e.target) && !(S.sub && S.sub.el.contains(e.target)) && !(S.menu.anchor && S.menu.anchor.contains(e.target)) && e.target !== cin && !cin.contains(e.target)) closeMenu();
   }, true);
 
-  // #128 (Paper A): 280 px, one list grouped by provider; the class before the menu is placed (its rows set its height)
-  const MM_W = 280;
+  // #128 v2 (Paper « #128 Menu des modèles · v2 ancien menu + groupes »): the old menu (6.4, 17US-0), 300 px; the class
+  // before the menu is placed (its rows set its height)
+  const MM_W = 300, SUB_W = 214;
+  // #128: the hint under another provider's model (hover, keyboard focus) makes its menu taller: the region asked of the
+  // host follows (bubble)
+  function reaskOnHint(el) {
+    const reask = () => requestAnimationFrame(() => { if (S.menu && el.isConnected && el.querySelector(".mm-x")) publishSize(); });
+    for (const t of ["pointerover", "pointerout", "focusin"]) el.addEventListener(t, reask);
+  }
   function openModelMenu(anchor) {
-    openMenu(anchor, { label: "Modèle et effort", items: modelItems("main"), align: "right", width: MM_W, cls: "models mm-list" });
+    openMenu(anchor, { label: "Modèle et effort", items: modelItems("main"), align: "right", width: MM_W, cls: "models" });
     if (!S.menu) return;
     S.menu.view = "main";
     if (!BUB()) return;
-    // Bubble: « Effort › » opens a real sub-menu next to this one (pointer: a short pause on the row)
+    // Bubble: « Plus de modèles › » and « Effort › » open a real sub-menu next to this one (pointer: a short pause on the row)
     S.menu.el.addEventListener("pointerover", (e) => {
       const row = e.target.closest && e.target.closest(".mi");
       if (!row || !S.menu || !S.menu.el.contains(row)) return;
@@ -785,15 +798,14 @@
       if (row.dataset.sub) { if (!S.sub || S.sub.view !== row.dataset.key) subTimer = setTimeout(() => openSub(row.dataset.key, row, false), 120); }
       else if (S.sub) subTimer = setTimeout(() => closeSub(), 250);
     });
-    // #128: the hint under another provider's model (hover, keyboard focus) makes the menu taller: the region asked of the
-    // host follows (the menu grows upward from its button)
-    const reask = () => requestAnimationFrame(() => { if (S.menu && S.menu.el.querySelector(".mm-x")) publishSize(); });
-    for (const t of ["pointerover", "pointerout", "focusin"]) S.menu.el.addEventListener(t, reask);
+    reaskOnHint(S.menu.el);
+    S.menu.el.addEventListener("pointerleave", () => { if (S.menu) S.menu.el._keepTop = null; });   // #128 v2: see refreshModelMenu
   }
-  // B 1.9 (Paper 6.4: 17VU-0 next to 17US-0): in the bubble, Effort is a true sub-menu beside the model menu (#128: every
-  // model is in the list, no « Autres modèles » any more) — on its right, or on its left when the host cannot give the
-  // room (`overflowRight` / `overflowLeft`). Tops aligned, 4 px apart. ArrowRight or the pointer opens; ArrowLeft or Échap closes it and returns to its row. The panel, too narrow
-  // for two menus side by side, keeps the view inside the menu (« ‹ Effort »).
+  // B 1.9 / #128 v2 (Paper 6.4: 17VU-0 next to 17US-0): in the bubble, « Plus de modèles » and « Effort » are true sub-menus
+  // beside the model menu, 214 px — on its right, or on its left when there is no room (`overflowRight` / `overflowLeft`).
+  // Tops aligned, 4 px apart, slid to stay whole in the room there is (never cut). ArrowRight, Entrée or the pointer opens;
+  // ArrowLeft or Échap closes it and returns to its row. The panel, too narrow for two menus side by side (320-380 px, at the
+  // window's right edge), keeps the view inside the menu (« ‹ Plus de modèles », « ‹ Effort »), as the old menu did.
   let subTimer = 0;
   function subItems(view) { const it = modelItems(view); while (it.length && (it[0].back || it[0].sep)) it.shift(); return it; }
   function closeSub(restore) {
@@ -810,31 +822,34 @@
     clearTimeout(subTimer);
     if (S.sub && S.sub.view === view) { if (focus) subFocus(); return; }
     let from = null;
-    if (S.sub && !isReduced()) {   // R41: Effort ↔ Autres modèles: the sub-menu transforms
+    if (S.sub && !isReduced()) {   // R41: Effort ↔ Plus de modèles: the sub-menu transforms
       const old = S.sub; S.sub = null; clearTimeout(subTimer);
       if (old.row) old.row.setAttribute("aria-expanded", "false");
       from = ghostMenu(old.el);
     } else closeSub();
-    const width = 214;   // « Effort » (Paper 17VU-0), as before #128
-    const el = h("div", { class: "menu models sub-menu", role: "menu", "aria-label": "Effort", tabindex: "-1" });
+    const width = SUB_W;   // Paper 17VU-0 / #128 v2: both sub-menus 214 px
+    const el = h("div", { class: "menu models sub-menu", role: "menu", "aria-label": view === "effort" ? "Effort" : "Plus de modèles", tabindex: "-1" });
     fillMenu(el, subItems(view));
     menuLayer.appendChild(el);
     S.sub = { el, view, row };
     row.setAttribute("aria-expanded", "true");
     const parent = S.menu.el;
     floatSet(el, (lim, H) => {
-      const W = S.lay.maxW;
+      const W = S.lay.maxW, top = -lim.top, bottom = H + lim.bottom;
       el.style.width = width + "px"; el.style.maxHeight = "";
-      const x0 = parseFloat(parent.style.left) || 0, y0 = parseFloat(parent.style.top) || 0, pw = parent.offsetWidth, sh = el.offsetHeight;
+      const x0 = parseFloat(parent.style.left) || 0, y0 = parseFloat(parent.style.top) || 0, pw = parent.offsetWidth;
+      let sh = el.offsetHeight;
       let x = x0 + pw + 4, from = "left";
-      if (x + width > W + lim.right) { x = x0 - 4 - width; from = "right"; if (x < -lim.left) { x = Math.max(-lim.left, x0 + pw - width); from = "left"; } }
-      let y = y0;
-      if (y + sh > H + lim.bottom) y = Math.max(-lim.top, H + lim.bottom - sh);
+      if (x + width > W + lim.right) { x = x0 - 4 - width; from = "right"; if (x < -lim.left) { x = Math.max(-lim.left, Math.min(x0 + pw - width, W + lim.right - width)); from = "left"; } }
+      // #128: whole in the room there is — slid up (or down) from the menu's top; taller than all that room: it scrolls there
+      if (sh > bottom - top) { el.style.maxHeight = (bottom - top) + "px"; sh = el.offsetHeight; }
+      const y = Math.max(top, Math.min(y0, bottom - sh));
       el.style.left = Math.round(x) + "px"; el.style.top = Math.round(y) + "px";
       el.style.setProperty("--origin", "top " + from);
       return { x, y, w: width, h: sh, pad: SHADOW.none };
     });
     if (from) morphFrom(from, el);
+    reaskOnHint(el);
     el.addEventListener("pointerover", () => clearTimeout(subTimer));
     el.addEventListener("keydown", (e) => {
       const its = Array.from(el.querySelectorAll(".mi:not([aria-disabled='true'])")), i = its.indexOf(document.activeElement);
@@ -860,18 +875,92 @@
     if (!S.menu) return;
     S.menu.view = view;
     fillMenu(S.menu.el, modelItems(view));
-    S.menu.el.classList.toggle("mm-list", view === "main");   // #128: the grouped list; « ‹ Effort » keeps its look (17VU-0)
-    S.menu.el.setAttribute("aria-label", view === "effort" ? "Effort" : "Modèle et effort");
-    place(S.menu.el, S.menu.anchor, "right", view === "effort" ? 214 : MM_W);
+    S.menu.el.setAttribute("aria-label", view === "effort" ? "Effort" : view === "more" ? "Plus de modèles" : "Modèle et effort");
+    place(S.menu.el, S.menu.anchor, "right", view === "effort" ? SUB_W : MM_W);   // « ‹ Plus de modèles »: 300 (Paper v2, board 1)
     const its = menuItems();
     const back = from && S.menu.el.querySelector(".mi[data-key='" + from + "']");
     (back || its.find((i) => i.getAttribute("aria-checked") === "true") || its.find((i) => !i.classList.contains("back")) || its[0] || S.menu.el).focus({ preventScroll: BUB() });
+  }
+  // #128 v2 (coordinator, 24 Nov): a new list from the host — the background read of an agent's models, a session that
+  // starts, the cache — redraws an OPEN model menu at once, the same view: the keyboard focus stays on the same row (else the
+  // chosen one); while the pointer is over the menu its top stays where it is (it grows downward, over its button if need be,
+  // still whole), so the row under the pointer stays under it; the bubble's open sub-menu is redrawn too. The same list:
+  // nothing is touched.
+  const menuSig = (el) => Array.from(el.children).map((n) => n.className + "|" + n.textContent + "|" + (n.getAttribute("aria-checked") || "") + (n.getAttribute("aria-disabled") || "")).join("|");
+  function rowKey(n) {
+    if (!n || !n.classList) return "";
+    if (n.classList.contains("mm-act")) return "act:" + n.getAttribute("aria-label");
+    if (!n.classList.contains("mi")) return "";
+    if (n.classList.contains("back")) return "back";
+    if (n.dataset.key) return "key:" + n.dataset.key;
+    let g = n.previousElementSibling; while (g && !g.classList.contains("mm-head")) g = g.previousElementSibling;
+    return "row:" + (g ? g.querySelector(".mm-hl").textContent : "") + "|" + n.querySelector(".lb").textContent;
+  }
+  const findRow = (root, key) => key ? Array.from(root.querySelectorAll(".mi, .mm-act")).find((n) => rowKey(n) === key) || null : null;
+  function refreshModelMenu() {
+    const M = S.menu;
+    if (!M || M.combo || !M.view || !M.el.isConnected || M.el.classList.contains("menu-ghost")) return;
+    const fresh = h("div"); fillMenu(fresh, modelItems(M.view));
+    const sub = S.sub && S.sub.el.isConnected ? S.sub : null, freshSub = sub ? h("div") : null;
+    if (sub) fillMenu(freshSub, subItems(sub.view));
+    if (menuSig(fresh) === menuSig(M.el) && (!sub || menuSig(freshSub) === menuSig(sub.el))) return;
+    const a = document.activeElement, inSub = !!(sub && sub.el.contains(a)), inMain = M.el.contains(a);
+    const key = inMain || inSub ? rowKey(a) : "";
+    const hovered = M.el.matches(":hover") || !!(sub && sub.el.matches(":hover"));
+    const was = M.el.getBoundingClientRect();
+    clear(M.el); while (fresh.firstChild) M.el.appendChild(fresh.firstChild);
+    if (sub) {
+      const row = M.el.querySelector(".mi[data-key='" + sub.view + "']");
+      if (!row || !freshSub.querySelector(".mi")) closeSub();
+      else { clear(sub.el); while (freshSub.firstChild) sub.el.appendChild(freshSub.firstChild); sub.row = row; row.setAttribute("aria-expanded", "true"); }
+    }
+    if (BUB()) {
+      M.el._keepTop = hovered ? was.top - app.getBoundingClientRect().top : null;
+      publishSize();
+    } else if (hovered) {   // the panel: the same top, the menu whole in the page
+      const box = M.el.offsetParent ? M.el.offsetParent.getBoundingClientRect() : { top: 0, height: innerHeight };
+      M.el.style.bottom = ""; M.el.style.top = Math.max(8, Math.min(was.top - box.top, box.height - 8 - M.el.offsetHeight)) + "px";
+    } else place(M.el, M.anchor, "right", M.view === "effort" ? SUB_W : MM_W);
+    if (!key) return;
+    const root = inSub && S.sub ? S.sub.el : M.el;
+    const t = findRow(root, key) || root.querySelector(".mi[aria-checked='true']") || root.querySelector(".mi:not(.back):not([aria-disabled='true'])");
+    if (t) t.focus({ preventScroll: true });
   }
   // R42: the model changes at any time with no confirmation. The same provider keeps the chat; another provider (#128)
   // opens a new chat when this one has messages — the host decides (`setModel` / `setAgent` with the other agent), the page
   // only tells it beforehand (the row's hint). Agents are compared by id: the state is sent again often (bubble), so the
   // same agent may be another object.
   const chatHasMessages = () => S.users.size > 0 || S.turns.size > 0;
+  // #128 v2 — which models the first level shows (Val: « seulement les derniers modèles »), from the names the agent gives,
+  // the same rule for every agent (nothing written per agent or per model):
+  //   · a model's LINE is what its name says before its version number — after it when the name starts with the number —
+  //     and its VERSION that number: « Opus 5.5 » → opus 5.5, « GPT-5.5 mini » → gpt 5.5, « GPT-5.3-Codex » → gpt 5.3,
+  //     Codex's own names « 6.2 Sol » → sol 6.2, « 6.1 Terra » → terra 6.1;
+  //   · first level: the models of each line's newest version, in the agent's order (Opus 5.5, Sonnet 5.5, Fable 5.2,
+  //     Haiku 5.5; GPT-5.5, GPT-5.5 mini). A context-size variant of one of them (« (1M context) », « [1m] ») is not;
+  //   · the agent's default model (« Par défaut ») is always on the first level;
+  //   · a name without a version: « Plus de modèles » when the agent versions its other models; an agent that versions
+  //     none keeps its first 4 models on the first level (the old menu's « au-delà de 4 modèles »);
+  //   · everything else: « Plus de modèles », in the agent's order.
+  const CTX_VARIANT = /\s*(?:\(\s*\d+\s*[mk]\b[^)]*\)|\[\s*\d+\s*[mk]\s*\])\s*$/i, FIRST_WHEN_UNVERSIONED = 4;
+  function splitModels(models) {
+    const ms = models || [];
+    const info = ms.map((m) => {
+      const name = String(m.label || m.id || ""), base = name.replace(CTX_VARIANT, ""), v = /\d+(?:\.\d+)*/.exec(base);
+      const before = v ? base.slice(0, v.index).toLowerCase().replace(/[\s\-_.:/]+$/, "").trim() : null;
+      return { m, ctx: base !== name, v: v ? v[0].split(".").map(Number) : null, line: v ? before || base.slice(v.index + v[0].length).toLowerCase().replace(/^[\s\-_.:/]+/, "").trim() : null };
+    });
+    const cmp = (a, b) => { for (let i = 0; i < Math.max(a.length, b.length); i++) { const d = (a[i] || 0) - (b[i] || 0); if (d) return d; } return 0; };
+    let firstSet;
+    if (!info.some((x) => x.v)) firstSet = new Set(info.slice(0, FIRST_WHEN_UNVERSIONED).map((x) => x.m));
+    else {
+      const newest = new Map();
+      for (const x of info) if (x.v && (!newest.has(x.line) || cmp(x.v, newest.get(x.line)) > 0)) newest.set(x.line, x.v);
+      firstSet = new Set(info.filter((x) => x.v && !x.ctx && cmp(x.v, newest.get(x.line)) === 0).map((x) => x.m));
+    }
+    for (const x of info) if (x.m.isDefault) firstSet.add(x.m);
+    return { first: ms.filter((m) => firstSet.has(m)), more: ms.filter((m) => !firstSet.has(m)) };
+  }
   function chooseModel(a, m) {
     const cur = curAgent();
     closeSub(); closeMenu(true);
@@ -890,33 +979,49 @@
         onSelect: () => { post("setEffort", { id: e.id }); S.st.effort = e.id; closeMenu(true); renderComposerBar(); } });
       return items;
     }
-    // #128 (Paper A): one list — each provider the host lists, in its order (Claude Code, then Codex): its header (logo, name),
-    // then every model the agent said (never a name written here). A provider that cannot answer yet keeps its group: the
-    // header says why with the action that fixes it (Connecter, Installer, Réessayer — the existing flows), its models greyed
-    // out (32 %), not choosable. A model of the other provider says, under its name, that it opens a new chat (when this
-    // one has messages). The effort stays the last row, its sub-menu as before.
-    const hasChat = chatHasMessages();
+    // #128 v2 (Paper « #128 Menu des modèles · v2 ancien menu + groupes »): the old menu, and one group per provider the host
+    // lists, in its order (Claude Code, then Codex): its header (logo, name), then its LATEST models (`splitModels`, never a
+    // name written here); every other model under « Plus de modèles › », grouped the same way. A provider that cannot answer
+    // yet keeps its group: the header says why with the action that fixes it (Connecter, Installer, Réessayer — the existing
+    // flows), its models greyed out (32 %), not choosable. A model of the other provider says, under its name, that it opens
+    // a new chat (when this one has messages). « Plus de modèles › » then « Effort › » at the bottom, as before.
+    const hasChat = chatHasMessages(), agents = S.st.agents || [];
     const row = (a, label, m, usable) => {
       const other = !cur || a.id !== cur.id;
-      return { radio: true, label, tag: m && m.isDefault ? "Par défaut" : null, cls: "mm-row" + (other && usable && hasChat ? " mm-x" : ""),
+      return { radio: true, label, tag: m && m.isDefault ? "Par défaut" : null, cls: other && usable && hasChat ? "mm-x" : null,
                hint: other && usable && hasChat ? "Passer à " + a.name + " ouvre un nouveau chat" : null, disabled: !usable,
                checked: !other && (m ? m.id === S.st.model : !curModel()), onSelect: () => chooseModel(a, m) };
     };
-    (S.st.agents || []).forEach((a, i) => {
-      const usable = CONNECTED.includes(a.status), ms = a.models || [];
+    if (view === "more") {
+      items.push(back("Plus de modèles"));
+      for (const a of agents) {
+        const rest = splitModels(a.models).more;
+        if (!rest.length) continue;
+        const usable = CONNECTED.includes(a.status);
+        items.push({ sep: true }, { node: groupHead(a, usable) });
+        for (const m of rest) items.push(row(a, m.label, m, usable));
+      }
+      return items;
+    }
+    let more = false;
+    agents.forEach((a, i) => {
+      const usable = CONNECTED.includes(a.status), ms = a.models || [], split = splitModels(ms);
       if (i) items.push({ sep: true });
       items.push({ node: groupHead(a, usable) });
-      for (const m of ms) items.push(row(a, m.label, m, usable));
+      for (const m of split.first) items.push(row(a, m.label, m, usable));
+      if (split.more.length) more = true;
       // #129 / R13: a provider ready but whose models are not known yet (new profile, its agent never started here) — its
       // group and one row naming the model it will use (the button's own fallback, FALLBACK_MODEL): the bubble's menu
       // is never the empty 14 px box #129 fixed, and the choice is a model, never « Claude Code » / « Codex »
       if (!ms.length && usable) items.push(row(a, fallbackModel(a).label, null, true));
     });
-    if (efforts.length) items.push({ sep: true }, { label: "Effort", value: curEffort() ? effortName(curEffort().id, curEffort().label) : "", sub: true, key: "effort", cls: "mm-eff", onSelect: subOrView("effort") });
+    if (more || efforts.length) items.push({ sep: true });
+    if (more) items.push({ label: "Plus de modèles", sub: true, key: "more", onSelect: subOrView("more") });
+    if (efforts.length) items.push({ label: "Effort", value: curEffort() ? effortName(curEffort().id, curEffort().label) : "", sub: true, key: "effort", onSelect: subOrView("effort") });
     return items;
   }
-  // #128: a provider's header (Paper: 28 px, logo 14, 12/16 Medium at 50 %); not ready: « Codex · non connecté » and its
-  // action at the right (32 px row, accent button 24 px)
+  // #128 v2: a provider's header (Paper: logo 14 + name 12/16 Medium #929292, 8 apart, padding 6 10 2, not clickable); not
+  // ready: « Codex · non connecté » and its action at the right (accent button 22 px)
   const MM_STATE = { notConnected: "non connecté", notInstalled: "pas installé", error: "erreur" };
   function groupHead(a, usable) {
     const act = usable ? null : agentAction(a);
@@ -1250,7 +1355,7 @@
   // again (above, then under, then inside the surface). The limits only shrink while something floats: it ends.
   // The one bound (px CSS) on the transparent margin around the surface — the host's inset and the overflow asked — so a
   // bubble whose bottom stays fixed can grow by up to this much at once without its surface moving (H1: PageInsetCapCss)
-  const SIDES = ["top", "right", "bottom", "left"], CAP = 1000;
+  const SIDES = ["top", "right", "bottom", "left"], CAP = 1000, OV_MAX = 400;
   const SHADOW = { none: { top: 0, right: 0, bottom: 0, left: 0 },
                    menu: { top: 32, right: 48, bottom: 64, left: 48 },    // 0 16px 48px #00000080 (Paper 14RK-0)
                    tip: { top: 16, right: 24, bottom: 32, left: 24 } };   // 0 8px 24px #00000080 (send button bubble)
@@ -1268,7 +1373,9 @@
     const room = {};
     // E4 (b): and inside the page area the host measured (`layout.room`, px from each side of the surface to the page area's
     // edge) — a menu turns before the host has to refuse it
-    for (const k of SIDES) room[k] = Math.min(lim[k], S.insetKnown ? S.inset[k] : CAP, S.lay.room && Number.isFinite(S.lay.room[k]) ? S.lay.room[k] : CAP);
+    // #128: and never more than the host shows of an overflow (`bubble.size` overflow* are bounded to OV_MAX, chat-bubble.h
+    // MaxOverflowCss): a menu placed further out was cut at 400 px from the surface
+    for (const k of SIDES) room[k] = Math.min(lim[k], OV_MAX, S.insetKnown ? S.inset[k] : CAP, S.lay.room && Number.isFinite(S.lay.room[k]) ? S.lay.room[k] : CAP);
     for (const [el, placer] of Array.from(floats)) {
       if (!el.isConnected || el.hidden) { floats.delete(el); continue; }
       const r = placer(room, H), p = r.pad || SHADOW.none;
@@ -2937,6 +3044,7 @@
       if (!S.st.agentId && S.st.agents[0]) S.st.agentId = S.st.agents[0].id;
       renderHeader(); renderComposerBar(); updateView(); renderDock(); refreshWaiting();
       if (S.historyOpen) renderHistoryList();
+      refreshModelMenu();   // #128 v2: an open model menu shows the new list at once
     },
     // B 1.8: the page's layout — the panel on the right (default) or the comment-mode bubble. Sent at each opening and switch.
     layout(m) {

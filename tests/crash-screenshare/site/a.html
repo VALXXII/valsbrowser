@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>A</title></head>
+<body>
+<h1>Page A</h1>
+<p>Local test page (tests/crash-screenshare). The frame below comes from another host (other site).</p>
+<script>
+const frame = new URLSearchParams(location.search).get('frame');
+if (frame) { const f = document.createElement('iframe'); f.src = frame; f.allow = 'display-capture'; document.body.appendChild(f); }
+addEventListener('message', e => { if (e.source !== window) window.lastFrameAnswer = e.data; });
+</script>
+</body></html>

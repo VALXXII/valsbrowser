@@ -638,6 +638,7 @@ void SyncCardFrame(RECT r) {
     if (CardOn() && Shown() && r.right > r.left) { const float d = GetDpiForWindow(window) / 96.f; f = {r.left / d, r.top / d, r.right / d, r.bottom / d}; }
     if (f.left != chrome.chatFrame.left || f.top != chrome.chatFrame.top || f.right != chrome.chatFrame.right || f.bottom != chrome.chatFrame.bottom) { chrome.chatFrame = f; InvalidateRect(window, nullptr, FALSE); }
     SyncChatCorners();
+    ::SyncResizeGrips();   // the window's resize border back above the chat's WebView (src/resize-border.h)
 }
 void FinishClose();
 struct SlideClient : AUI::Animator::Client {

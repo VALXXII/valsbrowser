@@ -6,7 +6,7 @@ namespace NativeChrome::Loading {
 inline constexpr float WidthMs=360, FadeMs=200;
 struct Visual { float fraction=0, opacity=0; };
 class State {
-    uint64_t id_=0; bool active_=false,complete_=false;
+    uint64_t id_=0; bool active_=false,complete_=false,waiting_=false;
     float from_=0,target_=0; Motion::Time changed_{},finished_{};
     static double Ms(Motion::Time now,Motion::Time start){return std::max(0.,std::chrono::duration<double,std::milli>(now-start).count());}
     float Fraction(Motion::Time now) const {
@@ -15,8 +15,14 @@ class State {
     }
 public:
     void Start(uint64_t id,Motion::Time now) {
-        if(active_&&!complete_&&id==id_)return; // redirects keep their progress
-        id_=id;active_=true;complete_=false;from_=0;target_=.15f;changed_=now;
+        if(active_&&!complete_&&(id==id_||waiting_)){id_=id;waiting_=false;return;} // redirects keep their progress; a waited navigation goes on with its bar
+        id_=id;active_=true;complete_=false;waiting_=false;from_=0;target_=.15f;changed_=now;
+    }
+    // A navigation that waits before it starts (restored tabs while the ad blocker is replaced): its bar shows at once,
+    // and the navigation's own Start continues it (no jump back to zero).
+    void Wait(Motion::Time now) {
+        if(active_&&!complete_)return;
+        id_=0;active_=true;complete_=false;waiting_=true;from_=0;target_=.15f;changed_=now;
     }
     void Committed(Motion::Time now) { if(!active_||complete_)return;from_=Fraction(now);target_=.65f;changed_=now; }
     void Finish(uint64_t id,Motion::Time now) {
@@ -24,7 +30,7 @@ public:
         from_=Fraction(now);target_=1;changed_=finished_=now;complete_=true;
     }
     bool IsLoading() const { return active_&&!complete_; }
-    void Clear(){active_=complete_=false;}
+    void Clear(){active_=complete_=waiting_=false;}
     Visual Sample(Motion::Time now,bool reduced=false) const {
         if(!active_)return {};
         float elapsed=float(Ms(now,finished_));

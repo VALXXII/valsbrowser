@@ -1062,10 +1062,12 @@
       }
     },
     "O9": {
-      "gap": {
-        "lot": 5,
-        "why": "un essai réel Claude Code et un essai réel Codex (décision 4) ; le pont est déjà couvert par la suite annotations"
-      }
+      "tests": [
+        {
+          "suite": "real-trial-records",
+          "what": "tests/chat/real_trial_record_test.py — un compte rendu par agent (tests/chat/real-trials/claude.json, codex.json) d'un essai RÉEL : toutes les étapes passées, seules cartes acceptées = la modification de checkout.css et des lectures, aucune configuration réelle modifiée"
+        }
+      ]
     },
     "O10": {
       "gap": {
@@ -1074,10 +1076,12 @@
       }
     },
     "O11": {
-      "gap": {
-        "lot": 5,
-        "why": "le fil de surveillance seulement en mode test, puis contrat"
-      }
+      "tests": [
+        {
+          "suite": "o11-idle-bubble",
+          "what": "tests/chat/chat_qa_idle_bubble.py — la bulle reste ouverte, le fil de diagnostic ne démarre pas dans le navigateur publié (et démarre en mode diagnostic) ; les deux mesures du processeur sont écrites au rapport, sans seuil"
+        }
+      ]
     },
     "O12": {
       "tests": [
@@ -1136,6 +1140,66 @@
         {
           "suite": "focus-annotation",
           "what": "tests/focus/annotation_focus_journey.py — Mode Focus et mode Annotation ensemble : bandeau et chat gardés, rien ne saute (propriétaire : Mode Focus)"
+        }
+      ]
+    },
+    "lot1c-cadre-dans-iframe": {
+      "tests": [
+        {
+          "suite": "page-frames",
+          "what": "tests/chat/final/page_frames.py — iframe de même origine (bordure, marge intérieure), iframe imbriqué, page défilée, iframe défilé (élément coupé / sorti), iframe retiré, autre origine et canvas = une seule boîte ; 100 % et 125 %"
+        },
+        {
+          "suite": "journeys",
+          "what": "e1b_cadre_dans_iframe — vrai navigateur : le cadre de la bulle est autour de l'élément cliqué dans l'iframe, encore après un défilement de la page"
+        }
+      ]
+    },
+    "lot5-narrateur-vraie-fenetre": {
+      "tests": [
+        {
+          "suite": "narrator-window",
+          "what": "tests/chat/chat_qa_narrator.py — boutons du bandeau nommés, focus dans la saisie de la bulle, bulle dans l'arbre d'une fenêtre du navigateur, Tab / Maj+Tab, carte d'autorisation annoncée et répondue au clavier, Échap"
+        }
+      ]
+    },
+    "lot1d-bulle-collee-au-bord-iframe": {
+      "tests": [
+        {
+          "suite": "page-frames",
+          "what": "tests/chat/final/page_frames.py « case 1 » — élément sorti de son iframe par le haut, par le bas, iframe imbriqué, page défilée pendant ce temps, retour ; dans la page elle-même rien ne change"
+        },
+        {
+          "suite": "chat-units",
+          "what": "tests/chat/host_contract_test.py « lot 1d, case 1 = A »"
+        },
+        {
+          "suite": "journeys",
+          "what": "e1b_cadre_dans_iframe — vrai navigateur : la bulle reste collée au bord haut de l'iframe, sans cadre, puis revient"
+        }
+      ]
+    },
+    "lot1d-iframe-recharge": {
+      "tests": [
+        {
+          "suite": "page-frames",
+          "what": "tests/chat/final/page_frames.py « case 3 » — iframe rechargé : cadre de la bulle et marque « En attente » retrouvés ; élément absent : rien de dessiné, « gone » une fois ; après rechargement de la page : retrouvé par sa clé"
+        },
+        {
+          "suite": "chat-units",
+          "what": "chat_units_test.cpp (FrameKey) et host_contract_test.py « lot 1d, case 3 » (3 contrats)"
+        },
+        {
+          "suite": "journeys",
+          "what": "e1b_cadre_dans_iframe — vrai navigateur : l'iframe se recharge, la bulle reste ouverte et son cadre revient"
+        }
+      ]
+    },
+    "lot1e-inspecteur-marge-enfant": {
+      "tests": [
+        {
+          "suite": "page-frames",
+          "what": "tests/chat/final/page_frames.py « margins » — planche Paper 5.3 au pixel (aplat de marge, gap hachuré, deux pastilles), formulaire (20 / 6 / 10 / 18), rangée, grille, sans marge, message de sélection"
         }
       ]
     }

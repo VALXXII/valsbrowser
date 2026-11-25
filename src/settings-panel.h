@@ -24,6 +24,7 @@
 #include <windowsx.h>
 #include <dwmapi.h>
 #include "drawer-corners.h"   // Mode Focus: the docked drawer's antialiased top corners
+#include "resize-border.h"     // the window's resize border wins over the drawer on the window's edges
 #include <commctrl.h>
 #include <array>
 #include <ctime>
@@ -1831,7 +1832,8 @@ private:
             const wchar_t* labels[] = {TR(permission_choice_allow), TR(permission_ask), TR(permission_choice_block)};
             const wchar_t* notes[] = {TR(permission_choice_allow_note), TR(permission_choice_ask_note), TR(permission_choice_block_note)};
             std::vector<ContextMenu::Item> items;
-            for (int i = 0; i < 3; ++i) { auto item = ContextMenu::Command(i + 1, labels[i], L"", true, perm.state == order[i]); item.description = notes[i]; items.push_back(item); }
+            // Screen sharing (#121) is only ever remembered as « Bloquer »: its list offers Demander / Bloquer, never Autoriser.
+            for (int i = 0; i < 3; ++i) { if (perm.kind == BrowserSettings::Permission::ScreenShare && order[i] == PermissionState::Allow) continue; auto item = ContextMenu::Command(i + 1, labels[i], L"", true, perm.state == order[i]); item.description = notes[i]; items.push_back(item); }
             const int chosen = Choose(items, hit, keyboard);
             if (chosen > 0 && order[chosen - 1] != perm.state) {
                 perm.state = order[chosen - 1];
@@ -2065,6 +2067,7 @@ private:
     static LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM w, LPARAM l) {
         auto* self = reinterpret_cast<Drawer*>(GetWindowLongPtrW(h, GWLP_USERDATA));
         if (msg == WM_NCCREATE) { self = static_cast<Drawer*>(reinterpret_cast<CREATESTRUCTW*>(l)->lpCreateParams); SetWindowLongPtrW(h, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self)); self->hwnd_ = h; }
+        { LRESULT border = 0; if (NativeChrome::ResizeBorder::Claim(h, msg, w, l, border)) return border; }   // flush with the window's right edge and bottom: its resize border wins there (src/resize-border.h)
         return self ? self->Handle(h, msg, w, l) : DefWindowProcW(h, msg, w, l);
     }
     LRESULT Handle(HWND h, UINT msg, WPARAM w, LPARAM l) {

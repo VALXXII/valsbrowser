@@ -158,6 +158,7 @@ void ScrollPageTo(unsigned serial,int axis,float value){
 }
 // Pointer on a handle window: hover widens it, a press drags it (the grab offset is kept).
 LRESULT CALLBACK ScrollbarProc(HWND h,UINT msg,WPARAM w,LPARAM l){
+    {LRESULT border=0;if(NativeChrome::ResizeBorder::Claim(h,msg,w,l,border))return border;} // the page's edge, over the window's resize border (src/resize-border.h)
     namespace SB=NativeChrome::Scrollbar;
     unsigned serial=0;int k=-1;
     for(auto& [id,s]:pageScrollbars)for(int i=0;i<2;++i)if(s.bars[i]==h){serial=id;k=i;}
