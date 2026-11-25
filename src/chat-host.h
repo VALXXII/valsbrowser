@@ -45,6 +45,8 @@
 #include "acp-client.h"
 #include "agent-runtime.h"
 #include "change-snapshots.h"
+#include "chat-model-probe.h"   // #128 v2: an agent's model list read before its first chat
+#include "chat-known-models.h"   // #128 v2: the models shown until the agent says its own
 
 namespace Chat {
 namespace SJ = StrictJson; namespace BA = BrowserAnnotations; namespace AH = AnnotationHost; namespace AUI = NativeChrome::Annotations;
@@ -298,7 +300,7 @@ SJ::Value OptionList(const Acp::ConfigOption* o, const std::string& defaultValue
         if (!defaultValue.empty() && c.value == defaultValue) v.Set("isDefault", SJ::Value::Bool(true)); arr.Push(std::move(v)); }
     return arr;
 }
-std::string DefaultModelOf(const std::string& id, const Acp::ConfigOption* o) { if (!o) return ""; auto it = agentFirstModel.find(id); return ChatOptions::DefaultModel(o->choices, it == agentFirstModel.end() ? std::string() : it->second); }
+std::string DefaultModelOf(const std::string& id, const Acp::ConfigOption* o) { if (!o) return ""; auto it = agentFirstModel.find(id); return ChatOptions::DefaultModel(o->choices, it == agentFirstModel.end() ? (ChatKnownModels::IsBuiltIn(id, o) ? o->currentValue : std::string()) : it->second); }   // #128 v2: the built-in list's recommended one
 // The current choice's name; an alias is named by the model it stands for (models) or not at all (efforts: no « Default »).
 std::string LabelOf(const Acp::ConfigOption* o, const std::string& agent = "") {
     if (!o) return "";
@@ -330,12 +332,12 @@ void SendState() {
         if (info.status == "notConnected") a.Set("notice", Str(info.signedIn ? TRF(chat_agent_signed_out, W(std::string(def.name))) : TRF(chat_agent_never_signed_in, W(std::string(def.name)))));
         if (info.progress >= 0) a.Set("progress", SJ::Value::Num(std::clamp(info.progress, 0.0, 1.0)));
         if (!info.auth.empty()) { SJ::Value ms = SJ::Value::Arr(); for (const auto& m : info.auth) if (ChatStore::ValidId(m.id)) { SJ::Value o = SJ::Value::Obj(); o.Set("id", Str(m.id)); o.Set("label", Str(m.name.empty() ? m.id : m.name)); ms.Push(std::move(o)); } a.Set("authMethods", std::move(ms)); }
-        {   const auto* mo = Acp::FindModelOption(info.options); a.Set("models", OptionList(mo, DefaultModelOf(def.id, mo))); }
+        {   const auto* mo = ChatKnownModels::Shown(def.id, info.options, info.known, info.cli); a.Set("models", OptionList(mo, DefaultModelOf(def.id, mo))); }   // #128 v2: never empty for an installed agent
         agents.Push(std::move(a));
     }
     st.Set("agents", std::move(agents)); st.Set("agentId", Str(agentId));
     const auto& info = agentInfo[agentId];
-    const auto* model = Acp::FindModelOption(info.options); const auto* effort = Acp::FindEffortOption(info.options);
+    const auto* model = ChatKnownModels::Shown(agentId, info.options, info.known, info.cli); const auto* effort = Acp::FindEffortOption(info.options);   // #128 v2: its built-in list until it says its own
     std::string WantedEffort(const Acp::ConfigOption* e); std::string WantedMode(const ModeView& mv); std::string NewSessionModel(const Acp::ConfigOption* m); std::string NewSessionEffort(const Acp::ConfigOption* e);
     // M (monkey 0.3.561 #78-#81): a conversation shown aside shows what ITS session will get (the user's choice, else the
     // start value) — never the running session of the other element; the session a choice is owed to shows that choice.

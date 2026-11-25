@@ -112,11 +112,21 @@ void Measure() {
 void Prepare() {
     const std::string js = ReadFile(pagesDir + L"\\" + names[current] + L".prepare.js");
     if (js.empty()) { After(150, [] { Measure(); }); return; }
+    // The script returns what to do next: "x,y" or "hover:x,y" (DevTools mouse move), "press:x,y" (move, then the
+    // button held down), "post:<text>" (the host posts <text> to the page, as main does), "wait:<ms>", or nothing.
     Script(Wide(js), [](const std::wstring& r) {
-        const std::wstring xy = Unquote(r); const auto comma = xy.find(L',');
+        std::wstring cmd = Unquote(r), arg = cmd; const auto colon = cmd.find(L':');
+        if (colon != std::wstring::npos) { arg = cmd.substr(colon + 1); cmd = cmd.substr(0, colon); } else cmd = L"hover";
+        if (cmd == L"post") { view->PostWebMessageAsString(arg.c_str()); After(300, [] { Measure(); }); return; }
+        if (cmd == L"wait") { After((UINT)_wtoi(arg.c_str()), [] { Measure(); }); return; }
+        const auto comma = arg.find(L',');
         if (comma == std::wstring::npos) { After(250, [] { Measure(); }); return; }
-        const std::wstring params = L"{\"type\":\"mouseMoved\",\"x\":" + xy.substr(0, comma) + L",\"y\":" + xy.substr(comma + 1) + L"}";
-        Cdp(L"Input.dispatchMouseEvent", params, [](HRESULT, const std::wstring&) { After(250, [] { Measure(); }); });
+        const std::wstring at = L"\"x\":" + arg.substr(0, comma) + L",\"y\":" + arg.substr(comma + 1);
+        const bool press = cmd == L"press";
+        Cdp(L"Input.dispatchMouseEvent", L"{\"type\":\"mouseMoved\"," + at + L"}", [press, at](HRESULT, const std::wstring&) {
+            if (!press) { After(900, [] { Measure(); }); return; }   // 600 ms tooltip delay + 120 ms fade
+            Cdp(L"Input.dispatchMouseEvent", L"{\"type\":\"mousePressed\",\"button\":\"left\",\"clickCount\":1," + at + L"}", [](HRESULT, const std::wstring&) { After(250, [] { Measure(); }); });
+        });
     });
 }
 void WaitFonts() {
@@ -127,6 +137,8 @@ void WaitFonts() {
 }
 void Next() {
     if (current >= names.size()) { Finish(); return; }
+    Cdp(L"Input.dispatchMouseEvent", L"{\"type\":\"mouseReleased\",\"button\":\"left\",\"clickCount\":1,\"x\":1,\"y\":1}", [](HRESULT, const std::wstring&) {});
+    Cdp(L"Input.dispatchMouseEvent", L"{\"type\":\"mouseMoved\",\"x\":1,\"y\":1}", [](HRESULT, const std::wstring&) {});
     fontPolls = 0;
     const std::wstring html = Wide(ReadFile(pagesDir + L"\\" + names[current] + L".html"));
     const HRESULT hr = html.empty() ? E_INVALIDARG : view->NavigateToString(html.c_str());
@@ -156,6 +168,9 @@ int wmain(int argc, wchar_t** argv) {
     }
     for (size_t s = 0; s <= list.size();) { const size_t e = list.find(L',', s); const std::wstring n = list.substr(s, e == std::wstring::npos ? std::wstring::npos : e - s); if (!n.empty()) names.push_back(n); if (e == std::wstring::npos) break; s = e + 1; }
     if (pagesDir.empty() || udf.empty() || outDir.empty() || names.empty()) { Say(L"usage: --pages DIR --names a,b --udf DIR --out DIR"); return 2; }
+    // WebView2 158 refuses a controller in a process that is not DPI-aware (0x8007139F, ERROR_INVALID_STATE): the browser
+    // declares it in its manifest, this host does it here, before the environment.
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     WNDCLASSW wc{}; wc.lpfnWndProc = WindowProc; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"ErrorPagesCheckHost"; RegisterClassW(&wc);
     // Never shown: the page renders, nothing appears on screen and the focus is never taken.

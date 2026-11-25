@@ -330,6 +330,7 @@ def main():
         if not args.real_only:
             compile_exe("fake-cli.exe", ["tests/acp/fake_cli.cpp"])
             compile_exe("acp_client_test.exe", ["tests/acp/acp_client_test.cpp", *CLIENT], CLIENT_LIBS)
+            compile_exe("model_probe_test.exe", ["tests/acp/model_probe_test.cpp", *CLIENT], CLIENT_LIBS)   # #128 v2
             compile_exe("agent_runtime_test.exe", ["tests/acp/agent_runtime_test.cpp", *RUNTIME], RUNTIME_LIBS)
         if args.real or args.real_only:
             compile_exe("real_adapter_probe.exe", ["tests/acp/real_adapter_probe.cpp", *RUNTIME], RUNTIME_LIBS)
@@ -338,6 +339,7 @@ def main():
         if not args.real_only:
             make_fixtures(TMP / "fixtures")
             run([OUT / "acp_client_test.exe", OUT / "fake-acp-agent.exe", TMP / "client"], "acp_client_test", env=env)
+            run([OUT / "model_probe_test.exe", OUT / "fake-acp-agent.exe", TMP / "probe", ROOT], "model_probe_test", env=env)   # #128 v2: an agent's models read before its first chat
             cmd = [OUT / "agent_runtime_test.exe", OUT / "fake-acp-agent.exe", OUT / "fake-cli.exe", TMP / "runtime", TMP / "fixtures"]
             run(cmd + ([] if args.quick else ["--network"]) + (["--no-console"] if args.no_console else []),
                 "agent_runtime_test" + (" (no network)" if args.quick else " (with real downloads)") + (" (no console)" if args.no_console else ""), env=env)

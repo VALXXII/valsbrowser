@@ -1,6 +1,7 @@
 // « Nouveautés » release notes (src/release-notes.h, src/modal.h Spec::notes, Paper p-L-0 142E-0 / 144O-0).
 //  A. model: read state format, `previous` syntax, automatic decision (positives and the targeted negatives:
-//     first install, dev, ordinary launch / other window, already seen, damaged or future state);
+//     first install, dev, ordinary launch / other window, already seen, damaged or future state, a build
+//     without notes, the owner's 0.3.840 case), notes content (sections, languages, the build's own notes);
 //  B. read state on disk: written only over a missing or own-format file, never over a damaged/future one;
 //  C. logo: the real assets/lottie/logo-spin.json through the production ThorVG player: refused by the
 //     default limits (other assets keep them), loaded with the opt-in ones, visible ink at several instants
@@ -8,7 +9,9 @@
 //  D. the real modal (offscreen-free window + RenderForTest PNGs): Mini 343 x 218 / Full height to content,
 //     Paper geometry, balanced wrapping, focus order, « Voir tout », X / Échap, focus restored, done once,
 //     onShown only when really shown, UIA nodes, logo clock only while shown, reduced motion poster,
-//     short windows (Full scrolls), FR / EN, 96 / 144 / 192 DPI.
+//     short windows (Full scrolls), FR / EN, 96 / 144 / 192 DPI — on the Paper sample text;
+//  E. the release's own notes (release-notes/notes.json, when the runner compiled them in): every line on at
+//     most two lines of the card, FR and EN, at most 4 lines per section (release-notes/README.md).
 // Usage: release_notes_test.exe <repo root> <output dir>
 #include <windows.h>
 #include <wincodec.h>
@@ -50,11 +53,24 @@ static Ink InkIn(const Image& img, float scale, D2D1_RECT_F dip, int delta = 12)
         }
     return k;
 }
-static Modal::Spec NotesSpec(const std::wstring& root, bool mini) {
-    std::vector<Modal::NoteSection> sections; const auto notes = RN::Current();
+// The Paper sample (142E-0 / 144O-0; the text validated on 2026-11-22, shipped once): the card's geometry is checked
+// on it. The release's own notes come from release-notes/notes.json (section E).
+static const std::string kId = "notes-0123456789abcdef";
+static RN::Content Sample() {
+    RN::Content c; c.id = "notes-paper-sample";
+    c.added.push_back({L"Mode Commentaire : discutez d’un élément de la page avec votre agent.", L"Comment mode: talk about any element of the page with your agent."});
+    c.added.push_back({L"Infobulles centrées, enfin visibles dans les panneaux.", L"Tooltips centered, and now visible in panels."});
+    c.fixed.push_back({L"Un téléchargement n’affiche plus de page d’erreur.", L"A download no longer shows an error page."});
+    c.fixed.push_back({L"Ctrl+A sélectionne tout dans chaque champ.", L"Ctrl+A selects all in every field."});
+    c.fixed.push_back({L"Saisie sans scintillement dans les champs de texte.", L"Typing without flicker in text fields."});
+    return c;
+}
+static Modal::Spec NotesSpecOf(const RN::Content& content, const std::wstring& root, bool mini) {
+    std::vector<Modal::NoteSection> sections; const auto notes = RN::Sections(content);
     for (const auto& s : notes) sections.push_back({s.kind == RN::Kind::Fixed, s.title, s.items});
     return Modal::ReleaseNotesSpec(std::move(sections), RN::Spoken(notes), root + L"\\assets\\lottie\\logo-spin.json", mini);
 }
+static Modal::Spec NotesSpec(const std::wstring& root, bool mini) { return NotesSpecOf(Sample(), root, mini); }
 
 int wmain(int argc, wchar_t** argv) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -75,7 +91,7 @@ int wmain(int argc, wchar_t** argv) {
         Check(RN::Parse("browser-release-notes 1\nseen=a\nseen=b\n").status == RN::Status::Invalid, "state: two seen lines = invalid");
         Check(RN::Parse("browser-release-notes 1\nseen=Bad Id\n").status == RN::Status::Invalid, "state: invalid id = invalid");
         Check(RN::Parse("browser-release-notes 1\n").status == RN::Status::Invalid, "state: header only = invalid");
-        Check(RN::ValidId(RN::NotesId), "NotesId is a valid id");
+        Check(RN::ValidId(kId) && RN::ValidId("notes-e353c1c9aaae864a") && !RN::ValidId(""), "ids: a notes id is valid, an empty one is not");
 
         using PK = RN::Previous::Kind;
         Check(RN::ParsePrevious("").kind == PK::None, "previous: absent = none (first install)");
@@ -85,41 +101,61 @@ int wmain(int argc, wchar_t** argv) {
         for (const char* bad : {"installed 0.3\n", "installed 0.3.x\n", "installed 0..3\n", "installed 0.3.1.2\n", "installed  0.3.1\n", "portable \n", "repair 0.3.1\n", "installed 0.3.1\nportable x\n", "installed 0.3.1234567\n"})
             Check(RN::ParsePrevious(bad).kind == PK::Invalid, (std::string("previous: invalid syntax refused: ") + bad).c_str());
 
-        const RN::State missing{}, seenOther{"older-notes", RN::Status::Ok}, seenNow{RN::NotesId, RN::Status::Ok};
+        const RN::State missing{}, seenOther{"older-notes", RN::Status::Ok}, seenNow{kId, RN::Status::Ok};
         RN::Previous inst; inst.kind = PK::Installed; inst.version = "0.3.379";
         RN::Previous same = inst; same.version = "0.3.380";
         RN::Previous port; port.kind = PK::Portable;
         RN::Previous none, invalid; invalid.kind = PK::Invalid;
         using D = RN::Decision;
-        Check(RN::Decide(true, inst, "0.3.380", missing) == D::Show, "decide: update from an installed version, never seen -> Mini");
-        Check(RN::Decide(true, inst, "0.3.380", seenOther) == D::Show, "decide: update, other notes seen -> Mini");
-        Check(RN::Decide(true, port, "0.3.380", missing) == D::Show, "decide: update from a portable copy -> Mini");
-        Check(RN::Decide(true, inst, "0.3.380", seenNow) == D::Hidden, "decide NEGATIVE: these notes already seen");
-        Check(RN::Decide(false, inst, "0.3.380", missing) == D::Hidden, "decide NEGATIVE: ordinary launch / another window (no Installed at start)");
-        Check(RN::Decide(true, inst, "dev", missing) == D::Hidden, "decide NEGATIVE: dev build (no M.m.B version)");
-        Check(RN::Decide(true, none, "0.3.380", missing) == D::Baseline, "decide NEGATIVE: first install -> baseline only, no modal");
-        Check(RN::Decide(true, none, "0.3.380", seenOther) == D::Hidden, "decide: no previous, state present -> nothing");
-        Check(RN::Decide(true, same, "0.3.380", missing) == D::Hidden, "decide NEGATIVE: previous = this version (repair)");
-        Check(RN::Decide(true, invalid, "0.3.380", missing) == D::Hidden, "decide NEGATIVE: unreadable/invalid previous");
-        Check(RN::Decide(true, inst, "0.3.380", RN::State{"", RN::Status::UnknownVersion}) == D::Hidden, "decide NEGATIVE: future state format");
-        Check(RN::Decide(true, inst, "0.3.380", RN::State{"", RN::Status::Invalid}) == D::Hidden, "decide NEGATIVE: damaged state");
-        Check(RN::Decide(true, inst, "0.3.380", RN::State{"", RN::Status::Unreadable}) == D::Hidden, "decide NEGATIVE: unreadable state");
+        Check(RN::Decide(true, inst, "0.3.380", missing, kId) == D::Show, "decide: update from an installed version, never seen -> Mini");
+        Check(RN::Decide(true, inst, "0.3.380", seenOther, kId) == D::Show, "decide: update, other notes seen -> Mini");
+        Check(RN::Decide(true, port, "0.3.380", missing, kId) == D::Show, "decide: update from a portable copy -> Mini");
+        Check(RN::Decide(true, inst, "0.3.380", seenNow, kId) == D::Hidden, "decide NEGATIVE: these notes already seen");
+        Check(RN::Decide(false, inst, "0.3.380", missing, kId) == D::Hidden, "decide NEGATIVE: ordinary launch / another window (no Installed at start)");
+        Check(RN::Decide(true, inst, "dev", missing, kId) == D::Hidden, "decide NEGATIVE: dev build (no M.m.B version)");
+        Check(RN::Decide(true, none, "0.3.380", missing, kId) == D::Baseline, "decide NEGATIVE: first install -> baseline only, no modal");
+        Check(RN::Decide(true, none, "0.3.380", seenOther, kId) == D::Hidden, "decide: no previous, state present -> nothing");
+        Check(RN::Decide(true, same, "0.3.380", missing, kId) == D::Hidden, "decide NEGATIVE: previous = this version (repair)");
+        Check(RN::Decide(true, invalid, "0.3.380", missing, kId) == D::Hidden, "decide NEGATIVE: unreadable/invalid previous");
+        Check(RN::Decide(true, inst, "0.3.380", RN::State{"", RN::Status::UnknownVersion}, kId) == D::Hidden, "decide NEGATIVE: future state format");
+        Check(RN::Decide(true, inst, "0.3.380", RN::State{"", RN::Status::Invalid}, kId) == D::Hidden, "decide NEGATIVE: damaged state");
+        Check(RN::Decide(true, inst, "0.3.380", RN::State{"", RN::Status::Unreadable}, kId) == D::Hidden, "decide NEGATIVE: unreadable state");
+        // Notes per release (design/release-notes-fix-report.md).
+        Check(RN::Decide(true, inst, "0.3.380", missing, "") == D::Hidden && RN::Decide(true, inst, "0.3.380", seenOther, "") == D::Hidden, "decide NEGATIVE: a build without notes -> no card (the generic notification stays)");
+        Check(RN::Decide(true, none, "0.3.380", missing, "") == D::Hidden, "decide: first install of a build without notes -> nothing recorded");
+        RN::Previous p837; p837.kind = PK::Installed; p837.version = "0.3.837";
+        const RN::State owner{"2026-11-comment-tooltips-download-selectall-typing", RN::Status::Ok};   // the owner's state file since 0.3.646
+        Check(RN::Decide(true, p837, "0.3.840", owner, "2026-11-comment-tooltips-download-selectall-typing") == D::Hidden, "decide: the 0.3.840 bug reproduced: the same fixed notes id as the one seen -> hidden");
+        Check(RN::Decide(true, p837, "0.3.841", owner, kId) == D::Show, "decide: the owner's case fixed: new release notes -> Mini after the update");
+        RN::Previous p841; p841.kind = PK::Installed; p841.version = "0.3.841";
+        Check(RN::Decide(true, p841, "0.3.842", seenNow, kId) == D::Hidden, "decide NEGATIVE: next release without new notes -> no card, the old notes never again");
+        Check(RN::Decide(true, inst, "0.3.842", seenNow, "notes-fedcba9876543210") == D::Show, "decide: next release with its own notes -> Mini again");
 
         // Content: the Paper text (FR), the same structure in EN.
         I18n::SetForProcess(I18n::Locale::Fr);
-        auto fr = RN::Current();
+        auto fr = RN::Sections(Sample());
         Check(fr.size() == 2 && fr[0].kind == RN::Kind::Added && fr[0].items.size() == 2 && fr[1].kind == RN::Kind::Fixed && fr[1].items.size() == 3, "content: Ajouts 2 + Corrections 3");
         Check(fr[0].title == L"Ajouts" && fr[1].title == L"Corrections" && fr[0].items[0] == L"Mode Commentaire : discutez d’un élément de la page avec votre agent." && fr[0].items[1] == L"Infobulles centrées, enfin visibles dans les panneaux."
               && fr[1].items[0] == L"Un téléchargement n’affiche plus de page d’erreur." && fr[1].items[1] == L"Ctrl+A sélectionne tout dans chaque champ." && fr[1].items[2] == L"Saisie sans scintillement dans les champs de texte.", "content FR: the validated text verbatim");
         Check(std::wstring(TR(release_notes_title)) == L"Nouveautés" && std::wstring(TR(release_notes_show_all)) == L"Voir tout", "content FR: title and Voir tout");
         I18n::SetForProcess(I18n::Locale::En);
-        auto en = RN::Current();
+        auto en = RN::Sections(Sample());
         Check(en.size() == 2 && en[0].items.size() == 2 && en[1].items.size() == 3 && en[0].title == L"Added" && en[1].title == L"Fixed" && std::wstring(TR(release_notes_show_all)) == L"Show all", "content EN: same structure, English text");
         bool differ = true; for (size_t s = 0; s < 2; ++s) for (size_t i = 0; i < en[s].items.size(); ++i) differ = differ && en[s].items[i] != fr[s].items[i];
         Check(differ, "content EN: every item translated");
         const auto spoken = RN::Spoken(en);
         Check(spoken.find(L"Added.") != std::wstring::npos && spoken.find(L"Typing without flicker in text fields.") != std::wstring::npos, "spoken: all sections and items");
         I18n::SetForProcess(I18n::Locale::Fr);
+        RN::Content onlyFixed = Sample(); onlyFixed.added.clear();
+        const auto of = RN::Sections(onlyFixed);
+        Check(of.size() == 1 && of[0].kind == RN::Kind::Fixed && of[0].title == L"Corrections", "content: an empty section is left out (Corrections only)");
+        RN::Content noId = Sample(); noId.id.clear(); RN::Content noLines; noLines.id = kId;
+        Check(noId.Empty() && noLines.Empty() && RN::Sections(noId).empty() && RN::Sections(noLines).empty() && !Sample().Empty(), "content: no id or no line = no notes");
+#ifdef BROWSER_RELEASE_NOTES_ID
+        Check(RN::Compiled().id == BROWSER_RELEASE_NOTES_ID && !RN::Compiled().Empty(), "content: the build's notes compiled in (release-notes/notes.json)");
+#else
+        Check(RN::Compiled().Empty(), "content: a build without the generated header has no notes");
+#endif
     }
 
     // ---- B. read state on disk ----------------------------------------------------------------------------
@@ -127,18 +163,18 @@ int wmain(int argc, wchar_t** argv) {
         const std::wstring dir = out + L"\\state"; std::filesystem::remove_all(std::filesystem::path(dir)); std::filesystem::create_directories(std::filesystem::path(dir));
         const std::wstring file = RN::PathIn(dir);
         Check(RN::Load(dir).status == RN::Status::Missing, "disk: missing file");
-        Check(RN::MarkSeen(dir, RN::NotesId) && RN::Load(dir).seen == RN::NotesId && Bytes(file) == RN::Format(RN::NotesId), "disk: MarkSeen writes the own format");
+        Check(RN::MarkSeen(dir, kId) && RN::Load(dir).seen == kId && Bytes(file) == RN::Format(kId), "disk: MarkSeen writes the own format");
         Check(RN::MarkSeen(dir, "next-notes") && RN::Load(dir).seen == "next-notes", "disk: a newer content id replaces the old one");
         bool noTemp = true; for (auto& e : std::filesystem::directory_iterator(std::filesystem::path(dir))) noTemp = noTemp && e.path().filename().wstring().find(L".tmp") == std::wstring::npos;
         Check(noTemp, "disk: no temp file left");
         const std::string future = "browser-release-notes 7\nseen=x\nwhatever\n"; Put(file, future);
-        Check(!RN::MarkSeen(dir, RN::NotesId) && Bytes(file) == future, "disk: a future format is never overwritten");
+        Check(!RN::MarkSeen(dir, kId) && Bytes(file) == future, "disk: a future format is never overwritten");
         const std::string damaged = "\x01\x02 not ours"; Put(file, damaged);
-        Check(!RN::MarkSeen(dir, RN::NotesId) && Bytes(file) == damaged, "disk: a damaged file is never overwritten");
+        Check(!RN::MarkSeen(dir, kId) && Bytes(file) == damaged, "disk: a damaged file is never overwritten");
         std::filesystem::remove(std::filesystem::path(file)); std::filesystem::create_directories(std::filesystem::path(file));   // a folder where the file should be
-        Check(RN::Load(dir).status == RN::Status::Unreadable && !RN::MarkSeen(dir, RN::NotesId), "disk: unreadable target -> nothing written");
-        Check(RN::Load(L"").status == RN::Status::Unreadable && !RN::MarkSeen(L"", RN::NotesId), "disk: no data root -> nothing written");
-        Check(!RN::MarkSeen(dir + L"\\missing-folder", RN::NotesId) && !std::filesystem::exists(std::filesystem::path(dir + L"\\missing-folder")), "disk: write failure reported, no folder created");
+        Check(RN::Load(dir).status == RN::Status::Unreadable && !RN::MarkSeen(dir, kId), "disk: unreadable target -> nothing written");
+        Check(RN::Load(L"").status == RN::Status::Unreadable && !RN::MarkSeen(L"", kId), "disk: no data root -> nothing written");
+        Check(!RN::MarkSeen(dir + L"\\missing-folder", kId) && !std::filesystem::exists(std::filesystem::path(dir + L"\\missing-folder")), "disk: write failure reported, no folder created");
     }
 
     // ---- C. logo through the production ThorVG player --------------------------------------------------
@@ -320,6 +356,33 @@ int wmain(int argc, wchar_t** argv) {
         Check(!d.LogoLoadedForTest() && !d.LogoAnimatingForTest() && InkIn(Load(png), 1.5f, {17, 17, 37, 37}).count > 40, "missing Lottie: static Paper glyph, no clock");
         d.Abort(); d.FinishAnimationsForTest();
     }
+    // ---- E. the release's own notes -----------------------------------------------------------------------
+    if (!RN::Compiled().Empty()) {
+        const auto& c = RN::Compiled();
+        Check(c.added.size() <= 4 && c.fixed.size() <= 4, "release notes: at most 4 lines per section");
+        for (I18n::Locale lang : {I18n::Locale::Fr, I18n::Locale::En}) {
+            I18n::SetForProcess(lang); const std::wstring tag = lang == I18n::Locale::Fr ? L"fr" : L"en";
+            const auto sections = RN::Sections(c);
+            d.Show(NotesSpecOf(c, root, false), area, [](const Modal::Result&) {}); d.FinishAnimationsForTest(); Pump(20);
+            const auto blocks = d.NoteBlocksForTest(); size_t at = 0; bool twoLines = true, shape = true; float worst = 0;
+            for (const auto& s : sections) {
+                at += 2;   // rule, heading
+                for (size_t i = 0; i < s.items.size(); ++i, ++at) {
+                    if (at >= blocks.size()) { shape = false; break; }
+                    const float h = blocks[at].bottom - blocks[at].top; worst = std::max(worst, h);
+                    if (h > 40.01f) { twoLines = false; std::printf("     too long (%.0f DIP): %ls\n", h, s.items[i].c_str()); }
+                }
+            }
+            char what[200]; std::snprintf(what, sizeof what, "release notes %ls: every line fits two lines of the card (tallest %.0f DIP), Full view %.0f DIP", tag.c_str(), worst, d.HeightForTest());
+            Check(shape && at == blocks.size() && twoLines, what);
+            Check(d.RenderForTest(out + L"\\release-full-" + tag + L"-144.png", 144), "release notes: Full render");
+            d.Abort(); d.FinishAnimationsForTest();
+            d.Show(NotesSpecOf(c, root, true), area, [](const Modal::Result&) {}); d.FinishAnimationsForTest();
+            Check(d.RenderForTest(out + L"\\release-mini-" + tag + L"-144.png", 144) && std::fabs(d.HeightForTest() - 218) < .01f, "release notes: Mini 343 x 218 rendered");
+            d.Abort(); d.FinishAnimationsForTest();
+        }
+        I18n::SetForProcess(I18n::Locale::Fr);
+    } else std::printf("note release notes: none compiled in (run through test-release-notes.ps1 to check release-notes/notes.json)\n");
     d.Dispose(); DestroyWindow(owner); CoUninitialize();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

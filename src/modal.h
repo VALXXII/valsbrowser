@@ -199,6 +199,27 @@ public:
         t->SetTransform(D2D1::Matrix3x2F::Translation(-viewMin, -viewMinY) * D2D1::Matrix3x2F::Scale(k, k) * D2D1::Matrix3x2F::Translation(x, y) * old);
         b->SetColor(color); t->FillGeometry(g, b); t->SetTransform(old);
     }
+    // One SVG layer of a multi-colour icon (Modal::Spec::hero): path data in a `view`-sized box drawn `size` at (left, top),
+    // filled solid (top == bottom or y1 == y2) or with a vertical gradient from y1 (top colour) to y2 (bottom colour),
+    // in the path's own coordinates (SVG gradientUnits="userSpaceOnUse").
+    void DrawLayer(const char* d, float left, float top, float size, float view, D2D1_COLOR_F topColor, D2D1_COLOR_F bottomColor, float y1, float y2) {
+        auto* t = Target(); auto* b = Brush(); if (!t || !b || !d || !chrome_ || !chrome_->Factory()) return;
+        auto& g = glyphs_[d]; if (!g) g = SvgGeometry(chrome_->Factory(), d); if (!g) return;
+        D2D1_MATRIX_3X2_F old; t->GetTransform(&old);
+        const float k = size / view;
+        t->SetTransform(D2D1::Matrix3x2F::Scale(k, k) * D2D1::Matrix3x2F::Translation(left, top) * old);
+        const bool solid = y1 == y2 || (topColor.r == bottomColor.r && topColor.g == bottomColor.g && topColor.b == bottomColor.b && topColor.a == bottomColor.a);
+        ID2D1GradientStopCollection* stops = nullptr; ID2D1LinearGradientBrush* gradient = nullptr;
+        if (!solid) {
+            const D2D1_GRADIENT_STOP s[2] = {{0.f, topColor}, {1.f, bottomColor}};
+            if (SUCCEEDED(t->CreateGradientStopCollection(s, 2, &stops)) && stops)
+                t->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({0, y1}, {0, y2}), stops, &gradient);
+        }
+        if (gradient) t->FillGeometry(g, gradient); else { b->SetColor(topColor); t->FillGeometry(g, b); }
+        if (gradient) gradient->Release();
+        if (stops) stops->Release();
+        t->SetTransform(old);
+    }
     // 16 px radio (B08 certificate rows): 1.5 px ring, filled 8 px dot when selected; `opacity` dims disabled rows.
     void Radio(D2D1_RECT_F box, bool on, float opacity) {
         auto* t = Target(); auto* b = Brush(); if (!t || !b) return;
@@ -301,6 +322,8 @@ inline constexpr const char* key = "M160,12A84.09,84.09,0,0,0,79.43,119.53L23.51
 inline constexpr const char* eye = "M251,123.13c-.37-.81-9.13-20.26-28.48-39.61C196.63,57.67,164,44,128,44S59.37,57.67,33.51,83.52C14.16,102.87,5.4,122.32,5,123.13a12.08,12.08,0,0,0,0,9.75c.37.82,9.13,20.26,28.49,39.61C59.37,198.34,92,212,128,212s68.63-13.66,94.48-39.51c19.36-19.35,28.12-38.79,28.49-39.61A12.08,12.08,0,0,0,251,123.13Zm-46.06,33C183.47,177.27,157.59,188,128,188s-55.47-10.73-76.91-31.88A130.36,130.36,0,0,1,29.52,128,130.45,130.45,0,0,1,51.09,99.89C72.54,78.73,98.41,68,128,68s55.46,10.73,76.91,31.89A130.36,130.36,0,0,1,226.48,128,130.45,130.45,0,0,1,204.91,156.12ZM128,84a44,44,0,1,0,44,44A44.05,44.05,0,0,0,128,84Zm0,64a20,20,0,1,1,20-20A20,20,0,0,1,128,148Z";
 // Not exported in Paper's B02 grid (MIDI, screen, certificate, generic): closest Phosphor shapes drawn from the same set.
 inline constexpr const char* screen = SiteRequest::Path::screen;
+// #121 screen-share confirmation row (Paper p-V-0, 1LPL-0): Phosphor « monitor » (bold), exported verbatim.
+inline constexpr const char* monitor = "M208,36H48A28,28,0,0,0,20,64V176a28,28,0,0,0,28,28H208a28,28,0,0,0,28-28V64A28,28,0,0,0,208,36Zm4,140a4,4,0,0,1-4,4H48a4,4,0,0,1-4-4V64a4,4,0,0,1,4-4H208a4,4,0,0,1,4,4Zm-40,52a12,12,0,0,1-12,12H96a12,12,0,0,1,0-24h64A12,12,0,0,1,172,228Z";
 }}
 
 namespace Modal {
@@ -345,7 +368,9 @@ struct Notice { const char* glyph = nullptr; std::wstring text; bool boxed = fal
 // B01/B02 request rows. `toggle` (B02 « Clic sur la puce », EAC-0): -1 none, 1 on, 0 off. A toggle
 // only ever switches off from here (revoking); an off toggle is inert, re-granting needs the site
 // to ask again. Its row calls Spec::onButton(Dialog::RowHit(i)) and the dialog stays open.
-struct Row { const char* glyph = nullptr; std::wstring label, trailing; int toggle = -1; std::wstring detail; };
+// `note` (#121 screen-share confirmation, Paper 1O50-0 / 1O5M-0, the owner's final retouch): a description right
+// under the row (no gap), on the label's column (36), 14/20 regular at 50 %, wrapping; the row block grows with it.
+struct Row { const char* glyph = nullptr; std::wstring label, trailing; int toggle = -1; std::wstring detail, note; };
 // B03 fill list: `masked` is the password as dots (tracked 0.08em, Paper EK1-0) unless `plain`;
 // a plain second line (certificate issuer, FW8-0) is ordinary 14 px secondary text, tracking 0.
 struct Account { std::wstring user, masked; bool plain = false, disabled = false; };   // disabled: shown at 32 %, not selectable (expired certificate)
@@ -394,6 +419,14 @@ struct Spec {
     const char* tileGlyph = nullptr;                           // 32 DIP raised tile left of the title (B06 app)
     float width = 0, padding = 0, gap = 0;                     // 0: Paper defaults (400 / 16 / 16)
     RECT anchor{}; bool anchorRight = false;                   // Scope::Anchor
+    // #121 « Page qui ne répond plus » (Paper 1O1M-0): a multi-colour icon on its own row above the head, its SVG
+    // layers verbatim (viewBox 0 0 heroView, drawn heroSize), each a solid fill or a vertical gradient (userSpaceOnUse
+    // y1..y2, top colour -> bottom colour).
+    struct HeroLayer { const char* d = nullptr; unsigned long top = 0, bottom = 0; float y1 = 0, y2 = 0; };
+    std::vector<HeroLayer> hero; float heroSize = 32, heroView = 24;
+    // Scope::Page variants (#121 frozen page, Paper 1NZI-0): the veil's opacity (0: the A1 40 %), its bottom corners
+    // rounded like the page area, and the window centred in the owner's client area instead of 16 under the page top.
+    float scrimAlpha = 0, scrimBottomRadius = 0; bool centerInOwner = false;
     std::vector<Field> fields;
     std::wstring checkLabel; bool checkValue = false, originCheck = false; // single row check (A2/A6; B0x style)
     // A6 420 (Paper EX1-0 / EY9-0, comment c-npdt3g): key caps after the body (KKC-0: padding-left 4,
@@ -489,10 +522,11 @@ public:
     static constexpr long long NoteTextKey = 9500;                   // UIA text nodes of the notes (not hits)
 private:
     using Kit = DialogKit::Kit;
-    enum class B { Badge, Head, Message, Select, Segments, Sources, Checks, Field, Notice, Rows, Info, Status, Links, Footnote, Check, Accounts, Danger, Error, Actions, NoteHead, NoteRule, NoteText };
+    enum class B { Badge, Hero, Head, Message, Select, Segments, Sources, Checks, Field, Notice, Rows, Info, Status, Links, Footnote, Check, Accounts, Danger, Error, Actions, NoteHead, NoteRule, NoteText };
     struct Block { B type; size_t index; D2D1_RECT_F r; };
     struct Box { int hit = 0; D2D1_RECT_F r{}; };
     HWND hwnd_ = nullptr, scrim_ = nullptr, owner_ = nullptr, restore_ = nullptr; HINSTANCE instance_ = nullptr;
+    int scrimRadius_ = 0; SIZE scrimSize_{};   // the veil's current rounded region (Spec::scrimBottomRadius)
     Chrome chrome_; Kit kit_; Motion::State motion_; Hooks hooks_; Accessibility::Bridge uia_;
     Chrome* pc_ = &chrome_;   // paint target (the window, or an offscreen bitmap for RenderForTest)
     std::wstring root_;
@@ -605,6 +639,8 @@ private:
         return w;
     }
     float HeadLeft() const { return Pad() + (spec_.tileGlyph ? 44.f : spec_.headGlyph ? 32.f : 0.f); }
+    // A request row: 32 DIP, plus its note (right under it, on the label's 36 DIP column) when it has one.
+    float RowHeight(size_t i) { const auto& row = spec_.rows[i]; return row.note.empty() ? 32.f : 32.f + kit_.Height(row.note, DialogKit::Type::body, ContentWidth() - 36); }
     // ---- Popover lanes (B06 rule, generalised 2026-11-09) ----------------------------------
     // A popover's head has a leading lane (32 DIP tile, 24 DIP glyph, or the 24 DIP glyph lane of the
     // request rows, inset 4) and a text column. Secondary lines — the remembering check, notices — put
@@ -740,6 +776,7 @@ private:
         float y = Pad(); bool first = true; bool actionsLift = true;
         auto next = [&](B type, size_t index, float h, float gap = -1) { if (!first) y += gap >= 0 ? gap : Gap(); first = false; blocks_.push_back({type, index, {left, y, right, y + h}}); y += h; return blocks_.back().r; };
         if (spec_.demo) next(B::Badge, 0, P::badge);
+        if (!spec_.hero.empty()) next(B::Hero, 0, spec_.heroSize);
         if (spec_.appTile || !spec_.origin.empty() || !spec_.title.empty() || !spec_.subtitle.empty() || !spec_.body.empty()) {
             const auto r = next(B::Head, 0, HeadHeight());
             if (spec_.closeButton) boxes_.push_back({CloseHit, {right - 24, r.top - (spec_.appTile ? 0 : 2), right, r.top - (spec_.appTile ? 0 : 2) + 24}});
@@ -755,8 +792,10 @@ private:
             next(B::Notice, i, h, n.boxed ? 8.f : -1.f);
         }
         if (!spec_.rows.empty()) {
-            const auto r = next(B::Rows, 0, 32 * spec_.rows.size() + 4 * (spec_.rows.size() - 1));
-            for (size_t i = 0; i < spec_.rows.size(); ++i) if (spec_.rows[i].toggle >= 0) boxes_.push_back({RowHit(i), {left, r.top + 36.f * i, right, r.top + 36.f * i + 32}});
+            float h = 0; std::vector<float> tops;
+            for (size_t i = 0; i < spec_.rows.size(); ++i) { if (i) h += 4; tops.push_back(h); h += RowHeight(i); }
+            const auto r = next(B::Rows, 0, h);
+            for (size_t i = 0; i < spec_.rows.size(); ++i) if (spec_.rows[i].toggle >= 0) boxes_.push_back({RowHit(i), {left, r.top + tops[i], right, r.top + tops[i] + 32}});
         }
         if (spec_.hasSelect) { const auto r = next(B::Select, 0, P::field); boxes_.push_back({SelectHit, {right - 184, r.top, right, r.bottom}}); }
         if (spec_.sources.shown) {
@@ -887,14 +926,24 @@ private:
             SetWindowPos(hwnd_, HWND_TOP, x, y, w, h, SWP_NOACTIVATE);
         } else {
             const RECT scope = ScopeRect();
-            const float availW = Dip(scope.right - scope.left), availH = Dip(scope.bottom - scope.top);
+            // #121 frozen page: the veil stays on the page area, the window is centred in the owner's client area.
+            const bool centred = spec_.scope == Scope::Page && spec_.centerInOwner;
+            const RECT box = centred ? OwnerClient() : scope;
+            const float availW = Dip(box.right - box.left), availH = Dip(box.bottom - box.top);
             width_ = std::clamp(availW - 2 * P::padding, P::minWidth, spec_.width > 0 ? spec_.width : P::width);
-            Fit(std::max(120.f, availH - (spec_.scope == Scope::Page ? P::pageTop : 0) - 2 * P::padding));
+            Fit(std::max(120.f, availH - (spec_.scope == Scope::Page && !centred ? P::pageTop : 0) - 2 * P::padding));
             const int w = Px(width_), h = Px(height_);
-            const int x = scope.left + (scope.right - scope.left - w) / 2;
-            int y = spec_.scope == Scope::Page ? scope.top + Px(P::pageTop) : scope.top + (scope.bottom - scope.top - h) / 2;
+            const int x = box.left + (box.right - box.left - w) / 2;
+            int y = spec_.scope == Scope::Page && !centred ? box.top + Px(P::pageTop) : box.top + (box.bottom - box.top - h) / 2;
             y += Px(rise);
-            SetWindowPos(scrim_, HWND_TOP, scope.left, scope.top, std::max<int>(1, scope.right - scope.left), std::max<int>(1, scope.bottom - scope.top), SWP_NOACTIVATE);
+            const int sw = std::max<int>(1, scope.right - scope.left), sh = std::max<int>(1, scope.bottom - scope.top);
+            SetWindowPos(scrim_, HWND_TOP, scope.left, scope.top, sw, sh, SWP_NOACTIVATE);
+            // Rounded bottom corners like the page area under it (Paper 1NZI-0); the top edge stays square.
+            const int r = spec_.scrimBottomRadius > 0 ? Px(spec_.scrimBottomRadius) : 0;
+            if (r != scrimRadius_ || sw != scrimSize_.cx || sh != scrimSize_.cy) {
+                scrimRadius_ = r; scrimSize_ = {sw, sh};
+                SetWindowRgn(scrim_, r > 0 ? CreateRoundRectRgn(0, -2 * r, sw + 1, sh + 1, 2 * r, 2 * r) : nullptr, TRUE);
+            }
             SetWindowPos(hwnd_, HWND_TOP, x, y, w, h, SWP_NOACTIVATE);
         }
         chrome_.Resize(); PlaceEdits(); InvalidateRect(hwnd_, nullptr, FALSE);
@@ -902,7 +951,7 @@ private:
     float Fade() const { return fade_.Value(Motion::Now()); }
     void ApplyAlpha() {
         const float a = Fade();
-        if (Scrimmed()) SetLayeredWindowAttributes(scrim_, 0, static_cast<BYTE>(std::lround(255 * P::scrim * a)), LWA_ALPHA);
+        if (Scrimmed()) SetLayeredWindowAttributes(scrim_, 0, static_cast<BYTE>(std::lround(255 * (spec_.scrimAlpha > 0 ? spec_.scrimAlpha : P::scrim) * a)), LWA_ALPHA);
         SetLayeredWindowAttributes(hwnd_, 0, static_cast<BYTE>(std::lround(255 * a)), LWA_ALPHA);
     }
     // ---- fields ---------------------------------------------------------------------------------
@@ -1445,6 +1494,7 @@ private:
             switch (b.type) {
             case B::Badge: kit_.Badge(left, b.r.top, TR(demo_badge)); break;
             case B::Head: PaintHead(b, now); break;
+            case B::Hero: for (const auto& l : spec_.hero) kit_.DrawLayer(l.d, b.r.left, b.r.top, spec_.heroSize, spec_.heroView, DialogKit::Rgb(l.top), DialogKit::Rgb(l.bottom), l.y1, l.y2); break;
             case B::Message: {
                 const D2D1_RECT_F clip = b.r;
                 kit_.Text(spec_.message, DialogKit::Type::message, left, b.r.top - scroll_, cw, DialogKit::White(1), true, &clip);
@@ -1486,7 +1536,8 @@ private:
                     const float tail = (tw > 0 ? tw + 16 : 0) + (row.toggle >= 0 ? 28 + 12 : 0);
                     kit_.Text(row.label, DialogKit::Type::field, left + 36, ry + 6, cw - 36 - tail, DialogKit::White(row.toggle == 0 ? P::muted : 1.f));
                     if (tw > 0) kit_.Text(row.trailing, DialogKit::Type::detail, right - 8 - tw - (row.toggle >= 0 ? 28 + 8 : 0), ry + 7, tw + 1, row.trailing == TR(demo_in_progress) ? DialogKit::AccentColor() : DialogKit::White(P::origin));
-                    ry += 36;
+                    if (!row.note.empty()) kit_.Text(row.note, DialogKit::Type::body, left + 36, ry + 32, cw - 36, DialogKit::White(P::muted), true);
+                    ry += RowHeight(i) + 4;
                 }
                 break;
             }
@@ -1724,6 +1775,7 @@ private:
         Accessibility::Node g; g.key = GroupKey; g.role = Accessibility::Role::Group; g.name = AccessibleName();
         if (NotesOn()) { g.help = spec_.notes.spoken; g.automationId = spec_.automationId; g.focusable = false; RECT wr{}; GetWindowRect(hwnd_, &wr); g.bounds = wr; nodes.push_back(g); NotesNodes(nodes); return nodes; }
         g.help = !spec_.message.empty() ? spec_.message : !spec_.body.empty() ? spec_.body : spec_.subtitle;
+        if (g.help.empty()) for (const auto& row : spec_.rows) if (!row.note.empty()) g.help += (g.help.empty() ? L"" : L" ") + row.label + L". " + row.note;   // what the rows say (share confirmation)
         if (spec_.message.empty() && !spec_.body.empty() && !spec_.bodyKeys.empty()) { g.help += L" "; for (size_t i = 0; i < spec_.bodyKeys.size(); ++i) g.help += (i ? L" + " : L"") + spec_.bodyKeys[i]; g.help += L"."; } if (!error_.empty()) g.help = error_;
         if (spec_.danger.shown && error_.empty()) g.help = DangerSpoken();   // R1: the full reason, never the ellipsised line
         g.automationId = spec_.automationId; g.focusable = false; RECT wr{}; GetWindowRect(hwnd_, &wr); g.bounds = wr; nodes.push_back(g);
@@ -1794,7 +1846,7 @@ public:
         font_ = nullptr;
         if (hwnd_ && IsWindow(hwnd_)) DestroyWindow(hwnd_);
         if (scrim_ && IsWindow(scrim_)) DestroyWindow(scrim_);
-        hwnd_ = scrim_ = nullptr; closing_ = false;
+        hwnd_ = scrim_ = nullptr; closing_ = false; scrimRadius_ = 0; scrimSize_ = {};
         if (!choosing_) menu_.reset();
     }
     bool Show(Spec spec, RECT area, std::function<void(const Result&)> done) {

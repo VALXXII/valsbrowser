@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>frame</title></head>
+<body><p>Cross-site frame</p>
+<script>
+addEventListener('message', e => {
+  if (e.data !== 'share') return;
+  navigator.mediaDevices.getDisplayMedia({video: true})
+    .then(s => { s.getTracks().forEach(t => t.stop()); return 'granted'; }, err => err.name + ': ' + err.message)
+    .then(r => parent.postMessage('frame: ' + r, '*'));
+});
+</script>
+</body></html>

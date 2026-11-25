@@ -171,14 +171,19 @@ root.innerHTML = '<style>' +
   // final pass 1, defect 3: the width is the text's own (never the containing block's: .bx is 0 wide, the hover's is the viewport)
   'width:max-content;flex:none}' +
   // R16: the selected element's inspector follows a change of its values softly (same path structure: interpolated)
-  '.pb.sm,.gb.sm{transition:clip-path 160ms cubic-bezier(.23,1,.32,1)}.pl.sm,.gl.sm{transition:transform 160ms cubic-bezier(.23,1,.32,1)}' +
+  '.pb.sm,.gb.sm,.mb.sm{transition:clip-path 160ms cubic-bezier(.23,1,.32,1)}.pl.sm,.gl.sm,.ml.sm{transition:transform 160ms cubic-bezier(.23,1,.32,1)}' +
   '.s{position:fixed;left:0;top:0;width:0;height:0;pointer-events:auto;background:transparent}' +
   '.i,.j{position:fixed;left:0;top:0;width:0;height:0;opacity:0;pointer-events:none}.i.on,.j.on{transition:opacity 120ms ease-out}' +
-  '.pb,.gb,.pl,.gl{position:fixed;left:0;top:0;box-sizing:border-box}' +
+  '.pb,.gb,.mb,.pl,.gl,.ml{position:fixed;left:0;top:0;box-sizing:border-box}' +
   '.gb{background:repeating-linear-gradient(45deg,rgba(224,71,158,.45) 0 1px,transparent 1px 5px),rgba(224,71,158,.12)}' +
   // D8 (decided): the padding / gap values in the labels' font (Paper 18QK-0): Inter Display, plain white, 10/14 (a band may be 4 px)
   '.pl,.gl{height:14px;padding:0 4px;border-radius:3px;font:400 10px/14px "Browser Annotation Inter","Inter Display",Inter,"Segoe UI",system-ui,sans-serif;color:#fff;white-space:nowrap;letter-spacing:0}' +
   '.gl{background:#D63E92}' +
+  // Paper « 5.3 · Espacements au survol — padding, gap et marges » (26IE-0, 26IF-0): a child's own margin is a flat light
+  // fill, no hatching; its value in a label of the same size with a 1 px border — the values' font stays the labels' (D8)
+  '.mb{background:#FBE3EF}' +
+  '.ml{height:14px;padding:0 4px;border-radius:3px;border:1px solid #D63E92;background:#FBE3EF;color:#B0307A;' +
+  'font:400 10px/12px "Browser Annotation Inter","Inter Display",Inter,"Segoe UI",system-ui,sans-serif;white-space:nowrap;letter-spacing:0}' +
   '.w{position:absolute;left:0;top:0;width:0;height:0;overflow:hidden;pointer-events:none;transform:translate(0px,0px)}' +
   '.mk{position:fixed;left:0;top:0;pointer-events:none;opacity:0;transition:opacity 120ms ease-out}' +
   '.cf{box-sizing:border-box;position:absolute;left:0;top:0;border:2px solid rgb(var(--a))}' +
@@ -196,12 +201,12 @@ root.innerHTML = '<style>' +
   '.bx{position:fixed;left:0;top:0;pointer-events:none}' +
   '.bf{box-sizing:border-box;position:absolute;left:0;top:0;border:2px solid rgb(var(--a));background:rgba(var(--a),.08)}' +
   '.bl{position:absolute;left:0;top:0;background:rgb(var(--a))}' +   // R45: the rest is .l's
-  '</style><style class="a"></style><div class="w fw"><div class="x f"></div><div class="i"><div class="pb"></div><div class="gb"></div></div><div class="x l"></div><div class="x l"></div><div class="j"></div></div><div class="w mw"></div>';
+  '</style><style class="a"></style><div class="w fw"><div class="x f"></div><div class="i"><div class="pb"></div><div class="mb"></div><div class="gb"></div></div><div class="x l"></div><div class="x l"></div><div class="j"></div></div><div class="w mw"></div>';
 var accentStyle = root.querySelector('style.a'); accentStyle.textContent = accentCss();
 var parts = root.querySelectorAll('.x'), shields = [];
 var fill = parts[0], label = parts[1], label2 = parts[2];   // R27: the frame's box (fill + border); R14: name | size
-var ins = root.querySelector('.i'), insL = root.querySelector('.j'), padEl = root.querySelector('.pb'), gapEl = root.querySelector('.gb');
-var insPool = { pl: [], gl: [] }, insData = null, insEl = null, insTimer = 0, insShown = false, labelBox = [];
+var ins = root.querySelector('.i'), insL = root.querySelector('.j'), padEl = root.querySelector('.pb'), gapEl = root.querySelector('.gb'), marEl = root.querySelector('.mb');
+var insPool = { pl: [], gl: [], ml: [] }, insData = null, insEl = null, insTimer = 0, insShown = false, labelBox = [];
 var frameWrap = root.querySelector('.fw'), markWrap = root.querySelector('.mw'), placed = null;
 var cmarks = {}, cmTimer = 0, follow = null, followTimer = 0, followLast = '';   // Mode Commentaire
 (D.documentElement || D).appendChild(host);
@@ -227,7 +232,7 @@ function rectOf(info) {
   return { x: r.left + info.ox, y: r.top + info.oy, w: r.width, h: r.height };
 }
 function frameOffset(fr) {
-  var r = fr.getBoundingClientRect(), cs = getComputedStyle(fr);
+  var r = fr.getBoundingClientRect(), cs = ((fr.ownerDocument && fr.ownerDocument.defaultView) || window).getComputedStyle(fr);
   return { x: r.left + fr.clientLeft + (parseFloat(cs.paddingLeft) || 0), y: r.top + fr.clientTop + (parseFloat(cs.paddingTop) || 0) };
 }
 function hitList(doc, x, y) {
@@ -439,7 +444,7 @@ function spaceMark() {
   if (!insData || !insShown || insEl !== (cur && cur.el)) return null;
   var gaps = [], labels = [], p = insData.pad;
   for (var i = 0; i < insData.gaps.length && i < 96; i++) { var b = insData.gaps[i]; gaps.push([r2(b.x), r2(b.y), r2(b.w), r2(b.h)]); }
-  for (var j = 0; j < insData.labels.length && j < 12; j++) { var l = insData.labels[j]; if (l.w) labels.push([l.k, r2(l.x), r2(l.y), r2(l.w), 14, l.t]); }
+  for (var j = 0; j < insData.labels.length && labels.length < 12; j++) { var l = insData.labels[j]; if (l.w && l.k < 2) labels.push([l.k, r2(l.x), r2(l.y), r2(l.w), 14, l.t]); }   // margins (k 2): the page's only
   return { pad: p ? [r2(p.ox), r2(p.oy), r2(p.ow), r2(p.oh), r2(p.ix), r2(p.iy), r2(p.iw), r2(p.ih)] : null, radius: p ? r2(p.r) : 0, inner: p ? r2(p.ri) : 0,
            gaps: gaps, labels: labels, vw: innerWidth, vh: innerHeight };
 }
@@ -465,9 +470,9 @@ function spaceGeometry(info) {
   var bt = num(cs.borderTopWidth), br = num(cs.borderRightWidth), bb = num(cs.borderBottomWidth), bl = num(cs.borderLeftWidth);
   var pt = num(cs.paddingTop), pr = num(cs.paddingRight), pb = num(cs.paddingBottom), pl = num(cs.paddingLeft);
   var ix = r.x + bl, iy = r.y + bt, iw = Math.max(0, r.w - bl - br), ih = Math.max(0, r.h - bt - bb);
-  var g = { bands: [], gaps: [], labels: [], pad: null }, rad = cs.borderTopLeftRadius || '', radius = 0;
+  var g = { bands: [], gaps: [], margins: [], labels: [], pad: null }, rad = cs.borderTopLeftRadius || '', radius = 0;
   if (/px$/.test(rad)) radius = Math.max(0, num(rad) - Math.max(bt, bl));
-  function band(k, x, y, w, h, value, side) { if (w < 0.5 || h < 0.5) return null; var b = { k: k, x: x, y: y, w: w, h: h, v: value, side: side }; g.bands.push(b); if (k) g.gaps.push(b); return b; }
+  function band(k, x, y, w, h, value, side) { if (w < 0.5 || h < 0.5) return null; var b = { k: k, x: x, y: y, w: w, h: h, v: value, side: side }; g.bands.push(b); if (k === 1) g.gaps.push(b); if (k === 2) g.margins.push(b); return b; }
   var top = band(0, ix, iy, iw, Math.min(pt, ih), pt, 'top'), bottom = band(0, ix, iy + ih - Math.min(pb, ih), iw, Math.min(pb, ih), pb, 'bottom');
   var midH = Math.max(0, ih - pt - pb);
   var left = band(0, ix, iy + pt, Math.min(pl, iw), midH, pl, 'left'), right = band(0, ix + iw - Math.min(pr, iw), iy + pt, Math.min(pr, iw), midH, pr, 'right');
@@ -477,14 +482,20 @@ function spaceGeometry(info) {
               ri: Math.max(0, radius - Math.max(pt, pr, pb, pl)) };
   }
   // gaps: from the children's real rectangles (rows by vertical overlap; flex keeps the real space, grid the gap)
-  var flow = flowOf(cs), rg = num(cs.rowGap), cg = num(cs.columnGap), firstRow = null, firstCol = null;
+  // Choice B (the owner, 24 Nov 2026; Paper « 5.3 · Espacements au survol — padding, gap et marges »): when a child has its
+  // OWN margin, the real space between two children is that margin + the gap — each has its band and its value: the margin
+  // a flat light band against its child (kind 2), the gap its hatched band in what is left between the margins. On
+  // form.checkout the first band was 26 px high and said « 6 »: it is now « 20 » flat under the title, then « 6 » hatched.
+  var flow = flowOf(cs), rg = num(cs.rowGap), cg = num(cs.columnGap), firstRow = null, firstCol = null, mrow = [], mcol = [];
+  function edge(list, key, low) { var e = list[0]; for (var z = 1; z < list.length; z++) if (low ? list[z][key] < e[key] : list[z][key] > e[key]) e = list[z]; return e; }
   if (flow && (rg > 0 || cg > 0)) {
     var cx = ix + pl, cy = iy + pt, cw = Math.max(0, iw - pl - pr), items = [], kids = el.children;
     for (var i = 0; i < kids.length && items.length < 200; i++) {
       var c = kids[i], ccs; try { ccs = getComputedStyle(c); } catch (e) { continue; }
       if (ccs.display === 'none' || ccs.position === 'absolute' || ccs.position === 'fixed') continue;
       var b = c.getBoundingClientRect(); if (b.width <= 0 && b.height <= 0) continue;
-      items.push({ x: b.left + info.ox, y: b.top + info.oy, r: b.right + info.ox, b: b.bottom + info.oy });
+      items.push({ x: b.left + info.ox, y: b.top + info.oy, r: b.right + info.ox, b: b.bottom + info.oy,
+                   mt: Math.max(0, num(ccs.marginTop)), mr: Math.max(0, num(ccs.marginRight)), mb: Math.max(0, num(ccs.marginBottom)), ml: Math.max(0, num(ccs.marginLeft)) });
     }
     items.sort(function (a, b) { return a.y - b.y || a.x - b.x; });
     var rows = [];
@@ -497,12 +508,21 @@ function spaceGeometry(info) {
       var list = rows[q].items.slice().sort(function (a, b) { return a.x - b.x; });
       for (var n = 1; n < list.length; n++) {
         var from = list[n - 1].r, to = list[n].x; if (to - from <= 0.5) continue;
+        var m0 = Math.min(list[n - 1].mr, to - from), m1 = Math.min(list[n].ml, to - from - m0);   // the left child's right margin, the right child's left margin
+        if (m0 >= 0.5) mcol.push(band(2, from, rows[q].y, m0, rows[q].b - rows[q].y, list[n - 1].mr, 'col'));
+        if (m1 >= 0.5) mcol.push(band(2, to - m1, rows[q].y, m1, rows[q].b - rows[q].y, list[n].ml, 'col'));
+        from += m0; to -= m1; if (to - from <= 0.5) continue;
         if (flow === 'grid') from = Math.max(from, to - cg);
         var cb = band(1, from, rows[q].y, to - from, rows[q].b - rows[q].y, cg, 'col'); if (cb && !firstCol) firstCol = cb;
       }
     }
     if (rg > 0) for (var u = 1; u < rows.length; u++) {
       var a0 = rows[u - 1].b, a1 = rows[u].y; if (a1 - a0 <= 0.5) continue;
+      var up = edge(rows[u - 1].items, 'b', false), dn = edge(rows[u].items, 'y', true);   // the child whose edge is the row's
+      var n0 = Math.min(up.mb, a1 - a0), n1 = Math.min(dn.mt, a1 - a0 - n0);                 // its bottom margin; the next row's top margin
+      if (n0 >= 0.5) mrow.push(band(2, cx, a0, cw, n0, up.mb, 'row'));
+      if (n1 >= 0.5) mrow.push(band(2, cx, a1 - n1, cw, n1, dn.mt, 'row'));
+      a0 += n0; a1 -= n1; if (a1 - a0 <= 0.5) continue;
       if (flow === 'grid') a0 = Math.max(a0, a1 - rg);
       var rb = band(1, cx, a0, cw, a1 - a0, rg, 'row'); if (rb && !firstRow) firstRow = rb;
     }
@@ -513,6 +533,9 @@ function spaceGeometry(info) {
   if (top && bottom && Math.round(pt) === Math.round(pb)) lab(top); else { lab(top); lab(bottom); }
   if (left && right && Math.round(pl) === Math.round(pr)) lab(left); else { lab(left); lab(right); }
   lab(firstRow); lab(firstCol);
+  // the margins: once per distinct value and axis too, after the gaps (their labels keep the centre of their band)
+  function labs(list) { var seen = {}; for (var z = 0; z < list.length; z++) { var b = list[z], v = b ? Math.round(b.v) : 0; if (!b || v < 4 || seen[v]) continue; seen[v] = 1; lab(b); } }
+  labs(mrow); labs(mcol);
   return g;
 }
 function pool(kind, i) {
@@ -538,18 +561,20 @@ function layer(el, d, rule) {
 function hits(a, b) { return a && b && a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h; }
 // A value label's place: centred on its band; on a side too thin for it, flush with the band's inner edge (it
 // overflows inward, never out of the element); moved along the band, then past the obstacle, if it would collide.
-function labelPlace(b, lw, obstacles) {
+function labelPlace(b, lw, obstacles, air) {
+  air = air || 4;   // along the band, from the label it would collide with: 4 px; a margin's: 12 (Paper 26IF-0: 192 = 160 + 20 + 12)
   var lh = 14, x = b.x + b.w / 2 - lw / 2, y = b.y + b.h / 2 - lh / 2;
   if (b.side === 'top' && b.h < lh) y = b.y;
   if (b.side === 'bottom' && b.h < lh) y = b.y + b.h - lh;
   if (b.side === 'left' && b.w < lw) x = b.x;
   if (b.side === 'right' && b.w < lw) x = b.x + b.w - lw;
   var horizontal = b.side === 'top' || b.side === 'bottom' || b.side === 'row';
-  var c = [{ x: x, y: y }];
+  var c = [{ x: x, y: y }], at0 = { x: x, y: y, w: lw, h: lh };
   for (var o = 0; o < obstacles.length; o++) {
     var ob = obstacles[o]; if (!ob) continue;
-    if (horizontal) { c.push({ x: ob.x + ob.w + 4, y: y }); c.push({ x: ob.x - lw - 4, y: y }); c.push({ x: x, y: ob.y + ob.h + 2 }); }
-    else { c.push({ x: x, y: ob.y + ob.h + 4 }); c.push({ x: x, y: ob.y - lh - 4 }); c.push({ x: ob.x + ob.w + 2, y: y }); }
+    if (air > 4 && !hits(at0, ob)) continue;   // a margin's label only moves past the label it would really cover (Paper: after the gap's)
+    if (horizontal) { c.push({ x: ob.x + ob.w + air, y: y }); c.push({ x: ob.x - lw - air, y: y }); c.push({ x: x, y: ob.y + ob.h + 2 }); }
+    else { c.push({ x: x, y: ob.y + ob.h + air }); c.push({ x: x, y: ob.y - lh - air }); c.push({ x: ob.x + ob.w + 2, y: y }); }
   }
   for (var k = 0; k < c.length; k++) {
     var p = { x: Math.max(0, Math.min(c[k].x, innerWidth - lw)), y: Math.max(0, Math.min(c[k].y, innerHeight - lh)), w: lw, h: lh }, ok = true;
@@ -559,21 +584,23 @@ function labelPlace(b, lw, obstacles) {
   return { x: Math.max(0, Math.min(x, innerWidth - lw)), y: Math.max(0, Math.min(y, innerHeight - lh)), w: lw, h: lh };
 }
 function drawSpace(g) {
-  var counts = { pl: 0, gl: 0 };
-  if (!g) { layer(padEl, null); layer(gapEl, null); trim('pl', 0); trim('gl', 0); return; }
+  var counts = { pl: 0, gl: 0, ml: 0 };
+  if (!g) { layer(padEl, null); layer(gapEl, null); layer(marEl, null); trim('pl', 0); trim('gl', 0); trim('ml', 0); return; }
   var p = g.pad;
   layer(padEl, p ? rectPath(p.ox, p.oy, p.ow, p.oh, p.r) + (p.iw > 0 && p.ih > 0 ? rectPath(p.ix, p.iy, p.iw, p.ih, p.ri) : '') : null, 'evenodd');
   var gd = ''; for (var i = 0; i < g.gaps.length && i < 96; i++) { var b = g.gaps[i]; gd += rectPath(b.x, b.y, b.w, b.h, 0); }
   layer(gapEl, gd || null, 'nonzero');
+  var md = ''; for (var m = 0; m < g.margins.length && m < 96; m++) { var mb = g.margins[m]; md += rectPath(mb.x, mb.y, mb.w, mb.h, 0); }
+  layer(marEl, md || null, 'nonzero');   // choice B: the children's own margins, flat
   var obstacles = labelBox.slice();
   for (var j = 0; j < g.labels.length && j < 12; j++) {
-    var l = g.labels[j], lk = l.k ? 'gl' : 'pl', e = pool(lk, counts[lk]++);
+    var l = g.labels[j], lk = l.k === 2 ? 'ml' : l.k ? 'gl' : 'pl', e = pool(lk, counts[lk]++);
     e.textContent = l.t;
-    var pl = labelPlace(l.b, e.offsetWidth || 20, obstacles); obstacles.push(pl);
+    var pl = labelPlace(l.b, e.offsetWidth || 20, obstacles, l.k === 2 ? 12 : 4); obstacles.push(pl);
     e.style.transform = 'translate(' + pl.x.toFixed(2) + 'px,' + pl.y.toFixed(2) + 'px)';
     l.x = pl.x; l.y = pl.y; l.w = pl.w; l.h = 14;
   }
-  trim('pl', counts.pl); trim('gl', counts.gl);
+  trim('pl', counts.pl); trim('gl', counts.gl); trim('ml', counts.ml);
 }
 function insFade(on, animate) {
   for (var i = 0, l = [ins, insL]; i < 2; i++) { if (animate && !reduced) l[i].classList.add('on'); else l[i].classList.remove('on'); l[i].style.opacity = on ? '1' : '0'; }
@@ -954,12 +981,15 @@ function cmTag(m) {
   if (m.state === 'waiting') { var t = D.createElement('span'); t.textContent = String(m.waitLabel || 'En attente').slice(0, 40); tag.appendChild(t); }
 }
 function cmPlace(m) {
-  if (!m.el || !m.el.isConnected) { m.el = cmFind(m.selector); }
-  if (!m.el) { m.wrap.style.display = 'none'; return false; }
+  var chain = m.el && m.el.isConnected ? frameChain(m.el) : null;
+  if (!chain) { m.el = m.key ? keyFind(m.key) : cmFind(m.selector); chain = m.el ? frameChain(m.el) : null; }   // case 3: again after its iframe reloaded
+  if (!m.el || !chain) { m.wrap.style.display = 'none'; return false; }
   var r = m.el.getBoundingClientRect();
   if (r.width < 1 && r.height < 1) { m.wrap.style.display = 'none'; return false; }
+  var at = chainAt(chain), v = { x: r.left + at.x, y: r.top + at.y, w: r.width, h: r.height };
+  if (at.clip) { v = cut(at.clip, v.x, v.y, v.w, v.h); if (v.w < 1 || v.h < 1) { m.wrap.style.display = 'none'; return true; } }   // there, but its iframe hides it: nothing over the page
   m.wrap.style.display = ''; anchor(m.wrap, m.el);
-  var fb = frameBox({ x: r.left, y: r.top, w: r.width, h: r.height });   // R27: exactly the hover / selection frame's rectangle
+  var fb = frameBox(v);   // R27: exactly the hover / selection frame's rectangle
   m.box.style.transform = 'translate(' + fb.x.toFixed(6) + 'px,' + fb.y.toFixed(6) + 'px)';
   boxTo(m.frame, fb, false);
   return true;
@@ -969,16 +999,17 @@ function cmSet(list) {
   var keep = {}, found = [];
   if (!Array.isArray(list)) list = [];
   for (var i = 0; i < list.length && i < 200; i++) {
-    var it = list[i] || {}; var id = String(it.id || '').slice(0, 128); if (!id || !it.selector) continue;
+    var it = list[i] || {}; var id = String(it.id || '').slice(0, 128); if (!id || (!it.selector && !it.key)) continue;
+    var isel = it.selector ? String(it.selector) : '', ikey = !it.selector && it.key ? String(it.key).slice(0, 1200) : '';   // key: an element of a same-origin iframe (case 3)
     keep[id] = 1;
     var m = cmarks[id];
-    if (!m || m.selector !== String(it.selector)) {
+    if (!m || m.selector !== isel || m.key !== ikey) {
       if (m) try { m.wrap.remove(); } catch (e) {}
       var wrap = D.createElement('div'); wrap.className = 'w';
       var box = D.createElement('div'); box.className = 'mk'; box.style.opacity = '1';
       var fr = D.createElement('div'); fr.className = 'cf'; var tag = D.createElement('div'); tag.className = 'ct';
       fr.appendChild(tag); box.appendChild(fr); wrap.appendChild(box); root.insertBefore(wrap, markWrap);
-      m = cmarks[id] = { id: id, selector: String(it.selector), wrap: wrap, box: box, frame: fr, tag: tag, el: null, state: '' };
+      m = cmarks[id] = { id: id, selector: isel, key: ikey, wrap: wrap, box: box, frame: fr, tag: tag, el: null, state: '' };
     }
     if (m.state !== String(it.state || 'idle') || m.waitLabel !== it.waitLabel) { m.state = String(it.state || 'idle'); m.waitLabel = it.waitLabel; cmTag(m); }
     m.el = null;
@@ -996,7 +1027,11 @@ function cmSet(list) {
 function followPost() {
   if (!follow) return null;
   var el = follow.el;
-  if (!el || !el.isConnected) { el = follow.el = follow.selector ? cmFind(follow.selector) : null; }
+  if (!el || !el.isConnected || !follow.chain) {   // removed, or its iframe reloaded / left the page (case 3): looked for again, at each check
+    el = follow.el = follow.selector ? cmFind(follow.selector) : follow.key ? keyFind(follow.key) : follow.deep ? deepFind(follow.deep) : null;
+    follow.chain = el ? frameChain(el) : null; if (el && follow.chain) followWins(follow, true);
+  }
+  if (el && !follow.chain) el = null;
   // Review C3: « gone » only once the element has been missing for 500 ms and at least 2 checks (an agent's edit or a hot
   // reload replaces it for a moment); back before that: nothing was said, it is followed again.
   if (!el) {
@@ -1007,24 +1042,120 @@ function followPost() {
     return null;
   }
   follow.missSince = 0; follow.missChecks = 0;
-  var r = el.getBoundingClientRect(), o = { x: r.left + follow.ox, y: r.top + follow.oy, w: r.width, h: r.height, vw: innerWidth, vh: innerHeight };
+  var at = chainAt(follow.chain);
+  var r = el.getBoundingClientRect(), o = stick({ x: r.left + at.x, y: r.top + at.y, w: r.width, h: r.height, vw: innerWidth, vh: innerHeight }, at.edge);   // case 1 = A
   var key = [o.x, o.y, o.w, o.h, o.vw, o.vh].map(function (v) { return v.toFixed(1); }).join(',');
   if (key !== followLast) {
     followLast = key; o.op = 'anchor'; o.sx = scrollX; o.sy = scrollY;
     o.t = performance.timeOrigin ? performance.timeOrigin + performance.now() : Date.now();   // R39: the host measures page -> host
     post(o);
   }
-  return { el: el, r: r };
+  return { el: el, r: r, at: at };
+}
+// The frames of an element inside same-origin iframes (innermost first; none for the top document), with what a scroll
+// does not change: where each frame's content box starts in its element (border + padding) and its size. null: one of
+// them is no longer in its page.
+// The owner's trial of 24 Nov 2026 (« Standard · 3 à 5 jours » in the sandbox's same-origin iframe): the bubble's frame was
+// drawn with the element's rectangle in ITS frame, at the top left of the page; and the offset given to the host was the
+// one of the click, so a scroll of the page left the bubble where it was. Both are now read where the frames are, at each
+// check: nested frames, a scrolled page, a scrolled frame.
+function frameChain(el) {
+  var list = [], doc = el && el.ownerDocument;
+  for (var g = 0; doc && doc !== D && g < 32; g++) {
+    var fr = null; try { fr = doc.defaultView.frameElement; } catch (e) { fr = null; }
+    if (!fr || !fr.isConnected) return null;
+    var cs = null; try { cs = ((fr.ownerDocument && fr.ownerDocument.defaultView) || window).getComputedStyle(fr); } catch (e) { cs = null; }
+    var pl = cs ? parseFloat(cs.paddingLeft) || 0 : 0, pt = cs ? parseFloat(cs.paddingTop) || 0 : 0, pr = cs ? parseFloat(cs.paddingRight) || 0 : 0, pb = cs ? parseFloat(cs.paddingBottom) || 0 : 0;
+    list.push({ fr: fr, ix: fr.clientLeft + pl, iy: fr.clientTop + pt, iw: Math.max(0, fr.clientWidth - pl - pr), ih: Math.max(0, fr.clientHeight - pt - pb) });
+    doc = fr.ownerDocument;
+  }
+  return list;
+}
+// Where the innermost frame's viewport starts in the top viewport, now (bounding boxes only: the scroll listener calls
+// it), what the frames leave visible of it (`clip`: their content boxes, top viewport; null in the top document) and the
+// frames' own boxes (`edge`: their border boxes — the iframe's edge as the user sees it).
+function cut(a, x, y, w, h) {
+  if (!a) return { x: x, y: y, w: Math.max(0, w), h: Math.max(0, h) };
+  var l = Math.max(a.x, x), t = Math.max(a.y, y), r = Math.min(a.x + a.w, x + w), b = Math.min(a.y + a.h, y + h);
+  return { x: l, y: t, w: Math.max(0, r - l), h: Math.max(0, b - t) };
+}
+function chainAt(list) {
+  var x = 0, y = 0, clip = null, edge = null;
+  for (var i = (list ? list.length : 0) - 1; i >= 0; i--) {
+    var f = list[i], r = f.fr.getBoundingClientRect();
+    edge = cut(edge, x + r.left, y + r.top, r.width, r.height);
+    x += r.left + f.ix; y += r.top + f.iy;
+    clip = cut(clip, x, y, f.iw, f.ih);
+  }
+  return { x: x, y: y, clip: clip, edge: edge };
+}
+// Case 1 = A (the owner, 24 Nov 2026; Paper « Iframes · cas 1 · l'élément sort de l'iframe · A »): an element that a
+// scroll INSIDE its iframe takes out of it does not take its bubble away — the bubble stays stuck to the iframe's edge,
+// on the side the element left by, and what is being typed is never lost; back in view, everything is as before. The
+// place given to the host is the element's as far as the iframe shows it: its rectangle kept inside the iframe's box
+// (the part still in view; a point of the edge once nothing is). Paper: the bubble's top 4 px above the iframe's top edge
+// — the bubble's own « top -4 » next to its element. In the page itself nothing changes (rule 6 of #130: an element out
+// of the screen takes its bubble with it).
+function stick(o, e) {
+  if (!e) return o;
+  var l = Math.min(Math.max(o.x, e.x), e.x + e.w), t = Math.min(Math.max(o.y, e.y), e.y + e.h);
+  var r = Math.min(Math.max(o.x + o.w, e.x), e.x + e.w), b = Math.min(Math.max(o.y + o.h, e.y), e.y + e.h);
+  o.x = l; o.y = t; o.w = Math.max(0, r - l); o.h = Math.max(0, b - t);
+  return o;
+}
+// Case 3 (the owner, 24 Nov 2026; Paper « Iframes · cas 3 · l'iframe se recharge »): an element of a same-origin iframe is
+// found again — after its iframe reloaded, or after the page did — by its selector INSIDE the frame's document, looked
+// for in every same-origin frame of the page (nested ones too). Exactly one element in exactly one frame, or nothing: the
+// frame and the mark are then not drawn (the conversation keeps its chip). `key`: the host's anchor key of such an
+// element, « same-origin|<shadow path>|<selector> » (src/chat-bubble.h, UnsafeAnchorKey) — a shadow path is not followed.
+function frameDocs(doc, out, depth) {
+  if (depth > 8) return;
+  var l = []; try { l = doc.querySelectorAll('iframe,frame'); } catch (e) { l = []; }
+  for (var i = 0; i < l.length && out.length < 64; i++) {
+    var cd = null; try { cd = l[i].contentDocument; } catch (e) { cd = null; }
+    if (cd && cd.documentElement) { out.push(cd); frameDocs(cd, out, depth + 1); }
+  }
+}
+function deepFind(sel) {
+  var docs = [], el = null, n = 0; frameDocs(D, docs, 0);
+  for (var i = 0; i < docs.length && n < 2; i++) {
+    var q = null; try { q = docs[i].querySelectorAll(String(sel)); } catch (e) { q = null; }
+    if (q && q.length === 1) { el = q[0]; n++; } else if (q && q.length > 1) n = 2;
+  }
+  return n === 1 ? el : null;
+}
+function keyFind(key) {
+  var k = String(key || ''), a = k.indexOf('|'), b = a < 0 ? -1 : k.indexOf('|', a + 1);
+  if (b < 0 || k.slice(0, a) !== 'same-origin' || b !== a + 1) return null;
+  return deepFind(k.slice(b + 1));
+}
+// A scroll INSIDE one of the element's frames moves it too: heard at once, as the page's own scroll is.
+function followWins(f, bind) {
+  if (!f) return;
+  for (var i = 0; i < (f.wins || []).length; i++) { try { f.wins[i].removeEventListener('scroll', onScroll, true); } catch (e) {} }
+  f.wins = [];
+  if (!bind) return;
+  for (var j = 0; j < (f.chain || []).length; j++) { try { var w = f.chain[j].fr.contentWindow; if (w) { w.addEventListener('scroll', onScroll, { capture: true, passive: true }); f.wins.push(w); } } catch (e) {} }
 }
 function followCheck() {
   if (!follow) return;
+  if (follow.el && follow.el.isConnected) follow.chain = frameChain(follow.el);   // read again at each check (a frame resized, restyled, removed)
   var f = followPost();   // posted first
-  bxPlace(f ? f.el : null, f ? f.r : null);   // then drawn
+  bxPlace(f ? f.el : null, f ? f.r : null, f ? f.at : null);   // then drawn
 }
 // D1: the frame + two labels of the bubble's element (document-anchored like the marks: glued while scrolling)
 var bx = null;
-function bxPlace(el, r) {
+function bxPlace(el, r, at) {
   if (!follow || !follow.draw || !el) { if (bx) { try { bx.wrap.remove(); } catch (e) {} bx = null; } return; }
+  var ox = at ? at.x : 0, oy = at ? at.y : 0, full = { left: r.left + ox, top: r.top + oy, width: r.width, height: r.height };
+  // inside a frame: only what the frame shows of the element is framed (a frame's scroll may hide a part of it, or all of
+  // it: then nothing is drawn over the page around the frame)
+  var vis = { x: full.left, y: full.top, w: full.width, h: full.height };
+  if (at && at.clip) {
+    var c = at.clip, cl = Math.max(vis.x, c.x), ct = Math.max(vis.y, c.y), cr = Math.min(vis.x + vis.w, c.x + c.w), cb = Math.min(vis.y + vis.h, c.y + c.h);
+    if (cr - cl < 1 || cb - ct < 1) { if (bx) bx.wrap.style.display = 'none'; if (insEl === el) placeSpace(null, false); return; }
+    vis = { x: cl, y: ct, w: cr - cl, h: cb - ct };
+  }
   if (!bx) {
     var wrap = D.createElement('div'); wrap.className = 'w'; var box = D.createElement('div'); box.className = 'bx';
     var fr = D.createElement('div'); fr.className = 'bf'; var l1 = D.createElement('div'); l1.className = 'bl'; var l2 = D.createElement('div'); l2.className = 'bl';
@@ -1032,7 +1163,7 @@ function bxPlace(el, r) {
     bx = { wrap: wrap, box: box, frame: fr, left: l1, right: l2 };
   }
   bx.wrap.style.display = ''; anchor(bx.wrap, el);
-  var fb = frameBox({ x: r.left, y: r.top, w: r.width, h: r.height });   // R15: 2 px from the window's sides; R27: the hover frame's box
+  var fb = frameBox(vis);   // R15: 2 px from the window's sides; R27: the hover frame's box
   boxTo(bx.frame, fb); if (cmOn(el)) bx.frame.classList.add('nb'); else bx.frame.classList.remove('nb');
   var t1 = String(follow.draw.label || seg(el)).slice(0, 120), t2 = Math.round(r.width) + 'x' + Math.round(r.height);
   if (bx.left.textContent !== t1) bx.left.textContent = t1;
@@ -1046,7 +1177,8 @@ function bxPlace(el, r) {
   if (follow.el && !peek && !(cur && cur.range)) {
     labelBox = labelBoxes(lp, lw, rw);
     anchor(frameWrap, el);
-    var info = { el: el, range: null, frame: null, ox: 0, oy: 0, kind: 'main' }, g = spaceGeometry(info), key = spaceKey(g, r), now = performance.now();
+    var whole = vis.w >= full.width - 0.5 && vis.h >= full.height - 0.5;   // cut by its frame: no padding / gap drawn out of it
+    var info = { el: el, range: null, frame: null, ox: ox, oy: oy, kind: 'main' }, g = whole ? spaceGeometry(info) : null, key = spaceKey(g, full), now = performance.now();
     var resized = innerWidth !== insVW || innerHeight !== insVH; insVW = innerWidth; insVH = innerHeight;
     if (insShown && insEl === el && key !== insKey && !resized && !tracking()) smUntil = now + 200;
     smooth(now < smUntil);
@@ -1061,23 +1193,28 @@ function spaceKey(g, r) {
   var q = function (v) { return Math.round(v * 4) / 4; }, out = [q(r.width), q(r.height)], p = g.pad;
   if (p) out.push(q(p.ox - r.left), q(p.oy - r.top), q(p.ow), q(p.oh), q(p.ix - r.left), q(p.iy - r.top), q(p.iw), q(p.ih), q(p.r));
   for (var i = 0; i < g.gaps.length; i++) { var b = g.gaps[i]; out.push(q(b.x - r.left), q(b.y - r.top), q(b.w), q(b.h)); }
+  for (var m = 0; m < g.margins.length; m++) { var mb = g.margins[m]; out.push('m', q(mb.x - r.left), q(mb.y - r.top), q(mb.w), q(mb.h)); }
   for (var j = 0; j < g.labels.length; j++) out.push(g.labels[j].t);
   return out.join(',');
 }
 // R16: soft updates of the selected element's inspector (not for the hover, which jumps to another element)
 function smooth(on) {
-  var l = [padEl, gapEl].concat(insPool.pl, insPool.gl);
+  var l = [padEl, gapEl, marEl].concat(insPool.pl, insPool.gl, insPool.ml);
   for (var i = 0; i < l.length; i++) { if (on && !reduced) l[i].classList.add('sm'); else l[i].classList.remove('sm'); }
 }
 function followSet(a) {
   if (followTimer) { clearInterval(followTimer); followTimer = 0; }
-  var drew = follow && follow.draw; follow = null; followLast = ''; bxPlace(null);
+  var drew = follow && follow.draw; followWins(follow, false); follow = null; followLast = ''; bxPlace(null);
   if (drew) { smooth(false); placeSpace(null, false); haveMove = px >= 0; schedule(); }   // the hover frame (and its inspector) come back under the pointer
   if (!a) return true;
-  var el = null, ox = 0, oy = 0;
-  if (a.current && cur && cur.el && !cur.range) { el = cur.el; ox = cur.ox; oy = cur.oy; }
+  var el = null, deep = '';
+  if (a.current && cur && cur.el && !cur.range) el = cur.el;   // may be inside same-origin frames: its place is read through them (frameChain)
   else if (a.selector) el = cmFind(a.selector);
-  follow = { el: el, selector: a.selector ? String(a.selector) : '', ox: ox, oy: oy, draw: a.draw && !(cur && cur.range) ? { label: String(a.draw.label || '') } : null };
+  else if (a.key) el = keyFind(a.key);   // case 3: an element of an iframe, given back by the host after a reload of the page
+  if (el && el.ownerDocument !== D && el.getRootNode() === el.ownerDocument) { var sf = selectorFor(el); if (sf.unique) deep = sf.sel; }   // case 3: found again when its iframe reloads
+  follow = { el: el, selector: a.selector ? String(a.selector) : '', key: !a.selector && a.key ? String(a.key) : '', deep: deep, chain: el ? frameChain(el) : null, wins: [],
+             draw: a.draw && !(cur && cur.range) ? { label: String(a.draw.label || '') } : null };
+  followWins(follow, true);
   if (follow.draw) place(null);
   followCheck();
   followTimer = setInterval(followCheck, 250);
@@ -1118,7 +1255,7 @@ function onRestyle(e) {
 function teardown() {
   if (!alive) return; alive = false;
   markClear();
-  if (cmTimer) { clearInterval(cmTimer); cmTimer = 0; } if (followTimer) { clearInterval(followTimer); followTimer = 0; } cmarks = {}; follow = null; peek = null;
+  if (cmTimer) { clearInterval(cmTimer); cmTimer = 0; } if (followTimer) { clearInterval(followTimer); followTimer = 0; } cmarks = {}; followWins(follow, false); follow = null; peek = null;
   if (raf) cancelAnimationFrame(raf); raf = 0;
   for (var i = 0; i < listeners.length; i++) { var l = listeners[i]; try { l[0].removeEventListener(l[1], l[2], l[3]); } catch (e) {} }
   listeners = []; cur = null; down = [];

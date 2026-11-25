@@ -29,7 +29,7 @@ struct WorkspaceStash {
     std::map<std::wstring, std::shared_ptr<const NativeChrome::FaviconImage>> siteIcons; std::set<std::wstring> siteIconsMissing; std::map<std::wstring, size_t> siteIconsWritten;
     std::vector<DL::Item> downloads, downloadsBase; bool downloadFolderOnProfile = false;
     std::vector<std::shared_ptr<PendingDownload>> pendingDownloads;
-    bool adBlockSynced = false, adBlockBusy = false, adBlockAgain = false, adBlockNoProfileLogged = false;
+    bool adBlockSynced = false, adBlockBusy = false, adBlockAgain = false, adBlockNoProfileLogged = false, adBlockHold = false; int adBlockRemoving = 0;
     BM::Store bookmarks, bookmarksBase; BM::Id lastFolder = BM::BarRoot; bool bookmarksSaveFailed = false;
     AU::Volumes audioVolumes;
     Vault::Store vault, vaultBase; bool vaultLoaded = false; std::set<unsigned> vaultPromptOpen; std::map<unsigned, Vault::CaptureBinding> vaultCapture;
@@ -67,7 +67,7 @@ void Exchange(Workspace& w) {
     std::swap(siteIcons, s.siteIcons); std::swap(siteIconsMissing, s.siteIconsMissing); std::swap(siteIconsWritten, s.siteIconsWritten);
     std::swap(downloads, s.downloads); std::swap(downloadsBase, s.downloadsBase); std::swap(downloadFolderOnProfile, s.downloadFolderOnProfile);
     std::swap(pendingDownloads, s.pendingDownloads);
-    std::swap(adBlockSynced, s.adBlockSynced); std::swap(adBlockBusy, s.adBlockBusy); std::swap(adBlockAgain, s.adBlockAgain); std::swap(adBlockNoProfileLogged, s.adBlockNoProfileLogged);
+    std::swap(adBlockSynced, s.adBlockSynced); std::swap(adBlockBusy, s.adBlockBusy); std::swap(adBlockAgain, s.adBlockAgain); std::swap(adBlockNoProfileLogged, s.adBlockNoProfileLogged); std::swap(adBlockHold, s.adBlockHold); std::swap(adBlockRemoving, s.adBlockRemoving);
     std::swap(bookmarks, s.bookmarks); std::swap(bookmarksBase, s.bookmarksBase); std::swap(lastFolder, s.lastFolder); std::swap(bookmarksSaveFailed, s.bookmarksSaveFailed);
     std::swap(audioVolumes, s.audioVolumes);
     std::swap(vault, s.vault); std::swap(vaultBase, s.vaultBase); std::swap(vaultLoaded, s.vaultLoaded); std::swap(vaultPromptOpen, s.vaultPromptOpen); std::swap(vaultCapture, s.vaultCapture);

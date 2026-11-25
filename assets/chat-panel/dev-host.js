@@ -446,11 +446,27 @@
   };
   Object.assign(SC, C_SCENARIOS);
 
-  // #128 (Paper « #128 Menu des modèles · A liste groupée (validée) »): the model menu as one list grouped by provider, in
-  // the panel and in the comment bubble. The model names are this fake host's agents' (the board's Codex names are only
-  // examples): the page writes none of its own. tests/chat-panel/model_menu_128.py drives these.
-  const CODEX_A = Object.assign({}, CODEX, { models: [{ id: "gpt-5.5", label: "GPT-5.5" }, { id: "gpt-5.5-mini", label: "GPT-5.5 mini" }] });
-  const AGENTS_A = (codex) => ({ agents: [CLAUDE, Object.assign({}, CODEX_A, codex || {})] });
+  // #128 v2 (Paper « #128 Menu des modèles · v2 ancien menu + groupes (maquette prête) »): the old menu with a header per
+  // agent, the latest models first, the others under « Plus de modèles », in the panel and in the comment bubble. The model
+  // names are this fake host's agents' (the board's names are only examples): the page writes none of its own.
+  // tests/chat-panel/model_menu_128.py drives these.
+  const CLAUDE_A = Object.assign({}, CLAUDE, { models: [{ id: "opus", label: "Opus 5.5" }, { id: "sonnet", label: "Sonnet 5.5", isDefault: true }, { id: "fable", label: "Fable 5.2" }, { id: "haiku", label: "Haiku 5.5" },
+    { id: "opus-5", label: "Opus 5" }, { id: "sonnet-5", label: "Sonnet 5" }, { id: "opus-4.6", label: "Opus 4.6" }, { id: "sonnet-4.6", label: "Sonnet 4.6" }, { id: "haiku-4.5", label: "Haiku 4.5" }] });
+  const CODEX_A = Object.assign({}, CODEX, { models: [{ id: "gpt-5.5", label: "GPT-5.5" }, { id: "gpt-5.5-mini", label: "GPT-5.5 mini" },
+    { id: "gpt-5.4", label: "GPT-5.4" }, { id: "gpt-5.4-mini", label: "GPT-5.4 mini" }, { id: "gpt-5.3-codex", label: "GPT-5.3-Codex" }] });
+  const AGENTS_A = (codex) => ({ agents: [CLAUDE_A, Object.assign({}, CODEX_A, codex || {})] });
+  // the bubble at an edge of the page area: `room` (CSS px from the surface to the page area's edges, as the host measures
+  // it) and the window's margin there (window.__grant caps the inset, as a screen edge does)
+  const EDGE = {
+    haut: { room: { top: 8, right: 700, bottom: 620, left: 300 }, grant: { top: 8 } },
+    bas: { room: { top: 620, right: 700, bottom: 8, left: 300 }, grant: { bottom: 8 } },
+    gauche: { room: { top: 300, right: 900, bottom: 300, left: 8 }, grant: { left: 8 } },
+    droite: { room: { top: 300, right: 8, bottom: 300, left: 900 }, grant: { right: 8 } },
+    // Val's trial (0.3.833): near the banner, little room under it either (a short window): above nor under holds it
+    serre: { room: { top: 24, right: 700, bottom: 200, left: 300 }, grant: { top: 24 } },
+  };
+  const edge = (k, then) => [() => { window.__grant = EDGE[k].grant; }, LAY({ maxWidth: 320, room: EDGE[k].room }), st(Object.assign(AGENTS_A(), conv("Bouton de paiement"))),
+    { type: "thread.reset", conversationId: "c1", items: cDoneItems() }].concat([wait(30), click(".model .m"), wait(80)], then || []);
   const OFF = { status: "notConnected", detail: "Pas connecté", authMethods: [{ id: "chatgpt", label: "ChatGPT" }] };
   const withChat = (over) => [st(Object.assign(AGENTS_A(), conv("Bouton de paiement"), over || {})), { type: "thread.reset", conversationId: "c1", items: [userMsg("u1", ASK)].concat(doneTurn("t1")) }];
   const openModels = [wait(30), click(".model .m"), wait(80)];
@@ -471,6 +487,15 @@
     "c-128-bulle-effort": [LAY({ maxWidth: 320 }), st(Object.assign(AGENTS_A(), conv("Bouton de paiement"))), { type: "thread.reset", conversationId: "c1", items: cDoneItems() }].concat(openModels, [click(".menu .mi[data-key=effort]"), wait(120)]),
     "c-128-modeles-inconnus": [LAY({ maxWidth: 320 }), st({ agents: [Object.assign({}, CLAUDE, { models: [] }), Object.assign({}, CODEX, { models: [] })], model: null, efforts: [], effort: null }),
       { type: "thread.reset", conversationId: "new", items: [] }].concat(openModels),
+    // #128 v2: « Plus de modèles » — the panel's list replaces the menu; the bubble's opens beside it
+    "128-panneau-plus": withChat().concat(openModels, [click(".menu .mi[data-key='more']"), wait(80)]),
+    "c-128-bulle-plus": [LAY({ maxWidth: 320 }), st(Object.assign(AGENTS_A(), conv("Bouton de paiement"))), { type: "thread.reset", conversationId: "c1", items: cDoneItems() }].concat(openModels, [click(".menu .mi[data-key=more]"), wait(120)]),
+    // #128: the bubble at each edge of the page area, its menu then each sub-menu (never cut by the bubble)
+    "c-128-bord-haut": edge("haut"), "c-128-bord-bas": edge("bas"), "c-128-bord-gauche": edge("gauche"), "c-128-bord-droite": edge("droite"), "c-128-bord-serre": edge("serre"),
+    "c-128-bord-haut-plus": edge("haut", [click(".menu .mi[data-key=more]"), wait(120)]), "c-128-bord-bas-plus": edge("bas", [click(".menu .mi[data-key=more]"), wait(120)]),
+    "c-128-bord-gauche-plus": edge("gauche", [click(".menu .mi[data-key=more]"), wait(120)]), "c-128-bord-droite-plus": edge("droite", [click(".menu .mi[data-key=more]"), wait(120)]),
+    "c-128-bord-serre-plus": edge("serre", [click(".menu .mi[data-key=more]"), wait(120)]),
+    "c-128-bord-droite-effort": edge("droite", [click(".menu .mi[data-key=effort]"), wait(120)]), "c-128-bord-bas-effort": edge("bas", [click(".menu .mi[data-key=effort]"), wait(120)]),
   });
   function bigThread(n) {
     const out = [];

@@ -18,6 +18,7 @@
 #include "password-demo.h"
 #include "find-bar.h"
 #include "error-pages.h"
+#include "crash-page.h"
 #include "context-toast.h"
 #include "tooltip.h"
 #include "fullscreen-hint.h"
@@ -321,7 +322,7 @@ void PumpPrompt(){
         if(t!=Active())continue;
         // Never pull focus out of the address while it is being edited: the request waits (its
         // page waits too) and shows when editing ends (SyncRequestChip).
-        if(it->spec.kind==OP::Kind::Permission&&editing)continue;
+        if((it->spec.kind==OP::Kind::Permission||it->spec.kind==OP::Kind::ScreenCapture)&&editing)continue;
         if(!it->spec.demo&&(it->spec.kind==OP::Kind::PasswordSave||it->spec.kind==OP::Kind::PasswordUpdate)&&!VaultOfferStillValid(t,it->spec.topOrigin.empty()?it->spec.origin:it->spec.topOrigin)){   // N13: never above another page (a frame's offer: its page's origin)
             auto job=std::move(*it);promptQueue.erase(it);Log(L"VAULT capture dropped before showing: the tab is no longer on its origin");OP::Result none;for(auto& a:job.answers)a(none);PumpPrompt();return;}
         promptActive=std::move(*it);promptQueue.erase(it);promptOpen=true;originPrompt.SetPageArea(PageScreenRect());
@@ -357,8 +358,8 @@ void PromptTabChanged(){if(promptOpen){auto q=promptActive.tab.lock();if(q!=Acti
 // belonged to the document being left. Authentication and other prompts are left alone.
 void ElementsNavigationStarting(const std::shared_ptr<Tab>& t){
     if(!t)return;
-    for(auto it=promptQueue.begin();it!=promptQueue.end();){auto q=it->tab.lock();if((it->spec.kind==OP::Kind::Permission||it->spec.kind==OP::Kind::ClientCertificate)&&(!q||q==t)){auto job=std::move(*it);it=promptQueue.erase(it);OP::Result none;for(auto& a:job.answers)a(none);}else ++it;}
-    if(promptOpen&&(promptActive.spec.kind==OP::Kind::Permission||promptActive.spec.kind==OP::Kind::SiteStatus||promptActive.spec.kind==OP::Kind::ClientCertificate)){auto q=promptActive.tab.lock();if(!q||q==t){Log(L"PERMISSION navigation: popover closed");originPrompt.Abort();}}
+    for(auto it=promptQueue.begin();it!=promptQueue.end();){auto q=it->tab.lock();if((it->spec.kind==OP::Kind::Permission||it->spec.kind==OP::Kind::ClientCertificate||it->spec.kind==OP::Kind::ScreenCapture||it->spec.kind==OP::Kind::Unresponsive)&&(!q||q==t)){auto job=std::move(*it);it=promptQueue.erase(it);OP::Result none;for(auto& a:job.answers)a(none);}else ++it;}
+    if(promptOpen&&(promptActive.spec.kind==OP::Kind::Permission||promptActive.spec.kind==OP::Kind::SiteStatus||promptActive.spec.kind==OP::Kind::ClientCertificate||promptActive.spec.kind==OP::Kind::ScreenCapture||promptActive.spec.kind==OP::Kind::Unresponsive)){auto q=promptActive.tab.lock();if(!q||q==t){Log(L"PERMISSION navigation: popover closed");originPrompt.Abort();}}
     if(siteStates.erase(t->serial))Log(L"PERMISSION navigation: site state cleared");
     if(t==Active())RefreshRequestChip();
 }
@@ -448,6 +449,45 @@ HRESULT PermissionRequested(const std::shared_ptr<Tab>& t,ICoreWebView2Permissio
         default:deny(false);break; // dismissed: no decision saved, the site may ask again
         }
         Log(L"PERMISSION kind="+std::to_wstring(kind)+L" action="+std::to_wstring((int)r.action)+(r.remember?L" saved":L""));
+        deferral->Complete();
+    },key);
+    return S_OK;
+}
+
+// ---------------------------------------------------------------------------------------
+// Screen share (#121, Paper p-V-0 « Partage d'écran, confirmation · A »): getDisplayMedia() first shows OUR popover
+// (OP::Kind::ScreenCapture, under the origin indicator like B01). « Choisir… » lets the engine open its own picker:
+// the choice of tab / window / screen stays the engine's (WebView2 has no API for the source). « Bloquer » and every
+// dismissal (close button, Échap, click outside, the tab switched, closed or navigated) cancel the capture: the page
+// gets the engine's normal refusal, NotAllowedError « Permission denied ». Engine facts (ICoreWebView2_27
+// ScreenCaptureStarting, tests/crash-screenshare/engine_probe.py): raised for the page and for a cross-site frame
+// (OriginalSourceFrameInfo names the frame), with or without a user gesture; getDisplayMedia() waits for our
+// deferral; no PermissionRequested is raised for it. « Toujours bloquer ce site » with « Bloquer » (never « Choisir… »)
+// keeps the site in Browser's own list (main.cpp ScreenShareBlocked, shown in Réglages › Autorisations): its next
+// requests are refused at once, without the popover. Otherwise each request asks again; one waiting in a tab refuses
+// the next ones of that tab at once (no stacked popovers).
+bool ScreenCaptureWaiting(const std::shared_ptr<Tab>& t){
+    for(auto& q:promptQueue)if(q.spec.kind==OP::Kind::ScreenCapture&&q.tab.lock()==t)return true;
+    return promptOpen&&promptActive.spec.kind==OP::Kind::ScreenCapture&&promptActive.tab.lock()==t;
+}
+HRESULT ScreenCaptureStarting(const std::shared_ptr<Tab>& t,ICoreWebView2ScreenCaptureStartingEventArgs* a){
+    if(!a)return S_OK;
+    a->put_Cancel(TRUE);   // refused unless « Choisir… » says otherwise, whatever ends this request
+    if(halted||!t||t->closed){Log(L"SCREEN CAPTURE refused: tab gone");return S_OK;}
+    std::wstring source;{Com<ICoreWebView2FrameInfo> f;LPWSTR s=nullptr;if(SUCCEEDED(a->get_OriginalSourceFrameInfo(&f.p))&&f.p&&SUCCEEDED(f->get_Source(&s))&&s){source=s;CoTaskMemFree(s);}}
+    if(source.empty())source=t->uri;
+    const std::wstring key=OriginOf(source);
+    if(ScreenShareIsBlocked(key)){Log(L"SCREEN CAPTURE refused: always blocked for "+key);return S_OK;}
+    if(ScreenCaptureWaiting(t)){Log(L"SCREEN CAPTURE refused: a request of this tab is already waiting "+key);return S_OK;}
+    ICoreWebView2Deferral* raw=nullptr;if(FAILED(a->GetDeferral(&raw))||!raw){Log(L"SCREEN CAPTURE refused: no deferral");return S_OK;}
+    auto deferral=std::make_shared<DeferralGuard>(raw);ComRef<ICoreWebView2ScreenCaptureStartingEventArgs> args(a);
+    OP::Spec spec;spec.kind=OP::Kind::ScreenCapture;spec.origin=OriginLabel(source);
+    Log(L"SCREEN CAPTURE request "+key);
+    AskPrompt(std::move(spec),t,[args,deferral,key](OP::Result& r){
+        const bool choose=r.action==OP::Action::Choose;
+        args->put_Cancel(choose?FALSE:TRUE);
+        if(r.action==OP::Action::Block&&r.remember)SetScreenShareBlocked(key,true);   // « Toujours bloquer ce site »
+        Log(std::wstring(L"SCREEN CAPTURE ")+(choose?L"choose: the engine's picker opens ":r.action==OP::Action::Block?L"blocked ":L"dismissed: refused ")+key);
         deferral->Complete();
     },key);
     return S_OK;
@@ -662,7 +702,8 @@ bool ErrorPageNavigationStarting(const std::shared_ptr<Tab>& t,const std::wstrin
 }
 // Only the failure of the tab's latest top-level http(s) navigation (not an external
 // protocol hand-off, not an older navigation) replaces the document.
-bool ShowErrorPage(const std::shared_ptr<Tab>& t,COREWEBVIEW2_WEB_ERROR_STATUS error,UINT64 navigationId){
+// `netCode`: the engine's own error code when main read it from its error document (« ERR_CONNECTION_REFUSED »).
+bool ShowErrorPage(const std::shared_ptr<Tab>& t,COREWEBVIEW2_WEB_ERROR_STATUS error,UINT64 navigationId,const std::wstring& netCode=L""){
     if(halted||!t||t->closed||!t->view.p)return false;
     const std::wstring target=t->errorPage.starting;
     if(navigationId!=t->errorPage.startingId||(target.rfind(L"http://",0)!=0&&target.rfind(L"https://",0)!=0)||IsSandboxUri(target))return false;
@@ -681,8 +722,8 @@ bool ShowErrorPage(const std::shared_ptr<Tab>& t,COREWEBVIEW2_WEB_ERROR_STATUS e
     NativeChrome::ErrorPages::Extras extras;PageFonts(extras,sheet);extras.reducedMotion=motion.ReducedMotion();
     const bool forcedCert=certificate&&e.forcedCert>=0;   // sandbox only: the certificate case and its example issuer
     const int status=forcedCert?e.forcedCert:(int)error;
-    extras.code=certificate?std::wstring(NativeChrome::ErrorPages::CertificateCode(status)):std::wstring(NativeChrome::ErrorPages::Code(status));
-    extras.address=NativeChrome::ErrorPages::AddressOf(target);extras.tries=NativeChrome::ErrorPages::TriesText(e.tries,ClockNow());
+    extras.code=certificate?std::wstring(NativeChrome::ErrorPages::CertificateCode(status)):!netCode.empty()&&!forcedCert?netCode:std::wstring(NativeChrome::ErrorPages::Code(status));
+    extras.address=NativeChrome::ErrorPages::AddressOf(target);extras.tries=NativeChrome::ErrorPages::TriesText(e.tries,ClockNow());extras.triesCount=e.tries;
     extras.attempt=e.tries-1;   // time-out: 8, 16 then 32 s before the next automatic try, then none
     extras.restored=e.forcedRestored;extras.certStatus=status;extras.issuer=forcedCert?e.forcedIssuer:e.certIssuer;
     const bool retrying=e.forcedRetrying;e.forced=-1;e.forcedRetrying=e.forcedRestored=false;e.forcedCert=-1;e.forcedIssuer.clear();
@@ -699,9 +740,14 @@ bool ErrorPageMessage(const std::shared_ptr<Tab>& t,const std::wstring& source,c
     const std::wstring target=e.shown;std::weak_ptr<Tab> weak=t;
     switch(*action){
     case NativeChrome::ErrorPages::Action::Retry:Log(L"ERROR PAGE retry");Defer([weak,target]{auto tab=weak.lock();if(tab&&!tab->closed)Navigate(tab,target);});break;
+    // The time-out's automatic retry (8, 16 then 32 s): it was never wired, so the countdown ended on nothing
+    // (night 25/11: « the automatic retry did not bring a new page »). Only the page that counts down sends it.
+    case NativeChrome::ErrorPages::Action::AutoRetry:if(e.kind!=(int)NativeChrome::ErrorPages::Kind::TimedOut)break;
+        Log(L"ERROR PAGE automatic retry");Defer([weak,target]{auto tab=weak.lock();if(tab&&!tab->closed)Navigate(tab,target);});break;
     case NativeChrome::ErrorPages::Action::Back:Defer([weak]{auto tab=weak.lock();if(!tab||tab->closed||!tab->view.p)return;BOOL yes=FALSE;tab->view->get_CanGoBack(&yes);if(yes)tab->view->GoBack();else Navigate(tab,L"");});break;
     // The sheet's copy button: the code this page shows (kept by the host, never taken from the page).
-    case NativeChrome::ErrorPages::Action::Copy:if(!e.code.empty()&&CopyToClipboard(e.code)){Log(L"ERROR PAGE code copied");accessibility.Notify('C',TR(error_code_copied),L"ErrorCodeCopied");}break;
+    // « Copié » on the button (1.5 s) only once the clipboard holds the code: the page is told « copied ».
+    case NativeChrome::ErrorPages::Action::Copy:if(!e.code.empty()&&CopyToClipboard(e.code)){Log(L"ERROR PAGE code copied");accessibility.Notify('C',TR(error_code_copied),L"ErrorCodeCopied");if(t->view.p)t->view->PostWebMessageAsString(L"copied");}break;
     default:break;
     }
     return true;
@@ -914,13 +960,19 @@ void ShowAboutDialog(int demoState){
     });
 }
 void ShowAboutDialog(){ShowAboutDialog(-1);}
-// « Nouveautés » (src/release-notes.h, Paper p-L-0 142E-0 / 144O-0): the build's own notes, never fetched.
+// « Nouveautés » (src/release-notes.h, Paper p-L-0 142E-0 / 144O-0): the build's own notes (release-notes/notes.json),
+// never fetched. A build without notes shows no card: À propos then opens the release's GitHub page, as before the card.
 // `mini`: the automatic Mini after an update (« Voir tout » expands it in place); else the Full view.
 // `activate`: take the keyboard (opened by hand from À propos); the automatic card leaves it to the page.
 // `shown` runs only once the card is really on screen. One card at a time: a new request replaces it.
 std::wstring ReleaseNotesLogo(){return base+L"\\assets\\lottie\\logo-spin.json";}
 void ShowReleaseNotes(bool mini,std::function<void()> shown,bool activate){
-    std::vector<MD::NoteSection> sections;const auto notes=ReleaseNotes::Current();
+    const auto& content=ReleaseNotes::Compiled();
+    if(content.Empty()){
+        if(mini){Log(L"RELEASE NOTES none in this build");return;}
+        Log(L"RELEASE NOTES none in this build: release page");NewTab(ReleaseNotesUrl(RunningVersion()),-1,L"");return;
+    }
+    std::vector<MD::NoteSection> sections;const auto notes=ReleaseNotes::Sections(content);
     for(const auto& s:notes)sections.push_back({s.kind==ReleaseNotes::Kind::Fixed,s.title,s.items});
     auto spec=MD::ReleaseNotesSpec(std::move(sections),ReleaseNotes::Spoken(notes),ReleaseNotesLogo(),mini);
     spec.onShown=[mini,shown]{Log(std::wstring(L"RELEASE NOTES shown ")+(mini?L"mini":L"full"));if(shown)shown();};
@@ -930,7 +982,7 @@ void ShowReleaseNotes(bool mini,std::function<void()> shown,bool activate){
     if(notesCard.Visible())notesCard.Abort();
     if(!notesCard.Show(std::move(spec),PageScreenRect(),[](const MD::Result&){Log(L"RELEASE NOTES closed");}))Log(L"RELEASE NOTES show failed");
 }
-// Automatic Mini after a successful update, at most once per notes content (ReleaseNotes::Decide).
+// Automatic Mini after a successful update, at most once per notes text (ReleaseNotes::Decide on Compiled().id).
 // `startupInstalled`: the update engine reported Installed when it started (the helper-launched process).
 // `dataRoot`: the GLOBAL data root (profileRoot, else dataDir) where the read state lives; never a private window's.
 // True when the card will open: it then replaces the « Mise à jour installée » toast.
@@ -940,13 +992,14 @@ bool ReleaseNotesAtStartup(bool startupInstalled,const std::wstring& installRoot
     if(startupInstalled){if(ProfileStore::ReadAll(installRoot+L"\\previous",previousBytes))previous=ReleaseNotes::ParsePrevious(previousBytes);else previous.kind=ReleaseNotes::Previous::Kind::Invalid;}
     const auto state=startupInstalled?ReleaseNotes::Load(dataRoot):ReleaseNotes::State{};
     std::string current;for(wchar_t c:version)current.push_back(c<128?static_cast<char>(c):'?');
-    const auto decision=ReleaseNotes::Decide(startupInstalled,previous,current,state);
+    const auto& content=ReleaseNotes::Compiled();const std::string notesId=content.Empty()?std::string():content.id;
+    const auto decision=ReleaseNotes::Decide(startupInstalled,previous,current,state,notesId);
     if(!startupInstalled)return false; // ordinary launch, other window, dev build: nothing read, nothing logged
     {const char* d=ReleaseNotes::DecisionText(decision);const char* st=ReleaseNotes::StatusText(state.status);
-     Log(L"RELEASE NOTES startup: "+std::wstring(d,d+std::strlen(d))+L" (state "+std::wstring(st,st+std::strlen(st))+L")");}
-    if(decision==ReleaseNotes::Decision::Baseline){const bool ok=ReleaseNotes::MarkSeen(dataRoot,ReleaseNotes::NotesId);Log(ok?L"RELEASE NOTES baseline recorded (first install)":L"RELEASE NOTES baseline NOT recorded");return false;}
+     Log(L"RELEASE NOTES startup: "+std::wstring(d,d+std::strlen(d))+L" (state "+std::wstring(st,st+std::strlen(st))+L") notes "+(notesId.empty()?std::wstring(L"none"):std::wstring(notesId.begin(),notesId.end()))+L", seen "+std::wstring(state.seen.begin(),state.seen.end()));}
+    if(decision==ReleaseNotes::Decision::Baseline){const bool ok=ReleaseNotes::MarkSeen(dataRoot,notesId);Log(ok?L"RELEASE NOTES baseline recorded (first install)":L"RELEASE NOTES baseline NOT recorded");return false;}
     if(decision!=ReleaseNotes::Decision::Show)return false;
-    Defer([dataRoot]{ShowReleaseNotes(true,[dataRoot]{const bool ok=ReleaseNotes::MarkSeen(dataRoot,ReleaseNotes::NotesId);Log(ok?L"RELEASE NOTES seen recorded":L"RELEASE NOTES seen NOT recorded (kept as it was)");},false);});
+    Defer([dataRoot,notesId]{ShowReleaseNotes(true,[dataRoot,notesId]{const bool ok=ReleaseNotes::MarkSeen(dataRoot,notesId);Log(ok?L"RELEASE NOTES seen recorded":L"RELEASE NOTES seen NOT recorded (kept as it was)");},false);});
     return true;
 }
 void ShowPrivateDialog(bool future){AskModal(MD::PrivateSpec(future),nullptr,[future](const MD::Result& r){if(r.button==MD::PrivateClearDataButton)AskClearBrowsingData(future,nullptr);});}
@@ -1550,6 +1603,196 @@ void ShowVaultManager(bool keyboard){
     if(vaultEngineJustDeleted){vaultEngineJustDeleted=false;passwordDemo.EngineDeleted();}   // said once, in the list that comes back
     passwordDemo.Show(PageScreenRect());
 }
+// ---------------------------------------------------------------------------------------
+// Frozen page (#121, Paper p-V-0 « Page qui ne répond plus · A »). Engine facts (tests/crash-screenshare/engine_probe.py
+// hang-*, window never shown): ProcessFailed RENDER_PROCESS_UNRESPONSIVE comes about 16.6 s after the page stops
+// answering input, and only ONCE per freeze (one report in 70 s of a page frozen for good, and none either when new
+// input comes after it: hang-again, 24/11); a script sent to the page answers the moment it runs again (the recovery
+// signal); Reload() of a frozen page never completes (12 s), its renderer has to end first (found through the tab's
+// main frame id among the renderers' frames), after which Reload() brings the page back. Hence:
+//   a report for the shown tab  -> our window over the veiled page (OP::Kind::Unresponsive), one at a time;
+//   « Attendre » / Échap        -> closed; it comes back by itself 15 s later while the page is still frozen
+//                                  (src/crash-page.h AfterWait; a hidden tab gets it once shown);
+//   the page answers again      -> the window closes by itself, nothing happens to the page;
+//   « Recharger »               -> that renderer ends (other tabs it hosts get the crashed-tab page, as with Chrome's
+//                                  « Quitter la page »), then the page reloads.
+bool UnresponsivePromptFor(const std::shared_ptr<Tab>& t){
+    for(auto& q:promptQueue)if(q.spec.kind==OP::Kind::Unresponsive&&q.tab.lock()==t)return true;
+    return promptOpen&&promptActive.spec.kind==OP::Kind::Unresponsive&&promptActive.tab.lock()==t;
+}
+void HangRecovered(const std::shared_ptr<Tab>& t){
+    for(auto it=promptQueue.begin();it!=promptQueue.end();){auto q=it->tab.lock();if(it->spec.kind==OP::Kind::Unresponsive&&q==t){auto job=std::move(*it);it=promptQueue.erase(it);OP::Result none;for(auto& a:job.answers)a(none);}else ++it;}
+    if(promptOpen&&promptActive.spec.kind==OP::Kind::Unresponsive&&promptActive.tab.lock()==t){Log(L"PAGE UNRESPONSIVE answered again: window closed");originPrompt.Abort();}
+}
+// A script that runs only once the page runs again.
+void HangProbe(const std::shared_ptr<Tab>& t){
+    if(t->hang.probing||!t->view.p)return;
+    t->hang.probing=true;t->hang.uri=t->uri;std::weak_ptr<Tab> weak=t;
+    auto done=Callback<ICoreWebView2ExecuteScriptCompletedHandler,HRESULT,LPCWSTR>([weak](HRESULT,LPCWSTR)->HRESULT{
+        auto tab=weak.lock();if(halted||!tab||tab->closed||!tab->hang.probing)return S_OK;
+        tab->hang.probing=false;Log(L"PAGE UNRESPONSIVE recovered");HangRecovered(tab);return S_OK;});
+    if(FAILED(t->view->ExecuteScript(L"0",done)))t->hang.probing=false;
+    done->Release();
+}
+// « Recharger »: end the renderer that hosts this tab's main frame, then reload (ProcessFailed sees `reloading`).
+void HangReload(const std::shared_ptr<Tab>& t){
+    if(halted||!t||t->closed||!t->view.p)return;
+    UINT32 mainFrame=0;{Com<ICoreWebView2_20> v20;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_20,(void**)&v20.p))&&v20.p)v20->get_FrameId(&mainFrame);}
+    Com<ICoreWebView2Environment13> e13;
+    if(!mainFrame||!environment.p||FAILED(environment->QueryInterface(IID_ICoreWebView2Environment13,(void**)&e13.p))||!e13.p){Log(L"PAGE UNRESPONSIVE reload: renderer unknown, plain reload");t->view->Reload();return;}
+    std::weak_ptr<Tab> weak=t;
+    auto found=Callback<ICoreWebView2GetProcessExtendedInfosCompletedHandler,HRESULT,ICoreWebView2ProcessExtendedInfoCollection*>([weak,mainFrame](HRESULT hr,ICoreWebView2ProcessExtendedInfoCollection* list)->HRESULT{
+        auto tab=weak.lock();if(halted||!tab||tab->closed||!tab->view.p)return S_OK;
+        DWORD pid=0;UINT n=0;
+        if(SUCCEEDED(hr)&&list&&SUCCEEDED(list->get_Count(&n)))for(UINT i=0;i<n&&!pid;++i){
+            Com<ICoreWebView2ProcessExtendedInfo> x;Com<ICoreWebView2ProcessInfo> p;Com<ICoreWebView2FrameInfoCollection> frames;Com<ICoreWebView2FrameInfoCollectionIterator> it;
+            if(FAILED(list->GetValueAtIndex(i,&x.p))||!x.p||FAILED(x->get_ProcessInfo(&p.p))||!p.p||FAILED(x->get_AssociatedFrameInfos(&frames.p))||!frames.p||FAILED(frames->GetIterator(&it.p))||!it.p)continue;
+            BOOL more=FALSE;it->get_HasCurrent(&more);
+            while(more&&!pid){Com<ICoreWebView2FrameInfo> f;Com<ICoreWebView2FrameInfo2> f2;UINT32 id=0;
+                if(SUCCEEDED(it->GetCurrent(&f.p))&&f.p&&SUCCEEDED(f->QueryInterface(IID_ICoreWebView2FrameInfo2,(void**)&f2.p))&&f2.p&&SUCCEEDED(f2->get_FrameId(&id))&&id==mainFrame){INT32 v=0;p->get_ProcessId(&v);pid=(DWORD)v;}
+                if(FAILED(it->MoveNext(&more)))more=FALSE;}
+        }
+        HANDLE h=pid?OpenProcess(PROCESS_TERMINATE,FALSE,pid):nullptr;
+        if(!h){Log(L"PAGE UNRESPONSIVE reload: renderer not found, plain reload");tab->view->Reload();return S_OK;}
+        tab->hang.reloading=true;Log(L"PAGE UNRESPONSIVE reload: ending the tab's renderer");
+        if(!TerminateProcess(h,1)){tab->hang.reloading=false;Log(L"PAGE UNRESPONSIVE reload: renderer not ended, plain reload");tab->view->Reload();}
+        CloseHandle(h);return S_OK;});
+    if(FAILED(e13->GetProcessExtendedInfos(found))){Log(L"PAGE UNRESPONSIVE reload: process list unavailable, plain reload");t->view->Reload();}
+    found->Release();
+}
+void PageUnresponsive(const std::shared_ptr<Tab>& t);
+// The engine reports a freeze once: after « Attendre » (or a report for a hidden tab), the window comes back from here.
+void HangAskAgainLater(const std::shared_ptr<Tab>& t){
+    std::weak_ptr<Tab> weak=t;
+    DeferAfter(NativeChrome::CrashPage::HangAskAgainMs,[weak]{
+        auto tab=weak.lock();if(halted||!tab)return;
+        namespace CP=NativeChrome::CrashPage;
+        switch(CP::AfterWait(tab->closed,tab->hang.probing,tab->hang.reloading||CrashPageOn(tab),tab->uri==tab->hang.uri,tab==Active(),UnresponsivePromptFor(tab))){
+        case CP::HangNext::Ask:Log(L"PAGE UNRESPONSIVE still frozen: asked again");PageUnresponsive(tab);break;
+        case CP::HangNext::Later:HangAskAgainLater(tab);break;
+        default:break;
+        }
+    });
+}
+void PageUnresponsive(const std::shared_ptr<Tab>& t){
+    if(halted||!t||t->closed||!t->view.p||t->home||t->hang.reloading||CrashPageOn(t))return;
+    HangProbe(t);
+    if(t!=Active()){Log(L"PAGE UNRESPONSIVE in a hidden tab: asked once it is shown, if still frozen");HangAskAgainLater(t);return;}
+    if(UnresponsivePromptFor(t))return;
+    OP::Spec s;s.kind=OP::Kind::Unresponsive;s.origin=NativeChrome::ErrorPages::HostOf(t->uri);
+    Log(L"PAGE UNRESPONSIVE window");
+    std::weak_ptr<Tab> weak=t;
+    AskPrompt(std::move(s),t,[weak](OP::Result& r){
+        auto tab=weak.lock();if(!tab||tab->closed)return;
+        if(r.action==OP::Action::Reload){Log(L"PAGE UNRESPONSIVE « Recharger »");Defer([weak]{auto t2=weak.lock();if(t2&&!t2->closed)HangReload(t2);});return;}
+        if(r.action==OP::Action::Wait)Log(L"PAGE UNRESPONSIVE « Attendre »: asked again in 15 s if still frozen");
+        HangAskAgainLater(tab);   // « Attendre », or closed by the host (the page answered: nothing more; the tab switched: once shown)
+    });
+}
+
+// ---------------------------------------------------------------------------------------
+// Crashed tab (#121, src/crash-page.h, Paper p-V-0 « Onglet planté · A »). When the tab's own renderer dies
+// (ProcessFailed RENDER_PROCESS_EXITED: crash, out of memory, killed), our page replaces the engine's « Cette page a un
+// problème ». Engine facts (tests/crash-screenshare/engine_probe.py, no window shown): NavigateToString right in the
+// handler shows our page and adds ONE history entry right after the crashed one; Reload() of that entry reloads OUR
+// page; GoBack() reloads the crashed entry in a new renderer (the site comes back, its earlier entries kept). Hence:
+//   « Recharger », the toolbar reload, F5, Ctrl+R  -> back to the crashed entry (its address is the one shown);
+//   Back                                           -> the entry BEFORE the crashed one (DevTools history), as Chrome;
+//   « Fermer l'onglet »                            -> closes this tab only.
+// Our entry stays in front after « Recharger » (Forward brings the same page back, working: same token) until the
+// next navigation prunes it. A crashed error / HTTPS-only page (one of ours) opens its address again instead.
+// Its three weights as WOFF2 data: URIs (the three TTF weights exceed what NavigateToString accepts).
+const std::wstring& CrashPageFont(int weight){
+    static const std::wstring regular=DataUri(base+L"\\assets\\fonts\\InterDisplay-Regular.woff2",L"font/woff2",512*1024);
+    static const std::wstring medium=DataUri(base+L"\\assets\\fonts\\InterDisplay-Medium.woff2",L"font/woff2",512*1024);
+    static const std::wstring semibold=DataUri(base+L"\\assets\\fonts\\InterDisplay-SemiBold.woff2",L"font/woff2",512*1024);
+    return weight>=600?semibold:weight>=500?medium:regular;
+}
+bool CrashPageOn(const std::shared_ptr<Tab>& t){return t&&!t->closed&&t->errorPage.kind==NativeChrome::CrashPage::PageKind&&!t->errorPage.shown.empty();}
+void ShowCrashPage(const std::shared_ptr<Tab>& t){
+    if(halted||!t||t->closed||!t->view.p)return;
+    namespace CP=NativeChrome::CrashPage;
+    switch(CP::ExitResponse(false,CrashPageOn(t),t->home||t->uri.empty()||IsSandboxUri(t->uri))){
+    case CP::OnExit::ReshowPage:
+        // Our page's own renderer died (night 24/11: a second crash of a background tab sent it back to the site).
+        // Reloading our entry renders our page again; `pending` lets that reload through and keeps its state.
+        t->errorPage.pending=true;Log(L"CRASH PAGE crashed itself: shown again");
+        if(FAILED(t->view->Reload())){t->errorPage.pending=false;Log(L"CRASH PAGE reload failed");}
+        return;
+    case CP::OnExit::ReloadDocument:   // the native home, the debug sandbox: their own document back
+        Log(L"CRASH PAGE not shown (home or internal page): reloaded");if(FAILED(t->view->Reload()))Log(L"CRASH PAGE reload failed");return;
+    default:break;
+    }
+    GUID guid{};wchar_t token[40]{};if(FAILED(CoCreateGuid(&guid))||!StringFromGUID2(guid,token,40)){Log(L"CRASH PAGE no token: the engine's page stays");return;}
+    auto& c=t->crash;auto& e=t->errorPage;BOOL back=FALSE;t->view->get_CanGoBack(&back);
+    c=CrashPageState{};c.url=t->uri;c.token=token;c.pending=true;c.entryBefore=back!=FALSE;c.ownPage=!e.shown.empty()||!t->https.shown.empty();
+    e.shown=c.url;e.token=c.token;e.pending=true;e.kind=NativeChrome::CrashPage::PageKind;t->home=false;
+    NativeChrome::CrashPage::Extras x;x.fontRegular=CrashPageFont(400);x.fontMedium=CrashPageFont(500);x.fontSemiBold=CrashPageFont(600);x.reducedMotion=motion.ReducedMotion();
+    Log(std::wstring(L"CRASH PAGE shown")+(c.ownPage?L" (over one of our pages)":L""));
+    if(FAILED(t->view->NavigateToString(NativeChrome::CrashPage::Html(c.url,c.token,x).c_str()))){
+        Log(L"CRASH PAGE NavigateToString failed: the engine's page stays");e.shown.clear();e.token.clear();e.pending=false;e.kind=0;c=CrashPageState{};}
+}
+// « Recharger » (and every reload of our page).
+void CrashPageReload(const std::shared_ptr<Tab>& t){
+    if(halted||!t||t->closed||!t->view.p||t->crash.url.empty())return;
+    auto& c=t->crash;BOOL back=FALSE;t->view->get_CanGoBack(&back);
+    if(!c.ownPage&&back){c.recharging=true;Log(L"CRASH PAGE reload: back to the crashed entry");if(SUCCEEDED(t->view->GoBack()))return;c.recharging=false;}
+    Log(L"CRASH PAGE reload: address opened again");Navigate(t,c.url);
+}
+// Back from our page: the entry two places back (ours sits right after the crashed one), read from DevTools history.
+void CrashPageBack(const std::shared_ptr<Tab>& t){
+    if(halted||!t||t->closed||!t->view.p)return;
+    if(!t->crash.entryBefore){Log(L"CRASH PAGE back: no page before the crashed one");return;}
+    std::weak_ptr<Tab> weak=t;
+    auto read=Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler,HRESULT,LPCWSTR>([weak](HRESULT hr,LPCWSTR json)->HRESULT{
+        auto tab=weak.lock();if(halted||!tab||tab->closed||!tab->view.p||!CrashPageOn(tab))return S_OK;
+        const long long id=SUCCEEDED(hr)&&json?NativeChrome::CrashPage::HistoryEntryBefore(json,2):-1;
+        if(id<0){Log(L"CRASH PAGE back: history unreadable");return S_OK;}
+        tab->crash.skipping=true;Log(L"CRASH PAGE back: the page before the crashed one");
+        if(FAILED(tab->view->CallDevToolsProtocolMethod(L"Page.navigateToHistoryEntry",(L"{\"entryId\":"+std::to_wstring(id)+L"}").c_str(),nullptr))){tab->crash.skipping=false;Log(L"CRASH PAGE back: navigateToHistoryEntry failed");}
+        return S_OK;});
+    if(FAILED(t->view->CallDevToolsProtocolMethod(L"Page.getNavigationHistory",L"{}",read)))Log(L"CRASH PAGE back: history unavailable");read->Release();
+}
+// NavigationStarting, before the error pages' bookkeeping. true: this navigation was cancelled (handled here).
+bool CrashPageNavigationStarting(const std::shared_ptr<Tab>& t,ICoreWebView2NavigationStartingEventArgs* a,const std::wstring& uri){
+    auto& c=t->crash;if(c.url.empty())return false;
+    const bool blank=uri==L"about:blank"||uri.rfind(L"data:",0)==0;
+    if(c.pending){   // our own NavigateToString starting: remember its entry (a hash: the address is megabytes long)
+        if(blank){c.pending=false;c.dataSize=uri.size();c.dataHash=std::hash<std::wstring>{}(uri);}else c=CrashPageState{};
+        return false;}
+    if(CrashPageOn(t)&&!t->errorPage.pending){
+        namespace CP=NativeChrome::CrashPage;
+        COREWEBVIEW2_NAVIGATION_KIND kind=COREWEBVIEW2_NAVIGATION_KIND_NEW_DOCUMENT;
+        {Com<ICoreWebView2NavigationStartingEventArgs3> a3;if(SUCCEEDED(a->QueryInterface(IID_ICoreWebView2NavigationStartingEventArgs3,(void**)&a3.p))&&a3.p)a3->get_NavigationKind(&kind);}
+        std::weak_ptr<Tab> weak=t;
+        switch(CP::NavigationWhileShown(false,blank,kind,c.recharging,c.skipping,c.ownPage)){
+        case CP::OnNavigation::ToCrashedEntry:   // toolbar reload, F5, Ctrl+R on our page
+            if(SUCCEEDED(a->put_Cancel(TRUE))){Defer([weak]{auto tab=weak.lock();if(tab&&!tab->closed)CrashPageReload(tab);});return true;}
+            return false;
+        case CP::OnNavigation::ToEntryBefore:
+            if(SUCCEEDED(a->put_Cancel(TRUE))){Defer([weak]{auto tab=weak.lock();if(tab&&!tab->closed)CrashPageBack(tab);});return true;}
+            return false;
+        default:   // ours: « Recharger », or Back already resolved
+            if(kind==COREWEBVIEW2_NAVIGATION_KIND_BACK_OR_FORWARD)c.recharging=c.skipping=false;
+            return false;
+        }
+    }
+    c.recharging=c.skipping=false;
+    // Our entry brought back by history (Forward after « Recharger »): the same page, working again.
+    if(blank&&c.dataSize&&uri.size()==c.dataSize&&std::hash<std::wstring>{}(uri)==c.dataHash){
+        auto& e=t->errorPage;e.shown=c.url;e.token=c.token;e.kind=NativeChrome::CrashPage::PageKind;e.pending=true;   // pending: kept by ErrorPageNavigationStarting
+        Log(L"CRASH PAGE back from history");}
+    return false;
+}
+bool CrashPageMessage(const std::shared_ptr<Tab>& t,const std::wstring& source,const std::wstring& message){
+    auto& e=t->errorPage;if(!CrashPageOn(t)||e.pending||t->uri!=e.shown)return false;
+    if(source!=L"about:blank"&&source.rfind(L"data:",0)!=0)return false;
+    const auto action=NativeChrome::CrashPage::ParseMessage(message,e.token);if(!action)return false;
+    std::weak_ptr<Tab> weak=t;
+    if(*action==NativeChrome::CrashPage::Action::Reload){Log(L"CRASH PAGE « Recharger »");Defer([weak]{auto tab=weak.lock();if(tab&&!tab->closed&&CrashPageOn(tab))CrashPageReload(tab);});}
+    else{Log(L"CRASH PAGE « Fermer l'onglet »");Defer([weak]{auto tab=weak.lock();if(!tab||tab->closed)return;const int i=TabIndexOf(tab);if(i>=0)CloseAt(i);});}
+    return true;
+}
 HRESULT PageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceivedEventArgs* a){
     if(halted||!t||t->closed||!a)return S_OK;
     if(!t->https.shown.empty())return InterstitialMessage(t,a);
@@ -1562,7 +1805,9 @@ HRESULT PageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceive
     struct WipeAtEnd{std::wstring& m;~WipeAtEnd(){Wipe(m);}} wipeAll{message};   // F6: a page message may carry a submitted password
     if(AudioPageMessage(t,message,source))return S_OK; // per-site audio reports (audio-integration.h)
     if(ScrollbarMessageFrom(t,message))return S_OK; // overlay scrollbar metrics (viewport-scrollbar-host.h)
+    if(PrintPageMessage(t,message))return S_OK; // window.print() of the top document (print-integration.h)
     if(VaultCapture(t,source,message))return S_OK;
+    if(CrashPageMessage(t,source,message))return S_OK;
     if(ErrorPageMessage(t,source,message))return S_OK;
     SandboxMessage(t,source,message);
     return S_OK;
@@ -1586,6 +1831,10 @@ void RegisterElementEvents(const std::shared_ptr<Tab>& t,ICoreWebView2Settings* 
      if(FAILED(need(t->view->add_ScriptDialogOpening(h,&token))))Log(L"DIALOG add_ScriptDialogOpening failed");h->Release();}
     {auto h=Callback<ICoreWebView2PermissionRequestedEventHandler,ICoreWebView2*,ICoreWebView2PermissionRequestedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2PermissionRequestedEventArgs* a)->HRESULT{return PermissionRequested(weak.lock(),a);});
      if(FAILED(need(t->view->add_PermissionRequested(h,&token))))Log(L"PERMISSION add_PermissionRequested failed");h->Release();}
+    {Com<ICoreWebView2_27> v27;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_27,(void**)&v27.p))&&v27.p){   // #121 screen-share confirmation
+        auto h=Callback<ICoreWebView2ScreenCaptureStartingEventHandler,ICoreWebView2*,ICoreWebView2ScreenCaptureStartingEventArgs*>([weak](ICoreWebView2*,ICoreWebView2ScreenCaptureStartingEventArgs* a)->HRESULT{return ScreenCaptureStarting(weak.lock(),a);});
+        if(FAILED(v27->add_ScreenCaptureStarting(h,&token)))Log(L"SCREEN CAPTURE add_ScreenCaptureStarting failed: the engine's picker opens directly");h->Release();}
+     else Log(L"SCREEN CAPTURE ICoreWebView2_27 unavailable: the engine's picker opens directly");}
     {Com<ICoreWebView2_10> v10;if(SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_10,(void**)&v10.p))&&v10.p){
         auto h=Callback<ICoreWebView2BasicAuthenticationRequestedEventHandler,ICoreWebView2*,ICoreWebView2BasicAuthenticationRequestedEventArgs*>([weak](ICoreWebView2*,ICoreWebView2BasicAuthenticationRequestedEventArgs* a)->HRESULT{return BasicAuthenticationRequested(weak.lock(),a);});
         if(FAILED(need(v10->add_BasicAuthenticationRequested(h,&token))))Log(L"AUTH add_BasicAuthenticationRequested failed");h->Release();}else Log(L"AUTH ICoreWebView2_10 unavailable: engine dialog kept");}
@@ -1612,6 +1861,7 @@ bool RegisterSandboxResources(const std::shared_ptr<Tab>& t){
 // A tab is closing (or its renderer died): end everything that waits on it.
 void ElementsTabClosed(const std::shared_ptr<Tab>& t){
     AbortTabModals(t);AbortTabPrompts(t);
+    PrintTabClosed(t);
     if(findSession.tab.lock()==t){if(findBar.Visible())findBar.Hide();FindDetach();}
     if(t->pageFullscreen){t->pageFullscreen=false;if(fullscreen.page){const bool was=InFullscreen();fullscreen.page=false;ApplyFullscreen(was);}}
     scriptDialogs.erase(t->serial);
@@ -1628,9 +1878,10 @@ bool ElementSurfaceKey(UINT key,bool ctrl,bool alt,bool shift,int& cmd){
         if(!ctrl&&!alt&&key==VK_F3){cmd=shift?FindPreviousCommand:FindNextCommand;return true;}
         return true;
     }
+    if(PrintSurfaceFocus(f))return true;   // our print window keeps its keys (#121)
     return InWindow(shortcutsPanel.Window(),f)||InWindow(modal.Window(),f)||InWindow(notesCard.Window(),f)||InWindow(originPrompt.Window(),f)||InWindow(passwordDemo.Window(),f)||InWindow(contextToast.Window(),f);
 }
-void ElementsTabChanged(){ModalTabChanged();PromptTabChanged();FindTabChanged();FullscreenTabChanged();RefreshRequestChip();}
+void ElementsTabChanged(){ModalTabChanged();PromptTabChanged();FindTabChanged();FullscreenTabChanged();RefreshRequestChip();PrintTabChanged();}
 void RepositionElementSurfaces(){
     if(modal.Visible())modal.Reposition(PageScreenRect());
     if(notesCard.Visible())notesCard.Reposition(PageScreenRect());
@@ -1638,6 +1889,7 @@ void RepositionElementSurfaces(){
     if(findBar.Visible())findBar.Reposition(FindBarArea());
     if(contextToast.Visible())contextToast.Reposition(PageScreenRect());
     originPrompt.SetPageArea(PageScreenRect());
+    PrintReposition();
 }
 void ElementsReducedMotion(bool reduced){modal.SetReducedMotion(reduced);notesCard.SetReducedMotion(reduced);originPrompt.SetReducedMotion(reduced);passwordDemo.SetReducedMotion(reduced);findBar.SetReducedMotion(reduced);contextToast.SetReducedMotion(reduced);fullscreenHint.SetReducedMotion(reduced);shortcutsPanel.SetReducedMotion(reduced);sandboxTip.SetReducedMotion(reduced);chromeTip.SetReducedMotion(reduced);}
 NativeChrome::Motion::Wake ElementsNextWake(NativeChrome::Motion::Time now){
@@ -1727,6 +1979,7 @@ void CreateElementSurfaces(){
     // C5: the toolbar's tooltips use the Paper tooltip; the comctl one stays only as a fallback.
     {NativeChrome::Tooltip::Hooks th;th.wake=[]{RequestElementFrame();};
      if(chromeTip.Create(instance,window,root,std::move(th))&&tooltip){DestroyWindow(tooltip);tooltip=nullptr;}}
+    CreatePrintSurfaces();   // our print window (#121)
     ElementsReducedMotion(motion.ReducedMotion());
 }
 void DisposeElementSurfaces(){
@@ -1736,6 +1989,7 @@ void DisposeElementSurfaces(){
     if(promptOpen)originPrompt.Abort();
     siteStates.clear();chipMotion=ChipMotion{};
     FindDetach();
+    DisposePrintSurfaces();
     notesCard.Dispose();modal.Dispose();originPrompt.Dispose();findBar.Dispose();contextToast.Dispose();fullscreenHint.Dispose();passwordDemo.Dispose();shortcutsPanel.Dispose();sandboxTip.Dispose();chromeTip.Dispose();
 }
 
@@ -1879,7 +2133,7 @@ void SandboxCommand(const std::shared_ptr<Tab>& t,const NativeChrome::DebugSandb
         // A real navigation to a reserved, unresolvable host (RFC 2606 .invalid): the engine fails it,
         // our error page is shown for the requested variant.
         NewTab(L"https://"+(v.empty()?std::wstring(L"hors-ligne"):v)+L".sandbox.invalid/",current+1);auto nt=Active();
-        if(nt){nt->errorPage.forced=(int)kind;nt->errorPage.forcedRetrying=v==L"retrying";nt->errorPage.forcedRestored=v==L"restored";nt->errorPage.forcedCert=cert;nt->errorPage.forcedIssuer=issuer;}
+        if(nt){nt->errorPage.forced=(int)kind;nt->errorPage.forcedRetrying=v==L"retrying"||v==L"restored"; /* « Connexion rétablie » = the reprise board (1M20-0): back online AND reloading */nt->errorPage.forcedRestored=v==L"restored";nt->errorPage.forcedCert=cert;nt->errorPage.forcedIssuer=issuer;}
         log(what+L" → nouvel onglet");return;}
     if(n==L"tooltip.show"){
         NativeChrome::Tooltip::Content content{L"Actualiser",v==L"label"?L"":L"F5",v==L"detail"?L"Recharge la page depuis le serveur":L""};

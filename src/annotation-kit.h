@@ -32,6 +32,7 @@
 #include "frame-clock.h"
 #include "accessibility.h"
 #include "annotation-motion.h"
+#include "resize-border.h"   // a layer on the window's edge (Mode Focus: the banner on its top edge) leaves it the resize border
 
 namespace NativeChrome { namespace Annotations {
 template<class T> inline void Release(T*& p) { if (p) { p->Release(); p = nullptr; } }
@@ -529,6 +530,7 @@ private:
     static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         auto* self = reinterpret_cast<Layer*>(GetWindowLongPtrW(h, GWLP_USERDATA));
         if (m == WM_NCCREATE) { self = static_cast<Layer*>(reinterpret_cast<CREATESTRUCTW*>(l)->lpCreateParams); SetWindowLongPtrW(h, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self)); self->hwnd_ = h; }
+        { LRESULT border = 0; if (NativeChrome::ResizeBorder::Claim(h, m, w, l, border)) return border; }   // over the window's resize border (src/resize-border.h)
         if (self) {
             if (m == WM_GETOBJECT) { LRESULT r; if (self->uia.OnGetObject(h, w, l, r)) return r; }
             if (m == WM_MOUSEACTIVATE && !self->options_.activatable) return MA_NOACTIVATE;

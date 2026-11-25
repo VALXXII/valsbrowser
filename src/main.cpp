@@ -46,6 +46,7 @@
 #include "split-view.h"
 #include "split-overlay.h"
 #include "status-bubble.h"
+#include "resize-border.h"   // the window's resize border kept over the chat's WebView and the drawers
 #include "site-name.h"
 #include "debug-sandbox.h"
 #include "motion-lab.h"
@@ -75,6 +76,7 @@
 #define BROWSER_ANNOTATIONS 1
 #endif
 #include "profile-store.h"
+#include "screen-share-blocks.h"
 #include "window-sessions.h"
 #include "trace-erase.h"
 #include "log-privacy.h"
@@ -131,6 +133,8 @@ GUID_TEXT(ICoreWebView2BrowserExtensionRemoveCompletedHandler,"{8e41909a-9b18-4b
 GUID_TEXT(ICoreWebView2WebMessageReceivedEventHandler,"{57213f19-00e6-49fa-8e07-898ea01ecbd2}")
 GUID_TEXT(ICoreWebView2ScriptDialogOpeningEventHandler,"{ef381bf9-afa8-4e37-91c4-8ac48524bdfb}")
 GUID_TEXT(ICoreWebView2PermissionRequestedEventHandler,"{15e1c6a3-c72a-4df3-91d7-d097fbec6bfd}")
+GUID_TEXT(ICoreWebView2ScreenCaptureStartingEventHandler,"{e24ff05a-1db5-59d9-89f3-3c864268db4a}")
+GUID_TEXT(ICoreWebView2GetProcessExtendedInfosCompletedHandler,"{f45e55aa-3bc2-11ee-be56-0242ac120002}")
 GUID_TEXT(ICoreWebView2BasicAuthenticationRequestedEventHandler,"{58b4d6c2-18d4-497e-b39b-9a96533fa278}")
 GUID_TEXT(ICoreWebView2ClientCertificateRequestedEventHandler,"{d7175ba2-bcc3-11eb-8529-0242ac130003}")
 GUID_TEXT(ICoreWebView2LaunchingExternalUriSchemeEventHandler,"{74f712e0-8165-43a9-a13f-0cce597e75df}")
@@ -186,6 +190,14 @@ inline unsigned NextTabSerial(){static unsigned serial=0;return ++serial;}
 // whose "not secure" interstitial the tab displays (NavigateToString), `token` authenticates
 // its button messages and `from` is where "Revenir" leads.
 struct HttpsOnlyState { std::wstring insecure,expectHost,shown,token,from; UINT64 upgrade=0; bool pending=false; };
+// Crashed tab (src/crash-page.h, #121): our page replaced the engine's after the tab's renderer died. It is one of our
+// internal pages like the error pages (ErrorPageState below carries shown = the crashed address, its token and kind
+// CrashPage::PageKind while it is on screen); this record outlives it so the same page works again when history brings
+// it back. url: the crashed address; dataSize/dataHash: our document's entry as NavigationStarting reports it (a
+// data: address of megabytes, kept as size + hash); entryBefore: the crashed entry had a previous one (Back from our
+// page goes there); ownPage: what crashed was one of our own pages (error / HTTPS-only), so « Recharger » opens its
+// address again; recharging / skipping: the next back navigation is ours (« Recharger », or Back resolved).
+struct CrashPageState { std::wstring url,token; size_t dataSize=0,dataHash=0; bool pending=false,entryBefore=false,ownPage=false,recharging=false,skipping=false; };
 // Network error page (src/error-pages.h) shown in place of `shown`, authenticated by `token`.
 struct ErrorPageState { std::wstring shown,token; bool pending=false; int kind=0; int forced=-1; bool forcedRetrying=false,forcedRestored=false; /* sandbox: the variant to show */
     std::wstring starting; UINT64 startingId=0; /* last top-level navigation: only its failure gets the page */
@@ -207,6 +219,7 @@ struct Tab { unsigned serial=NextTabSerial(); Com<ICoreWebView2Controller> contr
     // `frozen`: bounds held while the preview stands in for the page.
     std::uint64_t navStamp=0; bool frozen=false;
     std::uint64_t navInFlight=0;   // the engine id of the top-level navigation started and not yet completed (review N13)
+    bool navigationHeld=false; std::wstring heldUri;   // its first navigation waits while the ad blocker is replaced (AdBlockHoldStart)
     // Overlay scrollbar (Paper V3 "Scrollbar minimale"): root scroll metrics posted by the page.
     NativeChrome::Scrollbar::Metrics scroll;
     // Link preview: the engine's status text (hovered link), drawn by our own bubble.
@@ -214,6 +227,10 @@ struct Tab { unsigned serial=NextTabSerial(); Com<ICoreWebView2Controller> contr
     // Paper p-D-0 surfaces: network error page, debug sandbox (opened by the user in this tab),
     // page element in fullscreen.
     ErrorPageState errorPage; bool sandbox=false,sandboxPending=false,pageFullscreen=false;
+    CrashPageState crash;   // crashed tab page (#121)
+    // Frozen page (#121 « Page qui ne répond plus »): a script sent to the page is waiting for it to run again
+    // (`probing`); « Recharger » is ending its renderer (`reloading`: the exit that follows reloads, no crash page).
+    struct { bool probing=false,reloading=false; std::wstring uri; } hang;   // uri: the frozen document's address
     // Script-opened target (window.open): its about:blank is a web document, never the native home, until the user
     // deliberately goes Home (Navigate with an empty address sets blankIsHome again). popupSetup: created for a
     // pending request, not yet assigned: no script removal/reinjection meanwhile (queued in audioReinject).
@@ -286,6 +303,8 @@ void AskClearBrowsingData(bool demo=false,std::function<void(bool)> result=nullp
 void ShowAboutDialog(); void ShowPrivateDialog(bool future=false); bool ElementSurfaceKey(UINT key,bool ctrl,bool alt,bool shift,int& cmd);
 void ElementsFrame(NativeChrome::Motion::Time now); NativeChrome::Motion::Wake ElementsNextWake(NativeChrome::Motion::Time now);
 void ElementsReducedMotion(bool reduced); void RepositionElementSurfaces(); void ChromeTipHover(int x,int y); void ChromeTipHide(); bool sandboxNextTab=false,debugSandboxAtStart=false;
+// Our print window (#121, src/print-integration.h, included after SavePageAsPdf).
+void PrintFrame(NativeChrome::Motion::Time now); NativeChrome::Motion::Wake PrintNextWake(NativeChrome::Motion::Time now); void PrintReposition(); bool PrintSurfaceFocus(HWND f); void PrintTabChanged(); void PrintTabClosed(const std::shared_ptr<Tab>& t); void CreatePrintSurfaces(); void DisposePrintSurfaces(); bool PrintPageMessage(const std::shared_ptr<Tab>& t,const std::wstring& message); void RegisterPrintScript(const std::shared_ptr<Tab>& t,const PopupHost::RequestPtr& popup);
 constexpr int FindNextCommand=3050,FindPreviousCommand=3051,FullscreenCommand=3052,SandboxCommandId=3053,ShortcutsCommand=3054,ExitFullscreenCommand=3055; bool PageFullscreenActive(); void ExitPageFullscreen(); void OpenShortcutsPanel();
 // Bookmarks (section "Bookmarks" below).
 constexpr int BookmarkBarCommand=3030,BookmarksDrawerCommand=3031,BookmarkUndoCommand=3032;
@@ -334,6 +353,7 @@ void CloseAudioDrawer();void InvalidateDownloadIcon();void AudioFrame(NativeChro
 void InvalidateMotion(NativeChrome::Motion::Time now){
     FocusFrame(now); // Mode Focus: the floating panel's slide (the page windows' hole, then its own repaint)
     ScrollbarRefresh(now); // overlay handles only: never repaints the chrome
+    PrintFrame(now);
     SplitFrame(now);GripFrame(now);ElementsFrame(now);downloadPanel.Frame(now);downloadDrawer.Frame(now);settingsDrawer.Frame(now);historyDrawer.Frame(now);bookmarksDrawer.Frame(now);
     // Downloads icon: its own button only (also the frame that lands its last pose).
     chrome.downloadIcon.Settle(now);chrome.nav.Settle(now);AudioFrame(now);
@@ -347,7 +367,7 @@ void InvalidateMotion(NativeChrome::Motion::Time now){
 }
 void ScheduleMotion(NativeChrome::Motion::Time now){
     const bool reduced=motion.ReducedMotion();auto ui=NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(motion.NextWake(now),chrome.tabMotion.NextWake(now)),chrome.lottie.NextWake(now,reduced)),chrome.nav.NextWake(now));motionFullFrames=ui.delay.has_value();
-    auto wake=NativeChrome::Motion::Earlier(ui,NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(downloadPanel.NextWake(now),downloadDrawer.NextWake(now)),settingsDrawer.NextWake(now)),NativeChrome::Motion::Earlier(historyDrawer.NextWake(now),bookmarksDrawer.NextWake(now))));wake=NativeChrome::Motion::Earlier(wake,chrome.downloadIcon.NextWake(now));wake=NativeChrome::Motion::Earlier(wake,AudioNextWake(now));wake=NativeChrome::Motion::Earlier(wake,ElementsNextWake(now));if(current>=0&&current<(int)pages.size())wake=NativeChrome::Motion::Earlier(wake,pages[current]->loading.NextWake(now,reduced));if(SplitAnimating()||GripsAnimating())wake=NativeChrome::Motion::Earlier(wake,NativeChrome::Motion::Frame());wake=NativeChrome::Motion::Earlier(wake,ScrollbarWake(now));wake=NativeChrome::Motion::Earlier(wake,FocusWake(now));if(halted||motionMinimized||!wake.delay){KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();return;}
+    auto wake=NativeChrome::Motion::Earlier(ui,NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(downloadPanel.NextWake(now),downloadDrawer.NextWake(now)),settingsDrawer.NextWake(now)),NativeChrome::Motion::Earlier(historyDrawer.NextWake(now),bookmarksDrawer.NextWake(now))));wake=NativeChrome::Motion::Earlier(wake,chrome.downloadIcon.NextWake(now));wake=NativeChrome::Motion::Earlier(wake,AudioNextWake(now));wake=NativeChrome::Motion::Earlier(wake,ElementsNextWake(now));if(current>=0&&current<(int)pages.size())wake=NativeChrome::Motion::Earlier(wake,pages[current]->loading.NextWake(now,reduced));if(SplitAnimating()||GripsAnimating())wake=NativeChrome::Motion::Earlier(wake,NativeChrome::Motion::Frame());wake=NativeChrome::Motion::Earlier(wake,ScrollbarWake(now));wake=NativeChrome::Motion::Earlier(wake,FocusWake(now));wake=NativeChrome::Motion::Earlier(wake,PrintNextWake(now)); /* our print window (#121): before the nothing-moves exit, or its fade never gets a frame */if(halted||motionMinimized||!wake.delay){KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();return;}
     // A deadline due within one nominal frame is served by the next compositor tick.
     if(frameClockReady&&(wake.frames||*wake.delay<=*NativeChrome::Motion::Frame().delay)){if(motionDeadline){KillTimer(window,MotionTimerId);motionDeadline.reset();}frameClock.Request();return;}
     frameClock.Cancel();
@@ -447,6 +467,13 @@ void FindInPage(){
 }
 void CancelContentTransitionIfMoved();
 void SyncFolderRename();
+// The window's resize border over its children (src/resize-border.h). In « Panneau » the chat's WebView, a window of the
+// WebView2 process, lies flush with the right and bottom edges: the border's band never got the pointer there. Four
+// invisible grips sit on the band above every other child; each layout puts them back on top, and so does the chat's
+// placement (src/chat-host-ui.h SyncCardFrame: a WebView given to the window later, put_ParentWindow, lands above them).
+// Hidden while the window has no band (maximized, fullscreen, minimized).
+NativeChrome::ResizeBorder::Grips resizeGrips;
+void SyncResizeGrips(){if(window)resizeGrips.Sync(window,!IsZoomed(window)&&!IsIconic(window)&&!InFullscreen());}
 void Layout(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */if(!window)return;CancelContentTransitionIfMoved();SyncFocusMode();FocusAbove();chrome.Resize();BuildChrome();FocusPlace();SyncFolderRename();auto r=chrome.edit;
     HDC dc=GetDC(address);auto old=SelectObject(dc,font?font:GetStockObject(DEFAULT_GUI_FONT));TEXTMETRICW metrics{};GetTextMetricsW(dc,&metrics);SelectObject(dc,old);ReleaseDC(address,dc);
     auto placement=chrome.MeasureText(L"Ag",{r.left,44,r.right,76},16,false,false,-.16f);
@@ -459,9 +486,10 @@ void Layout(){if(WorkspaceParked())return; /* a hidden profile's event: the wind
     // The page (and a split view's panels, see ContentBox) starts right under the chrome:
     // 81 DIP, 121 with the bookmarks band, no top padding (Paper c-v7q0dg). Mode Focus: 4 DIP, the panel floats over it.
     SetUpdateToastTop(ChromeBottomDip());bookmarkToast.Reposition();
-    ApplyPages();
+    ApplyPages();SyncResizeGrips(); // the resize border's grips above the pages and the chat (src/resize-border.h)
     RefreshTools();InvalidateRect(window,nullptr,FALSE);
 }
+bool CrashPageOn(const std::shared_ptr<Tab>& t);   // src/elements-integration.h (crashed tab page, #121)
 void Update(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
     auto t=Active();if(!t)return;
     BOOL canGoBack=FALSE,canGoForward=FALSE;
@@ -469,6 +497,7 @@ void Update(){if(WorkspaceParked())return; /* a hidden profile's event: the wind
         if(!Check(t->view->get_CanGoBack(&canGoBack),L"get_CanGoBack")||
            !Check(t->view->get_CanGoForward(&canGoForward),L"get_CanGoForward"))return;
     }
+    if(CrashPageOn(t)&&!t->crash.ownPage)canGoBack=t->crash.entryBefore;   // Back from our page skips the crashed entry
     chrome.SetEnabled('B',canGoBack!=FALSE);chrome.SetEnabled('F',canGoForward!=FALSE);
     chrome.SetEnabled('C',!t->home&&!t->uri.empty());AnnotationSyncChrome();if(!editing)SetWindowTextW(address,t->home?L"":t->uri.c_str());NativeUI::SetTextIfChanged(window,privateWindow?TRF(window_title_private,t->title):TRF(window_title,t->title)); /* only a new title reaches Windows: Update runs on every address, history and load event */RefreshTools(); /* builds the chrome (PERF-07: no second BuildChrome) */InvalidateRect(window,nullptr,FALSE);
     ScrollbarRefresh(NativeChrome::Motion::Now()); // home <-> page hides or restores the handle
@@ -1108,7 +1137,7 @@ void ReopenTab(){if(closedTabs.empty()||pages.size()>=128)return;auto tab=closed
 std::wstring HomeDocument(); // NEWTAB: HomeHtml, or the most visited sites (defined with the site icons)
 // SETTINGS(newtab): what a new tab (Ctrl+T, "+", a fresh start) opens: "" is the home tab.
 std::wstring NewTabTarget(){return settings.newTabPage==BrowserSettings::NewTabPage::Custom?settings.homepage:L"";}
-void Navigate(std::shared_ptr<Tab> t,const std::wstring& uri){if(!t||!t->view.p||halted)return;t->navigateFrom=t->uri;t->navigateFromHome=t->home;t->navigateTo=uri; /* what the tab showed, in case this becomes a download */t->home=uri.empty();t->uri=uri;if(uri.empty()){t->blankIsHome=true;const auto html=HomeDocument();homeTiles.Set(*t,html!=HomeHtml());Check(t->view->NavigateToString(html.c_str()),L"NavigateToString");return;}
+void Navigate(std::shared_ptr<Tab> t,const std::wstring& uri){if(!t||!t->view.p||halted)return;t->navigationHeld=false; /* any navigation replaces a held one (AdBlockHoldStart) */t->navigateFrom=t->uri;t->navigateFromHome=t->home;t->navigateTo=uri; /* what the tab showed, in case this becomes a download */t->home=uri.empty();t->uri=uri;if(uri.empty()){t->blankIsHome=true;const auto html=HomeDocument();homeTiles.Set(*t,html!=HomeHtml());Check(t->view->NavigateToString(html.c_str()),L"NavigateToString");return;}
     // An address the engine refuses (E_INVALIDARG) is not the loss of the engine: the tab keeps what it showed (its home
     // page when it had nothing), so a bad link, bookmark or restored session never stops the browser.
     const HRESULT hr=t->view->Navigate(uri.c_str());if(hr==E_INVALIDARG){Log(L"NAVIGATE refused: invalid address");t->uri=t->navigateFrom;t->home=t->navigateFromHome;t->navigateTo.clear();if(t->uri.empty()||t->home)Navigate(t,L"");else if(t==Active())Update();return;}
@@ -1239,8 +1268,9 @@ int Key(UINT key){
         if(shift&&key=='F')return FocusModeCommand; // Ctrl+Maj+F: Mode Focus (toggle; Réglages › Affichage)
         if(shift&&key==VK_F12)return SandboxCommandId;
         if(!shift&&key==VK_OEM_2)return ShortcutsCommand; // Ctrl+/ : raccourcis clavier (C5)
-        // Ctrl+P likewise: the page opens the same browser print preview itself (no double dialog).
-        if(!shift&&key=='P')return GetFocus()==window||GetFocus()==address||(Active()&&Active()->home)?PrintActive:0; // a home tab (frequent sites shown) never prints
+        // Ctrl+P opens our print window everywhere, the page included (the engine's preview is never shown, #121);
+        // PrintActive does nothing on a home tab (frequent sites shown).
+        if(!shift&&key=='P')return PrintActive;
         if(!shift&&(key=='L'||key=='T'||key=='W'||key=='R'))return key;
         if(!shift&&key=='H')return 'Y'; // history, as in every desktop browser
     }
@@ -2110,6 +2140,28 @@ void QueryPermissions(std::function<void(std::vector<EnginePermission>)> done){
     HRESULT hr=profile->GetNonDefaultPermissionSettings(cb);cb->Release();
     if(FAILED(hr)){LogPermissionHr(L"GetNonDefaultPermissionSettings call",hr);done({});}
 }
+// #121 « Toujours bloquer ce site » (src/screen-share-blocks.h): this profile's file, read under the profile lock. A
+// private window keeps its list for the session only (nothing written, like its other permissions).
+std::vector<std::wstring> screenShareBlockedPrivate;
+std::wstring ScreenShareBlocksFile(){return dataDir+L"\\screen-share-blocked";}
+std::vector<std::wstring> ScreenShareBlocked(){
+    if(privateWindow)return screenShareBlockedPrivate;
+    if(smoke||dataDir.empty())return {};
+    std::string bytes;{ProfileStore::Lock lock(dataDir);if(!lock.Held()||!ProfileStore::ReadAll(ScreenShareBlocksFile(),bytes))return {};}
+    return NativeChrome::ScreenShareBlocks::Parse(bytes);
+}
+bool ScreenShareIsBlocked(const std::wstring& origin){return NativeChrome::ScreenShareBlocks::Contains(ScreenShareBlocked(),origin);}
+// Adds (blocked) or removes `origin`; empty origin with !blocked: every site.
+void SetScreenShareBlocked(const std::wstring& origin,bool blocked){
+    namespace SB=NativeChrome::ScreenShareBlocks;
+    if(privateWindow){if(origin.empty()&&!blocked)screenShareBlockedPrivate.clear();else SB::Set(screenShareBlockedPrivate,origin,blocked);return;}
+    if(smoke||dataDir.empty())return;
+    ProfileStore::Lock lock(dataDir);if(!lock.Held()){Log(L"SCREEN CAPTURE block list: profile busy, not saved");return;}
+    std::string bytes;if(!ProfileStore::ReadAll(ScreenShareBlocksFile(),bytes))return;
+    auto list=SB::Parse(bytes);const bool changed=origin.empty()&&!blocked?(list.clear(),true):SB::Set(list,origin,blocked);
+    if(changed&&!ProfileStore::WriteAtomic(ScreenShareBlocksFile(),SB::Serialize(list)))Log(L"SCREEN CAPTURE block list: write failed");
+    if(changed)Log(std::wstring(L"SCREEN CAPTURE block list: ")+(blocked?L"added ":L"removed ")+(origin.empty()?std::wstring(L"every site"):origin));
+}
 // SETTINGS(permissions): the panel's Autorisations views. Load is asynchronous (engine call);
 // `done` runs on the UI thread with the sites that have at least one non-default permission.
 void LoadSitePermissions(std::function<void(std::vector<BrowserSettings::Site>)> done){
@@ -2126,11 +2178,14 @@ void LoadSitePermissions(std::function<void(std::vector<BrowserSettings::Site>)>
             // Several engine kinds fold into Other: one row, a block anywhere wins.
             if(!perms.empty()&&perms.back().kind==r.second.kind){if(r.second.state==PermissionState::Block)perms.back().state=PermissionState::Block;continue;}
             perms.push_back(r.second);}
+        // Screen sharing blocked by « Toujours bloquer ce site » (#121): Browser's own list, shown on the same site.
+        NativeChrome::ScreenShareBlocks::MergeInto(sites,ScreenShareBlocked(),SitePermission{Permission::ScreenShare,PermissionState::Block});
         done(std::move(sites));});
 }
 void SetSitePermission(const std::wstring& origin,BrowserSettings::Permission kind,BrowserSettings::PermissionState state){
     using namespace BrowserSettings;
     if(origin.empty()||halted)return;
+    if(kind==Permission::ScreenShare){SetScreenShareBlocked(origin,state==PermissionState::Block);return;}   // #121: Browser's own list, Block or nothing
     const auto engineState=state==PermissionState::Allow?COREWEBVIEW2_PERMISSION_STATE_ALLOW:state==PermissionState::Block?COREWEBVIEW2_PERMISSION_STATE_DENY:COREWEBVIEW2_PERMISSION_STATE_DEFAULT;
     if(kind!=Permission::Other){
         const auto k=kind==Permission::Camera?COREWEBVIEW2_PERMISSION_KIND_CAMERA:kind==Permission::Microphone?COREWEBVIEW2_PERMISSION_KIND_MICROPHONE:kind==Permission::Location?COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION:kind==Permission::Notifications?COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS:COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ;
@@ -2147,6 +2202,7 @@ void SetSitePermission(const std::wstring& origin,BrowserSettings::Permission ki
 // Empty origin: every site.
 void ResetSitePermissions(const std::wstring& origin){
     if(halted)return;
+    SetScreenShareBlocked(origin,false);   // #121: « Toujours bloquer ce site » goes with the site's other permissions
     ++permissionWrites;
     QueryPermissions([origin](std::vector<EnginePermission> raw){
         Com<ICoreWebView2Profile4> profile;
@@ -2293,20 +2349,12 @@ bool HttpsNavigationStarting(const std::shared_ptr<Tab>& t,ICoreWebView2Navigati
 }
 // NavigationCompleted hook for a failed navigation: an https:// upgrade that could not connect
 // (DNS, TCP, TLS or certificate) gives the interstitial. True when it was shown.
-bool HttpsUpgradeFailed(const std::shared_ptr<Tab>& t,UINT64 id,COREWEBVIEW2_WEB_ERROR_STATUS error){
-    auto& h=t->https;if(!h.upgrade||h.upgrade!=id||h.insecure.empty())return false;h.upgrade=0;
-    switch(error){
-    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT:case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED:
-    case COREWEBVIEW2_WEB_ERROR_STATUS_CLIENT_CERTIFICATE_CONTAINS_ERRORS:case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_REVOKED:
-    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID:case COREWEBVIEW2_WEB_ERROR_STATUS_SERVER_UNREACHABLE:
-    case COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT:case COREWEBVIEW2_WEB_ERROR_STATUS_ERROR_HTTP_INVALID_SERVER_RESPONSE:
-    case COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED:case COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET:
-    case COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT:case COREWEBVIEW2_WEB_ERROR_STATUS_HOST_NAME_NOT_RESOLVED:
-    case COREWEBVIEW2_WEB_ERROR_STATUS_REDIRECT_FAILED:case COREWEBVIEW2_WEB_ERROR_STATUS_UNEXPECTED_ERROR:
-        Log(L"HTTPS upgrade failed WebErrorStatus="+std::to_wstring(error)+L" "+h.insecure);
-        ShowInsecureInterstitial(t,h.insecure);return true;
-    default:return false; // offline, cancelled, authentication: the engine's own page
-    }
+bool HttpsUpgradeFailed(const std::shared_ptr<Tab>& t,UINT64 id,COREWEBVIEW2_WEB_ERROR_STATUS error,int httpStatus){
+    auto& h=t->https;if(!h.upgrade||h.upgrade!=id||h.insecure.empty())return false;
+    if(!NativeChrome::ErrorPages::UpgradeFallsBack((int)error,httpStatus))return false; // offline, cancelled, authentication, a real answer: their own page
+    h.upgrade=0;
+    Log(L"HTTPS upgrade failed WebErrorStatus="+std::to_wstring(error)+L" "+h.insecure);
+    ShowInsecureInterstitial(t,h.insecure);return true;
 }
 // The interstitial's buttons. Only the document the tab shows as interstitial, with its token.
 HRESULT InterstitialMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceivedEventArgs* a){
@@ -2363,12 +2411,69 @@ void ApplySecuritySettings(){
 // dataDir\adblock remembers "<folder>\n<id>" of the current install; any other "uBlock Origin Lite"
 // in the profile is an older version's leftover and is removed. One sync at a time.
 bool adBlockSynced=false,adBlockBusy=false,adBlockAgain=false,adBlockNoProfileLogged=false;void ApplyAdBlock();
+bool adBlockHold=false;int adBlockRemoving=0;   // the tabs wait while this profile's ad blocker is replaced; removals not finished
 const wchar_t* const AdBlockName=L"uBlock Origin Lite";
 // Installed from a folder that survives updates (src/adblock-folder.h): <data root>\extensions\ublock-lite-<version>.
 // Resolved once per launch; the bundled versions\<v>\assets\... folder only when that copy is not possible.
-std::wstring AdBlockSource(){static const std::wstring folder=[]{std::wstring note;const std::wstring f=AdBlockFolder::Stable(base+L"\\assets\\extensions\\ublock-lite",profileRoot.empty()?dataDir:profileRoot,&note);Log(L"SETTINGS adblock source: "+note);return f;}();return folder;}
+// Resolved OFF the UI thread, started as soon as the settings are read (AdBlockPrepare). The first copy (a new profile,
+// or the first launch of an update that ships another uBlock version) is ~1000 files / 47 MB that the antivirus scans
+// one by one: measured ~10 s on a busy machine (24 Nov 2026). On the UI thread it froze the window that long, and the
+// restored tabs, whose loads need that thread, only came after it (tests/restore-first-load). The sync now waits for
+// it without blocking (AdBlockWaitSource): the pages load meanwhile, the install comes once the folder is ready.
+std::wstring AdBlockBundled(){return base+L"\\assets\\extensions\\ublock-lite";}
+std::wstring AdBlockRoot(){return profileRoot.empty()?dataDir:profileRoot;}
+struct AdBlockSourceJob{std::atomic<bool> done{false};std::wstring folder,note;};
+AdBlockSourceJob& AdBlockSourceState(){static AdBlockSourceJob* job=new AdBlockSourceJob();return *job;}   // never freed: its thread may still run at exit
+bool adBlockSourceStarted=false,adBlockSourceLogged=false;   // UI thread only (one resolution per process: the data root is the same for every profile)
+void AdBlockSourceStart(){
+    if(adBlockSourceStarted)return;adBlockSourceStarted=true;
+    AdBlockSourceJob* job=&AdBlockSourceState();const std::wstring bundled=AdBlockBundled(),root=AdBlockRoot();
+    auto resolve=[job,bundled,root]{std::wstring note;std::wstring folder=AdBlockFolder::Stable(bundled,root,&note);job->folder=std::move(folder);job->note=std::move(note);job->done.store(true,std::memory_order_release);};
+    try{std::thread(resolve).detach();}catch(...){resolve();}   // no thread to be had: the former way, on this one
+}
+// True once the folder is known (its note logged once, on the UI thread); starts the resolution if it has not started.
+bool AdBlockSourceReady(){AdBlockSourceStart();AdBlockSourceJob& job=AdBlockSourceState();if(!job.done.load(std::memory_order_acquire))return false;if(!adBlockSourceLogged){adBlockSourceLogged=true;Log(L"SETTINGS adblock source: "+job.note);}return true;}
+std::wstring AdBlockSource(){AdBlockSourceJob& job=AdBlockSourceState();return job.done.load(std::memory_order_acquire)?job.folder:std::wstring();}   // read after AdBlockSourceReady() only
+// At startup, right after the settings: the folder is prepared while the engine and the first tab start.
+void AdBlockPrepare(){if(!privateWindow&&!smoke&&settings.adBlock)AdBlockSourceStart();}
+// The sync needs the folder when the blocker is on (it installs from it) or when this profile installed it once (its
+// marker names the folder: ours is told from a leftover). Off and never installed here: no copy at all, as before.
+bool AdBlockNeedsSource(){return settings.adBlock||GetFileAttributesW((dataDir+L"\\adblock").c_str())!=INVALID_FILE_ATTRIBUTES;}
+std::string AdBlockMarkerText(){std::string marker;std::ifstream in(std::filesystem::path(dataDir+L"\\adblock"),std::ios::binary);marker.assign(std::istreambuf_iterator<char>(in),std::istreambuf_iterator<char>());return marker;}
 std::string AdBlockMarker(const std::wstring& id){return Utf8(AdBlockSource())+"\n"+Utf8(id);}
-void AdBlockDone(){adBlockBusy=false;if(adBlockAgain&&!halted){adBlockAgain=false;ApplyAdBlock();}}
+// ---- The restored tabs while the ad blocker is replaced ------------------------------------------------------------
+// Removing an installed extension aborts the profile's loads in flight: at the first launch of an update that ships
+// another uBlock version, the sync removes the previous install and the restored tab got « La connexion a été
+// interrompue » (WebErrorStatus=9; 3 launches out of 3, tests/restore-first-load « update »). An install alone aborts
+// nothing (a page waiting for its server through a whole install loads fine, 2 out of 2). Until 24 Nov 2026 the copy on
+// the UI thread (above) happened to delay the restored tabs past that removal. The removal is foreseen before the first
+// tab navigates: this profile installed uBlock from another folder than this version's (AdBlockRemovalExpected). Its
+// tabs then hold their first navigation, address shown and bar « loading », until the replacement is over (removals
+// done, new version installed) or AdBlockHoldMaxMs at most. A tab navigated meanwhile goes there (Navigate clears it).
+constexpr UINT AdBlockHoldMaxMs=15000;
+bool AdBlockRemovalExpected(){const std::string marker=AdBlockMarkerText();return !marker.empty()&&marker.substr(0,marker.find('\n'))!=Utf8(AdBlockFolder::Expected(AdBlockBundled(),AdBlockRoot()));}
+void AdBlockReleaseTabs(bool late){
+    if(!adBlockHold)return;adBlockHold=false;int n=0;
+    const auto held=pages;   // (a copy: navigating never changes the tab list, but nothing here depends on it)
+    for(const auto& t:held)if(t&&!t->closed&&t->navigationHeld){++n;Navigate(t,t->heldUri);}
+    Log(std::wstring(late?L"TABS restored tabs released after the longest wait, the replacement goes on (":L"TABS restored tabs released once the ad blocker was replaced (")+std::to_wstring(n)+L" tab(s))");
+}
+void AdBlockHoldStart(){
+    adBlockHold=true;Log(L"TABS restored tabs wait while the ad blocker is replaced (another uBlock version)");
+    DeferAfter(AdBlockHoldMaxMs,[]{AdBlockReleaseTabs(true);});
+}
+void AdBlockMaybeRelease(){if(adBlockHold&&!adBlockBusy&&adBlockRemoving==0)AdBlockReleaseTabs(false);}
+// A new tab's first navigation (CreateTab, its controller ready), or its hold.
+void NavigateOrHold(const std::shared_ptr<Tab>& t,const std::wstring& uri){
+    if(!adBlockHold){Navigate(t,uri);return;}
+    t->navigationHeld=true;t->heldUri=uri;t->loading.Wait(NativeChrome::Motion::Now());
+    if(t==Active()){RefreshTools();InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());}
+}
+void AdBlockSync(ICoreWebView2Profile7* profile);
+// The sync waits for the folder without blocking the UI thread: looked at every 50 ms, then the sync goes on in the
+// same profile (DeferAfter keeps the workspace). Busy meanwhile: a settings change waits its turn (adBlockAgain).
+void AdBlockWaitSource(){DeferAfter(50,[]{if(halted)return;if(!AdBlockSourceReady()){AdBlockWaitSource();return;}Com<ICoreWebView2Profile7> profile;if(!LiveProfile(IID_ICoreWebView2Profile7,(void**)&profile.p)){adBlockBusy=false;AdBlockMaybeRelease();return;}AdBlockSync(profile.p);});}
+void AdBlockDone(){adBlockBusy=false;AdBlockMaybeRelease();if(adBlockAgain&&!halted){adBlockAgain=false;ApplyAdBlock();}}
 void AdBlockEnable(ICoreWebView2BrowserExtension* ext,bool on){
     auto done=Callback<ICoreWebView2BrowserExtensionEnableCompletedHandler,HRESULT>([on](HRESULT hr)->HRESULT{
         Log(FAILED(hr)?L"SETTINGS adblock Enable failed":on?L"SETTINGS adblock on (uBlock Origin Lite enabled)":L"SETTINGS adblock off (uBlock Origin Lite disabled)");AdBlockDone();return S_OK;});
@@ -2392,24 +2497,31 @@ void ApplyAdBlock(){
     if(smoke||halted)return;if(adBlockBusy){adBlockAgain=true;return;}
     Com<ICoreWebView2Profile7> profile;
     if(!LiveProfile(IID_ICoreWebView2Profile7,(void**)&profile.p)){if(!adBlockNoProfileLogged){adBlockNoProfileLogged=true;Log(L"SETTINGS adblock: no ICoreWebView2Profile7 yet (no live tab or old runtime)");}return;}
-    adBlockSynced=adBlockBusy=true;
+    const bool first=!adBlockSynced;adBlockSynced=adBlockBusy=true;
+    if(first&&AdBlockRemovalExpected())AdBlockHoldStart();   // before the profile's first tab navigates (its caller navigates right after)
+    AdBlockSync(profile.p);
+}
+// The sync itself (busy): the folder when it is needed, the profile's extensions, then keep / enable / disable / remove /
+// install.
+void AdBlockSync(ICoreWebView2Profile7* profile){
+    if(AdBlockNeedsSource()&&!AdBlockSourceReady()){AdBlockWaitSource();return;}   // its folder is still being prepared, off the UI thread
     auto listed=Callback<ICoreWebView2ProfileGetBrowserExtensionsCompletedHandler,HRESULT,ICoreWebView2BrowserExtensionList*>([](HRESULT hr,ICoreWebView2BrowserExtensionList* list)->HRESULT{
         Com<ICoreWebView2Profile7> profile;
         if(halted||FAILED(hr)||!list||!LiveProfile(IID_ICoreWebView2Profile7,(void**)&profile.p)){if(!halted)Log(L"SETTINGS adblock: extension list unavailable");AdBlockDone();return S_OK;}
-        std::string marker;{std::ifstream in(std::filesystem::path(dataDir+L"\\adblock"),std::ios::binary);marker.assign(std::istreambuf_iterator<char>(in),std::istreambuf_iterator<char>());}
+        const std::string marker=AdBlockMarkerText();
         Com<ICoreWebView2BrowserExtension> ours;UINT count=0;list->get_Count(&count);
         for(UINT i=0;i<count;++i){
             Com<ICoreWebView2BrowserExtension> ext;LPWSTR id=nullptr,name=nullptr;
             if(FAILED(list->GetValueAtIndex(i,&ext.p))||!ext.p)continue;
             if(SUCCEEDED(ext->get_Id(&id))&&id&&SUCCEEDED(ext->get_Name(&name))&&name&&std::wstring(name)==AdBlockName){
                 if(!ours.p&&marker==AdBlockMarker(id))ours.set(ext.p);
-                else{Log(L"SETTINGS adblock removing a previous install "+std::wstring(id));auto removed=Callback<ICoreWebView2BrowserExtensionRemoveCompletedHandler,HRESULT>([](HRESULT r)->HRESULT{if(FAILED(r))Log(L"SETTINGS adblock remove failed");return S_OK;});if(FAILED(ext->Remove(removed)))Log(L"SETTINGS adblock Remove call failed");removed->Release();}}
+                else{Log(L"SETTINGS adblock removing a previous install "+std::wstring(id));++adBlockRemoving;auto removed=Callback<ICoreWebView2BrowserExtensionRemoveCompletedHandler,HRESULT>([](HRESULT r)->HRESULT{if(FAILED(r))Log(L"SETTINGS adblock remove failed");--adBlockRemoving;AdBlockMaybeRelease();return S_OK;});if(FAILED(ext->Remove(removed))){Log(L"SETTINGS adblock Remove call failed");--adBlockRemoving;}removed->Release();}}
             if(id)CoTaskMemFree(id);if(name)CoTaskMemFree(name);
         }
         if(ours.p){BOOL on=FALSE;ours->get_IsEnabled(&on);if(!!on!=settings.adBlock){AdBlockEnable(ours.p,settings.adBlock);return S_OK;}Log(settings.adBlock?L"SETTINGS adblock on":L"SETTINGS adblock off");AdBlockDone();return S_OK;}
         if(settings.adBlock){AdBlockInstall(profile.p);return S_OK;}
         Log(L"SETTINGS adblock off (not installed)");AdBlockDone();return S_OK;});
-    HRESULT hr=profile->GetBrowserExtensions(listed);listed->Release();if(FAILED(hr)){Log(L"SETTINGS adblock GetBrowserExtensions call failed");adBlockBusy=false;}
+    HRESULT hr=profile->GetBrowserExtensions(listed);listed->Release();if(FAILED(hr)){Log(L"SETTINGS adblock GetBrowserExtensions call failed");adBlockBusy=false;AdBlockMaybeRelease();}
 }
 // SETTINGS(memory): settings.memorySaver asks the engine to trim background tabs
 // (MemoryUsageTargetLevel LOW, scripts keep running); the active tab, and every tab once it is
@@ -2680,12 +2792,12 @@ void DownloadNavigationAsked(const std::shared_ptr<Tab>& t,const std::wstring& u
     if(t->downloadNav.DownloadAsked(uri,GetTickCount64()))NavigationBecameDownload(t);
 }
 // A failed top-level navigation that is not a download: the error page, the HTTPS-only interstitial, the site's own
-// HTTP error page or the engine's (unchanged behaviour).
-HRESULT NavigationFailed(const std::shared_ptr<Tab>& t,UINT64 navigationId,COREWEBVIEW2_WEB_ERROR_STATUS error,int httpStatus){
+// HTTP error page or the engine's (unchanged behaviour). `netCode`: the engine's own code when it was read (below).
+HRESULT NavigationFailedAs(const std::shared_ptr<Tab>& t,UINT64 navigationId,COREWEBVIEW2_WEB_ERROR_STATUS error,int httpStatus,const std::wstring& netCode){
     if(halted||!t||t->closed)return S_OK;
     {
         if(error==COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED)return S_OK;
-        if(HttpsUpgradeFailed(t,navigationId,error))return S_OK;
+        if(HttpsUpgradeFailed(t,navigationId,error,httpStatus))return S_OK;
         Log(L"NAVIGATION FAILED engine WebErrorStatus="+std::to_wstring(error)+L" HttpStatusCode="+std::to_wstring(httpStatus)+(navigationId==t->errorPage.startingId?L" latest":L" older"));   // engine facts only (no URL, no body)
         // An HTTP 4xx/5xx answer (e.g. a 403 challenge page) IS the site's page: shown as received, never replaced.
         // Only for the tab's latest top-level navigation, never when WE refused this page's own certificate
@@ -2712,7 +2824,7 @@ HRESULT NavigationFailed(const std::shared_ptr<Tab>& t,UINT64 navigationId,COREW
             t->revealed=true;ApplyPages();if(t==Active())Update();
             return S_OK;
         }
-        if(ShowErrorPage(t,error,navigationId)){t->revealed=true;ApplyPages();if(t==Active())Update();return S_OK;}
+        if(ShowErrorPage(t,error,navigationId,netCode)){t->revealed=true;ApplyPages();if(t==Active())Update();return S_OK;}
         Log(L"NAVIGATION FAILED WebErrorStatus="+std::to_wstring(error)+L" "+t->uri);
         // A new controller starts hidden until its first navigation completes.
         // Reveal the error document too, including a failed first address.
@@ -2721,6 +2833,25 @@ HRESULT NavigationFailed(const std::shared_ptr<Tab>& t,UINT64 navigationId,COREW
     }
 }
 // The failure of a possible download (either order with DownloadStarting): settled now, or held.
+// WebView2 reports a refused connection (and ERR_FAILED, ERR_ACCESS_DENIED...) as UNKNOWN without an HTTP status, which
+// gave the generic page and no « non sécurisé » page (night 24/11; tests/error-pages/status_probe.py). The engine's own
+// error document (chrome-error:, never a site page) names the real error: it is read first, then the page is chosen
+// as before with ERR_CONNECTION_REFUSED as a connection that could not be made, and the real code in the sheet.
+HRESULT NavigationFailed(const std::shared_ptr<Tab>& t,UINT64 navigationId,COREWEBVIEW2_WEB_ERROR_STATUS error,int httpStatus){
+    if(halted||!t||t->closed)return S_OK;
+    if(error==COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN&&httpStatus==0&&t->view.p){
+        std::weak_ptr<Tab> weak=t;
+        auto cb=Callback<ICoreWebView2ExecuteScriptCompletedHandler,HRESULT,LPCWSTR>([weak,navigationId](HRESULT hr,LPCWSTR json)->HRESULT{
+            auto tab=weak.lock();if(halted||!tab||tab->closed)return S_OK;
+            const std::wstring code=SUCCEEDED(hr)&&json?NativeChrome::ErrorPages::EngineErrorCode(json):std::wstring();
+            Log(L"NAVIGATION FAILED engine error document: "+(code.empty()?std::wstring(L"no code"):code));
+            return NavigationFailedAs(tab,navigationId,(COREWEBVIEW2_WEB_ERROR_STATUS)NativeChrome::ErrorPages::RefineUnknown(COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN,0,code),0,code);});
+        const HRESULT hr=t->view->ExecuteScript(NativeChrome::ErrorPages::EngineErrorCodeScript(),cb);cb->Release();
+        if(SUCCEEDED(hr))return S_OK;
+        Log(L"NAVIGATION FAILED engine error document unreadable hr="+std::to_wstring((long)hr));
+    }
+    return NavigationFailedAs(t,navigationId,error,httpStatus,L"");
+}
 HRESULT DownloadNavigationFailed(const std::shared_ptr<Tab>& t,UINT64 navigationId,COREWEBVIEW2_WEB_ERROR_STATUS error,int httpStatus){
     namespace DN=NativeChrome::DownloadNavigation;
     switch(t->downloadNav.Failed(navigationId,(int)error,httpStatus,GetTickCount64())){
@@ -2768,14 +2899,22 @@ HRESULT ProcessFailed(const std::shared_ptr<Tab>& t,ICoreWebView2ProcessFailedEv
     if(kind==COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED){
         Fail(L"ProcessFailed kind="+std::to_wstring(kind),E_FAIL);return S_OK;
     }
-    Log(L"TAB PROCESS FAILED kind="+std::to_wstring(kind)+L" "+t->uri);
-    if(kind==COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED){
-        // WebView2 replaces the crashed document with its error page. Keep the
-        // existing URL/history so Reload (or F5) can recover just this tab.
+    COREWEBVIEW2_PROCESS_FAILED_REASON reason=COREWEBVIEW2_PROCESS_FAILED_REASON_UNEXPECTED;
+    {Com<ICoreWebView2ProcessFailedEventArgs2> a2;if(SUCCEEDED(a->QueryInterface(IID_ICoreWebView2ProcessFailedEventArgs2,(void**)&a2.p))&&a2.p)a2->get_Reason(&reason);}
+    Log(L"TAB PROCESS FAILED kind="+std::to_wstring(kind)+L" reason="+std::to_wstring(reason)+L" "+t->uri);
+    if(NativeChrome::CrashPage::Shows(kind)){
         t->loading.Clear();t->refreshing=false;ElementsTabClosed(t);
+        if(t->hang.reloading){   // « Recharger » of the frozen page ended this renderer: the page reloads, no crash page
+            t->hang.reloading=t->hang.probing=false;Log(L"PAGE UNRESPONSIVE renderer ended: reloading");if(FAILED(t->view->Reload()))Log(L"PAGE UNRESPONSIVE reload failed");
+        }else
+        // The tab's own renderer died: our page (src/crash-page.h) replaces the engine's. The address and the
+        // history stay; « Recharger » (or F5) goes back to the crashed entry, which recovers just this tab.
+        ShowCrashPage(t);
         if(t==Active()){chrome.lottie.RefreshEnd();RefreshTools();InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());}
     }
-    // Subframe and auxiliary process failures recover within WebView2.
+    // The page stopped answering (#121 « Page qui ne répond plus »): our window over the veiled page (elements-integration.h).
+    if(kind==COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE)PageUnresponsive(t);
+    // Frame, GPU, utility and helper process failures recover within WebView2.
     return S_OK;
 }
 
@@ -2896,11 +3035,12 @@ void CreateTab(std::wstring uri,int index,std::wstring title,const PopupHost::Re
         // Overlay scrollbar (Paper V3): the page script hides the root scrollbar and posts its
         // metrics; PageMessage hands them to ScrollbarMessageFrom.
         {auto* barrier=PopupScriptBarrier(popup,L"scrollbar");HRESULT added=t->view->AddScriptToExecuteOnDocumentCreated(ScrollbarScript,barrier);if(barrier){if(FAILED(added))popups.Finish(popup,false);barrier->Release();}Check(added,L"AddScriptToExecuteOnDocumentCreated scrollbar");}
+        RegisterPrintScript(t,popup);   // window.print() opens our print window (#121)
         IID faviconInterface;CLSIDFromString(L"{517B2D1D-7DAE-4A66-A4F4-10352FFB9518}",&faviconInterface);
         if(!Check(t->view->QueryInterface(faviconInterface,(void**)&t->faviconView.p),L"QueryInterface favicon"))return S_OK;
         auto faviconChanged=Callback<ICoreWebView2FaviconChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2*,IUnknown*)->HRESULT{auto tab=weak.lock();if(tab&&!tab->closed&&!halted)RequestFavicon(tab);return S_OK;});
         HRESULT faviconResult=t->faviconView->add_FaviconChanged(faviconChanged,&token);faviconChanged->Release();if(!Check(faviconResult,L"add_FaviconChanged"))return S_OK;
-        auto starting=Callback<ICoreWebView2NavigationStartingEventHandler,ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs*>([weak](ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs* args)->HRESULT{auto tab=weak.lock();if(!tab||tab->closed||halted)return S_OK;tab->certificateError=false;AnnotationNavigation(tab);++tab->navStamp;SetTabStatus(tab,L"");LPWSTR uri=nullptr;if(!Check(args->get_Uri(&uri),L"NavigationStarting get_Uri"))return S_OK;UINT64 navigationId=0;if(!Check(args->get_NavigationId(&navigationId),L"NavigationStarting id")){CoTaskMemFree(uri);return S_OK;}if(SandboxNavigationStarting(tab,args,uri?uri:L"")){CoTaskMemFree(uri);return S_OK;}ElementsNavigationStarting(tab);VaultNavigationStarting(tab,navigationId,uri?uri:L"");tab->navInFlight=navigationId;ErrorPageNavigationStarting(tab,uri?uri:L"",navigationId);tab->downloadNav.Starting(navigationId,uri?uri:L"",GetTickCount64());if(HttpsNavigationStarting(tab,args,uri?uri:L"",navigationId)){CoTaskMemFree(uri);return S_OK;}if(uri&&wcscmp(uri,L"about:blank")!=0)tab->loading.Start(navigationId,NativeChrome::Motion::Now());else tab->loading.Clear();if(tab==Active()){RefreshTools();ScheduleMotion(NativeChrome::Motion::Now());}tab->favicon.Navigation(uri?uri:L"");CoTaskMemFree(uri);InvalidateChrome();return S_OK;});
+        auto starting=Callback<ICoreWebView2NavigationStartingEventHandler,ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs*>([weak](ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs* args)->HRESULT{auto tab=weak.lock();if(!tab||tab->closed||halted)return S_OK;tab->certificateError=false;AnnotationNavigation(tab);++tab->navStamp;SetTabStatus(tab,L"");LPWSTR uri=nullptr;if(!Check(args->get_Uri(&uri),L"NavigationStarting get_Uri"))return S_OK;UINT64 navigationId=0;if(!Check(args->get_NavigationId(&navigationId),L"NavigationStarting id")){CoTaskMemFree(uri);return S_OK;}if(SandboxNavigationStarting(tab,args,uri?uri:L"")){CoTaskMemFree(uri);return S_OK;}if(CrashPageNavigationStarting(tab,args,uri?uri:L"")){CoTaskMemFree(uri);return S_OK;}ElementsNavigationStarting(tab);VaultNavigationStarting(tab,navigationId,uri?uri:L"");tab->navInFlight=navigationId;ErrorPageNavigationStarting(tab,uri?uri:L"",navigationId);tab->downloadNav.Starting(navigationId,uri?uri:L"",GetTickCount64());if(HttpsNavigationStarting(tab,args,uri?uri:L"",navigationId)){CoTaskMemFree(uri);return S_OK;}if(uri&&wcscmp(uri,L"about:blank")!=0)tab->loading.Start(navigationId,NativeChrome::Motion::Now());else tab->loading.Clear();if(tab==Active()){RefreshTools();ScheduleMotion(NativeChrome::Motion::Now());}tab->favicon.Navigation(uri?uri:L"");CoTaskMemFree(uri);InvalidateChrome();return S_OK;});
         HRESULT startingResult=t->view->add_NavigationStarting(starting,&token);starting->Release();if(!Check(startingResult,L"add_NavigationStarting favicon"))return S_OK;
         auto source=Callback<ICoreWebView2SourceChangedEventHandler,ICoreWebView2*,ICoreWebView2SourceChangedEventArgs*>([weak](ICoreWebView2* v,ICoreWebView2SourceChangedEventArgs*)->HRESULT{if(halted)return S_OK;auto t=weak.lock();if(!t||t->closed)return S_OK;LPWSTR s=nullptr;AnnotationNavigation(t);++t->navStamp;if(Check(v->get_Source(&s),L"get_Source")&&s){t->uri=s;CoTaskMemFree(s);/* our own pages (error, HTTPS-only) report about:blank or data: in EVERY tab, a script-opened one included: the real address comes back regardless of blankIsHome, which only decides « home » */const bool hostPage=t->uri==L"about:blank"||t->uri.rfind(L"data:",0)==0;t->home=t->uri==L"about:blank"&&t->blankIsHome;if(!t->https.shown.empty()&&hostPage){t->uri=t->https.shown;t->home=false;}if(!t->errorPage.shown.empty()&&hostPage){t->uri=t->errorPage.shown;t->home=false;}}t->loading.Committed(NativeChrome::Motion::Now());AudioSiteChanged(t);if(t==Active()){Update();ScheduleMotion(NativeChrome::Motion::Now());}return S_OK;});
         HRESULT result=t->view->add_SourceChanged(source,&token);source->Release();if(!Check(result,L"add_SourceChanged"))return S_OK;
@@ -2942,7 +3082,7 @@ void CreateTab(std::wstring uri,int index,std::wstring title,const PopupHost::Re
 #endif
         Layout();if(!Check(c->put_IsVisible(FALSE),L"put_IsVisible initial"))return S_OK;t->placedVisible=0;
         if(popup){settle.armed=false;popups.Step(popup,true);return S_OK;}   // the engine navigates the target itself: never Navigate/NavigateToString here
-        Navigate(t,uri);return S_OK;
+        NavigateOrHold(t,uri);return S_OK;   // held while the ad blocker is replaced (AdBlockHoldStart)
     });
     if(popup){unownedCallbacks=false;PopupHost::Registry::Arm(popup,1);}   // the controller setup itself
     HRESULT hr=E_FAIL;ICoreWebView2Environment* creating=popup?PopupEnvironment(popup):environment.p;
@@ -3339,14 +3479,8 @@ bool CopyToClipboard(const std::wstring& text){
     CloseClipboard();return done;
 }
 // ---- Print / PDF -------------------------------------------------------------
-// Print: the engine's own print preview (ICoreWebView2_16); older runtimes get window.print().
-void PrintPage(std::shared_ptr<Tab> tab){
-    if(halted||!tab||tab->closed||!tab->view.p)return;
-    Com<ICoreWebView2_16> view16;
-    if(SUCCEEDED(tab->view->QueryInterface(IID_ICoreWebView2_16,(void**)&view16.p))&&view16.p&&SUCCEEDED(view16->ShowPrintUI(COREWEBVIEW2_PRINT_DIALOG_KIND_BROWSER)))return;
-    Log(L"PRINT ShowPrintUI unavailable: window.print()");
-    if(FAILED(tab->view->ExecuteScript(L"window.print()",nullptr)))Log(L"PRINT window.print failed");
-}
+// Print: our print window (src/print-integration.h, #121), the engine's preview only as a fallback.
+void PrintPage(std::shared_ptr<Tab> tab);
 // PDF name: page title, else host; characters Windows refuses become spaces.
 std::wstring PdfFileName(const Tab& tab){
     std::wstring name=tab.home?L"":tab.title;if(name.empty())name=AddressBar::SiteOf(tab.uri);
@@ -3378,6 +3512,7 @@ void SavePageAsPdf(std::shared_ptr<Tab> tab){
     const HRESULT hr=view7->PrintToPdf(path.c_str(),nullptr,done);done->Release();
     if(FAILED(hr))Log(L"PDF PrintToPdf failed hr="+std::to_wstring((unsigned long)hr));
 }
+#include "print-integration.h"
 // ---- Split block of the tab menu (Paper p-7-0, "V2 · Bloc à plat, site nommé en en-tête") ----
 // The block names its target once, in a read-only header: the page on screen (the active
 // tab, or its group when split). No "last used" guess. "Avec un autre site ›" reaches every
@@ -3563,6 +3698,7 @@ void ReadPageMenu(ICoreWebView2ContextMenuItemCollection* list,std::vector<CM::I
         if(kind==COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SUBMENU){Com<ICoreWebView2ContextMenuItemCollection> children;if(SUCCEEDED(item->get_Children(&children.p))&&children.p)ReadPageMenu(children.p,m.children,commands);if(m.children.empty())continue;}
         else{INT32 command=0;item->get_CommandId(&command);commands.push_back(command);m.id=(int)commands.size();}
         text=nullptr;std::wstring name;if(SUCCEEDED(item->get_Name(&text))&&text){name=text;CoTaskMemFree(text);}
+        if(name==L"print"&&kind!=COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SUBMENU&&!commands.empty()){commands.pop_back();m.id=PagePrintItem;} // our print window, not the engine's preview (#121)
         out.push_back(std::move(m));
         if(name==L"print")out.push_back(CM::Command(PagePdfItem,TR(cmd_save_pdf))); // beside the engine's own print
     }
@@ -5542,7 +5678,7 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){
 #ifdef BROWSER_E2E_VAULT_ACTIVE
     Log(L"E2E VAULT ACTIVE: product path, vault forced active, every foreground condition in force (test build only)");   /* review R-5 host marker, absent from dev/release (tests/e2e/product_markers.ps1) */
 #endif
-    INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);RunOnboarding(onboardingReason);/* first-run window: returns when the person is done, then the normal start */paper=CreateSolidBrush(BG);WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);{const UINT dpi=GetDpiForSystem();/* channel app icon (src/app-icon.rc), picked from its multi-size ICO at the system DPI for the title bar/Alt+Tab and the taskbar */wc.hIcon=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXICON,dpi),GetSystemMetricsForDpi(SM_CYICON,dpi),LR_DEFAULTCOLOR);wc.hIconSm=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXSMICON,dpi),GetSystemMetricsForDpi(SM_CYSMICON,dpi),LR_DEFAULTCOLOR);}wc.hbrBackground=paper;RegisterClassExW(&wc);window=CreateWindowW(wc.lpszClassName,privateWindow?TR(window_title_private_bare):L"Browser",WS_POPUP|WS_CAPTION/* Windows' minimize / restore / maximize animations (no caption is drawn: WM_NCCALCSIZE gives the whole window to the client) */|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);StampTaskbarIdentity();DragAcceptFiles(window,TRUE);NativeUI::ConfigureFullClientFrame(window);NativeUI::RoundNatively(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,TR(startup_graphics_failed),L"Browser",MB_OK|MB_ICONERROR);return 3;}splitOverlay.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());statusBubble.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());LoadSettings();ClaimWindowSession();LoadAudioVolumes();motion.SetReducedMotion(ReducedMotionPreferred());NativeChrome::Design::Accent::Set(settings.accent);ProfilesStarted(args);AnnotationStartup(); /* #125: notes of a private window that did not close normally */LoadDownloads();LoadHistory();LoadBookmarks();CreateDownloadPanel();CreateAudioPanel();CreateSuggestions();CreateSettingsPanel();CreateHistoryPanel();CreateBookmarkSurfaces();CreateElementSurfaces();CreateFormsSurfaces();FormsEngineImport(); /* #121 P13: once, before the engine starts (it holds its file while it runs) */contextMenu.Init(instance,window,base);profileMenu.Init(instance,window,base);profileDialog.Init(instance,window,base);profileDeleteDialog.Init(instance,window,base);frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();OnboardingShowBrowser(show);/* plain ShowWindow + UpdateWindow, or the scale-in after a completed onboarding */OnboardingAfterStart();if(motionLabMode){motionLab.changed=[]{ApplyMotionTuning();InvalidateChrome();};motionLab.replay=MotionLabReplay;if(motionLab.Create(hi,window,base+L"\\motion-tuning.ini")){ApplyMotionTuning();motionLab.Show();}}if(smoke)SetTimer(window,1,splitTest?180000:60000,nullptr);
+    INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);RunOnboarding(onboardingReason);/* first-run window: returns when the person is done, then the normal start */paper=CreateSolidBrush(BG);WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);{const UINT dpi=GetDpiForSystem();/* channel app icon (src/app-icon.rc), picked from its multi-size ICO at the system DPI for the title bar/Alt+Tab and the taskbar */wc.hIcon=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXICON,dpi),GetSystemMetricsForDpi(SM_CYICON,dpi),LR_DEFAULTCOLOR);wc.hIconSm=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXSMICON,dpi),GetSystemMetricsForDpi(SM_CYSMICON,dpi),LR_DEFAULTCOLOR);}wc.hbrBackground=paper;RegisterClassExW(&wc);window=CreateWindowW(wc.lpszClassName,privateWindow?TR(window_title_private_bare):L"Browser",WS_POPUP|WS_CAPTION/* Windows' minimize / restore / maximize animations (no caption is drawn: WM_NCCALCSIZE gives the whole window to the client) */|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);StampTaskbarIdentity();DragAcceptFiles(window,TRUE);NativeUI::ConfigureFullClientFrame(window);NativeUI::RoundNatively(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,TR(startup_graphics_failed),L"Browser",MB_OK|MB_ICONERROR);return 3;}splitOverlay.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());statusBubble.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());LoadSettings();AdBlockPrepare();ClaimWindowSession();LoadAudioVolumes();motion.SetReducedMotion(ReducedMotionPreferred());NativeChrome::Design::Accent::Set(settings.accent);ProfilesStarted(args);AnnotationStartup(); /* #125: notes of a private window that did not close normally */LoadDownloads();LoadHistory();LoadBookmarks();CreateDownloadPanel();CreateAudioPanel();CreateSuggestions();CreateSettingsPanel();CreateHistoryPanel();CreateBookmarkSurfaces();CreateElementSurfaces();CreateFormsSurfaces();FormsEngineImport(); /* #121 P13: once, before the engine starts (it holds its file while it runs) */contextMenu.Init(instance,window,base);profileMenu.Init(instance,window,base);profileDialog.Init(instance,window,base);profileDeleteDialog.Init(instance,window,base);frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();OnboardingShowBrowser(show);/* plain ShowWindow + UpdateWindow, or the scale-in after a completed onboarding */OnboardingAfterStart();if(motionLabMode){motionLab.changed=[]{ApplyMotionTuning();InvalidateChrome();};motionLab.replay=MotionLabReplay;if(motionLab.Create(hi,window,base+L"\\motion-tuning.ini")){ApplyMotionTuning();motionLab.Show();}}if(smoke)SetTimer(window,1,splitTest?180000:60000,nullptr);
 #ifdef BROWSER_UPDATES
     StartUpdates(); // never blocks: the delayed startup check runs on the engine's thread
 #endif
