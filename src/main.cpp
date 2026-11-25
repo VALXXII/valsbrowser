@@ -664,18 +664,28 @@ void ApplyPages(){if(WorkspaceParked())return; /* a hidden profile's event: the 
     // old and new rectangles of each moving page (pages are composited above it; a
     // resized page repaints in full anyway).
     HDC under=nullptr;
-    for(auto& t:pages){
+    // Every page's place first. A page leaving the screen is hidden BEFORE it is resized; and when a page takes the
+    // fullscreen, the split panels it sets aside are hidden before it grows (fullscreen trace, 25/11: a panel was
+    // stretched to the whole monitor while still shown, then stayed shown beside the page that had already grown).
+    // Other changes (a tab switch) keep the tabs' order.
+    struct Place{bool show=false;RECT bounds{};};std::vector<Place> places(pages.size());
+    for(size_t i=0;i<pages.size();++i){auto& t=pages[i];
         bool show=false;RECT bounds=full;
         if(v.group&&t->group==v.group){const int m=(int)(std::find(v.members.begin(),v.members.end(),t)-v.members.begin());const int s=v.a.SlotOf(m);if(s>=0&&!v.a.slots[s].rail){show=true;bounds=PixelRect(v.a.slots[s].box);}}
         else show=t==active&&PageShown(*t); // a home tab shows only when it carries the frequent sites
         show=show&&t->revealed;
         if(!show&&t->shown)t->hiddenAt=now;
         if(show&&t->sleeping){t->sleeping=false;Com<ICoreWebView2_3> v3;if(t->view.p&&SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_3,(void**)&v3.p))&&v3.p)v3->Resume();}
-        t->shown=show;
+        t->shown=show;places[i]={show,bounds};
+    }
+    const bool fullscreenFirst=PageFullscreenActive();
+    for(size_t i=0;i<pages.size();++i){auto& t=pages[i];const bool show=places[i].show;const RECT bounds=places[i].bounds;
         if(t->controller.p&&!halted){
-            // A page leaving the screen is hidden BEFORE it is resized: a split panel set aside for a page's fullscreen
-            // was stretched to the whole monitor while still shown, over the page that asked (fullscreen trace, 25/11).
-            if(!show&&t->placedVisible==1){if(!Check(t->controller->put_IsVisible(FALSE),L"put_IsVisible")){if(under)ReleaseDC(window,under);return;}t->placedVisible=0;FullscreenStep(L"page "+std::to_wstring(t->serial)+L" hidden");} /* i18n-exempt: fullscreen log trace */
+            if(!show&&t->placedVisible==1&&(fullscreenFirst||(!t->frozen&&!EqualRect(&bounds,&t->placed)))){if(!Check(t->controller->put_IsVisible(FALSE),L"put_IsVisible")){if(under)ReleaseDC(window,under);return;}t->placedVisible=0;FullscreenStep(L"page "+std::to_wstring(t->serial)+L" hidden");} /* i18n-exempt: fullscreen log trace */
+        }
+    }
+    for(size_t i=0;i<pages.size();++i){auto& t=pages[i];const bool show=places[i].show;const RECT bounds=places[i].bounds;
+        if(t->controller.p&&!halted){
             if(!t->frozen&&!EqualRect(&bounds,&t->placed)){
                 if(!under)under=GetDCEx(window,nullptr,DCX_CACHE|DCX_CLIPSIBLINGS);
                 if(under){RECT both;UnionRect(&both,&bounds,IsRectEmpty(&t->placed)?&bounds:&t->placed);FillRect(under,&both,paper);}

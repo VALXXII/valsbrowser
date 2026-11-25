@@ -194,7 +194,10 @@ int wmain(int argc, wchar_t** argv) {
         ExpectStep(in, "split, page fullscreen in", SIZE_MAXIMIZED, Monitor().rcMonitor, false, {{a, WholeClient()}});
         { const auto* first = in.First(b);
           Expect(b->placedVisible == 0 && in.Shows(b).size() == 1 && in.Bounds(b).size() <= 1 && first && !first->bounds && !first->visible,
-                 "split, page fullscreen in: the other panel hidden once, BEFORE any resize (" + std::to_string(in.Bounds(b).size()) + " bounds change after)"); }
+                 "split, page fullscreen in: the other panel hidden once, BEFORE any resize (" + std::to_string(in.Bounds(b).size()) + " bounds change after)");
+          // ... and before the page that asked grows (it stayed shown beside it for a moment, real browser 25/11).
+          Expect(!in.pages.empty() && in.pages.front().serial == b->serial && !in.pages.front().bounds && !in.pages.front().visible,
+                 "split, page fullscreen in: the first page change is the other panel leaving, before the page grows"); }
         auto out = Measure([&] { a->pageFullscreen = false; SetPageFullscreen(a, false); });
         ExpectStep(out, "split, page fullscreen out", SIZE_MAXIMIZED, maxed, false, {{a, pa}, {b, pb}});
         Expect(b->placedVisible == 1 && out.Shows(b).size() == 1 && Same(b->placed, pb), "split, page fullscreen out: the other panel back, as it was");
