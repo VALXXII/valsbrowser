@@ -930,6 +930,7 @@ void OnPanelMessage(const std::string& json) {
         Diag((stats.requestedAt > 0 ? L"panel ready " + Ann::Ms(stats.readyAt - stats.requestedAt) + L" ms after the request" : std::wstring(L"panel ready in advance")) + L" (build " + W(m.Text("build", 64)) + L")");
         SJ::Value hello = SJ::Value::Obj(); hello.Set("locale", Str(std::string(I18n::Current() == I18n::Locale::En ? "en" : "fr"))); hello.Set("platform", Str(std::string("windows"))); hello.Set("reducedMotion", SJ::Value::Bool(Ann::Reduced()));
         Send("hello", std::move(hello)); if (BubbleOpen()) SendLayout(true); else SendLayout(false);   // R34: the layout the page needs, always first
+        if (BubbleOpen()) BubblePageReady();   // C1: a bubble that waited for this page shows with its acknowledgement (never empty)
         SendState(); SendThread(); SendTonAgent(); SendCommands(); SendQueue();   // C1 (review R): were left in the comment above — a bubble opened before the page was ready got no thread; « Ton agent »'s block after the thread (journeys C1, night of 25/11: the bubble's size published before its conversation)
         if (!BubbleOpen() && !BubbleWarm())   // R35: the panel's draft (its chips) stays the panel's
             for (const auto& e : composerElements) { SJ::Value a = SJ::Value::Obj(); a.Set("element", ElementRef(e.second)); Send("element.attached", std::move(a)); }

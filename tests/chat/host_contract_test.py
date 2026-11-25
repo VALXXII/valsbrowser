@@ -514,6 +514,16 @@ check('key = FrameKeyOf(bubble.conv)' in fb and 'f.Set("key", Str(key))' in fb a
 check('!ChatBubble::FrameKey(h.anchorKey) || !marked.insert(h.anchorKey).second' in sm and 'o.Set("key", Str(h.anchorKey))' in sm,
       'lot 1d, case 3: a conversation of an iframe\'s element has its mark too (by its key); a web component\'s still has none')
 
+# C1 (journeys of 25 Nov 2026, « chat page delayed by 4 s », replayed on a hidden desktop): a bubble opened before its page
+# exists is never shown empty — the 2 s safety waits for the page (at most BubblePageWaitMs), the page's « ready » re-arms
+# the short safety and its acknowledgement shows the surface with the conversation.
+b2 = comment[comment.find('if (m == WM_TIMER && w == 0xB2)'):]; b2 = b2[:b2.find('RevealBubble(L"without acknowledgement (safety delay)")')]
+check('if (!panelReady && bubble.open && bubble.waitingAck && Ann::NowMs() - bubble.openedAt < BubblePageWaitMs)' in b2 and 'SetTimer(h, 0xB2, 250, nullptr); return 0;' in b2,
+      'C1: a bubble whose page is still being created is not revealed by the safety delay (it waits for its page, at most BubblePageWaitMs)')
+check('SetTimer(bubble.hwnd, 0xB2, 300, nullptr)' in block_after(comment, 'void BubblePageReady() {')
+      and 0 <= ready.find('BubblePageReady();') < ready.find('SendThread();'),
+      'C1: the page ready, a bubble that waited for it is shown with the acknowledgement of its opening layout (the thread sent with it)')
+
 
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)
