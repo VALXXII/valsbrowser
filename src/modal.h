@@ -389,9 +389,12 @@ struct SourcePicker {
 // balanced wrapping). `collapsed`: the Mini (fixed 218 DIP, clipped, bottom fade with « Voir tout »,
 // which expands in place to the Full view, height to content). `logo`: the Lottie file played in
 // the 20 DIP slot left of the title (static Paper glyph when it cannot be loaded).
+// Full view (Paper 26KK-0, catch-up of several versions): at most 480 DIP high; past that the body scrolls under the
+// head with a 48 DIP fade at the bottom and a thin bar shown only while scrolling. `subtitle` (« Depuis la version
+// 0.3.646 »): under the title, in the Full view only, with the head then fixed above its own rule.
 struct NoteSection { bool fixed = false; std::wstring title; std::vector<std::wstring> items; };
 struct Notes {
-    std::vector<NoteSection> sections; std::wstring logo, showAll, spoken; bool collapsed = false;
+    std::vector<NoteSection> sections; std::wstring logo, showAll, spoken, subtitle; bool collapsed = false;
     bool Shown() const { return !sections.empty(); }
 };
 namespace NotesPaper {
@@ -402,6 +405,14 @@ inline constexpr float border = 0x0D / 255.f, rule = .10f /* #DDDDDD at --opacit
 inline constexpr float title = .9f * .9f /* #FFFFFFE6, opacity .9 */, heading = .9f /* #FFFFFFE6 */, item = .5f * .9f /* 50 %, opacity .9 */, glyph = .5f, closeInk = 0x82 / 255.f;
 inline constexpr float logoInk = .5f;   // --color-browser-text at --opacity-browser-secondary
 inline constexpr DialogKit::Style titleStyle{16, 20, true, -.01f, true}, headingStyle{16, 20, true, .01f, true}, itemStyle{16, 20, false, .01f, true};
+// 26KK-0 « rattrapage de plusieurs versions »: max height 480; head = title row, gap 4, subtitle 13/18 Regular white 50 %
+// indented 26 (26KR-0), gap 4, 12 (26KT-0), gap 4, the rule (26KU-0); body padding 16 / bottom 40 when it scrolls; fade 48
+// (#171717 transparent to opaque, 26ML-0); bar 3 wide #3A3A3A radius 2, 4 from the right, from 84 in the padding box (26MM-0).
+inline constexpr DialogKit::Style subtitleStyle{13, 18, false, 0, true};
+inline constexpr float subtitle = .5f, fullMax = 480, headGap = 4, subtitleSpace = 12, scrollBottom = 40, fade = 48;
+inline constexpr float bar = 3, barRight = 4, barRadius = 1.5f;   // its track starts 5 under the head (84 in the padding box)
+inline constexpr unsigned barInk = 0x3A3A3A;
+inline constexpr int barHoldMs = 700, barFadeMs = 200;   // not in Paper: shown while scrolling, then a short fade
 // Paper SVG exports, verbatim (viewBox origin and size beside each).
 inline constexpr const char* added = "M80 60.5A67.5 67.5 0 1 0 147.5 128 67.575 67.575 0 0 0 80 60.5Zm0 120a52.5 52.5 0 1 1 52.5-52.5A52.556 52.556 0 0 1 80 180.5Zm32.5-52.5a7.5 7.5 0 0 1-7.5 7.5H87.5v17.5a7.5 7.5 0 0 1-15 0V135.5H55a7.5 7.5 0 0 1 0-15h17.5V103a7.5 7.5 0 0 1 15 0v17.5h17.5A7.5 7.5 0 0 1 112.5 128Z";   // 1.6 49.704 160
 inline constexpr const char* fixed = "M110.306 59.694a7.5 7.5 0 0 1 0 10.625l-35 35a7.5 7.5 0 0 1-10.625 0l-15-15a7.5 7.5 0 1 1 10.625-10.625L70 89.375l29.694-29.7A7.5 7.5 0 0 1 110.306 59.694ZM147.5 80A67.5 67.5 0 1 1 80 12.5 67.575 67.575 0 0 1 147.5 80Zm-15 0a52.5 52.5 0 1 0-52.5 52.5A52.556 52.556 90 0 0 132.5 80Z";   // 0 0 160
@@ -522,7 +533,7 @@ public:
     static constexpr long long NoteTextKey = 9500;                   // UIA text nodes of the notes (not hits)
 private:
     using Kit = DialogKit::Kit;
-    enum class B { Badge, Hero, Head, Message, Select, Segments, Sources, Checks, Field, Notice, Rows, Info, Status, Links, Footnote, Check, Accounts, Danger, Error, Actions, NoteHead, NoteRule, NoteText };
+    enum class B { Badge, Hero, Head, Message, Select, Segments, Sources, Checks, Field, Notice, Rows, Info, Status, Links, Footnote, Check, Accounts, Danger, Error, Actions, NoteHead, NoteRule, NoteText, NoteSubtitle, NoteHeadRule };
     struct Block { B type; size_t index; D2D1_RECT_F r; };
     struct Box { int hit = 0; D2D1_RECT_F r{}; };
     HWND hwnd_ = nullptr, scrim_ = nullptr, owner_ = nullptr, restore_ = nullptr; HINSTANCE instance_ = nullptr;
@@ -548,6 +559,7 @@ private:
     struct NoteLine { size_t section = 0; int item = -1; float width = 0; };   // item -1: the heading
     std::vector<NoteLine> noteLines_;
     float notesAvail_ = 1e9f, notesFull_ = 0, notesBodyTop_ = 0;
+    Motion::Time notesBarAt_{}; bool notesBarShown_ = false;   // the thin scroll bar: last scroll, shown since
     Lottie::Asset logo_; bool logoTried_ = false, logoOk_ = false; Motion::Time logoStart_{};
     std::vector<uint32_t> logoPixels_;
     // One bitmap for the looping logo, refilled per frame; owned by `logoTarget_` (held, so a new target never shares its address).
@@ -731,13 +743,18 @@ private:
         namespace N = NotesPaper;
         noteLines_.clear(); messageFull_ = messageHeight_ = 0;
         const float left = Pad(), cw = ContentWidth(), right = left + cw;
+        const bool sub = !spec_.notes.collapsed && !spec_.notes.subtitle.empty();
         float y = Pad();
         blocks_.push_back({B::NoteHead, 0, {left, y, right, y + N::row}}); y += N::row;
         boxes_.push_back({CloseHit, {width_ - N::closeRight - N::close, N::closeTop, width_ - N::closeRight, N::closeTop + N::close}});
-        notesBodyTop_ = y + N::gap / 2;   // the body (rules, headings, items) scrolls under the head in a short Full view
+        if (sub) {   // 26KL-0: the head keeps the subtitle and the first rule; the body starts under that rule
+            y += N::headGap; blocks_.push_back({B::NoteSubtitle, 0, {left, y, right, y + N::subtitleStyle.line}}); y += N::subtitleStyle.line;
+            y += N::headGap + N::subtitleSpace + N::headGap; blocks_.push_back({B::NoteHeadRule, 0, {left, y, right, y + 1}}); y += 1;
+            notesBodyTop_ = y;
+        } else notesBodyTop_ = y + N::gap / 2;   // the body (rules, headings, items) scrolls under the head in a long Full view
         for (size_t s = 0; s < spec_.notes.sections.size(); ++s) {
             const auto& sec = spec_.notes.sections[s];
-            y += N::gap; blocks_.push_back({B::NoteRule, s, {left, y, right, y + 1}}); y += 1;
+            if (!(sub && s == 0)) { y += N::gap; blocks_.push_back({B::NoteRule, s, {left, y, right, y + 1}}); y += 1; }
             y += N::gap; noteLines_.push_back({s, -1, cw - N::indent}); blocks_.push_back({B::NoteText, noteLines_.size() - 1, {left, y, right, y + N::row}}); y += N::row;
             y += N::gap;
             for (size_t i = 0; i < sec.items.size(); ++i) {
@@ -747,6 +764,7 @@ private:
                 noteLines_.push_back({s, static_cast<int>(i), w}); blocks_.push_back({B::NoteText, noteLines_.size() - 1, {left, y, right, y + h}}); y += h;
             }
         }
+        const float contentEnd = y;
         notesFull_ = y + Pad();
         const float avail = std::max(120.f, notesAvail_);
         if (spec_.notes.collapsed) {
@@ -756,15 +774,16 @@ private:
             const float bl = 1 - N::footerInset + 16, br = width_ - 1 + N::footerInset - 16;
             boxes_.push_back({NotesExpandHit, {std::round(bl), height_ - 16 - P::button, std::round(br), height_ - 16}});
         } else {
-            height_ = std::min(notesFull_, avail);
-            // Too short for the whole Full view: the body scrolls (wheel, ↑/↓, Pg↑/Pg↓), same as a long page message.
-            messageFull_ = notesFull_ - notesBodyTop_ - Pad(); messageHeight_ = std::max(0.f, height_ - notesBodyTop_ - Pad());
+            // At most 480 (26KK-0) and never past the window: then the body scrolls (wheel, ↑/↓, Pg↑/Pg↓) between the head
+            // and the card's bottom edge, its content ending 40 above it (under the 48 fade).
+            height_ = std::min({notesFull_, avail, N::fullMax});
+            if (notesFull_ > height_ + .5f) { messageFull_ = contentEnd + N::scrollBottom - notesBodyTop_; messageHeight_ = std::max(0.f, height_ - 1 - notesBodyTop_); }
             if (messageFull_ <= messageHeight_ + .5f) messageFull_ = messageHeight_ = 0;
         }
     }
     void ExpandNotes() {
         if (!NotesOn() || !spec_.notes.collapsed) return;
-        spec_.notes.collapsed = false; scroll_ = 0; hover_ = pressed_ = 0; motion_.ClearInteractions();
+        spec_.notes.collapsed = false; scroll_ = 0; notesBarShown_ = false; hover_ = pressed_ = 0; motion_.ClearInteractions();
         Place(false); FocusStop(CloseHit);
         if (uia_.Listening()) uia_.ChildrenChanged(GroupKey);
         if (spec_.onButton) spec_.onButton(NotesExpandHit);
@@ -1236,7 +1255,15 @@ private:
         if (!open_ || (key != VK_DOWN && key != VK_UP) || focus_ != SelectHit || EditIndex(GetFocus()) >= 0) return false;
         Activate(SelectHit, true); return true;
     }
-    void Scroll(float dy) { const float max = std::max(0.f, messageFull_ - messageHeight_); const float s = std::clamp(scroll_ + dy, 0.f, max); if (s != scroll_) { scroll_ = s; InvalidateRect(hwnd_, nullptr, FALSE); } }
+    void Scroll(float dy) { const float max = std::max(0.f, messageFull_ - messageHeight_); const float s = std::clamp(scroll_ + dy, 0.f, max); if (s != scroll_) { scroll_ = s; notesBarAt_ = Motion::Now(); notesBarShown_ = true; InvalidateRect(hwnd_, nullptr, FALSE); } }
+    // The notes' thin scroll bar: opaque while scrolling, then fades (reduced motion: hidden at once after the hold).
+    float NotesBarAlpha(Motion::Time now) const {
+        if (!notesBarShown_ || !NotesOn() || spec_.notes.collapsed || messageFull_ <= messageHeight_) return 0;
+        const auto hold = notesBarAt_ + Motion::Milliseconds(NotesPaper::barHoldMs);
+        if (now <= hold) return 1;
+        if (reduced_) return 0;
+        return 1 - Motion::Fraction(now, hold, hold + Motion::Milliseconds(NotesPaper::barFadeMs));
+    }
 public:
     // --workspace-test runtime QA only: the pointer state of the button whose role is `role` (the real paint path
     // then renders it; a synthetic WM_MOUSEMOVE would be undone by TrackMouseEvent as the real cursor is elsewhere).
@@ -1430,6 +1457,10 @@ private:
             if (!DrawLogo(slot, LogoProgress(now))) kit_.DrawGlyph(N::logoPoster, slot, 13, DialogKit::White(N::logoInk), 48, 13, 239.883f);
             kit_.Text(spec_.title, N::titleStyle, b.r.left + N::indent, b.r.top, b.r.right - b.r.left - N::indent - (N::close + 8), DialogKit::White(N::title));
         }
+        for (const auto& b : blocks_) {   // 26KS-0 / 26KU-0: fixed under the title, never scrolled
+            if (b.type == B::NoteSubtitle) kit_.Text(spec_.notes.subtitle, N::subtitleStyle, b.r.left + N::indent, b.r.top, b.r.right - b.r.left - N::indent, DialogKit::White(N::subtitle));
+            else if (b.type == B::NoteHeadRule) kit_.Fill(b.r, 0, DialogKit::Rgb(0xDDDDDD, N::rule));
+        }
         {
             const auto r = Find(CloseHit); const auto v = motion_.Visual(CloseHit, now);
             if (v.hover > 0 || v.press > 0) kit_.Fill(r, Design::Radius::inset, RowFill(CloseHit, now));
@@ -1438,7 +1469,7 @@ private:
         }
         // Body: clipped inside the border (Mini: overflow clip) or under the head when the Full view scrolls.
         const bool scrolls = !mini && messageFull_ > messageHeight_;
-        const D2D1_RECT_F clip = scrolls ? D2D1_RECT_F{1, notesBodyTop_, width_ - 1, height_ - Pad() + N::gap / 2} : D2D1_RECT_F{1, 1, width_ - 1, height_ - 1};
+        const D2D1_RECT_F clip = scrolls ? D2D1_RECT_F{1, notesBodyTop_, width_ - 1, height_ - 1} : D2D1_RECT_F{1, 1, width_ - 1, height_ - 1};
         t->PushAxisAlignedClip(clip, D2D1_ANTIALIAS_MODE_ALIASED);
         const float dy = scrolls ? -scroll_ : 0;
         for (const auto& b : blocks_) {
@@ -1458,10 +1489,24 @@ private:
             }
         }
         t->PopAxisAlignedClip();
-        if (scrolls) {   // same discreet position mark as a long page message (not in Paper: says more text exists)
-            const float track = messageHeight_, thumb = std::max(16.f, track * messageHeight_ / messageFull_);
-            const float at = (track - thumb) * scroll_ / std::max(1.f, messageFull_ - messageHeight_);
-            kit_.Fill({width_ - 8, notesBodyTop_ + at, width_ - 6, notesBodyTop_ + at + thumb}, 1, DialogKit::White(.2f));
+        if (scrolls) {
+            // 26ML-0: 48 DIP at the bottom inside the border, #171717 from transparent to opaque, over the body.
+            const float c = Design::Surface::canvas, top = height_ - 1 - N::fade;
+            const D2D1_GRADIENT_STOP stops[] = {{0, D2D1::ColorF(c, c, c, 0)}, {1, D2D1::ColorF(c, c, c, 1)}};
+            ID2D1GradientStopCollection* list = nullptr; ID2D1LinearGradientBrush* fade = nullptr;
+            if (SUCCEEDED(t->CreateGradientStopCollection(stops, 2, &list)) && SUCCEEDED(t->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({0, top}, {0, height_ - 1}), list, &fade)))
+                t->FillRectangle({1, top, width_ - 1, height_ - 1}, fade);
+            if (fade) fade->Release();
+            if (list) list->Release();
+            // 26MM-0: the thin bar, 4 from the right edge, from 84 in the padding box (5 under the head's rule) to 4 above
+            // the bottom, only while scrolling.
+            const float alpha = NotesBarAlpha(now);
+            if (alpha > 0) {
+                const float x1 = width_ - 1 - N::barRight, trackTop = notesBodyTop_ + 5, trackBottom = height_ - 1 - N::barRight;
+                const float track = std::max(0.f, trackBottom - trackTop), thumb = std::min(track, std::max(16.f, track * messageHeight_ / messageFull_));
+                const float at = (track - thumb) * scroll_ / std::max(1.f, messageFull_ - messageHeight_);
+                kit_.Fill({x1 - N::bar, trackTop + at, x1, trackTop + at + thumb}, N::barRadius, DialogKit::Rgb(N::barInk, alpha));
+            }
         }
         if (mini) {
             // 145U-0: #171717 from transparent (top of the 128 DIP overlay) to opaque at 55.98 %, over the content.
@@ -1735,7 +1780,7 @@ private:
                 kit_.Text(spec_.danger.text, DialogKit::Type::detail, x, y + 40 + 12, iw, DialogKit::White(P::body), true);
                 break;
             }
-            case B::Actions: case B::NoteHead: case B::NoteRule: case B::NoteText: break;   // notes: PaintNotes
+            case B::Actions: case B::NoteHead: case B::NoteRule: case B::NoteText: case B::NoteSubtitle: case B::NoteHeadRule: break;   // notes: PaintNotes
             }
         }
         PaintActions(now);
@@ -1766,6 +1811,10 @@ private:
             const D2D1_RECT_F r{b.r.left, b.r.top + dy, b.r.right, b.r.bottom + dy};
             n.offscreen = r.top >= bottom || r.bottom <= top; n.bounds = ScreenOf(r);
             nodes.push_back(n);
+        }
+        for (const auto& b : blocks_) if (b.type == B::NoteSubtitle) {
+            Accessibility::Node n; n.key = NoteTextKey - 1; n.parent = GroupKey; n.role = Accessibility::Role::Text; n.focusable = false;
+            n.name = spec_.notes.subtitle; n.bounds = ScreenOf(b.r); nodes.push_back(n);
         }
         if (mini) { Accessibility::Node n; n.key = NotesExpandHit; n.parent = GroupKey; n.name = spec_.notes.showAll; n.bounds = ScreenOf(Find(NotesExpandHit)); n.automationId = L"ReleaseNotesShowAll"; nodes.push_back(n); }
         Accessibility::Node c; c.key = CloseHit; c.parent = GroupKey; c.name = TR(common_close); c.bounds = ScreenOf(Find(CloseHit)); c.automationId = L"DialogClose"; nodes.push_back(c);
@@ -1854,7 +1903,7 @@ public:
         if (closing_) FinishClosing();
         spec_ = std::move(spec); done_ = std::move(done); area_ = area; ++generation_;
         ReleaseLogo(); logoStart_ = Motion::Now();
-        busy_ = submitted_ = false; error_.clear(); fieldError_.clear(); busyLabel_.clear(); scroll_ = 0; hover_ = pressed_ = 0; focus_ = 0; motion_.ClearInteractions();
+        busy_ = submitted_ = false; error_.clear(); fieldError_.clear(); busyLabel_.clear(); scroll_ = 0; notesBarShown_ = false; hover_ = pressed_ = 0; focus_ = 0; motion_.ClearInteractions();
         keyboard_ = OpenedFromKeyboard(); open_ = true; spinStart_ = Motion::Now(); armedFrom_ = GetTickCount64() + static_cast<ULONGLONG>(spec_.armMs); foregroundForTest_ = false;
         HWND f = GetFocus(); restore_ = f && f != hwnd_ && !IsChild(hwnd_, f) ? f : nullptr;
         SetWindowTextW(hwnd_, AccessibleName().c_str());
@@ -1879,7 +1928,7 @@ public:
     // Replace the content of an open dialog (B05 list ↔ detail ↔ confirmation); keeps `done`.
     void Update(Spec spec) {
         if (!open_) return;
-        spec_ = std::move(spec); ++generation_; busy_ = submitted_ = false; error_.clear(); fieldError_.clear(); scroll_ = 0; hover_ = pressed_ = 0; motion_.ClearInteractions();
+        spec_ = std::move(spec); ++generation_; busy_ = submitted_ = false; error_.clear(); fieldError_.clear(); scroll_ = 0; notesBarShown_ = false; hover_ = pressed_ = 0; motion_.ClearInteractions();
         SetWindowTextW(hwnd_, AccessibleName().c_str()); CreateEdits(); Place(false); FocusStop(InitialStop());
         if (uia_.Listening()) uia_.ChildrenChanged(GroupKey);
     }
@@ -1937,6 +1986,10 @@ public:
         if (fade_.Moving(now) || closing_) w = Motion::Earlier(w, Motion::Frame());
         if (open_ && !reduced_ && (busy_ || (spec_.hasStatus && spec_.status.icon == StatusIcon::Busy))) w = Motion::Earlier(w, Motion::Frame());
         if (LogoAnimating()) w = Motion::Earlier(w, Motion::Frame());   // the « Nouveautés » logo loops only while shown
+        if (open_ && NotesBarAlpha(now) > 0) {   // the notes' scroll bar: a deadline for its hold, frames for its fade
+            const auto hold = notesBarAt_ + Motion::Milliseconds(NotesPaper::barHoldMs);
+            w = Motion::Earlier(w, now < hold ? Motion::Deadline(now, hold) : reduced_ ? Motion::Wake{} : Motion::Frame());
+        }
         return w;
     }
     void Frame(Motion::Time now) {
@@ -1998,6 +2051,11 @@ public:
     size_t LogoBytesForTest() const { return logo_.CacheBytes() + logoPixels_.capacity() * 4; }
     void LogoAtForTest(double seconds) { logoStart_ = Motion::Now() - std::chrono::duration_cast<Motion::Clock::duration>(std::chrono::duration<double>(seconds)); }
     float ScrollMaxForTest() const { return std::max(0.f, messageFull_ - messageHeight_); }
+    D2D1_RECT_F NoteSubtitleForTest() const { for (auto& b : blocks_) if (b.type == B::NoteSubtitle) return b.r; return {}; }
+    D2D1_RECT_F NoteHeadRuleForTest() const { for (auto& b : blocks_) if (b.type == B::NoteHeadRule) return b.r; return {}; }
+    float NotesBodyTopForTest() const { return notesBodyTop_; }
+    float NotesBarAlphaForTest(Motion::Time now) const { return NotesBarAlpha(now); }
+    void ScrollForTestBy(float dy) { Scroll(dy); }
     float ScrollForTest() const { return scroll_; }
     bool ReducedForTest() const { return reduced_; }
 };
@@ -2151,14 +2209,16 @@ inline Spec PrivateSpec(bool future = false) {
 }
 // « Nouveautés » (Paper p-L-0 142E-0 Mini / 144O-0 Full): 343 DIP, no action row; X / Échap close (-1).
 // It replaces the « Mise à jour installée » toast when it opens after an update (src/main.cpp ShowUpdateView).
-// `collapsed`: the Mini with « Voir tout »; the Full view otherwise (À propos › Notes de version).
+// `collapsed`: the Mini with « Voir les N nouveautés » (26MU-0, N = every line of the card); the Full view otherwise.
+// `subtitle`: « Depuis la version … » when the card gathers several versions (26KK-0), else empty.
 // Placed bottom-right (Scope::Corner, user request 2026-11-16), not modal: the page stays usable.
-inline Spec ReleaseNotesSpec(std::vector<NoteSection> sections, std::wstring spoken, std::wstring logo, bool collapsed) {
+inline Spec ReleaseNotesSpec(std::vector<NoteSection> sections, std::wstring spoken, std::wstring logo, bool collapsed, std::wstring subtitle = L"") {
     Spec s; s.kind = Kind::ReleaseNotes; s.scope = Scope::Corner; s.automationId = L"ReleaseNotes";
     s.title = TR(release_notes_title); s.closeButton = true;
     s.width = NotesPaper::width; s.padding = NotesPaper::pad; s.gap = NotesPaper::gap;
     s.notes.sections = std::move(sections); s.notes.spoken = std::move(spoken); s.notes.logo = std::move(logo);
-    s.notes.collapsed = collapsed; s.notes.showAll = TR(release_notes_show_all);
+    std::size_t lines = 0; for (const auto& sec : s.notes.sections) lines += sec.items.size();
+    s.notes.collapsed = collapsed; s.notes.showAll = TRP(release_notes_show_count, lines); s.notes.subtitle = std::move(subtitle);
     return s;
 }
 } // namespace Modal

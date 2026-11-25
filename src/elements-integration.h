@@ -962,22 +962,22 @@ void ShowAboutDialog(int demoState){
 void ShowAboutDialog(){ShowAboutDialog(-1);}
 // « Nouveautés » (src/release-notes.h, Paper p-L-0 142E-0 / 144O-0): the build's own notes (release-notes/notes.json and
 // its history), never fetched. `card`: what to show (the automatic Mini: the versions the user has not seen yet); empty =
-// the most recent notes (À propos). A build without notes shows no card: À propos then opens the release's GitHub page.
+// the most recent version's notes (À propos). A build without notes shows no card: À propos then opens the release's GitHub page.
 // `mini`: the automatic Mini after an update (« Voir tout » expands it in place); else the Full view.
 // `activate`: take the keyboard (opened by hand from À propos); the automatic card leaves it to the page.
 // `shown` runs only once the card is really on screen. One card at a time: a new request replaces it.
 std::wstring ReleaseNotesLogo(){return base+L"\\assets\\lottie\\logo-spin.json";}
 void ShowReleaseNotes(bool mini,std::function<void()> shown,bool activate,ReleaseNotes::Content card){
-    std::string current;for(wchar_t c:RunningVersion())current.push_back(c<128?static_cast<char>(c):'?');
     const auto& history=ReleaseNotes::History();
-    const ReleaseNotes::Content content=!card.Empty()?std::move(card):ReleaseNotes::Unseen(history,"",history.empty()?current:history.front().version);
+    const ReleaseNotes::Content content=!card.Empty()?std::move(card):ReleaseNotes::Latest(history);
     if(content.Empty()){
         if(mini){Log(L"RELEASE NOTES none in this build");return;}
         Log(L"RELEASE NOTES none in this build: release page");NewTab(ReleaseNotesUrl(RunningVersion()),-1,L"");return;
     }
     std::vector<MD::NoteSection> sections;const auto notes=ReleaseNotes::Sections(content);
     for(const auto& s:notes)sections.push_back({s.kind==ReleaseNotes::Kind::Fixed,s.title,s.items});
-    auto spec=MD::ReleaseNotesSpec(std::move(sections),ReleaseNotes::Spoken(notes),ReleaseNotesLogo(),mini);
+    const std::wstring subtitle=ReleaseNotes::Subtitle(content);   // « Depuis la version … »: several versions (Paper 26KK-0)
+    auto spec=MD::ReleaseNotesSpec(std::move(sections),(subtitle.empty()?L"":subtitle+L". ")+ReleaseNotes::Spoken(notes),ReleaseNotesLogo(),mini,subtitle);
     spec.onShown=[mini,shown]{Log(std::wstring(L"RELEASE NOTES shown ")+(mini?L"mini":L"full"));if(shown)shown();};
     spec.onButton=[](int id){if(id==MD::Dialog::NotesExpandHit)Log(L"RELEASE NOTES expanded (Voir tout)");};
     spec.activate=activate;
