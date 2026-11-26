@@ -1,6 +1,8 @@
 # Installateur bloqué par Windows : options de signature
 
 Recherche du 26 novembre 2026. Aucun achat, aucun compte créé, aucune inscription.
+Mise à jour du même jour : le propriétaire a choisi l'option A (Certum) ; les parties 4 à 6 décrivent la
+chaîne de signature préparée, ses essais et ce qu'il lui reste à faire.
 Chaque fait porte sa source et sa date (liste en bas). « Confirmé » = lu ce jour dans une page
 officielle. « Déduit » = conclusion tirée de ces pages ou du code, pas encore prouvée par un essai.
 
@@ -76,71 +78,177 @@ intelligent et fait enfin progresser la réputation SmartScreen d'une version à
    intelligent est actif. À faire avant toute annonce.
 4. L'avertissement SmartScreen bleu reste au début (« plusieurs semaines et des centaines
    d'installations », dit Microsoft), puis disparaît.
-5. Avant d'acheter : faire d'abord l'essai gratuit du point 5 ci-dessous, avec un certificat de test.
+5. L'essai gratuit avec un certificat de test est fait : voir la partie 5.
 
-## 4. Ce que chaque option demande à notre chaîne de publication
+## 4. La chaîne de signature : prête, essayée avec un certificat de test, coupée
 
-Chaîne actuelle (`.github/workflows/update-release.yml`) : tâche `build` sur Windows, sans aucun
-secret (`tools/release/build.py`, tests, `tools/release/package.py`), puis tâche `publish` sur
-Linux, seule à lire un secret, dans l'environnement `release` limité à `main`.
+Décision du propriétaire (26/11/2026) : option A, Certum. Tout ce qui suit est écrit et essayé avec un
+certificat de test fabriqué pour l'occasion. **Rien n'est signé pour de vrai tant que l'interrupteur
+n'est pas mis.**
 
-Fichiers à signer : `browser.exe`, `update-helper.exe`,
-`assets/bin/browser-annotations-mcp.exe`, puis l'installateur complet.
-`WebView2Loader.dll` est déjà signé par Microsoft (vérifié le 26/11/2026).
+### Ce qui est signé, dans quel ordre
 
-Commun à A, B et C :
+Tout se fait dans `tools/release/package.py` (option `--sign-name`), avec `tools/release/sign.py`.
 
-- Signer les trois exécutables **avant** `package.py` : ce sont eux que le paquet de mise à
-  jour, le ZIP et l'installateur embarquent. Sinon une mise à jour livrerait un `browser.exe`
-  non signé, bloqué au lancement suivant sur les PC protégés (déduit).
-- Signer l'installateur **après** l'ajout de son contenu. `package.py` calcule aujourd'hui
-  `SHA256SUMS.txt` et `release-info.json` juste après l'écriture de l'installateur : ces
-  calculs doivent passer après la signature.
-- Garder la tâche `build` sans secret : ajouter une tâche `sign` sur Windows, dans
-  l'environnement `release` (donc `main` seulement). Les branches restent non signées.
-- Horodater chaque signature (`/tr … /td SHA256`), pour qu'elle reste valable après la fin du
-  certificat.
-- Refuser de publier si un exécutable n'est pas signé par le bon nom (contrôle dans `publish.py`).
-- **Point à corriger dans l'installateur (déduit du code, à prouver).** Une signature se pose à
-  une position multiple de 8 octets ; l'outil ajoute des zéros si besoin. Or
-  `src/setup-payload.h` et `verify_setup` exigent que le bloc de fin soit collé à la signature.
-  L'installateur 0.3.1062 fait 59 058 047 octets, pas un multiple de 8 : signé tel quel, il
-  refuserait probablement de s'installer. Petite correction des deux lecteurs, avec un test.
-- Le programme de mise à jour ne change pas : il vérifie toujours HTTPS, taille et SHA-256, et
-  les empreintes sont calculées sur les fichiers signés. Il ne vérifie pas la signature
-  (design/update-engine.md). Le faire serait un durcissement à part, pas nécessaire ici ; le
-  code existe déjà pour WebView2 (`src/webview2-install.h`). Dans ce cas, comparer le nom du
-  signataire, jamais l'empreinte du certificat, qui change à chaque renouvellement.
-- Le fichier de publication est aussi copié vers le dépôt public : relire les règles de
-  `tools/public-mirror/` avant de le modifier. Aucun secret ne part là-bas.
+1. **Les programmes du navigateur** : `browser.exe`, `update-helper.exe`,
+   `assets/bin/browser-annotations-mcp.exe`. Ils sont signés dans la copie de préparation, avant que le
+   paquet de mise à jour, le ZIP et l'installateur soient fabriqués : les trois contiennent donc les
+   mêmes fichiers signés. `WebView2Loader.dll` est déjà signé par Microsoft : il est seulement contrôlé.
+2. **Le désinstalleur.** L'installateur dépose sur le PC une copie de lui-même sans son contenu : c'est
+   le désinstalleur. Une signature posée sur l'installateur entier ne couvre pas ce petit fichier, qui
+   serait donc bloqué par le Contrôle intelligent. Il est signé à part et rangé dans l'installateur.
+3. **L'installateur complet**, en dernier.
+4. **Contrôle de chaque signature** par la vérification de Windows lui-même, puis seulement calcul des
+   empreintes publiées (`SHA256SUMS.txt`, `release-info.json`, qui note « signé » et le nom du signataire).
+5. **Publication** : `tools/release/publish.py --require-signer` refuse tout ce qui n'est pas signé par
+   le bon nom, ou signé avec un certificat de test.
 
-Propre à chaque option :
+Chaque signature est horodatée (`http://time.certum.pl`) : elle reste valable après la fin du certificat.
 
-- **A. Certum.** La machine GitHub ouvre une session SimplySign avec un code à usage unique
-  calculé depuis un secret, puis `signtool` signe. Outils tiers existants, aucun guide officiel
-  Certum. Secrets : identifiant SimplySign et graine du code, dans l'environnement `release`.
-- **B. SSL.com.** Action GitHub officielle `SSLcom/esigner-codesign`. Secrets : identifiant, mot
-  de passe, identifiant de certificat, graine du code.
-- **C. Azure.** Action officielle `azure/artifact-signing-action`. Certificats de 3 jours :
-  horodatage indispensable. Secrets : identifiants d'une application Azure avec le rôle
-  « Artifact Signing Certificate Profile Signer ».
-- **E. Store MSIX.** Chantier, pas un correctif : nouveau paquet (identité, manifeste), envoi au
-  Store, mise à jour maison coupée dans cette variante, vérification de tout ce qui écrit sur
-  le disque (profils, agents, passerelle MCP). La règle du Store sur les navigateurs (moteur
-  Chromium ou Gecko récent) est respectée par WebView2 (déduit).
-- **F. Store .exe.** Installateur signé, installation silencieuse (notre `--unattended` existe,
-  à vérifier contre leur exigence « aucune fenêtre »), adresse de version qui ne change jamais
-  (nos adresses de version conviennent).
-- **G. SignPath.** Construire depuis le dépôt public, approbation manuelle de chaque version.
+### Deux défauts de l'installateur corrigés au passage
 
-## 5. Essai gratuit à faire avant tout achat
+- **Signé, il ne s'installait plus.** Prouvé : l'installateur de la version actuelle, une fois signé,
+  répond « retéléchargez-le » dans 7 tailles de fichier sur 8 (l'outil de signature ajoute jusqu'à 7
+  octets avant sa signature, et l'installateur ne retrouvait plus son contenu). Son bloc de fin est
+  maintenant toujours aligné : il se lit pareil avec ou sans signature.
+- **Le désinstalleur n'était pas signé** (point 2 ci-dessus). L'installateur vérifie que le désinstalleur
+  qu'il transporte est bien lui-même, signé, avant d'écrire quoi que ce soit.
 
-Signer une version de test avec un certificat fabriqué pour l'essai (sans valeur pour Windows),
-puis vérifier que l'installateur signé s'installe toujours et que la mise à jour s'applique.
-Cela prouve la chaîne, dont le point des 8 octets, sans rien dépenser. Seul le passage du
-Contrôle intelligent demande ensuite le vrai certificat et un PC où il est actif.
+### L'interrupteur
 
-## 6. Que dire aux utilisateurs bloqués maintenant
+Variable du dépôt GitHub `RELEASE_SIGNING` (Settings › Secrets and variables › Actions › Variables) :
+
+| Valeur | Effet |
+|---|---|
+| absente (aujourd'hui) | Rien ne change : aucune signature, publication comme avant. |
+| `rehearsal` | Répétition : GitHub ouvre la session Certum, signe, contrôle, et garde le résultat de côté. La version **publiée reste non signée**, et un échec de la répétition ne bloque aucune publication. |
+| `on` | Seuls les fichiers signés sont publiés. Pas de signature valable, pas de publication. |
+
+Dans `.github/workflows/update-release.yml` : la tâche `build` ne change pas et ne voit aucun secret ;
+une tâche `sign` (Windows, environnement `release`, donc `main` seulement) ouvre la session, lance
+`package.py --sign-name`, ferme la session ; la tâche `publish` prend les fichiers signés quand la
+valeur est `on`.
+
+### Les secrets : leurs noms, jamais leurs valeurs
+
+| Nom | Où le créer | Ce que c'est |
+|---|---|---|
+| `CERTUM_SIMPLYSIGN_ID` | Settings › Environments › `release` › Environment secrets | L'identifiant du compte SimplySign (l'adresse e-mail du compte Certum). |
+| `CERTUM_SIMPLYSIGN_TOTP_SECRET` | même endroit | Le secret contenu dans le QR code d'activation (le texte qui commence par `otpauth://`, ou sa partie `secret`). |
+| `RELEASE_SIGNER_NAME` | Settings › Secrets and variables › Actions › Variables | Le nom exact écrit sur le certificat (celui que Windows affichera). |
+
+### Comment GitHub atteint la clé rangée chez Certum
+
+- **Ce que Certum prévoit (officiel).** La clé ne quitte jamais Certum. Sur un PC, on ouvre le logiciel
+  SimplySign Desktop, on tape son identifiant et un code à 6 chiffres donné par l'application SimplySign
+  du téléphone ; le certificat apparaît alors dans Windows et l'outil de signature s'en sert. Certum ne
+  décrit aucune méthode sans personne devant l'écran.
+- **Ce que nous faisons (non officiel, comme les projets publics qui signent avec Certum depuis
+  GitHub).** `tools/release/simplysign_session.ps1` installe SimplySign Desktop sur la machine de
+  GitHub (fichier figé : version, empreinte et signature de son éditeur vérifiées avant de le lancer),
+  calcule lui-même le code à 6 chiffres à partir du secret du QR code, et remplit la fenêtre de
+  connexion. Une seule tentative par publication, jamais deux sessions en même temps.
+- **Ce qui est prouvé et ce qui ne l'est pas.** Le calcul du code est vérifié contre les valeurs de
+  référence de la norme. La connexion elle-même n'a pas pu être essayée : il faut le vrai compte. La
+  première mise au point se fera en répétition.
+- **Risques.**
+  - Le secret du QR code et l'identifiant suffisent pour signer à ta place. Ils ne sont lus que par la
+    tâche `sign`, sur `main`. S'ils fuient : demander un nouveau QR code à Certum.
+  - Certum peut changer son logiciel et casser la connexion automatique : la publication signée s'arrête
+    alors (rien de non signé ne sort quand l'interrupteur est sur `on`) jusqu'à correction.
+  - Trop de connexions refusées peuvent bloquer le compte : d'où la tentative unique.
+  - Quota : 5 000 signatures par mois, 4 par version : large.
+- **Si la connexion automatique ne tient pas.** Deux replis : signer sur le PC de Val, SimplySign
+  ouvert avec le téléphone, ce qui oblige à regrouper les publications (une par nuit, par exemple) ; ou
+  passer à SSL.com (option B), prévu officiellement pour GitHub, plus cher.
+
+### Si une autre option était choisie plus tard
+
+Le reste de la chaîne ne change pas (`package.py --sign-name` signe avec le certificat présent dans
+Windows) ; seule l'ouverture de session diffère :
+- **B. SSL.com** : action GitHub officielle `SSLcom/esigner-codesign` (identifiant, mot de passe,
+  identifiant de certificat, secret du code à usage unique).
+- **C. Azure Artifact Signing** (avec une société) : action officielle `azure/artifact-signing-action` ;
+  certificats de 3 jours, donc horodatage indispensable (déjà fait).
+- **E. Store MSIX** : un chantier à part (nouveau paquet, envoi au Store, mise à jour maison coupée
+  dans cette variante).
+- **F. Store avec notre .exe** : il faut déjà un installateur signé, une installation silencieuse (notre
+  installateur n'en a pas dans les versions publiées : le mode sans fenêtre n'existe que dans les
+  versions de test) et une adresse de version qui ne change jamais (les nôtres conviennent).
+- **G. SignPath** : construire depuis le dépôt public, approbation manuelle de chaque version.
+
+## 5. Essais faits avec le certificat de test
+
+Tous hors écran, dans des dossiers jetables ; le vrai navigateur installé n'est jamais touché.
+
+- **Installateur signé** (`tests/setup/run_tests.py`, cas `signed_release`, 84 vérifications ; la suite
+  complète : 17 cas verts). Une version signée s'installe ; une version signée plus récente arrive par
+  le vrai moteur de mise à jour ; l'installateur suivant passe par-dessus ; la désinstallation tourne
+  depuis une copie signée. Après chaque étape, chaque programme installé est contrôlé par Windows :
+  signature valable, bon signataire. Un octet changé dans un fichier signé est vu par Windows.
+- **Preuve inverse** : les mêmes essais sur le code actuel de `main` échouent (l'installateur signé ne
+  trouve plus son contenu).
+- **Outils de publication** (`tests/update-integration/test_release_tools.py`, 74 tests verts) : format
+  du fichier pour les 8 alignements possibles, désinstalleur transporté, refus de publier du non signé
+  quand c'est demandé, propriétés de sécurité du fichier de publication (secrets dans la seule tâche
+  `sign`, interrupteur coupé par défaut).
+- **Avec le certificat de test, Windows répond « racine non reconnue »** : c'est attendu, et accepté
+  dans les tests seulement. Un certificat de test ne peut pas signer une version destinée au public
+  (`package.py` le refuse).
+
+Pas encore fait :
+- Signer et horodater une **vraie** compilation complète de bout en bout (interrompu par la pause des
+  compilations ; à refaire, 10 minutes).
+- Installer une vraie version signée : le programme de mise à jour d'une vraie version écrit dans le
+  registre de l'utilisateur, donc cet essai se fait sur une machine propre ou pendant la répétition,
+  pas sur ce PC.
+- Le passage du Contrôle intelligent : il faut le vrai certificat et un PC où il est actif.
+
+## 6. Ce que Val doit faire
+
+Dans l'ordre. Rien ici ne se délègue : c'est ton identité et ta clé.
+
+1. **Finir la commande chez Certum** (« Open Source Code Signing in the Cloud »).
+2. **Faire vérifier ton identité**, dans ton compte Certum, rubrique des produits de sécurité des
+   données, « activer » le certificat :
+   - une pièce d'identité (carte d'identité ou passeport). Certum recommande sa vérification
+     automatique : photo du document, recto et verso ;
+   - un justificatif de domicile à ton nom (facture d'électricité, d'eau, de téléphone…) ;
+   - l'adresse du projet open source : `https://github.com/VALXXII/valsbrowser`. Certum doit y voir le
+     lien entre toi et le projet. Si ton nom civil n'apparaît ni sur le dépôt ni sur ton profil GitHub,
+     Certum peut refuser : à toi de voir si tu l'y fais figurer.
+   - Délai : Certum n'en annonce pas ; compte quelques jours à deux semaines.
+3. **Activer SimplySign** quand Certum t'écrit (un e-mail de bienvenue, un e-mail avec un lien
+   d'activation, un e-mail avec un code) :
+   - installe l'application **SimplySign** sur ton téléphone (iPhone ou Android) ;
+   - ouvre le lien d'activation sur ton PC et tape le code reçu : **un QR code s'affiche** ;
+   - **avant de le scanner, garde-en une copie** : capture d'écran rangée dans ton gestionnaire de mots
+     de passe. Ce QR code contient le secret qui permettra à GitHub de signer. À notre connaissance il
+     n'est affiché qu'une fois ;
+   - scanne-le avec l'application SimplySign : elle te donne maintenant des codes à 6 chiffres.
+   - **Ne l'envoie à personne**, ni par message, ni à un agent : c'est l'équivalent de ta clé.
+4. **Lire le texte du QR code** : la plupart des gestionnaires de mots de passe savent lire un QR code
+   de « code à usage unique » et montrent ensuite un texte qui commence par `otpauth://`. C'est ce
+   texte qu'il faut pour l'étape suivante. Si tu n'y arrives pas, dis-le : on le fera ensemble sur ton
+   PC, sans que le secret en sorte.
+5. **Créer les deux secrets et les deux variables dans GitHub**, dépôt `VALXXII/browser` (les noms sont
+   dans le tableau de la partie 4) :
+   - `CERTUM_SIMPLYSIGN_ID` et `CERTUM_SIMPLYSIGN_TOTP_SECRET` dans l'environnement `release` ;
+   - la variable `RELEASE_SIGNER_NAME` : le nom exact du certificat, tel que Certum l'a émis
+     (il commence par « Open Source Developer, ») ;
+   - la variable `RELEASE_SIGNING` : ne la crée pas encore.
+6. **Prévenir Chief.** On fusionne alors la chaîne, tu mets `RELEASE_SIGNING` sur `rehearsal`, et on
+   regarde une ou deux publications : GitHub essaie de signer, la version publiée reste comme
+   aujourd'hui. On corrige la connexion automatique si besoin.
+7. **Essayer une version signée sur un PC où le Contrôle intelligent est actif** (le fichier signé de la
+   répétition). C'est la seule preuve qui compte.
+8. **Mettre `RELEASE_SIGNING` sur `on`.** À partir de là chaque version publiée est signée.
+
+À savoir : le certificat dure environ un an (459 jours au plus) ; son renouvellement repasse par les
+étapes 2 à 5 si Certum redonne un QR code. Si le navigateur devenait payant, ce certificat ne
+conviendrait plus (Certum le révoque) : il faudrait passer à une autre option du tableau.
+
+## 7. Que dire aux utilisateurs bloqués maintenant
 
 - Il n'existe pas de contournement par application (confirmé).
 - Le ZIP portable **ne contourne pas** le blocage : le contrôle vise tous les exécutables
@@ -160,7 +268,7 @@ Texte proposé :
 > Windows, ce qui réduit la protection de tout le PC : nous vous conseillons plutôt d'attendre
 > la version signée.
 
-## 7. Sources
+## 8. Sources
 
 Toutes lues le 26/11/2026. La date entre parenthèses est celle de la page.
 
@@ -177,6 +285,8 @@ Toutes lues le 26/11/2026. La date entre parenthèses est celle de la page.
 - SSL.com : particulier, EV sans société, eSigner. https://www.ssl.com/products/software-integrity/code-signing/iv/, https://www.ssl.com/products/software-integrity/code-signing/ev-sole-proprietor/, https://www.ssl.com/products/software-integrity/signing-service/
 - Sectigo (durée de 459 jours ; pas de prix à un an ni d'offre claire pour particulier). https://www.sectigo.com/ssl-certificates-tls/code-signing
 - SignPath Foundation, conditions. https://signpath.org/terms
+- Certum, activation de SimplySign et installation des applications (sans date). https://support.certum.eu/en/how-to-activate-access-to-simply-sign-application/ et https://support.certum.eu/en/installation-of-the-simplysign-application/
+- Projets publics qui signent avec Certum depuis GitHub (méthode non officielle, sources secondaires). https://github.com/jay0lee/certum-cloud-code-sign et https://www.devas.life/how-to-automate-signing-your-windows-app-with-certum/
 - Presse, pour dater la réactivation du Contrôle intelligent (source secondaire). https://www.neowin.net/news/microsoft-removes-mandatory-clean-install-requirement-for-a-windows-11-exclusive-feature/
 
 Non vérifié ce jour : la France dans la liste des pays du compte Store (page muette) ;
