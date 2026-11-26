@@ -123,6 +123,7 @@ struct Scene {
     const Motion::State* motion = nullptr;
     const std::vector<float>* ticks = nullptr; // presented tick position per row (fractional while gliding)
     int focus = 0, dragging = -1; bool keyboard = false, focused = true, drawer = false;
+    bool drawerLeft = false;   // #143: docked on the left (the side panel's layouts): it enters from the left, its hairline on the right
     float entrance = 1, scroll = 0, height = 0;
     Motion::Time now{};
 };
@@ -214,7 +215,7 @@ public:
         const float h = s.height > 0 ? s.height : t->GetSize().height;
         const float e = Motion::Clamp(s.entrance);
         D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
-        t->SetTransform((s.drawer ? D2D1::Matrix3x2F::Translation((1 - e) * Layout::drawerSlide, 0) : D2D1::Matrix3x2F::Translation(0, -(1 - e) * Layout::enterSlide)) * base);
+        t->SetTransform((s.drawer ? D2D1::Matrix3x2F::Translation((s.drawerLeft ? -1.f : 1.f) * (1 - e) * Layout::drawerSlide, 0) : D2D1::Matrix3x2F::Translation(0, -(1 - e) * Layout::enterSlide)) * base);
         const auto& items = *s.items; const int n = static_cast<int>(items.size());
         const int shown = s.drawer ? n : std::min(n, Layout::popoverRows);
         if (s.drawer) t->PushAxisAlignedClip(D2D1::RectF(0, 0, Layout::width, h), D2D1_ANTIALIAS_MODE_ALIASED);
@@ -238,7 +239,7 @@ public:
         t->SetTransform(base);
         auto* b = chrome_.SolidBrush();
         const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width));
-        if (s.drawer) { b->SetColor(D2D1::ColorF(1, 1, 1, 5 / 255.f)); t->FillRectangle(D2D1::RectF(0, 0, px, h), b); }
+        if (s.drawer) { const float x = s.drawerLeft ? t->GetSize().width - px : 0.f; b->SetColor(D2D1::ColorF(1, 1, 1, 5 / 255.f)); t->FillRectangle(D2D1::RectF(x, 0, x + px, h), b); }   // the page's side
         else { b->SetColor(D2D1::ColorF(1, 1, 1, 15 / 255.f)); t->DrawRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(px / 2, px / 2, Layout::width - px / 2, h - px / 2), Layout::radius, Layout::radius), b, px); }
     }
     int Hit(const std::vector<Item>& items, float x, float y, bool drawer, float scroll, float height) {
@@ -264,6 +265,7 @@ struct Hooks {
     std::function<void(int tab)> show;                                                // bring that tab forward
     std::function<void(bool keyboard)> closed;
     std::function<RECT()> drawerArea;                                                 // screen px: the strip right of the page, under the chrome
+    std::function<bool()> drawerLeft;                                                 // #143: dock at the area's LEFT edge (the side panel's right edge)
     std::function<void()> drawerOpening;                                              // the host closes the other docked drawers
 };
 
@@ -274,7 +276,7 @@ class Popover {
     std::vector<Item> items_;
     std::vector<float> ticks_; std::map<std::wstring, float> tickBySite_; // presented tick position (glides to the nearest tick)
     std::map<std::wstring, int> remembered_;                               // last audible level per site, for unmute
-    bool visible_ = false, keyboard_ = false, entering_ = false, exiting_ = false, drawer_ = false;
+    bool visible_ = false, keyboard_ = false, entering_ = false, exiting_ = false, drawer_ = false, drawerLeft_ = false;
     int hover_ = 0, pressed_ = 0, focus_ = 0, dragging_ = -1, tipFor_ = 0; float grab_ = 0, scroll_ = 0;
     POINT final_{}; Motion::Time opened_{}, lastStep_{};
     static constexpr UINT_PTR FrameTimer = 1; bool frameArmed_ = false;
@@ -299,7 +301,7 @@ class Popover {
     }
     Scene MakeScene(Motion::Time now) const {
         Scene s; s.items = &items_; s.motion = &motion_; s.ticks = &ticks_; s.focus = focus_; s.keyboard = keyboard_; s.dragging = dragging_; s.now = now; s.focused = GetFocus() == hwnd_;
-        s.drawer = drawer_; s.scroll = scroll_; s.height = HeightDip(); s.entrance = motion_.ReducedMotion() && drawer_ ? 1.f : Entrance(now);
+        s.drawer = drawer_; s.drawerLeft = drawerLeft_; s.scroll = scroll_; s.height = HeightDip(); s.entrance = motion_.ReducedMotion() && drawer_ ? 1.f : Entrance(now);
         return s;
     }
     void Paint() {
@@ -342,7 +344,8 @@ class Popover {
     void Place() {
         if (drawer_ && hooks_.drawerArea) {
             const RECT a = hooks_.drawerArea(); const int w = Px(Layout::width);
-            final_ = {a.right - w, a.top};
+            drawerLeft_ = hooks_.drawerLeft && hooks_.drawerLeft();   // #143: on the tab panel's side
+            final_ = {drawerLeft_ ? a.left : a.right - w, a.top};
             SetWindowPos(hwnd_, HWND_TOP, final_.x, final_.y, w, std::max<LONG>(1, a.bottom - a.top), SWP_NOACTIVATE);
         } else {
             RECT r{}; GetWindowRect(hwnd_, &r);

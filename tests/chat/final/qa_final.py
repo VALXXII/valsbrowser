@@ -803,6 +803,40 @@ def panel_widget():
     return sorted(out, key=lambda r: r[2] - r[0])[-1] if out else None
 
 
+# WindowFromPoint / GetAncestor with their own prototypes: the shared ctypes.windll.user32 keeps the return types the
+# other helpers expect.
+_WindowFromPoint = ctypes.WINFUNCTYPE(W.HWND, W.POINT)(('WindowFromPoint', u32))
+_GetAncestor = ctypes.WINFUNCTYPE(W.HWND, W.HWND, W.UINT)(('GetAncestor', u32))
+
+
+def ours_at(point):
+    """A real click at this screen point reaches a window of OUR test browser (its root window is ours: the page, the
+    panel's WebView, the bubble) — not another application's window lying over it."""
+    h = _WindowFromPoint(W.POINT(int(point[0]), int(point[1])))
+    root = _GetAncestor(h, 2) if h else None   # GA_ROOT
+    if not root:
+        return False
+    pid = W.DWORD(); u32.GetWindowThreadProcessId(W.HWND(root), ctypes.byref(pid))
+    return pid.value == Q.our_pid()
+
+
+def click_ours(p):
+    """A real click at `p`, sent only once it reaches our browser. In a daytime run the test browser may lie behind another
+    window (the owner's own window, Orca): it opened without the foreground, or something took it. A real click there went
+    to THAT window — 25 Nov: « the panel's model button does not open its menu » (tonagent_screen.py, the step clicked
+    before anything had brought our window up), and the capture that followed, which brings our window up first
+    (chat_qa.grab), showed the cursor hovering the button as if the click had reached it. Our window is brought up first,
+    as click_uia and the journeys do — only when the point is not ours already: activating the main window would take the
+    activation from an open bubble. Returns False (and says where the click would have gone) rather than click elsewhere."""
+    if not ours_at(p):
+        front(); time.sleep(0.15)
+        if not ours_at(p):
+            print('real click not sent: the point', p, 'is not on the test browser —', json.dumps(window_at(p), ensure_ascii=False), flush=True)
+            return False
+    click_at(*p)
+    return True
+
+
 def real_click_chat(selector=None, text=None, kind='bubble', tries=12):
     if text == 'Autoriser':
         time.sleep(0.7)   # SEC-23: a permission card takes no « Autoriser » in its first 600 ms
@@ -811,7 +845,7 @@ def real_click_chat(selector=None, text=None, kind='bubble', tries=12):
         if p and kind == 'bubble':
             p = bring_into_view(p, selector, text)   # the bubble may go past the visible area (it grows in place): the user scrolls
         if p:
-            click_at(*p); return True
+            return click_ours(p)
         time.sleep(0.25)
     return False
 
@@ -855,8 +889,8 @@ def type_and_send(text, kind='bubble'):
     the keyboard would) and Entrée."""
     if kind == 'panel':   # a real click at the END of the composer's text (never on a chip), then real keys, as the user
         p = composer_end_point(kind)
-        if p:
-            click_at(*p); time.sleep(0.15)
+        if p and click_ours(p):
+            time.sleep(0.15)
         focus_composer(kind)
         type_keys(text, every=0.008); time.sleep(0.15); tap(0x0D)
         return

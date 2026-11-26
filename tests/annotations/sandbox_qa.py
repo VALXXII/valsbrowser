@@ -239,8 +239,17 @@ def launch():
     (APP / 'session').write_text('browser-session-2\n0\n1\n' + json.dumps(URL) + '\n0\n', encoding='utf-8', newline='\n')
     env = dict(os.environ)
     env['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = f'--remote-debugging-port={PORT} --remote-allow-origins=http://127.0.0.1:{PORT}'
+    # agent guard (tests/agent-guard/agent_guard.py): no agent in this QA — the browser's test mode with no fake agent
+    # refuses every agent (the mode's « Chat à droite » would otherwise start the computer's own Claude Code), the
+    # « Connecter » writes go under build/, keys stripped, the « user » folders and PATH redirected; a watch in a process
+    # of its own (this launcher exits) stops the browser if an agent appears under it anyway
+    sys.path.insert(0, str(ROOT / 'tests' / 'agent-guard'))
+    import agent_guard as G
+    env = G.secure_env(env, work=QA, exe=APP / 'browser.exe', agent=False)
     p = subprocess.Popen([str(APP / 'browser.exe')], cwd=str(APP), env=env)
     (APP / 'qa.pid').write_text(str(p.pid))
+    G.clear_marker(QA)
+    G.spawn_detached_watch(p.pid, env, work=QA, log=APP / 'prototype.log')
     for _ in range(100):
         try:
             page_ws(); break

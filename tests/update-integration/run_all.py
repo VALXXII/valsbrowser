@@ -62,6 +62,11 @@ def existing_fixtures() -> None:
     fixture('focus_mode_test', [*STRICT, 'tests/focus_mode_test.cpp'])
     # Its drawers' antialiased top corners (src/drawer-corners.h): coverage, region cut, layered corner windows.
     fixture('drawer_corners_test', [*STRICT, '-municode', 'tests/drawer_corners_test.cpp', '-lgdi32', '-luser32'])
+    # #143: the drawers on the tab panel's side (pure geometry at 4 DPI, then src/main.cpp's real drawers, side Focus and the
+    # toolbar tooltip muted over its open menu, on a desktop of its own that is never displayed).
+    run('drawer side (#143): pure + host on a hidden desktop', [sys.executable, '-I', ROOT / 'tests/drawer-side/run.py'])
+    # #143 · Infobulle B of the side column's tabs and favourites (src/side-tip.h): box, place, delay / chaining, motion (pure).
+    fixture('side_tip_test', [*STRICT, 'tests/side_tip_test.cpp', '-luser32'])
     # The window's resize border over the chat panel, the drawers and the layers (src/resize-border.h; trial 0.3.952):
     # hidden windows only, never shown. The browser's manifest is linked in (layered child windows need Windows 8+ declared).
     resize_manifest = OUT / 'resize_border_manifest.o'
@@ -184,6 +189,10 @@ def existing_fixtures() -> None:
     downloads_evidence = ROOT / 'build/downloads-qa'
     downloads_evidence.mkdir(parents=True, exist_ok=True)
     fixture('download_panel_test', [*STRICT, '-municode', *TVG, 'tests/downloads/download_panel_test.cpp', 'src/native-lottie.cpp', THORVG,
+            '-ld2d1', '-ldwrite', '-lwindowscodecs', '-lole32', '-luuid', '-lcomctl32', '-lgdi32', '-ldwmapi', '-lshell32'],
+            [ROOT, downloads_evidence])
+    # Its rows' file icons: type by extension + MIME, image thumbnails (fallbacks, cache), SVG never decoded. No window.
+    fixture('download_file_kinds_test', [*STRICT, '-municode', *TVG, 'tests/downloads/download_file_kinds_test.cpp', 'src/native-lottie.cpp', THORVG,
             '-ld2d1', '-ldwrite', '-lwindowscodecs', '-lole32', '-luuid', '-lcomctl32', '-lgdi32', '-ldwmapi', '-lshell32'],
             [ROOT, downloads_evidence])
     # Browsing history drawer opened by the toolbar button (same line as test-history.ps1)
@@ -372,6 +381,14 @@ def main() -> int:
     p.add_argument('--ci', action='store_true')
     p.add_argument('--only', choices=('existing', 'peers', 'integration', 'app'))
     a = p.parse_args()
+    # agent guard (tests/agent-guard/agent_guard.py): every program this run starts (installers, browsers, peers) inherits
+    # no API key or agent credential, and no switch to this computer's agents or to a fake agent
+    sys.path.insert(0, str(ROOT / 'tests' / 'agent-guard'))
+    import agent_guard as G
+    import os
+    clean, _stripped = G.scrub(dict(os.environ), keep_locations=True)
+    for k in [k for k in os.environ if k not in clean] + [G.REAL_AGENT_SWITCH, G.REAL_OPT_IN[0], 'BROWSER_CHAT_FAKE_AGENT']:
+        os.environ.pop(k, None)
     OUT.mkdir(parents=True, exist_ok=True)
     steps = {'existing': existing_fixtures, 'peers': peer_suites, 'integration': integration}
     for key, step in steps.items():

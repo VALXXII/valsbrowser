@@ -35,6 +35,8 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'tests' / 'agent-guard'))
+import agent_guard as G   # noqa: E402  (no agent at all here: the browser refuses every agent, the watch proves none ran)
 user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
 user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))   # per-monitor v2: real pixels for rectangles, captures and clicks
 kernel32.OpenProcess.restype = wt.HANDLE
@@ -246,17 +248,29 @@ class Run:
         (self.dir / 'connect').mkdir(exist_ok=True)
         self.env['BROWSER_ANNOTATIONS_CONNECT_ROOT'] = str(self.dir / 'connect')
         self.env.pop('BROWSER_NO_ONBOARDING', None)
-        self.job, self.proc, self.ui = make_job(), None, None
+        # the agent guard (tests/agent-guard/agent_guard.py): no agent in these scenarios (the trial of « Essayer en 1
+        # minute » enters the annotation mode): no fake agent named, so the browser in its test mode refuses every agent;
+        # keys stripped, USERPROFILE / PATH / CLAUDE_CONFIG_DIR / CODEX_HOME redirected (LOCALAPPDATA / APPDATA stay here)
+        self.env = G.secure_env(self.env, work=self.dir, agent=False)
+        self.job, self.proc, self.ui, self.guard = make_job(), None, None, None
+
+    def watch(self, env):
+        """The agent guard's watch of the browser just started: an agent process under it ends it and the scenario."""
+        if self.guard:
+            self.guard.stop()
+        self.guard = G.watch(self.proc.pid, env, work=self.dir, expect_agent=False)
 
     def launch(self, exe: Path, args, env=None):
         """Starts `exe` inside the job (suspended until it is in)."""
-        self.proc = subprocess.Popen([str(exe), *args], cwd=str(exe.parent), env=env or self.env, creationflags=0x00000004)
+        env = G.secure_env(env or self.env, work=self.dir, exe=exe, agent=False)   # before anything starts
+        self.proc = subprocess.Popen([str(exe), *args], cwd=str(exe.parent), env=env, creationflags=0x00000004)
         handle = kernel32.OpenProcess(0x1F0FFF, False, self.proc.pid)
         if not handle or not kernel32.AssignProcessToJobObject(wt.HANDLE(self.job), wt.HANDLE(handle)):
             self.proc.kill()
             raise SystemExit('process not placed in the job: refusing to run it')
         ctypes.windll.ntdll.NtResumeProcess(wt.HANDLE(handle))
         kernel32.CloseHandle(wt.HANDLE(handle))
+        self.watch(env)
         return self.proc
 
     def close_browser(self):
@@ -269,7 +283,8 @@ class Run:
 
     def start(self, *extra):
         exe = self.app / 'browser.exe'
-        self.proc = subprocess.Popen([str(exe), '--onboarding', '--import-sources', str(self.sources), *extra], cwd=str(self.app), env=self.env,
+        env = G.secure_env(self.env, work=self.dir, exe=exe, agent=False)   # before anything starts
+        self.proc = subprocess.Popen([str(exe), '--onboarding', '--import-sources', str(self.sources), *extra], cwd=str(self.app), env=env,
                                      creationflags=0x00000004)   # CREATE_SUSPENDED: in the job before it runs
         handle = kernel32.OpenProcess(0x1F0FFF, False, self.proc.pid)
         if not handle or not kernel32.AssignProcessToJobObject(wt.HANDLE(self.job), wt.HANDLE(handle)):
@@ -277,6 +292,7 @@ class Run:
             raise SystemExit('process not placed in the job: refusing to run it')
         ctypes.windll.ntdll.NtResumeProcess(wt.HANDLE(handle))
         kernel32.CloseHandle(wt.HANDLE(handle))
+        self.watch(env)
         hwnd = wait_window(self.proc.pid, 'LisiereOnboarding')
         if not check(hwnd is not None, '%s: the onboarding window opens with --onboarding' % self.name):
             return False

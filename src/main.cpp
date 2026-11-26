@@ -27,6 +27,7 @@
 #include "native-ui.h"
 #include "frame-clock.h"
 #include "download-panel.h"
+#include "kept-downloads.h"   // « Conserver »: our own names for kept bytes, and what a killed browser left of them
 #include "history-panel.h"
 #include "settings.h"
 #include "address.h"
@@ -329,7 +330,8 @@ void SetUpdateToastTop(float dip); float UpdateToastHeight(); // the bookmarks b
 void SyncUpdateToastMotion();
 constexpr int CheckUpdatesCommand=3020;
 bool SideFocusWanted();void SideFocusReset();void SideFocusEvaluate();void SideRevealChanged();void SideSlideFrame();void SidePictureHide();void SideFocusForAddress();void SideFocusCommand(int cmd);bool SideFocusEscape();
-void InvalidateChrome(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */if(chrome.floating){InvalidateFocusPanel();return;}RECT r;GetClientRect(window,&r);if(!chrome.sidebar)r.bottom=std::min(r.bottom,(LONG)S(chrome.ContentTop()));InvalidateRect(window,&r,FALSE);}
+void ChromeTipMenuSync();   // #143 (src/elements-integration.h): a button's tooltip never over the menu it opened
+void InvalidateChrome(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */ChromeTipMenuSync();if(chrome.floating){InvalidateFocusPanel();return;}RECT r;GetClientRect(window,&r);if(!chrome.sidebar)r.bottom=std::min(r.bottom,(LONG)S(chrome.ContentTop()));InvalidateRect(window,&r,FALSE);}
 // Frame wakes are display-paced by FrameClock (one outstanding notification, worker
 // dormant when idle). Deadline-only dwells keep a single one-shot SetTimer. If the
 // clock is unavailable the legacy SetTimer path remains (not display synchronised).
@@ -438,7 +440,8 @@ void SyncAddressDisplay(){auto t=Active();chrome.address=t&&!t->home?AddressBar:
 // without index reuse transferring one tab's visual state to its neighbour.
 void SyncTabKeys(){chrome.tabKeys.clear();for(auto& t:pages)chrome.tabKeys.push_back(t->serial);}
 void SyncVaultKey(); void FormsSync(); void FormsHideAll();
-void BuildChrome(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */FormsSync(); /* #121: the list and the bubble belong to one tab, document and place (P8) */chrome.privateChip=false; /* user polish: the incognito control in the profile slot replaces the « Privée » chip (privacy stays in its name, tooltip and title) */SyncVaultKey(); /* decision 7: the chip is the private indication; P stays a normal command */SyncAddressDisplay();SyncBookmarkChrome();SyncTabKeys();auto titles=Titles();auto now=NativeChrome::Motion::Now();chrome.contentOnly=InFullscreen(); /* fullscreen: the page alone */SidebarPrepare();chrome.Build((int)pages.size(),current,&titles,now);SyncSplitDecor();if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(now);}}
+void SyncDrawerSide();void DrawerOpening();void CloseDockedDrawers();   // #143: the drawers on the tab panel's side (below, after the side Focus)
+void BuildChrome(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */FormsSync(); /* #121: the list and the bubble belong to one tab, document and place (P8) */chrome.privateChip=false; /* user polish: the incognito control in the profile slot replaces the « Privée » chip (privacy stays in its name, tooltip and title) */SyncVaultKey(); /* decision 7: the chip is the private indication; P stays a normal command */SyncAddressDisplay();SyncBookmarkChrome();SyncTabKeys();auto titles=Titles();auto now=NativeChrome::Motion::Now();chrome.contentOnly=InFullscreen(); /* fullscreen: the page alone */SidebarPrepare();chrome.Build((int)pages.size(),current,&titles,now);SyncSplitDecor();SyncDrawerSide();if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(now);}}
 // After a pointer close the strip keeps its tab width until the pointer leaves
 // it, so repeated clicks keep landing on close buttons.
 void LockTabWidth(){chrome.lockedTab=chrome.strip.tab;}
@@ -577,7 +580,7 @@ SV::Box ContentBox(){namespace View=NativeChrome::Design::Viewport;
     // page keeps its size and only moves (no relayout per frame), as in the normal chrome.
     if(chrome.floating&&!InFullscreen()){auto f=FM::Content(chrome.ClientWidth(),chrome.height,FM::ChatReserve(ChatInsetDip()),chrome.annotationBand);if(AnnotationBandSliding())f.bottom+=f.top-FM::pageInset;return {f.left,f.top,f.right,f.bottom};}
     auto c=SV::Content(chrome.width,chrome.height);c.top=chrome.ContentTop();const float inset=NativeChrome::Sidebar::Zone::inset; /* #127 (Val): 4 DIP around the page in both layouts */c.left=chrome.sidebar?chrome.SidebarZoneLeft():inset;c.right=std::max(c.left,chrome.width-inset-ChatInsetDip());   /* #127 panel layouts: ChatInsetDip includes the 4 DIP gap to the chat card */
-    if(const float drawer=DrawerReserveDip();drawer>0)c.right=std::max(c.left,std::min(c.right,chrome.width-drawer-inset)); /* #127 (Val, B): an open drawer: the page stops 4 DIP before it, its right corners rounded */ /* the chat panel sits at the right of the page area: the page shrinks, it is never covered */c.bottom=chrome.height-inset;if(AnnotationBandSliding())c.bottom+=chrome.annotationBand; /* R25: while the annotation band slides, the page keeps its size and only moves (its bottom goes past the window, unseen): no relayout per frame */if(InFullscreen()){c={0,0,chrome.width,chrome.height};}c.bottom=std::max(c.top,c.bottom);return c;}
+    if(const float drawer=DrawerReserveDip();drawer>0){if(chrome.sidebar)c.left=std::min(c.right,std::max(c.left,chrome.side.drawerDock+drawer+inset));else c.right=std::max(c.left,std::min(c.right,chrome.width-drawer-inset));} /* #127 (Val, B): an open drawer: the page stops 4 DIP before it, its right corners rounded; #143: in the side panel's layouts it docks against the panel, the page starts 4 DIP after it */ /* the chat panel sits at the right of the page area: the page shrinks, it is never covered */c.bottom=chrome.height-inset;if(AnnotationBandSliding())c.bottom+=chrome.annotationBand; /* R25: while the annotation band slides, the page keeps its size and only moves (its bottom goes past the window, unseen): no relayout per frame */if(InFullscreen()){c={0,0,chrome.width,chrome.height};}c.bottom=std::max(c.top,c.bottom);return c;}
 struct SplitView{int group=0,active=-1;float min=SV::minWidthCss;std::vector<std::shared_ptr<Tab>> members;std::vector<float> weights;SV::Arrangement a;};
 SplitView CurrentSplit(){
     // A page element in fullscreen (video, game…) is presented alone at the whole ContentBox: the other panels,
@@ -645,6 +648,14 @@ void KeepChatAbovePages(){
     if(!chat||GetParent(chat)!=window||!(GetWindowLongW(chat,GWL_STYLE)&WS_VISIBLE)||!ChatOverlaysPage())return;
     SetWindowPos(chat,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER);ChatCornersOnTop();
 }
+// Fullscreen switch trace (user report 25/11, « the window jumps several times »): for 2 s after the window enters or
+// leaves fullscreen (ApplyFullscreen), every window size change (WM_SIZE, with its show state) and every page bounds or
+// visibility change is one log line « FULLSCREEN step +<ms> ms … ». A clean switch is ONE window line and one line per
+// page on screen (tests/fullscreen/fullscreen_jump_test.cpp, tests/e2e/fullscreen_e2e.py).
+ULONGLONG fullscreenTraceAt=0;
+std::wstring RectText(const RECT& r){return std::to_wstring(r.left)+L","+std::to_wstring(r.top)+L" "+std::to_wstring(r.right-r.left)+L"x"+std::to_wstring(r.bottom-r.top);}
+void FullscreenTraceBegin(bool on){fullscreenTraceAt=GetTickCount64();RECT r{};if(window)GetWindowRect(window,&r);Log(std::wstring(L"FULLSCREEN switch ")+(on?L"in":L"out")+L" from window "+RectText(r)+(window&&IsZoomed(window)?L" maximized":L" normal"));}
+void FullscreenStep(const std::wstring& what){if(!fullscreenTraceAt)return;const ULONGLONG ms=GetTickCount64()-fullscreenTraceAt;if(ms>2000){fullscreenTraceAt=0;return;}Log(L"FULLSCREEN step +"+std::to_wstring(ms)+L" ms "+what);}
 void ApplyPages(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
     if(!window||halted)return;
     DissolveSmallGroups();if(!ResizePreviewValid())ClearResizePreview();auto v=CurrentSplit();auto active=Active();
@@ -656,20 +667,33 @@ void ApplyPages(){if(WorkspaceParked())return; /* a hidden profile's event: the 
     // old and new rectangles of each moving page (pages are composited above it; a
     // resized page repaints in full anyway).
     HDC under=nullptr;
-    for(auto& t:pages){
+    // Every page's place first. A page leaving the screen is hidden BEFORE it is resized; and when a page takes the
+    // fullscreen, the split panels it sets aside are hidden before it grows (fullscreen trace, 25/11: a panel was
+    // stretched to the whole monitor while still shown, then stayed shown beside the page that had already grown).
+    // Other changes (a tab switch) keep the tabs' order.
+    struct Place{bool show=false;RECT bounds{};};std::vector<Place> places(pages.size());
+    for(size_t i=0;i<pages.size();++i){auto& t=pages[i];
         bool show=false;RECT bounds=full;
         if(v.group&&t->group==v.group){const int m=(int)(std::find(v.members.begin(),v.members.end(),t)-v.members.begin());const int s=v.a.SlotOf(m);if(s>=0&&!v.a.slots[s].rail){show=true;bounds=PixelRect(v.a.slots[s].box);}}
         else show=t==active&&PageShown(*t); // a home tab shows only when it carries the frequent sites
         show=show&&t->revealed;
         if(!show&&t->shown)t->hiddenAt=now;
         if(show&&t->sleeping){t->sleeping=false;Com<ICoreWebView2_3> v3;if(t->view.p&&SUCCEEDED(t->view->QueryInterface(IID_ICoreWebView2_3,(void**)&v3.p))&&v3.p)v3->Resume();}
-        t->shown=show;
+        t->shown=show;places[i]={show,bounds};
+    }
+    const bool fullscreenFirst=PageFullscreenActive();
+    for(size_t i=0;i<pages.size();++i){auto& t=pages[i];const bool show=places[i].show;const RECT bounds=places[i].bounds;
+        if(t->controller.p&&!halted){
+            if(!show&&t->placedVisible==1&&(fullscreenFirst||(!t->frozen&&!EqualRect(&bounds,&t->placed)))){if(!Check(t->controller->put_IsVisible(FALSE),L"put_IsVisible")){if(under)ReleaseDC(window,under);return;}t->placedVisible=0;FullscreenStep(L"page "+std::to_wstring(t->serial)+L" hidden");} /* i18n-exempt: fullscreen log trace */
+        }
+    }
+    for(size_t i=0;i<pages.size();++i){auto& t=pages[i];const bool show=places[i].show;const RECT bounds=places[i].bounds;
         if(t->controller.p&&!halted){
             if(!t->frozen&&!EqualRect(&bounds,&t->placed)){
                 if(!under)under=GetDCEx(window,nullptr,DCX_CACHE|DCX_CLIPSIBLINGS);
                 if(under){RECT both;UnionRect(&both,&bounds,IsRectEmpty(&t->placed)?&bounds:&t->placed);FillRect(under,&both,paper);}
-                if(!Check(t->controller->put_Bounds(bounds),L"put_Bounds")){if(under)ReleaseDC(window,under);return;}t->placed=bounds;}
-            if(t->placedVisible!=(int)show){if(!Check(t->controller->put_IsVisible(show),L"put_IsVisible"))return;t->placedVisible=show;}
+                if(!Check(t->controller->put_Bounds(bounds),L"put_Bounds")){if(under)ReleaseDC(window,under);return;}t->placed=bounds;FullscreenStep(L"page "+std::to_wstring(t->serial)+L" "+RectText(bounds)+(show?L"":L" (hidden)"));} /* i18n-exempt: fullscreen log trace */
+            if(t->placedVisible!=(int)show){if(!Check(t->controller->put_IsVisible(show),L"put_IsVisible"))return;t->placedVisible=show;FullscreenStep(L"page "+std::to_wstring(t->serial)+(show?L" shown":L" hidden"));} /* i18n-exempt: fullscreen log trace */
         }
     }
     if(under)ReleaseDC(window,under);
@@ -1566,13 +1590,14 @@ DL::Item* FindDownload(int id);
 // (a tab opened only for its download closes at once): the engine stops raising the operation's events when its
 // WebView closes, so the closed tab's hidden controller lives until its last download ends (released with the entry).
 // fullAt: when every byte was in (GetTickCount64, 0 = not yet): past DL::Engine::HoldGraceMs still in progress, the
-// engine holds the file for the user's decision. keeping/keepLink: « Conserver » in progress (KeepHeldDownload).
-struct DownloadOperation { Com<ICoreWebView2DownloadOperation> op; bool userPaused=false; Workspace* owner=nullptr; unsigned tab=0; std::shared_ptr<Com<ICoreWebView2Controller>> view; ULONGLONG fullAt=0; bool keeping=false; std::wstring keepLink; };
+// engine holds the file for the user's decision (« Conserver »: keepJobs).
+struct DownloadOperation { Com<ICoreWebView2DownloadOperation> op; bool userPaused=false; Workspace* owner=nullptr; unsigned tab=0; std::shared_ptr<Com<ICoreWebView2Controller>> view; ULONGLONG fullAt=0; };
 static_assert(DL::Engine::InProgress==COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS&&DL::Engine::Interrupted==COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED&&DL::Engine::Completed==COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED,"engine download states");
-static_assert(DL::Engine::ReasonUserCanceled==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED&&DL::Engine::ReasonUserPaused==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_PAUSED,"engine interrupt reasons");
+static_assert(DL::Engine::ReasonUserCanceled==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED&&DL::Engine::ReasonUserShutdown==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_SHUTDOWN&&DL::Engine::ReasonUserPaused==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_PAUSED,"engine interrupt reasons");
 std::map<int,std::shared_ptr<DownloadOperation>> downloadOps;
 // Drops the operations of `owner` (the workspace in the globals by default) whose row is gone from its downloads.
-void PruneDownloadOps(Workspace* owner=WorkspaceNow()){for(auto it=downloadOps.begin();it!=downloadOps.end();)it=it->second->owner==owner&&!FindDownload(it->first)?downloadOps.erase(it):std::next(it);}
+bool KeepWaitingForEngine(int id);   // « Conserver » waiting for the engine's own pass: its operation is kept, row or not
+void PruneDownloadOps(Workspace* owner=WorkspaceNow()){for(auto it=downloadOps.begin();it!=downloadOps.end();)it=it->second->owner==owner&&!FindDownload(it->first)&&!KeepWaitingForEngine(it->first)?downloadOps.erase(it):std::next(it);}
 // Drops every operation of a workspace leaving this window (its engine is closed with it).
 void DropDownloadOps(Workspace* owner){for(auto it=downloadOps.begin();it!=downloadOps.end();)it=it->second->owner==owner?downloadOps.erase(it):std::next(it);}
 bool downloadDismissClick=false;
@@ -1634,7 +1659,7 @@ std::wstring InterruptText(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON r){
     return DL::ReasonCode(I18n::Id::download_error_file);
 }
 void ShowDownloadDrawer();void SyncLatch();
-void DeferAfter(UINT ms,std::function<void()> job);void ShowDownloads();void FinishKeep(int id,int attempt);
+void DeferAfter(UINT ms,std::function<void()> job);void ShowDownloads();bool KeepWaitingForEngine(int id);
 // Toolbar icon: a run lasts while any download is active; its progress counts
 // every download of the run (completed ones included) so it never goes back.
 std::set<int> downloadIconRun;
@@ -1691,14 +1716,13 @@ void DownloadsChanged(){if(WorkspaceParked())return; /* a hidden profile's event
 void SyncDownload(int id){
     auto found=downloadOps.find(id);auto* item=FindDownload(id);if(found==downloadOps.end()||!item)return;
     auto entry=found->second;auto* op=entry->op.p;if(!op)return;
+    if(KeepWaitingForEngine(id))return;   // « Conserver »: the row shows the kept file while the engine ends its pass (WaitEnginePass)
     INT64 total=0,received=0;op->get_TotalBytesToReceive(&total);op->get_BytesReceived(&received);item->total=total;item->received=received;
     LPWSTR text=nullptr;if(SUCCEEDED(op->get_ResultFilePath(&text))&&text){if(*text)item->path=text;CoTaskMemFree(text);}
     text=nullptr;item->endTime=0;if(SUCCEEDED(op->get_EstimatedEndTime(&text))&&text){item->endTime=DL::ParseIsoTime(text);CoTaskMemFree(text);}
     BOOL resume=FALSE;op->get_CanResume(&resume);item->canResume=resume!=FALSE;
     COREWEBVIEW2_DOWNLOAD_STATE state=COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS;op->get_State(&state);
     COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE;if(state==COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED)op->get_InterruptReason(&reason);
-    // « Conserver »: the engine let go of the file (our cancel); the kept copy takes its place.
-    if(entry->keeping){if(state!=COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS)FinishKeep(id,0);return;}
     const auto before=item->state;const bool heldBefore=item->held;
     item->state=DL::MapEngineState(state,reason,entry->userPaused);
     if(item->state==DL::State::Completed)item->missing=false;
@@ -1736,59 +1760,236 @@ void SyncDownload(int id){
     }
 }
 // ---- A download held for the user's decision (B07b « À confirmer ») --------------------------------------
-// WebView2 has no API to accept a file its SmartScreen check holds (no danger type, no « keep »): its own flyout is
-// the only way, and this browser replaces it. The held file is complete at its final path, so « Conserver » keeps a
-// second link to it, lets the engine go (Cancel: it deletes its file), puts the kept link back at the same path, and
-// then hands the file to Windows' attachment services like any finished download (Mark of the Web, antivirus
-// scan): SmartScreen still checks it when it is opened. « Supprimer » cancels: the engine deletes the file.
-std::wstring KeepLinkPath(const std::wstring& path,int id){return path+L".keep-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(id);}
-void KeepHeldDownload(int id){
-    auto* item=FindDownload(id);auto found=downloadOps.find(id);if(!item||found==downloadOps.end()||!item->held||found->second->keeping)return;
-    auto entry=found->second;auto* op=entry->op.p;if(!op)return;
-    const auto link=KeepLinkPath(item->path,id);DeleteFileW(link.c_str());
-    if(!CreateHardLinkW(link.c_str(),item->path.c_str(),nullptr)&&!CopyFileW(item->path.c_str(),link.c_str(),TRUE)){Log(L"DOWNLOAD keep: the held file could not be kept ("+std::to_wstring(GetLastError())+L")");return;}
-    SetFileAttributesW(link.c_str(),FILE_ATTRIBUTE_HIDDEN);
-    entry->keeping=true;entry->keepLink=link;
-    Log(L"DOWNLOAD keep requested: "+DL::FileName(item->path));
-    if(FAILED(op->Cancel())){entry->keeping=false;entry->keepLink.clear();DeleteFileW(link.c_str());Log(L"DOWNLOAD keep: the engine refused to let go");return;}
-    SyncDownload(id);
+// WebView2 has no API to accept a file its SmartScreen check (or its insecure-download check) holds: no danger type,
+// no « keep », up to SDK 1.0.4392 / runtime 159. Its own flyout is the only way, and this browser replaces it. The held
+// file is complete at its final path. Measured (WebView2 158, tests/downloads/download_engine_probe.py --observe):
+// after a cancel the engine removes its file by name when its own pass on the file ends (the pass that writes the zone
+// mark: attachment services, antivirus): at once when that pass was over, seconds later when it still ran (up to 9.3 s
+// seen), and a removal left pending completes when another name of the file is dropped. Measured too (instrumented
+// build): our own IAttachmentExecute::Save() on the kept file can fail at once and remove it (E_INVALIDARG). So
+// « Conserver »:
+//   1. gives the bytes a name of our own at once (KeepJob::backup, in the profile's data folder: a hard link, else a
+//      copy; never beside the download, never hidden), and the row is a finished download at once;
+//   2. lets the engine go (Cancel) only once its pass is over (the held file carries its zone mark), or after
+//      DL::Keep::PassCapMs; should the engine end the download by itself meanwhile, that outcome stands (finished, or
+//      blocked: our name goes);
+//   3. then watches the path: no short limit before the engine's removal is seen; each removal is undone from our name;
+//      our name stays for a long guard after the last one (DL::Keep::GuardMs), and is dropped only with the file at its
+//      path proven ours;
+//   4. a file the engine marked needs no second pass; one without the mark gets Windows' attachment services pass with
+//      our name still alive: a removal by that pass without a virus verdict is undone (SettleKept);
+//   5. at exit before the end: the kept file takes a name the engine never knew (« name (1).exe »).
+// SmartScreen still checks the file when it is opened. A keep that cannot be made (no hard link, no copy) ends as
+// « Échec · Erreur de fichier » with « Retirer ».
+std::wstring UniqueDownloadPath(const std::wstring& folder,const std::wstring& suggested);
+// One « Conserver » until our own name is gone. copying: our name is a copy being made (0 running, 1 made, else
+// 0x10000 + the error); cancelled: the engine was let go (cancelAt); marked: its zone mark was there then; seen: a
+// removal by the engine seen since (guard counted from givenAt); settling: the final pass (at, saveDone / saveResult);
+// insecure: an insecure-download hold (DL::Keep::InsecureSource): no pass of the engine runs on it, nothing to wait for.
+struct KeepJob{std::wstring path,backup,uri,at;bool cancelled=false,marked=false,seen=false,settling=false,insecure=false;int looks=0;ULONGLONG keptAt=0,cancelAt=0,givenAt=0;
+    std::shared_ptr<std::atomic<long>> copying;std::shared_ptr<std::atomic<int>> saveDone;std::shared_ptr<std::atomic<long>> saveResult;};
+std::map<int,KeepJob> keepJobs;
+bool KeepWaitingForEngine(int id){auto k=keepJobs.find(id);return k!=keepJobs.end()&&!k->second.cancelled;}
+// Test hooks, never in a --channel release build: BROWSER_TEST_KEEP_CAP_MS / BROWSER_TEST_KEEP_GUARD_MS replace the cap
+// and the guard; BROWSER_TEST_KEEP_SAVE=remove makes the attachment services pass remove the kept file and fail with
+// E_INVALIDARG (what was measured once), and runs that pass even on a file the engine marked.
+#ifndef BROWSER_CHANNEL_RELEASE
+std::int64_t KeepTestMs(const wchar_t* name,std::int64_t fallback){wchar_t v[32]{};if(GetEnvironmentVariableW(name,v,32)&&*v)return _wtoi64(v);return fallback;}
+bool KeepTestSaveRemoves(){wchar_t v[16]{};return GetEnvironmentVariableW(L"BROWSER_TEST_KEEP_SAVE",v,16)&&std::wstring(v)==L"remove";}
+#else
+#define KeepTestMs(name,fallback) (fallback)   /* the hooks' names are not even in a release binary */
+inline bool KeepTestSaveRemoves(){return false;}
+#endif
+// What is at a kept file's path (DL::Keep::At): a name whose removal is pending is still listed but cannot be opened.
+DL::Keep::At KeepPathState(const std::wstring& path){
+    const bool read=GetFileAttributesW(path.c_str())!=INVALID_FILE_ATTRIBUTES;const DWORD error=read?0:GetLastError();bool opens=false;
+    if(read){HANDLE h=CreateFileW(path.c_str(),FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,0,nullptr);opens=h!=INVALID_HANDLE_VALUE;if(opens)CloseHandle(h);}
+    return DL::Keep::PathState(read,error,opens);
+}
+bool HasZoneMark(const std::wstring& path){return GetFileAttributesW((path+L":Zone.Identifier").c_str())!=INVALID_FILE_ATTRIBUTES;}
+// The kept bytes at `path` again, as one more name of our own file (a copy where the folders are on two volumes).
+bool PutKeptFileBack(const std::wstring& backup,const std::wstring& path){return CreateHardLinkW(path.c_str(),backup.c_str(),nullptr)||CopyFileW(backup.c_str(),path.c_str(),TRUE);}
+// The file at `path` holds our bytes: the same file as our name (a hard link), or a file of the same size (a copy).
+bool KeptFileIsOurs(const std::wstring& path,const std::wstring& backup){
+    auto info=[](const std::wstring& p,BY_HANDLE_FILE_INFORMATION& i){HANDLE h=CreateFileW(p.c_str(),FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,0,nullptr);
+        if(h==INVALID_HANDLE_VALUE)return false;const bool ok=GetFileInformationByHandle(h,&i)!=FALSE;CloseHandle(h);return ok;};
+    BY_HANDLE_FILE_INFORMATION a{},b{};if(!info(path,a)||!info(backup,b))return false;
+    const bool same=a.dwVolumeSerialNumber==b.dwVolumeSerialNumber&&a.nFileIndexHigh==b.nFileIndexHigh&&a.nFileIndexLow==b.nFileIndexLow;
+    return same||(a.nFileSizeHigh==b.nFileSizeHigh&&a.nFileSizeLow==b.nFileSizeLow&&(a.nFileSizeHigh||a.nFileSizeLow));
+}
+// The kept bytes under the next free name beside the download (« name (1).exe »), a name the engine never knew; our own
+// name stays. Empty: failed.
+std::wstring KeepAnotherName(const std::wstring& path,const std::wstring& backup){
+    const auto slash=path.find_last_of(L"\\/");if(slash==std::wstring::npos)return L"";
+    const auto target=UniqueDownloadPath(path.substr(0,slash),path);
+    if(!PutKeptFileBack(backup,target))return L"";
+    Log(L"DOWNLOAD kept under a name the engine never knew: "+DL::FileName(target));return target;
+}
+// Our own name for the kept bytes: the profile's data folder, where nobody looks.
+std::wstring KeepBackupPath(int id,const std::wstring& path){
+    const auto folder=dataDir+L"\\kept-downloads";CreateDirectoryW(folder.c_str(),nullptr);
+    return folder+L"\\"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(id)+L"-"+DL::FileName(path);
+}
+// The row after a keep that could not be made (logged by the caller): « Échec · Erreur de fichier », with « Retirer ».
+void KeepFailed(DL::Item* item){
+    item->held=false;item->endTime=0;item->state=DL::State::Failed;item->canResume=false;item->reason=DL::ReasonCode(I18n::Id::download_error_file);
+    SaveDownloads();DownloadsChanged();UpdateDownloadIcon(false);
 }
 // Windows attachment services on a kept file (what the engine does for every finished download): zone mark and
 // antivirus scan, off the UI thread. done: 1 saved, 2 refused (the file may be gone).
 void QuarantineKeptFile(const std::wstring& path,const std::wstring& uri,std::shared_ptr<std::atomic<int>> done,std::shared_ptr<std::atomic<long>> result){
-    std::thread([path,uri,done,result]{
+    const bool removes=KeepTestSaveRemoves();
+    std::thread([path,uri,done,result,removes]{
         const HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);HRESULT hr=E_FAIL;IAttachmentExecute* ae=nullptr;
         if(SUCCEEDED(CoCreateInstance(CLSID_AttachmentServices,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&ae)))&&ae){
             static const GUID client={0x6d3f1c52,0x0b2e,0x4d0c,{0x9a,0x41,0x52,0x7e,0x2b,0x11,0x84,0x3a}};   // this browser's downloads
             ae->SetClientGuid(client);ae->SetLocalPath(path.c_str());if(!uri.empty())ae->SetSource(uri.c_str());hr=ae->Save();ae->Release();}
+        if(removes){DeleteFileW(path.c_str());hr=E_INVALIDARG;}   // test hook (see KeepTestSaveRemoves)
         if(SUCCEEDED(init))CoUninitialize();
         result->store((long)hr);done->store(SUCCEEDED(hr)?1:2);
     }).detach();
 }
-void KeptFileChecked(int id,std::shared_ptr<std::atomic<int>> done,std::shared_ptr<std::atomic<long>> result,int attempt){
-    if(halted)return;const int r=done->load();
-    if(!r&&attempt<600){DeferAfter(100,[id,done,result,attempt]{KeptFileChecked(id,done,result,attempt+1);});return;}
-    auto* item=FindDownload(id);if(!item)return;
-    const bool there=GetFileAttributesW(item->path.c_str())!=INVALID_FILE_ATTRIBUTES;
-    if(r!=1)Log(L"DOWNLOAD kept file: attachment services refused it hr="+std::to_wstring((unsigned long)result->load())+std::wstring(there?L" (file kept)":L" (file removed)"));
-    else Log(L"DOWNLOAD kept file handed to attachment services");
-    if(!there){item->state=DL::State::Failed;item->canResume=false;item->reason=DL::ReasonCode(I18n::Id::download_blocked_dangerous);SaveDownloads();DownloadsChanged();UpdateDownloadIcon(false);}
+bool VirusVerdict(long hr){return hr==(long)HRESULT_FROM_WIN32(ERROR_VIRUS_INFECTED)||hr==(long)HRESULT_FROM_WIN32(ERROR_VIRUS_DELETED);}
+// The end of the attachment services pass on `at` (our own name still alive): a virus verdict stands (the row says it);
+// any other removal is undone from our name. Then our name goes. waitMs: at exit, how long the pass may still take.
+void KeepSettled(int id,KeepJob& k){
+    const int r=k.saveDone?k.saveDone->load():1;const long hr=k.saveResult?k.saveResult->load():0;const bool there=GetFileAttributesW(k.at.c_str())!=INVALID_FILE_ATTRIBUTES;
+    if(!r){Log(L"DOWNLOAD keep at exit: attachment services still run, the kept file also stays in the profile's folder "+k.backup);return;}   // never dropped while that pass may remove it
+    if(k.saveDone&&r==1)Log(L"DOWNLOAD kept file handed to attachment services");
+    else if(k.saveDone)Log(L"DOWNLOAD kept file: attachment services refused it hr="+std::to_wstring((unsigned long)hr)+std::wstring(there?L" (file kept)":L" (file removed)"));
+    auto* item=FindDownload(id);
+    if(!there&&r!=1&&VirusVerdict(hr)){
+        if(item){item->state=DL::State::Failed;item->canResume=false;item->reason=DL::ReasonCode(I18n::Id::download_blocked_dangerous);SaveDownloads();DownloadsChanged();UpdateDownloadIcon(false);}
+    }else if(!there){
+        const bool back=PutKeptFileBack(k.backup,k.at);
+        Log(back?L"DOWNLOAD kept file given back: attachment services removed it without a verdict":L"DOWNLOAD keep failed: attachment services removed the file and it could not be given back");
+        if(!back){if(item)KeepFailed(item);Log(L"DOWNLOAD the kept file stays in the profile's folder "+k.backup);return;}   // the bytes are never dropped
+    }
+    KeptDownloads::Drop(k.backup);
 }
-// The engine let go of the held file: the kept link goes back to its path once the engine's file is gone.
-void FinishKeep(int id,int attempt){
-    auto found=downloadOps.find(id);auto* item=FindDownload(id);if(found==downloadOps.end()||!item||!found->second->keeping)return;
-    auto entry=found->second;const auto path=item->path,link=entry->keepLink;
-    if(GetFileAttributesW(path.c_str())!=INVALID_FILE_ATTRIBUTES&&attempt<30){DeferAfter(100,[id,attempt]{if(!halted)FinishKeep(id,attempt+1);});return;}
-    bool kept=false;
-    if(GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES)kept=MoveFileExW(link.c_str(),path.c_str(),MOVEFILE_COPY_ALLOWED)!=FALSE;
-    else{kept=true;DeleteFileW(link.c_str());}   // the engine left its file: it is the same file
-    if(kept)SetFileAttributesW(path.c_str(),FILE_ATTRIBUTE_NORMAL);
-    downloadOps.erase(found);
-    item->held=false;item->endTime=0;
-    if(kept){item->state=DL::State::Completed;item->missing=false;if(item->total>0)item->received=item->total;Log(L"DOWNLOAD kept by the user: "+DL::FileName(path));}
-    else{item->state=DL::State::Failed;item->canResume=false;item->reason=DL::ReasonCode(I18n::Id::download_error_file);DeleteFileW(link.c_str());Log(L"DOWNLOAD keep failed: the kept file could not be put back ("+std::to_wstring(GetLastError())+L")");}
-    SaveDownloads();DownloadsChanged();UpdateDownloadIcon(kept);
-    if(kept){auto done=std::make_shared<std::atomic<int>>(0);auto result=std::make_shared<std::atomic<long>>(0);QuarantineKeptFile(path,item->uri,done,result);KeptFileChecked(id,done,result,0);}
+void KeepSaveChecked(int id){
+    auto job=keepJobs.find(id);if(halted||job==keepJobs.end())return;   // KeepsAtExit ends a pass still running
+    if(!job->second.saveDone->load()){DeferAfter(DL::Keep::StepMs,[id]{KeepSaveChecked(id);});return;}
+    KeepSettled(id,job->second);keepJobs.erase(job);
+}
+// The file is at its final name `at`, our own name still holds the bytes: step 4.
+void SettleKept(int id,KeepJob& k,const std::wstring& at){
+    k.settling=true;k.at=at;
+    if(HasZoneMark(at)&&!KeepTestSaveRemoves()){Log(L"DOWNLOAD kept file marked and checked by the engine's own pass: no second pass");KeptDownloads::Drop(k.backup);keepJobs.erase(id);return;}
+    k.saveDone=std::make_shared<std::atomic<int>>(0);k.saveResult=std::make_shared<std::atomic<long>>(0);QuarantineKeptFile(at,k.uri,k.saveDone,k.saveResult);
+    KeepSaveChecked(id);
+}
+// Step 3: the engine was let go. Each removal of the path is undone from our name; once the guard is over with the file
+// at its path, step 4. No short limit before the first removal.
+void WatchKept(int id){
+    auto job=keepJobs.find(id);if(halted||job==keepJobs.end()||job->second.settling)return;
+    auto& k=job->second;const ULONGLONG now=GetTickCount64();
+    auto at=KeepPathState(k.path);
+    if(at==DL::Keep::At::Left&&DL::Keep::EngineStub(KeptDownloads::SizeOf(k.path),KeptDownloads::SizeOf(k.backup))&&!KeptDownloads::SameFileId(k.path,k.backup)&&DeleteFileW(k.path.c_str())){
+        Log(L"DOWNLOAD keep: the engine left an empty file at the path (a cancel during its pass), the kept file takes its place");at=DL::Keep::At::Gone;}
+    switch(DL::Keep::Look(k.seen,at,k.seen?(std::int64_t)(now-k.givenAt):0,KeepTestMs(L"BROWSER_TEST_KEEP_GUARD_MS",DL::Keep::GuardMs(k.marked)))){
+    case DL::Keep::Next::Wait:if(!k.looks)Log(L"DOWNLOAD keep: the engine's own file is still there, our name holds the bytes until it goes");break;
+    case DL::Keep::Next::GiveBack:
+        Log(std::wstring(PutKeptFileBack(k.backup,k.path)?L"DOWNLOAD kept file given back at its path":L"DOWNLOAD kept file not given back yet")+L": the engine removed it "+std::to_wstring((long long)(now-k.cancelAt))+L" ms after the cancel"+(k.seen?L" (once more)":L""));
+        k.seen=true;k.givenAt=now;break;
+    case DL::Keep::Next::Guard:break;
+    case DL::Keep::Next::Settle:{
+        std::wstring at=k.path;
+        if(!KeptFileIsOurs(k.path,k.backup)){   // something else took the path: the kept file takes a name of its own
+            at=KeepAnotherName(k.path,k.backup);
+            if(auto* item=FindDownload(id)){if(at.empty()){Log(L"DOWNLOAD keep failed: the kept file stays in the profile's folder "+k.backup);KeepFailed(item);}else{item->path=at;SaveDownloads();DownloadsChanged();}}
+            if(at.empty()){keepJobs.erase(job);return;}
+        }
+        SettleKept(id,k,at);return;}
+    }
+    ++k.looks;DeferAfter(DL::Keep::LookAfterMs(k.looks),[id]{WatchKept(id);});
+}
+// Step 2: our name holds the bytes; the engine is let go once its own pass is over (or the cap), unless it ends the
+// download by itself.
+void KeepCopied(int id);
+void WaitEnginePass(int id){
+    auto job=keepJobs.find(id);if(halted||job==keepJobs.end()||job->second.cancelled)return;
+    auto& k=job->second;auto found=downloadOps.find(id);
+    if(found==downloadOps.end()||!found->second->op.p){   // the operation went (its profile closed): the path is watched, our name never dropped
+        k.cancelled=true;k.marked=HasZoneMark(k.path);k.cancelAt=GetTickCount64();Log(L"DOWNLOAD keep: the engine's operation went before its pass ended, the path is watched");WatchKept(id);return;}
+    auto entry=found->second;auto* op=entry->op.p;
+    COREWEBVIEW2_DOWNLOAD_STATE state=COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS;op->get_State(&state);
+    COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE;if(state==COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED)op->get_InterruptReason(&reason);
+    const bool marked=HasZoneMark(k.path)||k.insecure;   // measured: an insecure hold never gets the mark, its removal is at once and single
+    const auto step=DL::Keep::BeforeCancel((int)state,(int)reason,marked,(std::int64_t)(GetTickCount64()-k.keptAt),KeepTestMs(L"BROWSER_TEST_KEEP_CAP_MS",DL::Keep::PassCapMs));
+    if(step==DL::Keep::Before::Wait){DeferAfter(DL::Keep::StepMs,[id]{WaitEnginePass(id);});return;}
+    if(step==DL::Keep::Before::Ended){   // the engine ended it by itself: its outcome stands, our name goes
+        Log(L"DOWNLOAD keep: the engine ended the download by itself, state="+std::to_wstring((int)state)+L" reason="+std::to_wstring((int)reason));
+        KeptDownloads::Drop(k.backup);keepJobs.erase(job);SyncDownload(id);return;}
+    k.cancelled=true;k.marked=marked;k.cancelAt=GetTickCount64();downloadOps.erase(found);   // its later events no longer touch the row
+    if(step==DL::Keep::Before::Cancel){
+        Log(std::wstring(L"DOWNLOAD keep: the engine is let go ")+(k.insecure?L"(an insecure-download hold: no pass to wait for) ":marked?L"(its pass on the file is over) ":L"(its pass still runs after the cap) ")+std::to_wstring((long long)(k.cancelAt-k.keptAt))+L" ms after « Conserver »");
+        if(FAILED(op->Cancel()))Log(L"DOWNLOAD keep: the engine's cancel failed; the path is watched anyway");
+    }else Log(L"DOWNLOAD keep: the engine let go by itself, reason="+std::to_wstring((int)reason));
+    WatchKept(id);
+}
+// Step 1: our own name (a hard link, else a copy off the UI thread), the row a finished download at once.
+void KeepHeldDownload(int id){
+    auto* item=FindDownload(id);auto found=downloadOps.find(id);if(!item||found==downloadOps.end()||!item->held||keepJobs.count(id)||!found->second->op.p)return;
+    KeepJob job;job.path=item->path;job.uri=item->uri;job.backup=KeepBackupPath(id,item->path);job.keptAt=GetTickCount64();job.insecure=DL::Keep::InsecureSource(item->uri);KeptDownloads::Drop(job.backup);
+    if(!KeptDownloads::WriteSidecar(job.backup,job.path))Log(L"DOWNLOAD keep: the note of where the file belongs could not be written beside our name");   // read at the next start if the browser is killed meanwhile
+    Log(L"DOWNLOAD keep requested: "+DL::FileName(item->path));
+    const bool linked=CreateHardLinkW(job.backup.c_str(),job.path.c_str(),nullptr)!=FALSE;
+    if(!linked){
+        Log(L"DOWNLOAD keep: no hard link to the held file in the profile's folder ("+std::to_wstring(GetLastError())+L"), a copy is made");
+        job.copying=std::make_shared<std::atomic<long>>(0);
+        std::thread([from=job.path,to=job.backup,copying=job.copying]{copying->store(CopyFileW(from.c_str(),to.c_str(),TRUE)?1L:0x10000L+(long)GetLastError());}).detach();
+    }
+    keepJobs[id]=job;
+    item->held=false;item->endTime=0;item->state=DL::State::Completed;item->missing=false;if(item->total>0)item->received=item->total;
+    Log(L"DOWNLOAD kept by the user: "+DL::FileName(item->path));
+    SaveDownloads();DownloadsChanged();UpdateDownloadIcon(true);
+    if(linked)WaitEnginePass(id);else KeepCopied(id);
+}
+void KeepCopied(int id){
+    auto job=keepJobs.find(id);if(halted||job==keepJobs.end()||!job->second.copying)return;
+    const long r=job->second.copying->load();
+    if(!r){DeferAfter(DL::Keep::StepMs,[id]{KeepCopied(id);});return;}
+    job->second.copying.reset();
+    if(r==1){WaitEnginePass(id);return;}
+    // Nothing can hold the kept bytes: the engine is let go (it removes its file) and the row says so, with « Retirer ».
+    Log(L"DOWNLOAD keep failed: the held file could not be kept ("+std::to_wstring(r-0x10000)+L")");
+    KeptDownloads::Drop(job->second.backup);keepJobs.erase(job);
+    auto found=downloadOps.find(id);if(found!=downloadOps.end()){auto entry=found->second;downloadOps.erase(found);if(entry->op.p)entry->op->Cancel();}
+    if(auto* item=FindDownload(id))KeepFailed(item);
+}
+// The window closes before a keep's end (step 5): a copy being made ends first (bounded); a final pass under way ends
+// (bounded); a file given back after the engine's removal (its pass over, the same file as our name) stays where it is;
+// otherwise the kept file takes a name the engine never knew. Then the attachment services pass when the engine did not
+// mark it, our name alive meanwhile. A kept file is never dropped; a browser killed meanwhile: SweepKeptDownloads.
+void KeepsAtExit(){
+    if(keepJobs.empty())return;
+    for(auto& [id,k]:keepJobs){
+        if(k.copying){for(int i=0;i<600&&!k.copying->load();++i)Sleep(DL::Keep::StepMs);if(k.copying->load()!=1){KeptDownloads::Drop(k.backup);Log(L"DOWNLOAD keep at exit: the copy could not be made");continue;}}
+        if(!k.settling){   // the engine's removal seen and undone, its pass over (one removal, measured): the path is the user's file
+            k.at=k.cancelled&&k.seen&&k.marked&&KeptDownloads::SameFileId(k.path,k.backup)?k.path:KeepAnotherName(k.path,k.backup);
+            if(k.at.empty()){Log(L"DOWNLOAD keep at exit: the kept file stays in the profile's folder "+k.backup);if(auto* item=FindDownload(id))item->state=DL::State::Failed,item->canResume=false,item->reason=DL::ReasonCode(I18n::Id::download_error_file);continue;}
+            if(auto* item=FindDownload(id)){item->path=k.at;item->state=DL::State::Completed;item->missing=false;item->held=false;}
+            if(!HasZoneMark(k.at)||KeepTestSaveRemoves()){k.saveDone=std::make_shared<std::atomic<int>>(0);k.saveResult=std::make_shared<std::atomic<long>>(0);QuarantineKeptFile(k.at,k.uri,k.saveDone,k.saveResult);}
+        }
+        if(k.saveDone)for(int i=0;i<100&&!k.saveDone->load();++i)Sleep(DL::Keep::StepMs);
+        KeepSettled(id,k);
+        Log(L"DOWNLOAD keep settled at exit: "+DL::FileName(k.at));
+    }
+    keepJobs.clear();SaveDownloads();
+}
+// At the start (once per process, this profile's data folder): what a killed browser left in kept-downloads goes back
+// to the user (src/kept-downloads.h). A live window of ours (same executable) keeps its own keep untouched.
+std::wstring EffectiveDownloadFolder();
+void SweepKeptDownloads(){
+    const auto folder=dataDir+L"\\kept-downloads";if(GetFileAttributesW(folder.c_str())==INVALID_FILE_ATTRIBUTES)return;
+    wchar_t own[MAX_PATH]{};GetModuleFileNameW(nullptr,own,MAX_PATH);
+    auto live=[own=std::wstring(own)](unsigned long pid){
+        if(pid==GetCurrentProcessId())return true;
+        HANDLE h=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,pid);if(!h)return GetLastError()==ERROR_ACCESS_DENIED;   // a process we cannot look at: left alone
+        wchar_t image[MAX_PATH]{};DWORD n=MAX_PATH;const bool ok=QueryFullProcessImageNameW(h,0,image,&n)!=FALSE;DWORD code=0;GetExitCodeProcess(h,&code);CloseHandle(h);
+        return ok&&code==STILL_ACTIVE&&_wcsicmp(image,own.c_str())==0;};
+    KeptDownloads::Sweep(folder,EffectiveDownloadFolder(),live,[](const std::wstring& line){Log(line);});
 }
 void RefreshMissing(){for(auto& item:downloads)if(item.state==DL::State::Completed)item.missing=GetFileAttributesW(item.path.c_str())==INVALID_FILE_ATTRIBUTES;}
 void ShowDownloads(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
@@ -1806,6 +2007,7 @@ void ShowDownloads(){if(WorkspaceParked())return; /* a hidden profile's event: t
 // "View all": the popover gives way to the drawer docked on the right.
 void ShowDownloadDrawer(){
     if(!downloadDrawer.Window())return;
+    DrawerOpening();   // #143: the side panel ready (side Focus: the column at rest)
     CloseAudioDrawer();RefreshMissing();settingsDrawer.Hide(false,true);bookmarksDrawer.Hide(false,true);chrome.latched='D';InvalidateChrome();
     // From the popover: its rectangle morphs into the drawer.
     RECT from{};const bool morph=downloadPanel.Visible()&&GetWindowRect(downloadPanel.Window(),&from);
@@ -1883,7 +2085,7 @@ bool KeepControllerForDownloads(const std::shared_ptr<Tab>& t){
     if(!t||!t->controller.p)return false;
     std::shared_ptr<Com<ICoreWebView2Controller>> view;
     auto keep=[&]{if(!view){view=std::make_shared<Com<ICoreWebView2Controller>>();view->set(t->controller.p);}return view;};
-    for(auto& [id,entry]:downloadOps){if(!entry||entry->tab!=t->serial||entry->view)continue;const auto* item=FindDownload(id);if(item&&(item->state==DL::State::InProgress||item->state==DL::State::Paused))entry->view=keep();}
+    for(auto& [id,entry]:downloadOps){if(!entry||entry->tab!=t->serial||entry->view)continue;const auto* item=FindDownload(id);if((item&&(item->state==DL::State::InProgress||item->state==DL::State::Paused))||KeepWaitingForEngine(id))entry->view=keep();}
     for(auto& pending:pendingDownloads)if(pending&&pending->tab==t->serial&&!pending->view)pending->view=keep();
     if(!view)return false;
     t->controller->put_IsVisible(FALSE);Log(L"DOWNLOAD tab closed during its download: its page stays hidden until the download ends");return true;
@@ -1895,6 +2097,7 @@ void TrackDownload(ICoreWebView2DownloadStartingEventArgs* args,unsigned tab,std
     DL::Item item;item.id=nextDownloadId++;item.started=NativeChrome::DownloadsUI::UnixNowMs();const int id=item.id;
     LPWSTR text=nullptr;if(SUCCEEDED(args->get_ResultFilePath(&text))&&text){item.path=text;CoTaskMemFree(text);}
     text=nullptr;if(SUCCEEDED(raw->get_Uri(&text))&&text){item.uri=text;CoTaskMemFree(text);}
+    text=nullptr;if(SUCCEEDED(raw->get_MimeType(&text))&&text){item.mime=DL::CleanMime(text);CoTaskMemFree(text);}   // the row's icon (DL::KindOf)
     if(item.path.empty())item.path=L"download";
     downloads.insert(downloads.begin(),item);downloadOps[id]=entry;
     EventRegistrationToken token{};
@@ -1923,9 +2126,10 @@ void DownloadAction(int id,DL::Action action){
         SyncDownload(id);break;
     case DL::Action::Keep:KeepHeldDownload(id);break;
     // « Supprimer » on a held file: the engine cancels and deletes it; the row leaves the list (like B07's Delete).
-    case DL::Action::Discard:{if(!item->held||(entry&&entry->keeping))break;const auto path=item->path;Log(L"DOWNLOAD held file discarded by the user: "+DL::FileName(path));DownloadAction(id,DL::Action::Remove);
+    case DL::Action::Discard:{if(!item->held)break;const auto path=item->path;
+        Log(L"DOWNLOAD held file discarded by the user: "+DL::FileName(path));DownloadAction(id,DL::Action::Remove);
         DeferAfter(1500,[path]{if(GetFileAttributesW(path.c_str())!=INVALID_FILE_ATTRIBUTES&&!DeleteFileW(path.c_str()))Log(L"DOWNLOAD discarded file could not be removed");});break;}
-    case DL::Action::Remove:{if(op&&(item->state==DL::State::InProgress||item->state==DL::State::Paused))op->Cancel();downloadOps.erase(id);downloads.erase(std::find_if(downloads.begin(),downloads.end(),[id](const DL::Item& d){return d.id==id;}));SaveDownloads();DownloadsChanged();UpdateDownloadIcon(false);break;}
+    case DL::Action::Remove:{if(!KeepWaitingForEngine(id)){if(op&&(item->state==DL::State::InProgress||item->state==DL::State::Paused))op->Cancel();downloadOps.erase(id);}   /* a keep goes on without its row */downloads.erase(std::find_if(downloads.begin(),downloads.end(),[id](const DL::Item& d){return d.id==id;}));SaveDownloads();DownloadsChanged();UpdateDownloadIcon(false);break;}
     case DL::Action::ShowInFolder:{const auto path=item->path;CloseDownloadSurfaces();
         PIDLIST_ABSOLUTE pidl=ILCreateFromPathW(path.c_str());HRESULT hr=pidl?SHOpenFolderAndSelectItems(pidl,0,nullptr,0):E_FAIL;if(pidl)ILFree(pidl);
         if(FAILED(hr))Log(L"DOWNLOAD show in folder failed "+path);break;}
@@ -2640,6 +2844,7 @@ void SyncLatch(){chrome.latched=audioPanel.Visible()?'V':settingsDrawer.Open()?'
 void ShowSettings(){
     if(!settingsDrawer.Window())return;
     FocusAnchor(L"settings"); // Mode Focus: the panel at rest above the drawer
+    DrawerOpening();   // #143: the side panel ready (side Focus: the column at rest)
     CloseAudioDrawer();CloseDownloadSurfaces();historyDrawer.Hide(false,true);bookmarksDrawer.Hide(false,true);chrome.latched='S';InvalidateChrome();
     settingsDrawer.Show();SyncUpdateToastReserve();
 }
@@ -2647,6 +2852,7 @@ void ToggleSettings(){if(settingsDrawer.Open()){settingsDrawer.Hide(true,true);r
 // #121: « Gérer la saisie automatique » opens Réglages on its section.
 void ShowSettingsAt(NativeChrome::SettingsUI::View v){
     if(!settingsDrawer.Window())return;
+    DrawerOpening();   // #143: the side panel ready (side Focus: the column at rest)
     CloseAudioDrawer();CloseDownloadSurfaces();historyDrawer.Hide(false,true);bookmarksDrawer.Hide(false,true);chrome.latched='S';InvalidateChrome();
     settingsDrawer.Show(v);SyncUpdateToastReserve();
 }
@@ -2730,6 +2936,7 @@ void AnnounceHistory(const std::wstring& text);
 void ShowHistory(bool keyboard){
     if(!historyDrawer.Window())return;
     FocusAnchor(L"history"); // Mode Focus: the panel at rest above the drawer
+    DrawerOpening();   // #143: the side panel ready (side Focus: the column at rest)
     CloseAudioDrawer();HideSuggestions();CloseDownloadSurfaces();settingsDrawer.Hide(false,true);bookmarksDrawer.Hide(false,true);
     chrome.latched='Y';InvalidateChrome();historyDrawer.Show(keyboard);SyncUpdateToastReserve();
 }
@@ -4309,6 +4516,7 @@ void BandActivate(int index,bool ctrl,bool shift,bool keyboard){
 void ShowBookmarksDrawer(bool keyboard){
     if(!bookmarksDrawer.Window())return;
     FocusAnchor(L"bookmarks"); // Mode Focus: the panel at rest above the drawer
+    DrawerOpening();   // #143: the side panel ready (side Focus: the column at rest)
     CloseAudioDrawer();HideSuggestions();CloseDownloadSurfaces();settingsDrawer.Hide(false,true);historyDrawer.Hide(false,true);
     bookmarksDrawer.Show(keyboard);SyncUpdateToastReserve();
 }
@@ -4547,7 +4755,7 @@ case 'Y':if(historyDismissClick){historyDismissClick=false;break;}ToggleHistory(
 case PrintActive:if(t&&!t->home)PrintPage(t);break; // like the tab menu: nothing to print on a home tab
 case CheckUpdatesCommand:CheckForUpdates();break;
 case 'm':ShowWindow(window,SW_MINIMIZE);break;
-case 'M':ShowWindow(window,IsZoomed(window)?SW_RESTORE:SW_MAXIMIZE);break;
+case 'M':if(InFullscreen())break; /* the window covers its monitor; its show state comes back as it was on leaving (ApplyFullscreen) */ShowWindow(window,IsZoomed(window)?SW_RESTORE:SW_MAXIMIZE);break;
 case 'X':PostMessageW(window,WM_CLOSE,0,0);break;
 case 'C':if(t&&!t->home&&!t->uri.empty()&&OpenClipboard(window)){auto bytes=(t->uri.size()+1)*sizeof(wchar_t);HGLOBAL mem=GlobalAlloc(GMEM_MOVEABLE,bytes);if(mem){void* data=GlobalLock(mem);if(data){memcpy(data,t->uri.c_str(),bytes);GlobalUnlock(mem);EmptyClipboard();if(SetClipboardData(CF_UNICODETEXT,mem)){auto now=NativeChrome::Motion::Now();motion.CopySucceeded(now);chrome.lottie.CopySucceeded(now);InvalidateChrome();ScheduleMotion(now);AnnounceCopied();}else GlobalFree(mem);}else GlobalFree(mem);}CloseClipboard();}break;
 case 'D':if(downloadDismissClick){downloadDismissClick=false;break;}ToggleDownloads();break;
@@ -4705,7 +4913,7 @@ bool ForwardToInstalled(const std::wstring& installRoot=L""){
 }
 void LayoutUpdateToast(){if(updateToast.Window())updateToast.Layout();}
 // The bottom-left card keeps clear of the download drawer docked on the right.
-void SyncUpdateToastReserve(){SyncDrawerReserve();const bool open=(downloadDrawer.Visible()&&!downloadDrawer.Closing())||settingsDrawer.Open()||historyDrawer.Open()||bookmarksDrawer.Open();updateToast.SetReservedRight(open?(settingsDrawer.Open()?NativeChrome::SettingsUI::Layout::width:NativeChrome::Downloads::DrawerLayout::width)+NativeChrome::Downloads::DrawerLayout::margin:0.f);}
+void SyncUpdateToastReserve(){SyncDrawerReserve();const bool open=(downloadDrawer.Visible()&&!downloadDrawer.Closing())||settingsDrawer.Open()||historyDrawer.Open()||bookmarksDrawer.Open();updateToast.SetReservedRight(open&&!NativeChrome::Downloads::DrawerLayout::liveLeft /* #143: a drawer on the left leaves the toast's corner */?(settingsDrawer.Open()?NativeChrome::SettingsUI::Layout::width:NativeChrome::Downloads::DrawerLayout::width)+NativeChrome::Downloads::DrawerLayout::margin:0.f);}
 bool FocusUpdateToast(){return updateToast.Shown()&&updateToast.Focus();}
 bool UpdateToastHasFocus(){HWND toast=updateToast.Window();HWND focus=GetFocus();return toast&&focus&&(focus==toast||IsChild(toast,focus));}
 void SyncUpdateToastMotion(){updateToast.SyncReducedMotion();} // no-op before Init/after Close
@@ -4981,7 +5189,8 @@ double SidebarNowMs(){return std::chrono::duration<double,std::milli>(std::chron
 // --tab-layout=top|side|compact (Fix's tests; --side-panel = side): this run's layout, never saved. Réglages and the
 // tab menu (SetTabsPosition) take over again; the fold button, Ctrl+Maj+, and the edge switch it for the run only.
 BrowserSettings::TabsPosition LayoutInEffect(){return forcedLayout>=0?static_cast<BrowserSettings::TabsPosition>(forcedLayout):settings.tabsPosition;}
-SBar::Mode SidebarEffective(){if(SidebarEdgeDragging())return chrome.sidebarMode;   // the edge drag sets it live (SidebarEdgeMove)
+SBar::Mode SidebarEdgeTarget();
+SBar::Mode SidebarEffective(){if(SidebarEdgeDragging())return SidebarEdgeTarget();   // the edge drag's mode (SidebarEdgeMove); the fold animates to it (#143)
     const bool compact=LayoutInEffect()==BrowserSettings::TabsPosition::Compact;
     return SBar::Effective(compact?SBar::Mode::Compact:SBar::Mode::Complete,chrome.width);}
 // One log line with the active layout at start and at every change (Fix's tests read it): « layout: top|side|compact »,
@@ -5031,7 +5240,7 @@ void SidebarPrepare(){
     // Drawers start under the window bar: 40 in the complete layout, 25 in the compact one (Paper 07 / 11); in Focus at the
     // page's top (4, under the annotation banner when it is there).
     V::DrawerTopValue()=!chrome.sidebar?V::top:chrome.sideHidden?std::max(chrome.annotationBand,SBar::Zone::inset):(SidebarEffective()==SBar::Mode::Compact?SBar::Zone::compactDrawerTop:SBar::Zone::drawerTop);
-    if(window){bookmarkToast.pageLeftPx=chrome.sidebar?S(chrome.SidebarZoneLeft()):0;bookmarkToast.pageBottomPx=chrome.sidebar?S(SBar::Zone::inset):0;}
+    if(window){bookmarkToast.pageLeftPx=chrome.sidebar?S(DrawerReserveDip()>0?std::max(chrome.SidebarZoneLeft(),chrome.side.drawerDock+DrawerReserveDip()+SBar::Zone::inset):chrome.SidebarZoneLeft()):0; /* #143: after a drawer docked against the panel */bookmarkToast.pageBottomPx=chrome.sidebar?S(SBar::Zone::inset):0;}
     if(!chrome.sidebar){chrome.sidebarResizable=false;chrome.sidebarEdge=0;LogLayout();return;}const double now=SidebarNowMs();const auto mode=SidebarEffective();
     // The complete width: the profile's « side-width », or the edge being dragged.
     if(!SidebarEdgeDragging()){const auto mnow=NativeChrome::Motion::Now();const float saved=SBar::Resize::Clamp((float)settings.sideWidth);
@@ -5041,16 +5250,24 @@ void SidebarPrepare(){
         chrome.sidebarWidth=sideWidthSpring.Value(mnow);}
     sidebarFold.panel=chrome.sidebarWidth;
     if(!sidebarReady){sidebarFold.Set(mode,now,false);sidebarReady=true;}
-    else if(mode!=sidebarFold.target){sidebarFold.Set(mode,now,!SidebarEdgeDragging()&&!motion.ReducedMotion()&&window&&IsWindowVisible(window)&&!IsIconic(window));if(window&&sidebarFold.Moving(now))SetTimer(window,SidebarFoldTimerId,15,nullptr);}
+    // #143 (Val 25 nov.): crossing 160 while dragging the edge folds / unfolds on the same spring (1.0 / .35 s, Paper 254L-0),
+    // from what is on screen (a reversal mid-way keeps its velocity); the width it unfolds to follows the pointer. Reduced
+    // motion: at once.
+    else if(mode!=sidebarFold.target){sidebarFold.Set(mode,now,!motion.ReducedMotion()&&window&&IsWindowVisible(window)&&!IsIconic(window));if(window&&sidebarFold.Moving(now))SetTimer(window,SidebarFoldTimerId,15,nullptr);}
     sidebarFold.Update(now);sidebarFold.Settle(now);const bool moving=sidebarFold.Moving(now);   /* motion spec §2: the titles' fade-in starts past 70 % */
     if(sidebarFold.target!=SBar::Mode::Compact||moving){sidebarHover.Close();chrome.sidebarPopover=false;}
-    chrome.sidebarMode=SidebarEdgeDragging()?chrome.sidebarMode:sidebarFold.CompleteLayout(now)?SBar::Mode::Complete:SBar::Mode::Compact;   /* folding: complete for the titles' 80 ms, then compact (its pieces glide); unfolding: complete at once */
-    chrome.sidebarColumn=sidebarFold.ColumnWidth(now);chrome.sidebarTitles=sidebarFold.Titles(now);chrome.sidebarOverlay=sidebarHover.open;
+    chrome.sidebarMode=sidebarFold.CompleteLayout(now)?SBar::Mode::Complete:SBar::Mode::Compact;   /* folding: complete for the titles' 80 ms, then compact (its pieces glide); unfolding: complete at once (an edge drag too) */
+    // The presented width on whole device pixels: the page's left (ContentBox -> PixelRect) and the column's edge are then
+    // the same pixel at every DPI (#143: never a page over the column).
+    {float w=sidebarFold.ColumnWidth(now);if(window){const float k=GetDpiForWindow(window)/96.f;if(k>0)w=std::round(w*k)/k;}chrome.sidebarColumn=w;}
+    chrome.sidebarTitles=sidebarFold.Titles(now);chrome.sidebarOverlay=sidebarHover.open;
     if(chrome.sideHidden){sidebarHover.Close();chrome.sidebarOverlay=false;if(sideReveal.wide){chrome.sidebarMode=SBar::Mode::Complete;chrome.sidebarTitles=1;}}   // Focus: its own way back (SideFocusEvaluate); the address in compact: the complete column
     chrome.sideMorphing=moving||chrome.MorphMoving(NativeChrome::Motion::Now());   // §2: the pieces glide while the column folds
     chrome.annotateDimmed=chrome.annotateShown&&AnnotationButtonDimmed();
+    {namespace DS=NativeChrome::Downloads::DrawerLayout::Side;   // #143: Q2 (b) the window's edge while the Focus column is away; Q4 (b) the overlay's edge
+     chrome.sidebarDockAt=chrome.sideHidden&&!DS::focusBringsColumn&&!chrome.sideShown?0.f:!chrome.sideHidden&&!DS::overlayOneAtATime&&sidebarHover.open?chrome.sideOver.column+SBar::Overlay::border:-1.f;}
     // The edge handle: docked, settled, and the window wide enough for the chosen layout (not compact by itself).
-    chrome.sidebarResizable=!sidebarHover.open&&!moving&&chrome.width>=SBar::autoCompactBelow&&!InFullscreen()&&!chrome.sideHidden;if(!chrome.sidebarResizable&&!SidebarEdgeDragging())chrome.sidebarEdge=0;
+    chrome.sidebarResizable=!sidebarHover.open&&!moving&&chrome.width>=SBar::autoCompactBelow&&!InFullscreen()&&!chrome.sideHidden&&DrawerReserveDip()<=0; /* #143: a drawer docked against the column takes its edge */if(!chrome.sidebarResizable&&!SidebarEdgeDragging())chrome.sidebarEdge=0;
     LogLayout();
     chrome.sideHome.clear();chrome.sideDetails.clear();for(auto& t:pages){chrome.sideHome.push_back(t->home);chrome.sideDetails.push_back(t->home?std::wstring():BareDomain(t->uri));}
     // The selected tab's row is brought into the list's view (a new tab, Ctrl+Tab, Ctrl+1…9).
@@ -5060,8 +5277,8 @@ void SidebarPrepare(){
 // the choice is kept and the complete column opens over the page instead (Designer, answer 11).
 void ToggleSidebar(){
     if(!chrome.sidebar)return;
-    if(chrome.sideHidden){sideReveal.Toggle();SideRevealChanged();if(sideReveal.open){SetFocus(window);keyboardModality=true;keyboardFocus=NativeChrome::TabBase+std::max(0,current);InvalidateChrome();}return;}   // Mode Focus: in, then out
-    if(chrome.width<SBar::autoCompactBelow){if(sidebarHover.open)sidebarHover.Close();else sidebarHover.Open();Layout();return;}
+    if(chrome.sideHidden){if(sideReveal.open&&DrawerReserveDip()>0)CloseDockedDrawers(); /* #143: the drawer docked against it goes with it */sideReveal.Toggle();SideRevealChanged();if(sideReveal.open){SetFocus(window);keyboardModality=true;keyboardFocus=NativeChrome::TabBase+std::max(0,current);InvalidateChrome();}return;}   // Mode Focus: in, then out
+    if(chrome.width<SBar::autoCompactBelow){if(sidebarHover.open)sidebarHover.Close();else{if(NativeChrome::Downloads::DrawerLayout::Side::overlayOneAtATime&&DrawerReserveDip()>0)CloseDockedDrawers(); /* #143 Q4: one at a time */sidebarHover.Open();}Layout();return;}
     sidebarHover.Close();
     // The fold button and Ctrl+Maj+, switch Panneau latéral <-> Panneau compact in the setting (a trial run forced with
     // --side-panel while the setting says « En haut » folds for this run only).
@@ -5081,6 +5298,7 @@ struct EdgeDrag{bool active=false;float offset=0;SBar::Resize::State state{SBar:
 } edgeDrag;DWORD edgeClickAt=0;
 void SidebarWidthTo(float w,float response){const auto mnow=NativeChrome::Motion::Now();if(!sideWidthKnown||!window){sideWidthSpring.Snap(w);sideWidthKnown=true;return;}sideWidthSpring.Set(w,mnow,response,motion.ReducedMotion());if(window)SetTimer(window,0x5161 /* SidebarFoldTimerId */,15,nullptr);}
 bool SidebarEdgeDragging(){return edgeDrag.active;}
+SBar::Mode SidebarEdgeTarget(){return edgeDrag.state.mode;}
 constexpr UINT_PTR SidebarEdgeFadeTimerId=0x5163,SideFocusPollTimerId=0x5164,SideSlideTimerId=0x5165,SideSlideLiveTimerId=0x5166;
 void SidebarEdgeLook(int state){if(edgeDrag.active)state=2;if(!chrome.sidebarResizable&&!edgeDrag.active)state=0;if(chrome.sidebarEdge==state)return;
     if(state==1&&chrome.sidebarEdge==0){chrome.edgeHoverAt=NativeChrome::Motion::Now();if(window)SetTimer(window,SidebarEdgeFadeTimerId,15,nullptr);}   // §5: the line fades in (120 ms) after 150 ms
@@ -5095,14 +5313,15 @@ void SidebarEdgeReset(){settings.sideWidth=BrowserSettings::SideWidthDefault;Sav
     if(!window)chrome.sidebarWidth=SBar::Complete::width;SidebarEdgeMode(SBar::Mode::Complete);if(window)Layout();SidebarEdgeAnnounce();Log(L"SIDEBAR width reset to 248");}
 bool SidebarEdgeDown(float x){if(!chrome.sidebar||!chrome.sidebarResizable)return false;ChromeTipHide();
     const DWORD now=GetMessageTime();if(edgeClickAt&&now-edgeClickAt<=GetDoubleClickTime()){edgeClickAt=0;SidebarEdgeReset();return true;}
-    edgeClickAt=now;edgeDrag.active=true;edgeDrag.offset=chrome.side.column-x;edgeDrag.state={SidebarEffective(),chrome.sidebarWidth};keyboardFocus=0;keyboardModality=false;
+    const SBar::Mode from=SidebarEffective();   // read before the drag starts (it then answers the drag's own mode)
+    edgeClickAt=now;edgeDrag.active=true;edgeDrag.offset=chrome.side.column-x;edgeDrag.state={from,chrome.sidebarWidth};keyboardFocus=0;keyboardModality=false;
     edgeDrag.startedCompact=edgeDrag.state.mode==SBar::Mode::Compact;edgeDrag.raw=chrome.side.column;edgeDrag.trail.clear();edgeDrag.trail.push_back({edgeDrag.raw,SidebarNowMs()});
     if(window){SetFocus(window);if(!splitTest)SetCapture(window);}SidebarEdgeLook(2);return true;}
 void SidebarEdgeMove(float x){if(!edgeDrag.active)return;edgeDrag.raw=x+edgeDrag.offset;const double t=SidebarNowMs();
     edgeDrag.trail.push_back({edgeDrag.raw,t});while(edgeDrag.trail.size()>2&&t-edgeDrag.trail.front().ms>80)edgeDrag.trail.erase(edgeDrag.trail.begin());   // the last 80 ms
     const auto s=SBar::Resize::Dragging(edgeDrag.raw,edgeDrag.startedCompact);
     if(s.mode==edgeDrag.state.mode&&std::fabs(s.width-edgeDrag.state.width)<.01f)return;edgeDrag.state=s;
-    chrome.sidebarMode=s.mode;if(s.mode==SBar::Mode::Complete){chrome.sidebarWidth=s.width;sideWidthSpring.Snap(s.width);sideWidthKnown=true;}
+    if(s.mode==SBar::Mode::Complete){chrome.sidebarWidth=s.width;sideWidthSpring.Snap(s.width);sideWidthKnown=true;}   // the mode goes through the fold (SidebarPrepare: animated)
     if(window)Layout();}
 void SidebarEdgeUp(bool commit){if(!edgeDrag.active)return;const auto s=edgeDrag.state;const float v=edgeDrag.Velocity(),raw=edgeDrag.raw;edgeDrag.active=false;if(window&&GetCapture()==window)ReleaseCapture();
     if(commit){
@@ -5115,7 +5334,7 @@ void SidebarEdgeUp(bool commit){if(!edgeDrag.active)return;const auto s=edgeDrag
             if(window)SetTimer(window,0x5161 /* SidebarFoldTimerId */,15,nullptr);}
         SidebarEdgeMode(r.mode);
         Log(r.mode==SBar::Mode::Compact?std::wstring(L"SIDEBAR edge released (projected under 160): compact"):L"SIDEBAR width "+std::to_wstring(settings.sideWidth));}
-    else{if(window)Layout();}
+    else{SidebarWidthTo(SBar::Resize::Clamp((float)settings.sideWidth),SBar::Resize::settleResponse);if(window)Layout();}   // Échap / lost capture: back to the saved width on the spring-back (.3 s), the mode on the fold
     chrome.sidebarEdge=0;POINT p{};if(window&&GetCursorPos(&p)){ScreenToClient(window,&p);const float d=GetDpiForWindow(window)/96.f;SidebarEdgeLook(chrome.Hit(p.x/d,p.y/d)==NativeChrome::Chrome::SidebarEdgeId?1:0);}
     if(window){SyncCornerMasks();InvalidateChrome();}if(commit)SidebarEdgeAnnounce();}
 // Keyboard on the focused edge (a separator, like the split view's): ← → 16 DIP (Maj 64), Début 220, Fin 360, Entrée / Espace
@@ -5233,6 +5452,44 @@ void SideRevealChanged(){
     SetTimer(window,SideSlideTimerId,15,nullptr);SideSlideFrame();
     Log(open?(sideReveal.pinned?L"FOCUS column in (shortcut)":L"FOCUS column in (left edge)"):L"FOCUS column out");
 }
+// ---- #143 (owner 2026-11-25): the drawers open on the tab panel's side ----------------------------------------------
+// The top bar keeps them on the right. The side panel's layouts (complete, compact and their Mode Focus) dock them on the
+// LEFT against the panel (src/sidebar.h Layout::drawerDock: the docked column's right edge, following a fold or the edge
+// being dragged; in Focus the column shown over the page, just after its border); the page starts 4 DIP after an open
+// one. The drawers mirror themselves (src/native-ui.h DockedDrawerRect / DrawerRegion: the slide enters from the left, the
+// hairline on the page's side, square corners against the panel). Designer's answers to the four open points (Q1 to Q4,
+// 2026-11-25): src/downloads.h DrawerLayout::Side.
+constexpr UINT_PTR SideDrawerTimerId=0x5167;
+// Every drawer closes (animated), with the Downloads popover: the column they docked against goes, or the overlay opens.
+void CloseDockedDrawers(){CloseDownloadSurfaces();settingsDrawer.Hide(false,true);historyDrawer.Hide(false,true);bookmarksDrawer.Hide(false,true);CloseAudioDrawer();SyncLatch();SyncUpdateToastReserve();}
+// Q2 (Designer): in side Focus a drawer docks against the column: the column comes at rest at once and stays while the
+// drawer is open (sideDrawerHold, board 15's rule); when the drawer closes it leaves again unless the pointer is on it.
+void SideFocusForDrawer(){
+    namespace DS=NativeChrome::Downloads::DrawerLayout::Side;if(!chrome.sideHidden||!window||!DS::focusBringsColumn)return;
+    sideDrawerHold=true;const bool rest=sideReveal.open&&sideLive&&!sidePic.shown;if(!sideReveal.open){sideReveal.ForAddress(false);sideReveal.pinned=false;}if(rest)return;   /* in like for the field, but not pinned: held by the drawer only */
+    KillTimer(window,SideSlideTimerId);SidePictureHide();sideSlide.Snap(1);sideFade.Snap(1);
+    if(!sideLive)SideRevealLive(true);else BuildChrome();
+    Layout();Log(L"FOCUS column in (drawer)");
+}
+// A drawer is about to open (before it places itself): its side of the window ready. Side Focus: the column at rest (Q2);
+// a narrow window's column over the page closes (Q4, one at a time).
+void DrawerOpening(){
+    if(!chrome.sidebar||!window)return;
+    if(chrome.sideHidden){SideFocusForDrawer();return;}
+    if(sidebarHover.open&&NativeChrome::Downloads::DrawerLayout::Side::overlayOneAtATime){sidebarHover.Close();Layout();}
+}
+// After every Build: the side and the dock as laid out; the open drawers follow when they change (a fold, the edge, the
+// Focus column's width). A drawer open in side Focus while the column is away (Focus switched on with it open) brings the
+// column on the next turn of the loop (never from inside a Build).
+void SyncDrawerSide(){
+    namespace DL=NativeChrome::Downloads::DrawerLayout;
+    const bool left=chrome.sidebar;const float dock=left?chrome.side.drawerDock:0.f;
+    if(!DL::Side::overlayOneAtATime&&chrome.sidebar&&!chrome.sideHidden)sidebarHover.holds=DrawerReserveDip()>0?1:0;   // Q4 (b): the overlay stays while a drawer docks against it
+    if(window&&chrome.sideHidden&&DL::Side::focusBringsColumn&&!sideReveal.open&&DrawerReserveDip()>0)SetTimer(window,SideDrawerTimerId,0,nullptr);
+    if(left==DL::liveLeft&&dock==DL::liveDock)return;
+    DL::liveLeft=left;DL::liveDock=dock;
+    downloadDrawer.Reposition();settingsDrawer.Reposition();historyDrawer.Reposition();bookmarksDrawer.Reposition();audioPanel.OwnerChanged();
+}
 // Focus on / off or the layout changed: nothing shown, nothing moving.
 void SideFocusReset(){
     sideReveal.Close();sideDrawerHold=false;sideSlide.Snap(0);sideFade.Snap(1);
@@ -5252,16 +5509,21 @@ bool SideFocusHolds(){
 void SideFocusEvaluate(){
     if(!window)return;
     if(!chrome.sideHidden){if(sidePolling){KillTimer(window,SideFocusPollTimerId);sidePolling=false;}return;}
-    POINT sp{};const bool pointer=GetCursorPos(&sp)!=FALSE;POINT cp=sp;ScreenToClient(window,&cp);
-    const float k=96.f/GetDpiForWindow(window),x=cp.x*k,y=cp.y*k;
+    // The edge zone (src/sidebar.h EdgeZone): measured in device pixels, read in DIP at the window's DPI (per monitor). The
+    // pointer counts beyond the window's edge too (the next monitor, the desktop beside a restored window): in front only.
+    namespace EZ=SBar::EdgeZone;namespace FS=SBar::FocusSide;const auto side=EZ::Side::Left;   // the column's side (its only placement; Right is ready)
+    POINT sp{};const bool pointer=GetCursorPos(&sp)!=FALSE;
     HWND fg=GetForegroundWindow();const bool front=fg&&(fg==window||GetAncestor(fg,GA_ROOTOWNER)==window)&&IsWindowVisible(window)&&!IsIconic(window);
     const bool buttons=GetAsyncKeyState(VK_LBUTTON)<0||GetAsyncKeyState(VK_RBUTTON)<0||GetAsyncKeyState(VK_MBUTTON)<0;
-    RECT wr{};GetWindowRect(window,&wr);const bool ours=pointer&&front&&PtInRect(&wr,sp);
-    const float top=chrome.side.top;namespace FS=SBar::FocusSide;
-    const bool inBand=ours&&!buttons&&x>=0&&x<FS::edge&&y>=top&&y<chrome.height;
-    const bool overColumn=ours&&(sideLive||sidePic.shown)&&x>=0&&x<chrome.side.column+FS::border&&y>=top&&y<chrome.height;
-    const double ms=SidebarNowMs();
-    if(sideReveal.Pointer(ms,inBand,overColumn,sideReveal.open&&SideFocusHolds()))SideRevealChanged();
+    EZ::Pixels px;px.x=sp.x;px.y=sp.y;px.dpi=GetDpiForWindow(window);
+    {RECT c{};GetClientRect(window,&c);MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&c),2);px.left=c.left;px.top=c.top;px.right=c.right;px.bottom=c.bottom;}
+    if(pointer){MONITORINFO mi{};mi.cbSize=sizeof(mi);if(GetMonitorInfoW(MonitorFromPoint(sp,MONITOR_DEFAULTTONEAREST),&mi)){px.monitorLeft=mi.rcMonitor.left;px.monitorRight=mi.rcMonitor.right;}
+        px.monitorBeyond=MonitorFromPoint(POINT{side==EZ::Side::Left?sp.x-1:sp.x+1,sp.y},MONITOR_DEFAULTTONULL)!=nullptr;}
+    const auto s=EZ::Measure(side,px,pointer,front,chrome.side.top,!IsZoomed(window)&&!InFullscreen());
+    const bool was=sideReveal.open;
+    if(sideReveal.Pointer(SidebarNowMs(),EZ::Classify(s),EZ::Holds(s,chrome.side.column+FS::border),buttons,sideReveal.open&&SideFocusHolds())){
+        if(sideReveal.open&&!was){static const wchar_t* kinds[]={L"none",L"rest 400 ms",L"edge 120 ms",L"monitor edge 60 ms"};Log(std::wstring(L"FOCUS edge zone: ")+kinds[(int)sideReveal.by]);}  // i18n-exempt: log detail
+        SideRevealChanged();}
     const bool poll=front||sideReveal.open||sidePic.shown;
     if(poll&&!sidePolling)sidePolling=SetTimer(window,SideFocusPollTimerId,30,nullptr)!=0;
     else if(!poll&&sidePolling){KillTimer(window,SideFocusPollTimerId);sidePolling=false;}
@@ -5278,12 +5540,23 @@ void SideFocusCommand(int cmd){
     if(!chrome.sideHidden||!sideReveal.open)return;
     if(cmd=='Y'||cmd=='S'||cmd=='D'||cmd=='V'||cmd==BookmarksDrawerCommand||cmd==NativeChrome::Chrome::SidebarManageId)sideDrawerHold=true;
 }
-bool SideFocusEscape(){if(!chrome.sideHidden||!sideReveal.open)return false;sideReveal.Close();sideDrawerHold=false;SideRevealChanged();return true;}
+bool SideFocusEscape(){if(!chrome.sideHidden||!sideReveal.open)return false;if(DrawerReserveDip()>0){CloseDockedDrawers();return true;} /* #143: the drawer docked against the column first; the column then goes as usual */sideReveal.Close();sideDrawerHold=false;SideRevealChanged();return true;}
 // Window dragging: the bar right of the column, and the column's top above the field (complete) / the fold button (compact).
 bool SidebarCaption(float x,float y){if(!chrome.sidebar)return false;const auto& L=chrome.SideColumn();const float col=chrome.sidebarOverlay?L.column:chrome.side.column;
     if(x>=col)return y<chrome.side.bar;return y<(L.mode==SBar::Mode::Complete?L.address.top:L.toggle.bottom);}
 // Wheel over the tab list scrolls it (answer 4).
-void SidebarWheel(POINT client,int delta){const float d=GetDpiForWindow(window)/96.f,x=client.x/d,y=client.y/d;const auto& L=chrome.SideColumn();
+// #143 · Infobulle B (src/side-tip.h): what a tab row or a favourite tile says. A tab: its title (« Nouvel onglet » for the
+// new-tab page), its site's icon and bare address. A bookmark: its title (its address when it has none), its icon and
+// address; a folder: its name alone.
+NativeChrome::SideTip::Content SideTipContent(int id){
+    NativeChrome::SideTip::Content c;
+    if(NativeChrome::IsTab(id)){const int i=NativeChrome::TabIndex(id);if(i<0||i>=(int)pages.size()||!pages[i])return c;const auto& t=pages[i];
+        c.title=t->home?std::wstring(TR(tab_new)):t->title.empty()?std::wstring(TR(chrome_tab_untitled_tip)):t->title;if(!t->home)c.address=BareDomain(t->uri);c.icon=t->favicon.image;return c;}
+    const int i=NativeChrome::BookmarkIndex(id);if(i<0||i>=(int)chrome.bandItems.size())return c;const auto& b=chrome.bandItems[i];
+    c.title=b.title;if(b.folder)return c;
+    if(const auto* n=bookmarks.Find(b.id)){c.address=BareDomain(n->url);if(c.title.empty())c.title=c.address;}c.icon=b.image;c.local=b.local;return c;
+}
+void SidebarWheel(POINT client,int delta){sideTip.Leave(); /* #143: the list moves under the pointer: Infobulle B goes */const float d=GetDpiForWindow(window)/96.f,x=client.x/d,y=client.y/d;const auto& L=chrome.SideColumn();
     if(chrome.sidebarPopover&&chrome.sidePop.box.Contains(x,y)){chrome.sidebarPopoverScroll=std::clamp(chrome.sidePop.grid.scroll-delta/120.f*48.f,0.f,chrome.sidePop.grid.maxScroll);BuildChrome();InvalidateChrome();return;}
     if(L.gridOpen&&L.grid.view.Contains(x,y)){chrome.sidebarGridScroll=std::clamp(L.grid.scroll-delta/120.f*48.f,0.f,L.grid.maxScroll);BuildChrome();InvalidateChrome();return;}
     if(!L.tabsView.Contains(x,y))return;
@@ -5362,8 +5635,9 @@ constexpr UINT ImportIconsMessage=WM_APP+44;void ImportIconsArrived();
 HMONITOR MaximizedMonitor(HWND h){if(HMONITOR m=MonitorFromWindow(h,MONITOR_DEFAULTTONULL))return m;WINDOWPLACEMENT p{sizeof(p)};return GetWindowPlacement(h,&p)?MonitorFromRect(&p.rcNormalPosition,MONITOR_DEFAULTTONEAREST):MonitorFromWindow(h,MONITOR_DEFAULTTONEAREST);}
 LRESULT CALLBACK ChromeProc(HWND h,UINT msg,WPARAM w,LPARAM l){LRESULT frameResult;
     // Maximized with WS_CAPTION, Windows pushes the window past the monitor by its frame thickness: the client
-    // is the monitor's work area exactly (nothing cut at the edges, the taskbar left visible).
-    if(msg==WM_NCCALCSIZE&&w&&IsZoomed(h)){MONITORINFO mi{sizeof(mi)};if(GetMonitorInfoW(MaximizedMonitor(h),&mi)){reinterpret_cast<NCCALCSIZE_PARAMS*>(l)->rgrc[0]=mi.rcWork;return 0;}}
+    // is the monitor's work area exactly (nothing cut at the edges, the taskbar left visible). In fullscreen a maximized
+    // window stays maximized (elements-integration.h ApplyFullscreen): its client is the whole monitor.
+    if(msg==WM_NCCALCSIZE&&w&&IsZoomed(h)){MONITORINFO mi{sizeof(mi)};if(GetMonitorInfoW(MaximizedMonitor(h),&mi)){reinterpret_cast<NCCALCSIZE_PARAMS*>(l)->rgrc[0]=InFullscreen()?mi.rcMonitor:mi.rcWork;return 0;}}
     // WS_CAPTION makes DefWindowProc paint a classic caption straight onto the window when the title or icon changes
     // (and through the undocumented uxtheme caption / frame messages): the title and icon are stored with the caption
     // style briefly cleared, so nothing is drawn (NativeUI::DefWindowProcNoCaption); the two theme messages draw nothing.
@@ -5380,7 +5654,11 @@ LRESULT CALLBACK ChromeProc(HWND h,UINT msg,WPARAM w,LPARAM l){LRESULT frameResu
 case WM_CREATE:window=h;address=CreateWindowExW(0,L"EDIT",L"",WS_CHILD|WS_TABSTOP|ES_AUTOHSCROLL,0,0,1,1,h,nullptr,instance,nullptr); NativeUI::SelectAllOnCtrlA(address);SendMessageW(address,EM_SETLIMITTEXT,8192,0);SendMessageW(address,EM_SETMARGINS,EC_LEFTMARGIN|EC_RIGHTMARGIN,0);SetWindowSubclass(address,AddressProc,1,0);addressSelection.Attach(address,AddressSelectionColors);accessibility.Attach(AccessibleHost());tooltip=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP,0,0,0,0,h,nullptr,instance,nullptr);NativeUI::StripTooltipShadow(tooltip);return 0;
 // Alt alone (or F10) asks for the menu bar; this window has none, and the system-menu state it starts instead freezes
 // the WebView that had the keyboard (page or chat panel) until the next key. Alt+Espace (lParam = the key) still opens the system menu.
-case WM_SYSCOMMAND:if((w&0xFFF0)==SC_KEYMENU&&l==0)return 0;break;
+case WM_SYSCOMMAND:if((w&0xFFF0)==SC_KEYMENU&&l==0)return 0;
+    // Fullscreen covers the monitor in the window's own show state (ApplyFullscreen): Agrandir / Restaurer / Déplacer /
+    // Taille from the system menu or the shell would leave it half-sized with no chrome. Restoring it from the taskbar
+    // after a minimize stays allowed.
+    if(InFullscreen()&&!IsIconic(h)){const WPARAM c=w&0xFFF0;if(c==SC_MAXIMIZE||c==SC_RESTORE||c==SC_MOVE||c==SC_SIZE)return 0;}break;
 case WM_NCHITTEST:{if(InFullscreen())return HTCLIENT;POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(h,&p);RECT r;GetClientRect(h,&r);int edge=S(4);if(!IsZoomed(h)){bool left=p.x<edge,right=p.x>=r.right-edge,top=p.y<S(3),bottom=p.y>=r.bottom-edge;if(top&&left)return HTTOPLEFT;if(top&&right)return HTTOPRIGHT;if(bottom&&left)return HTBOTTOMLEFT;if(bottom&&right)return HTBOTTOMRIGHT;if(left)return HTLEFT;if(right)return HTRIGHT;if(top)return HTTOP;if(bottom)return HTBOTTOM;}float x=p.x*96.f/GetDpiForWindow(h),y=p.y*96.f/GetDpiForWindow(h);int id=chrome.Hit(x,y);if(id=='M')return HTMAXBUTTON;if(chrome.sidebar){if(!id&&SidebarCaption(x,y))return HTCAPTION;return HTCLIENT;}
     if(chrome.Local(x,y)&&y<44&&!id)return HTCAPTION; /* the tab row's empty space (Mode Focus: only while the floating panel shows it) */return HTCLIENT;}
 case WM_NCLBUTTONDOWN:if(w==HTMAXBUTTON){Command('M');return 0;}break;
@@ -5390,13 +5668,16 @@ case WM_MOUSEACTIVATE:{if(!RequestChipOpen())break;POINT p;GetCursorPos(&p);Scre
 case WM_NCMOUSEMOVE:if(w==HTMAXBUTTON){UpdateInteraction('M',0);TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE|TME_NONCLIENT,h,0};TrackMouseEvent(&track);return 0;}break;
 case WM_NCMOUSELEAVE:UpdateInteraction(0,0);return 0;
 case WM_NCLBUTTONDBLCLK:if(w==HTCAPTION){Command('M');return 0;}break;
-case WM_GETMINMAXINFO:{auto info=(MINMAXINFO*)l;info->ptMinTrackSize={S(560),S(300)};MONITORINFO monitor{sizeof(monitor)};if(GetMonitorInfoW(MaximizedMonitor(h),&monitor)){info->ptMaxPosition={monitor.rcWork.left-monitor.rcMonitor.left,monitor.rcWork.top-monitor.rcMonitor.top};info->ptMaxSize={monitor.rcWork.right-monitor.rcWork.left,monitor.rcWork.bottom-monitor.rcWork.top};}return 0;}
-case WM_DPICHANGED:{contentTransition.Cancel();auto r=(RECT*)l;SetWindowPos(h,nullptr,r->left,r->top,r->right-r->left,r->bottom-r->top,SWP_NOZORDER|SWP_NOACTIVATE);UpdateFont();Layout();RepositionElementSurfaces();
+// Maximized in fullscreen (ApplyFullscreen keeps the show state): the maximized place is the whole monitor, so a restore
+// from the taskbar or a work-area change brings it back over the taskbar too.
+case WM_GETMINMAXINFO:{auto info=(MINMAXINFO*)l;info->ptMinTrackSize={S(560),S(300)};MONITORINFO monitor{sizeof(monitor)};if(GetMonitorInfoW(MaximizedMonitor(h),&monitor)){const RECT& to=InFullscreen()?monitor.rcMonitor:monitor.rcWork;info->ptMaxPosition={to.left-monitor.rcMonitor.left,to.top-monitor.rcMonitor.top};info->ptMaxSize={to.right-to.left,to.bottom-to.top};}return 0;}
+// In fullscreen the window keeps covering its monitor (Windows' suggested rectangle is the windowed one scaled).
+case WM_DPICHANGED:{contentTransition.Cancel();auto r=(RECT*)l;const RECT m=InFullscreen()?MonitorScreenRect():*r;SetWindowPos(h,nullptr,m.left,m.top,m.right-m.left,m.bottom-m.top,SWP_NOZORDER|SWP_NOACTIVATE);UpdateFont();Layout();RepositionElementSurfaces();
 #ifdef BROWSER_UPDATES
     LayoutUpdateToast();
 #endif
     return 0;}
-case WM_SIZE:HideSuggestions();FormsHideAll();motionMinimized=w==SIZE_MINIMIZED;contentTransition.Cancel(); /* resize / minimise / maximise */AnnotationWindowState();if(!motionMinimized){Layout();audioPanel.OwnerChanged();downloadDrawer.Reposition();settingsDrawer.Reposition();historyDrawer.Reposition();bookmarksDrawer.Reposition();bookmarkToast.Reposition();RepositionElementSurfaces();}else{CloseDownloadSurfaces(false);audioPanel.Close(false);settingsDrawer.Hide(false,false);historyDrawer.Hide(false,false);bookmarksDrawer.Hide(false,false);bookmarkPopover.Hide();bookmarkToast.HideNow();}ScheduleMotion(NativeChrome::Motion::Now());
+case WM_SIZE:if(fullscreenTraceAt){RECT r{};GetWindowRect(h,&r);FullscreenStep(L"window "+RectText(r)+(w==SIZE_MAXIMIZED?L" maximized":w==SIZE_MINIMIZED?L" minimized":L" normal"));}HideSuggestions();FormsHideAll();motionMinimized=w==SIZE_MINIMIZED;contentTransition.Cancel(); /* resize / minimise / maximise */AnnotationWindowState();if(!motionMinimized){Layout();audioPanel.OwnerChanged();downloadDrawer.Reposition();settingsDrawer.Reposition();historyDrawer.Reposition();bookmarksDrawer.Reposition();bookmarkToast.Reposition();RepositionElementSurfaces();}else{CloseDownloadSurfaces(false);audioPanel.Close(false);settingsDrawer.Hide(false,false);historyDrawer.Hide(false,false);bookmarksDrawer.Hide(false,false);bookmarkPopover.Hide();bookmarkToast.HideNow();}ScheduleMotion(NativeChrome::Motion::Now()); /* i18n-exempt: fullscreen log trace */
 #ifdef BROWSER_UPDATES
     // Minimised: the toast stops its clock/timer (zero wakes); otherwise SetOwnerVisible(true)
     // re-lays the card out (bottom-left anchor, drawer reserve kept).
@@ -5426,7 +5707,7 @@ case WM_MOUSEMOVE:{if(chrome.floating)FocusEvaluate(true); /* Mode Focus: the po
     if(!tabDrag.tab){auto v=CurrentSplit();float px=x,py=y;const int hot=v.group&&!(chrome.floating&&chrome.Local(px,py))?SeparatorAt(x,y,v):-1;if(hot!=chrome.split.hotHandle&&!sepDrag.active){chrome.split.hotHandle=hot;SyncGripLooks();InvalidateRect(h,nullptr,FALSE);}}}
     if(tabDrag.tab){DragTab({GET_X_LPARAM(l),GET_Y_LPARAM(l)});if(tabDrag.active)return 0;}if(bandDrag.index>=0){BandDragMove({GET_X_LPARAM(l),GET_Y_LPARAM(l)});if(bandDrag.active)return 0;}int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));SidebarEdgeLook(id==NativeChrome::Chrome::SidebarEdgeId?1:0);if(NativeChrome::TabIndex(id)<0)UnlockTabWidth();if(id!=hover)UpdateInteraction(id,pressed);TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,h,0};TrackMouseEvent(&track);return 0;}
 case WM_COMMAND:if((HWND)l==address&&HIWORD(w)==EN_CHANGE){AddressEdited();return 0;}break;
-case WM_MOUSELEAVE:ChromeTipHide();UnlockTabWidth();SidebarPointerLeft();if(!SidebarEdgeDragging())SidebarEdgeLook(0);if(chrome.split.hotHandle>=0&&!sepDrag.active&&!PointerOnGrip()){chrome.split.hotHandle=-1;SyncGripLooks();InvalidateRect(h,nullptr,FALSE);}UpdateInteraction(0,pressed);return 0;
+case WM_MOUSELEAVE:ChromeTipLeft(); /* #143: a muted button's tip may come back once the pointer returns */UnlockTabWidth();SidebarPointerLeft();if(!SidebarEdgeDragging())SidebarEdgeLook(0);if(chrome.split.hotHandle>=0&&!sepDrag.active&&!PointerOnGrip()){chrome.split.hotHandle=-1;SyncGripLooks();InvalidateRect(h,nullptr,FALSE);}UpdateInteraction(0,pressed);return 0;
 case WM_LBUTTONDOWN:{if(folderRename.Active()&&folderRename.Host()==h)SetFocus(h);ChromeTipHide();
     // Mode Focus: a press on the panel while it moves first lands it at rest (live): every hit test of this press and of
     // its release then reads the same panel under the pointer (code review: a lost click / stray drag otherwise).
@@ -5511,6 +5792,7 @@ case WM_TIMER:
     if(w==SideFocusPollTimerId){SideFocusEvaluate();return 0;}
     if(w==SideSlideTimerId){SideSlideFrame();return 0;}
     if(w==SideSlideLiveTimerId){KillTimer(h,SideSlideLiveTimerId);if(chrome.sideShown)SidePictureHide();return 0;}
+    if(w==SideDrawerTimerId){KillTimer(h,SideDrawerTimerId);SideFocusForDrawer();return 0;}   // #143: a drawer open in side Focus brings the column
     if(w==FocusPollTimerId){FocusEvaluate();return 0;}
     if(w==FocusSlideTimerId){KillTimer(h,FocusSlideTimerId);if(focusLive)FocusSlideHide();return 0;}   // Mode Focus: the live panel is on screen, its picture goes
     if(w==AudioTimerId){KillTimer(h,AudioTimerId);RefreshAudio();return 0;}
@@ -5531,7 +5813,7 @@ case WM_DESTROY:ChatShutdown();ChatAgentsShutdown(); /* the agent's process tree
 #ifdef BROWSER_UPDATES
     StopUpdates(); // bounded: cancels transfers; an already launched install helper is a separate process
 #endif
-    KillTimer(h,MotionTimerId);motionDeadline.reset();frameClock.Stop();frameClockReady=false;popups.CancelAll();for(auto&t:pages){t->closed=true;t->favicon.Close();if(t->controller.p)t->controller->Close();}pages.clear();ScrollbarDestroy();PostQuitMessage(0);return 0;
+    KillTimer(h,MotionTimerId);motionDeadline.reset();frameClock.Stop();frameClockReady=false;popups.CancelAll();for(auto&t:pages){t->closed=true;t->favicon.Close();if(t->controller.p)t->controller->Close();}pages.clear();KeepsAtExit(); /* a « Conserver » under way: its file gets its path, nothing hidden is left */ScrollbarDestroy();PostQuitMessage(0);return 0;
 }return DefWindowProcW(h,msg,w,l);}
 // Every message may move keyboard focus, the selection or the tab set: report the
 // change to UI Automation clients once the message is handled.
@@ -6190,7 +6472,7 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){
 #ifdef BROWSER_E2E_VAULT_ACTIVE
     Log(L"E2E VAULT ACTIVE: product path, vault forced active, every foreground condition in force (test build only)");   /* review R-5 host marker, absent from dev/release (tests/e2e/product_markers.ps1) */
 #endif
-    INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);RunOnboarding(onboardingReason);/* first-run window: returns when the person is done, then the normal start */paper=CreateSolidBrush(BG);WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);{const UINT dpi=GetDpiForSystem();/* channel app icon (src/app-icon.rc), picked from its multi-size ICO at the system DPI for the title bar/Alt+Tab and the taskbar */wc.hIcon=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXICON,dpi),GetSystemMetricsForDpi(SM_CYICON,dpi),LR_DEFAULTCOLOR);wc.hIconSm=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXSMICON,dpi),GetSystemMetricsForDpi(SM_CYSMICON,dpi),LR_DEFAULTCOLOR);}wc.hbrBackground=paper;RegisterClassExW(&wc);window=CreateWindowW(wc.lpszClassName,privateWindow?TR(window_title_private_bare):L"Browser",WS_POPUP|WS_CAPTION/* Windows' minimize / restore / maximize animations (no caption is drawn: WM_NCCALCSIZE gives the whole window to the client) */|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);StampTaskbarIdentity();DragAcceptFiles(window,TRUE);NativeUI::ConfigureFullClientFrame(window);NativeUI::RoundNatively(window);if(const HRESULT gfx=chrome.Init(window,base);FAILED(gfx)){wchar_t code[16];swprintf(code,16,L"0x%08lX",(unsigned long)gfx);Log(std::wstring(L"STARTUP graphics failed at ")+chrome.initStep+L": hr="+code+L" (assets "+base+L"\\assets)");MessageBoxW(window,TR(startup_graphics_failed),L"Browser",MB_OK|MB_ICONERROR);return 3;}   /* the step and the HRESULT in the log (startup_graphics_failed) */splitOverlay.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());statusBubble.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());LoadSettings();AdBlockPrepare();ClaimWindowSession();LoadAudioVolumes();motion.SetReducedMotion(ReducedMotionPreferred());NativeChrome::Design::Accent::Set(settings.accent);ProfilesStarted(args);AnnotationStartup();ChatAgentsStartup(); /* #125: notes of a private window that did not close normally */LoadDownloads();LoadHistory();LoadBookmarks();CreateDownloadPanel();CreateAudioPanel();CreateSuggestions();CreateSettingsPanel();CreateHistoryPanel();CreateBookmarkSurfaces();CreateElementSurfaces();CreateFormsSurfaces();FormsEngineImport(); /* #121 P13: once, before the engine starts (it holds its file while it runs) */contextMenu.Init(instance,window,base);profileMenu.Init(instance,window,base);profileDialog.Init(instance,window,base);profileDeleteDialog.Init(instance,window,base);frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();OnboardingShowBrowser(show);/* plain ShowWindow + UpdateWindow, or the scale-in after a completed onboarding */OnboardingAfterStart();if(motionLabMode){motionLab.changed=[]{ApplyMotionTuning();InvalidateChrome();};motionLab.replay=MotionLabReplay;if(motionLab.Create(hi,window,base+L"\\motion-tuning.ini")){ApplyMotionTuning();motionLab.Show();}}if(smoke)SetTimer(window,1,splitTest?180000:60000,nullptr);
+    INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);RunOnboarding(onboardingReason);/* first-run window: returns when the person is done, then the normal start */paper=CreateSolidBrush(BG);WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);{const UINT dpi=GetDpiForSystem();/* channel app icon (src/app-icon.rc), picked from its multi-size ICO at the system DPI for the title bar/Alt+Tab and the taskbar */wc.hIcon=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXICON,dpi),GetSystemMetricsForDpi(SM_CYICON,dpi),LR_DEFAULTCOLOR);wc.hIconSm=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXSMICON,dpi),GetSystemMetricsForDpi(SM_CYSMICON,dpi),LR_DEFAULTCOLOR);}wc.hbrBackground=paper;RegisterClassExW(&wc);window=CreateWindowW(wc.lpszClassName,privateWindow?TR(window_title_private_bare):L"Browser",WS_POPUP|WS_CAPTION/* Windows' minimize / restore / maximize animations (no caption is drawn: WM_NCCALCSIZE gives the whole window to the client) */|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);StampTaskbarIdentity();DragAcceptFiles(window,TRUE);NativeUI::ConfigureFullClientFrame(window);NativeUI::RoundNatively(window);if(const HRESULT gfx=chrome.Init(window,base);FAILED(gfx)){wchar_t code[16];swprintf(code,16,L"0x%08lX",(unsigned long)gfx);Log(std::wstring(L"STARTUP graphics failed at ")+chrome.initStep+L": hr="+code+L" (assets "+base+L"\\assets)");MessageBoxW(window,TR(startup_graphics_failed),L"Browser",MB_OK|MB_ICONERROR);return 3;}   /* the step and the HRESULT in the log (startup_graphics_failed) */splitOverlay.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());statusBubble.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());LoadSettings();AdBlockPrepare();ClaimWindowSession();LoadAudioVolumes();motion.SetReducedMotion(ReducedMotionPreferred());NativeChrome::Design::Accent::Set(settings.accent);ProfilesStarted(args);AnnotationStartup();ChatAgentsStartup(); /* #125: notes of a private window that did not close normally */LoadDownloads();SweepKeptDownloads();LoadHistory();LoadBookmarks();CreateDownloadPanel();CreateAudioPanel();CreateSuggestions();CreateSettingsPanel();CreateHistoryPanel();CreateBookmarkSurfaces();CreateElementSurfaces();CreateFormsSurfaces();FormsEngineImport(); /* #121 P13: once, before the engine starts (it holds its file while it runs) */contextMenu.Init(instance,window,base);profileMenu.Init(instance,window,base);profileDialog.Init(instance,window,base);profileDeleteDialog.Init(instance,window,base);frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();OnboardingShowBrowser(show);/* plain ShowWindow + UpdateWindow, or the scale-in after a completed onboarding */OnboardingAfterStart();if(motionLabMode){motionLab.changed=[]{ApplyMotionTuning();InvalidateChrome();};motionLab.replay=MotionLabReplay;if(motionLab.Create(hi,window,base+L"\\motion-tuning.ini")){ApplyMotionTuning();motionLab.Show();}}if(smoke)SetTimer(window,1,splitTest?180000:60000,nullptr);
 #ifdef BROWSER_UPDATES
     StartUpdates(); // never blocks: the delayed startup check runs on the engine's thread
 #endif
