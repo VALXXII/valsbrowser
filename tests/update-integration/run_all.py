@@ -106,6 +106,11 @@ def existing_fixtures() -> None:
     switch_evidence.mkdir(parents=True, exist_ok=True)
     fixture('settings_layout_switch_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/settings_layout_switch_test.cpp', 'src/native-lottie.cpp', THORVG,
             *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt'], [ROOT, switch_evidence])
+    # Réglages stays open when it changes the layout (Val 2026-11-26): src/main.cpp on a desktop of its own, never displayed.
+    keep_evidence = ROOT / 'build/atelier-a-qa/layout-keep'
+    keep_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('settings_layout_keep_test', [*LOOSE, '-municode', *TVG, WV2, 'tests/atelier-a/settings_layout_keep_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32'], [ROOT, keep_evidence])
     language_evidence = ROOT / 'build/browser-languages/captures/settings'
     language_evidence.mkdir(parents=True, exist_ok=True)
     fixture('language_settings_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/language_settings_test.cpp', 'src/native-lottie.cpp', THORVG,
