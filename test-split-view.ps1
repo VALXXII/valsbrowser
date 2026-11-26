@@ -18,6 +18,18 @@ if ($LASTEXITCODE -ne 0) { throw 'Site name regression failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Split host fixture compilation failed.' }
 & ./build/split-tests/split_ui_test.exe
 if ($LASTEXITCODE -ne 0) { throw 'Split host regression failed.' }
+# Hover frames (Val's « Atelier » boards « Fenêtre »): the pure state machine, then the host (réduire / fermer, the
+# layered windows under a never-shown window, renders in build/atelier-a-qa/split-frames). Screen-free.
+& tools/w64devkit/bin/g++.exe -std=c++17 -static -Wall -Wextra -Werror -Wno-missing-field-initializers tests/split-view/split_frames_test.cpp -o build/split-tests/split_frames_test.exe
+if ($LASTEXITCODE -ne 0) { throw 'Split frames model compilation failed.' }
+& ./build/split-tests/split_frames_test.exe
+if ($LASTEXITCODE -ne 0) { throw 'Split frames model regression failed.' }
+& tools/w64devkit/bin/windres.exe tests/ui/split_frames_ui_test.rc -O coff -o build/split-tests/split_frames_manifest.o
+if ($LASTEXITCODE -ne 0) { throw 'Split frames manifest failed.' }
+& tools/w64devkit/bin/g++.exe -std=c++17 -O2 -Wall -Wextra -Wno-unknown-pragmas -Wno-cast-function-type -Wno-misleading-indentation -Wno-missing-field-initializers -static '-DTVG_STATIC' '-Ideps/thorvg-1.1.3/inc' '-Ideps/webview2/build/native/include' tests/ui/split_frames_ui_test.cpp build/split-tests/split_frames_manifest.o src/native-lottie.cpp build/lottie-backend/src/libthorvg-1.a -o build/split-tests/split_frames_ui_test.exe -lole32 -luuid -lcomctl32 -lshlwapi -lgdi32 -ld2d1 -ldwrite -lwindowscodecs -ldwmapi
+if ($LASTEXITCODE -ne 0) { throw 'Split frames host fixture compilation failed.' }
+& ./build/split-tests/split_frames_ui_test.exe
+if ($LASTEXITCODE -ne 0) { throw 'Split frames host regression failed.' }
 if ($Native) {
     $dir = Join-Path $PSScriptRoot $Out
     & python tools/release/build.py --out $Out

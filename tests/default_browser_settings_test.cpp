@@ -88,8 +88,10 @@ int wmain(int argc, wchar_t** argv) {
         Check(dr.HitForTest(lx, ly) == SettingsUI::DefaultLater && dr.HitForTest(mx, my) == SettingsUI::DefaultMake, "hit test: « Plus tard » and « Browser par défaut »");
         // Keyboard and UIA.
         const auto order = dr.FocusOrderForTest(); auto at = [&](int hit) { for (size_t i = 0; i < order.size(); ++i) if (order[i] == hit) return static_cast<int>(i); return -1; };
-        Check(at(SettingsUI::DefaultLater) >= 0 && at(SettingsUI::DefaultMake) == at(SettingsUI::DefaultLater) + 1 && at(SettingsUI::CheckUpdates) == at(SettingsUI::DefaultMake) + 1,
-              "Tab order: … rows, « Plus tard », « Browser par défaut », then the version's button");
+        // The root footer's layout switch (Val's « Atelier » boards) sits between the card and the version line.
+        Check(at(SettingsUI::DefaultLater) >= 0 && at(SettingsUI::DefaultMake) == at(SettingsUI::DefaultLater) + 1 && at(SettingsUI::LayoutSwitchBase) == at(SettingsUI::DefaultMake) + 1
+              && at(SettingsUI::CheckUpdates) == at(SettingsUI::LayoutSwitchBase + 2) + 1,
+              "Tab order: … rows, « Plus tard », « Browser par défaut », the layout switch, then the version's button");
         const auto nodes = dr.AccessibleNodesForTest(); const auto* later = Node(nodes, SettingsUI::DefaultLater); const auto* make = Node(nodes, SettingsUI::DefaultMake);
         Check(later && later->name == L"Plus tard" && later->automationId == L"SettingsDefaultBrowserLater" && later->help == L"Ne plus proposer pendant 30 jours" && later->focusable,
               "UIA « Plus tard »: name, automation id, help");

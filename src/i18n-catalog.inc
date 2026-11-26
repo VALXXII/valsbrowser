@@ -301,6 +301,12 @@ I18N(tabs_position_short_compact, L"Compact", L"Compact")  // same: the same wor
 I18N(tabs_position_top, L"En haut", L"At the top")
 I18N(tabs_position_side, L"Panneau latéral", L"Side panel")
 I18N(tabs_position_compact, L"Panneau compact", L"Compact panel")
+// Réglages' root footer (Val's « Atelier » boards « 01 · Réglages — racine »): the layout switch's hover labels and the
+// « BETA » chip before the version.
+I18N(layout_switch_classic, L"Classique", L"Classic")
+I18N(layout_switch_side, L"Panneau latéral", L"Side panel")
+I18N(layout_switch_compact, L"Compact", L"Compact")  // same: the same word in both languages
+I18N(settings_beta, L"BETA", L"BETA")  // same: the release stage, the same word in both languages
 I18N(search_kw_tabs_position, L"position onglets disposition panneau latéral compact colonne barre haut gauche verticaux", L"tab position layout side panel compact sidebar vertical tabs top left")
 I18N(sidebar_all_bookmarks, L"Tous les favoris ({0})", L"All bookmarks ({0})")
 I18N(sidebar_collapse_grid, L"Réduire", L"Collapse")
@@ -1087,6 +1093,9 @@ I18N(split_announce_drag_canceled_reason, L"Glisser annulé : {0}", L"Drag cance
 I18N(split_announce_drag_canceled, L"Glisser annulé", L"Drag canceled")
 I18N(split_announce_back_to_tab, L"Vue partagée : {0} redevient un onglet", L"Split view: {0} is a tab again")
 I18N(split_announce_closed, L"Vue partagée fermée. {0}", L"Split view closed. {0}")
+// Split view hover frames (Val's « Atelier » boards « Fenêtre »): the two windows' accessible names.
+I18N(split_frame_site_name, L"{0}, {1}", L"{0}, {1}")  // same: site name then address, list punctuation in both languages
+I18N(split_frame_actions_name, L"Réduire ou fermer {0}", L"Minimize or close {0}")
 I18N(download_error_disk_full, L"Disque plein", L"Disk full")
 I18N(download_error_access_denied, L"Accès refusé", L"Access denied")
 I18N(download_error_name_too_long, L"Nom trop long", L"Name too long")

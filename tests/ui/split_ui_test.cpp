@@ -42,12 +42,11 @@ int main() {
     pages = {yt, luma, paper}; current = 0; ApplyPages();
     Drag(paper, 1000, 450, false);
     assert(tabDrag.lifted && chrome.liftedIndex == 2 && tabDrag.target.kind == SV::Kind::Split && tabDrag.target.side == SV::Side::Right);
-    assert(!chrome.split.ring);  // one accent at a time while previewing
     WndProc(window, WM_LBUTTONUP, 0, At(1000, 450));
     assert(splitGroups.size() == 1 && yt->group && yt->group == paper->group && !luma->group);
     assert(pages[0] == yt && pages[1] == paper && pages[2] == luma);      // the pair sits together, Youtube first
     assert(Active() == paper && yt->shown && paper->shown && !luma->shown && Shown() == 2);
-    assert(chrome.split.shown && chrome.split.ring && chrome.split.handles.size() == 1);
+    assert(chrome.split.shown && chrome.split.handles.size() == 1);
     assert(chrome.split.active.left >= 590 && chrome.split.active.right == 1176);  // Paper on the right (Paper V3: 2 DIP outer outline; #127: 4 DIP inset)
     // the separator grip: 16 DIP centred on the 4 DIP gap (6 DIP over each page edge); z-order above the
     // real pages is checked by the native --split-test, where WebView2 children exist
@@ -64,9 +63,9 @@ int main() {
     assert(chrome.tabGroups[0] && chrome.tabGroups[0] == chrome.tabGroups[1] && !chrome.tabGroups[2]);
     // the group on screen is the one whose members get a surface in the strip (Paper 08)
     assert(chrome.visibleTabGroup == chrome.tabGroups[0]);
-    // active panel ring: neutral; a focus taken without a mouse button down (Tab, F6) is keyboard
-    // modality and shows the strong ring, a click the discreet one; hover never activates
-    ActivatePanel(yt); assert(Active() == yt && keyboardModality && chrome.split.ring);
+    // A focus taken without a mouse button down (Tab, F6) is keyboard modality, a click is not; hover never activates.
+    // No frame around the active panel any more (Val 2026-11-26: the split view's hover frames name the pages).
+    ActivatePanel(yt); assert(Active() == yt && keyboardModality);
     keyboardModality = false; ActivatePanel(yt); assert(keyboardModality);  // re-focus by keyboard re-arms it
     ActivatePanel(paper); assert(Active() == paper);
     // the address bar follows the active panel: Active() drives it
@@ -231,7 +230,6 @@ int main() {
         SV::Target t; t.kind = SV::Kind::Split; t.side = SV::Side::Right; t.orientation = SV::Orientation::Row;
         ApplySplitTarget(pages[1], t, pages[0], CurrentSplit()); auto v = CurrentSplit(); cs = PageCorners();
         assert(v.members.size() == 2 && cs.size() == 4 && cs[0].page.left == v.a.slots[0].box.left && !cs[0].right && cs[2].page.right == v.a.slots[1].box.right && cs[2].right);
-        assert(chrome.split.activeBottomLeft != chrome.split.activeBottomRight);  // the ring rounds only the active panel's outer corner
         splitGroups[v.group] = SV::Orientation::Column; ApplyPages(); v = CurrentSplit(); cs = PageCorners();
         assert(cs.size() == 4); for (auto& c : cs) assert(c.page.top == v.a.slots[c.top ? 0 : 1].box.top);  // stacked: the top panel's top, the bottom panel's bottom
         QuitGroup(v.group);
@@ -300,12 +298,11 @@ int main() {
         { RECT r = ChromePx(chrome.bar); assert(r.left == 5 + (LONG)chrome.bar.left && r.top == 49 && r.bottom == 81); }   // the field at 44 .. 76 in the panel: 49 .. 81
         assert(WndProc(window, WM_NCHITTEST, 0, MAKELPARAM(805, 25)) == HTCAPTION);   // the tab row's empty space drags the window
         { auto cs = PageCorners(); int tops = 0; for (auto& c : cs) tops += c.top; assert(cs.size() == 4 && tops == 2); }   // corners kept; the top masks step away (SyncCornerMasks)
-        // Split side by side: the outer panels get their top corners too; the ring follows the active one's.
+        // Split side by side: the outer panels get their top corners too.
         SV::Target t; t.kind = SV::Kind::Split; t.side = SV::Side::Right; t.orientation = SV::Orientation::Row;
         ApplySplitTarget(pages[1], t, pages[0], CurrentSplit()); auto v = CurrentSplit();
         { auto cs = PageCorners(); int tops = 0; for (auto& c : cs) tops += c.top; assert(v.members.size() == 2 && cs.size() == 4 && tops == 2);
           for (auto& c : cs) if (c.top) assert(c.page.top == 4 && (c.right ? c.page.right == 1176 : c.page.left == 4)); }
-        assert(chrome.split.activeTopLeft != chrome.split.activeTopRight && chrome.split.activeBottomLeft != chrome.split.activeBottomRight);
         for (auto& s : v.a.slots) assert(s.box.top == 4 && s.box.bottom == 811);
         splitGroups[v.group] = SV::Orientation::Column; ApplyPages(); v = CurrentSplit();
         { auto cs = PageCorners(); assert(cs.size() == 4); for (auto& c : cs) assert(c.top ? c.page.top == 4 : c.page.bottom == 811); }   // stacked: top panel's top, bottom panel's bottom

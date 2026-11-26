@@ -48,6 +48,7 @@
 #include "inline-rename.h"
 #include "split-view.h"
 #include "split-overlay.h"
+#include "split-frames-ui.h"   // split view hover frames (Val's « Atelier » boards « Fenêtre »)
 #include "status-bubble.h"
 #include "resize-border.h"   // the window's resize border kept over the chat's WebView and the drawers
 #include "site-name.h"
@@ -271,6 +272,8 @@ namespace SV=NativeChrome::Split;
 struct TabDrag { std::shared_ptr<Tab> tab; POINT start{}; float grab=0; bool active=false; int origin=-1; bool lifted=false; float grabY=0; SV::Target target; POINT at{}; float cardW=0; bool favorite=false; float favGrabY=0; TabFavorite::Target fav; } tabDrag;
 std::map<int,SV::Orientation> splitGroups; int nextSplitGroup=1; std::uint64_t useClock=0; int splitResize=-1;
 NativeChrome::SplitUI::Overlay splitOverlay;NativeChrome::StatusBubble::Bubble statusBubble;unsigned statusSerial=0;
+NativeChrome::SplitFrames::Machine splitFramesMachine;NativeChrome::SplitFrames::Frames splitFrames;bool splitFramesPolling=false;constexpr UINT_PTR SplitFramesPollTimerId=0x5346; /* split view hover frames: state machine, windows, pointer poll */
+void SplitFramesEvaluate();void SplitFramesTick(NativeChrome::Motion::Time now);NativeChrome::Motion::Wake SplitFramesWake(NativeChrome::Motion::Time now);void SplitFramesFlash();void SplitFramesFlashIfMoved(const std::shared_ptr<Tab>& before,int group);
 struct SeparatorDrag { bool active=false; int handle=-1,slot=-1; float grab=0; std::vector<float> extents; float last=0; DWORD lastTime=0; float velocity=0; } sepDrag; int lastSeparator=-1; DWORD lastSeparatorClick=0;
 // Annotation mode entry points (src/annotation-mode.h; no-op stubs when the feature is compiled out).
 constexpr int AnnotateCommand=3060,AnnotateExitCommand=3061,ChatCommand=3063; /* chat intégré (src/chat-host.h): Ctrl+Maj+D, the panel's width taken from the page area, the reload hook, shutdown */ float ChatInsetDip(); void ChatNavigationCompleted(const std::shared_ptr<Tab>& t); void ChatShutdown(); void ChatAgentsStartup(); void ChatAgentsShutdown(); /* « Ton agent »: the agents' one status (src/agent-status.h) */ void AnnotationStartup(); void AnnotationShutdown(); /* #125: a private window's notes erased at its close, leftovers at the next start */ bool AnnotationChatShortcut(); bool AnnotationSettingsAvailable(); bool AnnotationsCompiled(); bool AnnotationModeActive(); bool AnnotationBandSliding(); bool AnnotationSurfaceFocus(); void AnnotationSyncChrome(); void AnnotationLayout(); void AnnotationWindowState(); void AnnotationNavigation(const std::shared_ptr<Tab>& t); void AnnotationTabChanged(); void AnnotationTabSleeping(const std::shared_ptr<Tab>& t); bool AnnotationPageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceivedEventArgs* a); bool AnnotationCommand(int cmd);
@@ -323,6 +326,7 @@ NativeChrome::BookmarkPopover::Popover bookmarkPopover; NativeChrome::BookmarkTo
 NativeChrome::FolderPicker::Popover folderPicker;   // #138 « Personnaliser… » outside the drawer
 // Panneau latéral (#127): section « Panneau latéral » below (src/sidebar.h, Chrome::BuildSidebar / PaintSidebar).
 constexpr int SidebarToggleCommand=NativeChrome::Chrome::SidebarToggleId;int forcedLayout=-1;BrowserSettings::TabsPosition LayoutInEffect();void LogLayout();std::wstring LayoutLine();int TabLayoutArg(const wchar_t* args);bool SidebarEdgeDown(float x);void SidebarEdgeMove(float x);void SidebarEdgeUp(bool commit);void SidebarEdgeLook(int state);bool SidebarEdgeKey(WPARAM key);void SidebarEdgeReset();bool SidebarEdgeDragging();void ApplyLayout();float DrawerReserveDip();void SyncDrawerReserve();void SetTabsPosition(BrowserSettings::TabsPosition p);void SidebarPopover(bool open);bool AnnotationButtonDimmed();RECT RegionScreen(int id);bool ColumnPopoverAt(int id,float gap,POINT& bottomLeft);void UpdateFont();void SidebarPrepare();void ToggleSidebar();void SidebarHoles();bool SidebarDragMove(POINT point);void SidebarDragEnd(bool commit);
+extern bool keepSettingsAcrossLayout; /* the Réglages drawer stays open across a layout change it made (ApplyLayout) */
 bool SyncBookmarkChrome();void BookmarksChanged();void ToggleBookmarksDrawer(bool keyboard);bool BookmarkedSite(const std::wstring& site);long long AccessibleBandItemKey(int region);
 // Self-update host hooks (no-ops in unstamped builds).
 std::wstring AboutTitle(){
@@ -368,6 +372,7 @@ void InvalidateMotion(NativeChrome::Motion::Time now){
     FocusFrame(now); // Mode Focus: the floating panel's slide (the page windows' hole, then its own repaint)
     ScrollbarRefresh(now); // overlay handles only: never repaints the chrome
     PrintFrame(now);
+    SplitFramesTick(now); /* split view hover frames: the morph's frames */
     SplitFrame(now);GripFrame(now);ElementsFrame(now);downloadPanel.Frame(now);downloadDrawer.Frame(now);settingsDrawer.Frame(now);historyDrawer.Frame(now);bookmarksDrawer.Frame(now);
     // Downloads icon: its own button only (also the frame that lands its last pose).
     chrome.downloadIcon.Settle(now);chrome.nav.Settle(now);AudioFrame(now);
@@ -382,6 +387,7 @@ void InvalidateMotion(NativeChrome::Motion::Time now){
 void ScheduleMotion(NativeChrome::Motion::Time now){
     const bool reduced=motion.ReducedMotion();auto ui=NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(motion.NextWake(now),chrome.TabsNextWake(now)),chrome.lottie.NextWake(now,reduced)),chrome.nav.NextWake(now));motionFullFrames=ui.delay.has_value();
     auto wake=NativeChrome::Motion::Earlier(ui,NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(downloadPanel.NextWake(now),downloadDrawer.NextWake(now)),settingsDrawer.NextWake(now)),NativeChrome::Motion::Earlier(historyDrawer.NextWake(now),bookmarksDrawer.NextWake(now))));wake=NativeChrome::Motion::Earlier(wake,chrome.downloadIcon.NextWake(now));wake=NativeChrome::Motion::Earlier(wake,AudioNextWake(now));wake=NativeChrome::Motion::Earlier(wake,ElementsNextWake(now));if(current>=0&&current<(int)pages.size())wake=NativeChrome::Motion::Earlier(wake,pages[current]->loading.NextWake(now,reduced));if(SplitAnimating()||GripsAnimating())wake=NativeChrome::Motion::Earlier(wake,NativeChrome::Motion::Frame());wake=NativeChrome::Motion::Earlier(wake,ScrollbarWake(now));wake=NativeChrome::Motion::Earlier(wake,FocusWake(now));wake=NativeChrome::Motion::Earlier(wake,FocusMotionWake(now));wake=NativeChrome::Motion::Earlier(wake,PrintNextWake(now)); /* our print window (#121): before the nothing-moves exit, or its fade never gets a frame */if(halted||motionMinimized||!wake.delay){KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();return;}
+    wake=NativeChrome::Motion::Earlier(wake,SplitFramesWake(now)); /* split view hover frames */
     // A deadline due within one nominal frame is served by the next compositor tick.
     if(frameClockReady&&(wake.frames||*wake.delay<=*NativeChrome::Motion::Frame().delay)){if(motionDeadline){KillTimer(window,MotionTimerId);motionDeadline.reset();}frameClock.Request();return;}
     frameClock.Cancel();
@@ -465,8 +471,8 @@ void ToggleChromeFocus(bool back=false){
     // view the pages come first, in panel order (Shift+F6 walks back).
     if(UpdateToastHasFocus()||InFullscreen()){FocusPage();return;}   // fullscreen: no chrome to cycle through
     auto panels=ShownPanels();
-    if(GetFocus()==window||GetFocus()==address){editing=false;if(!back&&FocusUpdateToast()){keyboardFocus=0;InvalidateChrome();return;}if(!back&&FocusContextToast()){keyboardFocus=0;InvalidateChrome();return;}if(panels.size()>1){Select(back?panels.back():panels.front());}FocusPage();return;}
-    if(panels.size()>1){auto it=std::find(panels.begin(),panels.end(),current);if(it!=panels.end()){const int k=(int)(it-panels.begin())+(back?-1:1);if(k>=0&&k<(int)panels.size()){Select(panels[k]);return;}}}
+    if(GetFocus()==window||GetFocus()==address){editing=false;if(!back&&FocusUpdateToast()){keyboardFocus=0;InvalidateChrome();return;}if(!back&&FocusContextToast()){keyboardFocus=0;InvalidateChrome();return;}if(panels.size()>1){Select(back?panels.back():panels.front());}FocusPage();if(panels.size()>1)SplitFramesFlash(); /* split view: the frames show on the pane the keyboard lands on */return;}
+    if(panels.size()>1){auto it=std::find(panels.begin(),panels.end(),current);if(it!=panels.end()){const int k=(int)(it-panels.begin())+(back?-1:1);if(k>=0&&k<(int)panels.size()){Select(panels[k]);SplitFramesFlash();return;}}}
     SetFocus(window);auto order=chrome.FocusOrder();keyboardFocus=order.empty()?0:order.front();FocusAnchor(L"F6");InvalidateChrome();
 }
 void FindInPage(){
@@ -615,13 +621,8 @@ void SyncSplitDecor(){
     chrome.tabGroups.assign(pages.size(),0);for(size_t i=0;i<pages.size();++i){const int g=pages[i]->group;if(g&&splitGroups.count(g))chrome.tabGroups[i]=g;}
     chrome.visibleTabGroup=VisibleGroup();
     auto v=CurrentSplit();auto& d=chrome.split;d.rails.clear();d.railTabs.clear();d.handles.clear();d.shown=v.group!=0;
-    // One accent at a time: while a drop preview is shown, the active ring steps back.
-    d.ring=!tabDrag.lifted&&!ResizePlaceholdersUp();
     if(!d.shown){d.hotHandle=d.focusedHandle=-1;splitResize=-1;SyncGripLooks();return;}
     for(auto& s:v.a.slots){D2D1_RECT_F r{s.box.left,s.box.top,s.box.right,s.box.bottom};if(s.rail){d.rails.push_back(r);d.railTabs.push_back(TabIndexOf(v.members[s.member]));}else if(s.member==v.active)d.active=r;}
-    {const auto c=ContentBox();const bool low=std::fabs(d.active.bottom-c.bottom)<.5f;d.activeBottomLeft=low&&std::fabs(d.active.left-c.left)<.5f;d.activeBottomRight=low&&std::fabs(d.active.right-c.right)<.5f;
-     // Mode Focus: the pages' top corners are round too (6 DIP); the ring follows them on the content's top edge.
-     const bool high=chrome.floating&&std::fabs(d.active.top-c.top)<.5f;d.activeTopLeft=high&&std::fabs(d.active.left-c.left)<.5f;d.activeTopRight=high&&std::fabs(d.active.right-c.right)<.5f;}
     for(int s:v.a.separators){auto b=v.a.SeparatorBox(s);d.handles.push_back({b.left,b.top,b.right,b.bottom});}
     if(splitResize>=(int)d.handles.size())splitResize=-1;
     d.focusedHandle=splitResize;if(sepDrag.active)d.hotHandle=sepDrag.handle;else if(d.hotHandle>=(int)d.handles.size())d.hotHandle=-1;
@@ -711,6 +712,7 @@ void ApplyPages(){if(WorkspaceParked())return; /* a hidden profile's event: the 
     if(under)ReleaseDC(window,under);
     FocusHoles(true); // Mode Focus: Chromium may reset a page window's region when it resizes; the hole goes back at once
     SyncGrips(v);SyncCornerMasks();SidebarHoles();SyncSplitDecor();SyncStatusBubble();SyncScrollbars();AnnotationLayout();KeepChatAbovePages();InvalidateRect(window,nullptr,FALSE);
+    SplitFramesEvaluate();splitFrames.Raise(); /* split view hover frames: they follow the panes and stay above a page window placed again */
 }
 // Separator grips. Pages are child windows of another process: over them the main
 // window gets no mouse input, so the 4 DIP gap alone would be the target. A layered
@@ -897,6 +899,7 @@ void ActivatePanel(const std::shared_ptr<Tab>& tab){
     current=i;tab->usedAt=++useClock;editing=false;ShowWindow(address,SW_HIDE);ClearChromeMotion();motion.SelectTab((int)tab->serial,NativeChrome::Motion::Now());
     keyboardModality=keyboard;
     SyncSplitDecor();Update();ScheduleMotion(NativeChrome::Motion::Now());AnnotationTabChanged();
+    if(keyboard)SplitFramesFlash(); /* Tab into another pane's page: the frames show there (a click shows nothing) */
 }
 void AnnounceSplit(const std::wstring& text);
 // Strip placement: `t` right before (after=false) or right after `anchor`.
@@ -1332,8 +1335,72 @@ void CloseAt(int index,CloseReason why=CloseReason::User){if(halted||index<0||in
 enum ShortcutCommand { FocusChrome=3000, FindPage, PrintActive, FocusChromeBack, MoveTabLeft='{', MoveTabRight='}', SelectTabBase=3010 };
 std::vector<int> ShownPanels(){std::vector<int> out;auto v=CurrentSplit();if(v.group)for(auto& s:v.a.slots)if(!s.rail)out.push_back(TabIndexOf(v.members[s.member]));return out;}
 void Close(){CloseAt(current);}
+// ---- Split view: hover frames (src/split-frames.h, src/split-frames-ui.h; Val's « Atelier » boards « Fenêtre ») -------
+// Over a page the window gets no mouse message: while a split view is on screen and the window is in front (or frames
+// still show), the pointer is polled every ~30 ms, as Mode Focus and the compact column do. The machine sees the visible
+// panes in panel order; splitFramesTabs / splitFramesPanes keep which tab each one shows and where.
+std::vector<std::weak_ptr<Tab>> splitFramesTabs;std::vector<NativeChrome::Split::Box> splitFramesPanes;
+bool splitFramesFrontForTest=false;   // host tests: the never-shown window counts as in front
+bool SplitFramesFront(){if(!window)return false;if(splitFramesFrontForTest)return true;HWND fg=GetForegroundWindow();return fg&&(fg==window||GetAncestor(fg,GA_ROOTOWNER)==window)&&IsWindowVisible(window)&&!IsIconic(window);}
+NativeChrome::SplitFrames::Input SplitFramesInput(){
+    NativeChrome::SplitFrames::Input in;splitFramesTabs.clear();auto v=CurrentSplit();if(!window||halted||!v.group)return in;
+    for(auto& s:v.a.slots)if(!s.rail){in.panes.push_back(s.box);splitFramesTabs.push_back(v.members[s.member]);}
+    // Nothing else over the pages' tops: no tab lifted, no separator dragged, no resize placeholders, not Mode Focus (its floating panel sits there).
+    const bool busy=tabDrag.lifted||sepDrag.active||ResizePlaceholdersUp()||chrome.floating||WorkspaceParked();
+    POINT sp{};const bool pointer=GetCursorPos(&sp)!=FALSE;POINT cp=sp;ScreenToClient(window,&cp);RECT wr{};GetWindowRect(window,&wr);const float k=96.f/GetDpiForWindow(window);
+    in.active=!busy&&SplitFramesFront();in.pointer=pointer&&PtInRect(&wr,sp)!=FALSE;in.x=cp.x*k;in.y=cp.y*k;
+    in.buttons=GetAsyncKeyState(VK_LBUTTON)<0||GetAsyncKeyState(VK_RBUTTON)<0||GetAsyncKeyState(VK_MBUTTON)<0;
+    return in;
+}
+std::shared_ptr<Tab> SplitFramesTab(){const int p=splitFramesMachine.Pane();auto t=p>=0&&p<(int)splitFramesTabs.size()?splitFramesTabs[p].lock():nullptr;return t&&!t->closed?t:nullptr;}
+void SplitFramesPaint(NativeChrome::Motion::Time now){
+    const int p=splitFramesMachine.Pane();auto t=SplitFramesTab();if(!t||p>=(int)splitFramesPanes.size()){splitFrames.Hide();return;}
+    NativeChrome::SplitFrames::Content c;c.pane=splitFramesPanes[p];c.name=SiteLabel(t);c.address=BareDomain(t->uri);c.favicon=t->favicon.image;
+    c.progress=splitFramesMachine.Progress(now);c.reduced=splitFramesMachine.Reduced();
+    splitFrames.Show(c,TRF(split_frame_site_name,c.name,c.address),TRF(split_frame_actions_name,c.name));
+}
+void SplitFramesEvaluateAt(NativeChrome::Motion::Time now,bool schedule){
+    if(!window)return;const auto in=SplitFramesInput();splitFramesPanes=in.panes;
+    splitFramesMachine.SetReduced(motion.ReducedMotion());splitFramesMachine.Update(in,now);
+    const bool poll=!in.panes.empty()&&(SplitFramesFront()||splitFramesMachine.Pane()>=0)&&!splitTest;
+    if(poll&&!splitFramesPolling)splitFramesPolling=SetTimer(window,SplitFramesPollTimerId,30,nullptr)!=0;
+    else if(!poll&&splitFramesPolling){KillTimer(window,SplitFramesPollTimerId);splitFramesPolling=false;}
+    SplitFramesPaint(now);if(schedule&&splitFramesMachine.Moving(now))ScheduleMotion(now);
+}
+void SplitFramesEvaluate(){SplitFramesEvaluateAt(NativeChrome::Motion::Now(),true);}
+// The keyboard moved to another pane (F6 / Maj+F6, Tab into its page, Ctrl+Tab / Ctrl+1...9 inside the split; Val
+// 2026-11-26): the frames arrive on the pane that has the focus now, stay a moment (Timing::flash) and leave as after a
+// hover. The pointer over a pane's top wins (hover rules). Screen readers: the active page is announced as before.
+void SplitFramesFlash(){
+    if(!window)return;const auto now=NativeChrome::Motion::Now();const auto in=SplitFramesInput();splitFramesPanes=in.panes;
+    int pane=-1;const auto a=Active();for(size_t i=0;i<splitFramesTabs.size();++i)if(splitFramesTabs[i].lock()==a)pane=(int)i;
+    splitFramesMachine.SetReduced(motion.ReducedMotion());if(!splitFramesMachine.Flash(pane,in,now))return;
+    SplitFramesEvaluateAt(now,true);
+}
+// A tab shortcut that stayed inside the split view on screen but changed its active pane.
+void SplitFramesFlashIfMoved(const std::shared_ptr<Tab>& before,int group){if(group&&VisibleGroup()==group&&Active()!=before)SplitFramesFlash();}
+void SplitFramesTick(NativeChrome::Motion::Time now){if(splitFramesMachine.Pane()>=0||splitFrames.Visible())SplitFramesEvaluateAt(now,false);}
+NativeChrome::Motion::Wake SplitFramesWake(NativeChrome::Motion::Time now){return splitFramesMachine.Moving(now)?NativeChrome::Motion::Frame():NativeChrome::Motion::Wake{};}
+// « réduire »: the page leaves the split view and stays a tab (the split view's « back to a tab », as a member dragged out
+// of its group); the other panes stay on screen (the active one hands over to its neighbour, as on close) and the group
+// stays one run of tabs. « fermer »: the page closes, exactly as its tab's close button (CloseAt picks the heir).
+void SplitFramesAction(int action){
+    auto t=SplitFramesTab();splitFramesMachine.Dismiss();splitFrames.Hide();if(!t)return;
+    if(action==NativeChrome::SplitFrames::Close){CloseAt(TabIndexOf(t));SplitFramesEvaluate();return;}
+    if(action!=NativeChrome::SplitFrames::Minimize||!t->group)return;
+    auto m=Members(t->group);auto it=std::find(m.begin(),m.end(),t);if(it==m.end())return;
+    if(t==Active()){auto heir=it+1!=m.end()?*(it+1):it!=m.begin()?*(it-1):nullptr;if(heir)Select(TabIndexOf(heir));}
+    if(m.size()>2&&t!=m.front()&&t!=m.back())PlaceNextTo(t,m.back(),true);
+    LeaveGroup(t);DissolveSmallGroups();ApplyPages();Update();AnnounceSplit(TRF(split_announce_back_to_tab,TabLabel(t)));
+}
+// A click on the site frame: that pane becomes the active one, as a click on its page would.
+void SplitFramesActivate(){auto t=SplitFramesTab();if(!t)return;if(t!=Active())Select(TabIndexOf(t));if(t->controller.p)t->controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);}
+void SplitFramesInit(HINSTANCE hi){
+    splitFrames.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());
+    splitFrames.action=[](int a){SplitFramesAction(a);};splitFrames.activate=[]{SplitFramesActivate();};splitFrames.changed=[]{SplitFramesPaint(NativeChrome::Motion::Now());};
+}
 void Command(int cmd){if(cmd==MotionLabCommand){if(motionLabMode)motionLab.Toggle();return;}if(halted||!chrome.Enabled(cmd))return;SideFocusCommand(cmd);
-    if(tabDrag.tab){CancelTabDrag();if(GetCapture()==window)ReleaseCapture();UpdateInteraction(hover,0);}auto t=Active();if(cmd>=SelectTabBase&&cmd<SelectTabBase+9){Select(cmd==SelectTabBase+8?(int)pages.size()-1:cmd-SelectTabBase);return;}switch(cmd){case FocusChrome:ToggleChromeFocus();break;case FocusChromeBack:ToggleChromeFocus(true);break;case FindPage:OpenFindBar();break;case '{':MoveTab(current,current-1);break;case '}':MoveTab(current,current+1);break;case 'L':FocusAddress();break;case ']':if(!pages.empty())Select((current+1)%(int)pages.size());break;case '[':if(!pages.empty())Select((current+(int)pages.size()-1)%(int)pages.size());break;case 'T':NewTab(NewTabTarget(),UserTabIndex());FocusAddress();break;case 'W':Close();break;case 'U':ReopenTab();break;case 'R':if(t&&t->view.p&&t->loading.IsLoading()){Check(t->view->Stop(),L"Stop");break;}if(t&&t->view.p&&CheckTab(t->view->Reload(),L"Reload")){t->refreshing=true;auto now=NativeChrome::Motion::Now();chrome.lottie.RefreshBegin(now);SyncStopMorph(now);InvalidateChrome();ScheduleMotion(now);}break;case 'H':Navigate(t,L"");break;case 'B':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoBack(&yes);if(yes&&Check(t->view->GoBack(),L"GoBack")){auto now=NativeChrome::Motion::Now();chrome.nav.back.Kick(-1,now,motion.ReducedMotion(),TravelParams(true));InvalidateChrome();ScheduleMotion(now);}}break;case 'F':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoForward(&yes);if(yes&&Check(t->view->GoForward(),L"GoForward")){auto now=NativeChrome::Motion::Now();chrome.nav.forward.Kick(1,now,motion.ReducedMotion(),TravelParams(false));InvalidateChrome();ScheduleMotion(now);}}break;default:ExtraCommand(cmd);break;}}
+    if(tabDrag.tab){CancelTabDrag();if(GetCapture()==window)ReleaseCapture();UpdateInteraction(hover,0);}auto t=Active();if(cmd>=SelectTabBase&&cmd<SelectTabBase+9){const auto before=Active();const int group=VisibleGroup();Select(cmd==SelectTabBase+8?(int)pages.size()-1:cmd-SelectTabBase);SplitFramesFlashIfMoved(before,group);return;}switch(cmd){case FocusChrome:ToggleChromeFocus();break;case FocusChromeBack:ToggleChromeFocus(true);break;case FindPage:OpenFindBar();break;case '{':MoveTab(current,current-1);break;case '}':MoveTab(current,current+1);break;case 'L':FocusAddress();break;case ']':if(!pages.empty()){const int group=VisibleGroup();Select((current+1)%(int)pages.size());SplitFramesFlashIfMoved(t,group);}break;case '[':if(!pages.empty()){const int group=VisibleGroup();Select((current+(int)pages.size()-1)%(int)pages.size());SplitFramesFlashIfMoved(t,group);}break;case 'T':NewTab(NewTabTarget(),UserTabIndex());FocusAddress();break;case 'W':Close();break;case 'U':ReopenTab();break;case 'R':if(t&&t->view.p&&t->loading.IsLoading()){Check(t->view->Stop(),L"Stop");break;}if(t&&t->view.p&&CheckTab(t->view->Reload(),L"Reload")){t->refreshing=true;auto now=NativeChrome::Motion::Now();chrome.lottie.RefreshBegin(now);SyncStopMorph(now);InvalidateChrome();ScheduleMotion(now);}break;case 'H':Navigate(t,L"");break;case 'B':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoBack(&yes);if(yes&&Check(t->view->GoBack(),L"GoBack")){auto now=NativeChrome::Motion::Now();chrome.nav.back.Kick(-1,now,motion.ReducedMotion(),TravelParams(true));InvalidateChrome();ScheduleMotion(now);}}break;case 'F':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoForward(&yes);if(yes&&Check(t->view->GoForward(),L"GoForward")){auto now=NativeChrome::Motion::Now();chrome.nav.forward.Kick(1,now,motion.ReducedMotion(),TravelParams(false));InvalidateChrome();ScheduleMotion(now);}}break;default:ExtraCommand(cmd);break;}}
 bool BookmarkPopoverFocus();bool SmokeBookmarks();bool FolderRenameFocus();
 bool EscapeOwnedBySurface(HWND focus); // below, after the surfaces: a drawer or a toolbar popover with the keyboard closes on its own Échap
 bool EscapeLeavesAnnotation(bool modeActive,HWND focus); // below: Key()'s decision for Échap in the annotation mode (tests/shortcuts_test.cpp)
@@ -2973,7 +3040,7 @@ void SettingChanged(BrowserSettings::Change change){
     case Change::CustomSearch:break;
     case Change::TabPosition:case Change::ConfirmCloseTabs:case Change::CloseWithLastTab:case Change::MuteBackground:ApplyTabSettings();break;
     case Change::Autoplay:ApplyMediaSettings();break;
-    case Change::TabsPosition:forcedLayout=-1;ApplyLayout();if(window&&chrome.sidebar)Layout();settingsDrawer.Changed();Log(std::wstring(L"SETTINGS tabs position ")+BrowserSettings::Info(settings.tabsPosition).label);break;
+    case Change::TabsPosition:{const bool keep=settingsDrawer.Open();forcedLayout=-1;keepSettingsAcrossLayout=keep;ApplyLayout();keepSettingsAcrossLayout=false;if(window&&chrome.sidebar)Layout();if(keep)settingsDrawer.Relaid();settingsDrawer.Changed();}Log(std::wstring(L"SETTINGS tabs position ")+BrowserSettings::Info(settings.tabsPosition).label);break;
     case Change::GrayscaleText:Log(settings.grayscaleText?L"SETTINGS grayscale text on: applies at next launch":L"SETTINGS grayscale text off: applies at next launch");break;
     // Réglages › « Annotations »: the launch prompt is read by the mode when it next needs it (src/annotation-mode.h, Prefs).
     case Change::AnnotationConnectPrompt:Log(BrowserSettings::ConnectPromptActive(settings)?L"SETTINGS annotation connect prompt on (« Plus tard » count reset)":L"SETTINGS annotation connect prompt off");break;
@@ -5522,6 +5589,9 @@ float DrawerReserveDip(){if(InFullscreen()||halted)return 0;if(settingsDrawer.Op
     if((downloadDrawer.Visible()&&!downloadDrawer.Closing())||historyDrawer.Open()||bookmarksDrawer.Open())return NativeChrome::Downloads::DrawerLayout::width;
     if(audioPanel.Docked())return NativeChrome::AudioPanel::Layout::width;return 0;}
 void SyncDrawerReserve(){static float applied=0;const float r=DrawerReserveDip();if(r==applied)return;applied=r;if(window&&!halted)Layout();}
+// The Réglages drawer changed the layout itself (its root switch, Réglages › Onglets): it stays open across the change
+// and is placed again where drawers go in the new layout (Val 2026-11-26). Any other way of changing it closes it as before.
+bool keepSettingsAcrossLayout=false;
 void ApplyLayout(){
     layoutApplied=true;
     const bool want=SidePanelWanted();NativeChrome::ShortcutsPanel::SidePanelRows()=want;if(want==chrome.sidebar)return;
@@ -5529,7 +5599,7 @@ void ApplyLayout(){
     if(window){KillTimer(window,SidebarFoldTimerId);KillTimer(window,SidebarHoverTimerId);}
     for(auto& t:pages)if(t&&t->holed){if(t->host&&IsWindow(t->host))SetWindowRgn(t->host,nullptr,TRUE);t->holed=false;}
     chrome.sidebar=want;sidebarReady=false;sidebarShownTab=-1;chrome.ResetTabMotion();   // the other layout starts settled
-    if(window){HideSuggestions();chrome.latched=0;CloseDownloadSurfaces(false);audioPanel.Close(false);settingsDrawer.Hide(false,false);historyDrawer.Hide(false,false);bookmarksDrawer.Hide(false,false);
+    if(window){HideSuggestions();chrome.latched=0;CloseDownloadSurfaces(false);audioPanel.Close(false);if(!keepSettingsAcrossLayout)settingsDrawer.Hide(false,false);historyDrawer.Hide(false,false);bookmarksDrawer.Hide(false,false);
         Layout();bookmarkToast.Reposition();RepositionElementSurfaces();}
     Log(want?L"LAYOUT side panel":L"LAYOUT top bar");
 }
@@ -6037,6 +6107,7 @@ case WM_DROPFILES:{HDROP drop=(HDROP)w;const UINT n=DragQueryFileW(drop,0xFFFFFF
     for(UINT i=0;i<n&&i<32;++i){const UINT len=DragQueryFileW(drop,i,nullptr,0);if(!len)continue;std::wstring path(len+1,L'\0');DragQueryFileW(drop,i,path.data(),len+1);path.resize(len);NewTab(AddressBar::FileUrlFromPath(path));++opened;}
     DragFinish(drop);if(opened){Select((int)pages.size()-1);Log(L"OPEN dropped files: "+std::to_wstring(opened));}return 0;}
 case WM_ACTIVATE:if(LOWORD(w)!=WA_INACTIVE){vaultKeyShownAt=GetTickCount64();PublishProfileWindow();settingsDrawer.RefreshDefaultBrowser();}   /* review N6: the key re-arms when the window is activated */
+    SplitFramesEvaluate(); /* split view hover frames: they leave with the window's activation, the pointer poll starts again with it */
     if(chrome.floating)FocusEvaluate(); /* Mode Focus: the pointer poll runs while the window is in front (or the panel still shows) */if(chrome.sideHidden)SideFocusEvaluate(); /* #127: the same for the column's left band */
     if(LOWORD(w)==WA_INACTIVE){FormsHideAll();CancelTabDrag(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(0,0);}else if(!smoke&&!halted)Defer([]{if(!bandDrag.active)SaveBookmarks();if(sessionReady){SaveHistory();SaveDownloads();if(!WorkspaceParked())historyDrawer.Changed();DownloadsChanged();}}); /* pick up the other windows' changes, a wipe included (S5) */return 0;
 case WM_SHOWWINDOW:AnnotationWindowState();break; // V3-B: the annotation band's wave stops in the background (WM_ACTIVATEAPP: below)
@@ -6094,6 +6165,7 @@ case WM_TIMER:
     if(w==UpdateTimerId){UpdateTimerFired();return 0;}
 #endif
     if(w==SleepTimerId){SleepTabs();return 0;}
+    if(w==SplitFramesPollTimerId){SplitFramesEvaluate();return 0;} /* split view hover frames: the pointer over the pages */
     if(w==SidebarFoldTimerId){Layout();if(!sidebarFold.Moving(SidebarNowMs())&&!chrome.MorphMoving(NativeChrome::Motion::Now())&&!sideWidthSpring.Moving(NativeChrome::Motion::Now())){KillTimer(h,SidebarFoldTimerId);Layout();}return 0;}
     if(w==SidebarEdgeFadeTimerId){SyncCornerMasks();InvalidateChrome();if(chrome.sidebarEdge!=1||chrome.EdgeAlpha(NativeChrome::Motion::Now())>=1)KillTimer(h,SidebarEdgeFadeTimerId);return 0;}
     if(w==SidebarHoverTimerId){SidebarHoverDue();return 0;}
@@ -7129,7 +7201,7 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){
 #ifdef BROWSER_E2E_VAULT_ACTIVE
     Log(L"E2E VAULT ACTIVE: product path, vault forced active, every foreground condition in force (test build only)");   /* review R-5 host marker, absent from dev/release (tests/e2e/product_markers.ps1) */
 #endif
-    INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);RunOnboarding(onboardingReason);/* first-run window: returns when the person is done, then the normal start */paper=CreateSolidBrush(BG);WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);{const UINT dpi=GetDpiForSystem();/* channel app icon (src/app-icon.rc), picked from its multi-size ICO at the system DPI for the title bar/Alt+Tab and the taskbar */wc.hIcon=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXICON,dpi),GetSystemMetricsForDpi(SM_CYICON,dpi),LR_DEFAULTCOLOR);wc.hIconSm=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXSMICON,dpi),GetSystemMetricsForDpi(SM_CYSMICON,dpi),LR_DEFAULTCOLOR);}wc.hbrBackground=paper;RegisterClassExW(&wc);window=CreateWindowW(wc.lpszClassName,privateWindow?TR(window_title_private_bare):L"Browser",WS_POPUP|WS_CAPTION/* Windows' minimize / restore / maximize animations (no caption is drawn: WM_NCCALCSIZE gives the whole window to the client) */|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);StampTaskbarIdentity();DragAcceptFiles(window,TRUE);NativeUI::ConfigureFullClientFrame(window);NativeUI::RoundNatively(window);if(const HRESULT gfx=chrome.Init(window,base);FAILED(gfx)){wchar_t code[16];swprintf(code,16,L"0x%08lX",(unsigned long)gfx);Log(std::wstring(L"STARTUP graphics failed at ")+chrome.initStep+L": hr="+code+L" (assets "+base+L"\\assets)");MessageBoxW(window,TR(startup_graphics_failed),L"Browser",MB_OK|MB_ICONERROR);return 3;}   /* the step and the HRESULT in the log (startup_graphics_failed) */splitOverlay.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());statusBubble.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());LoadSettings();AdBlockPrepare();ClaimWindowSession();LoadAudioVolumes();motion.SetReducedMotion(ReducedMotionPreferred());NativeChrome::Design::Accent::Set(settings.accent);ProfilesStarted(args);AnnotationStartup();ChatAgentsStartup(); /* #125: notes of a private window that did not close normally */LoadDownloads();SweepKeptDownloads();LoadHistory();LoadBookmarks();CreateDownloadPanel();CreateAudioPanel();CreateSuggestions();CreateSettingsPanel();CreateHistoryPanel();CreateBookmarkSurfaces();CreateElementSurfaces();CreateFormsSurfaces();FormsEngineImport(); /* #121 P13: once, before the engine starts (it holds its file while it runs) */contextMenu.Init(instance,window,base);profileMenu.Init(instance,window,base);profileDialog.Init(instance,window,base);profileDeleteDialog.Init(instance,window,base);frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();OnboardingShowBrowser(show);/* plain ShowWindow + UpdateWindow, or the scale-in after a completed onboarding */OnboardingAfterStart();if(motionLabMode){motionLab.changed=[]{ApplyMotionTuning();InvalidateChrome();};motionLab.replay=MotionLabReplay;if(motionLab.Create(hi,window,base+L"\\motion-tuning.ini")){ApplyMotionTuning();motionLab.Show();}}if(smoke)SetTimer(window,1,splitTest?180000:60000,nullptr);
+    INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);RunOnboarding(onboardingReason);/* first-run window: returns when the person is done, then the normal start */paper=CreateSolidBrush(BG);WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);{const UINT dpi=GetDpiForSystem();/* channel app icon (src/app-icon.rc), picked from its multi-size ICO at the system DPI for the title bar/Alt+Tab and the taskbar */wc.hIcon=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXICON,dpi),GetSystemMetricsForDpi(SM_CYICON,dpi),LR_DEFAULTCOLOR);wc.hIconSm=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXSMICON,dpi),GetSystemMetricsForDpi(SM_CYSMICON,dpi),LR_DEFAULTCOLOR);}wc.hbrBackground=paper;RegisterClassExW(&wc);window=CreateWindowW(wc.lpszClassName,privateWindow?TR(window_title_private_bare):L"Browser",WS_POPUP|WS_CAPTION/* Windows' minimize / restore / maximize animations (no caption is drawn: WM_NCCALCSIZE gives the whole window to the client) */|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);StampTaskbarIdentity();DragAcceptFiles(window,TRUE);NativeUI::ConfigureFullClientFrame(window);NativeUI::RoundNatively(window);if(const HRESULT gfx=chrome.Init(window,base);FAILED(gfx)){wchar_t code[16];swprintf(code,16,L"0x%08lX",(unsigned long)gfx);Log(std::wstring(L"STARTUP graphics failed at ")+chrome.initStep+L": hr="+code+L" (assets "+base+L"\\assets)");MessageBoxW(window,TR(startup_graphics_failed),L"Browser",MB_OK|MB_ICONERROR);return 3;}   /* the step and the HRESULT in the log (startup_graphics_failed) */splitOverlay.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());SplitFramesInit(hi);statusBubble.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());LoadSettings();AdBlockPrepare();ClaimWindowSession();LoadAudioVolumes();motion.SetReducedMotion(ReducedMotionPreferred());NativeChrome::Design::Accent::Set(settings.accent);ProfilesStarted(args);AnnotationStartup();ChatAgentsStartup(); /* #125: notes of a private window that did not close normally */LoadDownloads();SweepKeptDownloads();LoadHistory();LoadBookmarks();CreateDownloadPanel();CreateAudioPanel();CreateSuggestions();CreateSettingsPanel();CreateHistoryPanel();CreateBookmarkSurfaces();CreateElementSurfaces();CreateFormsSurfaces();FormsEngineImport(); /* #121 P13: once, before the engine starts (it holds its file while it runs) */contextMenu.Init(instance,window,base);profileMenu.Init(instance,window,base);profileDialog.Init(instance,window,base);profileDeleteDialog.Init(instance,window,base);frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();OnboardingShowBrowser(show);/* plain ShowWindow + UpdateWindow, or the scale-in after a completed onboarding */OnboardingAfterStart();if(motionLabMode){motionLab.changed=[]{ApplyMotionTuning();InvalidateChrome();};motionLab.replay=MotionLabReplay;if(motionLab.Create(hi,window,base+L"\\motion-tuning.ini")){ApplyMotionTuning();motionLab.Show();}}if(smoke)SetTimer(window,1,splitTest?180000:60000,nullptr);
 #ifdef BROWSER_UPDATES
     StartUpdates(); // never blocks: the delayed startup check runs on the engine's thread
 #endif
@@ -7146,5 +7218,5 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){
      SetEnvironmentVariableW(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",nullptr);}
     StartWorkspaces();
     StartEngine(); // loader, probe, environment; a failure opens the recovery dialog
-    MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(motionLab.Window()&&IsDialogMessageW(motionLab.Window(),&msg))continue;if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);SyncAccessibility();continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}KeepsAfterEngine();StopEngineStart();engineStart.reset();environment.set(nullptr);if(loader)FreeLibrary(loader);RunPendingRelaunch();suggestions.Dispose();downloadPanel.Dispose();downloadDrawer.Dispose();settingsDrawer.Dispose();historyDrawer.Dispose();bookmarkPopover.Dispose();bookmarkToast.Dispose();bookmarksDrawer.Dispose();contextMenu.Dispose();splitOverlay.Dispose();statusBubble.Dispose();motionLab.Dispose();chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();return halted?2:0;
+    MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(motionLab.Window()&&IsDialogMessageW(motionLab.Window(),&msg))continue;if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);SyncAccessibility();continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}KeepsAfterEngine();StopEngineStart();engineStart.reset();environment.set(nullptr);if(loader)FreeLibrary(loader);RunPendingRelaunch();suggestions.Dispose();downloadPanel.Dispose();downloadDrawer.Dispose();settingsDrawer.Dispose();historyDrawer.Dispose();bookmarkPopover.Dispose();bookmarkToast.Dispose();bookmarksDrawer.Dispose();contextMenu.Dispose();splitOverlay.Dispose();splitFrames.Dispose();statusBubble.Dispose();motionLab.Dispose();chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();return halted?2:0;
 }

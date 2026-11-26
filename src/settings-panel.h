@@ -79,6 +79,9 @@ enum Hit : int {
     // are « Ton agent »'s CatAgents and ManualBase (+ 2 agents); 58, 59, 67 stay free (lot R removed those rows).
     TabsLayoutBase = 96,
     SiteBase = 100, PermissionBase = 400, ResultBase = 600,
+    // The root footer's layout switch (Val's « Atelier », « 01 · Réglages — racine »): Classique, Panneau latéral,
+    // Compact, 500..502 (the same setting as « Position des onglets » above, one source of truth).
+    LayoutSwitchBase = 500,
 };
 inline constexpr int AgentHit(AnnotationSettings::ChatApp a) { return AgentBase + static_cast<int>(a); }
 inline constexpr bool IsAgent(int hit) { return hit >= AgentBase && hit < AgentBase + AnnotationSettings::ChatAppCount; }
@@ -91,6 +94,8 @@ inline bool IsEngine(int hit) { return hit >= EngineBase && hit < EngineBase + B
 inline bool IsSite(int hit) { return hit >= SiteBase && hit < PermissionBase; }
 inline bool IsPermission(int hit) { return hit >= PermissionBase && hit < PermissionBase + 100; }
 inline bool IsProfileRow(int hit) { return hit >= ProfileRowBase && hit < ProfileRowBase + 64; }
+inline constexpr bool IsLayoutSwitch(int hit) { return hit >= LayoutSwitchBase && hit < LayoutSwitchBase + BrowserSettings::TabsPositionCount; }
+inline constexpr bool IsTabsLayout(int hit) { return hit >= TabsLayoutBase && hit < TabsLayoutBase + BrowserSettings::TabsPositionCount; }
 constexpr int SwitchHits[] = {RestoreTabs, AskWhere, ReduceMotion, Suggestions, Passwords, Autofill, ClearOnExit,
                               ConfirmClose, CloseWithLastTab, AdBlock, HttpsOnly, ThirdPartyCookies, MemorySaver, MuteBackground,
                               GrayscaleText, FocusModeHit};
@@ -121,6 +126,35 @@ inline constexpr float segPad = 2, segGap = 2, segHeight = 60, segRadius = 8, se
 inline constexpr float SegmentedRow(size_t lines) { return 6 + 20 + 2 + lines * descriptionLine + 10 + 2 * segPad + segHeight + 6; }
 // Footer of every settings view: hairline, 12, version (24), 16.
 inline constexpr float footer = 1 + 12 + slot + padBottom;                                        // 53
+// Version line (Val's « Atelier » boards 26YE-0 / 271F-0 / 274F-0 / 26V2-0, « 01 · Réglages — racine »): the « BETA »
+// chip (10/10 Medium, tracking 0.02em, white 50 %, on a white 4 % plate, radius 4, padding 2 / 4), 6, then the version.
+inline constexpr float betaFont = 10, betaTracking = .2f, betaPadX = 4, betaPadY = 2, betaLine = 10, betaRadius = 4, betaGap = 6;
+inline constexpr float betaHeight = betaLine + 2 * betaPadY;                                       // 14
+// Layout switch (same boards; the root view only): between the footer's hairline and the version line. Hairline, 12
+// (4 + the 16 DIP hover label + 2 while a label shows), the control's 2 DIP top margin, the control (white 4 %, radius 8,
+// padding 2, gap 2; three segments 28 high, radius 6: selected white 12 %, hovered white 4 %; the tabs-position icons at
+// 16), its 4 DIP bottom margin, 6, the version line. The control keeps 4 DIP from the column on both sides (16..316).
+// Hover label: 12/16 Regular, tracking -0.01em, white 50 %, centred in a 109 DIP box at the column's start (Classique),
+// across the column (Panneau latéral) or at its end (Compact).
+inline constexpr float switchMarginTop = 2, switchMarginSide = 4, switchMarginBottom = 4, switchRowGap = 6;
+inline constexpr float switchPad = 2, switchGap = 2, switchSeg = 28, switchRadius = 8, switchSegRadius = 6, switchIcon = 16;
+inline constexpr float switchControl = 2 * switchPad + switchSeg;                                                  // 32
+inline constexpr float switchBlock = switchMarginTop + switchControl + switchMarginBottom + switchRowGap;          // 44: what the footer grows by
+inline constexpr float switchLabel = 16, switchLabelGap = 2, switchLabelBox = 109, switchLabelFont = 12, switchLabelTracking = -.12f;
+inline constexpr float switchLabelGrow = 4 + switchLabel + switchLabelGap - 12;                                   // 10: the hairline rises while a label shows
+// `versionTop`: top of the version's 24 DIP slot.
+inline constexpr Box SwitchControl(float versionTop) {
+    return {rowLeft + switchMarginSide, versionTop - switchRowGap - switchMarginBottom - switchControl, rowRight - switchMarginSide, versionTop - switchRowGap - switchMarginBottom};
+}
+inline constexpr Box SwitchSegment(float versionTop, int k) {
+    const Box c = SwitchControl(versionTop); const float w = (c.right - c.left - 2 * switchPad - 2 * switchGap) / 3, x = c.left + switchPad + k * (w + switchGap);
+    return {x, c.top + switchPad, x + w, c.top + switchPad + switchSeg};
+}
+// The label's centre line (x) and its 16 DIP line (y).
+inline constexpr float SwitchLabelCentre(int k) { return k == 0 ? rowLeft + switchLabelBox / 2 : k == 1 ? (rowLeft + rowRight) / 2 : rowRight - switchLabelBox / 2; }
+inline constexpr float SwitchLabelTop(float versionTop) { return SwitchControl(versionTop).top - switchMarginTop - switchLabelGap - switchLabel; }
+static_assert(switchBlock == 44 && switchLabelGrow == 10, "Paper 26YE-0: the switch adds 2 + 32 + 4 + 6; a label lifts the hairline by 10");
+static_assert(SwitchControl(0).left == 16 && SwitchControl(0).right == 316 && SwitchControl(0).bottom == -10, "Paper 270P-0: 4 DIP inside the column, 4 + 6 above the version");
 // « Navigateur par défaut » card (Paper 1DQM-0, above the version, under the footer's hairline and its 12 DIP): the
 // halftone area (110 high, top corners 22, the shader node 308 x 159 at 0.2 / -3 over a #1D1D1D -> #121212 gradient,
 // then a #171717 radial veil 81 high at 33.2), the question 2 px up into it (14/20 Medium, centred, balanced, #FFFFFFE6),
@@ -652,6 +686,8 @@ private:
     std::map<int, std::vector<std::wstring>> lines_; std::vector<std::wstring> noSitesLines_, sitesNoteLines_;
     // Address fields: reveal lanes, a choice waiting for its address, the edit in progress.
     Lane customReveal_, homeReveal_; bool customPending_ = false, homePending_ = false;
+    // Root footer's layout switch: 1 while a hover / keyboard label shows (the hairline sits 10 DIP higher).
+    Lane switchReveal_;
     HWND edit_ = nullptr; int editing_ = 0; RECT editRect_{}; bool editShown_ = false; bool cancelEdit_ = false; HFONT editFont_ = nullptr; UINT editDpi_ = 0;
     HBRUSH editBrush_ = nullptr; COLORREF editBrushColor_ = 0; std::map<int, std::wstring> drafts_; std::map<int, bool> errors_;
     BrowserSettings::Autoplay launchAutoplay_ = BrowserSettings::Autoplay::Muted; bool launchCookies_ = false, launchGrayscale_ = false; // engine flags of this run
@@ -738,7 +774,28 @@ private:
     // Footer height per view (DIP): main = clear + version; sites = note + "Tout retirer"; site = one danger row.
     float FooterHeight(View v) const {
         if (v == View::Profile) { const auto& note = LastProfile() ? lastProfileNoteLines_ : profileNoteLines_; return 1 + 12 + note.size() * Layout::descriptionLine + 8 + Layout::row + Layout::padBottom; }
-        return v == View::Sites ? 1 + 12 + 40 + 8 + Layout::row + Layout::padBottom : v == View::Site ? 1 + 12 + Layout::row + Layout::padBottom : Layout::footer + (CardIn(v) ? Layout::CardBlock(CardLines().size()) : 0);
+        return v == View::Sites ? 1 + 12 + 40 + 8 + Layout::row + Layout::padBottom : v == View::Site ? 1 + 12 + Layout::row + Layout::padBottom : Layout::footer + (CardIn(v) ? Layout::CardBlock(CardLines().size()) : 0) + SwitchHeight(v);
+    }
+    // Root footer's layout switch (Val's « Atelier » boards): the root view only, under the « navigateur par défaut »
+    // card when it shows, above the version line. Selected segment = the « Position des onglets » setting.
+    bool SwitchIn(View v) const { return v == View::Main && state_ != nullptr; }
+    float SwitchReveal(Motion::Time now) const { return switchReveal_.Value(now); }
+    float SwitchHeight(View v) const { return SwitchIn(v) ? Layout::switchBlock + Layout::switchLabelGrow * SwitchReveal(Motion::Now()) : 0.f; }
+    int SwitchSelected() const { return state_ ? std::clamp(static_cast<int>(state_->tabsPosition), 0, BrowserSettings::TabsPositionCount - 1) : 0; }
+    // The segment whose label shows: the hovered one, else the keyboard-focused one; -1 for none.
+    int SwitchLabelIndex() const { return IsLayoutSwitch(hover_) ? hover_ - LayoutSwitchBase : keyboard_ && IsLayoutSwitch(focus_) ? focus_ - LayoutSwitchBase : -1; }
+    // Pointer: the whole control answers (padding and the 2 DIP gaps go to the nearest segment), so the label never
+    // blinks between two segments.
+    int SwitchAt(float x, float y) const {
+        const auto c = Layout::SwitchControl(VersionTop());
+        if (x < c.left || x >= c.right || y < c.top || y >= c.bottom) return -1;
+        for (int k = 0; k < BrowserSettings::TabsPositionCount - 1; ++k) if (x < (Layout::SwitchSegment(VersionTop(), k).right + Layout::SwitchSegment(VersionTop(), k + 1).left) / 2) return k;
+        return BrowserSettings::TabsPositionCount - 1;
+    }
+    void SyncSwitchLabel(Motion::Time now) {
+        const float target = SwitchIn(Current()) && SwitchLabelIndex() >= 0 ? 1.f : 0.f;
+        // The hover fade's 120 ms (Motion::Interaction), so the hairline moves with the label; reduced motion: at once.
+        if (target != switchReveal_.Target()) switchReveal_.Set(target, now, Motion::Milliseconds(0), Reduced() ? Motion::Milliseconds(0) : Motion::Milliseconds(120), Downloads::Curves::emphasized);
     }
     float ViewBottom(View v) const { return Height() - FooterHeight(v); }
     LayoutInput Input() const {
@@ -1351,6 +1408,47 @@ private:
         const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width));
         brush->SetColor(D2D1::ColorF(1, 1, 1, .04f)); t->FillRectangle(D2D1::RectF(c.card.left, c.card.bottom - px, c.card.right, c.card.bottom), brush);   // border-bottom: the footer's white 4 % hairline (designer, 2026-11-23; Paper had #FFFFFF14)
     }
+    // « BETA » before the version (Paper 2716-0): the chip centred on the version's 24 DIP slot at `y`, from the text's
+    // left edge; returns where the version starts (6 DIP after the chip).
+    D2D1_RECT_F BetaBox(float y) const {
+        const float w = pc_->TextWidth(TR(settings_beta), Layout::betaFont, true, true, Layout::betaTracking) + 2 * Layout::betaPadX;
+        const float top = y + (Layout::slot - Layout::betaHeight) / 2;
+        return {Layout::textLeft, top, Layout::textLeft + w, top + Layout::betaHeight};
+    }
+    float Beta(float y) {
+        const auto chip = BetaBox(y);
+        pc_->FillBox(chip, Layout::betaRadius, D2D1::ColorF(1, 1, 1, 0x0A / 255.f));   // #FFFFFF0A
+        pc_->Text(TR(settings_beta), {chip.left + Layout::betaPadX, chip.top + Layout::betaPadY, chip.right - Layout::betaPadX + 1, chip.bottom - Layout::betaPadY}, Layout::betaFont, .5f, true, true, Layout::betaTracking);   // #FFFFFF80
+        return chip.right + Layout::betaGap;
+    }
+    // The root's layout switch (Val's boards 26YE-0 rest, 271F-0 « Panneau latéral », 274F-0 « Compact », 26V2-0 « Classique »).
+    float SwitchLabelAlpha(int k, Motion::Time now) const {
+        const int hit = LayoutSwitchBase + k;
+        return std::max(std::clamp(Interaction(hit, now).hover, 0.f, 1.f), keyboard_ && focus_ == hit && !IsLayoutSwitch(hover_) ? 1.f : 0.f);
+    }
+    void LayoutSwitch(Motion::Time now) {
+        const float y = VersionTop(); const int selected = SwitchSelected();
+        pc_->FillBox(R(Layout::SwitchControl(y)), Layout::switchRadius, D2D1::ColorF(1, 1, 1, 0x0A / 255.f));   // #FFFFFF0A
+        for (int k = 0; k < BrowserSettings::TabsPositionCount; ++k) {
+            const auto b = R(Layout::SwitchSegment(y, k)); const int hit = LayoutSwitchBase + k; const bool active = k == selected;
+            const float hv = std::clamp(Interaction(hit, now).hover, 0.f, 1.f);
+            if (active || hv > 0) pc_->FillBox(b, Layout::switchSegRadius, D2D1::ColorF(1, 1, 1, active ? 0x1F / 255.f : 0x0A / 255.f * hv));   // #FFFFFF1F / #FFFFFF0A
+            if (focus_ == hit && keyboard_) pc_->FocusRing(b, Layout::switchSegRadius);
+            const float cx = (b.left + b.right) / 2, cy = (b.top + b.bottom) / 2, s = Layout::switchIcon / 2;
+            TabsPositionIcon::Paint(pc_->RenderTarget(), pc_->Factory(), pc_->SolidBrush(), {cx - s, cy - s, cx + s, cy + s}, Layout::switchIcon, k,
+                active ? TabsPositionIcon::State::Active : hv > .5f ? TabsPositionIcon::State::Hover : TabsPositionIcon::State::Rest);
+        }
+        const float top = Layout::SwitchLabelTop(y);
+        for (int k = 0; k < BrowserSettings::TabsPositionCount; ++k) {
+            const float a = SwitchLabelAlpha(k, now); if (a <= .002f) continue;
+            const std::wstring label = SwitchLabel(k); const float w = pc_->TextWidth(label, Layout::switchLabelFont, false, true, Layout::switchLabelTracking), cx = Layout::SwitchLabelCentre(k);
+            pc_->Text(label, {cx - w / 2, top, cx + w / 2 + 1, top + Layout::switchLabel}, Layout::switchLabelFont, .5f * a, true, false, Layout::switchLabelTracking);   // #FFFFFF80
+        }
+    }
+    static std::wstring SwitchLabel(int k) {
+        static const I18n::Id labels[] = {I18n::Id::layout_switch_classic, I18n::Id::layout_switch_side, I18n::Id::layout_switch_compact};
+        return I18n::T(labels[std::clamp(k, 0, 2)]);
+    }
     void Footer(View view, Motion::Time now) {
         const float h = Height(), top = h - FooterHeight(view);
         auto* t = pc_->RenderTarget(); auto* brush = pc_->SolidBrush();
@@ -1371,9 +1469,11 @@ private:
             } else DangerRow(TR(settings_delete_profile), y, ProfileDelete, now, !ProfilesReadOnly());
         } else if (view != View::Sites && view != View::Site) {
             if (CardIn(view)) Card(top + 13, now);
+            if (SwitchIn(view)) LayoutSwitch(now);
             // Version + check for updates. The glyph spins while a check runs.
             const auto version = hooks_.version ? hooks_.version() : Version{};
             const float y = h - Layout::padBottom - Layout::slot;
+            const float versionLeft = version.text.empty() ? Layout::textLeft : BetaBox(y).right + Layout::betaGap;
             // The line opens « À propos » (Paper 1V0L-0): nothing at rest; hover = white 4 % plate (radius 6) and the
             // chevron (white 50 %), the drawer's hover / press / focus ring like its other rows (120 ms, A1).
             const bool about = AboutOn(); float textRight = Layout::Trailing(y, Layout::slot).left - 4;
@@ -1384,7 +1484,9 @@ private:
                 if (shown > .001f) pc_->PathGlyph(DialogKit::Glyph::caretRight, R(chevron), Layout::aboutChevron, D2D1::ColorF(1, 1, 1, .5f * shown));
                 textRight = chevron.left - 4;
             }
-            pc_->Text(version.text, {Layout::textLeft, y, textRight, y + Layout::slot}, 14, .5f, true, false, -.14f);
+            // « BETA » over the line's hover plate (which is opaque): it stays on hover, press and keyboard focus (Val, 2026-11-26).
+            if (!version.text.empty()) Beta(y);
+            pc_->Text(version.text, {versionLeft, y, textRight, y + Layout::slot}, 14, .5f, true, false, -.14f);
             float turn = 0;
             if (Spinning(now)) turn = -SpinDegrees(now); // counter-clockwise, the way the glyph's arrow points
             IconButton(L"reload", Layout::Trailing(y, Layout::slot), CheckUpdates, now, turn, version.canCheck && !version.checking);
@@ -1521,6 +1623,7 @@ private:
         } else if (view != View::Sites && view != View::Site) {
             if (in(Layout::Trailing(h - Layout::padBottom - Layout::slot, Layout::slot))) return CheckUpdates;
             if (AboutOn() && in(Layout::About(h - Layout::padBottom - Layout::slot))) return AboutVersion;
+            if (SwitchIn(view)) { const int k = SwitchAt(x, y); if (k >= 0) return LayoutSwitchBase + k; }
             if (CardIn(view)) { const auto c = CardBoxes(footerTop + 13); if (in(c.later)) return DefaultLater; if (in(c.make)) return DefaultMake; }
         } else if (view == View::Sites) { if (!sites_.empty() && in(Layout::Row(footerTop + 13 + 40 + 8))) return ResetAll; }
         else if (in(Layout::Row(footerTop + 13))) return ResetSite;
@@ -1556,6 +1659,7 @@ private:
         if (view == View::Profile) { if (LastProfile()) order.push_back(ProfileClearData); else if (!ProfilesReadOnly()) order.push_back(ProfileDelete); }
         else if (view != View::Sites && view != View::Site) {
             if (CardIn(view)) { order.push_back(DefaultLater); order.push_back(DefaultMake); }
+            if (SwitchIn(view)) for (int k = 0; k < BrowserSettings::TabsPositionCount; ++k) order.push_back(LayoutSwitchBase + k);   // the layout switch, left to right
             if (AboutOn()) order.push_back(AboutVersion);   // the version line, then its update button (left to right)
             if (hooks_.version && hooks_.version().canCheck) order.push_back(CheckUpdates);
         }
@@ -1566,6 +1670,7 @@ private:
     void Interact(int hover, int pressed) {
         hover_ = hover; pressed_ = pressed; const auto now = Motion::Now();
         motion_.SetInteraction(hover_, pressed_ == hover_ ? pressed_ : 0, now);
+        SyncSwitchLabel(now);
         for (int i = 0; i < SwitchCount; ++i)
             knobPress_[i].Set(pressed_ == SwitchHits[i] && hover_ == SwitchHits[i] ? 1.f : 0.f, now, Motion::Milliseconds(0), Reduced() ? Motion::Milliseconds(0) : Timing::press, Downloads::Curves::emphasized);
         Invalidate(); Schedule(now);
@@ -1812,6 +1917,13 @@ private:
                 auto& later = add(DefaultLater, Role::Button, TR(settings_default_browser_later), c.later); later.automationId = L"SettingsDefaultBrowserLater"; later.help = TR(settings_default_browser_later_help);
                 auto& make = add(DefaultMake, Role::Button, TR(settings_default_browser_make), c.make); make.automationId = L"SettingsDefaultBrowser"; make.help = TR(settings_default_browser_help);
             }
+            if (SwitchIn(view)) {   // one button per segment, named as its label, the selected one marked (as « Position des onglets »)
+                static const wchar_t* ids[] = {L"SettingsLayoutClassic", L"SettingsLayoutSide", L"SettingsLayoutCompact"};
+                for (int k = 0; k < BrowserSettings::TabsPositionCount; ++k) {
+                    auto& seg = add(LayoutSwitchBase + k, Role::Button, SwitchLabel(k), Layout::SwitchSegment(VersionTop(), k));
+                    seg.selected = k == SwitchSelected(); seg.help = TR(settings_tabs_position); seg.automationId = ids[k];
+                }
+            }
             const auto version = hooks_.version ? hooks_.version() : Version{};
             if (AboutOn() && VersionIn(view)) {   // the line is a button: read as « À propos de Browser », the version and its state as help
                 auto& about = add(AboutVersion, Role::Button, TR(settings_about), Layout::About(h - Layout::padBottom - Layout::slot));
@@ -1933,8 +2045,8 @@ private:
                 if (page == NewTabPage::Custom && HomepageUrl(state_->homepage).empty()) { homePending_ = true; SyncReveals(Motion::Now()); StartEdit(HomepageField); }
                 else { homePending_ = false; if (page != state_->newTabPage) { state_->newTabPage = page; if (hooks_.changed) hooks_.changed(Change::NewTabPage); } SyncReveals(Motion::Now()); }
             }
-        } else if (hit >= TabsLayoutBase && hit < TabsLayoutBase + BrowserSettings::TabsPositionCount) {
-            const auto p = static_cast<BrowserSettings::TabsPosition>(hit - TabsLayoutBase);
+        } else if (IsTabsLayout(hit) || IsLayoutSwitch(hit)) {   // « Position des onglets » and the root's switch: one setting
+            const auto p = static_cast<BrowserSettings::TabsPosition>(hit - (IsLayoutSwitch(hit) ? LayoutSwitchBase : TabsLayoutBase));
             if (p != state_->tabsPosition) { state_->tabsPosition = p; if (hooks_.changed) hooks_.changed(Change::TabsPosition); Invalidate(); }
         } else if (hit == TabPositionHit) {
             std::vector<ContextMenu::Item> items;
@@ -2303,8 +2415,9 @@ private:
                 if (focus_ == ProfileEditorHit) editor_.SetFocusStop(back ? ProfileEditor::Hex : ProfileEditor::Name, true);
                 Interact(hover_, pressed_); return 0;
             }
-            if ((w == VK_LEFT || w == VK_RIGHT) && focus_ >= TabsLayoutBase && focus_ < TabsLayoutBase + BrowserSettings::TabsPositionCount) {
-                keyboard_ = true; focus_ = std::clamp(focus_ + (w == VK_RIGHT ? 1 : -1), static_cast<int>(TabsLayoutBase), static_cast<int>(TabsLayoutBase) + BrowserSettings::TabsPositionCount - 1); RaiseFocus(); Interact(hover_, pressed_); return 0; }
+            if ((w == VK_LEFT || w == VK_RIGHT) && (IsTabsLayout(focus_) || IsLayoutSwitch(focus_))) {   // segments: the arrows move the focus, Entrée / Espace select
+                const int base = IsLayoutSwitch(focus_) ? static_cast<int>(LayoutSwitchBase) : static_cast<int>(TabsLayoutBase);
+                keyboard_ = true; focus_ = std::clamp(focus_ + (w == VK_RIGHT ? 1 : -1), base, base + BrowserSettings::TabsPositionCount - 1); RaiseFocus(); Interact(hover_, pressed_); return 0; }
             if ((w == VK_RETURN || w == VK_SPACE) && focus_) { keyboard_ = true; Activate(focus_, true); return 0; }
             // Typing on the root starts a search (as Ctrl+F / F3 would).
             if (depth_ == 0 && ((w == 'F' && GetKeyState(VK_CONTROL) < 0) || w == VK_F3)) { keyboard_ = true; StartEdit(SearchField); return 0; }
@@ -2347,6 +2460,14 @@ public:
     void SettleForTest() { slide_.Snap(slide_.Target()); page_.Snap(page_.Target()); for (auto& l : scrolls_) l.Snap(l.Target()); for (int i = 0; i < SwitchCount; ++i) { switches_[i].Snap(switches_[i].Target()); knobPress_[i].Snap(0); } }
     void ScrollForTest(float y) { scrolls_[depth_].Snap(std::clamp(y, 0.f, MaxScroll(Current(), Motion::Now(), true))); }
     void HoverForTest(int hit) { Interact(hit, 0); }
+    // The root footer's layout switch and « BETA » chip (tests/settings_layout_switch_test.cpp).
+    float FooterHeightForTest() const { return FooterHeight(Current()); }
+    float SwitchRevealForTest() const { return SwitchReveal(Motion::Now()); }
+    int SwitchLabelForTest() const { return SwitchLabelIndex(); }
+    Design::Box SwitchControlForTest() const { return Layout::SwitchControl(VersionTop()); }
+    Design::Box SwitchSegmentForTest(int k) const { return Layout::SwitchSegment(VersionTop(), k); }
+    D2D1_RECT_F BetaForTest() const { return BetaBox(VersionTop()); }
+    void SettleSwitchForTest() { switchReveal_.Snap(switchReveal_.Target()); }
     void FocusForTest(int hit, bool keyboard) { focus_ = hit; keyboard_ = keyboard; Invalidate(); }
     Design::Box AboutForTest() const { return Layout::About(VersionTop()); }
     Design::Box AboutChevronForTest() const { return Layout::AboutChevron(VersionTop()); }
@@ -2474,6 +2595,16 @@ public:
     }
     void Toggle() { if (Open()) Hide(false, true); else Show(); }
     void Reposition() { if (visible_) ApplyGeometry(Motion::Now()); }   // Mode Focus: a new live top / right / radius counts as a move (ApplyGeometry)
+    // The window changed layout under the open drawer (the root's layout switch, Réglages › Onglets; Val 2026-11-26): it
+    // stays open, on the same view with the same focus, placed where drawers go in the new layout and painted there at
+    // once (no frame of its old picture at the new place).
+    void Relaid() {
+        if (!hwnd_ || !visible_ || closing_) return;
+        const auto now = Motion::Now();
+        ApplyGeometry(now, true);
+        PaintNow(); ValidateRect(hwnd_, nullptr); SyncCorners();
+        Repoint(); RefreshTips(); Schedule(now);
+    }
     // The state or the version status changed outside the drawer: follow it.
     void Changed() {
         if (!hwnd_ || !visible_ || !state_) return;
@@ -2506,7 +2637,7 @@ public:
     Motion::Wake NextWakeForTest() const { return NextWake(Motion::Now()); }
     void SetReducedMotion() { SyncReducedMotion(); Invalidate(); }
     bool Moving(Motion::Time now) const {
-        bool moving = slide_.Moving(now) || plate_.Moving(now) || page_.Moving(now) || Spinning(now) || customReveal_.Moving(now) || homeReveal_.Moving(now) || InstallAnimating();
+        bool moving = slide_.Moving(now) || plate_.Moving(now) || page_.Moving(now) || Spinning(now) || customReveal_.Moving(now) || homeReveal_.Moving(now) || switchReveal_.Moving(now) || InstallAnimating();
         for (auto& lane : scrolls_) moving = moving || lane.Moving(now);
         for (auto& lane : switches_) moving = moving || lane.Moving(now);
         for (auto& lane : knobPress_) moving = moving || lane.Moving(now);
