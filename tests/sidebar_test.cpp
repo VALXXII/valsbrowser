@@ -131,7 +131,8 @@ int main() {
             Check(ok, what);
         }
         // The compact column does not change: icons only, 40 x 36 tiles, gap 4, whatever the count and the stored width; its
-        // « » » popover keeps five per row (a sixth bookmark starts a second row at the same width).
+        // « » » popover keeps five per row, and like the unfolded panel its short last row shares the whole width (Designer
+        // 26 nov.): 6 = 5 + one tile of 230, 7 = 5 + two of 112.
         bool compactOk = true;
         for (int n = 1; n <= 9; ++n) for (float panel : {220.f, 280.f, 360.f}) {
             auto in = Compact(n); in.panel = panel; const auto K = S::Compute(in);
@@ -139,7 +140,21 @@ int main() {
             for (int i = 0; compactOk && i < static_cast<int>(K.tiles.size()); ++i) compactOk = Same(K.tiles[i], 0, 76 + i * 40.f, 40, 112 + i * 40.f);
         }
         const auto P6 = S::ComputePopover(40, S::Box{0, 236, 40, 272}, 6, 0, 738);
-        Check(compactOk && P6.grid.columns == 5 && P6.grid.tiles.size() == 6 && Near(P6.grid.tiles[5].left, P6.grid.tiles[0].left) && Near(P6.grid.tiles[5].Width(), (230 - 4 * 6) / 5.f), "compact unchanged (1WDI-0) and its popover keeps five per row");
+        Check(compactOk && P6.grid.columns == 5 && P6.grid.tiles.size() == 6 && Near(P6.grid.tiles[5].left, P6.grid.tiles[0].left) && Near(P6.grid.tiles[5].Width(), 230) && Near(P6.grid.tiles[4].right, P6.grid.view.right), "compact unchanged (1WDI-0); its popover: five per row, the sixth alone takes the whole row");
+        {   // The popover, 6 .. 40 bookmarks (it opens beyond five): five per row, every row sharing its 230 with 6 DIP gaps (the last
+            // one too), 40 high; 5 rows then scrolling (224), the same as before.
+            bool ok = true;
+            for (int n = 6; n <= 40; ++n) {
+                const auto P = S::ComputePopover(40, S::Box{0, 236, 40, 272}, n, 0, 738); const auto& g = P.grid;
+                ok = ok && g.columns == 5 && static_cast<int>(g.tiles.size()) == n && Near(g.view.Width(), 230) && Near(g.view.Height(), std::min(5, (n + 4) / 5) * 46 - 6.f) && g.Scrolls() == (n > 25);
+                for (int i = 0; ok && i < n; ++i) {
+                    const int row = i / 5, c = i % 5, inRow = std::min(5, n - row * 5); const float tw = (230 - 6.f * (inRow - 1)) / inRow; const auto& t = g.tiles[static_cast<std::size_t>(i)];
+                    ok = Near(t.Width(), tw, 1e-3f) && Near(t.Height(), 40) && Near(t.left, g.view.left + c * (tw + 6), 1e-3f) && (c != inRow - 1 || Near(t.right, g.view.right, 1e-3f));
+                }
+            }
+            const auto P7 = S::ComputePopover(40, S::Box{0, 236, 40, 272}, 7, 0, 738);
+            Check(ok && Near(P7.grid.tiles[5].Width(), 112) && Near(P7.grid.tiles[6].left, P7.grid.view.left + 118), "popover 6 .. 40: five per row, every row (the last one too) shares 230; 5 rows then scrolling");
+        }
     }
     {   // #143 (Val 25 nov., capture: the page over the panel's right edge). The host's chain for an edge drag, every device
         // pixel from 0 to 420 DIP at 100 / 125 / 150 %, started complete or compact: Resize::Dragging -> the presented width
