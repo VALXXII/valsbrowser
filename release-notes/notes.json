@@ -1,38 +1,58 @@
 {
   "ajouts": [
     {
-      "fr": "Mode Focus : le panneau latéral revient plus facilement depuis le bord.",
-      "en": "Focus mode: the side panel comes back more easily from the edge."
+      "fr": "Glissez un onglet sur les favoris pour l’y ajouter.",
+      "en": "Drag a tab onto your favorites to add it."
     },
     {
-      "fr": "Panneau latéral : les tiroirs s’ouvrent de son côté.",
-      "en": "Side panel: drawers now open on its side."
+      "fr": "Dossiers de favoris : choisissez leur icône et leur couleur.",
+      "en": "Favorite folders: choose their icon and color."
     },
     {
-      "fr": "Panneau latéral : une bulle montre le titre des onglets et des favoris.",
-      "en": "Side panel: a tooltip shows the title of tabs and favorites."
+      "fr": "Mode Focus : il s’ouvre et se ferme en douceur.",
+      "en": "Focus mode: it now opens and closes smoothly."
     },
     {
-      "fr": "Téléchargements : les images montrent leur miniature.",
-      "en": "Downloads: images show their own thumbnail."
+      "fr": "Nouvelle carte de mise à jour, avec « Plus tard ».",
+      "en": "New update card, with “Later”."
+    },
+    {
+      "fr": "Réglages : changez la disposition des onglets en un clic.",
+      "en": "Settings: switch the tab layout in one click."
+    },
+    {
+      "fr": "Vue partagée : réduisez ou fermez une page depuis son coin.",
+      "en": "Split view: minimize or close a page from its corner."
+    },
+    {
+      "fr": "Nouvelle fenêtre « À propos de Browser ».",
+      "en": "New “About Browser” window."
+    },
+    {
+      "fr": "Mode annotation : une carte explique les cadres d’un autre site.",
+      "en": "Annotation mode: a card explains frames from another site."
     }
   ],
   "corrections": [
     {
-      "fr": "Plein écran d’une vidéo : la fenêtre ne saute plus.",
-      "en": "Video fullscreen: the window no longer jumps."
+      "fr": "Un téléchargement en cours de vérification n’est plus signalé à tort.",
+      "en": "A download still being checked is no longer flagged by mistake."
     },
     {
-      "fr": "Panneau latéral : les favoris remplissent toute la largeur.",
-      "en": "Side panel: favorites fill the whole width."
+      "fr": "« Conserver » fonctionne même si le navigateur se ferme juste après.",
+      "en": "Keep works even if the browser closes right after."
     },
     {
-      "fr": "Panneau latéral : la page ne passe plus dessus quand on le redimensionne.",
-      "en": "Side panel: the page no longer covers it while you resize it."
+      "fr": "Mode Focus sur le côté : les menus s’ouvrent du côté du panneau.",
+      "en": "Focus mode on the side: menus open on the panel’s side."
     },
     {
-      "fr": "La bulle « Téléchargements » ne cache plus son menu ouvert.",
-      "en": "The “Downloads” tooltip no longer covers its open menu."
+      "fr": "Ctrl+J ouvre le menu Téléchargements de Browser.",
+      "en": "Ctrl+J opens Browser’s Downloads menu."
+    },
+    {
+      "fr": "Panneau latéral : la dernière rangée de favoris remplit aussi la largeur.",
+      "en": "Side panel: the last row of favorites fills the width too."
     }
   ]
 }
