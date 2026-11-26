@@ -189,6 +189,20 @@ def bring_front(pid, h, x, y):
     return front(pid)
 
 
+def press(pid, *vks):
+    """Real keys only while OUR window (or one of its popups) is the foreground one; otherwise nothing is sent."""
+    if not front(pid):
+        step('real keys refused: our window is not in front', False, describe_front()); return False
+    keys(*vks); return True
+
+
+def describe_front():
+    fg = u32.GetForegroundWindow(); c = ctypes.create_unicode_buffer(128)
+    if fg:
+        u32.GetClassNameW(fg, c, 128)
+    return {'class': c.value, 'pid': pid_of(fg) if fg else 0}
+
+
 def capture(name, box):
     try:
         from PIL import ImageGrab
@@ -216,7 +230,7 @@ def run(layout):
     out0 = len(log_lines())
     step(f'{layout}: the column hidden (Focus)', wait_log('FOCUS column in', 0.01, out0) is None)
     # 1. Ctrl+J in the page
-    n = len(log_lines()); keys(0x11, 0x4A)
+    n = len(log_lines()); press(pid, 0x11, 0x4A)
     line = wait_log('FOCUS column in (downloads)', 2.0, n)
     time.sleep(0.6)
     pop = [w for w in windows_of(pid) if w['class'] == 'LisiereDownloads']
@@ -225,22 +239,22 @@ def run(layout):
     step(f'{layout}: Ctrl+J: the Downloads menu on the panel side (left half), not top-right', pr is not None and pr[2] < mid[0] and pr[1] > r.top + 120, {'menu': pr, 'window': (r.left, r.top, r.right, r.bottom)})
     step(f'{layout}: capture, Ctrl+J', True, capture(f'{layout}-ctrl-j', (r.left, r.top, r.right, r.bottom)))
     # 2. Échap, the pointer away from the column: it leaves
-    n = len(log_lines()); keys(0x1B); u32.SetCursorPos(r.right - 300, mid[1])
+    n = len(log_lines()); press(pid, 0x1B); u32.SetCursorPos(r.right - 300, mid[1])
     step(f'{layout}: Échap: the menu closed, the column leaves (pointer away)', wait_log('FOCUS column out', 3.0, n) is not None and not [w for w in windows_of(pid) if w['class'] == 'LisiereDownloads'])
     time.sleep(0.6)
     # 3. Ctrl+H: the drawer docked against the column
-    n = len(log_lines()); keys(0x11, 0x48)
+    n = len(log_lines()); press(pid, 0x11, 0x48)
     line = wait_log('FOCUS column in (', 2.0, n); time.sleep(0.8)
     dr = [w for w in windows_of(pid) if w['class'].startswith('LisiereHistory')]
     step(f'{layout}: Ctrl+H: the column back, Historique docked on the left', line is not None and bool(dr) and dr[0]['rect'][0] < mid[0], {'drawer': dr[0]['rect'] if dr else None, 'log': line})
     step(f'{layout}: capture, Ctrl+H', True, capture(f'{layout}-ctrl-h', (r.left, r.top, r.right, r.bottom)))
-    keys(0x1B); time.sleep(0.8); u32.SetCursorPos(r.right - 300, mid[1]); time.sleep(0.8)
+    press(pid, 0x1B); time.sleep(0.8); u32.SetCursorPos(r.right - 300, mid[1]); time.sleep(0.8)
     # 4. Ctrl+D: the bookmark popover on the panel's side (compact: beside the column, no star there; it went above the window)
-    keys(0x11, 0x44); time.sleep(0.8)
+    press(pid, 0x11, 0x44); time.sleep(0.8)
     bp = [w for w in windows_of(pid) if w['class'] == 'LisiereBookmarkPopover']
     step(f'{layout}: Ctrl+D: the bookmark popover inside the window, on the panel side', bool(bp) and bp[0]['rect'][1] >= r.top and bp[0]['rect'][2] < mid[0], {'popover': bp[0]['rect'] if bp else None})
     step(f'{layout}: capture, Ctrl+D', True, capture(f'{layout}-ctrl-d', (r.left, r.top, r.right, r.bottom)))
-    keys(0x1B); time.sleep(0.5)
+    press(pid, 0x1B); time.sleep(0.5)
     return proc
 
 
