@@ -362,7 +362,11 @@ def launch(real=False, fresh=True, extra_env=None, reset_site=True):
         _guard_log_start = LOG.stat().st_size   # this launch's lines only (a launch with --keep goes on with the same log)
     except OSError:
         _guard_log_start = 0
-    p = subprocess.Popen([str(APP / 'browser.exe')], cwd=str(APP), env=env)
+    # CHAT_QA_TAB_LAYOUT=top|side|compact (the general test's three layouts, design/annotation-plan-2026-11-24.md §9):
+    # this run's layout, never saved in the profile (src/main.cpp TabLayoutArg); the browser logs « layout: … (this run) ».
+    layout = os.environ.get('CHAT_QA_TAB_LAYOUT', '')
+    assert layout in ('', 'top', 'side', 'compact'), f'CHAT_QA_TAB_LAYOUT: {layout!r}'
+    p = subprocess.Popen([str(APP / 'browser.exe')] + ([f'--tab-layout={layout}'] if layout else []), cwd=str(APP), env=env)
     (APP / 'qa.pid').write_text(str(p.pid))
     # the agent guard's watch: an agent that is not the fake one (process or log line) ends THIS browser and the run
     _guard_env = env
