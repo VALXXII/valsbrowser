@@ -7,3 +7,7 @@ New-Item -ItemType Directory -Force $out | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Download panel harness compilation failed.' }
 & "$out/download_panel_test.exe" $PSScriptRoot "$PSScriptRoot/$out"
 if ($LASTEXITCODE -ne 0) { throw 'Download panel checks failed.' }
+& tools/w64devkit/bin/g++.exe -std=c++17 -Wall -Wextra -Werror -static -municode tests/downloads/kept_downloads_test.cpp -o "$out/kept_downloads_test.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Kept downloads harness compilation failed.' }
+& "$out/kept_downloads_test.exe" "$PSScriptRoot/$out"
+if ($LASTEXITCODE -ne 0) { throw 'Kept downloads checks failed.' }

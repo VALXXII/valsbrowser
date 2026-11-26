@@ -206,10 +206,15 @@ def main() -> int:
                 'drop-released': ['--drop-link-ms', '6000', '--observe-ms', '20000', '--release-op', 'now'],
                 'touch': ['--touch-ms', '6000', '--drop-link-ms', '12000', '--observe-ms', '25000'],
                 # cancel only once the zone mark is there (cap 20 s), give the file back at each removal, count them for 60 s
-                'zone': ['--act-on', 'zone', '--restore-on-gone', 'on', '--link-hidden', 'off', '--observe-ms', '60000']}[a.observe]
+                'zone': ['--act-on', 'zone', '--restore-on-gone', 'on', '--link-hidden', 'off', '--observe-ms', '60000'],
+                # an insecure hold (http file, https page): cancel at the hold, give the file back at each removal, 60 s
+                'insecure': ['--act-on', 'hold', '--restore-on-gone', 'on', '--link-hidden', 'off', '--observe-ms', '60000']}[a.observe]
         cases.clear()
         for n in range(a.runs):
-            exe_case(f'observe-{a.observe}-{n + 1}', then='observe', more=more)
+            if a.observe == 'insecure':
+                exe_case(f'observe-{a.observe}-{n + 1}', then='observe', more=more, trigger='gesture', origin=insecure, page=secure)
+            else:
+                exe_case(f'observe-{a.observe}-{n + 1}', then='observe', more=more)
     only = {n for n in a.only.split(',') if n}
     lingering = 0
     failures = 0

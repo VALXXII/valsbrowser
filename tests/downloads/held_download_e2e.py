@@ -22,12 +22,14 @@ Expected (« Conserver », src/main.cpp KeepHeldDownload / WaitEnginePass / Watc
   - keep-read:       another program reads the held file across the cancel without allowing its deletion: the engine's
                      removal fails, the file stays at its path; at exit the row points at a whole file, nothing of ours left;
   - keep-then-discard: « Supprimer » 300 ms after « Conserver » is no longer offered (the row is finished), the file is kept;
-  - keep-then-close: the window closed right after « Conserver »: the row points at a whole, visible file (a name the engine
-                     never knew when its removal was not seen yet), nothing of ours left;
+  - keep-then-close: the window closed right after « Conserver »: the row points at a whole, visible file: its own path when
+                     the engine's removal was seen and undone (its pass over), else a name the engine never knew; nothing of ours left;
   - keep-early-cancel (A): the cancel forced while the engine's pass on a 40 MB file still runs (test hook
                      BROWSER_TEST_KEEP_CAP_MS=0): its late removal is seen and undone, the file ends kept as above;
   - keep-save-removes (B): the attachment services pass removes the kept file without a verdict (test hook
                      BROWSER_TEST_KEEP_SAVE=remove): it is given back from our name, the file ends kept;
+  - keep-then-kill:  the browser and its engine killed right after « Conserver », then started again on the same profile:
+                     the start-up sweep leaves the file whole at its path, nothing in kept-downloads;
   - keep-blocked:    our name cannot be made (a folder sits at it): « Échec · Erreur de fichier » with « Retirer », no dead
                      « Conserver », the engine's held file deleted, the folder left alone, nothing else left;
   - discard:         UIA Invoke on « Supprimer » → the file is gone and the row with it;
@@ -288,6 +290,11 @@ class Browser:
         except OSError:
             return 'no output'
 
+    def kill(self):
+        """The browser and its engine stopped at once (as a crash or a killed process): through its job only."""
+        k32.TerminateJobObject(self.job.h, 1); k32.WaitForSingleObject(self.pi.hProcess, 20000)
+        left = self.job.drain(5); k32.CloseHandle(self.pi.hProcess); k32.CloseHandle(self.pi.hThread); return left
+
     def close(self):
         """WM_CLOSE to our window, then the engine is given time to exit by itself (it deletes what it still holds then)."""
         for ws in self.sockets:
@@ -314,7 +321,7 @@ def main() -> int:
     work = out / 'work'; work.mkdir()
     uia = work / 'uia.ps1'; uia.write_text(UIA, encoding='utf-8')
     keeps = ['keep'] + [f'keep-r{n}' for n in range(2, a.repeat + 1)]
-    for tag in keeps + ['keep-again', 'keep-late-removal', 'keep-read', 'keep-then-discard', 'keep-then-close', 'keep-insecure', 'keep-blocked',
+    for tag in keeps + ['keep-again', 'keep-late-removal', 'keep-read', 'keep-then-discard', 'keep-then-close', 'keep-then-kill', 'keep-insecure', 'keep-blocked',
                         'keep-early-cancel', 'keep-save-removes', 'discard']:
         FILES[tag + '.exe'] = (fresh_exe(work, tag.replace('-', '_')), f'held-{tag}.exe')
     FILES['keep-early-cancel.exe'] = (FILES['keep-early-cancel.exe'][0] + os.urandom(150 << 20), 'held-keep-early-cancel.exe')   # a long scan
@@ -406,11 +413,24 @@ def main() -> int:
             stamp(watch, f'UIA Invoke « Conserver » x{times}' + (', then « Supprimer » 300 ms later' if then == 'discard' else ''))
             r = b.uia(uia, 'DownloadKeep', times=times, then_id='DownloadDiscard' if then == 'discard' else '', then_ms=300)
             stamp(watch, 'UIA Invoke returned: ' + r)
+            if then == 'kill':   # killed right after « Conserver », then started again on the same profile: the start-up sweep
+                left = b.kill(); closed = True; stamp(watch, 'browser and engine killed')
+                left_over = ours(); mark2 = len(b.log())
+                b2 = Browser(b.app, page, downloads, desk, extra_args, extra_env)
+                swept = dn.wait(lambda: 'DOWNLOAD kept leftover' in b2.log()[mark2:] or not ours(), 60)
+                time.sleep(2); text = b2.log()[mark2:]; b2.close()
+                size_ok = target.exists() and target.stat().st_size == size
+                check(f'{name}: killed during the keep: at the next start the file is whole at its path, nothing of ours left',
+                      r.startswith('invoked') and bool(left_over) and size_ok and not hidden(target) and not ours(),
+                      invoke=r, ours_after_kill=left_over, swept=bool(swept), file_whole=size_ok, ours_left=ours(), folder=sorted(x.name for x in downloads.iterdir()),
+                      next_start=[l for l in text.splitlines() if l.startswith('DOWNLOAD')], folder_events=events())
+                return
             if then == 'close':
                 left = b.close(); closed = True; stamp(watch, 'browser and engine exited')
                 f, row = row_file(b, target.name); size_ok = bool(f) and f.exists() and f.stat().st_size == size
+                common = 'DOWNLOAD kept file given back at its path' in b.log()[mark:] and '(its pass on the file is over)' in b.log()[mark:]
                 check(f'{name}: window closed during the keep: the row points at the whole file, visible, nothing left of ours',
-                      r.startswith('invoked') and row.startswith('C\t') and size_ok and not hidden(f) and not ours(),
+                      r.startswith('invoked') and row.startswith('C\t') and size_ok and not hidden(f) and not ours() and (not common or f == target),
                       invoke=r, row_file=str(f.name) if f else None, file_whole=size_ok, hidden=bool(f) and hidden(f), ours_left=ours(),
                       folder=sorted(p.name for p in downloads.iterdir()), log=lines(b, mark), folder_events=events())
                 return
@@ -445,7 +465,7 @@ def main() -> int:
             if not closed:
                 left = b.close()
             watch.close()
-        if then == 'close':
+        if then in ('close', 'kill'):
             return
         f, row = row_file(b, target.name); size_ok = bool(f) and f.exists() and f.stat().st_size == size
         check(f'{name}: kept_file_survives_exit', size_ok and row.startswith('C\t') and not ours(), row_file=str(f.name) if f else None, file_whole=size_ok,
@@ -476,6 +496,8 @@ def main() -> int:
                       expect_log='given back: attachment services removed it without a verdict')
             if not res['checks'].get('keep-save-removes: keep_finishes_the_download', {}).get('exercised'):
                 check('keep-save-removes: the attachment services removal was undone', False, error='the hook did not act')
+        if not only or 'keep-then-kill' in only:
+            keep_case('keep-then-kill', then='kill')
         if not only or 'keep-then-close' in only:
             keep_case('keep-then-close', then='close')
         if (not only or 'keep-insecure' in only) and secure:

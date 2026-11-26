@@ -134,6 +134,19 @@ inline Next Look(bool seen, At at, std::int64_t sinceGivenMs, std::int64_t guard
     return sinceGivenMs >= guardMs ? Next::Settle : Next::Guard;
 }
 inline int LookAfterMs(int looks) { return looks < 600 ? StepMs : 1000; }   // once a second after the first minute
+// An insecure-download hold: a plain http:// file from a host that is not this computer (held by Chromium's insecure-
+// download warning when the page is https). Measured: the engine runs no pass on it (never a zone mark) and removes it
+// at once and once after the cancel: nothing to wait for, its pass counts as over.
+inline bool InsecureSource(const std::wstring& uri) {
+    static const wchar_t scheme[] = L"http://";
+    if (uri.size() <= 7) return false;
+    for (size_t i = 0; i < 7; ++i) if (std::towlower(uri[i]) != scheme[i]) return false;
+    std::wstring host = uri.substr(7, uri.find_first_of(L"/?#", 7) == std::wstring::npos ? std::wstring::npos : uri.find_first_of(L"/?#", 7) - 7);
+    const auto at = host.rfind(L'@'); if (at != std::wstring::npos) host = host.substr(at + 1);
+    if (!host.empty() && host[0] == L'[') host = host.substr(0, host.find(L']') + 1); else host = host.substr(0, host.find(L':'));
+    for (auto& c : host) c = static_cast<wchar_t>(std::towlower(c));
+    return !host.empty() && host != L"localhost" && host.rfind(L"127.", 0) != 0 && host != L"[::1]";
+}
 }
 
 // ---- Text ---------------------------------------------------------------

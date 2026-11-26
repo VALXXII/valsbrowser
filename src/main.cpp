@@ -27,6 +27,7 @@
 #include "native-ui.h"
 #include "frame-clock.h"
 #include "download-panel.h"
+#include "kept-downloads.h"   // « Conserver »: our own names for kept bytes, and what a killed browser left of them
 #include "history-panel.h"
 #include "settings.h"
 #include "address.h"
@@ -1760,8 +1761,9 @@ void SyncDownload(int id){
 std::wstring UniqueDownloadPath(const std::wstring& folder,const std::wstring& suggested);
 // One « Conserver » until our own name is gone. copying: our name is a copy being made (0 running, 1 made, else
 // 0x10000 + the error); cancelled: the engine was let go (cancelAt); marked: its zone mark was there then; seen: a
-// removal by the engine seen since (guard counted from givenAt); settling: the final pass (at, saveDone / saveResult).
-struct KeepJob{std::wstring path,backup,uri,at;bool cancelled=false,marked=false,seen=false,settling=false;int looks=0;ULONGLONG keptAt=0,cancelAt=0,givenAt=0;
+// removal by the engine seen since (guard counted from givenAt); settling: the final pass (at, saveDone / saveResult);
+// insecure: an insecure-download hold (DL::Keep::InsecureSource): no pass of the engine runs on it, nothing to wait for.
+struct KeepJob{std::wstring path,backup,uri,at;bool cancelled=false,marked=false,seen=false,settling=false,insecure=false;int looks=0;ULONGLONG keptAt=0,cancelAt=0,givenAt=0;
     std::shared_ptr<std::atomic<long>> copying;std::shared_ptr<std::atomic<int>> saveDone;std::shared_ptr<std::atomic<long>> saveResult;};
 std::map<int,KeepJob> keepJobs;
 bool KeepWaitingForEngine(int id){auto k=keepJobs.find(id);return k!=keepJobs.end()&&!k->second.cancelled;}
@@ -1840,7 +1842,7 @@ void KeepSettled(int id,KeepJob& k){
         Log(back?L"DOWNLOAD kept file given back: attachment services removed it without a verdict":L"DOWNLOAD keep failed: attachment services removed the file and it could not be given back");
         if(!back){if(item)KeepFailed(item);Log(L"DOWNLOAD the kept file stays in the profile's folder "+k.backup);return;}   // the bytes are never dropped
     }
-    DeleteFileW(k.backup.c_str());
+    KeptDownloads::Drop(k.backup);
 }
 void KeepSaveChecked(int id){
     auto job=keepJobs.find(id);if(halted||job==keepJobs.end())return;   // KeepsAtExit ends a pass still running
@@ -1850,7 +1852,7 @@ void KeepSaveChecked(int id){
 // The file is at its final name `at`, our own name still holds the bytes: step 4.
 void SettleKept(int id,KeepJob& k,const std::wstring& at){
     k.settling=true;k.at=at;
-    if(HasZoneMark(at)&&!KeepTestSaveRemoves()){Log(L"DOWNLOAD kept file marked and checked by the engine's own pass: no second pass");DeleteFileW(k.backup.c_str());keepJobs.erase(id);return;}
+    if(HasZoneMark(at)&&!KeepTestSaveRemoves()){Log(L"DOWNLOAD kept file marked and checked by the engine's own pass: no second pass");KeptDownloads::Drop(k.backup);keepJobs.erase(id);return;}
     k.saveDone=std::make_shared<std::atomic<int>>(0);k.saveResult=std::make_shared<std::atomic<long>>(0);QuarantineKeptFile(at,k.uri,k.saveDone,k.saveResult);
     KeepSaveChecked(id);
 }
@@ -1887,15 +1889,15 @@ void WaitEnginePass(int id){
     auto entry=found->second;auto* op=entry->op.p;
     COREWEBVIEW2_DOWNLOAD_STATE state=COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS;op->get_State(&state);
     COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE;if(state==COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED)op->get_InterruptReason(&reason);
-    const bool marked=HasZoneMark(k.path);
+    const bool marked=HasZoneMark(k.path)||k.insecure;   // measured: an insecure hold never gets the mark, its removal is at once and single
     const auto step=DL::Keep::BeforeCancel((int)state,(int)reason,marked,(std::int64_t)(GetTickCount64()-k.keptAt),KeepTestMs(L"BROWSER_TEST_KEEP_CAP_MS",DL::Keep::PassCapMs));
     if(step==DL::Keep::Before::Wait){DeferAfter(DL::Keep::StepMs,[id]{WaitEnginePass(id);});return;}
     if(step==DL::Keep::Before::Ended){   // the engine ended it by itself: its outcome stands, our name goes
         Log(L"DOWNLOAD keep: the engine ended the download by itself, state="+std::to_wstring((int)state)+L" reason="+std::to_wstring((int)reason));
-        DeleteFileW(k.backup.c_str());keepJobs.erase(job);SyncDownload(id);return;}
+        KeptDownloads::Drop(k.backup);keepJobs.erase(job);SyncDownload(id);return;}
     k.cancelled=true;k.marked=marked;k.cancelAt=GetTickCount64();downloadOps.erase(found);   // its later events no longer touch the row
     if(step==DL::Keep::Before::Cancel){
-        Log(std::wstring(L"DOWNLOAD keep: the engine is let go ")+(marked?L"(its pass on the file is over) ":L"(its pass still runs after the cap) ")+std::to_wstring((long long)(k.cancelAt-k.keptAt))+L" ms after « Conserver »");
+        Log(std::wstring(L"DOWNLOAD keep: the engine is let go ")+(k.insecure?L"(an insecure-download hold: no pass to wait for) ":marked?L"(its pass on the file is over) ":L"(its pass still runs after the cap) ")+std::to_wstring((long long)(k.cancelAt-k.keptAt))+L" ms after « Conserver »");
         if(FAILED(op->Cancel()))Log(L"DOWNLOAD keep: the engine's cancel failed; the path is watched anyway");
     }else Log(L"DOWNLOAD keep: the engine let go by itself, reason="+std::to_wstring((int)reason));
     WatchKept(id);
@@ -1903,7 +1905,8 @@ void WaitEnginePass(int id){
 // Step 1: our own name (a hard link, else a copy off the UI thread), the row a finished download at once.
 void KeepHeldDownload(int id){
     auto* item=FindDownload(id);auto found=downloadOps.find(id);if(!item||found==downloadOps.end()||!item->held||keepJobs.count(id)||!found->second->op.p)return;
-    KeepJob job;job.path=item->path;job.uri=item->uri;job.backup=KeepBackupPath(id,item->path);job.keptAt=GetTickCount64();DeleteFileW(job.backup.c_str());
+    KeepJob job;job.path=item->path;job.uri=item->uri;job.backup=KeepBackupPath(id,item->path);job.keptAt=GetTickCount64();job.insecure=DL::Keep::InsecureSource(item->uri);KeptDownloads::Drop(job.backup);
+    if(!KeptDownloads::WriteSidecar(job.backup,job.path))Log(L"DOWNLOAD keep: the note of where the file belongs could not be written beside our name");   // read at the next start if the browser is killed meanwhile
     Log(L"DOWNLOAD keep requested: "+DL::FileName(item->path));
     const bool linked=CreateHardLinkW(job.backup.c_str(),job.path.c_str(),nullptr)!=FALSE;
     if(!linked){
@@ -1925,19 +1928,20 @@ void KeepCopied(int id){
     if(r==1){WaitEnginePass(id);return;}
     // Nothing can hold the kept bytes: the engine is let go (it removes its file) and the row says so, with « Retirer ».
     Log(L"DOWNLOAD keep failed: the held file could not be kept ("+std::to_wstring(r-0x10000)+L")");
-    DeleteFileW(job->second.backup.c_str());keepJobs.erase(job);
+    KeptDownloads::Drop(job->second.backup);keepJobs.erase(job);
     auto found=downloadOps.find(id);if(found!=downloadOps.end()){auto entry=found->second;downloadOps.erase(found);if(entry->op.p)entry->op->Cancel();}
     if(auto* item=FindDownload(id))KeepFailed(item);
 }
 // The window closes before a keep's end (step 5): a copy being made ends first (bounded); a final pass under way ends
-// (bounded); otherwise the kept file takes a name the engine never knew, with its attachment services pass when the engine
-// did not mark it, our name alive meanwhile. A kept file is never dropped.
+// (bounded); a file given back after the engine's removal (its pass over, the same file as our name) stays where it is;
+// otherwise the kept file takes a name the engine never knew. Then the attachment services pass when the engine did not
+// mark it, our name alive meanwhile. A kept file is never dropped; a browser killed meanwhile: SweepKeptDownloads.
 void KeepsAtExit(){
     if(keepJobs.empty())return;
     for(auto& [id,k]:keepJobs){
-        if(k.copying){for(int i=0;i<600&&!k.copying->load();++i)Sleep(DL::Keep::StepMs);if(k.copying->load()!=1){DeleteFileW(k.backup.c_str());Log(L"DOWNLOAD keep at exit: the copy could not be made");continue;}}
-        if(!k.settling){
-            k.at=KeepAnotherName(k.path,k.backup);
+        if(k.copying){for(int i=0;i<600&&!k.copying->load();++i)Sleep(DL::Keep::StepMs);if(k.copying->load()!=1){KeptDownloads::Drop(k.backup);Log(L"DOWNLOAD keep at exit: the copy could not be made");continue;}}
+        if(!k.settling){   // the engine's removal seen and undone, its pass over (one removal, measured): the path is the user's file
+            k.at=k.cancelled&&k.seen&&k.marked&&KeptDownloads::SameFileId(k.path,k.backup)?k.path:KeepAnotherName(k.path,k.backup);
             if(k.at.empty()){Log(L"DOWNLOAD keep at exit: the kept file stays in the profile's folder "+k.backup);if(auto* item=FindDownload(id))item->state=DL::State::Failed,item->canResume=false,item->reason=DL::ReasonCode(I18n::Id::download_error_file);continue;}
             if(auto* item=FindDownload(id)){item->path=k.at;item->state=DL::State::Completed;item->missing=false;item->held=false;}
             if(!HasZoneMark(k.at)||KeepTestSaveRemoves()){k.saveDone=std::make_shared<std::atomic<int>>(0);k.saveResult=std::make_shared<std::atomic<long>>(0);QuarantineKeptFile(k.at,k.uri,k.saveDone,k.saveResult);}
@@ -1947,6 +1951,19 @@ void KeepsAtExit(){
         Log(L"DOWNLOAD keep settled at exit: "+DL::FileName(k.at));
     }
     keepJobs.clear();SaveDownloads();
+}
+// At the start (once per process, this profile's data folder): what a killed browser left in kept-downloads goes back
+// to the user (src/kept-downloads.h). A live window of ours (same executable) keeps its own keep untouched.
+std::wstring EffectiveDownloadFolder();
+void SweepKeptDownloads(){
+    const auto folder=dataDir+L"\\kept-downloads";if(GetFileAttributesW(folder.c_str())==INVALID_FILE_ATTRIBUTES)return;
+    wchar_t own[MAX_PATH]{};GetModuleFileNameW(nullptr,own,MAX_PATH);
+    auto live=[own=std::wstring(own)](unsigned long pid){
+        if(pid==GetCurrentProcessId())return true;
+        HANDLE h=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,pid);if(!h)return GetLastError()==ERROR_ACCESS_DENIED;   // a process we cannot look at: left alone
+        wchar_t image[MAX_PATH]{};DWORD n=MAX_PATH;const bool ok=QueryFullProcessImageNameW(h,0,image,&n)!=FALSE;DWORD code=0;GetExitCodeProcess(h,&code);CloseHandle(h);
+        return ok&&code==STILL_ACTIVE&&_wcsicmp(image,own.c_str())==0;};
+    KeptDownloads::Sweep(folder,EffectiveDownloadFolder(),live,[](const std::wstring& line){Log(line);});
 }
 void RefreshMissing(){for(auto& item:downloads)if(item.state==DL::State::Completed)item.missing=GetFileAttributesW(item.path.c_str())==INVALID_FILE_ATTRIBUTES;}
 void ShowDownloads(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
@@ -6349,7 +6366,7 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){
 #ifdef BROWSER_E2E_VAULT_ACTIVE
     Log(L"E2E VAULT ACTIVE: product path, vault forced active, every foreground condition in force (test build only)");   /* review R-5 host marker, absent from dev/release (tests/e2e/product_markers.ps1) */
 #endif
-    INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);RunOnboarding(onboardingReason);/* first-run window: returns when the person is done, then the normal start */paper=CreateSolidBrush(BG);WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);{const UINT dpi=GetDpiForSystem();/* channel app icon (src/app-icon.rc), picked from its multi-size ICO at the system DPI for the title bar/Alt+Tab and the taskbar */wc.hIcon=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXICON,dpi),GetSystemMetricsForDpi(SM_CYICON,dpi),LR_DEFAULTCOLOR);wc.hIconSm=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXSMICON,dpi),GetSystemMetricsForDpi(SM_CYSMICON,dpi),LR_DEFAULTCOLOR);}wc.hbrBackground=paper;RegisterClassExW(&wc);window=CreateWindowW(wc.lpszClassName,privateWindow?TR(window_title_private_bare):L"Browser",WS_POPUP|WS_CAPTION/* Windows' minimize / restore / maximize animations (no caption is drawn: WM_NCCALCSIZE gives the whole window to the client) */|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);StampTaskbarIdentity();DragAcceptFiles(window,TRUE);NativeUI::ConfigureFullClientFrame(window);NativeUI::RoundNatively(window);if(const HRESULT gfx=chrome.Init(window,base);FAILED(gfx)){wchar_t code[16];swprintf(code,16,L"0x%08lX",(unsigned long)gfx);Log(std::wstring(L"STARTUP graphics failed at ")+chrome.initStep+L": hr="+code+L" (assets "+base+L"\\assets)");MessageBoxW(window,TR(startup_graphics_failed),L"Browser",MB_OK|MB_ICONERROR);return 3;}   /* the step and the HRESULT in the log (startup_graphics_failed) */splitOverlay.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());statusBubble.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());LoadSettings();AdBlockPrepare();ClaimWindowSession();LoadAudioVolumes();motion.SetReducedMotion(ReducedMotionPreferred());NativeChrome::Design::Accent::Set(settings.accent);ProfilesStarted(args);AnnotationStartup();ChatAgentsStartup(); /* #125: notes of a private window that did not close normally */LoadDownloads();LoadHistory();LoadBookmarks();CreateDownloadPanel();CreateAudioPanel();CreateSuggestions();CreateSettingsPanel();CreateHistoryPanel();CreateBookmarkSurfaces();CreateElementSurfaces();CreateFormsSurfaces();FormsEngineImport(); /* #121 P13: once, before the engine starts (it holds its file while it runs) */contextMenu.Init(instance,window,base);profileMenu.Init(instance,window,base);profileDialog.Init(instance,window,base);profileDeleteDialog.Init(instance,window,base);frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();OnboardingShowBrowser(show);/* plain ShowWindow + UpdateWindow, or the scale-in after a completed onboarding */OnboardingAfterStart();if(motionLabMode){motionLab.changed=[]{ApplyMotionTuning();InvalidateChrome();};motionLab.replay=MotionLabReplay;if(motionLab.Create(hi,window,base+L"\\motion-tuning.ini")){ApplyMotionTuning();motionLab.Show();}}if(smoke)SetTimer(window,1,splitTest?180000:60000,nullptr);
+    INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);RunOnboarding(onboardingReason);/* first-run window: returns when the person is done, then the normal start */paper=CreateSolidBrush(BG);WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);{const UINT dpi=GetDpiForSystem();/* channel app icon (src/app-icon.rc), picked from its multi-size ICO at the system DPI for the title bar/Alt+Tab and the taskbar */wc.hIcon=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXICON,dpi),GetSystemMetricsForDpi(SM_CYICON,dpi),LR_DEFAULTCOLOR);wc.hIconSm=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXSMICON,dpi),GetSystemMetricsForDpi(SM_CYSMICON,dpi),LR_DEFAULTCOLOR);}wc.hbrBackground=paper;RegisterClassExW(&wc);window=CreateWindowW(wc.lpszClassName,privateWindow?TR(window_title_private_bare):L"Browser",WS_POPUP|WS_CAPTION/* Windows' minimize / restore / maximize animations (no caption is drawn: WM_NCCALCSIZE gives the whole window to the client) */|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);StampTaskbarIdentity();DragAcceptFiles(window,TRUE);NativeUI::ConfigureFullClientFrame(window);NativeUI::RoundNatively(window);if(const HRESULT gfx=chrome.Init(window,base);FAILED(gfx)){wchar_t code[16];swprintf(code,16,L"0x%08lX",(unsigned long)gfx);Log(std::wstring(L"STARTUP graphics failed at ")+chrome.initStep+L": hr="+code+L" (assets "+base+L"\\assets)");MessageBoxW(window,TR(startup_graphics_failed),L"Browser",MB_OK|MB_ICONERROR);return 3;}   /* the step and the HRESULT in the log (startup_graphics_failed) */splitOverlay.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());statusBubble.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());LoadSettings();AdBlockPrepare();ClaimWindowSession();LoadAudioVolumes();motion.SetReducedMotion(ReducedMotionPreferred());NativeChrome::Design::Accent::Set(settings.accent);ProfilesStarted(args);AnnotationStartup();ChatAgentsStartup(); /* #125: notes of a private window that did not close normally */LoadDownloads();SweepKeptDownloads();LoadHistory();LoadBookmarks();CreateDownloadPanel();CreateAudioPanel();CreateSuggestions();CreateSettingsPanel();CreateHistoryPanel();CreateBookmarkSurfaces();CreateElementSurfaces();CreateFormsSurfaces();FormsEngineImport(); /* #121 P13: once, before the engine starts (it holds its file while it runs) */contextMenu.Init(instance,window,base);profileMenu.Init(instance,window,base);profileDialog.Init(instance,window,base);profileDeleteDialog.Init(instance,window,base);frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();OnboardingShowBrowser(show);/* plain ShowWindow + UpdateWindow, or the scale-in after a completed onboarding */OnboardingAfterStart();if(motionLabMode){motionLab.changed=[]{ApplyMotionTuning();InvalidateChrome();};motionLab.replay=MotionLabReplay;if(motionLab.Create(hi,window,base+L"\\motion-tuning.ini")){ApplyMotionTuning();motionLab.Show();}}if(smoke)SetTimer(window,1,splitTest?180000:60000,nullptr);
 #ifdef BROWSER_UPDATES
     StartUpdates(); // never blocks: the delayed startup check runs on the engine's thread
 #endif
