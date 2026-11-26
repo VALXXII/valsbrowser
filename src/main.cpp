@@ -1895,6 +1895,7 @@ void TrackDownload(ICoreWebView2DownloadStartingEventArgs* args,unsigned tab,std
     DL::Item item;item.id=nextDownloadId++;item.started=NativeChrome::DownloadsUI::UnixNowMs();const int id=item.id;
     LPWSTR text=nullptr;if(SUCCEEDED(args->get_ResultFilePath(&text))&&text){item.path=text;CoTaskMemFree(text);}
     text=nullptr;if(SUCCEEDED(raw->get_Uri(&text))&&text){item.uri=text;CoTaskMemFree(text);}
+    text=nullptr;if(SUCCEEDED(raw->get_MimeType(&text))&&text){item.mime=DL::CleanMime(text);CoTaskMemFree(text);}   // the row's icon (DL::KindOf)
     if(item.path.empty())item.path=L"download";
     downloads.insert(downloads.begin(),item);downloadOps[id]=entry;
     EventRegistrationToken token{};

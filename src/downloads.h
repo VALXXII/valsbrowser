@@ -17,12 +17,14 @@
 #include <vector>
 #include "motion.h"
 #include "design-system.h"
+#include "download-file-kind.h"
 
 namespace NativeChrome { namespace Downloads {
 enum class State { InProgress, Paused, Completed, Failed, Cancelled };
 struct Item {
     int id = 0;
     std::wstring path, uri, reason;  // reason: short failure text (Failed only)
+    std::wstring mime;               // the server's MIME type, CleanMime'd ("" unknown): with the extension, the row's icon (KindOf)
     State state = State::InProgress;
     std::int64_t received = 0, total = 0; // total <= 0: unknown size, never simulated
     std::int64_t endTime = 0;             // estimated end, Unix ms; 0 = unknown
@@ -276,7 +278,10 @@ inline void WriteHistory(std::ostream& out, const std::vector<Item>& items) {
     for (const auto& item : items) {
         if (!Persistent(item) || item.path.empty() || written >= HistoryLimit) continue;
         const char state = item.state == State::Completed ? 'C' : item.state == State::Failed ? 'F' : 'X';
-        out << state << '\t' << (item.total > 0 ? item.total : item.received) << '\t' << item.started << '\t' << ToUtf8(item.path) << '\t' << ToUtf8(item.uri) << '\t' << ToUtf8(item.reason) << '\n';
+        // The MIME type is a trailing field (2026-11-26): still version 2, older builds read the five before it.
+        out << state << '\t' << (item.total > 0 ? item.total : item.received) << '\t' << item.started << '\t' << ToUtf8(item.path) << '\t' << ToUtf8(item.uri) << '\t' << ToUtf8(item.reason);
+        if (!item.mime.empty()) out << '\t' << ToUtf8(CleanMime(item.mime));
+        out << '\n';
         ++written;
     }
 }
@@ -336,6 +341,7 @@ inline std::vector<Item> ReadHistory(std::istream& in, int& nextId) {
         if (fields[1].empty() || !end || *end || bytes < 0) continue;
         if (!FromUtf8(fields[2], item.path) || item.path.empty() || !FromUtf8(fields[3], item.uri)) continue;
         if (fields.size() > 4 && !FromUtf8(fields[4], item.reason)) continue;
+        if (version == 2 && fields.size() > 5) { std::wstring mime; if (FromUtf8(fields[5], mime)) item.mime = CleanMime(mime); }
         item.received = item.total = bytes; item.started = started; item.id = nextId++;
         items.push_back(std::move(item));
     }
@@ -353,6 +359,7 @@ namespace Panel {
 using Design::Box;
 inline constexpr float width = 268, padding = Design::Space::lg, headerHeight = Design::Size::compact;
 inline constexpr float tile = Design::Size::control, rowGap = Design::Space::lg, pitch = tile + rowGap;
+inline constexpr float fileIcon = 24;   // in the tile: the shell icon, or an image's thumbnail / glyph in its place
 inline constexpr float textLeft = padding + tile + Design::Space::md;           // 56
 inline constexpr float line = 16, detailText = 14, detailIcon = 14, iconGap = Design::Space::xs, groupGap = Design::Space::sm;
 inline constexpr float button = Design::Size::compact, buttonGap = Design::Space::sm;
