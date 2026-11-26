@@ -1359,6 +1359,7 @@ int Key(UINT key){
         if(!shift&&key=='P')return PrintActive;
         if(!shift&&(key=='L'||key=='T'||key=='W'||key=='R'))return key;
         if(!shift&&key=='H')return 'Y'; // history, as in every desktop browser
+        if(!shift&&key=='J')return 'D'; // downloads, as in every desktop browser (owner, 2026-11-26: unhandled, the engine's own flyout opened top-right of the page)
     }
     if(!ctrl&&!alt&&!shift&&key==VK_F6)return FocusChrome;
     if(!ctrl&&!alt&&shift&&key==VK_F6)return FocusChromeBack;
@@ -4301,18 +4302,28 @@ void RenameOrEdit(BM::Id id,int surface,RECT anchor,bool keyboard,int returnTo){
 int bookmarkMenuSurface=RenameNone; // the surface whose row opened BookmarkContextMenu (drawer), else band/none
 // Ctrl+D / the star: save at once in the last folder used, then the popover; an
 // already saved page opens its most recent bookmark instead of a second one.
+// Where Ctrl+D's bookmark popover hangs: the star (top bar, complete column). The compact column has no star (its field
+// sits in the window bar, hidden in Focus): beside the column instead, level with its bookmarks (or its top), on the
+// panel's side (the empty anchor put it at the screen's top-left, above the window). `alignRight`: the star's rule.
+RECT StarAnchor(bool& alignRight){
+    alignRight=true;const RECT star=RegionScreen('K');if(star.right>star.left||!chrome.sidebar)return star;
+    for(int id:{(int)'E',NativeChrome::BookmarkBase,(int)NativeChrome::Chrome::SidebarMoreId,900}){const RECT r=RegionScreen(id);if(r.right<=r.left)continue;
+        POINT o{0,0};ClientToScreen(window,&o);const LONG x=o.x+S(chrome.SideColumn().column+NativeChrome::Sidebar::Popover::gapX),y=r.top-S(NativeChrome::Design::Space::md);
+        alignRight=false;return RECT{x,y,x,y};}
+    return star;
+}
 void BookmarkStar(bool keyboard){
     auto t=Active();if(!t||t->home||!BM::Admissible(t->uri))return;
     HideSuggestions();
-    const auto matches=bookmarks.Matching(t->uri);const RECT star=RegionScreen('K');
-    if(!matches.empty()){EditBookmark(matches.front(),star,true,keyboard,false,keyboard?'K':0);return;}
+    const auto matches=bookmarks.Matching(t->uri);bool alignRight=true;const RECT star=StarAnchor(alignRight);
+    if(!matches.empty()){EditBookmark(matches.front(),star,alignRight,keyboard,false,keyboard?'K':0);return;}
     if(!bookmarks.Find(lastFolder)||bookmarks.Find(lastFolder)->kind!=BM::Kind::Folder)lastFolder=BM::BarRoot;
     std::wstring title=t->title==TR(tab_new)?L"":t->title;
     const BM::Id id=bookmarks.Add(lastFolder,BM::End,title,t->uri,NativeChrome::DownloadsUI::UnixNowMs());
     if(!id){AnnounceBookmark(TR(bookmark_add_failed));return;}
     PushUndo({{BookmarkStep::Created,id}},TR(bookmark_undo_add));SaveBookmarks();BookmarksChanged();
     AnnounceBookmark(TRF(bookmark_added_to,bookmarks.Find(lastFolder)->title));
-    EditBookmark(id,RegionScreen('K'),true,keyboard,true,keyboard?'K':0);
+    EditBookmark(id,star,alignRight,keyboard,true,keyboard?'K':0);
 }
 void CommitBookmark(unsigned id,const std::wstring& title,const std::wstring& url,unsigned parent){
     const auto* n=bookmarks.Find(id);if(!n)return;std::vector<BookmarkStep> steps;
@@ -4989,7 +5000,7 @@ AccessibleLabel AccessibleButton(int id){
     case 'K':return {chrome.starred?TR(bookmark_title_edit):TR(a11y_add_bookmark),L"Ctrl+D",L"",L"Bookmark.Star"};
     case 'O':{const size_t hidden=chrome.bandItems.size()-std::min(chrome.bandItems.size(),(size_t)chrome.band.visible),other=bookmarks.Root(BM::OtherRoot).children.size();return {TRF(a11y_other_bookmarks_count,std::to_wstring(hidden+other)),L"",TR(a11y_other_bookmarks_help),L"Bookmarks.Overflow"};}
     case 'E':return {TR(chrome_bookmarks_add_page_full),L"Ctrl+D",L"",L"Bookmarks.AddPage"};
-    case 'D':return {TR(chrome_tip_downloads),L"",L"",L"Downloads"};
+    case 'D':return {TR(downloads_title),L"Ctrl+J",L"",L"Downloads"};
     case 'V':return {AU::ButtonName(AudioRows(NativeChrome::Motion::Now()),audioToolbar.Music()),L"",TR(a11y_audio_help),L"SiteAudio"};
     case 'P':return {TR(a11y_new_private_window),TR(key_ctrl_shift_n),privateWindow?TR(a11y_private_this_window_help):TR(a11y_private_new_window_help),L"Private"};
     case 'S':return {TR(chrome_tip_settings),L"",L"",L"Settings"};
@@ -5470,13 +5481,18 @@ constexpr UINT_PTR SideDrawerTimerId=0x5167;
 void CloseDockedDrawers(){CloseDownloadSurfaces();settingsDrawer.Hide(false,true);historyDrawer.Hide(false,true);bookmarksDrawer.Hide(false,true);CloseAudioDrawer();SyncLatch();SyncUpdateToastReserve();}
 // Q2 (Designer): in side Focus a drawer docks against the column: the column comes at rest at once and stays while the
 // drawer is open (sideDrawerHold, board 15's rule); when the drawer closes it leaves again unless the pointer is on it.
-void SideFocusForDrawer(){
-    namespace DS=NativeChrome::Downloads::DrawerLayout::Side;if(!chrome.sideHidden||!window||!DS::focusBringsColumn)return;
-    sideDrawerHold=true;const bool rest=sideReveal.open&&sideLive&&!sidePic.shown;if(!sideReveal.open){sideReveal.ForAddress(false);sideReveal.pinned=false;}if(rest)return;   /* in like for the field, but not pinned: held by the drawer only */
-    KillTimer(window,SideSlideTimerId);SidePictureHide();sideSlide.Snap(1);sideFade.Snap(1);
+// The column at rest at once, not pinned (in like for the field): a surface anchored to it, or docked against it, opens.
+// What keeps it then is that surface (SideFocusHolds: a drawer, a toolbar menu, a popover, a menu); when it closes the
+// column leaves again unless the pointer is on it. False when there is no hidden column.
+bool SideFocusBring(const wchar_t* why){
+    namespace DS=NativeChrome::Downloads::DrawerLayout::Side;if(!chrome.sideHidden||!window||!DS::focusBringsColumn)return false;
+    static bool busy=false;if(busy)return true;   // its own Layout never brings it again
+    const bool rest=sideReveal.open&&sideLive&&!sidePic.shown;if(!sideReveal.open){sideReveal.ForAddress(false);sideReveal.pinned=false;}if(rest)return true;
+    busy=true;KillTimer(window,SideSlideTimerId);SidePictureHide();sideSlide.Snap(1);sideFade.Snap(1);
     if(!sideLive)SideRevealLive(true);else BuildChrome();
-    Layout();Log(L"FOCUS column in (drawer)");
+    Layout();busy=false;Log(std::wstring(L"FOCUS column in (")+why+L")");return true;
 }
+void SideFocusForDrawer(){if(SideFocusBring(L"drawer"))sideDrawerHold=true;}   // held by the drawer (SideFocusHolds)
 // A drawer is about to open (before it places itself): its side of the window ready. Side Focus: the column at rest (Q2);
 // a narrow window's column over the page closes (Q4, one at a time).
 void DrawerOpening(){
@@ -6306,7 +6322,9 @@ void FocusReveal(){
 }
 // A surface anchored to the chrome opens (a menu at a region, the profile menu, a popover, a drawer, the permission
 // prompt): the panel at rest at once, so its anchor is on screen (code review, keyboard-opened surfaces).
-void FocusAnchor(const wchar_t* why){if(!chrome.floating)return;focusRevealWhy=why;FocusReveal();focusRevealWhy=L"keyboard";}
+// Side layouts' Focus (owner, 2026-11-26: Ctrl+J opened the Downloads menu top-right): the hidden column comes back at
+// rest the same way (SideFocusBring, Designer's rule 2 for the drawers) and stays while that surface is open.
+void FocusAnchor(const wchar_t* why){if(!chrome.floating){if(chrome.sidebar&&chrome.sideHidden)SideFocusBring(why);return;}focusRevealWhy=why;FocusReveal();focusRevealWhy=L"keyboard";}
 // On / off follows the setting, fullscreen and the annotation mode (Layout, before the chrome is measured). Returns
 // true when it changed. The bar starts hidden (the next evaluation reveals it if the pointer already asks for it).
 bool SyncFocusMode(){
