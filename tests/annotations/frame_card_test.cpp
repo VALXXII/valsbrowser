@@ -80,6 +80,7 @@ int wmain(int argc, wchar_t** argv) {
         Expect(ok, "render: the panel 332 × 659 (a 740 px window under its 81 px chrome) at 100 / 125 / 150 %");
         Expect(help.RenderForTest(root, 96, 659, 0, true, (out + L"\\panel-fr-close-hover@96.png").c_str(), measure), "render: « × » under the pointer (the ghost button's plate)");
         Expect(help.RenderForTest(root, 96, 360, 9999, false, (out + L"\\panel-fr-scrolled@96.png").c_str(), measure), "render: a short window, scrolled to the end (the header stays, the fade under it)");
+        Expect(help.RenderForTest(root, 96, 659, 0, false, (out + L"\\panel-fr-left@96.png").c_str(), measure, true), "render: docked on the left (side panel layouts, #143): the hairline on its right edge, toward the page");
     }
     // ---- English
     I18n::SetForProcess(I18n::Locale::En);
@@ -147,6 +148,15 @@ int wmain(int argc, wchar_t** argv) {
             help.Show(false, h); help.SettleForTest();
             help.KeyForTest(VK_TAB); help.KeyForTest(VK_RETURN); help.SettleForTest(); Expect(!help.Visible() && closed == 4 && closedKeyboard == 2, "panel: Tab to « × », Entrée closes it");
             help.Show(false, h); help.SettleForTest(); help.Hide(false, false); Expect(!help.Visible(), "panel: hidden at once (the window minimised)");
+            // #143: the side panel's layouts dock the drawers on the LEFT, against the panel (liveDock DIP from the window's left)
+            DL::liveLeft = true; DL::liveDock = 240;
+            help.Show(false, h); help.SettleForTest();
+            const RECT lw = help.WindowRectForTest();
+            std::snprintf(line, sizeof line, "panel window, side panel layout: docked on the LEFT against the panel — left %ld (client %ld + 240 DIP = %ld), %ld wide, from the toolbar",
+                          lw.left, c.left, c.left + std::lround(240 * k), lw.right - lw.left);
+            Expect(help.Open() && lw.left == c.left + std::lround(240 * k) && lw.right - lw.left == std::lround(332 * k) && lw.top == c.top + std::lround(DL::liveTop * k), line);
+            help.KeyForTest(VK_ESCAPE); help.SettleForTest(); Expect(!help.Visible(), "panel, side panel layout: Échap closes it");
+            DL::liveLeft = false; DL::liveDock = 0;
             help.Destroy();
         }
         DestroyWindow(owner);

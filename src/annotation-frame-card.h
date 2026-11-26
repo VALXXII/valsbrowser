@@ -10,8 +10,8 @@
 //   is not whole under it): 300 wide, #242424, border 1 #3A3A3A, radius 12, padding 12, gap 8. Title 13/18 600 white
 //   « Ce cadre vient d'un autre site »; two texts 12/17 #BFBFBF; then (4 more above, gap 8) two buttons 28 high, radius 6,
 //   padding-inline 10, 12/16 500 white: « Annoter le cadre » in the profile's accent, « En savoir plus » #333333.
-//   Help panel (26HA-0), opened by « En savoir plus » at the drawers' place and width (332, docked to the window's right edge
-//   under the toolbar, as Réglages): #171717, padding 16, gap 16. Header: title 15/20 600 white « Les cadres d'autres
+//   Help panel (26HA-0), opened by « En savoir plus » at the drawers' place and width (332, docked under the toolbar on the tab
+//   panel's side, as Réglages: the window's right edge in the top bar, the side panel's edge in its layouts, #143): #171717, padding 16, gap 16. Header: title 15/20 600 white « Les cadres d'autres
 //   sites », « × » 16/16 #8C8C8C at its right. The intro 13/19 #BFBFBF; four sections (gap 4): subtitle 13/18 600 white, text
 //   13/19 #BFBFBF (the last one three lines « • … », pre-wrap).
 //
@@ -294,6 +294,9 @@ private:
     float Height() const { if (offscreen_) return testHeight_; RECT r{}; if (hwnd_) GetClientRect(hwnd_, &r); return r.bottom * 96.f / std::max(1.f, Dpi()); }
     RECT OwnerClient() const { RECT r{}; GetClientRect(owner_, &r); MapWindowPoints(owner_, nullptr, reinterpret_cast<POINT*>(&r), 2); return r; }
     float LeadDip() const { return offscreen_ ? 0.f : lead_ * 96.f / std::max(1.f, Dpi()); }
+    // The content's offset in DIP while it slides: right of its place docked on the right, left of it docked on the left (#143).
+    float OffsetDip() const { return offscreen_ ? 0.f : NativeUI::DrawerSlideOffset(lead_, left_) * 96.f / std::max(1.f, Dpi()); }
+    bool left_ = false;   // #143: docked on the left (the side panel's layouts), as last placed by ApplyGeometry
     static float TextW() { return HelpSpec::width - 2 * HelpSpec::pad; }   // 300
     struct Section { const wchar_t* title; const wchar_t* text; };
     static std::vector<Section> Sections() {
@@ -316,7 +319,7 @@ private:
     // « × » (Paper 26HD-0: 16/16 at the header row's right, centred on its 20 px line) and its 24 px button around it.
     D2D1_RECT_F GlyphBox() { const float w = GlyphW(), x = HelpSpec::width - HelpSpec::pad - w, y = HelpSpec::pad + (HelpSpec::header - HelpSpec::Close().line) / 2; return {x, y, x + w, y + HelpSpec::Close().line}; }
     D2D1_RECT_F CloseBox() { const auto g = GlyphBox(); const float cx = (g.left + g.right) / 2, cy = (g.top + g.bottom) / 2, h = HelpSpec::closeBox / 2; return {cx - h, cy - h, cx + h, cy + h}; }
-    int HitAt(float x, float y) { x -= LeadDip(); const auto b = CloseBox(); return x >= b.left && x < b.right && y >= b.top && y < b.bottom ? CloseHit : None; }
+    int HitAt(float x, float y) { x -= OffsetDip(); const auto b = CloseBox(); return x >= b.left && x < b.right && y >= b.top && y < b.bottom ? CloseHit : None; }
     void Invalidate() { if (hwnd_ && visible_) InvalidateRect(hwnd_, nullptr, FALSE); }
     void RequestFrame() { if (!hwnd_ || offscreen_) return; if (clockOk_) clock_.Request(); else SetTimer(hwnd_, 1, 16, nullptr); }
     bool Moving(Motion::Time now) const { return slide_.Moving(now) || scroll_.Moving(now) || glow_.Moving(now); }
@@ -333,7 +336,7 @@ private:
         P::TextLook(*c_, t);
         const float canvas = Design::Surface::canvas, h = Height(), lead = LeadDip();
         t->Clear(D2D1::ColorF(canvas, canvas, canvas, 1));
-        t->SetTransform(D2D1::Matrix3x2F::Translation(lead, 0));
+        t->SetTransform(D2D1::Matrix3x2F::Translation(OffsetDip(), 0));
         // the body, scrolled under the header
         const float scroll = offscreen_ ? scroll_.Target() : scroll_.Value(now);
         t->PushAxisAlignedClip(D2D1::RectF(0, HelpSpec::viewTop, HelpSpec::width, h), D2D1_ANTIALIAS_MODE_ALIASED);
@@ -355,11 +358,11 @@ private:
         if (style.fill) c_->Round(CloseBox(), style.radius, style.surface);
         if (style.focus) c_->FocusRing(CloseBox(), style.radius);
         K::Text(*c_, HelpSpec::Glyph(), GlyphBox(), HelpSpec::Close(), K::Col(HelpSpec::closeGlyph));
-        // the drawers' leading hairline: one physical pixel
-        const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width));
-        K::Fill(*c_, {0, 0, px, h}, 0, PopupKit::White(HelpSpec::hairline));
+        // the drawers' hairline toward the page: one physical pixel (on the right edge when docked on the left, #143)
+        const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width)), edge = left_ ? HelpSpec::width - px : 0.f;
+        K::Fill(*c_, {edge, 0, edge + px, h}, 0, PopupKit::White(HelpSpec::hairline));
         t->SetTransform(D2D1::Matrix3x2F::Identity());
-        if (!offscreen_) { chrome_.KeyOut(lead); KeyCorners(); }
+        if (!offscreen_) { chrome_.KeyOut(lead, left_); KeyCorners(); }
     }
     void PaintNow() {
         if (!chrome_.RenderTarget()) chrome_.Resize();
@@ -370,23 +373,25 @@ private:
         if (!tip_) return;
         tip_.Clear(); const auto b = CloseBox(); tip_.Add(CloseHit, {Px(b.left), Px(b.top), Px(b.right), Px(b.bottom)}, TR(common_close_tip));
     }
-    // The column docked to the owner's right edge under the toolbar, where the drawers dock (src/history-panel.h's
-    // ApplyGeometry): the window never moves while sliding, the strip it has not entered is keyed out.
+    // The column docked on the tab panel's side under the toolbar, where the drawers dock (#143: the window's right edge in
+    // the top bar, the side panel's edge in its layouts; src/history-panel.h's ApplyGeometry): the window never moves while
+    // sliding, the content drawn toward its entering edge and the strip it has not entered keyed out.
     bool ApplyGeometry(Motion::Time now, bool force = false) {
         if (!hwnd_) return false;
         namespace DL = Downloads::DrawerLayout;
         const RECT owner = OwnerClient();
         const int column = OwnerPx(HelpSpec::width), top = owner.top + OwnerPx(DL::liveTop), height = std::max(1, static_cast<int>(owner.bottom - OwnerPx(DL::liveBottom) - top));
         const int shown = static_cast<int>(std::lround(column * Motion::Clamp(slide_.Value(now))));
-        const int inset = OwnerPx(DL::liveRight); const RECT window{owner.right - inset - column, top, owner.right - inset, top + height};   // Mode Focus: the floating panel's right edge (0 otherwise)
-        const float radius = DL::liveRadius * GetDpiForWindow(owner_) / 96.f;
-        const bool restyled = !EqualRect(&window, &appliedWindow_) || radius != corners_.Radius();
+        const bool left = DL::liveLeft; const int inset = left ? 0 : OwnerPx(DL::liveRight), dock = left ? OwnerPx(DL::liveDock) : 0;   // Mode Focus: the floating panel's right edge (0 otherwise)
+        const RECT window = NativeUI::DockedDrawerRect(owner, column, top, height, left, dock, inset);
+        const float radius = left ? 0.f : DL::liveRadius * GetDpiForWindow(owner_) / 96.f;   // Mode Focus: round top corners (the top bar's floating panel only)
+        const bool restyled = !EqualRect(&window, &appliedWindow_) || radius != corners_.Radius() || left != left_;
         if (!force && !restyled && shown == appliedVisible_ && EqualRect(&owner, &appliedOwner_)) return false;
-        const bool resized = !EqualRect(&owner, &appliedOwner_) || !EqualRect(&window, &appliedWindow_), slid = shown != appliedVisible_;
-        appliedVisible_ = shown; appliedOwner_ = owner; lead_ = column - shown; corners_.SetRadius(radius);
+        const bool resized = !EqualRect(&owner, &appliedOwner_) || !EqualRect(&window, &appliedWindow_) || left != left_, slid = shown != appliedVisible_;
+        appliedVisible_ = shown; appliedOwner_ = owner; lead_ = column - shown; left_ = left; corners_.SetRadius(radius);
         if (force || !EqualRect(&window, &appliedWindow_)) { SetWindowPos(hwnd_, nullptr, window.left, window.top, column, height, SWP_NOACTIVATE | SWP_NOZORDER); appliedWindow_ = window; }
         const int entered = shown > 0;
-        if (force || resized || entered != appliedEntered_) { SetWindowRgn(hwnd_, NativeUI::DrawerRegion(entered, column, height, OwnerPx(20), IsZoomed(owner_) || inset > 0), FALSE); appliedEntered_ = entered; }
+        if (force || resized || entered != appliedEntered_) { SetWindowRgn(hwnd_, NativeUI::DrawerRegion(entered, column, height, OwnerPx(20), IsZoomed(owner_) || !NativeUI::DrawerOnWindowCorner(left, dock, inset, DL::Side::roundAgainstPanel), left), FALSE); appliedEntered_ = entered; }
         if (lead_ > 0) corners_.HideLeading();
         if (restyled && !force) InvalidateRect(hwnd_, nullptr, FALSE);
         if (resized) { scroll_.Snap(std::clamp(scroll_.Target(), 0.f, MaxScroll())); RefreshTips(); }
@@ -394,8 +399,8 @@ private:
         PaintNow(); ValidateRect(hwnd_, nullptr); SyncCorners();
         return true;
     }
-    void SyncCorners() { if (!visible_ || appliedVisible_ <= 0 || !IsWindowVisible(hwnd_)) { corners_.Hide(); return; } const float c = Design::Surface::canvas; corners_.Place(hwnd_, appliedWindow_, lead_, appliedWindow_.right - appliedWindow_.left, c + (1 - c) * HelpSpec::hairline, c, lead_ == 0); }
-    void KeyCorners() { if (corners_.Radius() <= 0) return; HRGN cut = corners_.CutRegion(lead_, appliedWindow_.right - appliedWindow_.left); chrome_.KeyOutRegion(cut); DeleteObject(cut); }
+    void SyncCorners() { if (!visible_ || appliedVisible_ <= 0 || !IsWindowVisible(hwnd_)) { corners_.Hide(); return; } int from = 0, to = 0; NativeUI::DrawerContentColumn(lead_, appliedWindow_.right - appliedWindow_.left, left_, from, to); const float c = Design::Surface::canvas; corners_.Place(hwnd_, appliedWindow_, from, to, c + (1 - c) * HelpSpec::hairline, c, lead_ == 0); }
+    void KeyCorners() { if (corners_.Radius() <= 0) return; int from = 0, to = 0; NativeUI::DrawerContentColumn(lead_, appliedWindow_.right - appliedWindow_.left, left_, from, to); HRGN cut = corners_.CutRegion(from, to); chrome_.KeyOutRegion(cut); DeleteObject(cut); }
     void Finish() {
         closing_ = false; visible_ = false; appliedVisible_ = -1; appliedWindow_ = {};
         corners_.Hide(); if (hwnd_) ShowWindow(hwnd_, SW_HIDE);
@@ -429,7 +434,7 @@ private:
             Accessibility::Node g; g.key = 500; g.role = Accessibility::Role::Group; g.focusable = false; g.bounds = win; g.automationId = L"AnnotationFrameHelp";
             g.name = TR(annotation_frame_help_title); g.help = Whole(); nodes.push_back(g);
             const auto b = CloseBox(); Accessibility::Node n; n.key = CloseHit; n.parent = 500; n.role = Accessibility::Role::Button; n.name = TR(common_close); n.accelerator = L"Esc";   // i18n-exempt: key name (UIA accelerator)
-            n.automationId = L"AnnotationFrameHelpClose"; n.bounds = {win.left + Px(b.left + LeadDip()), win.top + Px(b.top), win.left + Px(b.right + LeadDip()), win.top + Px(b.bottom)}; nodes.push_back(n);
+            n.automationId = L"AnnotationFrameHelpClose"; n.bounds = {win.left + Px(b.left + OffsetDip()), win.top + Px(b.top), win.left + Px(b.right + OffsetDip()), win.top + Px(b.bottom)}; nodes.push_back(n);
             return nodes;
         };
         host.focused = [this]() -> long long { return focus_; };
@@ -491,7 +496,7 @@ public:
         clockOk_ = clock_.Start(hwnd_, FrameMessage); AttachUia();
         return true;
     }
-    // Slides in from the window's right edge (reopened while leaving: from where it is) and takes the keyboard.
+    // Slides in from its edge (the drawers' side, #143; reopened while leaving: from where it is) and takes the keyboard.
     void Show(bool reduced, HelpHooks hooks, bool keyboard = false) {
         if (!hwnd_) return;
         hooks_ = std::move(hooks); reduced_ = reduced;
@@ -536,13 +541,14 @@ public:
     D2D1_RECT_F CloseBoxForTest(Chrome& c) { Chrome* keep = c_; c_ = &c; const auto b = CloseBox(); c_ = keep; return b; }
     D2D1_RECT_F GlyphBoxForTest(Chrome& c) { Chrome* keep = c_; c_ = &c; const auto b = GlyphBox(); c_ = keep; return b; }
     // An offscreen render of the panel `height` DIP high, scrolled by `scroll` (clamped), « × » hovered or not.
-    bool RenderForTest(const std::wstring& root, UINT dpi, float height, float scroll, bool hoverClose, const wchar_t* path, Chrome& measure) {
-        const bool keepOff = offscreen_; const float keepH = testHeight_; const int keepHover = hover_;
-        offscreen_ = true; testHeight_ = height; hover_ = hoverClose ? CloseHit : None;
+    // `left`: docked on the left (the side panel's layouts, #143): the hairline on its right edge, toward the page.
+    bool RenderForTest(const std::wstring& root, UINT dpi, float height, float scroll, bool hoverClose, const wchar_t* path, Chrome& measure, bool left = false) {
+        const bool keepOff = offscreen_, keepLeft = left_; const float keepH = testHeight_; const int keepHover = hover_;
+        offscreen_ = true; left_ = left; testHeight_ = height; hover_ = hoverClose ? CloseHit : None;
         Chrome* keep = c_; c_ = &measure; const float s = std::clamp(scroll, 0.f, MaxScroll()); c_ = keep;
         scroll_.Snap(s);
         const bool ok = PopupKit::RenderPng(root, HelpSpec::width, height, dpi, path, c_, [this] { auto* t = c_->RenderTarget(); if (!t) return; t->BeginDraw(); Draw(Motion::Now()); t->EndDraw(); });
-        offscreen_ = keepOff; testHeight_ = keepH; hover_ = keepHover; scroll_.Snap(0);
+        offscreen_ = keepOff; left_ = keepLeft; testHeight_ = keepH; hover_ = keepHover; scroll_.Snap(0);
         return ok;
     }
 };
