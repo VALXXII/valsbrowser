@@ -87,6 +87,21 @@ int main(int argc, char** argv) {
     auto yt = MakeTab(L"YouTube", L"youtube.com", 0xFF0000), paper = MakeTab(L"Paper", L"paper.design", 0x4E7BFF), luma = MakeTab(L"Luma", L"lu.ma", 0xFFFFFF), gh = MakeTab(L"GitHub", L"github.com", 0x24292E);
     pages = {yt, paper, luma}; current = 1; Group({yt, paper}); ApplyPages();
     {   auto v = CurrentSplit(); Check(v.group && v.a.slots.size() == 2, "a split view of two panes (YouTube | Paper)"); }
+    // ---- No grey frame around the active pane any more (Val 2026-11-26): the hover frames name the pages. The chrome
+    // painted off screen: only the canvas around both pages (in the 4 DIP gap, under them, at the window's edge), after a
+    // click (pointer) as after F6 / Tab (keyboard, where the ring used to be the strong one).
+    for (bool keyboard : {false, true}) {
+        keyboardModality = keyboard; SyncSplitDecor(); BuildChrome();
+        std::vector<std::wstring> titles; for (auto& t : pages) titles.push_back(t->title);
+        chrome.Paint(titles, current, Active()->uri, false, 0, 0);
+        auto v = CurrentSplit(); const auto box = v.a.slots[v.a.SlotOf(v.active)].box; int lit = 0, probes = 0;
+        auto probe = [&](float x, float y) { ++probes; const int g = static_cast<int>((chrome.SurfacePixel(x, y) >> 8) & 255); if (std::abs(g - 0x17) > 2) ++lit; };
+        for (float y = box.top + 12; y < box.bottom - 12; y += 2) for (float d : {.5f, 1.5f, 2.5f}) { probe(box.left - d, y); probe(box.right + d, y); }
+        for (float x = box.left + 12; x < box.right - 12; x += 2) for (float d : {.5f, 1.5f, 2.5f}) probe(x, box.bottom + d);
+        Check(probes > 1000 && lit == 0, keyboard ? "keyboard (F6): no frame around the active pane, the canvas all around it" : "pointer: no frame around the active pane, the canvas all around it");
+        chrome.SavePng((out + (keyboard ? L"\\no-active-ring-keyboard.png" : L"\\no-active-ring-pointer.png")).c_str());
+    }
+    keyboardModality = false;
     // The real poll: this test's window is not in front, so nothing shows and nothing polls.
     SplitFramesEvaluate(); Check(!splitFrames.Visible() && splitFramesMachine.Pane() == -1 && !splitFramesPolling, "window not in front: no frames, no pointer poll");
 

@@ -159,6 +159,28 @@ int wmain(int argc, wchar_t** argv) {
             ink(compact96, l, r); Check(std::fabs((l + r) / 2 - (320 - 54.5f)) <= 2 && r <= 320, "« Compact »: centred in a 109 DIP box at the column's end (Paper 276R-0)");
             ink(classic96, l, r); Check(std::fabs((l + r) / 2 - (12 + 54.5f)) <= 2 && l >= 12, "« Classique »: centred in a 109 DIP box at the column's start (Paper 271E-0)");
         }
+        // « BETA » stays on the version line hovered (its opaque hover plate used to cover it) and keyboard-focused (Val 2026-11-26).
+        {   const auto chip = dr.BetaForTest(); const float version = H - 16 - 24, top = version + 5;
+            const Design::Box chipBox{chip.left, top, chip.right, top + 14}, textBox{chip.left + 4, top + 2, chip.right - 4, top + 12};
+            const int canvas = 0x17, plate = Over(canvas, .04f), chipOnPlate = Over(plate, 0x0A / 255.f);
+            st.tabsPosition = BrowserSettings::TabsPosition::Top; dr.HoverForTest(SettingsUI::AboutVersion); Sleep(400);
+            for (UINT dpi : {96u, 144u}) {
+                const std::wstring file = shots + L"\\beta-version-hover-" + std::to_wstring(dpi * 100 / 96) + L".png";
+                Check(dr.RenderForTest(file, dpi, H, root), "version line hovered: capture rendered");
+                const auto img = Load(file); const float k = dpi / 96.f;
+                std::printf("     hover %u dpi: line plate %d (exp %d), chip plate %d (exp %d), BETA peak %d\n", dpi, img.At(12, version + 2, k), plate, img.At(chip.left + 1.5f, top + 1.5f, k), chipOnPlate, Peak(img, k, textBox));
+                Check(std::abs(img.At(12, version + 2, k) - plate) <= 1, "version line hovered: its white 4 % plate (Paper 1V0L-0)");
+                Check(std::abs(img.At(chip.left + 1.5f, top + 1.5f, k) - chipOnPlate) <= 1 && Peak(img, k, textBox) > chipOnPlate + 60, "version line hovered: « BETA » still there, over the plate (its 4 % plate and its text)");
+                (void)chipBox;
+            }
+            dr.HoverForTest(0); Sleep(400);
+            for (int i = 0; i < 80 && dr.FocusForTest() != SettingsUI::AboutVersion; ++i) dr.KeyForTest(VK_TAB);
+            Check(dr.FocusForTest() == SettingsUI::AboutVersion, "keyboard focus on the version line");
+            Check(dr.RenderForTest(shots + L"\\beta-version-focus-150.png", 144, H, root), "version line focused: capture rendered");
+            {   const auto img = Load(shots + L"\\beta-version-focus-150.png");
+                Check(img.At(8.4f, version + 12, 1.5f) > 0x50 && Peak(img, 1.5f, textBox) > Over(canvas, .04f) + 60, "version line focused: the ring and « BETA » both shown"); }
+            dr.FocusForTest(0, false); dr.HoverForTest(0);
+        }
         // Keyboard focus picture: the ring on the focused segment and its label.
         st.tabsPosition = BrowserSettings::TabsPosition::Top; dr.HoverForTest(0); Sleep(250);
         for (int i = 0; i < 80 && dr.FocusForTest() != compact; ++i) dr.KeyForTest(VK_TAB);

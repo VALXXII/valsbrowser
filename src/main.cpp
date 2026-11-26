@@ -318,6 +318,7 @@ extern Accessibility::Bridge accessibility;
 NativeChrome::BookmarkPopover::Popover bookmarkPopover; NativeChrome::BookmarkToast::Toast bookmarkToast; NativeChrome::BookmarksUI::Drawer bookmarksDrawer;
 // Panneau latéral (#127): section « Panneau latéral » below (src/sidebar.h, Chrome::BuildSidebar / PaintSidebar).
 constexpr int SidebarToggleCommand=NativeChrome::Chrome::SidebarToggleId;int forcedLayout=-1;BrowserSettings::TabsPosition LayoutInEffect();void LogLayout();std::wstring LayoutLine();int TabLayoutArg(const wchar_t* args);bool SidebarEdgeDown(float x);void SidebarEdgeMove(float x);void SidebarEdgeUp(bool commit);void SidebarEdgeLook(int state);bool SidebarEdgeKey(WPARAM key);void SidebarEdgeReset();bool SidebarEdgeDragging();void ApplyLayout();float DrawerReserveDip();void SyncDrawerReserve();void SetTabsPosition(BrowserSettings::TabsPosition p);void SidebarPopover(bool open);bool AnnotationButtonDimmed();RECT RegionScreen(int id);bool ColumnPopoverAt(int id,float gap,POINT& bottomLeft);void UpdateFont();void SidebarPrepare();void ToggleSidebar();void SidebarHoles();bool SidebarDragMove(POINT point);void SidebarDragEnd(bool commit);
+extern bool keepSettingsAcrossLayout; /* the Réglages drawer stays open across a layout change it made (ApplyLayout) */
 bool SyncBookmarkChrome();void BookmarksChanged();void ToggleBookmarksDrawer(bool keyboard);bool BookmarkedSite(const std::wstring& site);long long AccessibleBandItemKey(int region);
 // Self-update host hooks (no-ops in unstamped builds).
 std::wstring AboutTitle(){
@@ -607,13 +608,8 @@ void SyncSplitDecor(){
     chrome.tabGroups.assign(pages.size(),0);for(size_t i=0;i<pages.size();++i){const int g=pages[i]->group;if(g&&splitGroups.count(g))chrome.tabGroups[i]=g;}
     chrome.visibleTabGroup=VisibleGroup();
     auto v=CurrentSplit();auto& d=chrome.split;d.rails.clear();d.railTabs.clear();d.handles.clear();d.shown=v.group!=0;
-    // One accent at a time: while a drop preview is shown, the active ring steps back.
-    d.ring=!tabDrag.lifted&&!ResizePlaceholdersUp();
     if(!d.shown){d.hotHandle=d.focusedHandle=-1;splitResize=-1;SyncGripLooks();return;}
     for(auto& s:v.a.slots){D2D1_RECT_F r{s.box.left,s.box.top,s.box.right,s.box.bottom};if(s.rail){d.rails.push_back(r);d.railTabs.push_back(TabIndexOf(v.members[s.member]));}else if(s.member==v.active)d.active=r;}
-    {const auto c=ContentBox();const bool low=std::fabs(d.active.bottom-c.bottom)<.5f;d.activeBottomLeft=low&&std::fabs(d.active.left-c.left)<.5f;d.activeBottomRight=low&&std::fabs(d.active.right-c.right)<.5f;
-     // Mode Focus: the pages' top corners are round too (6 DIP); the ring follows them on the content's top edge.
-     const bool high=chrome.floating&&std::fabs(d.active.top-c.top)<.5f;d.activeTopLeft=high&&std::fabs(d.active.left-c.left)<.5f;d.activeTopRight=high&&std::fabs(d.active.right-c.right)<.5f;}
     for(int s:v.a.separators){auto b=v.a.SeparatorBox(s);d.handles.push_back({b.left,b.top,b.right,b.bottom});}
     if(splitResize>=(int)d.handles.size())splitResize=-1;
     d.focusedHandle=splitResize;if(sepDrag.active)d.hotHandle=sepDrag.handle;else if(d.hotHandle>=(int)d.handles.size())d.hotHandle=-1;
@@ -2683,7 +2679,7 @@ void SettingChanged(BrowserSettings::Change change){
     case Change::CustomSearch:break;
     case Change::TabPosition:case Change::ConfirmCloseTabs:case Change::CloseWithLastTab:case Change::MuteBackground:ApplyTabSettings();break;
     case Change::Autoplay:ApplyMediaSettings();break;
-    case Change::TabsPosition:forcedLayout=-1;ApplyLayout();if(window&&chrome.sidebar)Layout();settingsDrawer.Changed();Log(std::wstring(L"SETTINGS tabs position ")+BrowserSettings::Info(settings.tabsPosition).label);break;
+    case Change::TabsPosition:{const bool keep=settingsDrawer.Open();forcedLayout=-1;keepSettingsAcrossLayout=keep;ApplyLayout();keepSettingsAcrossLayout=false;if(window&&chrome.sidebar)Layout();if(keep)settingsDrawer.Relaid();settingsDrawer.Changed();}Log(std::wstring(L"SETTINGS tabs position ")+BrowserSettings::Info(settings.tabsPosition).label);break;
     case Change::GrayscaleText:Log(settings.grayscaleText?L"SETTINGS grayscale text on: applies at next launch":L"SETTINGS grayscale text off: applies at next launch");break;
     // Réglages › « Annotations »: the launch prompt is read by the mode when it next needs it (src/annotation-mode.h, Prefs).
     case Change::AnnotationConnectPrompt:Log(BrowserSettings::ConnectPromptActive(settings)?L"SETTINGS annotation connect prompt on (« Plus tard » count reset)":L"SETTINGS annotation connect prompt off");break;
@@ -5073,6 +5069,9 @@ float DrawerReserveDip(){if(InFullscreen()||halted)return 0;if(settingsDrawer.Op
     if((downloadDrawer.Visible()&&!downloadDrawer.Closing())||historyDrawer.Open()||bookmarksDrawer.Open())return NativeChrome::Downloads::DrawerLayout::width;
     if(audioPanel.Docked())return NativeChrome::AudioPanel::Layout::width;return 0;}
 void SyncDrawerReserve(){static float applied=0;const float r=DrawerReserveDip();if(r==applied)return;applied=r;if(window&&!halted)Layout();}
+// The Réglages drawer changed the layout itself (its root switch, Réglages › Onglets): it stays open across the change
+// and is placed again where drawers go in the new layout (Val 2026-11-26). Any other way of changing it closes it as before.
+bool keepSettingsAcrossLayout=false;
 void ApplyLayout(){
     layoutApplied=true;
     const bool want=SidePanelWanted();NativeChrome::ShortcutsPanel::SidePanelRows()=want;if(want==chrome.sidebar)return;
@@ -5080,7 +5079,7 @@ void ApplyLayout(){
     if(window){KillTimer(window,SidebarFoldTimerId);KillTimer(window,SidebarHoverTimerId);}
     for(auto& t:pages)if(t&&t->holed){if(t->host&&IsWindow(t->host))SetWindowRgn(t->host,nullptr,TRUE);t->holed=false;}
     chrome.sidebar=want;sidebarReady=false;sidebarShownTab=-1;chrome.ResetTabMotion();   // the other layout starts settled
-    if(window){HideSuggestions();chrome.latched=0;CloseDownloadSurfaces(false);audioPanel.Close(false);settingsDrawer.Hide(false,false);historyDrawer.Hide(false,false);bookmarksDrawer.Hide(false,false);
+    if(window){HideSuggestions();chrome.latched=0;CloseDownloadSurfaces(false);audioPanel.Close(false);if(!keepSettingsAcrossLayout)settingsDrawer.Hide(false,false);historyDrawer.Hide(false,false);bookmarksDrawer.Hide(false,false);
         Layout();bookmarkToast.Reposition();RepositionElementSurfaces();}
     Log(want?L"LAYOUT side panel":L"LAYOUT top bar");
 }

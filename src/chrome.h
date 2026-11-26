@@ -127,13 +127,8 @@ public:
             const float cx=(r.left+r.right)/2;const int tab=i<split.railTabs.size()?split.railTabs[i]:-1;
             const bool vertical=r.bottom-r.top>r.right-r.left;const float top=vertical?r.top+12:(r.top+r.bottom)/2-8;const float left=vertical?cx-8:r.left+12;
             if(tab>=0)DrawFavicon(tab,{left,top,left+16,top+16});}
-        // Active panel ring (Paper 08): neutral, 1 DIP off the page, 2 DIP. After a click it is
-        // discreet (white 10 %); reached by keyboard (F6, menu) it is the focus ring's 50 % (5.26:1).
-        // The accent is kept for drop previews and manipulation, never a permanent frame.
-        // At an outer bottom corner the page is round (6 DIP): the ring follows it (8 on its centre line). Mode Focus: the
-        // outer top corners too (the page's 6 DIP corners, 8 on the ring's centre line, 2 DIP off the page).
-        if(split.ring){auto a=split.active;Color(1,keyboardModality?Design::Focus::keyboardOpacity:Design::Focus::pointerOpacity);
-            if(auto g=CornerBox({a.left-2,a.top-2,a.right+2,a.bottom+2},split.activeTopLeft?8.f:2.f,split.activeTopRight?8.f:2.f,split.activeBottomRight?8.f:2.f,split.activeBottomLeft?8.f:2.f)){target->DrawGeometry(g,brush,2);g->Release();}}
+        // No frame around the active panel any more (Val 2026-11-26): the split view's hover frames name each page
+        // (src/split-frames.h); the address bar and the tab strip still follow the active one.
         // Separator (Paper 08): at rest only the 4 DIP canvas gap, a thin neutral line. The
         // handle, 8 x 36 #2F2F2F fully rounded, appears while hovered, dragged or keyboard-focused
         // and overlaps both page edges by 2 DIP. Pages are child windows that cover the canvas,
@@ -545,7 +540,7 @@ public:
     std::vector<int> tabGroups;int liftedIndex=-1,visibleTabGroup=0;
     std::vector<int> menuTargets;  // tabs a highlighted split-menu row designates (Paper V2: 1 DIP white 50 % outline)
     int menuSource=-1;             // #127: the right-clicked tab while a split-menu row designates a target (the column outlines both)
-    struct SplitDecor{bool shown=false,ring=true;D2D1_RECT_F active{};std::vector<D2D1_RECT_F> rails;std::vector<int> railTabs;std::vector<D2D1_RECT_F> handles;int hotHandle=-1,focusedHandle=-1;bool paintHandles=true,activeBottomLeft=false,activeBottomRight=false,activeTopLeft=false,activeTopRight=false;} split;
+    struct SplitDecor{bool shown=false;D2D1_RECT_F active{};std::vector<D2D1_RECT_F> rails;std::vector<int> railTabs;std::vector<D2D1_RECT_F> handles;int hotHandle=-1,focusedHandle=-1;bool paintHandles=true;} split;
     UINT dpi=96;float width=1180,height=815;D2D1_RECT_F bar{},edit{};std::vector<Region> regions;
     // Fullscreen (F11 or a page's element): the page takes the whole window. Nothing of the chrome is drawn, hit,
     // focused, given a tooltip or exposed to UI Automation (all of these read `regions`); Paint only clears the canvas.

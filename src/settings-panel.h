@@ -1473,7 +1473,7 @@ private:
             // Version + check for updates. The glyph spins while a check runs.
             const auto version = hooks_.version ? hooks_.version() : Version{};
             const float y = h - Layout::padBottom - Layout::slot;
-            const float versionLeft = version.text.empty() ? Layout::textLeft : Beta(y);
+            const float versionLeft = version.text.empty() ? Layout::textLeft : BetaBox(y).right + Layout::betaGap;
             // The line opens « À propos » (Paper 1V0L-0): nothing at rest; hover = white 4 % plate (radius 6) and the
             // chevron (white 50 %), the drawer's hover / press / focus ring like its other rows (120 ms, A1).
             const bool about = AboutOn(); float textRight = Layout::Trailing(y, Layout::slot).left - 4;
@@ -1484,6 +1484,8 @@ private:
                 if (shown > .001f) pc_->PathGlyph(DialogKit::Glyph::caretRight, R(chevron), Layout::aboutChevron, D2D1::ColorF(1, 1, 1, .5f * shown));
                 textRight = chevron.left - 4;
             }
+            // « BETA » over the line's hover plate (which is opaque): it stays on hover, press and keyboard focus (Val, 2026-11-26).
+            if (!version.text.empty()) Beta(y);
             pc_->Text(version.text, {versionLeft, y, textRight, y + Layout::slot}, 14, .5f, true, false, -.14f);
             float turn = 0;
             if (Spinning(now)) turn = -SpinDegrees(now); // counter-clockwise, the way the glyph's arrow points
@@ -2593,6 +2595,16 @@ public:
     }
     void Toggle() { if (Open()) Hide(false, true); else Show(); }
     void Reposition() { if (visible_) ApplyGeometry(Motion::Now()); }   // Mode Focus: a new live top / right / radius counts as a move (ApplyGeometry)
+    // The window changed layout under the open drawer (the root's layout switch, Réglages › Onglets; Val 2026-11-26): it
+    // stays open, on the same view with the same focus, placed where drawers go in the new layout and painted there at
+    // once (no frame of its old picture at the new place).
+    void Relaid() {
+        if (!hwnd_ || !visible_ || closing_) return;
+        const auto now = Motion::Now();
+        ApplyGeometry(now, true);
+        PaintNow(); ValidateRect(hwnd_, nullptr); SyncCorners();
+        Repoint(); RefreshTips(); Schedule(now);
+    }
     // The state or the version status changed outside the drawer: follow it.
     void Changed() {
         if (!hwnd_ || !visible_ || !state_) return;
