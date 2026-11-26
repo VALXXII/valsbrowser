@@ -1812,8 +1812,8 @@ std::wstring UniqueDownloadPath(const std::wstring& folder,const std::wstring& s
 // removal by the engine seen since (guard counted from givenAt); settling: the final pass (at, saveDone / saveResult);
 // insecure: an insecure-download hold (DL::Keep::InsecureSource): no pass of the engine runs on it, nothing to wait for;
 // adopted: a leftover of a browser stopped in the middle of a keep (SweepKeptDownloads), watched until the guard counted from
-// this profile's engine being up (KeptDownloads::AdoptedLook); engine: the engine's browser process (a handle that only
-// waits for its end, taken at « Conserver »); atExit: the window closed with the engine's removal still to come, its end
+// this profile's engine being up (KeptDownloads::AdoptedLook); engine: the engine's browser process (a handle to wait
+// for its end and read its exit code, taken at « Conserver »); atExit: the window closed with the engine's removal still to come, its end
 // is awaited after the message loop (KeepsAfterEngine).
 struct KeepJob{std::wstring path,backup,uri,at;bool cancelled=false,marked=false,seen=false,settling=false,insecure=false,adopted=false,atExit=false;int looks=0;ULONGLONG keptAt=0,cancelAt=0,givenAt=0;
     std::shared_ptr<std::atomic<long>> copying;std::shared_ptr<std::atomic<int>> saveDone;std::shared_ptr<std::atomic<long>> saveResult;std::shared_ptr<void> engine;};
@@ -1976,13 +1976,14 @@ void WaitEnginePass(int id){
     WatchKept(id);
 }
 // Step 1: our own name (a hard link, else a copy off the UI thread), the row a finished download at once.
-// The engine's browser process behind a download, as a handle that only waits for its end (never reused, unlike its pid):
+// The engine's browser process behind a download, as a handle to wait for its end and read its exit code (never reused,
+// unlike its pid):
 // from the download's own tab, else any page of this window (one engine per profile). Null: unknown.
 std::shared_ptr<void> EngineProcessOf(const DownloadOperation& entry){
     UINT32 pid=0;
     if(entry.view&&entry.view->p){Com<ICoreWebView2> view;if(SUCCEEDED(entry.view->p->get_CoreWebView2(&view.p))&&view.p)view->get_BrowserProcessId(&pid);}
     for(size_t i=0;!pid&&i<pages.size();++i)if(pages[i]->view.p&&FAILED(pages[i]->view->get_BrowserProcessId(&pid)))pid=0;
-    HANDLE h=pid?OpenProcess(SYNCHRONIZE,FALSE,pid):nullptr;
+    HANDLE h=pid?OpenProcess(SYNCHRONIZE|PROCESS_QUERY_LIMITED_INFORMATION,FALSE,pid):nullptr;
     return h?std::shared_ptr<void>(h,CloseHandle):nullptr;
 }
 void KeepHeldDownload(int id){
@@ -2063,8 +2064,8 @@ void KeepsAfterEngine(){
     for(auto& [id,k]:keepJobs){
         if(!k.atExit)continue;
         const auto name=DL::FileName(k.path);
-        DWORD code=STILL_ACTIVE;const bool clean=ended&&GetExitCodeProcess(k.engine.get(),&code)&&code==0;
-        if(ended&&!clean)Log(L"DOWNLOAD keep at exit: the engine ended with code "+std::to_wstring((unsigned long)code)+L", not a clean shutdown");
+        DWORD code=STILL_ACTIVE;const bool read=ended&&GetExitCodeProcess(k.engine.get(),&code);const bool clean=read&&code==0;
+        if(ended&&!clean)Log(L"DOWNLOAD keep at exit: the engine ended "+(read?L"with code "+std::to_wstring((unsigned long)code):L"(its exit code unreadable, "+std::to_wstring((unsigned long)GetLastError())+L")")+L", not taken as a clean shutdown");
         const auto at=KeepPathState(k.path);
         const bool stub=at==DL::Keep::At::Left&&DL::Keep::EngineStub(KeptDownloads::SizeOf(k.path),KeptDownloads::SizeOf(k.backup))&&!KeptDownloads::SameFileId(k.path,k.backup);
         auto next=DL::Keep::AtExit(clean,at,stub);
