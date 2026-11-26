@@ -104,9 +104,12 @@ inline bool HeldForDecision(int state, std::int64_t received, std::int64_t total
 // reads the file without allowing its deletion the removal simply fails and the file stays where it is. So:
 //   - the path's state after the cancel (At): Gone (not found), Pending (listed but cannot be opened: its removal is
 //     pending), Left (a file that opens: the engine's, not removed yet, or not at all);
-//   - Gone: the kept file gets its path back as another name of ours; Left for LeftSteps in a row: the engine's removal
-//     did not take, the file is at its path already; Pending, or Left for less: wait, up to WaitSteps; a path that never
-//     frees up: the kept file takes the next free name;
+//   - Gone: the kept file gets its path back as another name of ours; Pending, or Left for less than LeftSteps: wait, up
+//     to WaitSteps; a path that never frees up: the kept file takes the next free name;
+//   - Left for LeftSteps in a row (Stays): either the engine's removal did not take, or it waits for our hard link to go
+//     (measured twice: the engine's file and our link vanished together when the link was removed). So our bytes first
+//     get a copy of their own and the link goes; after that, Gone gives the path back from the copy, and Stays means the
+//     engine's file is the kept file;
 //   - then our own name stays for GuardSteps, during which a removal of the path is undone from it.
 namespace Keep {
 inline constexpr int StepMs = 100;

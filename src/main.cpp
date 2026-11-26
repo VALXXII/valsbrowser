@@ -1567,8 +1567,9 @@ DL::Item* FindDownload(int id);
 // WebView closes, so the closed tab's hidden controller lives until its last download ends (released with the entry).
 // fullAt: when every byte was in (GetTickCount64, 0 = not yet): past DL::Engine::HoldGraceMs still in progress, the
 // engine holds the file for the user's decision. keeping: « Conserver » in progress (KeepHeldDownload), the kept bytes
-// under keepLink, back to keepPath once the engine let go; keepFinishing: FinishKeep under way (started once).
-struct DownloadOperation { Com<ICoreWebView2DownloadOperation> op; bool userPaused=false; Workspace* owner=nullptr; unsigned tab=0; std::shared_ptr<Com<ICoreWebView2Controller>> view; ULONGLONG fullAt=0; bool keeping=false,keepFinishing=false; std::wstring keepLink,keepPath; };
+// under keepLink, back to keepPath once the engine let go; keepFinishing: FinishKeep under way (started once);
+// keepIndependent: keepLink is a copy of its own, no longer a link to the engine's file (keepCopy while it is made).
+struct DownloadOperation { Com<ICoreWebView2DownloadOperation> op; bool userPaused=false; Workspace* owner=nullptr; unsigned tab=0; std::shared_ptr<Com<ICoreWebView2Controller>> view; ULONGLONG fullAt=0; bool keeping=false,keepFinishing=false,keepIndependent=false; std::wstring keepLink,keepPath,keepCopy; std::shared_ptr<std::atomic<int>> keepCopying; };
 static_assert(DL::Engine::InProgress==COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS&&DL::Engine::Interrupted==COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED&&DL::Engine::Completed==COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED,"engine download states");
 static_assert(DL::Engine::ReasonUserCanceled==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED&&DL::Engine::ReasonUserPaused==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_PAUSED,"engine interrupt reasons");
 std::map<int,std::shared_ptr<DownloadOperation>> downloadOps;
@@ -1847,19 +1848,52 @@ void GuardKeptFile(int id,const std::wstring& path,const std::wstring& link,cons
     if(at.empty()){SetFileAttributesW(link.c_str(),FILE_ATTRIBUTE_NORMAL);DeleteFileW(link.c_str());return;}
     KeptFileSettled(id,at,uri);
 }
+// Our bytes made independent of the engine's file: a copy of their own, off the UI thread (done: 1 copied, 2 failed).
+void CopyKeptBytes(const std::wstring& from,const std::wstring& to,std::shared_ptr<std::atomic<int>> done){
+    std::thread([from,to,done]{DeleteFileW(to.c_str());done->store(CopyFileW(from.c_str(),to.c_str(),TRUE)?1:2);}).detach();
+}
+// The names of our own of a keep that ends without them (« Supprimer »): gone; a copy still being made, once it is done.
+void DropKeepNames(const std::wstring& link,const std::wstring& copy,std::shared_ptr<std::atomic<int>> copying){
+    if(!link.empty()){SetFileAttributesW(link.c_str(),FILE_ATTRIBUTE_NORMAL);DeleteFileW(link.c_str());}
+    if(copy.empty())return;
+    if(copying&&!copying->load()){DeferAfter(DL::Keep::StepMs,[copy,copying]{DropKeepNames(L"",copy,copying);});return;}
+    SetFileAttributesW(copy.c_str(),FILE_ATTRIBUTE_NORMAL);DeleteFileW(copy.c_str());
+}
 // The engine let go of the held file (its cancel): once its own file is really gone, the kept file takes its path back.
-// leftFor: steps in a row the engine's file was still there and readable (its removal may not have taken).
+// leftFor: steps in a row the engine's file was still there and readable.
 void FinishKeep(int id,int attempt,int leftFor){
     auto found=downloadOps.find(id);auto* item=FindDownload(id);if(found==downloadOps.end()||!item||!found->second->keeping)return;
-    auto entry=found->second;const auto path=entry->keepPath,link=entry->keepLink;
+    auto entry=found->second;const auto path=entry->keepPath;
+    if(entry->keepCopying){   // the copy of our own under way: it does not count against the wait
+        const int copied=entry->keepCopying->load();
+        if(!copied){DeferAfter(DL::Keep::StepMs,[id,attempt]{if(!halted)FinishKeep(id,attempt,0);});return;}
+        if(copied==1){   // our link's hidden mark was the engine's file's too: shown again before the link goes
+            SetFileAttributesW(path.c_str(),FILE_ATTRIBUTE_NORMAL);
+            if(!DeleteFileW(entry->keepLink.c_str())&&GetLastError()!=ERROR_FILE_NOT_FOUND&&attempt<DL::Keep::WaitSteps){   // in use elsewhere: its turn comes
+                DeferAfter(DL::Keep::StepMs,[id,attempt]{if(!halted)FinishKeep(id,attempt+1,0);});return;}
+            entry->keepLink=entry->keepCopy;Log(L"DOWNLOAD keep: the kept bytes have a copy of their own, the link to the engine's file is gone");
+        }else{DeleteFileW(entry->keepCopy.c_str());Log(L"DOWNLOAD keep: no copy of their own could be made, the link stays");}
+        entry->keepCopying.reset();entry->keepIndependent=true;entry->keepCopy.clear();
+        DeferAfter(DL::Keep::StepMs,[id,attempt]{if(!halted)FinishKeep(id,attempt+1,0);});return;
+    }
     const auto state=KeepPathState(path);leftFor=state==DL::Keep::At::Left?leftFor+1:0;
     const auto next=DL::Keep::AfterCancel(state,attempt,leftFor);
+    // Readable at its path for DL::Keep::LeftSteps: its removal may not have taken, or it may wait for our link to go
+    // (measured: the engine's file and our hard link vanished together when the link was removed). So our bytes first
+    // get a copy of their own and the link goes; then the engine's file goes (the copy takes its path) or stays (it is
+    // the kept file).
+    if(next==DL::Keep::Next::Stays&&!entry->keepIndependent){
+        entry->keepCopy=entry->keepLink+L"-copy";entry->keepCopying=std::make_shared<std::atomic<int>>(0);CopyKeptBytes(entry->keepLink,entry->keepCopy,entry->keepCopying);
+        Log(L"DOWNLOAD keep: the engine's file is still there after its cancel, the kept bytes get a copy of their own");
+        DeferAfter(DL::Keep::StepMs,[id,attempt]{if(!halted)FinishKeep(id,attempt+1,0);});return;
+    }
     if(next==DL::Keep::Next::Wait){
         if(attempt==0)Log(L"DOWNLOAD keep: the engine's own file is still there, waiting for it to go");
         DeferAfter(DL::Keep::StepMs,[id,attempt,leftFor]{if(!halted)FinishKeep(id,attempt+1,leftFor);});return;
     }
+    const auto link=entry->keepLink;
     downloadOps.erase(found);item->held=false;item->endTime=0;
-    if(next==DL::Keep::Next::Stays)Log(L"DOWNLOAD keep: the engine's removal of its file did not take, the file is at its place");
+    if(next==DL::Keep::Next::Stays)Log(L"DOWNLOAD keep: the engine's file stayed once our link was gone, it is the kept file");
     const bool back=next==DL::Keep::Next::Stays||(next==DL::Keep::Next::Restore&&PutKeptFileBack(link,path));
     std::wstring at=path;
     if(!back){
@@ -1867,30 +1901,36 @@ void FinishKeep(int id,int attempt,int leftFor){
         if(at.empty()){const DWORD error=GetLastError();SetFileAttributesW(link.c_str(),FILE_ATTRIBUTE_NORMAL);DeleteFileW(link.c_str());Log(L"DOWNLOAD keep failed: the kept file could not be put back ("+std::to_wstring(error)+L")");KeepFailed(item);return;}
     }
     item->path=at;item->state=DL::State::Completed;item->missing=false;if(item->total>0)item->received=item->total;
-    Log(L"DOWNLOAD kept by the user: "+DL::FileName(at)+(attempt?L" (the engine's own file went after "+std::to_wstring(attempt*DL::Keep::StepMs)+L" ms)":L""));
+    Log(L"DOWNLOAD kept by the user: "+DL::FileName(at)+(attempt?L" (after "+std::to_wstring(attempt*DL::Keep::StepMs)+L" ms of the engine's)":L""));
     SaveDownloads();DownloadsChanged();UpdateDownloadIcon(true);
     if(back){keptGuards[path]=link;GuardKeptFile(id,path,link,item->uri,0);}
     else KeptFileSettled(id,at,item->uri);   // under another name: the engine never touches it, nothing to guard
 }
 // The window closes while « Conserver » is under way (rare: it takes a few seconds at most): up to DL::Keep::GuardSteps
-// here for every kept file to get its path back (or to stay readable there for DL::Keep::LeftSteps: the engine's removal
-// did not take), then our own names go. A path still taken otherwise: the kept file takes the next free name. Nothing
-// hidden is left behind.
+// here for every kept file to get its path back, then our own names go. A kept file not given back (the engine's file
+// still there): the next free name, the bytes are safe. Nothing hidden is left behind.
 void KeepsAtExit(){
-    struct Job{std::wstring path,link;bool restored;DL::Item* item;int left=0;};std::vector<Job> jobs;
+    struct Job{std::wstring path,link;bool restored;DL::Item* item;};std::vector<Job> jobs;
     for(auto& [path,link]:keptGuards)jobs.push_back({path,link,true,nullptr});
-    for(auto& [id,entry]:downloadOps)if(entry&&entry->keeping)jobs.push_back({entry->keepPath,entry->keepLink,false,FindDownload(id)});
+    for(auto& [id,entry]:downloadOps){
+        if(!entry||!entry->keeping)continue;
+        if(entry->keepCopying){   // a copy of our own under way: it ends (bounded), then it is our name
+            for(int i=0;i<600&&!entry->keepCopying->load();++i)Sleep(DL::Keep::StepMs);
+            if(entry->keepCopying->load()==1){SetFileAttributesW(entry->keepPath.c_str(),FILE_ATTRIBUTE_NORMAL);DeleteFileW(entry->keepLink.c_str());entry->keepLink=entry->keepCopy;}
+            else DeleteFileW(entry->keepCopy.c_str());
+        }
+        jobs.push_back({entry->keepPath,entry->keepLink,false,FindDownload(id)});
+    }
     keptGuards.clear();if(jobs.empty())return;
     for(int step=0;step<DL::Keep::GuardSteps;++step){
         bool settled=true;
-        for(auto& j:jobs){const auto at=KeepPathState(j.path);j.left=at==DL::Keep::At::Left?j.left+1:0;
-            if(at==DL::Keep::At::Left&&j.left>=DL::Keep::LeftSteps)j.restored=true;   // the engine's removal did not take
+        for(auto& j:jobs){const auto at=KeepPathState(j.path);
             if(at==DL::Keep::At::Gone){j.restored=PutKeptFileBack(j.link,j.path)||j.restored;settled=false;}else if(at==DL::Keep::At::Pending||!j.restored)settled=false;}
         if(settled&&step>=5)break;   // every path back, half a second at least
         Sleep(DL::Keep::StepMs);
     }
     for(auto& j:jobs){
-        std::wstring at=j.path;   // never given back (the engine's file still there): the next free name, the bytes are safe
+        std::wstring at=j.path;
         if(!j.restored||KeepPathState(j.path)!=DL::Keep::At::Left){at=KeepElsewhere(j.path,j.link);if(at.empty()){SetFileAttributesW(j.link.c_str(),FILE_ATTRIBUTE_NORMAL);DeleteFileW(j.link.c_str());}}
         else{SetFileAttributesW(j.path.c_str(),FILE_ATTRIBUTE_NORMAL);DeleteFileW(j.link.c_str());}
         if(j.item){j.item->held=false;if(at.empty()){j.item->state=DL::State::Failed;j.item->canResume=false;j.item->reason=DL::ReasonCode(I18n::Id::download_error_file);}else{j.item->path=at;j.item->state=DL::State::Completed;j.item->missing=false;}}
@@ -2033,7 +2073,7 @@ void DownloadAction(int id,DL::Action action){
     // « Supprimer » on a held file: the engine cancels and deletes it; the row leaves the list (like B07's Delete).
     // While « Conserver » waits for the engine, « Supprimer » is the user's last word: our own name goes too, nothing kept.
     case DL::Action::Discard:{if(!item->held)break;const auto path=item->path;
-        if(entry&&entry->keeping){entry->keeping=false;SetFileAttributesW(entry->keepLink.c_str(),FILE_ATTRIBUTE_NORMAL);DeleteFileW(entry->keepLink.c_str());Log(L"DOWNLOAD keep abandoned for « Supprimer »");}
+        if(entry&&entry->keeping){entry->keeping=false;DropKeepNames(entry->keepLink,entry->keepCopy,entry->keepCopying);Log(L"DOWNLOAD keep abandoned for « Supprimer »");}
         Log(L"DOWNLOAD held file discarded by the user: "+DL::FileName(path));DownloadAction(id,DL::Action::Remove);
         DeferAfter(1500,[path]{if(GetFileAttributesW(path.c_str())!=INVALID_FILE_ATTRIBUTES&&!DeleteFileW(path.c_str()))Log(L"DOWNLOAD discarded file could not be removed");});break;}
     case DL::Action::Remove:{if(op&&(item->state==DL::State::InProgress||item->state==DL::State::Paused))op->Cancel();downloadOps.erase(id);downloads.erase(std::find_if(downloads.begin(),downloads.end(),[id](const DL::Item& d){return d.id==id;}));SaveDownloads();DownloadsChanged();UpdateDownloadIcon(false);break;}

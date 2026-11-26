@@ -51,7 +51,7 @@ static void KeepChecks() {
     Expect(WaitSteps * StepMs >= 10000, "keep: the wait covers the engine's removal measured up to about 4 s with room to spare");
     Expect(AfterCancel(At::Pending, WaitSteps - 1, 0) == Next::Wait && AfterCancel(At::Pending, WaitSteps, 0) == Next::Elsewhere, "keep: a path that never frees up: the next free name, never a dead row");
     Expect(AfterCancel(At::Left, 0, 1) == Next::Wait && AfterCancel(At::Left, 15, LeftSteps - 1) == Next::Wait, "keep: the engine's file still readable for less than LeftSteps: its removal may still come");
-    Expect(AfterCancel(At::Left, 25, LeftSteps) == Next::Stays && AfterCancel(At::Left, WaitSteps + 1, LeftSteps) == Next::Stays, "keep: readable for LeftSteps in a row: the engine's removal did not take (measured: a reader not allowing deletion), the file stays where it is");
+    Expect(AfterCancel(At::Left, 25, LeftSteps) == Next::Stays && AfterCancel(At::Left, WaitSteps + 1, LeftSteps) == Next::Stays, "keep: readable for LeftSteps in a row: our bytes get a copy of their own, then the engine's file goes (the copy takes its path) or stays (the kept file)");
     Expect(AfterCancel(At::Left, WaitSteps, 3) == Next::Elsewhere, "keep: the wait still ends");
     Expect(Guarding(true, 0) == Guard::Hold && Guarding(true, GuardSteps - 1) == Guard::Hold && Guarding(true, GuardSteps) == Guard::Done, "keep: the path is watched for the guard, then settled");
     Expect(Guarding(false, 0) == Guard::PutBack && Guarding(false, GuardSteps - 1) == Guard::PutBack, "keep: a removal during the guard is undone (measured: 16 ms after the file was given back)");
