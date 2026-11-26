@@ -71,7 +71,12 @@ inline bool Pairs(const SJ::Value* v, std::vector<BA::NamedValue>& out, std::siz
 }
 
 // ---------------------------------------------------------------- page messages
-enum class Op { Invalid, Select, Hidden, Shown, Escape, NoSelection, Anchor, Selecting, Mods };
+enum class Op { Invalid, Select, Hidden, Shown, Escape, NoSelection, Anchor, Selecting, Mods, FrameHover };
+// FrameHover (iframes case 2, src/annotation-frame-card.h): the hover entered (on) or left (!on) an iframe of ANOTHER site —
+// one message each way, never during the moves. serial = n (the page's counter: a leave names the enter it ends; the card's
+// « Annoter le cadre » gives it back); on: x / y / w / h = the iframe's rectangle (CSS px of the top viewport), vw / vh = that
+// viewport (optional), origin = the frame's origin (« https://pay.example », optional, ≤ 256 bytes, never a path);
+// !on: gone = moved (the page scrolled under the pointer: the card goes at once, no grace).
 // Anchor (chat, Mode Commentaire): where the element the bubble is attached to is now, CSS px of the top viewport;
 // gone = it is no longer in the page.
 // Selecting (latency): posted at the click, before the full « select » of the same seq: what was clicked —
@@ -80,7 +85,8 @@ enum class Op { Invalid, Select, Hidden, Shown, Escape, NoSelection, Anchor, Sel
 // optional (0 when absent), for the host's frame-by-frame measure of the page -> host lag.
 struct Envelope { Op op = Op::Invalid; std::int64_t serial = -1; double x = 0, y = 0, w = 0, h = 0, vw = 0, vh = 0; bool gone = false; std::string selector; double at = 0;
                   double sx = 0, sy = 0, t = 0;
-                  double px = -1, py = -1; };   // Selecting: pt = where the page saw the click (CSS px of the top viewport); -1 when absent (diagnostics only)
+                  double px = -1, py = -1;   // Selecting: pt = where the page saw the click (CSS px of the top viewport); -1 when absent (diagnostics only)
+                  bool on = false; std::string origin; };   // FrameHover
 
 // Checks the frame of every message: type/version, the session nonce and the navigation stamp.
 // Anything else (unknown op, wrong types) is Invalid.
@@ -109,6 +115,28 @@ inline Envelope CheckEnvelope(const SJ::Value& v, const std::string& nonce, std:
         e.op = Op::Selecting; e.serial = q->integer; e.selector = sel->string;
     }
     else if (op->string == "mods") e.op = Op::Mods;   // R31: the pointer moved over the page: the host reads Ctrl
+    else if (op->string == "frameHover") {   // iframes case 2: entered / left an iframe of another site
+        const auto* on = v.Get("on"); const auto* q = v.Get("n");
+        if (!on || !on->IsBool()) return bad("frameHover on");
+        if (!q || !q->IsNumber() || !q->integral || q->integer < 1 || q->integer > (std::int64_t(1) << 40)) return bad("frameHover n");
+        e.on = on->boolean; e.serial = q->integer;
+        if (!e.on) {
+            if (const auto* m = v.Get("moved")) { if (!m->IsBool()) return bad("frameHover moved"); e.gone = m->boolean; }
+        } else {
+            const auto* r = v.Get("rect");
+            if (!r || !r->IsObject() || !detail::Num(r->Get("x"), e.x, -1e7, 1e7) || !detail::Num(r->Get("y"), e.y, -1e7, 1e7) ||
+                !detail::Num(r->Get("width"), e.w, 0, 1e7) || !detail::Num(r->Get("height"), e.h, 0, 1e7)) return bad("frameHover rect");
+            if (v.Get("vw") && !detail::Num(v.Get("vw"), e.vw, 1, 1e5)) return bad("frameHover vw");
+            if (v.Get("vh") && !detail::Num(v.Get("vh"), e.vh, 1, 1e5)) return bad("frameHover vh");
+            if (const auto* o = v.Get("origin")) {
+                if (!detail::Str(o, e.origin, 256)) return bad("frameHover origin");
+                for (char ch : e.origin) if (static_cast<unsigned char>(ch) < 0x20 || static_cast<unsigned char>(ch) >= 0x7F) return bad("frameHover origin");   // an origin: printable ASCII only
+                if (!e.origin.empty() && e.origin != "null" && e.origin.find("://") == std::string::npos) return bad("frameHover origin");
+                if (const auto at = e.origin.find("://"); at != std::string::npos && e.origin.find('/', at + 3) != std::string::npos) return bad("frameHover origin");   // never a path
+            }
+        }
+        e.op = Op::FrameHover;
+    }
     else if (op->string == "escape") e.op = Op::Escape;
     else if (op->string == "noselection") e.op = Op::NoSelection;
     else if (op->string == "anchor") {
@@ -244,6 +272,24 @@ inline bool ParseSelection(const SJ::Value& v, Selection& out, std::string* why 
         !Num(vp->Get("scrollX"), g.viewport.scrollX, -big, big) || !Num(vp->Get("scrollY"), g.viewport.scrollY, -big, big) ||
         !Num(vp->Get("devicePixelRatio"), g.viewport.devicePixelRatio, 0.05, 20)) return bad("viewport");
     out = std::move(s); return true;
+}
+
+// Iframes case 2 (Paper 26GX-0, src/annotation-frame-card.h): where the card of an iframe of another site goes. Under the
+// iframe — `gap` (12) below its bottom edge, its left on the iframe's left — or above it (`gap` above its top) when it is
+// not whole under it; never out of the page area: `margin` (8, the chat bubble's) from its edges, slid left / right to stay
+// in. Neither under nor above (an iframe taller than the visible page): inside it, at the bottom of what is visible of it,
+// `margin` from that bottom (the chat bubble's rule 10). One unit for everything (screen pixels of the host).
+enum class CardSide { Below, Above, Inside };
+struct CardBox { int left = 0, top = 0, right = 0, bottom = 0; };
+struct CardPlacement { int x = 0, y = 0; CardSide side = CardSide::Below; };
+inline CardPlacement PlaceFrameCard(const CardBox& frame, int w, int h, const CardBox& area, int gap, int margin) {
+    auto clamp = [](int v, int lo, int hi) { return hi < lo ? lo : std::max(lo, std::min(v, hi)); };
+    CardPlacement p; p.x = clamp(frame.left, area.left + margin, area.right - margin - w);
+    const int below = frame.bottom + gap, above = frame.top - gap - h;
+    if (below >= area.top + margin && below + h <= area.bottom - margin) { p.y = below; p.side = CardSide::Below; return p; }
+    if (above >= area.top + margin && above + h <= area.bottom - margin) { p.y = above; p.side = CardSide::Above; return p; }
+    p.y = clamp(std::min(frame.bottom, area.bottom) - margin - h, area.top + margin, area.bottom - margin - h); p.side = CardSide::Inside;
+    return p;
 }
 
 // The whole check of a raw page message (JSON text from get_WebMessageAsJson).
