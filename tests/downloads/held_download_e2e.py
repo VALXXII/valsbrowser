@@ -14,7 +14,8 @@ Expected (« Conserver », src/main.cpp KeepHeldDownload / WaitEnginePass / Watc
   - held:            log « DOWNLOAD held by the engine », the popover's card exposes « Supprimer » / « Conserver » (UIA);
   - keep (x --repeat), keep-again (two invokes), keep-insecure (an http:// file from an https:// page, throwaway certificate,
                      this test's engine ignores certificate errors): the row is a finished download at once; after the guard
-                     our own name (<app>/kept-downloads) goes and the file is handed to attachment services: whole at its path,
+                     our own name (<app>/kept-downloads) goes and the file is settled (no second attachment services pass
+                     when the engine marked it): whole at its path,
                      zone mark, visible, nothing else in the download folder or in kept-downloads; it survives the exit;
   - keep-late-removal: the test removes the path right after the file was given back (as the engine can, once more):
                      it is given back again, then the same as keep;
@@ -23,6 +24,10 @@ Expected (« Conserver », src/main.cpp KeepHeldDownload / WaitEnginePass / Watc
   - keep-then-discard: « Supprimer » 300 ms after « Conserver » is no longer offered (the row is finished), the file is kept;
   - keep-then-close: the window closed right after « Conserver »: the row points at a whole, visible file (a name the engine
                      never knew when its removal was not seen yet), nothing of ours left;
+  - keep-early-cancel (A): the cancel forced while the engine's pass on a 40 MB file still runs (test hook
+                     BROWSER_TEST_KEEP_CAP_MS=0): its late removal is seen and undone, the file ends kept as above;
+  - keep-save-removes (B): the attachment services pass removes the kept file without a verdict (test hook
+                     BROWSER_TEST_KEEP_SAVE=remove): it is given back from our name, the file ends kept;
   - keep-blocked:    our name cannot be made (a folder sits at it): « Échec · Erreur de fichier » with « Retirer », no dead
                      « Conserver », the engine's held file deleted, the folder left alone, nothing else left;
   - discard:         UIA Invoke on « Supprimer » → the file is gone and the row with it;
@@ -232,7 +237,7 @@ def windows_of(pid, cls):
     return found
 
 
-def sealed_env(app: Path, extra_args: str, cdp_port: int) -> dict:
+def sealed_env(app: Path, extra_args: str, cdp_port: int, extra_env=None) -> dict:
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith(('BROWSER_', 'WEBVIEW2_'))}
     for k in [k for k in env if k.upper() in ('CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'NODE_OPTIONS')]:
         env.pop(k)
@@ -242,6 +247,7 @@ def sealed_env(app: Path, extra_args: str, cdp_port: int) -> dict:
     env.update(USERPROFILE=str(home), HOMEDRIVE=str(home)[:2], HOMEPATH=str(home)[2:], APPDATA=str(home / 'AppData' / 'Roaming'),
                LOCALAPPDATA=str(home / 'AppData' / 'Local'), PATH=r'C:\Windows\System32;C:\Windows;C:\Windows\System32\WindowsPowerShell\v1.0')
     env['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = f'--remote-debugging-port={cdp_port} --remote-debugging-address=127.0.0.1 {extra_args}'.strip()
+    env.update(extra_env or {})   # the browser's non-release test hooks (BROWSER_TEST_KEEP_*), never an agent's
     for n in ('claude', 'codex', 'node', 'npx', 'npm'):   # SAFETY before any launch: no agent CLI reachable
         assert shutil.which(n, path=env['PATH']) is None, f'{n} reachable from the sealed PATH: refused'
     assert str(home).startswith(str(app)) and env['USERPROFILE'] == str(home), 'sealed home: refused'
@@ -249,14 +255,14 @@ def sealed_env(app: Path, extra_args: str, cdp_port: int) -> dict:
 
 
 class Browser:
-    def __init__(self, app: Path, base: str, downloads: Path, desk: Desk, extra_args=''):
+    def __init__(self, app: Path, base: str, downloads: Path, desk: Desk, extra_args='', extra_env=None):
         self.app, self.desk, self.port = app, desk, dn.free_port()
         self.http = dn.urllib.request.build_opener(dn.urllib.request.ProxyHandler({}))
         (app / 'session').write_text(f'browser-session-2\n0\n1\n"{base}/page"\n0\n', encoding='utf-8', newline='\n')
         (app / 'settings').write_text('browser-settings 1\nrestore-tabs=1\nconfirm-close-tabs=0\n'
                                       f'download-folder={downloads}\nask-where-to-save=0\n', encoding='utf-8', newline='\n')
         self.job = Job(); self.sockets = []
-        self.pi = desk.start(str(app / 'browser.exe'), None, str(app), sealed_env(app, extra_args, self.port), self.job)
+        self.pi = desk.start(str(app / 'browser.exe'), None, str(app), sealed_env(app, extra_args, self.port, extra_env), self.job)
         self.pid = self.pi.dwProcessId
 
     targets = dn.Browser.targets
@@ -308,8 +314,10 @@ def main() -> int:
     work = out / 'work'; work.mkdir()
     uia = work / 'uia.ps1'; uia.write_text(UIA, encoding='utf-8')
     keeps = ['keep'] + [f'keep-r{n}' for n in range(2, a.repeat + 1)]
-    for tag in keeps + ['keep-again', 'keep-late-removal', 'keep-read', 'keep-then-discard', 'keep-then-close', 'keep-insecure', 'keep-blocked', 'discard']:
+    for tag in keeps + ['keep-again', 'keep-late-removal', 'keep-read', 'keep-then-discard', 'keep-then-close', 'keep-insecure', 'keep-blocked',
+                        'keep-early-cancel', 'keep-save-removes', 'discard']:
         FILES[tag + '.exe'] = (fresh_exe(work, tag.replace('-', '_')), f'held-{tag}.exe')
+    FILES['keep-early-cancel.exe'] = (FILES['keep-early-cancel.exe'][0] + os.urandom(40 << 20), 'held-keep-early-cancel.exe')   # a long scan
     FILES['plain.bin'] = (os.urandom(150000), 'plain-control.bin')
     srv = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Fixture); port = srv.server_port; base = f'http://127.0.0.1:{port}'
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -331,14 +339,14 @@ def main() -> int:
             res['failures'].append(name)
         print(('ok   ' if ok else 'FAIL ') + name + ' ' + json.dumps(seen, ensure_ascii=False, default=str)[:3000], flush=True)
 
-    def launch(name, page=base, extra_args=''):
+    def launch(name, page=base, extra_args='', extra_env=None):
         app = out / name / 'app'; app.mkdir(parents=True)
         for f in ('browser.exe', 'WebView2Loader.dll', 'version.json'):
             if (src / f).exists():
                 shutil.copy2(src / f, app / f)
         shutil.copytree(src / 'assets', app / 'assets')
         downloads = out / name / 'downloads'; downloads.mkdir()
-        b = Browser(app, page, downloads, desk, extra_args)
+        b = Browser(app, page, downloads, desk, extra_args, extra_env)
         op = b.connect(lambda t: t.get('url', '') == page + '/page', 60)
         if not op or not dn.wait(lambda: 'NAVIGATION OK ' + page + '/page' in b.log(), 30):
             b.close(); raise RuntimeError(f'{name}: the fixture page did not load')
@@ -369,7 +377,7 @@ def main() -> int:
         f = row.split('\t')
         return Path(f[3]) if len(f) > 3 else None, row
 
-    def keep_case(name, page=base, file_base=None, extra_args='', times=1, reader_ms=0, then=''):
+    def keep_case(name, page=base, file_base=None, extra_args='', times=1, reader_ms=0, then='', extra_env=None, expect_log=''):
         """« Conserver » on a held download: a finished download at once; once the engine has let go and its removal is
         undone, our own name (in the app's kept-downloads folder) goes after the guard and the file is handed to attachment
         services: whole at its path, marked, visible, nothing else left in the download folder or in kept-downloads, and
@@ -378,7 +386,7 @@ def main() -> int:
         right after the file was given back: a removal by the engine once more), 'discard' (« Supprimer » 300 ms after
         « Conserver »: no longer offered), 'close' (the window closed right after « Conserver »)."""
         file_base = file_base or base
-        b, op, downloads = launch(name, page, extra_args); target = downloads / f'held-{name}.exe'; size = len(FILES[name + '.exe'][0])
+        b, op, downloads = launch(name, page, extra_args, extra_env); target = downloads / f'held-{name}.exe'; size = len(FILES[name + '.exe'][0])
         kept_dir = b.app / 'kept-downloads'
         watch = FolderWatch(downloads); closed = False; left = None
         events = lambda: [e for e in watch.events if 'Zone.Identifier' not in e]
@@ -413,12 +421,15 @@ def main() -> int:
                         stamp(watch, f'the test could not remove the file: {e}')
             kept = dn.wait(lambda: 'DOWNLOAD kept by the user' in b.log()[mark:], 20)
             row_now = row_of(b, target.name)
-            settled = dn.wait(lambda: 'DOWNLOAD kept file handed to attachment services' in b.log()[mark:] or 'attachment services refused' in b.log()[mark:], 150) if not reader_ms else False
+            settled = dn.wait(lambda: any(s in b.log()[mark:] for s in ('DOWNLOAD kept file handed to attachment services', 'attachment services refused',
+                                                                       "marked and checked by the engine's own pass")), 150) if not reader_ms else False
             if reader_ms:   # the engine's removal failed: never seen, the file stays at its path and our name holds the bytes until exit
                 time.sleep(8)
             row = row_of(b, target.name); size_ok = target.exists() and target.stat().st_size == size
             leftovers = sorted(p.name for p in downloads.iterdir() if p.name != target.name)
             ok = r.startswith('invoked') and bool(kept) and row_now.startswith('C\t') and size_ok and row.startswith('C\t') and 'ZoneId=3' in zone(target) and not hidden(target) and not leftovers
+            if expect_log:
+                ok = ok and expect_log in b.log()[mark:]
             if then == 'discard':
                 ok = ok and r.endswith(';then missing')   # « Supprimer » is no longer offered once « Conserver » was chosen
             if not reader_ms:
@@ -447,6 +458,16 @@ def main() -> int:
             keep_case('keep-read', reader_ms=4000)
         if not only or 'keep-then-discard' in only:
             keep_case('keep-then-discard', reader_ms=1500, then='discard')
+        if not only or 'keep-early-cancel' in only:
+            # (A) the cancel forced while the engine's own pass on a 40 MB file still runs (test hook: no wait for the zone
+            # mark): its removal comes late, by itself; our name must hold the bytes until that removal is seen.
+            keep_case('keep-early-cancel', extra_env={'BROWSER_TEST_KEEP_CAP_MS': '0', 'BROWSER_TEST_KEEP_GUARD_MS': '15000'},
+                      expect_log='its pass still runs after the cap')
+        if not only or 'keep-save-removes' in only:
+            # (B) our attachment services pass removes the kept file and fails with E_INVALIDARG (test hook, what was
+            # measured once): it is given back from our name.
+            keep_case('keep-save-removes', extra_env={'BROWSER_TEST_KEEP_SAVE': 'remove', 'BROWSER_TEST_KEEP_GUARD_MS': '5000'},
+                      expect_log='given back: attachment services removed it without a verdict')
         if not only or 'keep-then-close' in only:
             keep_case('keep-then-close', then='close')
         if (not only or 'keep-insecure' in only) and secure:

@@ -1740,30 +1740,47 @@ void SyncDownload(int id){
 // file is complete at its final path. Measured (WebView2 158, tests/downloads/download_engine_probe.py --observe):
 // after a cancel the engine removes its file by name when its own pass on the file ends (the pass that writes the zone
 // mark: attachment services, antivirus): at once when that pass was over, seconds later when it still ran (up to 9.3 s
-// seen, a slow antivirus makes it longer), and a removal can come again later. So « Conserver »:
+// seen), and a removal left pending completes when another name of the file is dropped. Measured too (instrumented
+// build): our own IAttachmentExecute::Save() on the kept file can fail at once and remove it (E_INVALIDARG). So
+// « Conserver »:
 //   1. gives the bytes a name of our own at once (KeepJob::backup, in the profile's data folder: a hard link, else a
 //      copy; never beside the download, never hidden), and the row is a finished download at once;
 //   2. lets the engine go (Cancel) only once its pass is over (the held file carries its zone mark), or after
-//      DL::Keep::PassCapMs; should the engine end the download by itself meanwhile, it is that: a finished download, or
-//      a blocked one (the engine's verdict stands, our name goes);
-//   3. then watches the path: each removal by the engine is undone from our name, for a long guard (DL::Keep::GuardMs);
-//      then our name goes and the file gets Windows' attachment services pass like any finished download (Mark of the
-//      Web, antivirus scan): SmartScreen still checks it when it is opened;
-//   4. at exit before the end: the kept file takes a name the engine never knew (« name (1).exe »).
-// A keep that cannot be made (no hard link, no copy) ends as « Échec · Erreur de fichier » with « Retirer ».
+//      DL::Keep::PassCapMs; should the engine end the download by itself meanwhile, that outcome stands (finished, or
+//      blocked: our name goes);
+//   3. then watches the path: no short limit before the engine's removal is seen; each removal is undone from our name;
+//      our name stays for a long guard after the last one (DL::Keep::GuardMs), and is dropped only with the file at its
+//      path proven ours;
+//   4. a file the engine marked needs no second pass; one without the mark gets Windows' attachment services pass with
+//      our name still alive: a removal by that pass without a virus verdict is undone (SettleKept);
+//   5. at exit before the end: the kept file takes a name the engine never knew (« name (1).exe »).
+// SmartScreen still checks the file when it is opened. A keep that cannot be made (no hard link, no copy) ends as
+// « Échec · Erreur de fichier » with « Retirer ».
 std::wstring UniqueDownloadPath(const std::wstring& folder,const std::wstring& suggested);
 // One « Conserver » until our own name is gone. copying: our name is a copy being made (0 running, 1 made, else
 // 0x10000 + the error); cancelled: the engine was let go (cancelAt); marked: its zone mark was there then; seen: a
-// removal by the engine seen since (guard counted from givenAt).
-struct KeepJob{std::wstring path,backup,uri;bool cancelled=false,marked=false,seen=false;int looks=0;ULONGLONG keptAt=0,cancelAt=0,givenAt=0;std::shared_ptr<std::atomic<long>> copying;};
+// removal by the engine seen since (guard counted from givenAt); settling: the final pass (at, saveDone / saveResult).
+struct KeepJob{std::wstring path,backup,uri,at;bool cancelled=false,marked=false,seen=false,settling=false;int looks=0;ULONGLONG keptAt=0,cancelAt=0,givenAt=0;
+    std::shared_ptr<std::atomic<long>> copying;std::shared_ptr<std::atomic<int>> saveDone;std::shared_ptr<std::atomic<long>> saveResult;};
 std::map<int,KeepJob> keepJobs;
 bool KeepWaitingForEngine(int id){auto k=keepJobs.find(id);return k!=keepJobs.end()&&!k->second.cancelled;}
+// Test hooks, never in a --channel release build: BROWSER_TEST_KEEP_CAP_MS / BROWSER_TEST_KEEP_GUARD_MS replace the cap
+// and the guard; BROWSER_TEST_KEEP_SAVE=remove makes the attachment services pass remove the kept file and fail with
+// E_INVALIDARG (what was measured once), and runs that pass even on a file the engine marked.
+#ifndef BROWSER_CHANNEL_RELEASE
+std::int64_t KeepTestMs(const wchar_t* name,std::int64_t fallback){wchar_t v[32]{};if(GetEnvironmentVariableW(name,v,32)&&*v)return _wtoi64(v);return fallback;}
+bool KeepTestSaveRemoves(){wchar_t v[16]{};return GetEnvironmentVariableW(L"BROWSER_TEST_KEEP_SAVE",v,16)&&std::wstring(v)==L"remove";}
+#else
+#define KeepTestMs(name,fallback) (fallback)   /* the hooks' names are not even in a release binary */
+inline bool KeepTestSaveRemoves(){return false;}
+#endif
 // What is at a kept file's path (DL::Keep::At): a name whose removal is pending is still listed but cannot be opened.
 DL::Keep::At KeepPathState(const std::wstring& path){
     const bool read=GetFileAttributesW(path.c_str())!=INVALID_FILE_ATTRIBUTES;const DWORD error=read?0:GetLastError();bool opens=false;
     if(read){HANDLE h=CreateFileW(path.c_str(),FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,nullptr,OPEN_EXISTING,0,nullptr);opens=h!=INVALID_HANDLE_VALUE;if(opens)CloseHandle(h);}
     return DL::Keep::PathState(read,error,opens);
 }
+bool HasZoneMark(const std::wstring& path){return GetFileAttributesW((path+L":Zone.Identifier").c_str())!=INVALID_FILE_ATTRIBUTES;}
 // The kept bytes at `path` again, as one more name of our own file (a copy where the folders are on two volumes).
 bool PutKeptFileBack(const std::wstring& backup,const std::wstring& path){return CreateHardLinkW(path.c_str(),backup.c_str(),nullptr)||CopyFileW(backup.c_str(),path.c_str(),TRUE);}
 // The file at `path` holds our bytes: the same file as our name (a hard link), or a file of the same size (a copy).
@@ -1774,11 +1791,12 @@ bool KeptFileIsOurs(const std::wstring& path,const std::wstring& backup){
     const bool same=a.dwVolumeSerialNumber==b.dwVolumeSerialNumber&&a.nFileIndexHigh==b.nFileIndexHigh&&a.nFileIndexLow==b.nFileIndexLow;
     return same||(a.nFileSizeHigh==b.nFileSizeHigh&&a.nFileSizeLow==b.nFileSizeLow&&(a.nFileSizeHigh||a.nFileSizeLow));
 }
-// The kept file moves from our name to the next free name beside the download (« name (1).exe »). Empty: failed.
-std::wstring KeepElsewhere(const std::wstring& path,const std::wstring& backup){
+// The kept bytes under the next free name beside the download (« name (1).exe »), a name the engine never knew; our own
+// name stays. Empty: failed.
+std::wstring KeepAnotherName(const std::wstring& path,const std::wstring& backup){
     const auto slash=path.find_last_of(L"\\/");if(slash==std::wstring::npos)return L"";
     const auto target=UniqueDownloadPath(path.substr(0,slash),path);
-    if(!MoveFileExW(backup.c_str(),target.c_str(),MOVEFILE_COPY_ALLOWED))return L"";
+    if(!PutKeptFileBack(backup,target))return L"";
     Log(L"DOWNLOAD kept under a name the engine never knew: "+DL::FileName(target));return target;
 }
 // Our own name for the kept bytes: the profile's data folder, where nobody looks.
@@ -1794,44 +1812,66 @@ void KeepFailed(DL::Item* item){
 // Windows attachment services on a kept file (what the engine does for every finished download): zone mark and
 // antivirus scan, off the UI thread. done: 1 saved, 2 refused (the file may be gone).
 void QuarantineKeptFile(const std::wstring& path,const std::wstring& uri,std::shared_ptr<std::atomic<int>> done,std::shared_ptr<std::atomic<long>> result){
-    std::thread([path,uri,done,result]{
+    const bool removes=KeepTestSaveRemoves();
+    std::thread([path,uri,done,result,removes]{
         const HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);HRESULT hr=E_FAIL;IAttachmentExecute* ae=nullptr;
         if(SUCCEEDED(CoCreateInstance(CLSID_AttachmentServices,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&ae)))&&ae){
             static const GUID client={0x6d3f1c52,0x0b2e,0x4d0c,{0x9a,0x41,0x52,0x7e,0x2b,0x11,0x84,0x3a}};   // this browser's downloads
             ae->SetClientGuid(client);ae->SetLocalPath(path.c_str());if(!uri.empty())ae->SetSource(uri.c_str());hr=ae->Save();ae->Release();}
+        if(removes){DeleteFileW(path.c_str());hr=E_INVALIDARG;}   // test hook (see KeepTestSaveRemoves)
         if(SUCCEEDED(init))CoUninitialize();
         result->store((long)hr);done->store(SUCCEEDED(hr)?1:2);
     }).detach();
 }
-void KeptFileChecked(int id,std::shared_ptr<std::atomic<int>> done,std::shared_ptr<std::atomic<long>> result,int attempt){
-    if(halted)return;const int r=done->load();
-    if(!r&&attempt<600){DeferAfter(100,[id,done,result,attempt]{KeptFileChecked(id,done,result,attempt+1);});return;}
-    auto* item=FindDownload(id);if(!item)return;
-    const bool there=GetFileAttributesW(item->path.c_str())!=INVALID_FILE_ATTRIBUTES;
-    if(r!=1)Log(L"DOWNLOAD kept file: attachment services refused it hr="+std::to_wstring((unsigned long)result->load())+std::wstring(there?L" (file kept)":L" (file removed)"));
-    else Log(L"DOWNLOAD kept file handed to attachment services");
-    if(!there){item->state=DL::State::Failed;item->canResume=false;item->reason=DL::ReasonCode(I18n::Id::download_blocked_dangerous);SaveDownloads();DownloadsChanged();UpdateDownloadIcon(false);}
+bool VirusVerdict(long hr){return hr==(long)HRESULT_FROM_WIN32(ERROR_VIRUS_INFECTED)||hr==(long)HRESULT_FROM_WIN32(ERROR_VIRUS_DELETED);}
+// The end of the attachment services pass on `at` (our own name still alive): a virus verdict stands (the row says it);
+// any other removal is undone from our name. Then our name goes. waitMs: at exit, how long the pass may still take.
+void KeepSettled(int id,KeepJob& k){
+    const int r=k.saveDone?k.saveDone->load():1;const long hr=k.saveResult?k.saveResult->load():0;const bool there=GetFileAttributesW(k.at.c_str())!=INVALID_FILE_ATTRIBUTES;
+    if(!r){Log(L"DOWNLOAD keep at exit: attachment services still run, the kept file also stays in the profile's folder "+k.backup);return;}   // never dropped while that pass may remove it
+    if(k.saveDone&&r==1)Log(L"DOWNLOAD kept file handed to attachment services");
+    else if(k.saveDone)Log(L"DOWNLOAD kept file: attachment services refused it hr="+std::to_wstring((unsigned long)hr)+std::wstring(there?L" (file kept)":L" (file removed)"));
+    auto* item=FindDownload(id);
+    if(!there&&r!=1&&VirusVerdict(hr)){
+        if(item){item->state=DL::State::Failed;item->canResume=false;item->reason=DL::ReasonCode(I18n::Id::download_blocked_dangerous);SaveDownloads();DownloadsChanged();UpdateDownloadIcon(false);}
+    }else if(!there){
+        const bool back=PutKeptFileBack(k.backup,k.at);
+        Log(back?L"DOWNLOAD kept file given back: attachment services removed it without a verdict":L"DOWNLOAD keep failed: attachment services removed the file and it could not be given back");
+        if(!back){if(item)KeepFailed(item);Log(L"DOWNLOAD the kept file stays in the profile's folder "+k.backup);return;}   // the bytes are never dropped
+    }
+    DeleteFileW(k.backup.c_str());
 }
-void KeptFileSettled(int id,const std::wstring& path,const std::wstring& uri){
-    auto done=std::make_shared<std::atomic<int>>(0);auto result=std::make_shared<std::atomic<long>>(0);QuarantineKeptFile(path,uri,done,result);KeptFileChecked(id,done,result,0);
+void KeepSaveChecked(int id){
+    auto job=keepJobs.find(id);if(halted||job==keepJobs.end())return;   // KeepsAtExit ends a pass still running
+    if(!job->second.saveDone->load()){DeferAfter(DL::Keep::StepMs,[id]{KeepSaveChecked(id);});return;}
+    KeepSettled(id,job->second);keepJobs.erase(job);
+}
+// The file is at its final name `at`, our own name still holds the bytes: step 4.
+void SettleKept(int id,KeepJob& k,const std::wstring& at){
+    k.settling=true;k.at=at;
+    if(HasZoneMark(at)&&!KeepTestSaveRemoves()){Log(L"DOWNLOAD kept file marked and checked by the engine's own pass: no second pass");DeleteFileW(k.backup.c_str());keepJobs.erase(id);return;}
+    k.saveDone=std::make_shared<std::atomic<int>>(0);k.saveResult=std::make_shared<std::atomic<long>>(0);QuarantineKeptFile(at,k.uri,k.saveDone,k.saveResult);
+    KeepSaveChecked(id);
 }
 // Step 3: the engine was let go. Each removal of the path is undone from our name; once the guard is over with the file
-// at its path, our name goes. No short limit.
+// at its path, step 4. No short limit before the first removal.
 void WatchKept(int id){
-    auto job=keepJobs.find(id);if(halted||job==keepJobs.end())return;
+    auto job=keepJobs.find(id);if(halted||job==keepJobs.end()||job->second.settling)return;
     auto& k=job->second;const ULONGLONG now=GetTickCount64();
-    switch(DL::Keep::Look(k.seen,KeepPathState(k.path),k.seen?(std::int64_t)(now-k.givenAt):0,DL::Keep::GuardMs(k.marked))){
+    switch(DL::Keep::Look(k.seen,KeepPathState(k.path),k.seen?(std::int64_t)(now-k.givenAt):0,KeepTestMs(L"BROWSER_TEST_KEEP_GUARD_MS",DL::Keep::GuardMs(k.marked)))){
     case DL::Keep::Next::Wait:if(!k.looks)Log(L"DOWNLOAD keep: the engine's own file is still there, our name holds the bytes until it goes");break;
     case DL::Keep::Next::GiveBack:
         Log(std::wstring(PutKeptFileBack(k.backup,k.path)?L"DOWNLOAD kept file given back at its path":L"DOWNLOAD kept file not given back yet")+L": the engine removed it "+std::to_wstring((long long)(now-k.cancelAt))+L" ms after the cancel"+(k.seen?L" (once more)":L""));
         k.seen=true;k.givenAt=now;break;
     case DL::Keep::Next::Guard:break;
     case DL::Keep::Next::Settle:{
-        std::wstring at=k.path;const auto uri=k.uri,backup=k.backup;
-        if(KeptFileIsOurs(k.path,backup))DeleteFileW(backup.c_str());   // the file at its path is ours: our own name goes
-        else{at=KeepElsewhere(k.path,backup);   // something else took the path: the kept file keeps a name of its own
-            if(auto* item=FindDownload(id)){if(at.empty()){Log(L"DOWNLOAD keep failed: the kept file stays in the profile's folder "+backup);KeepFailed(item);}else{item->path=at;SaveDownloads();DownloadsChanged();}}}
-        keepJobs.erase(job);if(!at.empty())KeptFileSettled(id,at,uri);return;}
+        std::wstring at=k.path;
+        if(!KeptFileIsOurs(k.path,k.backup)){   // something else took the path: the kept file takes a name of its own
+            at=KeepAnotherName(k.path,k.backup);
+            if(auto* item=FindDownload(id)){if(at.empty()){Log(L"DOWNLOAD keep failed: the kept file stays in the profile's folder "+k.backup);KeepFailed(item);}else{item->path=at;SaveDownloads();DownloadsChanged();}}
+            if(at.empty()){keepJobs.erase(job);return;}
+        }
+        SettleKept(id,k,at);return;}
     }
     ++k.looks;DeferAfter(DL::Keep::LookAfterMs(k.looks),[id]{WatchKept(id);});
 }
@@ -1845,8 +1885,8 @@ void WaitEnginePass(int id){
     auto entry=found->second;auto* op=entry->op.p;
     COREWEBVIEW2_DOWNLOAD_STATE state=COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS;op->get_State(&state);
     COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE;if(state==COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED)op->get_InterruptReason(&reason);
-    const bool marked=GetFileAttributesW((k.path+L":Zone.Identifier").c_str())!=INVALID_FILE_ATTRIBUTES;
-    const auto step=DL::Keep::BeforeCancel((int)state,(int)reason,marked,(std::int64_t)(GetTickCount64()-k.keptAt));
+    const bool marked=HasZoneMark(k.path);
+    const auto step=DL::Keep::BeforeCancel((int)state,(int)reason,marked,(std::int64_t)(GetTickCount64()-k.keptAt),KeepTestMs(L"BROWSER_TEST_KEEP_CAP_MS",DL::Keep::PassCapMs));
     if(step==DL::Keep::Before::Wait){DeferAfter(DL::Keep::StepMs,[id]{WaitEnginePass(id);});return;}
     if(step==DL::Keep::Before::Ended){   // the engine ended it by itself: its outcome stands, our name goes
         Log(L"DOWNLOAD keep: the engine ended the download by itself, state="+std::to_wstring((int)state)+L" reason="+std::to_wstring((int)reason));
@@ -1887,17 +1927,22 @@ void KeepCopied(int id){
     auto found=downloadOps.find(id);if(found!=downloadOps.end()){auto entry=found->second;downloadOps.erase(found);if(entry->op.p)entry->op->Cancel();}
     if(auto* item=FindDownload(id))KeepFailed(item);
 }
-// The window closes before a keep's end: a copy being made ends first (bounded); the kept file then takes a name the
-// engine never knew (step 4), with its attachment services pass (bounded). A kept file is never dropped.
+// The window closes before a keep's end (step 5): a copy being made ends first (bounded); a final pass under way ends
+// (bounded); otherwise the kept file takes a name the engine never knew, with its attachment services pass when the engine
+// did not mark it, our name alive meanwhile. A kept file is never dropped.
 void KeepsAtExit(){
     if(keepJobs.empty())return;
     for(auto& [id,k]:keepJobs){
         if(k.copying){for(int i=0;i<600&&!k.copying->load();++i)Sleep(DL::Keep::StepMs);if(k.copying->load()!=1){DeleteFileW(k.backup.c_str());Log(L"DOWNLOAD keep at exit: the copy could not be made");continue;}}
-        const auto at=KeepElsewhere(k.path,k.backup);
-        if(!at.empty()){auto done=std::make_shared<std::atomic<int>>(0);auto result=std::make_shared<std::atomic<long>>(0);QuarantineKeptFile(at,k.uri,done,result);
-            for(int i=0;i<100&&!done->load();++i)Sleep(DL::Keep::StepMs);}
-        if(auto* item=FindDownload(id)){if(at.empty()){item->state=DL::State::Failed;item->canResume=false;item->reason=DL::ReasonCode(I18n::Id::download_error_file);}else{item->path=at;item->state=DL::State::Completed;item->missing=false;}}
-        Log(L"DOWNLOAD keep settled at exit: "+(at.empty()?L"failed, the kept file stays in the profile's folder "+k.backup:DL::FileName(at)));
+        if(!k.settling){
+            k.at=KeepAnotherName(k.path,k.backup);
+            if(k.at.empty()){Log(L"DOWNLOAD keep at exit: the kept file stays in the profile's folder "+k.backup);if(auto* item=FindDownload(id))item->state=DL::State::Failed,item->canResume=false,item->reason=DL::ReasonCode(I18n::Id::download_error_file);continue;}
+            if(auto* item=FindDownload(id)){item->path=k.at;item->state=DL::State::Completed;item->missing=false;item->held=false;}
+            if(!HasZoneMark(k.at)||KeepTestSaveRemoves()){k.saveDone=std::make_shared<std::atomic<int>>(0);k.saveResult=std::make_shared<std::atomic<long>>(0);QuarantineKeptFile(k.at,k.uri,k.saveDone,k.saveResult);}
+        }
+        if(k.saveDone)for(int i=0;i<100&&!k.saveDone->load();++i)Sleep(DL::Keep::StepMs);
+        KeepSettled(id,k);
+        Log(L"DOWNLOAD keep settled at exit: "+DL::FileName(k.at));
     }
     keepJobs.clear();SaveDownloads();
 }

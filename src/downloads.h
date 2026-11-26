@@ -101,7 +101,8 @@ inline bool HeldForDecision(int state, std::int64_t received, std::int64_t total
 // name when its own pass on the file ends (the pass that writes the zone mark): at once when it was over, seconds later
 // when it still ran, and a removal can come again. So the engine is let go only once that pass is over (the zone mark)
 // or after PassCapMs, and the path is then watched: every removal is undone from our own name for GuardMs after the
-// last one; our name goes only then.
+// last one; our name goes only then, with the file at its path proven ours. A file the engine marked needs no second
+// attachment services pass; when one runs, our name stays alive across it (measured: its Save() removed the file once).
 namespace Keep {
 inline constexpr int StepMs = 100;
 inline constexpr std::int64_t PassCapMs = 20000;        // the engine's own pass on the held file, waited for at most
@@ -118,8 +119,8 @@ inline At PathState(bool attributesRead, unsigned long error, bool opens) {
 // waitedMs: since « Conserver ». LetGo: the engine let go without a verdict (a closed tab, its shutdown); Ended: it
 // finished the download or blocked it by itself, its outcome stands.
 enum class Before { Wait, Cancel, LetGo, Ended };
-inline Before BeforeCancel(int engineState, int reason, bool marked, std::int64_t waitedMs) {
-    if (engineState == Engine::InProgress) return marked || waitedMs >= PassCapMs ? Before::Cancel : Before::Wait;
+inline Before BeforeCancel(int engineState, int reason, bool marked, std::int64_t waitedMs, std::int64_t capMs = PassCapMs) {
+    if (engineState == Engine::InProgress) return marked || waitedMs >= capMs ? Before::Cancel : Before::Wait;
     if (engineState == Engine::Interrupted && (reason == Engine::ReasonUserCanceled || reason == Engine::ReasonUserShutdown)) return Before::LetGo;
     return Before::Ended;
 }
