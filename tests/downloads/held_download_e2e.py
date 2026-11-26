@@ -20,7 +20,8 @@ Expected:
                      on main): « Conserver » puts it back from its own name, the file ends kept as above;
   - keep-read:       the same while another program reads the held file for 4 s without allowing its deletion (as some
                      scanners do): the engine's removal of the file it let go of does not take;
-  - keep-then-discard: « Supprimer » while that keep still waits: nothing kept, nothing left, the row gone;
+  - keep-then-discard: « Supprimer » 300 ms after « Conserver » while such a reader keeps the engine's file there (the keep
+                     still waits): nothing kept, nothing left, the row gone;
   - keep-then-close: the window closed right after « Conserver »: the file is kept at its path, visible, nothing left;
   - keep-insecure:   the same « Conserver » for an http:// file from an https:// page (a throwaway self-signed certificate,
                      this test's engine ignores certificate errors);
@@ -67,7 +68,7 @@ k32.GetFileAttributesW.restype = W.DWORD
 FILES: dict[str, tuple[bytes, str]] = {}
 WM_CLOSE = 0x0010
 
-UIA = r'''param([int]$Hwnd, [string]$Id, [string]$Out, [switch]$Probe, [int]$Times = 1)
+UIA = r'''param([int]$Hwnd, [string]$Id, [string]$Out, [switch]$Probe, [int]$Times = 1, [string]$ThenId = '', [int]$ThenMs = 0)
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 $r = ''
 try {
@@ -79,6 +80,12 @@ try {
   else {
     $p = $null; $name = $e.Current.Name
     if ($e.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$p)) { for ($i = 0; $i -lt $Times; $i++) { $p.Invoke() }; $r = 'invoked:' + $name } else { $r = 'no-invoke' }
+    if ($ThenId) {   # a second button of the same popover, $ThenMs later (one session: no PowerShell start in between)
+      Start-Sleep -Milliseconds $ThenMs
+      $c2 = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty, $ThenId)
+      $e2 = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $c2); $p2 = $null
+      if ($e2 -and $e2.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$p2)) { $p2.Invoke(); $r += ';then invoked:' + $e2.Current.Name } else { $r += ';then missing' }
+    }
   }
 } catch { $r = 'error: ' + $_.Exception.Message }
 [System.IO.File]::WriteAllText($Out, $r)
@@ -264,13 +271,13 @@ class Browser:
         hs = self.desk.run(lambda: windows_of(self.pid, 'LisiereDownloads')) or []
         return hs[0] if hs else None
 
-    def uia(self, uia_script: Path, automation_id: str, probe=False, times=1):
+    def uia(self, uia_script: Path, automation_id: str, probe=False, times=1, then_id='', then_ms=0):
         h = self.popover()
         if not h:
             return 'no popover'
         out = uia_script.parent / f'uia-{random.getrandbits(32):08x}.txt'
         cmd = (f'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{uia_script}" -Hwnd {h} -Id {automation_id} '
-               f'-Out "{out}" -Times {times}' + (' -Probe' if probe else ''))
+               f'-Out "{out}" -Times {times}' + (' -Probe' if probe else '') + (f' -ThenId {then_id} -ThenMs {then_ms}' if then_id else ''))
         pi = self.desk.start(None, cmd, str(uia_script.parent), flags=0x08000000)   # CREATE_NO_WINDOW
         k32.WaitForSingleObject(pi.hProcess, 120000); k32.CloseHandle(pi.hProcess); k32.CloseHandle(pi.hThread)
         try:
@@ -374,16 +381,20 @@ def main() -> int:
             whole = target.exists() and target.stat().st_size == size
             card = dn.wait(lambda: b.uia(uia, 'DownloadKeep', True) == 'found' and b.uia(uia, 'DownloadDiscard', True) == 'found', 15)
             check(f'{name}: held_detected', held and whole and card, held=bool(held), file_whole_while_held=whole, card_buttons=bool(card), log=lines(b, mark))
+            reader = None
             if reader_ms:
                 reader = k32.CreateFileW(str(target), 0x80000000, 0x1 | 0x2, None, 3, 0, None)   # GENERIC_READ, share read + write only
-                threading.Timer(reader_ms / 1000, lambda: (k32.CloseHandle(reader), stamp(watch, 'the reader closed the file'))).start()
-                stamp(watch, f'a reader opened the file for {reader_ms} ms (no delete sharing)')
-            stamp(watch, f'UIA Invoke « Conserver » x{times}')
-            r = b.uia(uia, 'DownloadKeep', times=times)
-            stamp(watch, 'UIA Invoke returned')
+                if then != 'discard':
+                    threading.Timer(reader_ms / 1000, lambda: (k32.CloseHandle(reader), stamp(watch, 'the reader closed the file'))).start()
+                stamp(watch, 'a reader opened the file (no delete sharing)' + ('' if then == 'discard' else f' for {reader_ms} ms'))
+            stamp(watch, f'UIA Invoke « Conserver » x{times}' + (', then « Supprimer » 300 ms later' if then == 'discard' else ''))
+            r = b.uia(uia, 'DownloadKeep', times=times, then_id='DownloadDiscard' if then == 'discard' else '', then_ms=300)
+            stamp(watch, 'UIA Invoke returned: ' + r)
+            if reader and then == 'discard':
+                k32.CloseHandle(reader); stamp(watch, 'the reader closed the file')
             events = lambda: [e for e in watch.events if 'Zone.Identifier' not in e]
             if then == 'discard':
-                time.sleep(.3); d = b.uia(uia, 'DownloadDiscard'); stamp(watch, 'UIA Invoke « Supprimer »: ' + d)
+                d = r.partition(';then ')[2]
                 gone = dn.wait(lambda: not target.exists(), 12); time.sleep(1.5)
                 leftovers = sorted(p.name for p in downloads.iterdir()); row_left = target.name in b.model()
                 check(f'{name}: « Supprimer » during the keep: nothing kept, nothing left', r.startswith('invoked') and d.startswith('invoked') and bool(gone) and not leftovers and not row_left,
