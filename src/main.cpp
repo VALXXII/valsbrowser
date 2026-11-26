@@ -5343,7 +5343,7 @@ void SideFocusEvaluate(){
     const auto s=EZ::Measure(side,px,pointer,front,chrome.side.top,!IsZoomed(window)&&!InFullscreen());
     const bool was=sideReveal.open;
     if(sideReveal.Pointer(SidebarNowMs(),EZ::Classify(s),EZ::Holds(s,chrome.side.column+FS::border),buttons,sideReveal.open&&SideFocusHolds())){
-        if(sideReveal.open&&!was){static const wchar_t* kinds[]={L"none",L"rest 400 ms",L"edge 120 ms",L"monitor edge 60 ms"};Log(std::wstring(L"FOCUS edge zone: ")+kinds[(int)sideReveal.by]);}
+        if(sideReveal.open&&!was){static const wchar_t* kinds[]={L"none",L"rest 400 ms",L"edge 120 ms",L"monitor edge 60 ms"};Log(std::wstring(L"FOCUS edge zone: ")+kinds[(int)sideReveal.by]);}  // i18n-exempt: log detail
         SideRevealChanged();}
     const bool poll=front||sideReveal.open||sidePic.shown;
     if(poll&&!sidePolling)sidePolling=SetTimer(window,SideFocusPollTimerId,30,nullptr)!=0;
