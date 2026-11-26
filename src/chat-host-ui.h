@@ -610,7 +610,7 @@ RECT PanelRect(float shown) {   // client pixels; shown 0 (off the right edge) .
     if (chrome.sidebar) {   // #127: the card (CardInset from the right and bottom; left of an open drawer unless DrawerOverChat)
         const int in = S(CardInset), right = c.right - in - (DrawerOverChat || chrome.sidebarReserve <= 0 ? 0 : S(chrome.sidebarReserve + CardInset));
         const int left = right - w + int(std::lround((1 - shown) * (w + in)));
-        return {left, S(chrome.ContentTop()), left + w, c.bottom - in + (AnnotationBandSliding() ? S(chrome.annotationBand) : 0)};
+        return {left, S(FocusMotionChatTop()), left + w, c.bottom - in + (AnnotationBandSliding() ? S(chrome.annotationBand) : 0)};   // Mode Focus motion: the card's top glides with the page's (src/main.cpp)
     }
     const int left = c.right - w + int(std::lround((1 - shown) * w));
     return {left, S(chrome.ContentTop()), left + w, c.bottom + (AnnotationBandSliding() ? S(chrome.annotationBand) : 0)};

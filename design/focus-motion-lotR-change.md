@@ -5,7 +5,7 @@
 `PanelRect`, Mode Focus branch: `right = c.right - S(chrome.ClientWidth() - card.right)` — the card's right edge follows
 the entry / exit (W → W − 4) instead of stepping 4 DIP sideways. Nothing more to do.
 
-## 2. Side layouts (#127): the card's top (to route)
+## 2. Side layouts (#127): the card's top (applied on `VALXXII/focus-transition`, coordinator's go 2026-11-26: lot R is in main)
 
 Why: in the side layouts (branch `VALXXII/focus-transition`, design/focus-motion-report.md « Side layouts ») the chat card
 (mode Panneau) keeps its left, right and bottom edges between the normal layout and Focus; only its top moves, with the
