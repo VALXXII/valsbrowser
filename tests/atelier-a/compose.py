@@ -79,5 +79,46 @@ def main() -> None:
         print('wrote', OUT / 'frames-states.png')
 
 
+def feedback() -> None:
+    """Val's part A feedback (2026-11-26): the three points, one picture each."""
+    import json
+    # 1. « BETA » on the version line hovered / keyboard-focused.
+    hov, foc = QA / 'switch/beta-version-hover-150.png', QA / 'switch/beta-version-focus-150.png'
+    if hov.exists() and foc.exists():
+        crops = [Image.open(f).convert('RGB').crop((0, 960, 498, 1097)) for f in (hov, foc)]
+        crops = [c.resize((c.width * 2, c.height * 2), Image.NEAREST) for c in crops]
+        column([label(crops[0], '1. version line hovered: BETA stays (150 %)'), label(crops[1], '1. version line keyboard-focused: BETA stays (150 %)')]).save(OUT / 'feedback-1-beta-hover-focus.png')
+        print('wrote', OUT / 'feedback-1-beta-hover-focus.png')
+    # 2. The drawer kept open across the layout switches (rectangles measured in the window, drawer painted by itself).
+    data = QA / 'layout-keep/layout-keep.json'
+    if data.exists():
+        tiles = []
+        for s in json.loads(data.read_text(encoding='utf-8')):
+            w, h = int(s['client'][0]), int(s['client'][1]); k = .5
+            img = Image.new('RGB', (int(w * k), int(h * k)), (23, 23, 23)); d = ImageDraw.Draw(img)
+            p = s['page']; d.rounded_rectangle([p[0] * k, p[1] * k, p[2] * k, p[3] * k], radius=3, fill=(165, 165, 165))
+            if s['column']: d.rectangle([0, s['page'][1] * k, max(0, s['column'] - 4) * k, h * k], fill=(33, 33, 33))
+            dr = s['drawer']; pic = Image.open(QA / 'layout-keep' / s['png']).convert('RGB')
+            pic = pic.resize((int((dr[2] - dr[0]) * k), int((dr[3] - dr[1]) * k)), Image.LANCZOS); img.paste(pic, (int(dr[0] * k), int(dr[1] * k)))
+            d.rectangle([0, 0, w * k - 1, h * k - 1], outline=(90, 90, 90))
+            tiles.append(label(img, f"switch #{s['step']} -> {s['layout']}: Reglages still open, docked {'left, against the column' if s['column'] else 'right'}"))
+        rows = [row(tiles[i:i + 2]) for i in range(0, len(tiles), 2)]
+        column(rows).save(OUT / 'feedback-2-drawer-stays-open.png')
+        print('wrote', OUT / 'feedback-2-drawer-stays-open.png')
+    # 3. No frame around the active pane (pointer and keyboard), the pages filled in grey as the boards draw them.
+    shots = [QA / 'split-frames/no-active-ring-pointer.png', QA / 'split-frames/no-active-ring-keyboard.png']
+    if all(s.exists() for s in shots):
+        out = []
+        for s in shots:
+            img = Image.open(s).convert('RGB'); d = ImageDraw.Draw(img)
+            for box in ((4, 81, 587, 810), (592, 81, 1175, 810)): d.rectangle(box, fill=(165, 165, 165))   # the pages (child windows, not in the chrome's picture)
+            d.text((800, 420), 'active pane (Paper)', fill=(40, 40, 40)); d.text((200, 420), 'other pane (YouTube)', fill=(40, 40, 40))
+            crop = img.crop((520, 60, 1180, 160)).resize((1320, 200), Image.NEAREST)
+            out.append(label(crop, ('3. after a click' if 'pointer' in s.name else '3. after F6 / Tab') + ': no frame around the active pane (gap, page edge and window edge: canvas only)'))
+        column(out).save(OUT / 'feedback-3-no-active-pane-frame.png')
+        print('wrote', OUT / 'feedback-3-no-active-pane-frame.png')
+
+
 if __name__ == '__main__':
     main()
+    feedback()
