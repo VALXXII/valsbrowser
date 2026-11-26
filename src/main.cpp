@@ -5273,16 +5273,21 @@ bool SideFocusHolds(){
 void SideFocusEvaluate(){
     if(!window)return;
     if(!chrome.sideHidden){if(sidePolling){KillTimer(window,SideFocusPollTimerId);sidePolling=false;}return;}
-    POINT sp{};const bool pointer=GetCursorPos(&sp)!=FALSE;POINT cp=sp;ScreenToClient(window,&cp);
-    const float k=96.f/GetDpiForWindow(window),x=cp.x*k,y=cp.y*k;
+    // The edge zone (src/sidebar.h EdgeZone): measured in device pixels, read in DIP at the window's DPI (per monitor). The
+    // pointer counts beyond the window's edge too (the next monitor, the desktop beside a restored window): in front only.
+    namespace EZ=SBar::EdgeZone;namespace FS=SBar::FocusSide;const auto side=EZ::Side::Left;   // the column's side (its only placement; Right is ready)
+    POINT sp{};const bool pointer=GetCursorPos(&sp)!=FALSE;
     HWND fg=GetForegroundWindow();const bool front=fg&&(fg==window||GetAncestor(fg,GA_ROOTOWNER)==window)&&IsWindowVisible(window)&&!IsIconic(window);
     const bool buttons=GetAsyncKeyState(VK_LBUTTON)<0||GetAsyncKeyState(VK_RBUTTON)<0||GetAsyncKeyState(VK_MBUTTON)<0;
-    RECT wr{};GetWindowRect(window,&wr);const bool ours=pointer&&front&&PtInRect(&wr,sp);
-    const float top=chrome.side.top;namespace FS=SBar::FocusSide;
-    const bool inBand=ours&&!buttons&&x>=0&&x<FS::edge&&y>=top&&y<chrome.height;
-    const bool overColumn=ours&&(sideLive||sidePic.shown)&&x>=0&&x<chrome.side.column+FS::border&&y>=top&&y<chrome.height;
-    const double ms=SidebarNowMs();
-    if(sideReveal.Pointer(ms,inBand,overColumn,sideReveal.open&&SideFocusHolds()))SideRevealChanged();
+    EZ::Pixels px;px.x=sp.x;px.y=sp.y;px.dpi=GetDpiForWindow(window);
+    {RECT c{};GetClientRect(window,&c);MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&c),2);px.left=c.left;px.top=c.top;px.right=c.right;px.bottom=c.bottom;}
+    if(pointer){MONITORINFO mi{};mi.cbSize=sizeof(mi);if(GetMonitorInfoW(MonitorFromPoint(sp,MONITOR_DEFAULTTONEAREST),&mi)){px.monitorLeft=mi.rcMonitor.left;px.monitorRight=mi.rcMonitor.right;}
+        px.monitorBeyond=MonitorFromPoint(POINT{side==EZ::Side::Left?sp.x-1:sp.x+1,sp.y},MONITOR_DEFAULTTONULL)!=nullptr;}
+    const auto s=EZ::Measure(side,px,pointer,front,chrome.side.top,!IsZoomed(window)&&!InFullscreen());
+    const bool was=sideReveal.open;
+    if(sideReveal.Pointer(SidebarNowMs(),EZ::Classify(s),EZ::Holds(s,chrome.side.column+FS::border),buttons,sideReveal.open&&SideFocusHolds())){
+        if(sideReveal.open&&!was){static const wchar_t* kinds[]={L"none",L"rest 400 ms",L"edge 120 ms",L"monitor edge 60 ms"};Log(std::wstring(L"FOCUS edge zone: ")+kinds[(int)sideReveal.by]);}
+        SideRevealChanged();}
     const bool poll=front||sideReveal.open||sidePic.shown;
     if(poll&&!sidePolling)sidePolling=SetTimer(window,SideFocusPollTimerId,30,nullptr)!=0;
     else if(!poll&&sidePolling){KillTimer(window,SideFocusPollTimerId);sidePolling=false;}
