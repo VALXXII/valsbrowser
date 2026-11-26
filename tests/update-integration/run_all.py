@@ -95,6 +95,12 @@ def existing_fixtures() -> None:
     about_evidence.mkdir(parents=True, exist_ok=True)
     fixture('settings_about_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/settings_about_test.cpp', 'src/native-lottie.cpp', THORVG,
             *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt'], [ROOT, about_evidence])
+    # Réglages' root footer: the layout switch (one setting with « Position des onglets ») and the « BETA » chip (Val's
+    # « Atelier » boards « 01 · Réglages — racine »). Windowless; pictures for tests/atelier-a/compose.py.
+    switch_evidence = ROOT / 'build/atelier-a-qa/switch'
+    switch_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('settings_layout_switch_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/settings_layout_switch_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt'], [ROOT, switch_evidence])
     language_evidence = ROOT / 'build/browser-languages/captures/settings'
     language_evidence.mkdir(parents=True, exist_ok=True)
     fixture('language_settings_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/language_settings_test.cpp', 'src/native-lottie.cpp', THORVG,
@@ -157,6 +163,12 @@ def existing_fixtures() -> None:
     fixture('split_view_test', [*STRICT, 'tests/split-view/split_view_test.cpp'])
     fixture('site_name_test', [*STRICT, 'tests/split-view/site_name_test.cpp'])
     fixture('split_ui_test', [*LOOSE, *TVG, WV2, 'tests/ui/split_ui_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
+    # Split view hover frames (Val's « Atelier » boards « Fenêtre »): the pure state machine and geometry, then the host
+    # (réduire / fermer through the real split view, the layered windows under a never-shown window, renders).
+    fixture('split_frames_test', [*STRICT, 'tests/split-view/split_frames_test.cpp'])
+    frames_manifest = OUT / 'split_frames_manifest.o'
+    run('windres split_frames_ui_test.rc', [BIN / 'windres.exe', 'tests/ui/split_frames_ui_test.rc', '-O', 'coff', '-o', frames_manifest])
+    fixture('split_frames_ui_test', [*LOOSE, *TVG, WV2, 'tests/ui/split_frames_ui_test.cpp', frames_manifest, 'src/native-lottie.cpp', THORVG, *UI_LIBS])
     # Window title / icon changes never hide the page, even for an instant (the canvas flashed in place of the page on
     # clicks in a site); the same title is not sent again on each page event. Screen-free: a DWM-cloaked window.
     fixture('window_title_test', [*LOOSE, '-Werror', *TVG, WV2, 'tests/ui/window_title_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])

@@ -2451,6 +2451,14 @@ public:
     void SettleForTest() { slide_.Snap(slide_.Target()); page_.Snap(page_.Target()); for (auto& l : scrolls_) l.Snap(l.Target()); for (int i = 0; i < SwitchCount; ++i) { switches_[i].Snap(switches_[i].Target()); knobPress_[i].Snap(0); } }
     void ScrollForTest(float y) { scrolls_[depth_].Snap(std::clamp(y, 0.f, MaxScroll(Current(), Motion::Now(), true))); }
     void HoverForTest(int hit) { Interact(hit, 0); }
+    // The root footer's layout switch and « BETA » chip (tests/settings_layout_switch_test.cpp).
+    float FooterHeightForTest() const { return FooterHeight(Current()); }
+    float SwitchRevealForTest() const { return SwitchReveal(Motion::Now()); }
+    int SwitchLabelForTest() const { return SwitchLabelIndex(); }
+    Design::Box SwitchControlForTest() const { return Layout::SwitchControl(VersionTop()); }
+    Design::Box SwitchSegmentForTest(int k) const { return Layout::SwitchSegment(VersionTop(), k); }
+    D2D1_RECT_F BetaForTest() const { return BetaBox(VersionTop()); }
+    void SettleSwitchForTest() { switchReveal_.Snap(switchReveal_.Target()); }
     void FocusForTest(int hit, bool keyboard) { focus_ = hit; keyboard_ = keyboard; Invalidate(); }
     Design::Box AboutForTest() const { return Layout::About(VersionTop()); }
     Design::Box AboutChevronForTest() const { return Layout::AboutChevron(VersionTop()); }
