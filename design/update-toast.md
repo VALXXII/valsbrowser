@@ -24,6 +24,24 @@ Texts (French, Val's, with Chief's two corrections): « Mise à jour disponible 
 à être téléchargée. » / Télécharger · Plus tard; « Téléchargement en cours… » / size · time / Annuler; « Prête à
 installer » / « La mise à jour est prête à être installée. » / « Redémarrer et installer ».
 
+## The background follows the profile (Val, 2026-11-26)
+
+Val drew the three colours for the violet profile (ink `#B49BFF`). For the window's profile ink
+(`NativeChrome::Design::Accent::Ink`, the same source as the download ring), each colour keeps, in OKLCH, its own
+lightness, its hue offset from the violet ink and its chroma ratio to it (`#8A66FF`: −4.75°, ×1.52; `#ECAEFF`: +23.9°,
+×0.90; `#F4F4FF`: −8.1°, ×0.10); out of sRGB only the chroma is reduced. `ToastModel::Grain::Colors`, tested to the hex:
+
+| Profile ink | Colours |
+| --- | --- |
+| violet `#B49BFF` | `#8A66FF` `#ECAEFF` `#F4F4FF` (Val's) |
+| gris `#B3B3B3` | `#888888` `#C9C9C9` `#F5F5F5` (neutral greys) |
+| vert `#6FD087` | `#00A42F` `#61E3C3` `#F0F8EF` |
+| cyan `#4FC3D9` | `#0099A9` `#8BD3FF` `#EDF8F9` |
+| rose `#F08BC4` | `#D643AD` `#FFB0BB` `#FCF2F9` |
+| ambre `#E6AC3D` | `#B67A00` `#D7CD65` `#FCF4EB` |
+
+The card redraws its background when the ink changes (profile switch and its fade, another profile's window in front).
+
 ## The icon while downloading
 
 The Downloads drawer's own icon (`src/download-icon.h`, `assets/lottie/download-*.json`): same model, frames and

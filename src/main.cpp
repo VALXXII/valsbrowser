@@ -67,9 +67,6 @@
 #include "build-info.h"
 #include "update-core.h"
 #include "update-toast.h"
-#ifdef BROWSER_PREVIEW
-#include "update-card-demo.h"
-#endif
 #endif
 // Annotation mode (src/annotation-mode.h): identity-stamped builds that ship the MCP bridge. Dev / preview builds have
 // it; a --channel release build only when it opts in with BROWSER_RELEASE_ANNOTATIONS, which the release pipeline
@@ -310,9 +307,6 @@ void ElementsFrame(NativeChrome::Motion::Time now); NativeChrome::Motion::Wake E
 void ElementsReducedMotion(bool reduced); void RepositionElementSurfaces(); void ChromeTipHover(int x,int y); void ChromeTipHide(); void ChromeTipFocus(int id); bool sandboxNextTab=false,debugSandboxAtStart=false;
 // Our print window (#121, src/print-integration.h, included after SavePageAsPdf).
 void PrintFrame(NativeChrome::Motion::Time now); NativeChrome::Motion::Wake PrintNextWake(NativeChrome::Motion::Time now); void PrintReposition(); bool PrintSurfaceFocus(HWND f); void PrintTabChanged(); void PrintTabClosed(const std::shared_ptr<Tab>& t); void CreatePrintSurfaces(); void DisposePrintSurfaces(); bool PrintPageMessage(const std::shared_ptr<Tab>& t,const std::wstring& message); void RegisterPrintScript(const std::shared_ptr<Tab>& t,const PopupHost::RequestPtr& popup);
-#if defined(BROWSER_PREVIEW) && defined(BROWSER_UPDATES)
-constexpr int CardDemoProfileCommand=3098; bool CardDemoActive(); void CardDemoNextProfile();
-#endif
 constexpr int FindNextCommand=3050,FindPreviousCommand=3051,FullscreenCommand=3052,SandboxCommandId=3053,ShortcutsCommand=3054,ExitFullscreenCommand=3055; bool PageFullscreenActive(); void ExitPageFullscreen(); void OpenShortcutsPanel();
 // Bookmarks (section "Bookmarks" below).
 constexpr int BookmarkBarCommand=3030,BookmarksDrawerCommand=3031,BookmarkUndoCommand=3032;
@@ -1333,9 +1327,6 @@ int Key(UINT key){
     // Modal, prompt and find bar fields keep their keys (Ctrl+W must not close the tab under a dialog).
     {int cmd=0;if(ElementSurfaceKey(key,ctrl,alt,shift,cmd))return cmd;}
     if(motionLabMode&&ctrl&&alt&&shift&&key=='M')return MotionLabCommand;
-#if defined(BROWSER_PREVIEW) && defined(BROWSER_UPDATES)
-    if(CardDemoActive()&&!ctrl&&!alt&&!shift&&key==VK_F9)return CardDemoProfileCommand; // update card trial: next profile colour
-#endif
     if(ctrl&&!alt){
         if(!shift&&key=='D')return 'K';
         if(shift&&key=='B')return BookmarkBarCommand;
@@ -4776,9 +4767,6 @@ case FindNextCommand:case FindPreviousCommand:FindStep(cmd==FindNextCommand);bre
 case FullscreenCommand:if(PageFullscreenActive())ExitPageFullscreen();else ToggleBrowserFullscreen();break;
 case ExitFullscreenCommand:ExitPageFullscreen();break;
 case SandboxCommandId:OpenSandbox();break;
-#if defined(BROWSER_PREVIEW) && defined(BROWSER_UPDATES)
-case CardDemoProfileCommand:CardDemoNextProfile();break;
-#endif
 case ShortcutsCommand:OpenShortcutsPanel();break;
 }}
 #ifndef BROWSER_UPDATES
@@ -4802,20 +4790,7 @@ bool installedToastReplaced=false;
 // « Plus tard » (Val, 2026-11-26, choice B): the card hides for this session only. The engine keeps its offer and saves
 // nothing (src/update-core.cpp), so it comes back at the next start; a newer version or the manual check shows it at once.
 std::wstring updateLaterVersion;
-#ifdef BROWSER_PREVIEW
-// Design-preview copies only: `--carte-maj` plays a fake update source through the real card (src/update-card-demo.h).
-extern std::wstring launchArgs;BrowserUpdate::CardDemo cardDemo;bool cardDemoOn=false;constexpr UINT_PTR CardDemoTimerId=75;
-void CardDemoTick(){updateToast.SetView(cardDemo.Step(GetTickCount64()));}
-// `--carte-maj-profil=<gris|vert|cyan|violet|rose|ambre>` and F9 (next profile): the background for each profile ink
-// (Paper's --color-profile-* tokens). Without them, the window's own profile ink, as in the product.
-struct CardDemoProfile{const wchar_t* name;unsigned long ink;};
-constexpr CardDemoProfile CardDemoProfiles[]={{L"gris",0xB3B3B3},{L"vert",0x6FD087},{L"cyan",0x4FC3D9},{L"violet",0xB49BFF},{L"rose",0xF08BC4},{L"ambre",0xE6AC3D}};
-int cardDemoProfile=-1;bool CardDemoActive(){return cardDemoOn;}
-void CardDemoNextProfile(){if(!cardDemoOn)return;cardDemoProfile=(cardDemoProfile+1)%6;updateToast.SetDemoInk(CardDemoProfiles[cardDemoProfile].ink);Log(std::wstring(L"UPDATE card trial: profile ")+CardDemoProfiles[cardDemoProfile].name);}
-#else
-constexpr bool cardDemoOn=false;
-#endif
-void ShowUpdateView(){if(updatesStarted&&!cardDemoOn){auto v=updates.View();if(installedToastReplaced&&v.phase==BrowserUpdate::Phase::Installed)v=BrowserUpdate::View{};updateToast.SetView(BrowserUpdate::CardView(v,updateLaterVersion));}settingsDrawer.Changed();RefreshAboutStatus();}
+void ShowUpdateView(){if(updatesStarted){auto v=updates.View();if(installedToastReplaced&&v.phase==BrowserUpdate::Phase::Installed)v=BrowserUpdate::View{};updateToast.SetView(BrowserUpdate::CardView(v,updateLaterVersion));}settingsDrawer.Changed();RefreshAboutStatus();}
 // Periodic checks for a long-running browser: ONE one-shot timer, due-aware and re-armed after every
 // engine notification and every firing. Delay = time to the persisted next-check (6 h TTL / back-off),
 // never below 15 min nor above 6 h, so an idle browser wakes at most a few times per hour and usually
@@ -4827,9 +4802,6 @@ void ArmUpdateTimer(){
 }
 void UpdateTimerFired(){KillTimer(window,UpdateTimerId);updateTimerDelayMs=0;if(updatesStarted&&!closingForInstall)updates.AutoCheck();ArmUpdateTimer();}
 void UpdateAction(BrowserUpdate::Action action){
-#ifdef BROWSER_PREVIEW
-    if(cardDemoOn){cardDemo.Act(action,GetTickCount64());CardDemoTick();return;}
-#endif
     if(!updatesStarted||closingForInstall)return;
     if(action==BrowserUpdate::Action::Later){const auto v=updates.View();if(v.phase==BrowserUpdate::Phase::Available)updateLaterVersion=v.version;Log(L"UPDATE later: card hidden for this session");ShowUpdateView();return;}
     // The session is saved before the helper exists and again by WM_CLOSE.
@@ -4854,10 +4826,6 @@ UpdateCore::Config UpdateConfig(){
 void StartUpdates(UpdateCore::Config config=UpdateConfig()){
     if(!updateToast.Init(window,base+L"\\assets",UpdateAction))Log(L"UPDATE toast unavailable");
     updateToast.SetFocusReleaseHandler([]{FocusPage();});
-#ifdef BROWSER_PREVIEW
-    if(const size_t at=launchArgs.find(L"--carte-maj-profil=");at!=std::wstring::npos&&!smoke)for(int i=0;i<6;++i)if(launchArgs.compare(at+19,wcslen(CardDemoProfiles[i].name),CardDemoProfiles[i].name)==0){cardDemoProfile=i;updateToast.SetDemoInk(CardDemoProfiles[i].ink);}
-    if(launchArgs.find(L"--carte-maj")!=std::wstring::npos&&!smoke){cardDemoOn=true;cardDemo.Start(GetTickCount64(),launchArgs.find(L"--carte-maj=erreur")!=std::wstring::npos);SetTimer(window,CardDemoTimerId,50,nullptr);Log(L"UPDATE card trial (preview copy): fake update source");}
-#endif
     updatesStarted=updates.Start(config);
     Log(updatesStarted?L"UPDATE engine started "+config.currentVersion:L"UPDATE engine disabled");
     // « Nouveautés » Mini once after a successful update (src/release-notes.h): Installed is set by Start itself.
@@ -5821,9 +5789,6 @@ case WM_TIMER:
     if(w==ContentTransitionTimerId){KillTimer(h,ContentTransitionTimerId);if(contentTransition.Holding()||contentTransition.Waiting())contentTransition.Cancel();else contentTransition.Finish(contentTransitionGeneration);return 0;}if(w==ContentReadyTimerId){KillTimer(h,ContentReadyTimerId);ContentReadyTick();return 0;}if(w==ProfileUndoTimerId){ProfileUndoTick();return 0;}if(w==ProfileAnimTimerId){ProfileAnimTick();return 0;}if(w==ProfilePublishTimerId){KillTimer(h,ProfilePublishTimerId);PublishDirtyWorkspaces();return 0;}if(w==ProfileCloseWaitTimerId){ProfileCloseWaitTick();return 0;}
 #ifdef BROWSER_UPDATES
     if(w==UpdateTimerId){UpdateTimerFired();return 0;}
-#ifdef BROWSER_PREVIEW
-    if(w==CardDemoTimerId){CardDemoTick();return 0;}
-#endif
 #endif
     if(w==SleepTimerId){SleepTabs();return 0;}
     if(w==SidebarFoldTimerId){Layout();if(!sidebarFold.Moving(SidebarNowMs())&&!chrome.MorphMoving(NativeChrome::Motion::Now())&&!sideWidthSpring.Moving(NativeChrome::Motion::Now())){KillTimer(h,SidebarFoldTimerId);Layout();}return 0;}

@@ -590,10 +590,9 @@ struct Toast::Impl {
     Onboarding::Shaders::Renderer gpu; Onboarding::Shaders::Layer grain; bool gpuTried = false;
     double grainSeconds = 0; Motion::Time grainTick{};
     IWICImagingFactory* wic = nullptr;
-    // The background's colours: from the window's profile ink (or the trial's), re-rendered when they change.
-    std::array<ProfileColor::Rgb8, 3> grainColors{}; bool grainColored = false; unsigned long demoInk = 0xFFFFFFFFul;
+    // The background's colours: from the window's profile ink, re-rendered when they change.
+    std::array<ProfileColor::Rgb8, 3> grainColors{}; bool grainColored = false;
     ProfileColor::Rgb8 Ink() const {
-        if (demoInk <= 0xFFFFFFul) return {static_cast<std::uint8_t>(demoInk >> 16), static_cast<std::uint8_t>(demoInk >> 8), static_cast<std::uint8_t>(demoInk)};
         const auto ink = NativeChrome::Design::Accent::Ink();
         auto byte = [](float v) { return static_cast<std::uint8_t>(std::lround(std::clamp(v, 0.f, 1.f) * 255)); };
         return {byte(ink.r), byte(ink.g), byte(ink.b)};
@@ -977,9 +976,6 @@ bool Toast::Focus() {
 }
 void Toast::SetFocusReleaseHandler(std::function<void()> handler) { if (impl_) impl_->onRelease = std::move(handler); }
 void Toast::AccentChanged() { if (impl_ && impl_->windowShown) impl_->Request(); }
-#ifdef BROWSER_PREVIEW
-void Toast::SetDemoInk(unsigned long rgb) { if (impl_) { impl_->demoInk = rgb; AccentChanged(); } }
-#endif
 void Toast::Close() { impl_.reset(); }
 HWND Toast::Window() const { return impl_ ? impl_->hwnd : nullptr; }
 bool Toast::Shown() const { return impl_ && impl_->windowShown; }
