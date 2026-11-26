@@ -4296,18 +4296,28 @@ void RenameOrEdit(BM::Id id,int surface,RECT anchor,bool keyboard,int returnTo){
 int bookmarkMenuSurface=RenameNone; // the surface whose row opened BookmarkContextMenu (drawer), else band/none
 // Ctrl+D / the star: save at once in the last folder used, then the popover; an
 // already saved page opens its most recent bookmark instead of a second one.
+// Where Ctrl+D's bookmark popover hangs: the star (top bar, complete column). The compact column has no star (its field
+// sits in the window bar, hidden in Focus): beside the column instead, level with its bookmarks (or its top), on the
+// panel's side (the empty anchor put it at the screen's top-left, above the window). `alignRight`: the star's rule.
+RECT StarAnchor(bool& alignRight){
+    alignRight=true;const RECT star=RegionScreen('K');if(star.right>star.left||!chrome.sidebar)return star;
+    for(int id:{(int)'E',NativeChrome::BookmarkBase,(int)NativeChrome::Chrome::SidebarMoreId,900}){const RECT r=RegionScreen(id);if(r.right<=r.left)continue;
+        POINT o{0,0};ClientToScreen(window,&o);const LONG x=o.x+S(chrome.SideColumn().column+NativeChrome::Sidebar::Popover::gapX),y=r.top-S(NativeChrome::Design::Space::md);
+        alignRight=false;return RECT{x,y,x,y};}
+    return star;
+}
 void BookmarkStar(bool keyboard){
     auto t=Active();if(!t||t->home||!BM::Admissible(t->uri))return;
     HideSuggestions();
-    const auto matches=bookmarks.Matching(t->uri);const RECT star=RegionScreen('K');
-    if(!matches.empty()){EditBookmark(matches.front(),star,true,keyboard,false,keyboard?'K':0);return;}
+    const auto matches=bookmarks.Matching(t->uri);bool alignRight=true;const RECT star=StarAnchor(alignRight);
+    if(!matches.empty()){EditBookmark(matches.front(),star,alignRight,keyboard,false,keyboard?'K':0);return;}
     if(!bookmarks.Find(lastFolder)||bookmarks.Find(lastFolder)->kind!=BM::Kind::Folder)lastFolder=BM::BarRoot;
     std::wstring title=t->title==TR(tab_new)?L"":t->title;
     const BM::Id id=bookmarks.Add(lastFolder,BM::End,title,t->uri,NativeChrome::DownloadsUI::UnixNowMs());
     if(!id){AnnounceBookmark(TR(bookmark_add_failed));return;}
     PushUndo({{BookmarkStep::Created,id}},TR(bookmark_undo_add));SaveBookmarks();BookmarksChanged();
     AnnounceBookmark(TRF(bookmark_added_to,bookmarks.Find(lastFolder)->title));
-    EditBookmark(id,RegionScreen('K'),true,keyboard,true,keyboard?'K':0);
+    EditBookmark(id,star,alignRight,keyboard,true,keyboard?'K':0);
 }
 void CommitBookmark(unsigned id,const std::wstring& title,const std::wstring& url,unsigned parent){
     const auto* n=bookmarks.Find(id);if(!n)return;std::vector<BookmarkStep> steps;

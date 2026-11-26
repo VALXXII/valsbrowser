@@ -335,6 +335,14 @@ int wmain(int argc, wchar_t** argv) {
             {   const RECT pr = ProfileButtonScreen(); RECT reg{}; for (auto& r : chrome.regions) if (r.id == 900) { reg = ChromePx(r.rect); MapWindowPoints(window, nullptr, reinterpret_cast<POINT*>(&reg), 2); }
                 Expect(sideReveal.open && EqualRect(&pr, &reg) && pr.left < c.left + Px(chrome.side.column), name + ", profile menu: the column back, anchored at its profile button " + Text(pr)); }
             hideColumn();
+            // The star (Ctrl+D): the bookmark popover on the panel's side (complete: from the column's star, the column back)
+            keyboardModality = true; Command('K'); Pump(400);
+            {   RECT bp{}; GetWindowRect(bookmarkPopover.Window(), &bp);
+                Expect(bookmarkPopover.Visible() && bp.right < middle && sideReveal.open, name + ", Ctrl+D: the column back, the bookmark popover on the panel's side " + Text(bp));
+                if (layout == BrowserSettings::TabsPosition::Compact) Expect(bp.top >= c.top && bp.left >= c.left + Px(chrome.SideColumn().column), name + ", Ctrl+D: inside the window, beside the column (compact: no star; it went above the window) " + Text(bp));
+                else { RECT k{}; for (auto& r : chrome.regions) if (r.id == 'K') { k = ChromePx(r.rect); MapWindowPoints(window, nullptr, reinterpret_cast<POINT*>(&k), 2); }
+                       Expect(k.right > k.left && bp.top > k.bottom, name + ", Ctrl+D: under the column's star, as outside Focus " + Text(bp)); } }
+            bookmarkPopover.Hide(); Pump(200); for (auto id : bookmarks.Matching(pages[current]->uri)) bookmarks.Remove(id); BookmarksChanged(); hideColumn();
             // Historique / Réglages by the keyboard (drawers, rule 2): the column back with them
             ShowHistory(true); Pump(600); Expect(sideReveal.open && historyDrawer.Open(), name + ", Ctrl+H: the column back with the drawer"); hideColumn();
             ShowSettings(); Pump(600); Expect(sideReveal.open && settingsDrawer.Open(), name + ", Réglages: the column back with the drawer"); hideColumn();
