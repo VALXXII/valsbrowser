@@ -129,6 +129,8 @@ public:
     // after 500 ms of rest, at once while a tip is on screen. A gap between items (item 0) keeps the tip where it is.
     void Hover(int item, const Box& anchor, const Content& content, bool compact, bool panelLeft) {
         if (!hwnd_ || !item) return;
+        const auto same = [](const Box& a, const Box& b) { return a.left == b.left && a.top == b.top && a.right == b.right && a.bottom == b.bottom; };
+        if (item == pending_.item && motion_.Shown() && motion_.Item() == item && content == pending_.content && same(anchor, pending_.anchor) && panelLeft == pending_.panelLeft) return;   // the pointer moving on the same item: nothing to measure or draw
         pending_ = {item, anchor, content, compact, panelLeft};
         Evaluate();
     }
