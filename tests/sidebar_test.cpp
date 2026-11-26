@@ -129,6 +129,51 @@ int main() {
         const auto P6 = S::ComputePopover(40, S::Box{0, 236, 40, 272}, 6, 0, 738);
         Check(compactOk && P6.grid.columns == 5 && P6.grid.tiles.size() == 6 && Near(P6.grid.tiles[5].left, P6.grid.tiles[0].left) && Near(P6.grid.tiles[5].Width(), (230 - 4 * 6) / 5.f), "compact unchanged (1WDI-0) and its popover keeps five per row");
     }
+    {   // #143 (Val 25 nov., capture: the page over the panel's right edge). The host's chain for an edge drag, every device
+        // pixel from 0 to 420 DIP at 100 / 125 / 150 %, started complete or compact: Resize::Dragging -> the presented width
+        // on whole device pixels (SidebarPrepare) -> Compute with it as the page's left (Chrome::BuildSidebar). Before, the
+        // column was laid out at the clamped 220 under a rubber-banded page at 195. Now the page starts on the column's edge
+        // (the same device pixel), and every piece lies left of it; under the « Haut » row's 194 (a complete drag past 160
+        // toward the window's edge) the layout stops at 194 and the painter fades its last 12 DIP at the edge.
+        const float scales[] = {1, 1.25f, 1.5f}; int cases = 0, bad = 0, fades = 0;
+        for (float s : scales) for (int startedCompact = 0; startedCompact < 2; ++startedCompact) for (int px = 0; px <= static_cast<int>(420 * s); ++px) {
+            const float raw = px / s; const auto st = S::Resize::Dragging(raw, startedCompact != 0); const bool full = st.mode == S::Mode::Complete;
+            const float shown = std::round((full ? st.width : S::Compact::width) * s) / s;
+            auto in = Complete(9, 6); in.mode = st.mode; in.panel = full ? st.width : 248; in.zoneLeft = shown; const auto L = S::Compute(in); ++cases;
+            const float edge = L.page.left; const bool fade = L.column > edge + .5f; fades += fade;
+            bool ok = Near(edge, shown) && Near(L.zone.left, shown) && std::lround(edge * s) == static_cast<long>(std::lround(shown * s));
+            ok = ok && fade == (full && shown < S::Complete::minimumLayout - .5f);   // the painter fades past half a DIP
+            if (!fade) {
+                const S::Box* boxes[] = {&L.profile, &L.toggle, &L.address, &L.lock, &L.text, &L.copy, &L.star, &L.gridBlock, &L.grid.view, &L.gridToggle, &L.manage, &L.line, &L.tabsView, &L.newTab, &L.footerLine};
+                for (const S::Box* b : boxes) ok = ok && (b->Empty() || b->right <= edge + .5f || (!full && L.addressInColumn == false && (b == &L.address || b == &L.lock || b == &L.text)));   // compact: the field is in the window bar
+                for (const auto* v : {&L.grid.tiles, &L.tiles, &L.tabs, &L.tools}) for (const auto& b : *v) ok = ok && b.right <= edge + .5f;
+                if (full) ok = ok && L.toggle.left >= L.reload.right + 3 - 1e-3f && Near(L.address.right, L.column - 8) && L.column <= edge + .5f && L.text.Width() > 0 && S::TitleIn(L.tabs[0], true).Width() > 0;   // the « Haut » row fits; texts have room (they fade when cut)
+            } else ok = ok && Near(L.column, S::Complete::minimumLayout) && edge >= 100 && raw < S::Resize::snap;   // only a complete drag past 160
+            if (!ok && ++bad <= 5) std::printf("  page edge: scale %.2f, %s drag, raw %.2f: shown %.2f, page %.2f, column %.2f\n", s, startedCompact ? "compact" : "complete", raw, shown, edge, L.column);
+        }
+        std::printf("page edge: %d drag positions (0 .. 420 DIP, 100 / 125 / 150 %%), %d past 160 towards the window's edge, faded at 194\n", cases, fades);
+        Check(bad == 0, "the page starts on the column's edge at every drag width and scale; the column fits left of it (or fades under 194)");
+        Check(Near(S::Compute([] { auto in = Complete(5); in.panel = S::Resize::Shown(160); in.zoneLeft = in.panel; return in; }()).column, S::Resize::Shown(160)), "the owner's capture: a rubber band at 194 is laid out at 194 (it was 220 under a page at 194)");
+        // The fold while dragging (crossing 160 from compact): it unfolds on its spring (1.0 / .35 s, Paper 254L-0) toward the
+        // pointer's width, which keeps moving; the page follows on the same frame; reversed mid-way it starts from what is on
+        // screen with its velocity (no jump); reduced motion: at once.
+        S::Fold f; f.Set(S::Mode::Compact, 0, false); f.panel = S::Resize::Shown(170);
+        f.Set(S::Mode::Complete, 1000, true);
+        float last = f.ColumnWidth(1000), maxStep = 0; bool layoutOk = true;
+        for (double t = 1000; t <= 1120; t += 8) {
+            f.panel = S::Resize::Shown(170 + static_cast<float>(t - 1000) * .3f); f.Update(t);   // the pointer keeps going right
+            const float w = f.ColumnWidth(t); maxStep = std::max(maxStep, std::fabs(w - last)); last = w;
+            auto in = Complete(9, 6); in.mode = f.CompleteLayout(t) ? S::Mode::Complete : S::Mode::Compact; in.panel = f.panel; in.zoneLeft = w; const auto L = S::Compute(in);
+            layoutOk = layoutOk && Near(L.page.left, w) && (L.column <= w + .5f || L.column >= S::Complete::minimumLayout - .01f);
+        }
+        const float before = f.ColumnWidth(1120), mid = f.Progress(1120);
+        Check(mid > .3f && mid < .97f && layoutOk && maxStep < 40, "dragging past 160: the column unfolds on the spring (no jump), the page on the same frame");
+        f.Set(S::Mode::Compact, 1120, true);   // back under 160 mid-way
+        Check(Near(f.ColumnWidth(1120), before, .01f) && f.ColumnWidth(1128) > before - 12 && f.Moving(1128), "reversed mid-way: from what is on screen, keeping its velocity");
+        Check(!f.Moving(1120 + 2000) && Near(f.ColumnWidth(1120 + 2000), 40), "then settles compact");
+        S::Fold r; r.Set(S::Mode::Compact, 0, false); r.panel = 230; r.Set(S::Mode::Complete, 10, false);
+        Check(!r.Moving(10) && Near(r.ColumnWidth(10), 230) && Near(r.Titles(10), 1), "reduced motion: at once");
+    }
     {   // « Toujours » with no bookmark: one full row tile.
         const auto L = S::Compute(Complete(0));
         Check(L.emptyGrid && L.tiles.size() == 1 && Same(L.tiles[0], 8, 92, 240, 132), "empty grid: one full-width tile");

@@ -101,6 +101,18 @@ inline constexpr float button = 32, pairGap = 3, hairline = 1, hairlineH = 10;
 inline constexpr float pair = button * 2 + pairGap * 2 + hairline;   // 71
 }
 static_assert(Nav::pair == 71, "Paper 1VCX-0: the pair is 71 wide");
+// The page's edge is the column's (Val 25 nov., #143: « the page covered the panel's right edge »): the docked complete
+// column is laid out at the width it is presented at (the fold's, the edge drag's rubber band, the width spring's), never
+// under the width its « Haut » row needs (profile, the pair, Reload 6 apart, then the fold button at least 3 from Reload:
+// 194, the rubber band's narrowest above the 160 snap, Resize::Shown(160) = 194.1). Narrower than its layout (it folds
+// or unfolds, a complete drag past 160 towards the window's edge) or while its pieces glide (§2), its paint stops at the
+// page's edge and its last `edgeFade` DIP fade into the canvas (Chrome::PaintSidebar): never cut by the page.
+namespace Complete {
+inline constexpr float minimumLayout = pad + row + rowGap + Nav::pair + rowGap + Nav::button + rowGap / 2 + toggle + pad, edgeFade = 12;
+// Truncated texts of the column (tab titles, « Tous les favoris (N) », « Gérer les favoris ») fade over their last 12 DIP.
+inline constexpr float textFade = 12;
+}
+static_assert(Complete::minimumLayout == 194, "the « Haut » row: 8 + 32 + 6 + 71 + 6 + 32 + 3 + 28 + 8");
 // The complete column over the page (03 « Panneau déplié par-dessus » 1QHV-0): + a 1 DIP right border white 12 %
 // (#FFFFFF1F), right corners 12, the window's whole height.
 namespace Overlay { inline constexpr float border = 1, borderAlpha = 0x1F / 255.f, radius = 12; }
@@ -407,6 +419,10 @@ inline Layout Compute(const Input& in) {
     const float W = std::max(in.width, 1.f), H = std::max(in.height, 1.f);
     L.column = Width(in.mode, Resize::Clamp(in.panel));
     const float zoneLeft = in.zoneLeft >= 0 ? in.zoneLeft : L.column;
+    // Docked (not the column over the compact page), the page starts at `zoneLeft`, the presented width: the complete
+    // column is laid out there (a rubber band at 195 gave a layout at 220 under a page at 195), or at its own width while
+    // the fold animates it narrower, never under `minimumLayout` (Complete::minimumLayout).
+    if (full && !in.zoneSet && in.zoneLeft >= 0) L.column = std::max(Complete::minimumLayout, zoneLeft >= in.panel - 1 ? zoneLeft : in.panel);
     L.bar = zoneMode == Mode::Complete ? Zone::bar : Zone::compactBar;
     // Page zone: window buttons right-aligned in the bar, the page under it (and under the annotation band).
     {
@@ -672,7 +688,8 @@ inline Box ShownRow(const Layout& L, float slot, float presence, float scroll) {
 // frame (the host lays it out from ColumnWidth). Folding: the titles fade out over the first 80 ms, the column keeps the
 // complete layout for those 80 ms, then the compact one (its tiles and buttons glide to their places: Chrome's morph).
 // Unfolding: the complete layout at once, the titles fading in over 120 ms once the width passes 70 %. A gesture can
-// throw it (the edge released under 160: damping .85 with the pointer's velocity). Reduced motion: at once.
+// throw it (the edge released under 160: damping .85 with the pointer's velocity). An edge drag crossing 160 runs it too
+// (#143: it jumped), toward the pointer's width (`panel` follows it every frame). Reduced motion: at once.
 inline double EaseOut(double x) { x = std::clamp(x, 0.0, 1.0); const double u = 1 - x; return 1 - u * u * u; }
 struct Fold {
     Mode target = Mode::Complete; double startMs = -1; float from = 1, velocity = 0, damping = 1, titlesAtStart = 1;

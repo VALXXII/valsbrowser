@@ -403,6 +403,30 @@ int wmain(int argc, wchar_t** argv) {
         Check(c.side.tiles.size() == 3 && c.side.grid.tiles.empty() && Near(c.side.tiles[0].left, 0) && Near(c.side.tiles[0].right, 40) && Near(c.side.tiles[2].Height(), 36), "compact: three 40 x 36 tiles in a column, unchanged");
         Check(SUCCEEDED(c.SavePng((out + L"\\grille-compact-03-96.png").c_str())), "snapshot (grid fill, compact)");
     }
+    {   // #143 (Val 25 nov., capture: the page over the panel's right edge). (1) The capture's state, a rubber band under 220
+        // (the narrowest above the 160 snap, 194.1, on whole device pixels at 100 / 125 / 150 %): the chrome's page box starts
+        // at the presented width and the column is laid out there (the field ends 8 before it, then the canvas, no fade).
+        // (2) An unfolding frame (a 248 layout shown 150 wide): nothing of the column is painted at or past the page's edge,
+        // and its last 12 DIP fade into the canvas.
+        auto grey = [](Chrome& c, float x, float y) { return (int)((c.SurfacePixel(x, y) >> 8) & 255); };
+        for (UINT dpi : {96u, 120u, 144u}) {
+            Chrome c; Check(SUCCEEDED(c.InitOffscreen(root, dpi, 1178, 738)), "offscreen chrome (page edge)");
+            c.sidebar = true; c.bandShown = true; bookmarksN(c, 3); c.address = AddressBar::Describe(L"https://www.youtube.com/watch?v=0123456789", false);
+            const float k = dpi / 96.f, shown = std::round(Sidebar::Resize::Shown(160) * k) / k;
+            c.sidebarWidth = c.sidebarColumn = shown; c.sidebarEdge = 2; c.Paint(titles, 0, L"", false, 0, 0);
+            wchar_t name[64]; std::swprintf(name, 64, L"bord-elastique-194-%d", (int)dpi);
+            Check(SUCCEEDED(c.SavePng((out + L"\\" + name + L".png").c_str())), "snapshot (page edge)");
+            const auto& L = c.side; const float y = (L.address.top + L.address.bottom) / 2;
+            char what[200]; std::snprintf(what, sizeof what, "%u dpi: rubber band at %.2f: page %.2f, column %.2f, field to %.2f (field #%02X, then canvas #%02X)", dpi, shown, L.page.left, L.column, L.address.right, grey(c, L.address.right - 3, y), grey(c, L.address.right + 3, y));
+            Check(Near(L.page.left, shown) && Near(L.column, shown) && Near(L.address.right, shown - 8) && std::abs(grey(c, L.address.right - 3, y) - 0x29) <= 2 && std::abs(grey(c, L.address.right + 3, y) - 0x17) <= 1 && L.grid.columns == 3 && Near(L.grid.tiles[2].right, shown - 8), what);
+            // (2) unfolding: the 248 layout, the page at 150.
+            c.sidebarEdge = 0; c.sidebarWidth = 248; c.sidebarColumn = std::round(150 * k) / k; c.Paint(titles, 0, L"", false, 0, 0);
+            const float e = c.side.zone.left, y2 = (c.side.address.top + c.side.address.bottom) / 2;
+            std::swprintf(name, 64, L"bord-depli-150-%d", (int)dpi); Check(SUCCEEDED(c.SavePng((out + L"\\" + name + L".png").c_str())), "snapshot (unfolding)");
+            std::snprintf(what, sizeof what, "%u dpi: unfolding (248 laid, shown %.2f): field #%02X at 120, #%02X 1 DIP before the edge (faded), #%02X past it (not painted)", dpi, e, grey(c, 120, y2), grey(c, e - 1, y2), grey(c, e + 1, y2));
+            Check(Near(c.side.column, 248) && Near(c.side.page.left, e) && std::abs(grey(c, 120, y2) - 0x29) <= 2 && grey(c, e - 1, y2) <= 0x19 && std::abs(grey(c, e + 1, y2) - 0x17) <= 1, what);
+        }
+    }
     std::printf("sidebar_render_test: %d checks passed\n", checks);
     return 0;
 }
