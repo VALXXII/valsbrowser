@@ -48,9 +48,11 @@ inline constexpr float row = 32, rowGap = 6, toggle = 28;
 inline constexpr float address = 32, addressPad = 8, addressGap = 6, addressGlyph = 14, addressFont = 16;
 // Bookmarks grid, variant B (Paper « Favoris · 10 / 20 · B / 40 · B replié / déplié / panneau 300 / 360 »): tiles 40
 // high, radius 8, #FFFFFF0A (hover #FFFFFF14), gap 6, as many columns as keep a tile about 42 wide (5 in 232, 6 in 284,
-// 7 in 344); favicon 18, a folder's glyph 16 white 70 %. Folded: two rows, then the 24 DIP row « Tous les favoris (N) »
-// with a caret (1WKW-0: padding 6, gap 6, 13/16 white 50 %, caret 12 white 50 %) when there are more. Unfolded: up to 5
-// rows (224) in a viewport that scrolls (a 32 DIP canvas fade at its bottom, a 3 DIP #FFFFFF33 bar radius 2 at its
+// 7 in 344); favicon 18, a folder's glyph 16 white 70 %. The tiles share the row edge to edge (Paper: flex 1, basis 0)
+// within the address field's margins; fewer bookmarks than a row holds share it too (3 in 232: 73.3 each; Val 25 nov.,
+// « like Dia »); a last row that is not full keeps the rows' tile width, left-aligned. Folded: two rows, then the 24 DIP
+// row « Tous les favoris (N) » with a caret (1WKW-0: padding 6, gap 6, 13/16 white 50 %, caret 12 white 50 %) when
+// there are more. Unfolded: up to 5 rows (224) in a viewport that scrolls (a 32 DIP canvas fade at its bottom, a 3 DIP #FFFFFF33 bar radius 2 at its
 // right, 4 from its top: 1WRB-0 / 1WRC-0), then the row « Réduire » (caret up); the tabs keep at least half the height.
 inline constexpr float tile = 40, tileGap = 6, tileNominal = 41.6f, toggleRow = 24, togglePad = 6, toggleFont = 13, toggleGlyph = 12;
 inline constexpr int foldedRows = 2, openRows = 5;
@@ -99,6 +101,18 @@ inline constexpr float button = 32, pairGap = 3, hairline = 1, hairlineH = 10;
 inline constexpr float pair = button * 2 + pairGap * 2 + hairline;   // 71
 }
 static_assert(Nav::pair == 71, "Paper 1VCX-0: the pair is 71 wide");
+// The page's edge is the column's (Val 25 nov., #143: « the page covered the panel's right edge »): the docked complete
+// column is laid out at the width it is presented at (the fold's, the edge drag's rubber band, the width spring's), never
+// under the width its « Haut » row needs (profile, the pair, Reload 6 apart, then the fold button at least 3 from Reload:
+// 194, the rubber band's narrowest above the 160 snap, Resize::Shown(160) = 194.1). Narrower than its layout (it folds
+// or unfolds, a complete drag past 160 towards the window's edge) or while its pieces glide (§2), its paint stops at the
+// page's edge and its last `edgeFade` DIP fade into the canvas (Chrome::PaintSidebar): never cut by the page.
+namespace Complete {
+inline constexpr float minimumLayout = pad + row + rowGap + Nav::pair + rowGap + Nav::button + rowGap / 2 + toggle + pad, edgeFade = 12;
+// Truncated texts of the column (tab titles, « Tous les favoris (N) », « Gérer les favoris ») fade over their last 12 DIP.
+inline constexpr float textFade = 12;
+}
+static_assert(Complete::minimumLayout == 194, "the « Haut » row: 8 + 32 + 6 + 71 + 6 + 32 + 3 + 28 + 8");
 // The complete column over the page (03 « Panneau déplié par-dessus » 1QHV-0): + a 1 DIP right border white 12 %
 // (#FFFFFF1F), right corners 12, the window's whole height.
 namespace Overlay { inline constexpr float border = 1, borderAlpha = 0x1F / 255.f, radius = 12; }
@@ -319,9 +333,10 @@ struct Grid {
 inline int Columns(float width) { return std::max(1, static_cast<int>(std::floor((width + Complete::tileGap) / (Complete::tileNominal + Complete::tileGap) + 1e-3f))); }
 // `n` tiles in rows of Columns(w) inside [left, left + w], from `top`, `visibleRows` rows tall at most (then scrolling),
 // `maxHeight` at most (the viewport may cut a row: the fade covers it).
-// `columns` > 0: that many per row (the popover's five in 230, Paper 1WSC-0 / 1YX2-0), else Columns(w).
+// `columns` > 0: that many per row (the popover's five in 230, Paper 1WSC-0 / 1YX2-0), else Columns(w), or `n` when
+// fewer: a single row of them spans the width (no empty slots on its right).
 inline Grid MakeGrid(float left, float top, float w, int n, int visibleRows, float scroll, float maxHeight = 1e9f, int columns = 0) {
-    namespace C = Complete; Grid g; g.columns = columns > 0 ? columns : Columns(w);
+    namespace C = Complete; Grid g; g.columns = columns > 0 ? columns : std::max(1, std::min(Columns(w), n));
     g.rows = n <= 0 ? 0 : (n + g.columns - 1) / g.columns;
     const auto height = [](int r) { return r <= 0 ? 0.f : r * C::tile + (r - 1) * C::tileGap; };
     const float viewH = std::min(height(std::min(g.rows, visibleRows)), std::max(C::tile, maxHeight));
@@ -404,6 +419,10 @@ inline Layout Compute(const Input& in) {
     const float W = std::max(in.width, 1.f), H = std::max(in.height, 1.f);
     L.column = Width(in.mode, Resize::Clamp(in.panel));
     const float zoneLeft = in.zoneLeft >= 0 ? in.zoneLeft : L.column;
+    // Docked (not the column over the compact page), the page starts at `zoneLeft`, the presented width: the complete
+    // column is laid out there (a rubber band at 195 gave a layout at 220 under a page at 195), or at its own width while
+    // the fold animates it narrower, never under `minimumLayout` (Complete::minimumLayout).
+    if (full && !in.zoneSet && in.zoneLeft >= 0) L.column = std::max(Complete::minimumLayout, zoneLeft >= in.panel - 1 ? zoneLeft : in.panel);
     L.bar = zoneMode == Mode::Complete ? Zone::bar : Zone::compactBar;
     // Page zone: window buttons right-aligned in the bar, the page under it (and under the annotation band).
     {
@@ -669,7 +688,8 @@ inline Box ShownRow(const Layout& L, float slot, float presence, float scroll) {
 // frame (the host lays it out from ColumnWidth). Folding: the titles fade out over the first 80 ms, the column keeps the
 // complete layout for those 80 ms, then the compact one (its tiles and buttons glide to their places: Chrome's morph).
 // Unfolding: the complete layout at once, the titles fading in over 120 ms once the width passes 70 %. A gesture can
-// throw it (the edge released under 160: damping .85 with the pointer's velocity). Reduced motion: at once.
+// throw it (the edge released under 160: damping .85 with the pointer's velocity). An edge drag crossing 160 runs it too
+// (#143: it jumped), toward the pointer's width (`panel` follows it every frame). Reduced motion: at once.
 inline double EaseOut(double x) { x = std::clamp(x, 0.0, 1.0); const double u = 1 - x; return 1 - u * u * u; }
 struct Fold {
     Mode target = Mode::Complete; double startMs = -1; float from = 1, velocity = 0, damping = 1, titlesAtStart = 1;
