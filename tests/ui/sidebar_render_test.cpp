@@ -358,9 +358,9 @@ int wmain(int argc, wchar_t** argv) {
         }
     }
     {   // Val 25 nov. (« like Dia »): the complete grid's tiles fill the row edge to edge (the address field's margins), fewer
-        // bookmarks than a row holds share it, a short last row keeps the tile width on the left; 220 / 280 / 360 at 100 and
-        // 125 %, then grid B folded / unfolded at 280. Pixels: each tile's two sides are the tile (#FFFFFF0A on #171717 ≈ #20),
-        // the gaps and a short row's empty end the canvas.
+        // bookmarks than a row holds share it, a short last row shares the whole width too (Val 26 nov.); 220 / 280 / 360 at
+        // 100 and 125 %, then grid B folded / unfolded at 280. Pixels: each tile's two sides are the tile (#FFFFFF0A on
+        // #171717 ≈ #20), the gaps the canvas; every row, the last one too, ends on the address field's edge.
         std::ofstream fill(std::filesystem::path(out + L"\\grille.txt"));
         auto grid = [&](UINT dpi, float panel, int n, bool open) {
             Chrome c; Check(SUCCEEDED(c.InitOffscreen(root, dpi, 1178, 738)), "offscreen chrome (grid fill)");
@@ -380,19 +380,19 @@ int wmain(int argc, wchar_t** argv) {
             for (int i = 0; ok && i < (int)g.tiles.size(); ++i) {
                 const auto& t = g.tiles[i]; if (t.top >= g.view.bottom) break;
                 const float y = (t.top + t.bottom) / 2; const bool rowEnd = i % g.columns == g.columns - 1 || i + 1 == (int)g.tiles.size();
-                ok = std::abs(grey(t.left + 3, y) - 0x20) <= 2 && std::abs(grey(t.right - 3, y) - 0x20) <= 2 && Near(t.Width(), g.tiles[0].Width());
+                const int first = i / g.columns * g.columns, inRow = std::min(g.columns, (int)g.tiles.size() - first);
+                ok = std::abs(grey(t.left + 3, y) - 0x20) <= 2 && std::abs(grey(t.right - 3, y) - 0x20) <= 2 && Near(t.Width(), (r - l - 6.f * (inRow - 1)) / inRow);
                 if (!rowEnd) ok = ok && std::abs(grey(t.right + 3, y) - 0x17) <= 1;
-                if (i % g.columns == g.columns - 1) ok = ok && Near(t.right, r);                                   // a full row ends on the address' edge
-                else if (i + 1 == (int)g.tiles.size()) ok = ok && std::abs(grey(r - 3, y) - 0x17) <= 1;          // a short last row: the rest is canvas
+                if (rowEnd) ok = ok && Near(t.right, r) && std::abs(grey(r - 3, y) - 0x20) <= 2;                  // every row ends on the address' edge, a short last one too
                 if (i % g.columns == 0) ok = ok && Near(t.left, l);
             }
             char line[200]; std::snprintf(line, sizeof line, "%ls columns %d tile %.2f x %.2f row %.1f .. %.1f address %.1f .. %.1f\n", name, g.columns, g.tiles[0].Width(), g.tiles[0].Height(), g.tiles[0].left, g.tiles[std::min((int)g.tiles.size(), g.columns) - 1].right, l, r);
             fill << line;
-            char what[160]; std::snprintf(what, sizeof what, "grid fill %ls: tiles edge to edge, gaps and a short row's end on the canvas", name);
+            char what[160]; std::snprintf(what, sizeof what, "grid fill %ls: every row edge to edge (the last one too), gaps on the canvas", name);
             Check(ok, what);
             return L;
         };
-        for (UINT dpi : {96u, 120u}) for (float panel : {220.f, 280.f, 360.f}) for (int n : {1, 4, 5, 9}) grid(dpi, panel, n, false);
+        for (UINT dpi : {96u, 120u, 144u}) for (float panel : {220.f, 280.f, 360.f}) for (int n = 1; n <= 12; ++n) grid(dpi, panel, n, false);   // every count 1 .. 12
         const auto folded = grid(96, 280, 20, false), unfolded = grid(96, 280, 20, true);
         Check(!folded.gridOpen && folded.grid.tiles.size() == 10 && !folded.gridToggle.Empty() && unfolded.gridOpen && unfolded.grid.tiles.size() == 20 && !unfolded.manage.Empty() && Near(unfolded.grid.tiles[0].Width(), folded.grid.tiles[0].Width()), "grid B at 280: folded 2 x 5 + « Tous les favoris (20) », unfolded 4 rows of 5 + « Réduire »");
         grid(120, 280, 20, false); grid(120, 280, 20, true);
