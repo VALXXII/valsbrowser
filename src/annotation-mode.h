@@ -901,8 +901,8 @@ void OnFrameHover(const std::shared_ptr<Tab>& t, const AH::Envelope& e) {
     if (e.serial != xo.n) return;   // the leave of an older entry
     xo.on = false; KillTimer(post, XoShowTimer);
     if (!xoCard.Visible()) return;
-    if (e.gone) { XoCardGone(true); return; }   // the page scrolled under a still pointer: the card would stay behind
-    if (!xoCard.PointerInside()) SetTimer(post, XoHideTimer, FC::CardSpec::leaveGraceMs, nullptr);
+    if (e.gone) { XoCardGone(true); Log(L"ANNOTATE frame card hidden (the page scrolled under the pointer)"); return; }   // the card would stay behind
+    if (!xoCard.PointerInside()) { SetTimer(post, XoHideTimer, FC::CardSpec::leaveGraceMs, nullptr); Log(L"ANNOTATE frame hover left: the card goes in 300 ms unless the pointer reaches it"); }
 }
 // The window moved or its layout changed: the card follows its frame, the panel its column.
 void XoReposition() { if (xoCard.Visible()) XoCardPlace(); xoHelp.Reposition(); }
@@ -1082,7 +1082,7 @@ LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == WM_TIMER && w == CtrlTimer) { if (!s.active || !OursInFront()) { CtrlWatch(); return 0; } CtrlArm(PointerOverPage() ? 30 : 200); CtrlPoll(); return 0; }   // R31, PERF-20
     if (m == WM_TIMER && w == FrameTimer) { KillTimer(h, FrameTimer); frame.Hide(); return 0; }
     if (m == WM_TIMER && w == XoShowTimer) { KillTimer(h, XoShowTimer); if (s.active && xo.on) XoCardPlace(); return 0; }   // iframes case 2
-    if (m == WM_TIMER && w == XoHideTimer) { KillTimer(h, XoHideTimer); if (!xo.on && !xoCard.PointerInside()) xoCard.Close(); return 0; }
+    if (m == WM_TIMER && w == XoHideTimer) { KillTimer(h, XoHideTimer); if (!xo.on && !xoCard.PointerInside() && xoCard.Visible()) { xoCard.Close(); Log(L"ANNOTATE frame card hidden (the pointer left the frame and the card)"); } return 0; }
     return DefWindowProcW(h, m, w, l);
 }
 } // namespace Ann

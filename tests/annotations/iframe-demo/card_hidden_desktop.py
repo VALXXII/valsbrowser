@@ -140,9 +140,14 @@ def ws(t):
     if t['id'] not in _ws: _ws[t['id']] = Q.WS(t['webSocketDebuggerUrl'])
     return _ws[t['id']]
 def ev(js):
-    t = page_target(); r = ws(t).call('Runtime.evaluate', {'expression': js, 'returnByValue': True}); return r.get('result', {}).get('value')
+    t = page_target()
+    if not t: return None
+    try:
+        r = ws(t).call('Runtime.evaluate', {'expression': js, 'returnByValue': True, 'awaitPromise': True}); return r.get('result', {}).get('value')
+    except Exception:
+        _ws.pop(t['id'], None); return None
 def move(x, y): ws(page_target()).call('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': x, 'y': y})
-def box(sel): return ev("(function(){var r=document.querySelector(%s).getBoundingClientRect();return [r.left,r.top,r.width,r.height,devicePixelRatio]})()" % json.dumps(sel))
+def box(sel): return ev("(function(){var e=document.querySelector(%s);if(!e||document.readyState!=='complete')return null;var r=e.getBoundingClientRect();return [r.left,r.top,r.width,r.height,devicePixelRatio]})()" % json.dumps(sel))
 def main_hwnd():
     hs = on_desk(lambda: windows_of(proc.dwProcessId, 'LisiereBrowser')) or []; return hs[0] if hs else None
 def page_origin():
@@ -189,12 +194,20 @@ def wait_for(fn, timeout):
 
 try:
     launch()
-    ev("new Promise(r=>{const f=()=>{const p=document.getElementById('pay');document.readyState==='complete'&&p?r(1):setTimeout(f,50)};f()})")
+    # the demo page loaded (its iframes too) BEFORE the mode starts, as a person would see it (the session restore may still
+    # be on the initial empty document when the page target appears)
+    assert wait_for(lambda: box('#pay'), 40), 'the demo page never loaded'
+    time.sleep(0.5)
     u32.PostMessageW(main_hwnd(), 0x8000 + 1, 3060, 0)   # the browser's own Shortcut message: AnnotateCommand (Ctrl+Maj+A)
     check(wait_log(r'ANNOTATE mode on', 20), 'the annotation mode is on (the browser\'s command)')
-    time.sleep(1.0); pump_log()
+    # the chat's warm-up may reload the page once (« mode re-armed after a reload »): measure once it has settled
+    wait_log(r'mode re-armed after a reload', 6); time.sleep(1.0); pump_log()
+    p = wait_for(lambda: box('#pay'), 40)
+    if not p:
+        t = page_target(); say(f'    target {t and t.get("url")}; readyState {ev("document.readyState")}; title {ev("document.title")}; html {ev("document.documentElement&&document.documentElement.outerHTML.slice(0,300)")}; server {len(urllib.request.urlopen(URL, timeout=3).read())} bytes;targets {[x.get("url") for x in targets()]}')
+    assert p, 'the demo page never settled'
     dpi = u32.GetDpiForWindow(main_hwnd()) / 96.0
-    p = box('#pay'); org = page_origin(); k = p[4]
+    org = page_origin(); k = p[4]
     say(f'    #pay {p[:4]} css px, page at {org}, dpr {k}, dpi {dpi}')
     move(p[0] + 120, p[1] + 90); time.sleep(0.05); move(p[0] + 130, p[1] + 100)
     card = wait_for(lambda: shown('BrowserAnnotationFrameCard'), 3)
@@ -207,12 +220,16 @@ try:
         ex = u32.GetWindowLongPtrW(h, -20) if hasattr(u32, 'GetWindowLongPtrW') else u32.GetWindowLongW(h, -20)
         check((ex & 0x08000000) != 0, 'the card never takes the keyboard (WS_EX_NOACTIVATE)', hex(ex))
     check(wait_log(r'frame card shown under the iframe of another site', 2) or any('frame card shown under' in l for l in lines_out), 'the log says « under »')
-    move(40, 20)   # the shop's header: an element of the page
-    gone = wait_for(lambda: shown('BrowserAnnotationFrameCard') is None, 2)
-    check(gone, 'the pointer onto the page: the card goes (after its grace)')
-    s = box('#ship'); move(s[0] + 40, s[1] + 40); time.sleep(0.2); move(s[0] + 60, s[1] + 70); time.sleep(0.6)
-    check(shown('BrowserAnnotationFrameCard') is None, 'over the iframe of the same site: no card')
-    move(p[0] + 100, p[1] + 60); card = wait_for(lambda: shown('BrowserAnnotationFrameCard'), 3)
+    t0 = time.perf_counter(); move(40, 20)   # the shop's header: an element of the page
+    left = wait_log(r'frame hover left: the card goes in 300 ms', 4); t1 = time.perf_counter()
+    hid = wait_log(r'frame card hidden \(the pointer left', 4); t2 = time.perf_counter()
+    gone = wait_for(lambda: shown('BrowserAnnotationFrameCard') is None, 2); t3 = time.perf_counter()
+    check(left and hid and gone, 'the pointer onto the page: the card goes (after its grace)',
+          f'leave seen {"%.0f" % ((t1 - t0) * 1000)} ms, hidden {"%.0f" % ((t2 - t0) * 1000)} ms, window gone {"%.0f" % ((t3 - t0) * 1000)} ms after the move')
+    s = box('#ship'); move(s[0] + 40, s[1] + 40); time.sleep(0.2); move(s[0] + 60, s[1] + 70); time.sleep(0.6); pump_log()
+    check(shown('BrowserAnnotationFrameCard') is None and not any('frame card shown' in l for l in lines_out[-6:]), 'over the iframe of the same site: no card')
+    move(p[0] + 100, p[1] + 60)
+    card = wait_log(r'frame card shown under', 4) and wait_for(lambda: shown('BrowserAnnotationFrameCard'), 2)
     check(bool(card), 'back over the iframe of another site: the card again')
     if card:
         u32.PostMessageW(card[0], 0x8000 + 1, 2, 0)   # « En savoir plus » (the card's Invoke path: its click without the hit test)
@@ -228,7 +245,8 @@ try:
             u32.PostMessageW(help_[0], 0x0100, 0x1B, 0); u32.PostMessageW(help_[0], 0x0101, 0x1B, 0)   # Échap
             check(wait_for(lambda: shown('BrowserAnnotationFrameHelp') is None, 3), 'Échap closes the panel')
             check(wait_log(r'frame help panel closed', 2) or any('frame help panel closed' in l for l in lines_out), 'the log says it closed')
-    move(40, 20); time.sleep(0.6); move(p[0] + 110, p[1] + 70); card = wait_for(lambda: shown('BrowserAnnotationFrameCard'), 3)
+    move(40, 20); wait_for(lambda: shown('BrowserAnnotationFrameCard') is None, 3); move(p[0] + 110, p[1] + 70)
+    card = wait_log(r'frame card shown under', 4) and wait_for(lambda: shown('BrowserAnnotationFrameCard'), 2)
     if check(bool(card), 'the card once more (for « Annoter le cadre »)'):
         u32.PostMessageW(card[0], 0x8000 + 1, 1, 0)   # « Annoter le cadre »
         check(wait_log(r'« select » handled', 5), '« Annoter le cadre »: the iframe is selected (« select » handled)')
