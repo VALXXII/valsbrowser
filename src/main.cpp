@@ -2049,10 +2049,10 @@ void KeepsAtExit(){
     SaveDownloads();
 }
 // After the message loop (the window and the engine's windows in it gone), only when a keep waits for the engine's end:
-// the engine's browser processes, 5 s at most in all. Then per keep (DL::Keep::AtExit): its file removed by the engine at
-// its end is given back from our name, checked ours, handed to Windows' attachment services if the engine never marked
-// it, and our name goes; the engine still up (another window of this profile uses it), or a file it never removed: our
-// name and its note stay, the next start's sweep gives the file back. Never a second name.
+// the engine's browser processes, 5 s at most in all. Then per keep (DL::Keep::AtExit): the engine ended cleanly, its
+// file removed at its end is given back from our name, checked ours, handed to Windows' attachment services if the
+// engine never marked it, and our name goes; the engine still up (another window of this profile uses it) or crashed:
+// our name and its note stay, the next start's sweep gives the file back. Never a second name.
 void KeepsAfterEngine(){
     std::vector<HANDLE> engines;
     for(auto& [id,k]:keepJobs)if(k.atExit&&std::find(engines.begin(),engines.end(),k.engine.get())==engines.end())engines.push_back(k.engine.get());
@@ -2063,9 +2063,11 @@ void KeepsAfterEngine(){
     for(auto& [id,k]:keepJobs){
         if(!k.atExit)continue;
         const auto name=DL::FileName(k.path);
+        DWORD code=STILL_ACTIVE;const bool clean=ended&&GetExitCodeProcess(k.engine.get(),&code)&&code==0;
+        if(ended&&!clean)Log(L"DOWNLOAD keep at exit: the engine ended with code "+std::to_wstring((unsigned long)code)+L", not a clean shutdown");
         const auto at=KeepPathState(k.path);
         const bool stub=at==DL::Keep::At::Left&&DL::Keep::EngineStub(KeptDownloads::SizeOf(k.path),KeptDownloads::SizeOf(k.backup))&&!KeptDownloads::SameFileId(k.path,k.backup);
-        auto next=DL::Keep::AtExit(ended,at,stub,k.seen);
+        auto next=DL::Keep::AtExit(clean,at,stub);
         if(next==DL::Keep::Exit::GiveBackThenSettle){
             if(stub&&!DeleteFileW(k.path.c_str()))next=DL::Keep::Exit::NextStart;
             else if(!PutKeptFileBack(k.backup,k.path))next=DL::Keep::Exit::NextStart;
@@ -2073,7 +2075,7 @@ void KeepsAfterEngine(){
         }
         if(next!=DL::Keep::Exit::NextStart&&!KeptFileIsOurs(k.path,k.backup))next=DL::Keep::Exit::NextStart;
         if(next==DL::Keep::Exit::NextStart){
-            Log(std::wstring(L"DOWNLOAD keep at exit: ")+(!ended?L"the engine still runs":at==DL::Keep::At::Left&&!k.seen?L"the engine ended without removing the file":L"the file could not be given back")+L", our name stays in the profile's folder until the next start: "+name);
+            Log(std::wstring(L"DOWNLOAD keep at exit: ")+(!ended?L"the engine still runs":!clean?L"the engine did not end cleanly":L"the file could not be given back")+L", our name stays in the profile's folder until the next start: "+name);
             continue;
         }
         k.at=k.path;

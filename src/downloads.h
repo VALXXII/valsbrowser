@@ -168,16 +168,17 @@ inline Next Look(bool seen, At at, std::int64_t sinceGivenMs, std::int64_t guard
 }
 inline int LookAfterMs(int looks) { return looks < 600 ? StepMs : 1000; }   // once a second after the first minute
 // At exit (src/main.cpp KeepsAfterEngine), a keep whose removal by the engine may still come waits for the end of the
-// engine's browser process, ExitWaitMs at most and only then (an ordinary exit never waits). Once it ended nothing
-// removes the file any more: a file it removed at its end (or an empty file it left) is given back from our name, then
-// settled; a file it never removed may still be cleaned by its next start, so our name stays for the next start's sweep,
-// as when the engine is still up (another window of this profile uses it) or the path cannot be read.
+// engine's browser process, ExitWaitMs at most and only then (an ordinary exit never waits). endedCleanly: it exited
+// with code 0, its shutdown cancelled what it still held (measured: it removes such a file at its end, and a cancelled
+// download is never cleaned by its next start). Then nothing removes the file any more: a file it removed (or an empty
+// file it left) is given back from our name, and the keep is settled. The engine still up (another window of this
+// profile uses it), ended otherwise (a crash: its next start cleans its unfinished downloads, measured ~1 s after its
+// start) or a path that cannot be read: our name stays for the next start's sweep, which gives the file back and watches.
 inline constexpr unsigned long ExitWaitMs = 5000;
 enum class Exit { Settle, GiveBackThenSettle, NextStart };
-inline Exit AtExit(bool engineEnded, At at, bool engineStub, bool removalSeen) {
-    if (!engineEnded || at == At::Pending) return Exit::NextStart;
-    if (at == At::Gone || engineStub) return Exit::GiveBackThenSettle;
-    return removalSeen ? Exit::Settle : Exit::NextStart;
+inline Exit AtExit(bool endedCleanly, At at, bool engineStub) {
+    if (!endedCleanly || at == At::Pending) return Exit::NextStart;
+    return at == At::Gone || engineStub ? Exit::GiveBackThenSettle : Exit::Settle;
 }
 // An empty file at the path that is not ours while our bytes are not empty: what the engine leaves after a cancel during
 // its own pass (measured: removal, then a 0-byte file written at the path within 140 ms, left there). The kept file takes

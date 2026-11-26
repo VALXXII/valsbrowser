@@ -564,6 +564,8 @@ def main() -> int:
             row_now = dn.wait(lambda: row_of(b, target.name) if row_of(b, target.name).startswith('C\t') else '', 10) or row_of(b, target.name)   # read again: the history file is rewritten atomically
             settled = dn.wait(lambda: any(s in b.log()[mark:] for s in ('DOWNLOAD kept file handed to attachment services', 'attachment services refused',
                                                                        "marked and checked by the engine's own pass")), 150) if not reader_ms else False
+            if settled:   # the settle line is logged just before our name is dropped
+                dn.wait(lambda: not ours(), 5)
             if reader_ms:   # the engine's removal failed: never seen, the file stays at its path and our name holds the bytes until exit
                 dn.wait(lambda: 'DOWNLOAD keep: the engine is let go' in b.log()[mark:], 40)   # no zone mark while the reader holds it: the cap
                 time.sleep(8)
