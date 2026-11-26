@@ -633,10 +633,11 @@ public:
     }
     void Color(float c,float alpha=1){brush->SetColor(D2D1::ColorF(c,c,c,alpha));}
     // Docked drawers (NativeUI::KeyedDrawer): the strip a sliding drawer has not entered yet, [0, lead) DIP, in the
-    // colour its layered window keys out. Aliased and pixel-exact (lead is a whole number of pixels).
-    void KeyOut(float lead){if(lead<=0||!target||!brush)return;D2D1_MATRIX_3X2_F m;target->GetTransform(&m);target->SetTransform(D2D1::Matrix3x2F::Identity());
+    // colour its layered window keys out. Aliased and pixel-exact (lead is a whole number of pixels). `fromRight` (#143,
+    // a drawer docked on the left, entering from its left edge): the strip [width - lead, width) instead.
+    void KeyOut(float lead,bool fromRight=false){if(lead<=0||!target||!brush)return;D2D1_MATRIX_3X2_F m;target->GetTransform(&m);target->SetTransform(D2D1::Matrix3x2F::Identity());
         const auto mode=target->GetAntialiasMode();target->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);brush->SetColor(D2D1::ColorF(1,0,1,1));
-        target->FillRectangle(D2D1::RectF(0,0,lead,target->GetSize().height+1),brush);target->SetAntialiasMode(mode);target->SetTransform(m);}
+        const float w=target->GetSize().width;target->FillRectangle(fromRight?D2D1::RectF(w-lead,0,w+1,target->GetSize().height+1):D2D1::RectF(0,0,lead,target->GetSize().height+1),brush);target->SetAntialiasMode(mode);target->SetTransform(m);}
     // The same key colour over a GDI region (target pixels), rectangle by rectangle, aliased: the keyed-out silhouette is
     // exactly the region's, pixel for pixel (the downloads drawer's morph: what its growing shape does not cover yet).
     void KeyOutRegion(HRGN region){if(!region||!target||!brush)return;const DWORD size=GetRegionData(region,0,nullptr);if(size<sizeof(RGNDATAHEADER))return;
@@ -1195,11 +1196,12 @@ public:
     // folds to two rows with « Tous les favoris (N) », unfolds to five rows then scrolls; the compact one keeps four and
     // « » », which opens every bookmark in a popover at its right. Host state: unfolded, both scrolls, the popover.
     bool sidebarGridOpen=false,sidebarPopover=false;float sidebarGridScroll=0,sidebarPopoverScroll=0;float sidebarReserve=0;
+    float sidebarDockAt=-1;   // #143: the host's drawer dock off the column's edge (Sidebar::Input::dockAt), -1 none
     Sidebar::PopoverLayout sidePop;
     static constexpr int SidebarGridToggleId=908,SidebarMoreId='O',SidebarManageId=910;   // 910: « Gérer les favoris » (grid or popover foot)   // « » » keeps the band overflow's id (its tile, its keyboard stop)
     Sidebar::Input SideInput(Sidebar::Mode m,int count,float zoneLeft=-1,bool compactZone=false)const{Sidebar::Input in;in.mode=m;in.zoneLeft=zoneLeft;in.width=width;in.height=height;
         if(compactZone){in.zoneSet=true;in.zoneMode=Sidebar::Mode::Compact;}
-        in.grid=bandShown;in.bookmarks=(int)bandItems.size();in.gridOpen=sidebarGridOpen;in.gridScroll=sidebarGridScroll;in.tabs=count;in.tools=(int)std::max<size_t>(1,sideTools.size());in.scroll=sidebarScroll;in.band=annotationBand;in.reserve=sidebarReserve;in.hidden=sideHidden;in.top=sideHidden?std::max(0.f,annotationBand):0.f;in.panel=sidebarWidth;in.groups=tabGroups;return in;}
+        in.grid=bandShown;in.bookmarks=(int)bandItems.size();in.gridOpen=sidebarGridOpen;in.gridScroll=sidebarGridScroll;in.tabs=count;in.tools=(int)std::max<size_t>(1,sideTools.size());in.scroll=sidebarScroll;in.band=annotationBand;in.reserve=sidebarReserve;in.dockAt=sidebarDockAt;in.hidden=sideHidden;in.top=sideHidden?std::max(0.f,annotationBand):0.f;in.panel=sidebarWidth;in.groups=tabGroups;return in;}
     // Visible bookmark tiles of the column (index i = bandItems[i]): complete, the grid's at its scroll; compact, the first
     // four (five when they all fit).
     int SideBookmarkTiles(const Sidebar::Layout& L)const{if(L.emptyGrid)return 0;if(L.mode==Sidebar::Mode::Complete)return (int)L.grid.tiles.size();return L.more?(int)L.tiles.size()-1:(int)L.tiles.size();}

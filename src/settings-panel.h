@@ -1494,20 +1494,21 @@ private:
         if (t < .001f || lo == hi) PaintView(lo, 0, 1, now);
         else { PaintView(lo, -.3f * Layout::width * t, 1 - .5f * t, now); PaintView(hi, Layout::width * (1 - t), 1, now); }
         target->PopAxisAlignedClip();
-        // Leading edge: one physical pixel, a touch lighter than the canvas (as the download drawer).
-        const float px = target->GetSize().width / std::max(1.f, static_cast<float>(target->GetPixelSize().width));
-        pc_->Color(1, .02f); target->FillRectangle(D2D1::RectF(0, 0, px, h), brush);
+        // Leading edge: one physical pixel, a touch lighter than the canvas (as the download drawer), on the page's side
+        // (#143: the right edge when docked on the left).
+        const float px = target->GetSize().width / std::max(1.f, static_cast<float>(target->GetPixelSize().width)), edge = left_ ? target->GetSize().width - px : 0.f;
+        pc_->Color(1, .02f); target->FillRectangle(D2D1::RectF(edge, 0, edge + px, h), brush);
     }
     void PaintNow() {
         if (!pc_->RenderTarget()) pc_->Resize();
         auto* target = pc_->RenderTarget(); if (!target) return;
-        target->BeginDraw(); target->SetTransform(D2D1::Matrix3x2F::Translation(LeadDip(), 0)); Paint(Motion::Now()); target->SetTransform(D2D1::Matrix3x2F::Identity()); chrome_.KeyOut(LeadDip()); KeyCorners();
+        target->BeginDraw(); target->SetTransform(D2D1::Matrix3x2F::Translation(OffsetDip(), 0)); Paint(Motion::Now()); target->SetTransform(D2D1::Matrix3x2F::Identity()); chrome_.KeyOut(LeadDip(), left_); KeyCorners();
         if (target->EndDraw() == D2DERR_RECREATE_TARGET) { Drop(fade_); Drop(stops_); DropCard(); pc_->RecreateTarget(); }
     }
 
     // ---- Input -----------------------------------------------------------------
     int HitAt(float x, float y) const {
-        x -= LeadDip();   // window DIP -> content DIP while it slides
+        x -= OffsetDip();   // window DIP -> content DIP while it slides
         const View view = Current(); const float h = Height();
         auto in = [x, y](Design::Box b) { return x >= b.left && x < b.right && y >= b.top && y < b.bottom; };
         if (page_.Moving(Motion::Now())) return None;
@@ -2131,7 +2132,8 @@ private:
             const bool shown = !page_.Moving(now) && top >= s.clipTop - .5f && bottom <= s.clipBottom + .5f &&
                                top >= Layout::viewTop - Layout::groupGap / 2 && bottom <= ViewBottom(Current());
             const bool search = editing_ == SearchField;
-            const RECT r{lead_ + Px(search ? SearchTextLeft() : Layout::textLeft), Px(top), lead_ + Px(search ? ClearBox(s.top).left - 4 : Layout::rowRight - 8), Px(bottom)};
+            const int slide = NativeUI::DrawerSlideOffset(lead_, left_);   // the content's place while it slides (#143: leftward when docked left)
+            const RECT r{slide + Px(search ? SearchTextLeft() : Layout::textLeft), Px(top), slide + Px(search ? ClearBox(s.top).left - 4 : Layout::rowRight - 8), Px(bottom)};
             if (EqualRect(&r, &editRect_) && shown == editShown_) return; // moving it repaints: only when it changes
             editRect_ = r; editShown_ = shown;
             SetWindowPos(edit_, nullptr, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE | (shown ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
@@ -2192,25 +2194,26 @@ private:
 
     // ---- Window ----------------------------------------------------------------
     RECT OwnerClient() const { RECT r{}; GetClientRect(owner_, &r); MapWindowPoints(owner_, nullptr, reinterpret_cast<POINT*>(&r), 2); return r; }
-    // The 332 DIP column docked to the owner's right edge under the toolbar. The
-    // window never moves while sliding (NativeUI::KeyedDrawer): a slide step is one
-    // present, the content drawn `lead_` pixels right of its place and the strip it
-    // has not entered keyed out. The region rounds the corner shared with the owner
-    // (empty while nothing has entered). Returns true when it painted.
+    // The 332 DIP column docked on the tab panel's side under the toolbar (#143: the owner's right edge in the top bar, the
+    // side panel's right edge in its layouts). The window never moves while sliding (NativeUI::KeyedDrawer): a slide step
+    // is one present, the content drawn `lead_` pixels toward its entering edge and the strip it has not entered keyed
+    // out. The region rounds the corner shared with the owner (empty while nothing has entered). Returns true when it painted.
     bool ApplyGeometry(Motion::Time now, bool force = false) {
         if (!hwnd_) return false;
+        namespace DL = Downloads::DrawerLayout;
         const RECT owner = OwnerClient();
-        const int column = OwnerPx(Layout::width), top = owner.top + OwnerPx(Downloads::DrawerLayout::liveTop), height = std::max(1, static_cast<int>(owner.bottom - OwnerPx(Downloads::DrawerLayout::liveBottom) - top));
+        const int column = OwnerPx(Layout::width), top = owner.top + OwnerPx(DL::liveTop), height = std::max(1, static_cast<int>(owner.bottom - OwnerPx(DL::liveBottom) - top));
         const int shown = static_cast<int>(std::lround(column * Motion::Clamp(slide_.Value(now))));
-        const int inset = OwnerPx(Downloads::DrawerLayout::liveRight); const RECT window{owner.right - inset - column, top, owner.right - inset, top + height};   // Mode Focus: the floating panel's right edge (0 otherwise)
-        const float radius = Downloads::DrawerLayout::liveRadius * GetDpiForWindow(owner_) / 96.f;   // Mode Focus: round top corners (src/drawer-corners.h)
-        const bool restyled = !EqualRect(&window, &appliedWindow_) || radius != corners_.Radius();
+        const bool left = DL::liveLeft; const int inset = left ? 0 : OwnerPx(DL::liveRight), dock = left ? OwnerPx(DL::liveDock) : 0;   // Mode Focus: the floating panel's right edge (0 otherwise)
+        const RECT window = NativeUI::DockedDrawerRect(owner, column, top, height, left, dock, inset);
+        const float radius = left ? 0.f : DL::liveRadius * GetDpiForWindow(owner_) / 96.f;   // Mode Focus: round top corners (src/drawer-corners.h; the top bar's floating panel only)
+        const bool restyled = !EqualRect(&window, &appliedWindow_) || radius != corners_.Radius() || left != left_;
         if (!force && !restyled && shown == appliedVisible_ && EqualRect(&owner, &appliedOwner_)) return false;
-        const bool resized = !EqualRect(&owner, &appliedOwner_) || !EqualRect(&window, &appliedWindow_), slid = shown != appliedVisible_;
-        appliedVisible_ = shown; appliedOwner_ = owner; lead_ = column - shown; corners_.SetRadius(radius);
+        const bool resized = !EqualRect(&owner, &appliedOwner_) || !EqualRect(&window, &appliedWindow_) || left != left_, slid = shown != appliedVisible_;
+        appliedVisible_ = shown; appliedOwner_ = owner; lead_ = column - shown; left_ = left; corners_.SetRadius(radius);
         if (force || !EqualRect(&window, &appliedWindow_)) { SetWindowPos(hwnd_, nullptr, window.left, window.top, column, height, SWP_NOACTIVATE | SWP_NOZORDER); appliedWindow_ = window; }
         const int entered = shown > 0;
-        if (force || resized || entered != appliedEntered_) { SetWindowRgn(hwnd_, NativeUI::DrawerRegion(entered, column, height, OwnerPx(20), IsZoomed(owner_) || inset > 0), FALSE); appliedEntered_ = entered; }   // Mode Focus: off the window's corner, square
+        if (force || resized || entered != appliedEntered_) { SetWindowRgn(hwnd_, NativeUI::DrawerRegion(entered, column, height, OwnerPx(20), IsZoomed(owner_) || !NativeUI::DrawerOnWindowCorner(left, dock, inset, DL::Side::roundAgainstPanel), left), FALSE); appliedEntered_ = entered; }   // Mode Focus / against the panel: off the window's corner, square
         if (lead_ > 0) corners_.HideLeading();   // Mode Focus: it moves with the content: back at rest
         if (restyled && !force) InvalidateRect(hwnd_, nullptr, FALSE);   // the corners keyed out (or no longer) by the next paint
         if (resized) { for (int d = 0; d <= depth_; ++d) scrolls_[d].Snap(std::clamp(scrolls_[d].Target(), 0.f, MaxScroll(views_[d], now, true))); RefreshTips(); Invalidate(); }
@@ -2218,12 +2221,16 @@ private:
         PaintNow(); ValidateRect(hwnd_, nullptr); SyncCorners();
         return true;
     }
-    // Slide offset in DIP (content drawn right of its docked place while it enters or leaves).
+    // Slide distance in DIP (how far the content is from its docked place while it enters or leaves).
     float LeadDip() const { return lead_ * 96.f / std::max(1.f, Dpi()); }
+    // The content's offset in DIP: right of its place docked on the right, left of it docked on the left (#143).
+    float OffsetDip() const { return NativeUI::DrawerSlideOffset(lead_, left_) * 96.f / std::max(1.f, Dpi()); }
     // Mode Focus: the antialiased top corners as presented (src/drawer-corners.h): the trailing one whenever the column is
     // in, the leading one at rest only (it moves with the content while sliding). KeyCorners: the paint's part of them.
-    void SyncCorners() { if (!visible_ || appliedVisible_ <= 0 || !IsWindowVisible(hwnd_)) { corners_.Hide(); return; } const float c = Design::Surface::canvas; corners_.Place(hwnd_, appliedWindow_, lead_, appliedWindow_.right - appliedWindow_.left, c + (1 - c) * .02f, c, lead_ == 0); }
-    void KeyCorners() { if (corners_.Radius() <= 0) return; HRGN cut = corners_.CutRegion(lead_, appliedWindow_.right - appliedWindow_.left); chrome_.KeyOutRegion(cut); DeleteObject(cut); }
+    // Docked on the left the radius is 0 (they belong to the top bar's floating panel): nothing shown, nothing keyed.
+    void SyncCorners() { if (!visible_ || appliedVisible_ <= 0 || !IsWindowVisible(hwnd_)) { corners_.Hide(); return; } int from = 0, to = 0; NativeUI::DrawerContentColumn(lead_, appliedWindow_.right - appliedWindow_.left, left_, from, to); const float c = Design::Surface::canvas; corners_.Place(hwnd_, appliedWindow_, from, to, c + (1 - c) * .02f, c, lead_ == 0); }
+    void KeyCorners() { if (corners_.Radius() <= 0) return; int from = 0, to = 0; NativeUI::DrawerContentColumn(lead_, appliedWindow_.right - appliedWindow_.left, left_, from, to); HRGN cut = corners_.CutRegion(from, to); chrome_.KeyOutRegion(cut); DeleteObject(cut); }
+    bool left_ = false;   // #143: docked on the left (the side panel's layouts), as last placed by ApplyGeometry
     void Finish() {
         closing_ = false; visible_ = false; appliedVisible_ = -1; appliedWindow_ = {};
         corners_.Hide(); ShowWindow(hwnd_, SW_HIDE);
@@ -2327,7 +2334,7 @@ public:
     // « Annotations » tests: the laid-out rows, the Tab order, hit testing, the UIA tree, the agents.
     std::vector<Slot> SlotsForTest() const { return Slots(Current(), Motion::Now(), true); }
     std::vector<int> FocusOrderForTest() const { return FocusOrder(); }
-    int HitForTest(float x, float y) const { return HitAt(x + LeadDip(), y); }   // content DIP (layout boxes), wherever the slide is
+    int HitForTest(float x, float y) const { return HitAt(x + OffsetDip(), y); }   // content DIP (layout boxes), wherever the slide is
     int FocusForTest() const { return focus_; }
     void KeyForTest(WPARAM key) { if (hwnd_) Handle(hwnd_, WM_KEYDOWN, key, 0); }
     std::vector<Accessibility::Node> AccessibleNodesForTest() const { return UiaNodes(); }

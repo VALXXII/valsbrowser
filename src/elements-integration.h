@@ -2167,23 +2167,46 @@ NativeChrome::Tooltip::Content TipContent(const wchar_t* tip){
             if(key.rfind(L"Ctrl",0)==0||key.rfind(L"Alt",0)==0||key.rfind(L"Maj",0)==0||key.rfind(L"Shift",0)==0||(key.size()>=2&&key[0]==L'F'&&iswdigit(key[1]))){c.label=s.substr(0,open);c.shortcut=key;}}}
     return c;
 }
+// #143 (owner's capture 2026-11-25: « Téléchargements » over its open popover): a button whose menu, popover or drawer is
+// open keeps its tooltip hidden, and after it closes until the pointer has left the button (Tooltip::MenuMute). Every
+// toolbar / column button with a menu: Téléchargements, Son, Réglages, Historique (chrome.latched), a band folder and « » »
+// (bandOpen), the profile menu, the compact column's « » » popover, « Gérer les favoris » (the Favoris drawer), the star /
+// « add this page » (the bookmark popover). « Annoter »'s card blocks every tip already (ChromeTipBlock).
+NativeChrome::Tooltip::MenuMute chromeTipMute;
+bool ChromeTipMenuOpen(int id){
+    if(!id)return false;
+    if(id==chrome.latched||id==chrome.bandOpen)return true;
+    if(id==900&&chrome.profileButton.open)return true;   // the profile button (Chrome region 900)
+    if(id==NativeChrome::Chrome::SidebarMoreId&&chrome.sidebarPopover)return true;
+    if(id==NativeChrome::Chrome::SidebarManageId&&bookmarksDrawer.Open())return true;
+    if((id=='K'||id=='E')&&bookmarkPopover.Visible())return true;
+    return false;
+}
+// A menu may have opened (every InvalidateChrome): a new one mutes its button and the tip showing (or due) goes at once.
+void ChromeTipMenuSync(){if(!chromeTip.Window())return;int open=0;for(auto& r:chrome.regions)if(r.tip&&*r.tip&&ChromeTipMenuOpen(r.id)){open=r.id;break;}if(chromeTipMute.Opened(open))chromeTip.HideNow();}
 void ChromeTipHover(int x,int y){
     if(!chromeTip.Window())return;
     const float d=GetDpiForWindow(window)/96.f;float fx=x/d,fy=y/d;
-    if(!chrome.Local(fx,fy)){chromeTip.Hide();return;}   // Mode Focus: only over the floating panel's visible part
-    if(chrome.Hit(fx,fy)==NativeChrome::Chrome::SidebarEdgeId){chromeTip.Hide();return;}   // #127: the column edge shows the ↔ cursor, no tooltip (Paper)
+    if(!chrome.Local(fx,fy)){chromeTipMute.Muted(0,ChromeTipMenuOpen(chromeTipMute.id));chromeTip.Hide();return;}   // Mode Focus: only over the floating panel's visible part
+    if(chrome.Hit(fx,fy)==NativeChrome::Chrome::SidebarEdgeId){chromeTipMute.Muted(NativeChrome::Chrome::SidebarEdgeId,ChromeTipMenuOpen(chromeTipMute.id));chromeTip.Hide();return;}   // #127: the column edge shows the ↔ cursor, no tooltip (Paper)
+    ChromeTipMenuSync();
     for(auto& r:chrome.regions){
         if(!r.tip||!*r.tip||fx<r.rect.left||fx>=r.rect.right||fy<r.rect.top||fy>=r.rect.bottom)continue;
+        if(chromeTipMute.Muted(r.id,ChromeTipMenuOpen(chromeTipMute.id))){chromeTip.Hide();return;}   // #143: over its own open menu
         RECT target=ChromePx(r.rect);MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&target),2);
         RECT bounds=NativeChrome::TooltipPlacement::VisibleRect(window);chromeTip.Hover(TipContent(r.tip),target,&bounds);return;
     }
+    chromeTipMute.Muted(0,ChromeTipMenuOpen(chromeTipMute.id));   // off every button: a closed menu's mute ends
     chromeTip.Hide();
 }
 void ChromeTipHide(){if(chromeTip.Window())chromeTip.Hide();}
+// The pointer left the window (into a popover, a drawer, another window): it has left the muted button too (#143).
+void ChromeTipLeft(){chromeTipMute.Muted(0,ChromeTipMenuOpen(chromeTipMute.id));ChromeTipHide();}
 // #127 compact column (Val, 24 nov.): the icons carry their names as tooltips, so the keyboard focus shows the focused
 // control's tooltip too (a tab's title, a bookmark's, a tool's); anywhere else it just hides the pointer's.
 void ChromeTipFocus(int id){
     if(!chromeTip.Window())return;
+    ChromeTipMenuSync();if(chromeTipMute.Muted(id,ChromeTipMenuOpen(chromeTipMute.id))){chromeTip.HideNow();return;}   // #143: never over the menu it opened (until the focus leaves it)
     if(id&&chrome.sidebar&&!chrome.sidebarOverlay&&chrome.side.mode==NativeChrome::Sidebar::Mode::Compact)
         for(auto& r:chrome.regions){if(r.id!=id||!r.tip||!*r.tip)continue;
             RECT target{S(r.rect.left),S(r.rect.top),S(r.rect.right),S(r.rect.bottom)};MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&target),2);

@@ -33,10 +33,18 @@ int main() {
         Check(Same(S::CloseIn(L.tabs[1]), 212, 191, 236, 215) && Same(S::FaviconIn(L.tabs[0], S::Mode::Complete), 16, 161, 32, 177), "row close and favicon");
         Check(S::RowAt(L, 20, 160) == 0 && S::RowAt(L, 20, 330) == 5 && S::RowAt(L, 20, 186) == -1, "rows hit-test");
     }
-    // An open drawer (Val, B): the page stops 4 before the drawer's column.
+    // An open drawer (#143, owner 2026-11-25): on the panel's side, docked against the column, the page starts 4 after it.
     {
-        auto in = Complete(5); in.reserve = 268; const auto L = S::Compute(in);
-        Check(Same(L.page, 248, 40, 906, 734), "drawer open: the page ends 4 before it (07 1QLM-0)");
+        auto in = Complete(5); in.reserve = 268; auto L = S::Compute(in);
+        Check(Near(L.drawerDock, 248) && Same(L.page, 520, 40, 1174, 734), "drawer open: docked at 248 against the column, the page starts 4 after it");
+        in.reserveLeft = false; L = S::Compute(in);
+        Check(Same(L.page, 248, 40, 906, 734), "drawer open on the right (a panel on the right): the page ends 4 before it (07 1QLM-0)");
+        in = Compact(5); in.reserve = 268; L = S::Compute(in);
+        Check(Near(L.drawerDock, 40) && Near(L.page.left, 40 + 268 + 4), "compact: docked at 40, the page from 312");
+        in = Complete(5); in.panel = 300; in.reserve = 332; L = S::Compute(in);
+        Check(Near(L.drawerDock, 300) && Near(L.page.left, 636), "a 300 wide column: Réglages (332) docked at 300, the page from 636");
+        in.dockAt = 0; L = S::Compute(in);
+        Check(Near(L.drawerDock, 0) && Near(L.page.left, 336), "the host's dock (other choices): at the window's edge, the page after it");
     }
     // ---- Grid B.
     {   // 10: two rows of 5, nothing hidden, no toggle row (« Favoris · 10 »).
@@ -325,7 +333,9 @@ int main() {
         Check(Same(L.band, 4, 0, 1176, 32) && Same(L.page, 4, 32, 1176, 736) && Near(L.bar, 0) && Near(L.drawerTop, 32), "Focus + annotation: the banner across the top, the page under it (2091-0)");
         Check(Near(L.top, 32) && Same(L.profile, 8, 40, 40, 72) && Same(L.address, 8, 82, 240, 114) && Same(L.tabs[0], 8, 135, 240, 167) && Near(L.tools[0].bottom, 732) && Near(L.footerLine.top, 691), "Focus + annotation: the column under the banner, its foot at the bottom");
         in.reserve = 320; L = S::Compute(in);
-        Check(Same(L.page, 4, 32, 856, 736), "Focus: a drawer open, the page stops 4 before it");
+        Check(Near(L.drawerDock, 249) && Same(L.page, 573, 32, 1176, 736), "Focus: a drawer open docks after the shown column's 1 DIP border (249), the page starts 4 after it");
+        in.reserveLeft = false; L = S::Compute(in); in.reserveLeft = true;
+        Check(Same(L.page, 4, 32, 856, 736), "Focus, a drawer on the right: the page stops 4 before it");
         in.reserve = 0; in.mode = S::Mode::Compact; L = S::Compute(in);
         { S::Input d = in; d.hidden = false; d.top = 0; d.band = 0; const auto D = S::Compute(d);
           Check(Near(L.column, 40) && Same(L.page, 4, 32, 1176, 736) && Near(L.profile.top, D.profile.top + 32) && Near(L.tabs[0].top, D.tabs[0].top + 32), "Focus compact: the 40 column under the banner (20EJ-0)"); }

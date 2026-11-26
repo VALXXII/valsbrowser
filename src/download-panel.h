@@ -72,6 +72,7 @@ struct Scene {
     float fadeTop = 0, fadeBottom = 0; // scroll edge effects (drawer)
     float fadeTopSize = DrawerLayout::topFade;
     bool edge = false;                 // drawer: hairline on its leading edge
+    float edgeRight = -1;              // #143, docked on the left: the column's right edge (content DIP), the hairline left of it
     float originX = 0, originY = 0;    // where the 268 DIP column sits in the window (drawer morph)
     float edgeOpacity = 1;
     // Drawer morph: the popover's hairline border, carried by the drawer and
@@ -485,7 +486,8 @@ public:
         }
         if (scene.edge && scene.edgeOpacity > 0) { // one physical pixel, a touch lighter than the canvas
             const float px = target->GetSize().width / std::max(1.f, static_cast<float>(target->GetPixelSize().width));
-            chrome_.Color(1, Popup::border * scene.edgeOpacity); target->FillRectangle(D2D1::RectF(0, 0, px, height), brush);
+            const float x = scene.edgeRight >= 0 ? scene.edgeRight - px : 0.f;   // the page's side
+            chrome_.Color(1, Popup::border * scene.edgeOpacity); target->FillRectangle(D2D1::RectF(x, 0, x + px, height), brush);
         }
         target->SetTransform(D2D1::IdentityMatrix());
     }
@@ -939,6 +941,14 @@ inline std::vector<Slot> MorphSlots(const std::vector<Item>& items, const std::v
 // Painting first and growing the region after left, every frame, the strip just
 // added holding what the window showed there before (black on a new surface,
 // earlier drawer pixels) until the next frame painted it; DWM showed it in between.
+// #143: « Tout afficher » morphs the popover into the drawer only when the popover lies over the drawer's window (`local`:
+// its rectangle in that window's pixels, `width` the window's): at least 90 % of its width inside. Elsewhere (the side
+// panel's complete column, whose popover sits over the column; the top-right one in side Focus) the drawer slides in.
+inline bool MorphFits(const RECT& local, LONG width) {
+    const LONG w = local.right - local.left; if (w <= 0 || width <= 0) return false;
+    const LONG inside = std::min(local.right, width) - std::max(local.left, 0L);
+    return inside * 10 >= w * 9;
+}
 class Drawer final : public Host {
     Lane slide_, scroll_, morph_;
     std::array<Lane, PeriodCount> fold_;
@@ -970,14 +980,17 @@ class Drawer final : public Host {
     }
     float Scale() const { return 96.f / Dpi(); }
     // The 268 DIP column: at the popover's place when the morph starts, docked after
-    // (and `lead_` further right while it slides, see ApplyGeometry).
+    // (and `lead_` further toward its entering edge while it slides, see ApplyGeometry).
+    // #143, docked on the left: the column is the window's left part [0, column), the
+    // margin strip its right one, and the slide enters from the left.
     D2D1_POINT_2F Origin(Motion::Time now) const override {
-        const float t = Morph(now), docked = DrawerLayout::margin + lead_ * Scale();
+        const float t = Morph(now), docked = left_ ? -lead_ * Scale() : DrawerLayout::margin + lead_ * Scale();
         return {(morphFrom_.left * Scale()) + (docked - morphFrom_.left * Scale()) * t, morphFrom_.top * Scale() * (1 - t)};
     }
     void Decorate(Scene& scene) const override {
         const float t = Morph(scene.now);
         scene.viewTop = DrawerLayout::viewTop; scene.edge = true; scene.edgeOpacity = t;
+        scene.edgeRight = left_ ? OwnerPx(DrawerLayout::width) * Scale() : -1.f;   // #143: the hairline on the page's side
         const float popoverBottom = (morphFrom_.bottom - morphFrom_.top) * Scale() - Panel::padding / 2;
         scene.viewBottom = SurfaceHeight() + (std::min(popoverBottom, SurfaceHeight()) - SurfaceHeight()) * (1 - t);
         const float scroll = scroll_.Value(scene.now), max = MaxScroll(scene.now, false);
@@ -986,9 +999,10 @@ class Drawer final : public Host {
         if (t < 1) {
             // The popover's border rides the growing shape and fades as it docks.
             const float s = Scale(), w = (DrawerLayout::width + DrawerLayout::margin);
+            const float dockLeft = left_ ? 0.f : DrawerLayout::margin, dockRight = left_ ? DrawerLayout::width : w;   // #143: mirrored
             auto lerp = [t](float a, float b) { return a + (b - a) * t; };
-            scene.frame = {lerp(morphFrom_.left * s, DrawerLayout::margin) - scene.originX, lerp(morphFrom_.top * s, 0) - scene.originY,
-                           lerp(morphFrom_.right * s, w) - scene.originX, lerp(morphFrom_.bottom * s, SurfaceHeight()) - scene.originY};
+            scene.frame = {lerp(morphFrom_.left * s, dockLeft) - scene.originX, lerp(morphFrom_.top * s, 0) - scene.originY,
+                           lerp(morphFrom_.right * s, dockRight) - scene.originX, lerp(morphFrom_.bottom * s, SurfaceHeight()) - scene.originY};
             scene.frameRadius = morphRadius_ * s * (1 - t); scene.frameOpacity = 1 - t;
             // Content meets the moving edge through a fade, never a hard cut.
             const float edge = 4 * t * (1 - t);
@@ -1011,12 +1025,18 @@ class Drawer final : public Host {
     int OwnerPx(float dip) const { return static_cast<int>(std::lround(dip * GetDpiForWindow(owner_) / 96.f)); }
     float SurfaceHeight() const override { return ClientHeight(); }
     // The popover's rectangle (rounded like DWM's popup corners) growing into the
-    // docked column [margin, width], in window pixels: a GDI region, so its corner is
-    // the 1-bit one the popover's own region has.
-    HRGN MorphShape(float t, int margin, int width, int height) const {
+    // docked column [dockLeft, dockRight) ([margin, width) on the right, [0, column)
+    // docked left), in window pixels: a GDI region, so its corner is the 1-bit one
+    // the popover's own region has.
+    HRGN MorphShape(float t, int dockLeft, int dockRight, int height) const {
         auto lerp = [t](LONG a, int b) { return static_cast<int>(std::lround(a + (b - a) * t)); };
         const int radius = static_cast<int>(std::lround(morphRadius_ * (1 - t))) * 2 + 1;
-        return CreateRoundRectRgn(lerp(morphFrom_.left, margin), lerp(morphFrom_.top, 0), lerp(morphFrom_.right, width) + 1, lerp(morphFrom_.bottom, height) + 1, radius, radius);
+        return CreateRoundRectRgn(lerp(morphFrom_.left, dockLeft), lerp(morphFrom_.top, 0), lerp(morphFrom_.right, dockRight) + 1, lerp(morphFrom_.bottom, height) + 1, radius, radius);
+    }
+    // The docked column in window pixels: [margin, width) on the right, [0, column) docked left (#143).
+    void DockColumn(int& from, int& to) const {
+        RECT client{}; GetClientRect(hwnd_, &client); const int margin = OwnerPx(DrawerLayout::margin);
+        from = left_ ? 0 : margin; to = left_ ? std::max(0, static_cast<int>(client.right) - margin) : static_cast<int>(client.right);
     }
     // Key colour (NativeUI::KeyedDrawer: transparent, click-through) over what this
     // frame must not show: while morphing, everything outside the growing shape;
@@ -1025,19 +1045,23 @@ class Drawer final : public Host {
     void KeyOut(Motion::Time now) override {
         const float t = Morph(now);
         if (t < 1) {
-            RECT client{}; GetClientRect(hwnd_, &client);
-            HRGN outside = CreateRectRgn(0, 0, client.right, client.bottom), shape = MorphShape(t, OwnerPx(DrawerLayout::margin), client.right, client.bottom);
+            RECT client{}; GetClientRect(hwnd_, &client); int from = 0, to = 0; DockColumn(from, to);
+            HRGN outside = CreateRectRgn(0, 0, client.right, client.bottom), shape = MorphShape(t, from, to, client.bottom);
             CombineRgn(outside, outside, shape, RGN_DIFF); chrome_.KeyOutRegion(outside);
             DeleteObject(shape); DeleteObject(outside);
-            if (lead_ > 0) chrome_.KeyOut(DrawerLayout::margin + lead_ * Scale());
+            if (lead_ > 0) chrome_.KeyOut(KeyLead(), left_);
             return;
         }
-        chrome_.KeyOut(DrawerLayout::margin + lead_ * Scale()); KeyCorners();
+        chrome_.KeyOut(KeyLead(), left_); KeyCorners();   // #143: docked left, the margin strip and the lead on the right
     }
-    // Window = margin strip + 268 DIP column, docked to the owner's right edge. It
-    // never moves while sliding (NativeUI::KeyedDrawer): a slide step is one present,
-    // the column drawn `lead_` pixels right of its place (Origin) and the strip it has
-    // not entered keyed out (KeyOut). The region rounds the corner shared with the
+    // The keyed strip's width (DIP): the margin strip and the lead (docked left: in whole pixels from the right edge).
+    float KeyLead() const { return left_ ? (OwnerPx(DrawerLayout::margin) + lead_) * Scale() : DrawerLayout::margin + lead_ * Scale(); }
+    // Window = margin strip + 268 DIP column, docked on the tab panel's side (#143):
+    // to the owner's right edge in the top bar (margin strip on its left), to the
+    // side panel's right edge in its layouts (mirrored: column, then the margin strip).
+    // It never moves while sliding (NativeUI::KeyedDrawer): a slide step is one present,
+    // the column drawn `lead_` pixels toward its entering edge (Origin) and the strip it
+    // has not entered keyed out (KeyOut). The region rounds the corner shared with the
     // owner (empty while nothing has entered) and keeps the docked column, or the
     // whole window while morphing: it changes only when a morph starts or lands,
     // never during one. Returns true when it painted.
@@ -1048,13 +1072,14 @@ class Drawer final : public Host {
         const int top = owner.top + OwnerPx(DrawerLayout::liveTop), height = std::max(1, static_cast<int>(owner.bottom - OwnerPx(DrawerLayout::liveBottom) - top));
         const int shown = static_cast<int>(std::lround(column * Motion::Clamp(slide_.Value(now))));
         const float t = Morph(now); const int morphKey = t >= 1 ? 1000 : static_cast<int>(t * 999);
-        const int inset = OwnerPx(DrawerLayout::liveRight); const RECT window{owner.right - inset - width, top, owner.right - inset, top + height};   // Mode Focus: the floating panel's right edge (0 otherwise)
-        const float radius = DrawerLayout::liveRadius * GetDpiForWindow(owner_) / 96.f;   // Mode Focus: round top corners (src/drawer-corners.h), never while morphing
-        const bool restyled = !EqualRect(&window, &appliedWindow_) || radius != corners_.Radius();
+        const bool left = DrawerLayout::liveLeft; const int inset = left ? 0 : OwnerPx(DrawerLayout::liveRight), dock = left ? OwnerPx(DrawerLayout::liveDock) : 0;   // Mode Focus: the floating panel's right edge (0 otherwise)
+        const RECT window = NativeUI::DockedDrawerRect(owner, width, top, height, left, dock, inset);
+        const float radius = left ? 0.f : DrawerLayout::liveRadius * GetDpiForWindow(owner_) / 96.f;   // Mode Focus: round top corners (src/drawer-corners.h; the top bar's floating panel only), never while morphing
+        const bool restyled = !EqualRect(&window, &appliedWindow_) || radius != corners_.Radius() || left != left_;
         if (!force && !restyled && shown == appliedVisible_ && morphKey == appliedMorph_ && EqualRect(&owner, &appliedOwner_)) return false;
         const bool resized = !EqualRect(&owner, &appliedOwner_) || restyled, slid = shown != appliedVisible_;
         const bool reshape = force || resized || (morphKey < 1000) != (appliedMorph_ < 1000) || (shown > 0) != (appliedVisible_ > 0);
-        appliedVisible_ = shown; appliedMorph_ = morphKey; appliedOwner_ = owner; lead_ = column - shown; corners_.SetRadius(radius);
+        appliedVisible_ = shown; appliedMorph_ = morphKey; appliedOwner_ = owner; lead_ = column - shown; left_ = left; corners_.SetRadius(radius);
         if (lead_ > 0 || morphKey < 1000) corners_.HideLeading();   // Mode Focus: it moves with the content: back at rest
         if (restyled && !force) InvalidateRect(hwnd_, nullptr, FALSE);   // the corners keyed out (or no longer) by the next paint
         if (force || !EqualRect(&window, &appliedWindow_)) { SetWindowPos(hwnd_, nullptr, window.left, window.top, width, height, SWP_NOACTIVATE | SWP_NOZORDER); appliedWindow_ = window; }
@@ -1064,13 +1089,15 @@ class Drawer final : public Host {
             // Owner clip: everything left of the owner's right edge, rounding the corner it shares with it
             // at 10 DIP, inside the owner's antialiased 8 DIP DWM corner: canvas over canvas, so the
             // visible outline stays the owner's smooth one.
-            const int right = width, r = OwnerPx(20);
-            region = IsZoomed(owner_) || inset > 0 ? CreateRectRgn(0, 0, right, height) : CreateRoundRectRgn(-r * 2, -r * 2, right + 1, height + 1, r, r);   // Mode Focus: off the window's corner, square
-            // Docked: the column [margin, width] — never the margin strip, which only
-            // exists for the popover to morph from. Morphing: the whole window, the
-            // same for the whole morph; the popover's shape growing into the column is
-            // what KeyOut leaves unkeyed, so shape and content reach DWM in one present.
-            HRGN shape = t < 1 ? CreateRectRgn(0, 0, width, height) : CreateRectRgn(margin, 0, width, height);
+            // #143: docked left, the bottom-left corner, and only on the window's own corner.
+            const int r = OwnerPx(20);
+            region = NativeUI::DrawerRegion(true, width, height, r, IsZoomed(owner_) || !NativeUI::DrawerOnWindowCorner(left, dock, inset, DrawerLayout::Side::roundAgainstPanel), left);   // Mode Focus / against the panel: off the window's corner, square
+            // Docked: the column [margin, width] ([0, column] docked left) — never the
+            // margin strip, which only exists for the popover to morph from. Morphing:
+            // the whole window, the same for the whole morph; the popover's shape growing
+            // into the column is what KeyOut leaves unkeyed, so shape and content reach
+            // DWM in one present.
+            HRGN shape = t < 1 ? CreateRectRgn(0, 0, width, height) : left ? CreateRectRgn(0, 0, column, height) : CreateRectRgn(margin, 0, width, height);
             CombineRgn(region, region, shape, RGN_AND); DeleteObject(shape);
         } else region = CreateRectRgn(0, 0, 0, 0);
         // No redraw here: a morph's region is set before its first frame (Enter) and
@@ -1125,9 +1152,17 @@ class Drawer final : public Host {
     DrawerCorners::Pair corners_;
     void SyncCorners() {
         if (!visible_ || appliedVisible_ <= 0 || appliedMorph_ < 1000 || !IsWindowVisible(hwnd_)) { corners_.Hide(); return; }
-        const float c = Design::Surface::canvas; corners_.Place(hwnd_, appliedWindow_, OwnerPx(DrawerLayout::margin) + lead_, appliedWindow_.right - appliedWindow_.left, c + (1 - c) * Popup::border, c, lead_ == 0);
+        int from = 0, to = 0; ContentColumn(from, to);
+        const float c = Design::Surface::canvas; corners_.Place(hwnd_, appliedWindow_, from, to, c + (1 - c) * Popup::border, c, lead_ == 0);
     }
-    void KeyCorners() { if (corners_.Radius() <= 0) return; HRGN cut = corners_.CutRegion(OwnerPx(DrawerLayout::margin) + lead_, appliedWindow_.right - appliedWindow_.left); chrome_.KeyOutRegion(cut); DeleteObject(cut); }
+    void KeyCorners() { if (corners_.Radius() <= 0) return; int from = 0, to = 0; ContentColumn(from, to); HRGN cut = corners_.CutRegion(from, to); chrome_.KeyOutRegion(cut); DeleteObject(cut); }
+    // The window pixels the sliding column covers now: [margin + lead, width) on the right, [0, column - lead) docked
+    // left (#143; there the radius is 0: the corners belong to the top bar's floating panel).
+    void ContentColumn(int& from, int& to) const {
+        const int width = appliedWindow_.right - appliedWindow_.left, margin = OwnerPx(DrawerLayout::margin);
+        from = left_ ? 0 : margin + lead_; to = left_ ? std::max(0, width - margin - lead_) : width;
+    }
+    bool left_ = false;   // #143: docked on the left (the side panel's layouts), as last placed by ApplyGeometry
     // Layered alpha 0, the colour key kept: nothing of the window reaches the
     // screen, while what it presents still lands in its surface.
     void Veil(bool veiled) { SetLayeredWindowAttributes(hwnd_, NativeUI::drawerKey, 0, veiled ? LWA_COLORKEY | LWA_ALPHA : LWA_COLORKEY); }
@@ -1137,13 +1172,21 @@ class Drawer final : public Host {
         motion_.SetReducedMotion(!test && Motion::PreferredReducedMotion());
         auto now = Motion::Now(); const bool reduced = motion_.ReducedMotion();
         if (!visible_) { slide_.Snap(0); scroll_.Snap(0); morph_.Snap(1); focus_ = 0; keyboard_ = false; ClearPointer(); }
-        const bool morph = from && !reduced;
+        // Window-local pixels of the popover, the drawer's column at its docked place. #143: the popover morphs only
+        // when it lies over the drawer's window (the top bar; the compact column's popover beside the left dock); away
+        // from it (the complete column's popover over the column, or the top-right one in side Focus) the drawer slides in.
+        RECT local{};
+        if (from) {
+            const RECT owner = OwnerClient(); namespace DL = DrawerLayout;
+            const int width = OwnerPx(DL::width + DL::margin), top = owner.top + OwnerPx(DL::liveTop);
+            const RECT docked = NativeUI::DockedDrawerRect(owner, width, top, 1, DL::liveLeft, DL::liveLeft ? OwnerPx(DL::liveDock) : 0, DL::liveLeft ? 0 : OwnerPx(DL::liveRight));
+            local = {from->left - docked.left, from->top - top, from->right - docked.left, from->bottom - top};
+        }
+        const bool morph = from && !reduced && MorphFits(local, OwnerPx(DrawerLayout::width + DrawerLayout::margin));
         if (morph) {
-            // Window-local pixels of the popover, the drawer's column at its docked place.
-            const RECT owner = OwnerClient();
-            const int width = OwnerPx(DrawerLayout::width + DrawerLayout::margin), left = owner.right - OwnerPx(DrawerLayout::liveRight) - width, top = owner.top + OwnerPx(DrawerLayout::liveTop);
-            morphFrom_ = {from->left - left, from->top - top, from->right - left, from->bottom - top};
+            morphFrom_ = local;
             morphFrom_.left = std::max(0L, morphFrom_.left); morphFrom_.top = std::max(0L, morphFrom_.top);
+            morphFrom_.right = std::min<LONG>(morphFrom_.right, OwnerPx(DrawerLayout::width + DrawerLayout::margin));
             morphRadius_ = static_cast<float>(OwnerPx(Panel::radius));
             slide_.Snap(1);
             if (!visible_) Warm(); // cheap when already warmed while the popover was open

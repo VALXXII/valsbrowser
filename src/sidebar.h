@@ -302,6 +302,8 @@ struct Input {
     float scroll = 0;             // tab list scroll (clamped)
     float band = 0;               // annotation band at the top of the page zone (answer 6)
     float reserve = 0;            // an open drawer's column: the page stops `inset` before it
+    bool reserveLeft = true;      // #143 (owner 2026-11-25): the drawer docks on the panel's side, against the column: the page starts `inset` after it
+    float dockAt = -1;            // #143: the host's dock (DIP) when DrawerLayout::Side's other choices move it off the column's edge; -1 none
     float panel = Complete::width; // the complete column's width (Resize: 220 .. 360)
     std::vector<int> groups;      // per tab, its split view group (0 = none): the top bar's Chrome::tabGroups
     bool hidden = false;          // Mode Focus: the column hides, the page takes the window (FocusSide)
@@ -364,7 +366,8 @@ struct Layout {
     std::vector<Box> tools;
     Box minimize, maximize, close;
     Box zone, band, page;
-    float drawerTop = Zone::drawerTop;   // the real drawers dock at the right from here
+    float drawerTop = Zone::drawerTop;   // the real drawers dock from here
+    float drawerDock = 0;                // #143: their left edge (DIP from the window's): the column's right edge (in Focus, after its border)
     bool hidden = false;          // Mode Focus: the column is not docked (it comes back over the page, FocusSide)
     float top = 0;                // the column's top (hidden: under the annotation banner, else 0)
 };
@@ -413,11 +416,12 @@ inline Layout Compute(const Input& in) {
         L.maximize = Centered(L.close.left - Z::buttonGap - Z::buttonW / 2, cy, Z::buttonW, Z::buttonH);
         L.minimize = Centered(L.maximize.left - Z::buttonGap - Z::buttonW / 2, cy, Z::buttonW, Z::buttonH);
         L.zone = {zoneLeft, 0, W, H};
-        float pageRight = std::max(zoneLeft, W - Z::inset);
-        if (in.reserve > 0) pageRight = std::max(zoneLeft, std::min(pageRight, W - in.reserve - Z::inset));
+        float pageRight = std::max(zoneLeft, W - Z::inset), pageLeft = zoneLeft;
+        L.drawerDock = in.dockAt >= 0 ? in.dockAt : zoneLeft;   // #143: against the docked column
+        if (in.reserve > 0) { if (in.reserveLeft) pageLeft = std::min(pageRight, std::max(zoneLeft, L.drawerDock + in.reserve + Z::inset)); else pageRight = std::max(zoneLeft, std::min(pageRight, W - in.reserve - Z::inset)); }
         const float pageBottom = std::max(L.bar, H - Z::inset);
-        L.band = in.band > 0 ? Box{zoneLeft, L.bar, pageRight, L.bar + in.band} : Box{};
-        L.page = {zoneLeft, L.bar + in.band, pageRight, std::max(L.bar + in.band, pageBottom)};
+        L.band = in.band > 0 ? Box{pageLeft, L.bar, pageRight, L.bar + in.band} : Box{};
+        L.page = {pageLeft, L.bar + in.band, pageRight, std::max(L.bar + in.band, pageBottom)};
         L.drawerTop = zoneMode == Mode::Complete ? Z::drawerTop : Z::compactDrawerTop;
     }
     auto pairAt = [&](float x, float top) {
@@ -545,6 +549,8 @@ namespace FocusSide {
 inline constexpr float edge = 8;                              // the left band that recalls the column (board 13)
 inline constexpr float border = 1;                            // its right border, outside the column
 inline constexpr unsigned borderRgb = 0x262626;
+// #143 Q3 (Designer, 2026-11-25): a drawer docks just after that border, never over it (false: flush with the column).
+inline constexpr bool drawerAfterBorder = true;
 inline constexpr float enterResponse = .30f, exitResponse = .20f;
 inline constexpr double reducedFadeMs = 120;
 }
@@ -568,11 +574,13 @@ inline Layout ComputeHidden(const Input& in) {
     const float top = std::max(in.band, Z::inset);            // under the banner, else the 4 DIP inset
     L.bar = std::max(0.f, Z::inset - in.band);                // the chrome's ContentTop is bar + band (continuous while the banner slides)
     L.minimize = L.maximize = L.close = Box{};
-    float pageRight = std::max(Z::inset, W - Z::inset);
-    if (in.reserve > 0) pageRight = std::max(Z::inset, std::min(pageRight, W - in.reserve - Z::inset));
+    float pageRight = std::max(Z::inset, W - Z::inset), pageLeft = Z::inset;
+    // #143: a drawer docks against the column shown over the page, just after its border (FocusSide::drawerAfterBorder).
+    L.drawerDock = in.dockAt >= 0 ? in.dockAt : L.column + (FocusSide::drawerAfterBorder ? FocusSide::border : 0.f);
+    if (in.reserve > 0) { if (in.reserveLeft) pageLeft = std::min(pageRight, std::max(Z::inset, L.drawerDock + in.reserve + Z::inset)); else pageRight = std::max(Z::inset, std::min(pageRight, W - in.reserve - Z::inset)); }
     L.zone = {0, 0, W, H};
     L.band = in.band > 0 ? Box{Z::inset, 0, std::max(Z::inset, W - Z::inset), in.band} : Box{};
-    L.page = {Z::inset, top, pageRight, std::max(top, H - Z::inset)};
+    L.page = {pageLeft, top, pageRight, std::max(top, H - Z::inset)};
     L.drawerTop = top;
     return L;
 }
@@ -600,6 +608,8 @@ struct FocusReveal {
     void Toggle() { if (open) Close(); else { open = pinned = true; wide = false; edgeSinceMs = -1; } }
     // The address needs the field: in, pinned; `compact`: the complete column.
     void ForAddress(bool compact) { if (!open) { open = pinned = true; edgeSinceMs = -1; } else pinned = true; wide = wide || compact; }
+    // #143: a drawer docks against it: in, not pinned (the host holds it while the drawer is open, then it goes as usual).
+    void ForDrawer() { if (!open) { open = true; pinned = wide = false; edgeSinceMs = -1; } }
     void Close() { open = pinned = wide = false; edgeSinceMs = -1; }
 };
 // The compact « » » popover (« compact, 40 » 1WSC-0): all the bookmarks, 4 right of the column, top on the « » » tile

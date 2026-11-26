@@ -436,6 +436,27 @@ inline float liveRight = 0, liveRadius = 0;
 // Mode Focus also keeps them 4 DIP above the window's bottom edge (Paper « Annotation + Focus · barre du haut · tiroir
 // ouvert »: 612 high from 124 in a 740 window), their bottom corners square. 0 outside focus mode.
 inline float liveBottom = 0;
+// The side the drawers dock on (#143, owner 2026-11-25): the tab panel's. `liveLeft` in the side panel's layouts (complete,
+// compact, their Mode Focus): docked on the LEFT, their left edge `liveDock` DIP from the window's left edge (the panel's
+// right edge, 0 = the window's own edge), everything mirrored (the slide enters from that edge, the hairline on the page
+// side, the bottom corner rounded only on the window's corner). The top bar keeps them on the right (`liveRight`).
+inline bool liveLeft = false;
+inline float liveDock = 0;
+// The four choices Paper does not settle for the left dock (no left-docked board; coordinator 2026-11-25: (a) for each
+// until Designer answers), one switch each.
+namespace Side {
+// Q1: docked against the panel, the drawer touches no window corner: all four corners square (false), or its bottom-left
+// rounded anyway like the window's corner (true). Docked on the window's own left edge it always follows that corner.
+inline constexpr bool roundAgainstPanel = false;
+// Q2: side Focus, a drawer opened while the column is hidden: the column comes at rest at once and stays while the drawer
+// is open, the drawer docked against it (true); or the drawer alone on the window's left edge (false).
+inline constexpr bool focusBringsColumn = true;
+// Q3: the column shown in side Focus has a 1 DIP border outside its right edge: the drawer docks after it or over it,
+// flush with the column: src/sidebar.h FocusSide::drawerAfterBorder (the side layout computes the dock, Layout::drawerDock).
+// Q4: a window narrower than the complete column shows it OVER the page (the fold button): one at a time, opening a
+// drawer closes that column and opening it closes the drawer (true); or the drawer follows its edge (false).
+inline constexpr bool overlayOneAtATime = true;
+}
 // The popover floats 6 DIP in from the window edge; the drawer window keeps that
 // strip (clipped by its region) so the popover rectangle can morph into it.
 inline constexpr float margin = Design::Space::sm;
