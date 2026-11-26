@@ -271,7 +271,8 @@ int wmain(int argc, wchar_t** argv) {
         }
     }
     {   // Decision S3 on bookmarks: a future format is never overwritten (same rule as the vault).
-        const std::wstring f = dir + L"\\bookmarks-s3"; const std::string future = "browser-bookmarks 3\nnew\n";   // 2 carries a folder's look (#138): 3 stands for a future version ProfileStore::WriteAtomic(f, future);
+        // Version 2 carries a folder's look (#138): 3 stands for a future version.
+        const std::wstring f = dir + L"\\bookmarks-s3"; const std::string future = "browser-bookmarks 3\nnew\n"; ProfileStore::WriteAtomic(f, future);
         BM::Store b0, m0; m0.Add(BM::BarRoot, BM::End, L"Ici", L"https://ici.test/", 1); const BM::Store mBefore = m0;
         const auto res = ProfileStore::Commit<BM::Store>(dir, f, b0, m0, Merge, 5000, Bookmarks::Headers());
         std::string after; ProfileStore::ReadAll(f, after);
