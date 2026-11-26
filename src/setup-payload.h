@@ -1,11 +1,20 @@
 #pragma once
 // Embedded payload of browser-<version>-win-x64-setup.exe (design/windows-setup-plan.md).
 //
-//   setup.exe = setup stub (PE image) | browser-<version>-win-x64.lsrupd (byte-identical) | 128-byte trailer
+//   setup.exe = setup stub (PE image) | browser-<version>-win-x64.lsrupd (byte-identical)
+//               | [signed uninstaller: this stub alone, with its own signature] | 0-7 zero bytes | 128-byte trailer
 //
 // The overlay is everything after the last section's raw data, up to the Authenticode certificate table when the file
 // is signed (so a later signature does not move the trailer), else up to EOF. The trailer is the last TrailerSize bytes
-// of the overlay; tools/release/package.py writes and verifies the same layout (write_setup / verify_setup).
+// of the overlay; tools/release/package.py writes and verifies the same layout (setup_bytes / verify_setup).
+//
+// Signing (design/installer-signing-options.md): an Authenticode certificate table starts on an 8-byte boundary, and a
+// signing tool pads the file with zeros to get there. The trailer therefore always starts on an 8-byte boundary of the
+// file (zeros before it, checked): the file is already aligned, a signature adds nothing between the trailer and the
+// certificate table, and the same bytes are read with or without a signature.
+// The uninstaller written by the setup is this stub without its payload; a signature over the whole setup does not
+// cover that smaller file. A signed release therefore also carries the stub signed on its own (WriteUninstaller copies
+// it out, after checking that it is this very image); without one, the stub is written unsigned, as before.
 //
 // Nothing here parses the package itself: the copied-out .lsrupd goes to UpdatePackage::ReadPackageIndex /
 // ExtractPackage, the validator every client already runs on downloaded updates. The trailer SHA-256 detects a
@@ -28,6 +37,9 @@ constexpr std::size_t TrailerSize = 128;
 constexpr char Magic[16] = {'B', 'R', 'O', 'W', 'S', 'E', 'R', '-', 'S', 'E', 'T', 'U', 'P', ' ', '1', 0};
 constexpr char EndMagic[8] = {'B', 'R', 'S', 'E', 'T', 'U', 'P', '!'};
 constexpr std::size_t HeaderProbe = 4096;  // PE headers + section table must fit
+constexpr std::uint64_t MaxUninstallerBytes = 64ull << 20;  // the stub plus its certificate table
+
+constexpr std::uint64_t Align8(std::uint64_t n) { return (n + 7) & ~std::uint64_t(7); }
 
 struct Overlay {
     std::uint64_t start = 0, end = 0, fileSize = 0;
@@ -38,6 +50,8 @@ struct Overlay {
 struct Layout {
     std::string version;
     std::uint64_t packageOffset = 0, packageSize = 0;
+    std::uint64_t uninstallerOffset = 0, uninstallerSize = 0;  // 0/0: no signed uninstaller embedded
+    std::uint64_t paddingOffset = 0, paddingSize = 0;          // the zeros before the trailer (0-7 bytes)
     UpdatePackage::Digest sha256{};
     Overlay overlay;
 };
@@ -100,11 +114,26 @@ inline bool ParseTrailer(const std::uint8_t* t, const Overlay& overlay, const st
     out.packageOffset = U64(t + 48);
     out.packageSize = U64(t + 56);
     std::memcpy(out.sha256.data(), t + 64, 32);
-    for (int i = 96; i < 120; ++i)
+    out.uninstallerOffset = U64(t + 96);
+    out.uninstallerSize = U64(t + 104);
+    for (int i = 112; i < 120; ++i)
         if (t[i]) return error = "bad trailer padding", false;
     if (out.packageOffset != overlay.start) return error = "package offset does not start the overlay", false;
     if (out.packageSize == 0 || out.packageSize > UpdatePackage::MaxPackageBytes) return error = "bad package size", false;
-    if (out.packageSize != overlay.end - overlay.start - TrailerSize) return error = "package size does not fill the overlay", false;
+    const std::uint64_t trailerStart = overlay.end - TrailerSize;
+    std::uint64_t dataEnd = out.packageOffset + out.packageSize;
+    if (dataEnd > trailerStart) return error = "package size does not fit the overlay", false;
+    if (out.uninstallerSize) {
+        if (out.uninstallerOffset != dataEnd) return error = "uninstaller does not follow the package", false;
+        if (out.uninstallerSize > MaxUninstallerBytes || out.uninstallerSize > trailerStart - dataEnd) return error = "bad uninstaller size", false;
+        dataEnd += out.uninstallerSize;
+    } else if (out.uninstallerOffset) {
+        return error = "uninstaller offset without a size", false;
+    }
+    // The trailer starts on the first 8-byte boundary after the data: one layout only.
+    if (Align8(dataEnd) != trailerStart) return error = "embedded data does not fill the overlay", false;
+    out.paddingOffset = dataEnd;
+    out.paddingSize = trailerStart - dataEnd;
     return true;
 }
 
@@ -116,7 +145,38 @@ inline bool ReadAt(HANDLE f, std::uint64_t offset, void* buffer, DWORD size) {
     return ReadFile(f, buffer, size, &got, &o) && got == size;
 }
 
-// Opens `setup` and validates headers + trailer (no hashing of the package yet: see CopyPackage).
+// Pure: true when `blob` is the image `image` (this setup's stub) followed only by its own certificate table. The two
+// header fields a signature rewrites (CheckSum, the certificate directory) are the only bytes allowed to differ.
+inline bool IsSignedCopyOfImage(const std::vector<std::uint8_t>& image, std::uint32_t securityDirOffset,
+                                const std::vector<std::uint8_t>& blob, std::string& error) {
+    Overlay o;
+    if (blob.size() <= image.size() || image.size() < 0x40) return error = "embedded uninstaller too small", false;
+    if (!LocateOverlay(blob.data(), std::min<std::size_t>(blob.size(), HeaderProbe), blob.size(), o, error)) return false;
+    if (!o.signedFile || o.start != image.size() || o.end != image.size()) return error = "embedded uninstaller is not a signed stub", false;
+    const std::uint32_t checksum = U32(image.data() + 0x3C) + 24 + 64;  // optional header CheckSum
+    if (std::uint64_t(checksum) + 4 > image.size() || std::uint64_t(securityDirOffset) + 8 > image.size()) return error = "bad stub headers", false;
+    for (std::size_t i = 0; i < image.size(); ++i) {
+        const bool rewritten = (i >= checksum && i < checksum + 4u) || (i >= securityDirOffset && i < securityDirOffset + 8u);
+        if (!rewritten && image[i] != blob[i]) return error = "embedded uninstaller is not this setup's stub", false;
+    }
+    return true;
+}
+
+// This setup's image (the stub) and, when one is embedded, its signed uninstaller.
+inline bool ReadImages(HANDLE f, const Layout& layout, std::vector<std::uint8_t>& image, std::vector<std::uint8_t>& blob, std::string& error) {
+    image.assign(std::size_t(layout.overlay.start), 0);
+    blob.clear();
+    bool read = layout.overlay.start <= (64ull << 20) && ReadAt(f, 0, image.data(), DWORD(image.size()));
+    if (read && layout.uninstallerSize) {
+        blob.assign(std::size_t(layout.uninstallerSize), 0);
+        read = layout.uninstallerSize <= MaxUninstallerBytes && ReadAt(f, layout.uninstallerOffset, blob.data(), DWORD(blob.size()));
+    }
+    if (!read) return error = "cannot read setup image", false;
+    return true;
+}
+
+// Opens `setup` and validates headers + trailer (no hashing of the package yet: see CopyPackage). An embedded signed
+// uninstaller is proven here to be this setup's own image: a setup with a wrong one is refused before anything is written.
 inline bool Open(const std::wstring& setup, const std::string& expectedVersion, Layout& out, std::string& error) {
     HANDLE f = CreateFileW(setup.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
     if (f == INVALID_HANDLE_VALUE) return error = "cannot open setup file", false;
@@ -133,6 +193,16 @@ inline bool Open(const std::wstring& setup, const std::string& expectedVersion, 
     if (ok && overlay.end - overlay.start < TrailerSize) ok = (error = "no embedded package", false);
     if (ok && !ReadAt(f, overlay.end - TrailerSize, trailer, TrailerSize)) ok = (error = "cannot read trailer", false);
     ok = ok && ParseTrailer(trailer, overlay, expectedVersion, out, error);
+    if (ok && out.paddingSize) {  // the alignment bytes are zeros: nothing hides between the data and the trailer
+        std::uint8_t pad[8] = {};
+        if (!ReadAt(f, out.paddingOffset, pad, DWORD(out.paddingSize))) ok = (error = "cannot read trailer padding", false);
+        for (std::uint64_t i = 0; ok && i < out.paddingSize; ++i)
+            if (pad[i]) ok = (error = "bad padding before the trailer", false);
+    }
+    if (ok && out.uninstallerSize) {
+        std::vector<std::uint8_t> image, blob;
+        ok = ReadImages(f, out, image, blob, error) && IsSignedCopyOfImage(image, overlay.securityDirOffset, blob, error);
+    }
     CloseHandle(f);
     return ok;
 }
@@ -182,15 +252,22 @@ inline bool CopyPackage(const std::wstring& setup, const Layout& layout, const s
     return ok;
 }
 
-// The setup image without its payload (the stub), with the certificate directory cleared: <root>\uninstall.exe.
-inline bool WriteStub(const std::wstring& setup, const Layout& layout, const std::wstring& dest, std::string& error) {
+// <root>\uninstall.exe. With a signed uninstaller embedded: that file, byte for byte, once it is proven to be this
+// setup's own image plus a certificate table. Without one: the setup image without its payload (the stub), with the
+// certificate directory cleared (unsigned).
+inline bool WriteUninstaller(const std::wstring& setup, const Layout& layout, const std::wstring& dest, std::string& error) {
     HANDLE in = CreateFileW(setup.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
     if (in == INVALID_HANDLE_VALUE) return error = "cannot open setup file", false;
-    std::vector<std::uint8_t> image(std::size_t(layout.overlay.start));
-    const bool read = layout.overlay.start <= (64ull << 20) && ReadAt(in, 0, image.data(), DWORD(image.size()));
+    std::vector<std::uint8_t> image, blob;
+    const bool read = ReadImages(in, layout, image, blob, error);
     CloseHandle(in);
-    if (!read) return error = "cannot read setup image", false;
-    if (layout.overlay.securityDirOffset + 8 <= image.size()) std::memset(image.data() + layout.overlay.securityDirOffset, 0, 8);
+    if (!read) return false;
+    if (layout.uninstallerSize) {
+        if (!IsSignedCopyOfImage(image, layout.overlay.securityDirOffset, blob, error)) return false;
+        image.swap(blob);
+    } else if (layout.overlay.securityDirOffset + 8 <= image.size()) {
+        std::memset(image.data() + layout.overlay.securityDirOffset, 0, 8);
+    }
     HANDLE out = CreateFileW(dest.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (out == INVALID_HANDLE_VALUE) return error = "cannot create uninstaller", false;
     DWORD put = 0;

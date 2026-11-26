@@ -16,6 +16,16 @@
 #      build + tests + packaging still run and upload a workflow artifact).
 #   4. This file is on the remote main branch. Local merges that are not pushed never
 #      trigger it.
+#
+# Code signing (design/installer-signing-options.md) is OFF by default: without the repository variable
+# RELEASE_SIGNING nothing below signs anything and the release is published unsigned, exactly as before.
+#   RELEASE_SIGNING = rehearsal   the `sign` job runs (login to the Certum SimplySign cloud key, signing, checks) and
+#                                 uploads its result as a workflow artifact; the release is still published UNSIGNED
+#                                 and never waits on a signing failure. For the first trials of the signing chain.
+#   RELEASE_SIGNING = on          the SIGNED assets are published; no signed assets, no release (fail closed).
+# It needs, set by the repository owner (names only here, never a value):
+#   - secrets CERTUM_SIMPLYSIGN_ID and CERTUM_SIMPLYSIGN_TOTP_SECRET in the "release" environment (main only);
+#   - repository variable RELEASE_SIGNER_NAME: the subject name on the certificate.
 name: update-release
 
 on:
@@ -89,10 +99,90 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      # Only when signing is asked for: the tested application and the setup stub, unsigned, for the `sign` job.
+      - name: Upload the unsigned application (for the sign job)
+        if: vars.RELEASE_SIGNING == 'rehearsal' || vars.RELEASE_SIGNING == 'on'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: browser-${{ steps.identity.outputs.version }}-unsigned-app
+          path: |
+            build/release/app/
+            build/release/app-setup/
+          if-no-files-found: error
+          retention-days: 1
+
+  sign:
+    name: Sign with the cloud key, package, check (windows x64)
+    needs: build
+    # OFF unless the repository variable RELEASE_SIGNING is "rehearsal" or "on" (see the head of this file).
+    if: github.ref == 'refs/heads/main' && github.repository == 'VALXXII/browser' && (vars.RELEASE_SIGNING == 'rehearsal' || vars.RELEASE_SIGNING == 'on')
+    runs-on: windows-2022
+    timeout-minutes: 30
+    # The signing secrets live in the "release" environment (main only), like the release token.
+    environment:
+      name: release
+    # One SimplySign session at a time, never cancelled half-way (two logins must not overlap).
+    concurrency:
+      group: update-release-sign
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout release scripts
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            tools/release
+            tools/update-package
+
+      - name: Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12.10'
+
+      - name: Download the unsigned application
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: browser-${{ needs.build.outputs.version }}-unsigned-app
+          path: build/release
+
+      - name: Open the SimplySign session (cloud key)
+        # The two signing secrets are given to this step only. The key itself never leaves the provider.
+        shell: pwsh
+        env:
+          CERTUM_SIMPLYSIGN_ID: ${{ secrets.CERTUM_SIMPLYSIGN_ID }}
+          CERTUM_SIMPLYSIGN_TOTP_SECRET: ${{ secrets.CERTUM_SIMPLYSIGN_TOTP_SECRET }}
+          RELEASE_SIGNER_NAME: ${{ vars.RELEASE_SIGNER_NAME }}
+        run: ./tools/release/simplysign_session.ps1 -Open
+
+      - name: Sign the executables, package, sign the setup, check every signature
+        shell: pwsh
+        env:
+          RELEASE_SIGNER_NAME: ${{ vars.RELEASE_SIGNER_NAME }}
+        run: python tools/release/package.py --app build/release/app --out build/release/dist --setup-stub build/release/app-setup/browser-setup.exe --sign-name "$env:RELEASE_SIGNER_NAME"
+
+      - name: Close the SimplySign session
+        if: always()
+        shell: pwsh
+        run: ./tools/release/simplysign_session.ps1 -Close
+
+      - name: Upload signed release assets (workflow artifact)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: browser-${{ needs.build.outputs.version }}-win-x64-signed
+          path: build/release/dist/
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
     name: Publish to VALXXII/browser-releases
-    needs: build
-    if: github.ref == 'refs/heads/main' && github.repository == 'VALXXII/browser' && vars.UPDATES_PUBLISH_ENABLED == 'true'
+    needs: [build, sign]
+    # Signing off or in rehearsal: the unsigned assets of `build`, whatever `sign` did. Signing on: only after `sign`.
+    if: >-
+      !cancelled() && needs.build.result == 'success'
+      && (needs.sign.result == 'success' || vars.RELEASE_SIGNING != 'on')
+      && github.ref == 'refs/heads/main' && github.repository == 'VALXXII/browser' && vars.UPDATES_PUBLISH_ENABLED == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     # The release token lives in the "release" environment, restricted to the main branch (no reviewer:
@@ -117,12 +207,20 @@ jobs:
       - name: Download verified assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: browser-${{ needs.build.outputs.version }}-win-x64
+          name: browser-${{ needs.build.outputs.version }}-win-x64${{ vars.RELEASE_SIGNING == 'on' && '-signed' || '' }}
           path: dist
 
       - name: Publish immutable release and latest manifest
         # The token is given to this step only; job outputs reach the shell as variables, never as script text.
+        # Signing on: publish.py refuses anything that is not signed by RELEASE_SIGNER_NAME (an empty name is refused).
         env:
           GH_TOKEN: ${{ secrets.UPDATES_RELEASE_TOKEN }}
           SOURCE_COMMIT: ${{ needs.build.outputs.commit }}
-        run: python3 tools/release/publish.py --repo VALXXII/browser-releases --dist dist --source-commit "$SOURCE_COMMIT"
+          RELEASE_SIGNING: ${{ vars.RELEASE_SIGNING }}
+          RELEASE_SIGNER_NAME: ${{ vars.RELEASE_SIGNER_NAME }}
+        run: |
+          if [ "$RELEASE_SIGNING" = "on" ]; then
+            python3 tools/release/publish.py --repo VALXXII/browser-releases --dist dist --source-commit "$SOURCE_COMMIT" --require-signer "$RELEASE_SIGNER_NAME"
+          else
+            python3 tools/release/publish.py --repo VALXXII/browser-releases --dist dist --source-commit "$SOURCE_COMMIT"
+          fi

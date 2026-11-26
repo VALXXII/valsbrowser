@@ -190,7 +190,7 @@ def main() -> int:
     subprocess.run([str(bin_ / 'strip.exe'), '--strip-all', str(stub)], check=True)
     assert K.stub_identity(stub.read_bytes()) == K.stub_identity(data[:start])
     test_setup = work / f'browser-{v}-win-x64-setup-TEST.exe'
-    test_setup.write_bytes(stub.read_bytes() + pkg + K.setup_trailer(v, len(stub.read_bytes()), pkg))
+    test_setup.write_bytes(K.setup_bytes(stub.read_bytes(), pkg, v))
 
     run = work / 'run'
     if run.exists():
