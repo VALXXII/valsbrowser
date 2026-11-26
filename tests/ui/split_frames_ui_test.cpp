@@ -34,6 +34,8 @@ static void HoverPane(int p) {
 }
 static RECT ChildRect(HWND h) { RECT r{}; GetWindowRect(h, &r); MapWindowPoints(nullptr, window, reinterpret_cast<POINT*>(&r), 2); return r; }
 static std::wstring Text(HWND h) { wchar_t b[256]{}; GetWindowTextW(h, b, 256); return b; }
+// The keyboard in a page: the page is another process's window, so GetFocus() is null on this thread (as in the browser).
+static void InPage() { SetFocus(nullptr); }
 static void Click(float x, float y, float x2, float y2) { splitFrames.PointerForTest(WM_MOUSEMOVE, x, y); splitFrames.PointerForTest(WM_LBUTTONDOWN, x, y); splitFrames.PointerForTest(WM_LBUTTONUP, x2, y2); }
 
 // A board scene (Paper « Fenêtre »): the canvas, the two panes (#A5A5A5, radius 6) under the 81 DIP chrome, the frames.
@@ -162,6 +164,68 @@ int main(int argc, char** argv) {
     motion.SetReducedMotion(true); SplitFramesEvaluate(); Check(splitFramesMachine.Reduced(), "reduced motion: the frames fade, no travel");
     motion.SetReducedMotion(false); SplitFramesEvaluate();
     splitFrames.Hide(); splitFramesMachine.Dismiss();
+
+    // ---- Keyboard (Val 2026-11-26): F6 / Maj+F6, Tab into another pane's page, Ctrl+Tab / Ctrl+1...9 inside the split
+    // show the frames on the pane receiving the focus (the real ToggleChromeFocus, ActivatePanel, Command). The window
+    // counts as in front (test hook); the real pointer is never over this window at -32000.
+    {   using namespace std::chrono; splitFramesFrontForTest = true;
+        // A stand-in address field (hidden): without one, GetFocus() == address would read « the chrome has the focus ».
+        HWND standIn = CreateWindowExW(0, L"EDIT", L"", WS_CHILD, 0, 0, 1, 1, window, nullptr, GetModuleHandleW(nullptr), nullptr); address = standIn;
+        splitGroups.clear(); for (auto& t : pages) t->group = 0;
+        auto ka = MakeTab(L"Alpha", L"alpha.test", 0x2E7D32), kb = MakeTab(L"Bravo", L"bravo.test", 0x1565C0), kc = MakeTab(L"Charlie", L"charlie.test", 0xC62828), kd = MakeTab(L"Delta", L"delta.test", 0x6A1B9A);
+        pages = {ka, kb, kc, kd}; current = 0; Group({ka, kb}); ApplyPages(); splitFrames.Hide(); splitFramesMachine.Dismiss();
+        auto settledPaint = [] { SplitFramesPaint(NativeChrome::Motion::Now() + milliseconds(700)); };
+        auto paneRect = [](int p) { return splitFramesPanes[p]; };
+        InPage(); ToggleChromeFocus(false);   // F6 from the left page
+        Check(Active() == kb && splitFramesMachine.Pane() == 1 && splitFramesMachine.Showing() && splitFramesMachine.Flashing(), "F6 to the right pane: the frames arrive there at once");
+        settledPaint();
+        {   const RECT a = ChildRect(splitFrames.ActionsWindow()), s = ChildRect(splitFrames.SiteWindow());
+            Check(splitFrames.Visible() && Near(static_cast<float>(a.right), paneRect(1).right) && Near(static_cast<float>(s.left), paneRect(1).left) && Text(splitFrames.SiteWindow()) == L"Bravo, bravo.test",
+                  "F6: in the right pane's corners, its own site"); }
+        InPage(); ToggleChromeFocus(true);    // Maj+F6 back
+        Check(Active() == ka && splitFramesMachine.Pane() == 0 && splitFramesMachine.Flashing() && splitFramesMachine.Progress(NativeChrome::Motion::Now()) < .5f, "Maj+F6 back to the left pane: the frames move there and arrive again");
+        settledPaint(); Check(Near(static_cast<float>(ChildRect(splitFrames.SiteWindow()).left), paneRect(0).left) && Text(splitFrames.SiteWindow()) == L"Alpha, alpha.test", "Maj+F6: in the left pane's corners");
+        // The moment ends as after a hover (the machine's clock moved on; the pointer elsewhere).
+        {   auto in = SplitFramesInput(); const auto later = NativeChrome::Motion::Now() + milliseconds(1300);
+            splitFramesMachine.Update(in, later); Check(!splitFramesMachine.Showing(), "after the keyboard moment (1.2 s): they leave");
+            splitFramesMachine.Update(in, later + milliseconds(600)); Check(splitFramesMachine.Pane() == -1, "gone after the exit spring"); }
+        // Three panes: F6 walks them; Ctrl+Tab and Ctrl+1...9 inside the split too.
+        splitGroups.clear(); for (auto& t : pages) t->group = 0; Group({ka, kb, kc}); current = 1; ApplyPages(); splitFramesMachine.Dismiss(); splitFrames.Hide();
+        InPage(); ToggleChromeFocus(false); Check(Active() == kc && splitFramesMachine.Pane() == 2 && splitFramesMachine.Flashing(), "three panes, F6 to the third");
+        // From the toolbar into the split (F6 / Maj+F6 from the chrome): the first / last pane receives the focus.
+        splitFramesMachine.Dismiss(); current = 0; ApplyPages(); SetFocus(window);
+        if (GetFocus() == window) { ToggleChromeFocus(true); Check(Active() == kc && splitFramesMachine.Pane() == 2 && splitFramesMachine.Flashing(), "Maj+F6 from the toolbar: the last pane, its frames"); }
+        else std::printf("     (this hidden window cannot take the focus: the toolbar branch is not exercised)\n");
+        splitFramesMachine.Dismiss(); current = 0; ApplyPages();
+        Command(']'); Check(Active() == kb && splitFramesMachine.Pane() == 1 && splitFramesMachine.Flashing(), "Ctrl+Tab inside the split: the frames on the next pane");
+        Command(SelectTabBase); Check(Active() == ka && splitFramesMachine.Pane() == 0 && splitFramesMachine.Flashing(), "Ctrl+1 inside the split: the frames on the first pane");
+        splitFramesMachine.Dismiss(); current = 2; ApplyPages();
+        Command(']'); Check(Active() == kd && !CurrentSplit().group && !splitFramesMachine.Flashing() && splitFramesMachine.Pane() == -1, "Ctrl+Tab out of the split (a single tab now): no frames");
+        // Tab into another pane's page (the page takes the focus without a mouse button): ActivatePanel by the keyboard.
+        current = 0; ApplyPages(); splitFramesMachine.Dismiss(); splitFrames.Hide();
+        ActivatePanel(kc); Check(Active() == kc && splitFramesMachine.Pane() == 2 && splitFramesMachine.Flashing(), "Tab into the third pane's page: the frames there");
+        // Hover during the keyboard moment: the pointer at the first pane's top takes over.
+        {   auto in = SplitFramesInput(); in.pointer = true; in.x = (in.panes[0].left + in.panes[0].right) / 2; in.y = in.panes[0].top + 8;
+            splitFramesMachine.Update(in, NativeChrome::Motion::Now() + milliseconds(200));
+            Check(splitFramesMachine.Pane() == 0 && !splitFramesMachine.Flashing(), "hover during the keyboard moment: the frames follow the pointer"); }
+        // A narrow pane (a 760 DIP window, two panes of ~374 DIP; long names): F6 there, the site frame trims, nothing overlaps.
+        splitGroups.clear(); for (auto& t : pages) t->group = 0; kb->title = L"Un très long titre de page pour tester"; kb->uri = L"https://un-sous-domaine.exemple-public.fr/";
+        Group({ka, kb}); chrome.width = 760; current = 0; ApplyPages(); splitFramesMachine.Dismiss(); splitFrames.Hide();
+        InPage(); ToggleChromeFocus(false); settledPaint();
+        {   const auto site = splitFrames.Site(); const auto act = splitFrames.Actions();
+            Check(splitFramesMachine.Pane() == 1 && splitFrames.Visible() && site.shown && act.shown && site.frame.right <= act.frame.left - 8 + .01f && paneRect(1).W() < 400,
+                  "F6 into a narrow pane: frames shown, the site frame trimmed 8 DIP before the actions"); }
+        chrome.width = 1180; ApplyPages();
+        // Reduced motion: the 120 ms fade, no travel.
+        motion.SetReducedMotion(true); current = 0; ApplyPages(); splitFramesMachine.Dismiss(); splitFrames.Hide();
+        InPage(); ToggleChromeFocus(false);
+        {   const auto now = NativeChrome::Motion::Now();
+            Check(splitFramesMachine.Reduced() && splitFramesMachine.Flashing() && Near(splitFramesMachine.Progress(now + milliseconds(130)), 1, .01f), "reduced motion: F6 fades the frames in (120 ms)");
+            Check(Near(NativeChrome::SplitFrames::PoseAt(.5f, true, true).dx, 0) && Near(NativeChrome::SplitFrames::PoseAt(.5f, true, true).dy, 0), "reduced motion: no travel"); }
+        motion.SetReducedMotion(false);
+        address = nullptr; DestroyWindow(standIn);
+        splitFramesFrontForTest = false; splitFramesMachine.Dismiss(); splitFrames.Hide(); splitGroups.clear(); for (auto& t : pages) t->group = 0;
+    }
 
     // ---- Pictures: the boards' two scenes at 100 / 125 / 150 %, the morph's poses, reduced motion, hover
     const std::vector<SV::Box> panes{{4, 81, 588, 811}, {592, 81, 1176, 811}};

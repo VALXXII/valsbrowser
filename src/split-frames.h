@@ -26,6 +26,9 @@
 // follow at once and arrive again), the narrow pane (the address trims first, gone under 24 DIP, then the name; with no
 // room even for the favicon the site frame steps aside), the glyphs' hover (white 90 %) and press (white 70 %), a click
 // on the site frame (it activates that pane, as a click on the page would).
+// Keyboard (Val 2026-11-26): F6 / Maj+F6, Tab into another pane's page and the tab shortcuts inside the split show the
+// frames on the pane that receives the focus, at once with the same morph, for Timing::flash (1.2 s, provisional), then
+// they leave as after a hover; the pointer over a pane's top wins.
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -50,6 +53,9 @@ static_assert(Layout::actionsWidth == 58, "Paper 27GI-0: 8 + 16 + 8 + 16 + 10");
 
 namespace Timing {
 inline constexpr Motion::Milliseconds showDelay{150}, hideDelay{400};   // provisional (not drawn)
+// A keyboard move to another pane (F6 / Maj+F6…): the frames stay this long from their arrival, then leave as after a
+// hover (Val 2026-11-26: « a short moment »; provisional).
+inline constexpr Motion::Milliseconds flash{1200};
 inline constexpr Downloads::Spring enterSpring = Downloads::DrawerMotion::morphSpring, exitSpring = Downloads::DrawerMotion::exitSpring;
 inline constexpr Motion::Milliseconds enter = Downloads::DrawerMotion::morph, exit = Downloads::DrawerMotion::exit, fade{120};
 inline constexpr float contentLead = Downloads::DrawerMotion::morphLead;   // content fades in over the morph's last 75 %
@@ -139,21 +145,22 @@ public:
     // direction changed (the host re-lays out its windows).
     bool Update(const Input& in, Motion::Time now) {
         const int before = pane_; const float target = reveal_.Target();
-        if (pane_ >= static_cast<int>(in.panes.size())) { pane_ = -1; reveal_.Snap(0); leavingSince_ = false; }   // its pane is gone (closed, reduced, layout)
+        if (pane_ >= static_cast<int>(in.panes.size())) { pane_ = -1; reveal_.Snap(0); leavingSince_ = false; flashing_ = false; }   // its pane is gone (closed, reduced, layout)
         const bool shown = pane_ >= 0 && reveal_.Target() > 0, leaving = pane_ >= 0 && reveal_.Target() == 0;
         const int zone = in.active && in.pointer ? ZoneAt(in.panes, in.x, in.y) : -1;
-        if (!in.active) { candidate_ = -1; leavingSince_ = false; if (pane_ >= 0) Hide(now); }
-        else if (shown && zone == pane_) { candidate_ = -1; leavingSince_ = false; }
+        if (!in.active) { candidate_ = -1; leavingSince_ = false; flashing_ = false; if (pane_ >= 0) Hide(now); }
+        else if (shown && zone == pane_) { candidate_ = -1; leavingSince_ = false; flashing_ = false; }   // the pointer takes over a keyboard flash
         else if (zone >= 0 && !in.buttons && (shown || leaving) && pane_ >= 0) {
             // Frames on screen (or still leaving): they follow the pointer at once, no second wait.
             if (zone != pane_) { pane_ = zone; reveal_.Snap(0); }
-            Show(now); candidate_ = -1; leavingSince_ = false;
+            Show(now); candidate_ = -1; leavingSince_ = false; flashing_ = false;
         } else if (zone >= 0 && !in.buttons) {
             if (candidate_ != zone) { candidate_ = zone; since_ = now; }
             else if (now - since_ >= Timing::showDelay) { pane_ = zone; reveal_.Snap(0); Show(now); candidate_ = -1; }
         } else {
             candidate_ = -1;
-            if (shown) {
+            if (shown && flashing_) { if (now >= flashUntil_) { Hide(now); flashing_ = false; } }   // a keyboard flash: its own moment, then out
+            else if (shown) {
                 if (!leavingSince_) { leavingSince_ = true; left_ = now; }
                 else if (now - left_ >= Timing::hideDelay) { Hide(now); leavingSince_ = false; }
             }
@@ -170,13 +177,25 @@ public:
         Motion::Wake wake; if (reveal_.Moving(now)) wake = Motion::Frame();
         if (candidate_ >= 0) wake = Motion::Earlier(wake, Motion::Deadline(now, since_ + Timing::showDelay));
         if (leavingSince_) wake = Motion::Earlier(wake, Motion::Deadline(now, left_ + Timing::hideDelay));
+        if (flashing_) wake = Motion::Earlier(wake, Motion::Deadline(now, flashUntil_));
         return wake;
     }
+    // The keyboard moved to pane `pane` (F6 / Maj+F6, Tab into its page, Ctrl+Tab / Ctrl+1…9 inside the split; Val
+    // 2026-11-26): the frames arrive there at once (no show delay, the same corner morph), stay Timing::flash and leave
+    // as after a hover. The pointer over a pane's top wins: then nothing happens here (hover rules). False when not shown.
+    bool Flash(int pane, const Input& in, Motion::Time now) {
+        if (!in.active || pane < 0 || pane >= static_cast<int>(in.panes.size())) return false;
+        if (in.pointer && ZoneAt(in.panes, in.x, in.y) >= 0) return false;
+        if (pane_ != pane) { pane_ = pane; reveal_.Snap(0); }
+        Show(now); candidate_ = -1; leavingSince_ = false; flashing_ = true; flashUntil_ = now + Timing::flash;
+        return true;
+    }
+    bool Flashing() const noexcept { return flashing_; }
     // At once, without motion (a click on « réduire » / « fermer »: the pane goes away under the frames).
-    void Dismiss() noexcept { pane_ = -1; candidate_ = -1; leavingSince_ = false; reveal_.Snap(0); }
+    void Dismiss() noexcept { pane_ = -1; candidate_ = -1; leavingSince_ = false; flashing_ = false; reveal_.Snap(0); }
 private:
-    int pane_ = -1, candidate_ = -1; bool reduced_ = false, leavingSince_ = false;
-    Motion::Time since_{}, left_{};
+    int pane_ = -1, candidate_ = -1; bool reduced_ = false, leavingSince_ = false, flashing_ = false;
+    Motion::Time since_{}, left_{}, flashUntil_{};
     Downloads::Lane reveal_;
     void Show(Motion::Time now) {
         if (reduced_) reveal_.Set(1, now, Motion::Milliseconds(0), Timing::fade, Downloads::Curves::emphasized);

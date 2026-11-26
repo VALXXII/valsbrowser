@@ -102,6 +102,46 @@ int main() {
         Machine m; m.SetReduced(true); m.Update(in(900, 90), t0); m.Update(in(900, 90), At(t0, 160));
         Check(Near(m.Progress(At(t0, 160 + 125)), 1), "reduced motion: the fade lasts 120 ms");
     }
+    // ---- Keyboard moves (Val 2026-11-26): F6 / Maj+F6 & co. flash the frames on the pane receiving the focus
+    {   const int hold = static_cast<int>(Timing::flash.count());
+        auto away = [&](bool active = true) { Input i = in(300, 500, active); return i; };   // the pointer low in a page (no zone)
+        Machine m;
+        Check(m.Flash(1, away(), t0) && m.Pane() == 1 && m.Showing() && m.Flashing(), "F6 to the right pane: the frames arrive there at once (no show delay)");
+        Check(m.Moving(At(t0, 30)) && m.Progress(At(t0, 30)) > 0 && m.Progress(At(t0, 30)) < 1, "the same corner morph (in motion)");
+        m.Update(away(), At(t0, 600)); m.Update(away(), At(t0, hold - 20)); Check(m.Showing(), "still shown just before Timing::flash (the pointer elsewhere)");
+        m.Update(away(), At(t0, hold + 10)); Check(m.Pane() == 1 && !m.Showing() && !m.Flashing(), "after Timing::flash: they leave as after a hover (exit spring)");
+        Check(m.Progress(At(t0, hold + 60)) > 0 && m.Progress(At(t0, hold + 60)) < 1, "leaving: the morph runs back");
+        m.Update(away(), At(t0, hold + 10 + static_cast<int>(Timing::exit.count()) + 5)); Check(m.Pane() == -1, "gone");
+        // Maj+F6 back to the left pane while they show on the right: they move there and arrive again.
+        m.Flash(1, away(), At(t0, 5000)); m.Update(away(), At(t0, 5400));
+        Check(m.Flash(0, away(), At(t0, 5500)) && m.Pane() == 0 && m.Progress(At(t0, 5500)) < .01f, "Maj+F6 to the left pane: the frames move there and arrive again");
+        m.Update(away(), At(t0, 5500 + hold - 20)); Check(m.Showing(), "its own moment starts again");
+        m.Update(away(), At(t0, 5500 + hold + 10)); Check(!m.Showing(), "then out");
+    }
+    {   // Three panes, F6 to the third.
+        Machine m; Input i3; i3.active = true; i3.pointer = true; i3.x = 100; i3.y = 600; i3.panes = {{4, 81, 392, 811}, {396, 81, 784, 811}, {788, 81, 1176, 811}};
+        Check(m.Flash(2, i3, t0) && m.Pane() == 2, "three panes: F6 to the third, its frames");
+        Check(!m.Flash(3, i3, t0) && !m.Flash(-1, i3, t0) && m.Pane() == 2, "no pane there (a rail or none): nothing changes");
+    }
+    {   // Hover during the keyboard moment: the pointer takes over.
+        Machine m; auto away = in(300, 500);
+        m.Flash(1, away, t0); m.Update(in(900, 90), At(t0, 300));
+        Check(m.Pane() == 1 && m.Showing() && !m.Flashing(), "the pointer reaches the flashed pane's top: hover rules from now on");
+        m.Update(in(900, 90), At(t0, 2500)); Check(m.Showing(), "kept past the keyboard moment while the pointer is there");
+        m.Update(away, At(t0, 2600)); m.Update(away, At(t0, 3010)); Check(!m.Showing(), "pointer gone: out after the hover's 400 ms");
+        Machine n; n.Flash(1, away, t0); n.Update(in(300, 90), At(t0, 200));
+        Check(n.Pane() == 0 && !n.Flashing(), "the pointer at the other pane's top during the moment: the frames follow the pointer");
+        Machine o; o.Update(in(300, 90), t0);   // the pointer already rests at the left pane's top
+        Check(!o.Flash(1, in(300, 90), At(t0, 50)) && o.Candidate() == 0, "F6 while the pointer is over a pane's top: hover wins, no flash");
+        Machine q; Check(!q.Flash(1, in(300, 500, false), t0) && q.Pane() == -1, "window not in front: no flash");
+        Machine r; r.Flash(1, away, t0); r.Update(in(300, 500, false), At(t0, 300)); Check(!r.Showing() && !r.Flashing(), "the window leaves the front during the moment: out at once");
+        Check(r.NextWake(At(t0, 300)).delay.has_value(), "frames requested while it leaves");
+    }
+    {   // Reduced motion: the 120 ms fade, no travel.
+        Machine m; m.SetReduced(true); const auto away = in(300, 500);
+        m.Flash(0, away, t0); Check(Near(m.Progress(At(t0, 125)), 1) && Near(PoseAt(m.Progress(At(t0, 60)), true, false).dx, 0), "reduced motion: F6 fades the frames in (120 ms), no travel");
+        m.Update(away, At(t0, static_cast<int>(Timing::flash.count()) + 10)); Check(!m.Showing() && Near(m.Progress(At(t0, static_cast<int>(Timing::flash.count()) + 140)), 0), "and fades them out");
+    }
     std::printf("\n%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

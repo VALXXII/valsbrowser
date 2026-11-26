@@ -268,7 +268,7 @@ struct TabDrag { std::shared_ptr<Tab> tab; POINT start{}; float grab=0; bool act
 std::map<int,SV::Orientation> splitGroups; int nextSplitGroup=1; std::uint64_t useClock=0; int splitResize=-1;
 NativeChrome::SplitUI::Overlay splitOverlay;NativeChrome::StatusBubble::Bubble statusBubble;unsigned statusSerial=0;
 NativeChrome::SplitFrames::Machine splitFramesMachine;NativeChrome::SplitFrames::Frames splitFrames;bool splitFramesPolling=false;constexpr UINT_PTR SplitFramesPollTimerId=0x5346; /* split view hover frames: state machine, windows, pointer poll */
-void SplitFramesEvaluate();void SplitFramesTick(NativeChrome::Motion::Time now);NativeChrome::Motion::Wake SplitFramesWake(NativeChrome::Motion::Time now);
+void SplitFramesEvaluate();void SplitFramesTick(NativeChrome::Motion::Time now);NativeChrome::Motion::Wake SplitFramesWake(NativeChrome::Motion::Time now);void SplitFramesFlash();void SplitFramesFlashIfMoved(const std::shared_ptr<Tab>& before,int group);
 struct SeparatorDrag { bool active=false; int handle=-1,slot=-1; float grab=0; std::vector<float> extents; float last=0; DWORD lastTime=0; float velocity=0; } sepDrag; int lastSeparator=-1; DWORD lastSeparatorClick=0;
 // Annotation mode entry points (src/annotation-mode.h; no-op stubs when the feature is compiled out).
 constexpr int AnnotateCommand=3060,AnnotateExitCommand=3061,ChatCommand=3063; /* chat intégré (src/chat-host.h): Ctrl+Maj+D, the panel's width taken from the page area, the reload hook, shutdown */ float ChatInsetDip(); void ChatNavigationCompleted(const std::shared_ptr<Tab>& t); void ChatShutdown(); void ChatAgentsStartup(); void ChatAgentsShutdown(); /* « Ton agent »: the agents' one status (src/agent-status.h) */ void AnnotationStartup(); void AnnotationShutdown(); /* #125: a private window's notes erased at its close, leftovers at the next start */ bool AnnotationChatShortcut(); bool AnnotationSettingsAvailable(); bool AnnotationsCompiled(); bool AnnotationModeActive(); bool AnnotationBandSliding(); bool AnnotationSurfaceFocus(); void AnnotationSyncChrome(); void AnnotationLayout(); void AnnotationWindowState(); void AnnotationNavigation(const std::shared_ptr<Tab>& t); void AnnotationTabChanged(); void AnnotationTabSleeping(const std::shared_ptr<Tab>& t); bool AnnotationPageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceivedEventArgs* a); bool AnnotationCommand(int cmd);
@@ -463,8 +463,8 @@ void ToggleChromeFocus(bool back=false){
     // view the pages come first, in panel order (Shift+F6 walks back).
     if(UpdateToastHasFocus()||InFullscreen()){FocusPage();return;}   // fullscreen: no chrome to cycle through
     auto panels=ShownPanels();
-    if(GetFocus()==window||GetFocus()==address){editing=false;if(!back&&FocusUpdateToast()){keyboardFocus=0;InvalidateChrome();return;}if(!back&&FocusContextToast()){keyboardFocus=0;InvalidateChrome();return;}if(panels.size()>1){Select(back?panels.back():panels.front());}FocusPage();return;}
-    if(panels.size()>1){auto it=std::find(panels.begin(),panels.end(),current);if(it!=panels.end()){const int k=(int)(it-panels.begin())+(back?-1:1);if(k>=0&&k<(int)panels.size()){Select(panels[k]);return;}}}
+    if(GetFocus()==window||GetFocus()==address){editing=false;if(!back&&FocusUpdateToast()){keyboardFocus=0;InvalidateChrome();return;}if(!back&&FocusContextToast()){keyboardFocus=0;InvalidateChrome();return;}if(panels.size()>1){Select(back?panels.back():panels.front());}FocusPage();if(panels.size()>1)SplitFramesFlash(); /* split view: the frames show on the pane the keyboard lands on */return;}
+    if(panels.size()>1){auto it=std::find(panels.begin(),panels.end(),current);if(it!=panels.end()){const int k=(int)(it-panels.begin())+(back?-1:1);if(k>=0&&k<(int)panels.size()){Select(panels[k]);SplitFramesFlash();return;}}}
     SetFocus(window);auto order=chrome.FocusOrder();keyboardFocus=order.empty()?0:order.front();FocusAnchor(L"F6");InvalidateChrome();
 }
 void FindInPage(){
@@ -887,6 +887,7 @@ void ActivatePanel(const std::shared_ptr<Tab>& tab){
     current=i;tab->usedAt=++useClock;editing=false;ShowWindow(address,SW_HIDE);ClearChromeMotion();motion.SelectTab((int)tab->serial,NativeChrome::Motion::Now());
     keyboardModality=keyboard;
     SyncSplitDecor();Update();ScheduleMotion(NativeChrome::Motion::Now());AnnotationTabChanged();
+    if(keyboard)SplitFramesFlash(); /* Tab into another pane's page: the frames show there (a click shows nothing) */
 }
 void AnnounceSplit(const std::wstring& text);
 // Strip placement: `t` right before (after=false) or right after `anchor`.
@@ -1312,7 +1313,8 @@ void Close(){CloseAt(current);}
 // still show), the pointer is polled every ~30 ms, as Mode Focus and the compact column do. The machine sees the visible
 // panes in panel order; splitFramesTabs / splitFramesPanes keep which tab each one shows and where.
 std::vector<std::weak_ptr<Tab>> splitFramesTabs;std::vector<NativeChrome::Split::Box> splitFramesPanes;
-bool SplitFramesFront(){if(!window)return false;HWND fg=GetForegroundWindow();return fg&&(fg==window||GetAncestor(fg,GA_ROOTOWNER)==window)&&IsWindowVisible(window)&&!IsIconic(window);}
+bool splitFramesFrontForTest=false;   // host tests: the never-shown window counts as in front
+bool SplitFramesFront(){if(!window)return false;if(splitFramesFrontForTest)return true;HWND fg=GetForegroundWindow();return fg&&(fg==window||GetAncestor(fg,GA_ROOTOWNER)==window)&&IsWindowVisible(window)&&!IsIconic(window);}
 NativeChrome::SplitFrames::Input SplitFramesInput(){
     NativeChrome::SplitFrames::Input in;splitFramesTabs.clear();auto v=CurrentSplit();if(!window||halted||!v.group)return in;
     for(auto& s:v.a.slots)if(!s.rail){in.panes.push_back(s.box);splitFramesTabs.push_back(v.members[s.member]);}
@@ -1339,6 +1341,17 @@ void SplitFramesEvaluateAt(NativeChrome::Motion::Time now,bool schedule){
     SplitFramesPaint(now);if(schedule&&splitFramesMachine.Moving(now))ScheduleMotion(now);
 }
 void SplitFramesEvaluate(){SplitFramesEvaluateAt(NativeChrome::Motion::Now(),true);}
+// The keyboard moved to another pane (F6 / Maj+F6, Tab into its page, Ctrl+Tab / Ctrl+1...9 inside the split; Val
+// 2026-11-26): the frames arrive on the pane that has the focus now, stay a moment (Timing::flash) and leave as after a
+// hover. The pointer over a pane's top wins (hover rules). Screen readers: the active page is announced as before.
+void SplitFramesFlash(){
+    if(!window)return;const auto now=NativeChrome::Motion::Now();const auto in=SplitFramesInput();splitFramesPanes=in.panes;
+    int pane=-1;const auto a=Active();for(size_t i=0;i<splitFramesTabs.size();++i)if(splitFramesTabs[i].lock()==a)pane=(int)i;
+    splitFramesMachine.SetReduced(motion.ReducedMotion());if(!splitFramesMachine.Flash(pane,in,now))return;
+    SplitFramesEvaluateAt(now,true);
+}
+// A tab shortcut that stayed inside the split view on screen but changed its active pane.
+void SplitFramesFlashIfMoved(const std::shared_ptr<Tab>& before,int group){if(group&&VisibleGroup()==group&&Active()!=before)SplitFramesFlash();}
 void SplitFramesTick(NativeChrome::Motion::Time now){if(splitFramesMachine.Pane()>=0||splitFrames.Visible())SplitFramesEvaluateAt(now,false);}
 NativeChrome::Motion::Wake SplitFramesWake(NativeChrome::Motion::Time now){return splitFramesMachine.Moving(now)?NativeChrome::Motion::Frame():NativeChrome::Motion::Wake{};}
 // « réduire »: the page leaves the split view and stays a tab (the split view's « back to a tab », as a member dragged out
@@ -1360,7 +1373,7 @@ void SplitFramesInit(HINSTANCE hi){
     splitFrames.action=[](int a){SplitFramesAction(a);};splitFrames.activate=[]{SplitFramesActivate();};splitFrames.changed=[]{SplitFramesPaint(NativeChrome::Motion::Now());};
 }
 void Command(int cmd){if(cmd==MotionLabCommand){if(motionLabMode)motionLab.Toggle();return;}if(halted||!chrome.Enabled(cmd))return;SideFocusCommand(cmd);
-    if(tabDrag.tab){CancelTabDrag();if(GetCapture()==window)ReleaseCapture();UpdateInteraction(hover,0);}auto t=Active();if(cmd>=SelectTabBase&&cmd<SelectTabBase+9){Select(cmd==SelectTabBase+8?(int)pages.size()-1:cmd-SelectTabBase);return;}switch(cmd){case FocusChrome:ToggleChromeFocus();break;case FocusChromeBack:ToggleChromeFocus(true);break;case FindPage:OpenFindBar();break;case '{':MoveTab(current,current-1);break;case '}':MoveTab(current,current+1);break;case 'L':FocusAddress();break;case ']':if(!pages.empty())Select((current+1)%(int)pages.size());break;case '[':if(!pages.empty())Select((current+(int)pages.size()-1)%(int)pages.size());break;case 'T':NewTab(NewTabTarget(),UserTabIndex());FocusAddress();break;case 'W':Close();break;case 'U':ReopenTab();break;case 'R':if(t&&t->view.p&&t->loading.IsLoading()){Check(t->view->Stop(),L"Stop");break;}if(t&&t->view.p&&CheckTab(t->view->Reload(),L"Reload")){t->refreshing=true;auto now=NativeChrome::Motion::Now();chrome.lottie.RefreshBegin(now);SyncStopMorph(now);InvalidateChrome();ScheduleMotion(now);}break;case 'H':Navigate(t,L"");break;case 'B':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoBack(&yes);if(yes&&Check(t->view->GoBack(),L"GoBack")){auto now=NativeChrome::Motion::Now();chrome.nav.back.Kick(-1,now,motion.ReducedMotion(),TravelParams(true));InvalidateChrome();ScheduleMotion(now);}}break;case 'F':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoForward(&yes);if(yes&&Check(t->view->GoForward(),L"GoForward")){auto now=NativeChrome::Motion::Now();chrome.nav.forward.Kick(1,now,motion.ReducedMotion(),TravelParams(false));InvalidateChrome();ScheduleMotion(now);}}break;default:ExtraCommand(cmd);break;}}
+    if(tabDrag.tab){CancelTabDrag();if(GetCapture()==window)ReleaseCapture();UpdateInteraction(hover,0);}auto t=Active();if(cmd>=SelectTabBase&&cmd<SelectTabBase+9){const auto before=Active();const int group=VisibleGroup();Select(cmd==SelectTabBase+8?(int)pages.size()-1:cmd-SelectTabBase);SplitFramesFlashIfMoved(before,group);return;}switch(cmd){case FocusChrome:ToggleChromeFocus();break;case FocusChromeBack:ToggleChromeFocus(true);break;case FindPage:OpenFindBar();break;case '{':MoveTab(current,current-1);break;case '}':MoveTab(current,current+1);break;case 'L':FocusAddress();break;case ']':if(!pages.empty()){const int group=VisibleGroup();Select((current+1)%(int)pages.size());SplitFramesFlashIfMoved(t,group);}break;case '[':if(!pages.empty()){const int group=VisibleGroup();Select((current+(int)pages.size()-1)%(int)pages.size());SplitFramesFlashIfMoved(t,group);}break;case 'T':NewTab(NewTabTarget(),UserTabIndex());FocusAddress();break;case 'W':Close();break;case 'U':ReopenTab();break;case 'R':if(t&&t->view.p&&t->loading.IsLoading()){Check(t->view->Stop(),L"Stop");break;}if(t&&t->view.p&&CheckTab(t->view->Reload(),L"Reload")){t->refreshing=true;auto now=NativeChrome::Motion::Now();chrome.lottie.RefreshBegin(now);SyncStopMorph(now);InvalidateChrome();ScheduleMotion(now);}break;case 'H':Navigate(t,L"");break;case 'B':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoBack(&yes);if(yes&&Check(t->view->GoBack(),L"GoBack")){auto now=NativeChrome::Motion::Now();chrome.nav.back.Kick(-1,now,motion.ReducedMotion(),TravelParams(true));InvalidateChrome();ScheduleMotion(now);}}break;case 'F':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoForward(&yes);if(yes&&Check(t->view->GoForward(),L"GoForward")){auto now=NativeChrome::Motion::Now();chrome.nav.forward.Kick(1,now,motion.ReducedMotion(),TravelParams(false));InvalidateChrome();ScheduleMotion(now);}}break;default:ExtraCommand(cmd);break;}}
 bool BookmarkPopoverFocus();bool SmokeBookmarks();bool FolderRenameFocus();
 bool EscapeOwnedBySurface(HWND focus); // below, after the surfaces: a drawer or a toolbar popover with the keyboard closes on its own Échap
 bool EscapeLeavesAnnotation(bool modeActive,HWND focus); // below: Key()'s decision for Échap in the annotation mode (tests/shortcuts_test.cpp)
