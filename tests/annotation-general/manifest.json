@@ -232,6 +232,17 @@
       ]
     },
     {
+      "id": "agent-guard",
+      "title": "Garde-fou des agents : faux agent manquant = rien ne démarre, clés retirées, aucun vrai Claude / Codex sous un navigateur de test",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/agent-guard/run_tests.py"
+      ],
+      "timeout": 300
+    },
+    {
       "id": "real-trial-records",
       "title": "O9 : comptes rendus des deux essais réels (Claude Code, Codex) — toutes les étapes passées, aucune configuration réelle modifiée",
       "part": "day",
@@ -553,6 +564,16 @@
         "tests/chat/chat_qa_lot_r.py"
       ],
       "timeout": 1800
+    },
+    {
+      "id": "panel-model-click",
+      "title": "Chat à droite : un vrai clic sur le bouton du modèle ouvre son menu, aussi quand une autre fenêtre était devant",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/final/panel_model_click.py"
+      ],
+      "timeout": 600
     },
     {
       "id": "focus-annotation",

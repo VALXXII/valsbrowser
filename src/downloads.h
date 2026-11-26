@@ -17,12 +17,14 @@
 #include <vector>
 #include "motion.h"
 #include "design-system.h"
+#include "download-file-kind.h"
 
 namespace NativeChrome { namespace Downloads {
 enum class State { InProgress, Paused, Completed, Failed, Cancelled };
 struct Item {
     int id = 0;
     std::wstring path, uri, reason;  // reason: short failure text (Failed only)
+    std::wstring mime;               // the server's MIME type, CleanMime'd ("" unknown): with the extension, the row's icon (KindOf)
     State state = State::InProgress;
     std::int64_t received = 0, total = 0; // total <= 0: unknown size, never simulated
     std::int64_t endTime = 0;             // estimated end, Unix ms; 0 = unknown
@@ -332,7 +334,10 @@ inline void WriteHistory(std::ostream& out, const std::vector<Item>& items) {
     for (const auto& item : items) {
         if (!Persistent(item) || item.path.empty() || written >= HistoryLimit) continue;
         const char state = item.state == State::Completed ? 'C' : item.state == State::Failed ? 'F' : 'X';
-        out << state << '\t' << (item.total > 0 ? item.total : item.received) << '\t' << item.started << '\t' << ToUtf8(item.path) << '\t' << ToUtf8(item.uri) << '\t' << ToUtf8(item.reason) << '\n';
+        // The MIME type is a trailing field (2026-11-26): still version 2, older builds read the five before it.
+        out << state << '\t' << (item.total > 0 ? item.total : item.received) << '\t' << item.started << '\t' << ToUtf8(item.path) << '\t' << ToUtf8(item.uri) << '\t' << ToUtf8(item.reason);
+        if (!item.mime.empty()) out << '\t' << ToUtf8(CleanMime(item.mime));
+        out << '\n';
         ++written;
     }
 }
@@ -392,6 +397,7 @@ inline std::vector<Item> ReadHistory(std::istream& in, int& nextId) {
         if (fields[1].empty() || !end || *end || bytes < 0) continue;
         if (!FromUtf8(fields[2], item.path) || item.path.empty() || !FromUtf8(fields[3], item.uri)) continue;
         if (fields.size() > 4 && !FromUtf8(fields[4], item.reason)) continue;
+        if (version == 2 && fields.size() > 5) { std::wstring mime; if (FromUtf8(fields[5], mime)) item.mime = CleanMime(mime); }
         item.received = item.total = bytes; item.started = started; item.id = nextId++;
         items.push_back(std::move(item));
     }
@@ -409,6 +415,7 @@ namespace Panel {
 using Design::Box;
 inline constexpr float width = 268, padding = Design::Space::lg, headerHeight = Design::Size::compact;
 inline constexpr float tile = Design::Size::control, rowGap = Design::Space::lg, pitch = tile + rowGap;
+inline constexpr float fileIcon = 24;   // in the tile: the shell icon, or an image's thumbnail / glyph in its place
 inline constexpr float textLeft = padding + tile + Design::Space::md;           // 56
 inline constexpr float line = 16, detailText = 14, detailIcon = 14, iconGap = Design::Space::xs, groupGap = Design::Space::sm;
 inline constexpr float button = Design::Size::compact, buttonGap = Design::Space::sm;
@@ -492,6 +499,27 @@ inline float liveRight = 0, liveRadius = 0;
 // Mode Focus also keeps them 4 DIP above the window's bottom edge (Paper « Annotation + Focus · barre du haut · tiroir
 // ouvert »: 612 high from 124 in a 740 window), their bottom corners square. 0 outside focus mode.
 inline float liveBottom = 0;
+// The side the drawers dock on (#143, owner 2026-11-25): the tab panel's. `liveLeft` in the side panel's layouts (complete,
+// compact, their Mode Focus): docked on the LEFT, their left edge `liveDock` DIP from the window's left edge (the panel's
+// right edge, 0 = the window's own edge), everything mirrored (the slide enters from that edge, the hairline on the page
+// side, the bottom corner rounded only on the window's corner). The top bar keeps them on the right (`liveRight`).
+inline bool liveLeft = false;
+inline float liveDock = 0;
+// The four choices Paper does not settle for the left dock (no left-docked board; coordinator 2026-11-25: (a) for each
+// until Designer answers), one switch each.
+namespace Side {
+// Q1: docked against the panel, the drawer touches no window corner: all four corners square (false), or its bottom-left
+// rounded anyway like the window's corner (true). Docked on the window's own left edge it always follows that corner.
+inline constexpr bool roundAgainstPanel = false;
+// Q2: side Focus, a drawer opened while the column is hidden: the column comes at rest at once and stays while the drawer
+// is open, the drawer docked against it (true); or the drawer alone on the window's left edge (false).
+inline constexpr bool focusBringsColumn = true;
+// Q3: the column shown in side Focus has a 1 DIP border outside its right edge: the drawer docks after it or over it,
+// flush with the column: src/sidebar.h FocusSide::drawerAfterBorder (the side layout computes the dock, Layout::drawerDock).
+// Q4: a window narrower than the complete column shows it OVER the page (the fold button): one at a time, opening a
+// drawer closes that column and opening it closes the drawer (true); or the drawer follows its edge (false).
+inline constexpr bool overlayOneAtATime = true;
+}
 // The popover floats 6 DIP in from the window edge; the drawer window keeps that
 // strip (clipped by its region) so the popover rectangle can morph into it.
 inline constexpr float margin = Design::Space::sm;
