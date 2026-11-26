@@ -1572,7 +1572,8 @@ static_assert(DL::Engine::InProgress==COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS&&D
 static_assert(DL::Engine::ReasonUserCanceled==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED&&DL::Engine::ReasonUserShutdown==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_SHUTDOWN&&DL::Engine::ReasonUserPaused==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_PAUSED,"engine interrupt reasons");
 std::map<int,std::shared_ptr<DownloadOperation>> downloadOps;
 // Drops the operations of `owner` (the workspace in the globals by default) whose row is gone from its downloads.
-void PruneDownloadOps(Workspace* owner=WorkspaceNow()){for(auto it=downloadOps.begin();it!=downloadOps.end();)it=it->second->owner==owner&&!FindDownload(it->first)?downloadOps.erase(it):std::next(it);}
+bool KeepWaitingForEngine(int id);   // « Conserver » waiting for the engine's own pass: its operation is kept, row or not
+void PruneDownloadOps(Workspace* owner=WorkspaceNow()){for(auto it=downloadOps.begin();it!=downloadOps.end();)it=it->second->owner==owner&&!FindDownload(it->first)&&!KeepWaitingForEngine(it->first)?downloadOps.erase(it):std::next(it);}
 // Drops every operation of a workspace leaving this window (its engine is closed with it).
 void DropDownloadOps(Workspace* owner){for(auto it=downloadOps.begin();it!=downloadOps.end();)it=it->second->owner==owner?downloadOps.erase(it):std::next(it);}
 bool downloadDismissClick=false;
@@ -1881,7 +1882,8 @@ void KeepCopied(int id);
 void WaitEnginePass(int id){
     auto job=keepJobs.find(id);if(halted||job==keepJobs.end()||job->second.cancelled)return;
     auto& k=job->second;auto found=downloadOps.find(id);
-    if(found==downloadOps.end()||!found->second->op.p){DeleteFileW(k.backup.c_str());keepJobs.erase(job);return;}   // the row went meanwhile
+    if(found==downloadOps.end()||!found->second->op.p){   // the operation went (its profile closed): the path is watched, our name never dropped
+        k.cancelled=true;k.marked=HasZoneMark(k.path);k.cancelAt=GetTickCount64();Log(L"DOWNLOAD keep: the engine's operation went before its pass ended, the path is watched");WatchKept(id);return;}
     auto entry=found->second;auto* op=entry->op.p;
     COREWEBVIEW2_DOWNLOAD_STATE state=COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS;op->get_State(&state);
     COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE;if(state==COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED)op->get_InterruptReason(&reason);
@@ -2082,7 +2084,7 @@ void DownloadAction(int id,DL::Action action){
     case DL::Action::Discard:{if(!item->held)break;const auto path=item->path;
         Log(L"DOWNLOAD held file discarded by the user: "+DL::FileName(path));DownloadAction(id,DL::Action::Remove);
         DeferAfter(1500,[path]{if(GetFileAttributesW(path.c_str())!=INVALID_FILE_ATTRIBUTES&&!DeleteFileW(path.c_str()))Log(L"DOWNLOAD discarded file could not be removed");});break;}
-    case DL::Action::Remove:{if(op&&(item->state==DL::State::InProgress||item->state==DL::State::Paused))op->Cancel();downloadOps.erase(id);downloads.erase(std::find_if(downloads.begin(),downloads.end(),[id](const DL::Item& d){return d.id==id;}));SaveDownloads();DownloadsChanged();UpdateDownloadIcon(false);break;}
+    case DL::Action::Remove:{if(!KeepWaitingForEngine(id)){if(op&&(item->state==DL::State::InProgress||item->state==DL::State::Paused))op->Cancel();downloadOps.erase(id);}   /* a keep goes on without its row */downloads.erase(std::find_if(downloads.begin(),downloads.end(),[id](const DL::Item& d){return d.id==id;}));SaveDownloads();DownloadsChanged();UpdateDownloadIcon(false);break;}
     case DL::Action::ShowInFolder:{const auto path=item->path;CloseDownloadSurfaces();
         PIDLIST_ABSOLUTE pidl=ILCreateFromPathW(path.c_str());HRESULT hr=pidl?SHOpenFolderAndSelectItems(pidl,0,nullptr,0):E_FAIL;if(pidl)ILFree(pidl);
         if(FAILED(hr))Log(L"DOWNLOAD show in folder failed "+path);break;}
