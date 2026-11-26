@@ -430,8 +430,8 @@ def main() -> int:
             ok = r.startswith('invoked') and bool(kept) and row_now.startswith('C\t') and size_ok and row.startswith('C\t') and 'ZoneId=3' in zone(target) and not hidden(target) and not leftovers
             if expect_log:
                 ok = ok and expect_log in b.log()[mark:]
-            if then == 'discard':
-                ok = ok and r.endswith(';then missing')   # « Supprimer » is no longer offered once « Conserver » was chosen
+            if then == 'discard':   # « Supprimer » is no longer offered once « Conserver » was chosen (or, still found an instant, does nothing)
+                ok = ok and (r.endswith(';then missing') or 'DOWNLOAD held file discarded' not in b.log()[mark:])
             if not reader_ms:
                 ok = ok and bool(settled) and not ours()
             check(f'{name}: keep_finishes_the_download', ok, invoke=r, kept=bool(kept), row_at_once=row_now[:2], settled=bool(settled), file_whole=size_ok, history_row=row[:140],
@@ -472,8 +472,11 @@ def main() -> int:
             keep_case('keep-then-close', then='close')
         if (not only or 'keep-insecure' in only) and secure:
             # The page on https, the file on plain http from a host that is not local: held as an insecure download.
+            # No zone mark ever comes on an insecure hold (measured): the cancel comes at the cap (20 s), then the forced
+            # guard (5 min), shortened here by the test hook so the whole flow ends within the case.
             keep_case('keep-insecure', page=secure, file_base=f'http://insecure.test:{port}',
-                      extra_args='--ignore-certificate-errors --host-resolver-rules="MAP insecure.test 127.0.0.1"')
+                      extra_args='--ignore-certificate-errors --host-resolver-rules="MAP insecure.test 127.0.0.1"',
+                      extra_env={'BROWSER_TEST_KEEP_GUARD_MS': '15000'}, expect_log='its pass still runs after the cap')
         elif not secure:
             check('keep-insecure: https fixture', False, error='no openssl: case not run')
         if not only or 'keep-blocked' in only:
