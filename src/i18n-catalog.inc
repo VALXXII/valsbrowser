@@ -516,6 +516,7 @@ I18N(bookmark_announce_undo_hint, L"{0}. Ctrl+Z pour annuler", L"{0}. Ctrl+Z to 
 I18N(bookmark_undo_moved_to_other_folder, L"{0} dans Autres favoris", L"{0} in Other bookmarks")
 I18N(bookmark_undo_failed, L"Impossible d'annuler", L"Couldn’t undo")
 I18N(bookmark_added_to, L"Favori ajouté à {0}", L"Bookmark added to {0}")
+I18N(bookmark_already_in, L"Déjà dans {0}", L"Already in {0}")
 I18N(bookmark_opened_in_tabs_one, L"{0} favori ouvert dans un nouvel onglet", L"{0} bookmark opened in a new tab")
 I18N(bookmark_opened_in_tabs_other, L"{0} favoris ouverts dans de nouveaux onglets", L"{0} bookmarks opened in new tabs")
 I18N(bookmark_open_all_one, L"Ouvrir {0} favori", L"Open {0} bookmark")

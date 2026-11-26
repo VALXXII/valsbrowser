@@ -421,7 +421,7 @@ public:
     std::map<unsigned,Motion::Spring> rowShift;Motion::Spring liftGrow{.0005f};int liftedRow=-1;
     struct RowDropState{unsigned key=0;float top=0,velocity=0;bool pending=false;} rowDrop;
     float RowShift(unsigned key,Motion::Time now)const{auto it=rowShift.find(key);return it==rowShift.end()?0.f:it->second.Value(now);}
-    bool ReorderMoving(Motion::Time now)const{if(liftGrow.Moving(now))return true;for(auto& e:rowShift)if(e.second.Moving(now))return true;return false;}
+    bool ReorderMoving(Motion::Time now)const{if(liftGrow.Moving(now)||BandTabMoving(now))return true;for(auto& e:rowShift)if(e.second.Moving(now))return true;return false;}
     // The host, at the drop (before the list is reordered): the dropped row's last top and the pointer's vertical speed.
     void RowDropped(unsigned key,float top,float velocity,Motion::Time now){rowDrop={key,top,velocity,true};
         // The rows that stepped aside are re-laid out by the move: their offsets keep only what was still on its way.
@@ -824,6 +824,30 @@ public:
     int bandDropInto=-1;           // folder item under the dragged one: drop moves it inside
     float bandInsertX=-1;          // a bookmark dragged from a menu or the drawer: x (DIP) of the insertion line, -1 none
     BookmarksBar::Result band;     // last layout (Build)
+    // Atelier B: a TAB dragged over the bar (top layout). Set by the host while the tab is over the band, cleared when it
+    // leaves, drops or is cancelled: where each shown item goes with the new favorite's place opened (TabFavorite::Opened:
+    // `left` / `width` / `shown` per shown item), that place (`slot`), « » » in that layout, the item that already holds
+    // the page (`duplicate`, hover look) and `toOverflow` (the new one goes behind « » »: the button takes the folder
+    // drop look). The bar lights up with the split view's drop-zone look; the place is board 08's hollow slot; the others
+    // step aside on the reorder spring (1.0 / .2 s), reduced motion: at once, the highlight still fades (80 ms).
+    struct BandTabDrop{bool on=false,slot=false,overflow=false,toOverflow=false;std::vector<float> left,width;std::vector<bool> shown;float slotLeft=0,slotWidth=0,overflowLeft=0;int duplicate=-1;} bandTab;
+    struct BandStep{Motion::Spring l{.05f},w{.05f};};std::map<unsigned,BandStep> bandStep;Motion::Spring bandTabGlow{.002f},bandSlotLeft{.05f},bandSlotWidth{.05f};bool bandSlotKnown=false;
+    bool BandTabMoving(Motion::Time now)const{if(bandTabGlow.Moving(now)||bandSlotLeft.Moving(now)||bandSlotWidth.Moving(now))return true;for(auto& e:bandStep)if(e.second.l.Moving(now)||e.second.w.Moving(now))return true;return false;}
+    // Presented boxes of the shown items while a tab is (or was just) over the bar; empty at rest. Returns the highlight.
+    float BandTabFrame(Motion::Time now,std::vector<D2D1_RECT_F>& at){
+        namespace L=BookmarksBar::Layout;const bool reduced=!motion||motion->ReducedMotion();
+        bandTabGlow.Set(bandTab.on?1.f:0.f,now,reduced?.08f:bandTab.on?.20f:.10f);   // split view: answers within ~200 ms, leaves in 100 ms; reduced: 80 ms
+        const int n=std::min(band.visible,(int)bandItems.size());bool open=bandTab.on&&bandTab.slot;
+        for(int i=0;i<n;++i){const auto rest=BandRect(i);float l=rest.left,w=rest.right-rest.left;
+            if(open&&i<(int)bandTab.left.size()&&i<(int)bandTab.shown.size()){if(bandTab.shown[i]){l=bandTab.left[i];w=bandTab.width[i];}else l=std::max(l,bandTab.overflowLeft);}   // pushed off: slides under « » »
+            auto it=bandStep.find(bandItems[i].id);if(it==bandStep.end()){if(!bandTab.on)continue;it=bandStep.emplace(bandItems[i].id,BandStep{}).first;it->second.l.Snap(rest.left);it->second.w.Snap(rest.right-rest.left);}
+            it->second.l.Set(l,now,stepResponse,reduced);it->second.w.Set(w,now,stepResponse,reduced);}
+        if(open){if(!bandSlotKnown){bandSlotLeft.Snap(bandTab.slotLeft);bandSlotWidth.Snap(0);bandSlotKnown=true;}bandSlotLeft.Set(bandTab.slotLeft,now,stepResponse,reduced);bandSlotWidth.Set(bandTab.slotWidth,now,stepResponse,reduced);}
+        else if(bandSlotKnown){bandSlotWidth.Set(0,now,stepResponse,reduced);if(!bandSlotWidth.Moving(now))bandSlotKnown=false;}
+        if(!bandTab.on&&!BandTabMoving(now)){bandStep.clear();bandSlotKnown=false;return 0;}   // at rest again: the bar's own layout
+        at.clear();for(int i=0;i<n;++i){const auto rest=BandRect(i);auto it=bandStep.find(bandItems[i].id);if(it==bandStep.end()){at.push_back(rest);continue;}const float l=it->second.l.Value(now);at.push_back({l,L::top,l+std::max(0.f,it->second.w.Value(now)),L::bottom});}
+        return std::clamp(bandTabGlow.Value(now),0.f,1.f);
+    }
     // Annotation mode (T3, src/annotation-mode.h): the "Annoter" button ('N') left of the tool cluster, and
     // the 32 DIP "Mode Annotation" band under the toolbar while the mode is on (the page moves down).
     bool annotateShown=false,annotateActive=false; float annotationBand=0; std::wstring annotateTip;   // empty until Ann::SyncChrome: AnnotateTip() falls back to the catalog at use
@@ -854,12 +878,12 @@ public:
     float KeyCapsWidth(){return 2*12+TextWidth(L"Ctrl",14,false,true)+TextWidth(L"D",14,false,true)+2;}
     // Fill of a band item's own surface (for the title's fade mask).
     float BandSurface(float hover,float press){return Design::Resolve(Design::ButtonVariant::Ghost,{hover,press}).fill?Design::Resolve(Design::ButtonVariant::Ghost,{hover,press}).surface:Design::Surface::canvas;}
-    void DrawBandItem(int i,const BandItem& item,int hover,int focus,Motion::Time now){
+    void DrawBandItem(int i,const BandItem& item,int hover,int focus,Motion::Time now,const D2D1_RECT_F* at=nullptr){
         namespace L=BookmarksBar::Layout;const int id=BookmarkBase+i;
-        D2D1_RECT_F box=BandRect(i);const bool dragged=i==bandDrag;
+        D2D1_RECT_F box=at?*at:BandRect(i);const bool dragged=i==bandDrag;   // at: its presented place while a tab opens a slot (atelier B)
         if(dragged){box.left+=bandDragOffset;box.right+=bandDragOffset;}
         auto v=motion?motion->Visual(id,now):Motion::InteractionVisual{hover==id?1.f:0.f,0};
-        if(id==bandOpen||i==bandDropInto||i==bandRenaming)v.hover=1;
+        if(id==bandOpen||i==bandDropInto||i==bandRenaming||(bandTab.on&&i==bandTab.duplicate))v.hover=1;   // atelier B: the item that already holds the dragged tab's page
         const float surface=dragged?Design::Surface::raised:BandSurface(v.hover,v.press);
         if(dragged||v.hover>0||v.press>0)Round(box,Design::Radius::control,surface);
         if(focus==id)FocusRing(box,Design::Radius::control);
@@ -892,17 +916,34 @@ public:
     }
     void DrawBand(int hover,int focus,Motion::Time now){
         if(!bandShown)return;
-        for(int i=0;i<band.visible&&i<(int)bandItems.size();++i)if(i!=bandDrag)DrawBandItem(i,bandItems[i],hover,focus,now);
+        namespace BL=BookmarksBar::Layout;const auto accent=Design::Accent::Get();
+        // Atelier B: a tab over the bar. The bar lights up as a split view drop zone does (Paper --color-browser-split-tint
+        // 16 % fill, a 2 DIP --color-browser-split-accent ring): on the page's 4 DIP side insets, 2 DIP around the items
+        // (the ring sits in that margin, radius 6 + 2 = 8, concentric with the items').
+        std::vector<D2D1_RECT_F> at;const float glow=sidebar?0.f:BandTabFrame(now,at);
+        const float clipRight=bandTab.on&&bandTab.overflow?bandTab.overflowLeft-BL::gap:band.overflow?band.overflowLeft-BL::gap:width;
+        if(glow>.001f){const D2D1_RECT_F zone{Sidebar::Zone::inset,BL::top-BL::gap,width-Sidebar::Zone::inset,BL::bottom+BL::gap};
+            FillBox(zone,Design::Radius::r8,D2D1::ColorF(accent.r,accent.g,accent.b,.16f*glow));
+            brush->SetColor(D2D1::ColorF(accent.r,accent.g,accent.b,glow));target->DrawRoundedRectangle(D2D1::RoundedRect({zone.left+1,zone.top+1,zone.right-1,zone.bottom-1},Design::Radius::r8-1,Design::Radius::r8-1),brush,2);}
+        if(!at.empty())target->PushAxisAlignedClip(D2D1::RectF(0,BL::top-BL::gap,std::max(0.f,clipRight),BL::bottom+BL::gap),D2D1_ANTIALIAS_MODE_ALIASED);   // pushed-off items slide under « » »
+        auto shownAt=[&](int i)->const D2D1_RECT_F*{return i<(int)at.size()?&at[i]:nullptr;};
+        for(int i=0;i<band.visible&&i<(int)bandItems.size();++i)if(i!=bandDrag)DrawBandItem(i,bandItems[i],hover,focus,now,shownAt(i));
         if(bandDrag>=0&&bandDrag<band.visible&&bandDrag<(int)bandItems.size())DrawBandItem(bandDrag,bandItems[bandDrag],hover,focus,now);
+        // Atelier B: where the tab lands, board 08's hollow slot (« 08 · Réordonner »: #FFFFFF0A, a 1 DIP inner #FFFFFF1F, radius 6).
+        if(bandSlotKnown&&glow>.001f){const float l=bandSlotLeft.Value(now),w=bandSlotWidth.Value(now);
+            if(w>1){const D2D1_RECT_F r{l,BL::top,l+w,BL::bottom};const float rr=std::min(Design::Radius::control,w/2);
+                FillBox(r,rr,D2D1::ColorF(1,1,1,10/255.f*glow));brush->SetColor(D2D1::ColorF(1,1,1,31/255.f*glow));target->DrawRoundedRectangle(D2D1::RoundedRect({r.left+.5f,r.top+.5f,r.right-.5f,r.bottom-.5f},std::max(0.f,rr-.5f),std::max(0.f,rr-.5f)),brush,1);}}
+        if(!at.empty())target->PopAxisAlignedClip();
         {   // Drop feedback for a bookmark dragged in from a menu or the drawer: the folder it would enter is tinted with the
-            // accent; otherwise a 2 DIP accent line marks where it would land. Nothing animates at rest.
-            const auto accent=Design::Accent::Get();
-            if(bandDrag<0&&bandDropInto>=0&&bandDropInto<band.visible)FillBox(BandRect(bandDropInto),Design::Radius::control,D2D1::ColorF(accent.r,accent.g,accent.b,.18f));
+            // accent; otherwise a 2 DIP accent line marks where it would land. Nothing animates at rest. (Atelier B: a tab
+            // over a folder's middle takes the same folder look, at the folder's presented place.)
+            if(bandDrag<0&&bandDropInto>=0&&bandDropInto<band.visible)FillBox(shownAt(bandDropInto)?*shownAt(bandDropInto):BandRect(bandDropInto),Design::Radius::control,D2D1::ColorF(accent.r,accent.g,accent.b,.18f));
             if(bandInsertX>=0)FillBox({bandInsertX-1,BookmarksBar::Layout::top+4,bandInsertX+1,BookmarksBar::Layout::bottom-4},1,D2D1::ColorF(accent.r,accent.g,accent.b,1));
         }
-        if(band.overflow){const D2D1_RECT_F box{band.overflowLeft,BookmarksBar::Layout::top,band.overflowLeft+Design::Size::control,BookmarksBar::Layout::bottom};
+        if(band.overflow||(bandTab.on&&bandTab.overflow)){const float ol=bandTab.on&&bandTab.overflow?bandTab.overflowLeft:band.overflowLeft;const D2D1_RECT_F box{ol,BookmarksBar::Layout::top,ol+Design::Size::control,BookmarksBar::Layout::bottom};
             auto v=motion?motion->Visual('O',now):Motion::InteractionVisual{hover=='O'?1.f:0.f,0};if(bandOpen=='O')v.hover=1;
-            DrawButton(L"overflow",box,Design::ButtonVariant::Ghost,{v.hover,v.press,false,focus=='O'});}
+            DrawButton(L"overflow",box,Design::ButtonVariant::Ghost,{v.hover,v.press,false,focus=='O'});
+            if(bandTab.on&&bandTab.toOverflow)FillBox(box,Design::Radius::control,D2D1::ColorF(accent.r,accent.g,accent.b,.18f));}   // atelier B: it goes behind « » »
         if(bandItems.empty()&&!band.overflow){
             // "Toujours" with no bookmark yet: one quiet way in, never an empty strip.
             const D2D1_RECT_F box{BookmarksBar::Layout::padding,BookmarksBar::Layout::top,BookmarksBar::Layout::padding+EmptyBandWidth(),BookmarksBar::Layout::bottom};

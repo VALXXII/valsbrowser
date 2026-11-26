@@ -10,6 +10,7 @@
 #include <windows.h>
 #include <d2d1.h>
 #include <dwrite.h>
+#include <dwrite_1.h>
 #include <memory>
 #include <string>
 #include "favicon.h"
@@ -28,7 +29,8 @@ inline D2D1_COLOR_F SplitAccent(float a) { const auto c = Design::Accent::Get();
 
 struct Plate { bool shown = false; Split::Box box; float opacity = 1; std::wstring title, detail; std::shared_ptr<const FaviconImage> favicon; };
 struct Pill { bool shown = false; float x = 0, y = 0; std::wstring title, detail; };
-struct Card { bool shown = false; Split::Box box; float opacity = 1; std::wstring title; std::shared_ptr<const FaviconImage> favicon; };
+// `tab` (atelier B): the tab dragged onto the favorites, as a lifted tab of the reference page instead of the split card.
+struct Card { bool shown = false; Split::Box box; float opacity = 1; std::wstring title; std::shared_ptr<const FaviconImage> favicon; bool tab = false; };
 // Resize preview tile: a panel's last rendered frame shown at the panel's new rectangle
 // while its page waits to reflow. `blur` (a 1/12 copy) is stretched to cover the whole
 // rectangle; `full` sits at 1:1 from the top-left corner, as reflowed text would.
@@ -188,7 +190,30 @@ private:
         Text(t, b, p.title, {x + 32, y, x + 32 + tw, y + 32}, true, p.opacity);
         if (!p.detail.empty() && room - tw > 24) Text(t, b, p.detail, {x + 32 + tw + 6, y, x + w - 12, y + 32}, false, p.opacity);
     }
+    // Atelier B: the tab over the favorites. Paper « Browser — référence unifiée »: the selected tab's surface (« Tab
+    // Selected »: #292929, radius 6, favicon 16 at 8, title 14 medium at 32) lifted like board 08's ghost (« Fantôme ·
+    // Mobbin (soulevé) »: a 1 DIP inner #FFFFFF0F, shadow 0 6 16 #00000066, title #FFFFFF). The shadow is a stack of 8
+    // transparent layers (no blur effect on this target), 2 DIP apart, 6 DIP down, summing to 40 % under the card.
+    void DrawTabCard(ID2D1RenderTarget* t, ID2D1SolidColorBrush* b, const Card& c) {
+        const D2D1_RECT_F r{c.box.left, c.box.top, c.box.right, c.box.bottom};
+        for (int i = 8; i >= 1; --i) {
+            const float s = (float)i * 2;
+            b->SetColor(D2D1::ColorF(0, 0, 0, .05f * c.opacity));
+            t->FillRoundedRectangle(D2D1::RoundedRect({r.left - s, r.top - s + 6, r.right + s, r.bottom + s + 6}, 6 + s, 6 + s), b);
+        }
+        b->SetColor(D2D1::ColorF(41 / 255.f, 41 / 255.f, 41 / 255.f, c.opacity)); t->FillRoundedRectangle(D2D1::RoundedRect(r, 6, 6), b);
+        b->SetColor(D2D1::ColorF(1, 1, 1, 15 / 255.f * c.opacity)); t->DrawRoundedRectangle(D2D1::RoundedRect({r.left + .5f, r.top + .5f, r.right - .5f, r.bottom - .5f}, 5.5f, 5.5f), b, 1);
+        Fav(t, b, c.favicon, {r.left + 8, r.top + 8, r.left + 24, r.top + 24}, c.opacity);
+        if (r.right - 8 <= r.left + 32 || c.title.empty() || !write || !medium) return;
+        // The tab's label: 14 medium, tracking -0.02 em (--tracking-browser-label), cut with « … » like the tab's.
+        IDWriteTextLayout* layout = nullptr; const D2D1_RECT_F box{r.left + 32, r.top, r.right - 8, r.bottom};
+        if (FAILED(write->CreateTextLayout(c.title.c_str(), (UINT32)c.title.size(), medium, box.right - box.left, box.bottom - box.top, &layout))) return;
+        IDWriteTextLayout1* spaced = nullptr;
+        if (SUCCEEDED(layout->QueryInterface(__uuidof(IDWriteTextLayout1), (void**)&spaced))) { spaced->SetCharacterSpacing(0, -.02f * 14, 0, {0, (UINT32)c.title.size()}); spaced->Release(); }
+        b->SetColor(D2D1::ColorF(1, 1, 1, c.opacity)); t->DrawTextLayout({box.left, box.top}, layout, b, D2D1_DRAW_TEXT_OPTIONS_CLIP); layout->Release();
+    }
     void DrawCard(ID2D1RenderTarget* t, ID2D1SolidColorBrush* b, const Card& c) {
+        if (c.tab) { DrawTabCard(t, b, c); return; }
         const D2D1_RECT_F r{c.box.left, c.box.top, c.box.right, c.box.bottom};
         // Elevation: a soft stack of transparent shadows (no blur effect needed).
         for (int i = 8; i >= 1; --i) {  // 8 faint layers read as one soft 0 4 12 shadow, no visible steps
