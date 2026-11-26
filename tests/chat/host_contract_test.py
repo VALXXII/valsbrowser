@@ -597,7 +597,7 @@ check('Mods, FrameHover };' in xo_host and 'else if (op->string == "frameHover")
       'iframes case 2: the host knows the « frameHover » op (validated: on, n, the rectangle, an origin without a path)')
 xo_mode = code('annotation-mode.h'); ofh = block_after(xo_mode, 'void OnFrameHover(')
 check('case AH::Op::FrameHover: OnFrameHover(t, c.env); break;' in xo_mode and 'SetTimer(post, XoShowTimer, FC::CardSpec::showDelayMs, nullptr)' in ofh
-      and 'if (e.serial != xo.n) return;' in ofh and 'if (e.gone) { XoCardGone(true); return; }' in ofh and 'SetTimer(post, XoHideTimer, FC::CardSpec::leaveGraceMs, nullptr)' in ofh,
+      and 'if (e.serial != xo.n) return;' in ofh and 'if (e.gone) { XoCardGone(true);' in ofh and 'SetTimer(post, XoHideTimer, FC::CardSpec::leaveGraceMs, nullptr)' in ofh,
       'iframes case 2: the card shows after its delay, its own leave only hides it (after the grace; at once when the page scrolled)')
 check('Cmd(t, L"xoSelect", std::to_wstring(n));' in block_after(xo_mode, 'void XoAnnotate(std::int64_t n) {') and 'xoHelp.Show(Reduced(), std::move(h));' in block_after(xo_mode, 'void XoHelpOpen() {')
       and 'XoReset(); xoCard.Destroy(); xoHelp.Hide(false, true);' in block_after(xo_mode, 'void Exit(const wchar_t* why) {'),
