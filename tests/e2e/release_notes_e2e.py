@@ -25,7 +25,7 @@ Scenarios:
   future-state    previous + pending, state in a future format -> no modal, file unchanged.
   update-en       language=en, previous portable -> Mini EN (« What’s new », « Show all »).
   reduced         reduce-motion=1 in Réglages -> Mini, logo identical between captures (poster), visible.
-  about-full      ordinary launch; command 'A' posted to our window (À propos), UIA Invoke « Notes de version »
+  about-full      ordinary launch; command 'A' posted to our window (À propos), UIA Invoke the « Nouveautés » tile
                   -> Full view, no Voir tout; X (UIA Invoke) closes; no read state written.
 
 Isolation as tests/e2e/language_e2e.py: only processes whose image lives in the fixture are touched; windows are
@@ -394,8 +394,8 @@ def scenario_about():
     d = dialog(p.pid)
     check(d != 0, f'{name}: À propos is open')
     if d:
-        r = ps(PS_INVOKE.format(hwnd=int(d), target='Notes de version'))
-        check('error' not in r, f'{name}: « Notes de version » invoked through UIA ({r.get("error", "ok")})')
+        r = ps(PS_INVOKE.format(hwnd=int(d), target='AboutWhatsNew'))   # « À propos » B: the « Nouveautés » tile
+        check('error' not in r, f'{name}: the « Nouveautés » tile invoked through UIA ({r.get("error", "ok")})')
         u, n = {}, 0
         for _ in range(20):   # the same dialog window is reused: wait until it carries the notes
             time.sleep(0.5); n = dialog(p.pid, 2); u = ps(PS_DIALOG.format(hwnd=int(n))) if n else {}

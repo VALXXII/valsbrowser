@@ -652,7 +652,7 @@ I18N(open_many_action, L"Ouvrir {0} onglets", L"Open {0} tabs")
 I18N(delete_bookmarks_title, L"Supprimer {0} favoris ?", L"Delete {0} bookmarks?")
 I18N(delete_bookmark_title, L"Supprimer ce favori ?", L"Delete this bookmark?")
 I18N(delete_bookmarks_body, L"Vous pourrez annuler juste après depuis la notification.", L"You can undo right after from the notification.")
-I18N(about_version_ready, L"Version {0} prête", L"Version {0} ready")
+I18N(about_version_ready, L"Version {0} disponible", L"Version {0} available")
 I18N(about_installs_on_restart, L"S'installe au redémarrage", L"Installs when you restart")
 I18N(about_restart, L"Redémarrer", L"Restart")
 I18N(about_check_impossible, L"Vérification impossible", L"Couldn’t check")
@@ -661,10 +661,14 @@ I18N(about_checking, L"Recherche de mises à jour…", L"Checking for updates…
 I18N(about_check, L"Rechercher", L"Check")
 I18N(about_up_to_date, L"Browser est à jour", L"Browser is up to date")
 I18N(about_version_line, L"Version {0} · Windows 64 bits", L"Version {0} · Windows 64-bit")
-I18N(about_release_notes, L"Notes de version", L"Release notes")
 I18N(about_licenses, L"Licences des composants tiers", L"Third-party licenses")
 I18N(about_report, L"Signaler un problème", L"Report a problem")
-I18N(about_engine_footnote, L"Moteur Microsoft Edge WebView2 · runtime système", L"Microsoft Edge WebView2 engine · system runtime")
+// « À propos » B tiles (Paper 257R-0): title, then the subtitle under it (« ↗ »: opens a page in a new tab).
+I18N(about_tile_notes_subtitle, L"Notes de la {0}", L"Notes for {0}")
+I18N(about_tile_source, L"Code source", L"Source code")
+I18N(about_tile_source_subtitle, L"Logiciel libre · GitHub ↗", L"Open source · GitHub ↗")
+I18N(about_tile_website, L"Site web", L"Website")
+I18N(about_tile_report_subtitle, L"Sur GitHub ↗", L"On GitHub ↗")
 
 // ---- « Nouveautés » release notes (src/release-notes.h, Paper p-L-0 142E-0 / 144O-0) -------------
 // The items describe what THIS build ships; bump ReleaseNotes::NotesId when they change.
