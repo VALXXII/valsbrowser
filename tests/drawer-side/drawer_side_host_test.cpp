@@ -354,6 +354,24 @@ int wmain(int argc, wchar_t** argv) {
         {   const RECT p = Win(downloadPanel.Window()), c = ClientScreen(); Expect(downloadPanel.Visible() && p.right > (c.left + c.right) / 2, "top bar Focus, Ctrl+J: the menu on the right, as before " + Text(p)); }
         CloseAll(); settings.focusMode = false; Relayout();
     }
+    // ---- 9. Ctrl+J written where Ctrl+H is (Designer, 2026-11-26: board 04's format, name then the key) ----
+    for (auto locale : {I18n::Locale::Fr, I18n::Locale::En}) {
+        I18n::SetForProcess(locale); const bool fr = locale == I18n::Locale::Fr; const std::string lang = fr ? "FR" : "EN";
+        const auto tip = TipContent(TR(chrome_tip_downloads)), history = TipContent(TR(chrome_tip_history));
+        Expect(tip.label == (fr ? L"Téléchargements" : L"Downloads") && tip.shortcut == L"Ctrl+J" && history.shortcut == L"Ctrl+H",
+               lang + ": the Downloads tooltip is its name then the « Ctrl+J » key, as Historique's « Ctrl+H »");
+        const auto label = AccessibleButton('D');
+        Expect(label.name == (fr ? L"Téléchargements" : L"Downloads") && label.accelerator == L"Ctrl+J", lang + ": its accessible name stays the bare name, Ctrl+J as its accelerator");
+        const NativeChrome::ShortcutsPanel::Shortcut* h = nullptr; const NativeChrome::ShortcutsPanel::Shortcut* next = nullptr;
+        for (const auto& s : NativeChrome::ShortcutsPanel::Sections()) for (size_t i = 0; i < s.rows.size(); ++i) if (std::wstring(s.rows[i].label) == TR(history_title)) { h = &s.rows[i]; next = i + 1 < s.rows.size() ? &s.rows[i + 1] : nullptr; }
+        Expect(h && next && std::wstring(next->label) == (fr ? L"Téléchargements" : L"Downloads") && next->keys.size() == 2 && std::wstring(next->keys[0]) == L"Ctrl" && std::wstring(next->keys[1]) == L"J",
+               lang + ": Ctrl+/ panel: « " + (fr ? std::string("Téléchargements") : std::string("Downloads")) + " » Ctrl J right after « Historique » Ctrl H");
+        // The tooltip as drawn (offscreen, the desktop's DPI): evidence for the Designer.
+        RECT target{100, 100, 132, 132}; chromeTip.Show(tip, target);
+        Expect(chromeTip.RenderForTest(base, (out + (fr ? L"\\tip-downloads-fr.png" : L"\\tip-downloads-en.png")).c_str(), GetDpiForWindow(window)), lang + ": the Downloads tooltip rendered");
+        chromeTip.HideNow();
+    }
+    I18n::SetForProcess(I18n::Locale::Fr);
     // ---- 6. Morph rule of « Tout afficher » (pure) ----
     {   namespace DU = NativeChrome::DownloadsUI;
         Expect(DU::MorphFits({6, 0, 274, 300}, 274), "the top bar's popover over the drawer's window: it morphs");

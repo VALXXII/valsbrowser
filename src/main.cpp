@@ -4994,7 +4994,7 @@ AccessibleLabel AccessibleButton(int id){
     case 'K':return {chrome.starred?TR(bookmark_title_edit):TR(a11y_add_bookmark),L"Ctrl+D",L"",L"Bookmark.Star"};
     case 'O':{const size_t hidden=chrome.bandItems.size()-std::min(chrome.bandItems.size(),(size_t)chrome.band.visible),other=bookmarks.Root(BM::OtherRoot).children.size();return {TRF(a11y_other_bookmarks_count,std::to_wstring(hidden+other)),L"",TR(a11y_other_bookmarks_help),L"Bookmarks.Overflow"};}
     case 'E':return {TR(chrome_bookmarks_add_page_full),L"Ctrl+D",L"",L"Bookmarks.AddPage"};
-    case 'D':return {TR(chrome_tip_downloads),L"Ctrl+J",L"",L"Downloads"};
+    case 'D':return {TR(downloads_title),L"Ctrl+J",L"",L"Downloads"};
     case 'V':return {AU::ButtonName(AudioRows(NativeChrome::Motion::Now()),audioToolbar.Music()),L"",TR(a11y_audio_help),L"SiteAudio"};
     case 'P':return {TR(a11y_new_private_window),TR(key_ctrl_shift_n),privateWindow?TR(a11y_private_this_window_help):TR(a11y_private_new_window_help),L"Private"};
     case 'S':return {TR(chrome_tip_settings),L"",L"",L"Settings"};
