@@ -2,6 +2,8 @@
 """Mode Focus entry / exit, frame by frame, on a HIDDEN Windows desktop (daytime-safe: nothing on the user's screen).
 
     python tests/focus/transition_qa.py --app <built app dir> --out <scratch dir> [--layout top|side|compact]
+    (side / compact: the #127 side layouts, --tab-layout: the column slides out by the left edge; the page's left edge is
+    judged frame by frame as its top is)
                                         [--reduced] [--scenario enter-exit|interrupt] [--frames-png]
 
 A throwaway portable copy of the app (its data beside it, LOCALAPPDATA of the child redirected, onboarding and the
@@ -68,6 +70,9 @@ k32.CreateProcessW.argtypes = [W.LPCWSTR, W.LPWSTR, ctypes.c_void_p, ctypes.c_vo
 k32.CreateProcessW.restype = W.BOOL
 
 PAGE_RGB = (0x2E, 0x7D, 0xF6)   # the page's flat colour: neither the canvas grey, nor black, nor white
+# The edge that carries the motion: the top bar's layout, the page's top (81 -> 4); the side layouts (#127), its left edge
+# (the column's width -> 4: the column slides out by the left edge) — their top (40 / 32 -> 4) is judged too.
+EDGE = 'top' if a.layout == 'top' else 'left'
 # A 2 px corner of the page changes by one level of blue every frame (invisible): the page presents continuously, so the
 # hidden desktop's DWM composes the window (and our DirectComposition layers) for every capture.
 PAGE = ('<!doctype html><title>Focus</title><style>@keyframes t{from{background:#%02X%02X%02X}to{background:#%02X%02X%02X}}'
@@ -146,8 +151,11 @@ def driver():
         bottom = next((y for y in range(h - 1, -1, -1) if is_page(col[y])), -1)
         left = next((x for x, p in enumerate(row) if is_page(p)), -1)
         white = black = 0
-        for y in range(int(90 * s), h, 8):   # a grid every 8 px, below the bar in every layout (its own text and icons are white)
-            line = data[y * stride:(y + 1) * stride]
+        # a grid every 8 px, below the bar in every layout (its own text and icons are white); the side layouts: right of the
+        # docked column too (248 complete, 40 compact: its titles and icons are white, and its picture slides there)
+        skip = 0 if a.layout == 'top' else round((250 if a.layout == 'side' else 42) * s)
+        for y in range(int(90 * s), h, 8):
+            line = data[y * stride + skip * 4:(y + 1) * stride]
             for p in zip(line[2::32], line[1::32], line[0::32]):
                 if min(p) >= 245: white += 1
                 elif max(p) <= 8: black += 1
@@ -178,8 +186,11 @@ def driver():
         while i < len(plan) and now >= plan[i][0]: plan[i][1](); i += 1
         d = grab(); t = (time.perf_counter() - start) * 1000
         f = analyse(d); f['t'] = round(t, 1); frames.append(f)
-        # interrupt: the second press once the page is seen half-way (the app's first motion really under way)
-        if a.scenario == 'interrupt' and not turned and marks and f['top'] is not None and 20 < f['top'] < 50: press(); turned = True
+        # interrupt: the second press once the page is seen half-way (the app's first motion really under way); the side
+        # layouts: its left edge between a quarter and three quarters of the way from the column's edge to 4
+        if a.scenario == 'interrupt' and not turned and marks and f[EDGE] is not None and rest[EDGE] is not None:
+            lo, hi = (20, 50) if EDGE == 'top' else (4 + .25 * (rest[EDGE] - 4), 4 + .75 * (rest[EDGE] - 4))
+            if lo < f[EDGE] < hi: press(); turned = True
         if a.frames_png: keep.append((t, d))
     report['frames'] = frames; report['presses_ms'] = [round((m - start) * 1000, 1) for m in marks]
     if a.frames_png:
@@ -207,30 +218,53 @@ else:
     tops = [f['top'] for f in fr if f['top'] is not None]
     # Captured frames: a step is judged only between two captures less than 40 ms apart (a hidden desktop's capture can
     # stall ~250 ms while the app keeps drawing: its own trace below says what every frame was).
-    seen = [f for f in fr if f['top'] is not None]
-    steps = [abs(b['top'] - a2['top']) for a2, b in zip(seen, seen[1:]) if b['t'] - a2['t'] < 40]
+    # Where each motion lands and how far each edge travels: 4 in Focus, the normal layout's edge otherwise (81 under the
+    # top bar; the side layouts: the window bar's height and the column's width, from the app's « FOCUS motion » line).
+    log = (app / 'prototype.log').read_text(encoding='utf-8', errors='replace') if (app / 'prototype.log').exists() else ''
+    import re
+    m = re.search(r'side layout, column (\d+) DIP, window bar (\d+) DIP', log)
+    normal = {'top': 81.0} if a.layout == 'top' else ({'left': float(m.group(1)), 'top': float(m.group(2))} if m else {'left': 248.0, 'top': 40.0})
+    # A jump is judged against the distance: the spec's one spring moves every edge on the same curve, so an edge that
+    # travels three times as far moves three times as much per frame (the top bar's 77 DIP: 40 DIP between two captures,
+    # 16 per app frame, the thresholds of the first version; the complete column's 244 DIP: 127 and 51).
+    TOP_TRAVEL = 77.0
+    def scale(kind): return max(1.0, (normal.get(kind, 81.0) - 4) / TOP_TRAVEL)
+    # Captured frames: a step is judged only between two captures less than 40 ms apart (a hidden desktop's capture can
+    # stall ~250 ms while the app keeps drawing: its own trace below says what every frame was).
+    seen = [f for f in fr if f['top'] is not None and f[EDGE] is not None]
+    kinds = ['top'] if EDGE == 'top' else [EDGE, 'top']
+    pairs = [(a2, b) for a2, b in zip(seen, seen[1:]) if b['t'] - a2['t'] < 40]
+    steps = [max(abs(b[k] - a2[k]) / scale(k) for k in kinds) for a2, b in pairs]   # in « top bar DIP »
+    raw = {k: max((abs(b[k] - a2[k]) for a2, b in pairs), default=0) for k in kinds}
     stalls = [round(b['t'] - a2['t']) for a2, b in zip(fr, fr[1:]) if b['t'] - a2['t'] >= 40]
     report['capture_stalls_ms'] = stalls
     check(all(f['top'] is not None for f in fr), 'a page on every frame (never a frame without the page)', f"{sum(f['top'] is None for f in fr)} of {len(fr)} without")
     if not a.reduced:
-        check(max(steps or [0]) <= a.max_step, f'no jump on screen: the page\'s top edge moves at most {a.max_step} DIP between two captures', f'largest step {max(steps or [0]):.1f} DIP over {len(steps)} close pairs (capture stalls: {stalls} ms)')
-        # The app's own trace: the page's top edge at EVERY frame it drew (src/main.cpp « FOCUS motion trace »).
-        log = (app / 'prototype.log').read_text(encoding='utf-8', errors='replace') if (app / 'prototype.log').exists() else ''
-        traces = [[float(v) for v in line.split(':', 1)[1].split()] for line in log.splitlines() if 'FOCUS motion trace' in line]
+        limits = ', '.join(f'{k} {a.max_step * scale(k):.0f}' for k in kinds)
+        check(max(steps or [0]) <= a.max_step, f'no jump on screen: the page\'s edges move at most {a.max_step} DIP per 77 DIP of travel between two captures ({limits} DIP)', f'largest steps {", ".join(f"{k} {v:.1f}" for k, v in raw.items())} DIP over {len(pairs)} close pairs (capture stalls: {stalls} ms)')
+        # The app's own trace: the page's top edge (side layouts: and its left edge) at EVERY frame it drew (src/main.cpp
+        # « FOCUS motion trace »).
+        def traced(kind): return [[float(v) for v in line.split(':', 1)[1].split()] for line in log.splitlines() if f'FOCUS motion trace (page {kind}' in line]
+        traces = {'top': traced('top'), 'left': traced('left')}
         report['app_traces'] = traces
-        worst = max((abs(b - a2) for t in traces for a2, b in zip(t, t[1:])), default=None)
-        check(bool(traces) and worst is not None and worst <= 16, 'no jump in any frame the app drew: the page\'s edge moves at most 16 DIP per frame', f'{len(traces)} motions, {sum(len(t) for t in traces)} frames, largest step {worst if worst is None else round(worst, 1)} DIP')
-        ends_ok = all(t and min(abs(t[-1] - 4), abs(t[-1] - 81)) < 1 for t in traces)
-        check(ends_ok, 'every motion lands exactly on a layout (4 or 81 DIP)', [round(t[-1], 1) for t in traces if t])
+        if a.layout != 'top': check(bool(m), 'the app moved in its side layout (« FOCUS motion … side layout »)', m.group(0) if m else 'no side motion logged')
+        for kind in kinds:
+            ts = traces[kind]; worst = max((abs(b - a2) for t in ts for a2, b in zip(t, t[1:])), default=None); limit = 16 * scale(kind)
+            check(bool(ts) and worst is not None and worst <= limit, f'no jump in any frame the app drew: the page\'s {kind} edge moves at most {limit:.0f} DIP per frame (16 per 77 DIP of travel)', f'{len(ts)} motions, {sum(len(t) for t in ts)} frames, largest step {worst if worst is None else round(worst, 1)} DIP')
+            end = normal.get(kind)
+            ends_ok = end is not None and all(t and min(abs(t[-1] - 4), abs(t[-1] - end)) < 1 for t in ts)
+            check(ends_ok, f'every motion lands exactly on a layout ({kind}: 4 or {end} DIP)', [round(t[-1], 1) for t in ts if t])
     check(sum(f['white'] for f in fr) == 0, 'no white pixel in any frame', f"{sum(f['white'] > 0 for f in fr)} frames with white")
     check(sum(f['holes'] for f in fr) == 0, 'no hole inside the page in any frame (canvas, black or white where the page is)', f"{sum(f['holes'] > 0 for f in fr)} frames with holes")
     # (black outside the page is not judged here: on a hidden desktop PrintWindow does not render the window's own Direct2D
     # surface — the bar and the canvas inset come out black at rest; the night QA judges those from the screen)
+    edges = [f[EDGE] for f in fr if f[EDGE] is not None]
     if not a.reduced:
-        moving = [f for f in fr if f['top'] is not None and 5 < f['top'] < 80]
-        check(len(moving) >= 4, 'the page\'s edge is seen in between (a motion, not a switch)', f'{len(moving)} frames between the two layouts')
-    if a.scenario == 'interrupt' and tops:
-        check(abs(tops[-1] - tops[0]) < 1.5, 'interrupted: back where it started', f'start {tops[0]:.1f}, end {tops[-1]:.1f} DIP')
+        far = normal.get(EDGE, 81.0)
+        moving = [f for f in fr if f[EDGE] is not None and 5 < f[EDGE] < far - 1]
+        check(len(moving) >= 4, f'the page\'s {EDGE} edge is seen in between (a motion, not a switch)', f'{len(moving)} frames between the two layouts')
+    if a.scenario == 'interrupt' and edges:
+        check(abs(edges[-1] - edges[0]) < 1.5, 'interrupted: back where it started', f'{EDGE} start {edges[0]:.1f}, end {edges[-1]:.1f} DIP')
     report['summary'] = {'frames': len(fr), 'largest_step_dip': max(steps or [0]), 'tops': [round(x, 1) for x in tops][:400]}
 (out / 'report.json').write_text(json.dumps(report, indent=1), encoding='utf-8')
 print(f"{len(report['checks']) - len(fails)} / {len(report['checks'])} checks passed; report {out / 'report.json'}")

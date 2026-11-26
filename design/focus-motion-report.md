@@ -60,12 +60,51 @@ captures (a 76.8 DIP step), the bar gone in the same capture; no frame in betwee
 3. A drawer open during the entry ends where Focus places drawers today (92, or 124 with the annotation banner), not at 4: the
    spec's « → 4 » would put it over the revealed panel's place.
 
+## Side layouts (#127, 2026-11-26, after #143 / #145 in main)
+
+The spec: « Panneau latéral ou compact : il glisse vers la gauche (0 → −100 %), même ressort, même départ. Il sort par le
+bord gauche, là où la colonne révélée réapparaîtra (même chemin à l'aller et au retour). » and « Page : … son bord reste
+collé au bord de la barre et de la colonne qui partent … le retrait (0 → 4) et le rayon (0 → 8) arrivent en même temps. »
+
+- One picture of the normal side chrome (`Chrome::RenderBar` in a side layout: the docked column and the window bar, the
+  page's place left as canvas), used twice: clipped to the column, it slides left 0 → −column width; clipped to the window
+  bar right of it (40, compact 32), it goes up and fades like the top bar (60 % in, 40 % out). Same spring, same start.
+- The page's rectangle: left edge from the column's edge to 4, top from the window bar to 4 (under the annotation banner when
+  it is there), right and bottom unchanged, radius 8 in both layouts (#127's own value): the page's left edge is the
+  column's right edge plus the inset growing 0 → 4 at every frame (`FX::LeftGap`, unit-tested).
+- The live state: as in the top layout, the hidden column is decided at the press for an entry and kept until the motion
+  lands for an exit (`SideFocusWanted` holds it like `FocusWanted`); the live page keeps its box under the pictures and is
+  resized once when the motion lands.
+- Drawers: docked flush right in both side layouts (FocusPlace); their top follows the frame (40 / 32 → 4).
+- The annotation banner: its picture from over the page's width under the window bar to the window's top (4 .. W − 4).
+- Leaving Focus with the column revealed over the page: it starts where it is shown (at rest it stays; the page comes to it
+  under it). The column revealed during an entry (left edge, Ctrl+Maj+,): the reveal starts from where the leaving column is
+  (the spec's « elle part de là où se trouve le panneau »), and the motion draws the revealed column at the reveal's slide.
+  A reversal carries the column from where it is shown (`FX::Follow`, unit-tested).
+- The spring's clock starts at the motion's first drawn frame, not at the press: the live relayout under the pictures
+  (7 .. 60 ms when the machine is busy) is no longer spent off screen (it made the first step 68 DIP on a busy machine).
+
+Springs (all the same model: critically damped, ω = 2π / response, interruptible from the position and velocity shown):
+Mode Focus entry / exit 1.0 / 0.3 s (the Designer's Focus board, every layout); the column revealed over the page in Focus
+0.3 s in, 0.2 s out (#127 FocusSide, the drawers' spec); the side panel's fold complete ↔ compact 1.0 / 0.35 s and its
+edge's spring-back 0.3 s (Paper motion spec §2, `VALXXII/fix-side-favorites-grid`). Consistent: one family, each value
+from its own board; the Focus entry and the reveal share 0.3 s, so the column leaves and comes back on the same path.
+
+Measured (hidden desktop, `transition_qa.py --layout side|compact`, 125 %): complete column 248 → the page's left edge
+248.0 → 4.0 and back, top 40 → 4; compact 40 → 4, top 32 → 4; every motion lands exactly; no white, no hole, the page on
+every frame; interrupted: back exactly where it started; reduced motion: a cross-fade. The jump thresholds scale with the
+distance an edge travels (the complete column goes 244 DIP on the same spring as the top bar's 77: up to ~31 DIP per frame
+at 60 Hz is the spring itself).
+
 ## Not done yet
 
-- Side panel / compact (#127, not in main tonight): the column must slide left 0 → −100 % on the same spring, the page's left
-  edge glued to it. The model takes it as one more edge; the QA already passes `--tab-layout` (`--layout side|compact`).
-- The chat card moves 4 DIP sideways at the switch (normal: flush right; Focus: 4 from the edge): its horizontal place is in
-  `src/chat-host-ui.h` (lot R's file); to lerp after lot R merges.
+- Side layouts: the chat card's top (mode Panneau) glides only with the one-line change in `src/chat-host-ui.h`
+  (design/focus-motion-lotR-change.md § 2); without it the card's content steps 36 DIP at the press (entry) or at the
+  landing (exit) while its top edge is hidden then shown by the motion's canvas band.
+- Side layouts: the chat card over the page (under 900 DIP, `OverPage`) is under the motion's pictures during the slide
+  (it shows again in the cross-fade).
+- Leaving Focus with the column revealed AND the annotation banner on: the motion's column is the docked one (from the
+  window's top) while the revealed one starts under the banner: its content is 32 DIP higher from the first frame of the exit.
 - The comment bubble (mode Commentaire) does not follow its element during the slide: the live page is still at its old box,
   the bubble follows the live page.
 - Window resized or moved during the motion: the motion ends at once on its target (no picture stretched).

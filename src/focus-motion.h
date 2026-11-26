@@ -67,8 +67,12 @@ inline float Lerp(float a, float b, float t) { return a + (b - a) * t; }
 inline Rect Lerp(const Rect& a, const Rect& b, float t) { return {Lerp(a.left, b.left, t), Lerp(a.top, b.top, t), Lerp(a.right, b.right, t), Lerp(a.bottom, b.bottom, t)}; }
 // One layout's places (client DIP): the bar (tabs, toolbar, bookmarks band: 0 .. barHeight), the page (its corner radii),
 // and the surfaces that follow it.
+// Side layouts (#127): the « bar » is the window bar right of the column (40, compact 32) and the column (its width)
+// slides to the left, 0 -> -100 %, on the same spring (the spec: « il sort par le bord gauche, là où la colonne révélée
+// réapparaîtra »); the page's left edge stays on the column's right edge plus the growing inset, as its top on the bar.
 struct Layout {
-    float barHeight = 0;               // the top bar's height (0 in Mode Focus: hidden)
+    float barHeight = 0;               // the top bar's height (0 in Mode Focus: hidden); side layouts: the window bar's
+    float column = 0;                  // side layouts: the docked column's width (0: the top bar layout)
     Rect page;                         // the page's box (the split view's whole area)
     float topRadius = 0, bottomRadius = 0;
     Rect chat;                         // the chat card / panel (empty: none)
@@ -78,6 +82,7 @@ struct Layout {
 // carry a little): every edge on the same curve, so the page's top stays on the bar's bottom plus the growing inset.
 struct Frame {
     float barOffset = 0, barOpacity = 1;   // the bar's translation (DIP, <= 0) and opacity
+    float columnOffset = 0;                // side layouts: the column's translation to the left (DIP, <= 0)
     Rect page; float topRadius = 0, bottomRadius = 0;
     Rect chat; float drawerTop = 0;
 };
@@ -85,6 +90,7 @@ inline Frame At(const Layout& normal, const Layout& focus, double x, double barO
     const float t = static_cast<float>(std::clamp(x, 0.0, 1.0));
     Frame f;
     f.barOffset = -normal.barHeight * t;
+    f.columnOffset = -normal.column * t;
     f.barOpacity = static_cast<float>(std::clamp(barOpacity, 0.0, 1.0));
     f.page = Lerp(normal.page, focus.page, t);
     f.topRadius = Lerp(normal.topRadius, focus.topRadius, t); f.bottomRadius = Lerp(normal.bottomRadius, focus.bottomRadius, t);
@@ -95,5 +101,21 @@ inline Frame At(const Layout& normal, const Layout& focus, double x, double barO
 // The gap between the bar's bottom edge and the page's top edge at that frame (the canvas inset: >= 0, never a hole
 // wider than the inset the page is heading to).
 inline float Gap(const Layout& normal, const Frame& f) { return f.page.top - (normal.barHeight + f.barOffset); }
+// The same on the left in the side layouts: the page's left edge minus the column's right edge (the inset, >= 0).
+inline float LeftGap(const Layout& normal, const Frame& f) { return f.page.left - (normal.column + f.columnOffset); }
+
+// ---- A value carried along the path from what is on screen --------------------------------------------------------
+// From the value shown when the move (re)started at position `fromX` to `to` at the target: linear in the spring's
+// position, so it moves on the same curve as the rest. The side column uses it when it did not start where the plain
+// frame puts it (the column revealed over the page when Focus is left, a reversal after that): never a jump.
+struct Follow {
+    double fromX = 0, toX = 1; float from = 0, to = 0;
+    static Follow Toward(double target, double x, float shown, float end) { Follow f; f.fromX = x; f.toX = target; f.from = shown; f.to = end; return f; }
+    float At(double x) const {
+        const double span = toX - fromX;
+        const double k = std::fabs(span) > 1e-9 ? std::clamp((x - fromX) / span, 0.0, 1.0) : 1.0;
+        return static_cast<float>(from + (to - from) * k);
+    }
+};
 
 }}

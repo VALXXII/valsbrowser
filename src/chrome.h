@@ -1866,17 +1866,20 @@ public:
     }
     // Mode Focus entry / exit (src/main.cpp « Mode Focus transition », Designer's spec 2026-11-25): the NORMAL top bar
     // (tab row, toolbar, bookmarks band, its lower hairline) drawn alone into opaque BGRA pixels, the client's width,
-    // 0 .. barHeight DIP: the picture that slides up and fades (entry) or comes down (exit). The chrome must be in its
-    // normal layout (not floating); `out` row-major, w x h device pixels. False without Direct2D 1.1.
+    // 0 .. barHeight DIP: the picture that slides up and fades (entry) or comes down (exit). In the side layouts (#127) the
+    // whole normal chrome over the client (barHeight: the window's height): the docked column and the window bar right of
+    // it, the page's place left as canvas; the host clips it into the column (it slides left) and the window bar (up, fading).
+    // The chrome must be in its normal layout (not floating, the column docked); `out` row-major, w x h device pixels.
+    // False without Direct2D 1.1.
     bool RenderBar(const std::vector<std::wstring>& titles,int selected,bool editing,int hover,int focus,Motion::Time now,float barHeight,std::vector<uint32_t>& out,UINT& w,UINT& h){
-        if(floating||!target||!brush||contentOnly||barHeight<=0)return false;
+        if(floating||(sidebar&&sideHidden)||!target||!brush||contentOnly||barHeight<=0)return false;
         ++textPass;Build((int)titles.size(),selected,&titles,now);
         const float s=dpi/96.f;w=(UINT)std::lround(width*s);h=(UINT)std::lround(barHeight*s);
         bool ok=false;ID2D1BitmapRenderTarget* bt=nullptr;
         if(w&&h&&SUCCEEDED(target->CreateCompatibleRenderTarget(D2D1::SizeF(w/s,h/s),D2D1::SizeU(w,h),D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED),D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_NONE,&bt))&&bt){
             bt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
             const float c=Design::Surface::canvas;auto* main=SwapTarget(bt);bt->BeginDraw();bt->Clear(D2D1::ColorF(c,c,c,1));
-            DrawChrome(titles,selected,editing,hover,focus,nullptr,now,true);
+            if(sidebar)PaintSidebar(titles,selected,editing,hover,focus,now);else DrawChrome(titles,selected,editing,hover,focus,nullptr,now,true);
             const HRESULT hr=bt->EndDraw();SwapTarget(main);
             ID2D1Bitmap* bitmap=nullptr;ID2D1DeviceContext* dc=nullptr;ID2D1Bitmap1* cpu=nullptr;
             if(SUCCEEDED(hr)&&SUCCEEDED(bt->GetBitmap(&bitmap))&&bitmap&&SUCCEEDED(bt->QueryInterface(__uuidof(ID2D1DeviceContext),reinterpret_cast<void**>(&dc)))&&dc){

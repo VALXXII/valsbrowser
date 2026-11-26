@@ -68,6 +68,33 @@ int main() {
         for (int i = 0; i <= 20; ++i) { const auto fr = FX::At(na, fa, i / 20.0, 1); if (FX::Gap(na, fr) < 32 - 1e-3f) bannerGlued = false; }
         Require(bannerGlued, "with the annotation banner: room for it (32) between the bar and the page at every frame");
     }
-    std::printf("PASS focus motion: %d checks (spring 1.0 / 0.3 s, interruption, fades 60 / 40 %%, glued layout)\n", checks);
+    // ---- #127 side layouts: the column slides left 0 -> -100 %, the page's left edge on it, its top on the window bar ----
+    for (const float column : {248.f, 40.f}) {   // complete (window bar 40), compact (window bar 32)
+        const float W = 1180, H = 815, bar = column > 100 ? 40.f : 32.f;
+        FX::Layout n; n.column = column; n.barHeight = bar; n.page = {column, bar, W - 4, H - 4}; n.topRadius = n.bottomRadius = 8; n.drawerTop = bar;
+        FX::Layout f; f.column = 0; f.barHeight = 0; f.page = {4, 4, W - 4, H - 4}; f.topRadius = f.bottomRadius = 8; f.drawerTop = 4;
+        const auto a = FX::At(n, f, 0, 1), b = FX::At(n, f, 1, 0);
+        Require(a.columnOffset == 0 && a.page.left == column && a.page.top == bar, "side, x 0: the column docked, the page from its edge under the window bar");
+        Require(b.columnOffset == -column && b.barOffset == -bar && b.page.left == 4 && b.page.top == 4 && b.drawerTop == 4, "side, x 1: the column out by the left edge (-100 %), the bar up, the page 4 inside the window");
+        bool glued = true, still = true;
+        for (int i = 0; i <= 100; ++i) {
+            const double x = i / 100.0; const auto fr = FX::At(n, f, x, 1);
+            const float left = FX::LeftGap(n, fr), top = FX::Gap(n, fr);
+            if (left < -1e-3f || left > 4 * static_cast<float>(x) + 1e-3f || top < -1e-3f || top > 4 * static_cast<float>(x) + 1e-3f) glued = false;
+            if (fr.page.right != W - 4 || fr.page.bottom != H - 4 || fr.topRadius != 8) still = false;
+        }
+        Require(glued, "side, every frame: the page's left edge on the column's right edge and its top on the window bar, plus the growing inset (0 -> 4)");
+        Require(still, "side: the right and bottom edges and the radius 8 do not move (the same in both layouts)");
+        // The plain frame's column, and the one carried from what is shown (FocusMotionToggle): the same on a plain move.
+        const auto in = FX::Follow::Toward(1, 0, 0, -column), out = FX::Follow::Toward(0, 1, -column, 0);
+        bool same = true; for (int i = 0; i <= 10; ++i) { const double x = i / 10.0; const float c = FX::At(n, f, x, 1).columnOffset; if (!Near(in.At(x), c, 1e-3) || !Near(out.At(x), c, 1e-3)) same = false; }
+        Require(same, "side: the column followed from the screen is the plain frame's on a plain entry or exit");
+        // Leaving Focus with the column revealed at rest: it stays where it is (offset 0 all the way).
+        const auto stay = FX::Follow::Toward(0, 1, 0, 0); Require(stay.At(.5) == 0 && stay.At(0) == 0, "side: an exit with the column revealed at rest keeps it in place");
+        // A reversal mid-way: from the offset on screen, no jump, to the other end.
+        const float shown = in.At(.4); const auto back = FX::Follow::Toward(0, .4, shown, 0);
+        Require(Near(back.At(.4), shown, 1e-4) && Near(back.At(0), 0, 1e-4) && back.At(.2) > shown && back.At(.5) == shown, "side: a reversal carries the column from where it is shown (clamped past its start)");
+    }
+    std::printf("PASS focus motion: %d checks (spring 1.0 / 0.3 s, interruption, fades 60 / 40 %%, glued layout, side column)\n", checks);
     return 0;
 }

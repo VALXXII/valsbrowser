@@ -1,35 +1,38 @@
-# Mode Focus motion — the one-line change for lot R (`src/chat-host-ui.h`)
+# Mode Focus motion — the one-line changes for the chat file (`src/chat-host-ui.h`, lot R's)
 
-Why: during the Mode Focus entry / exit (branch `VALXXII/focus-transition`, design/focus-motion-report.md), the chat card
-(mode Panneau) follows the page's top and bottom, but its right edge is fixed at W − 4 by `PanelRect`, so it steps 4 DIP
-sideways at the switch (normal: flush with the window's right edge; Focus: 4 DIP in). `FocusChatCard()` (src/main.cpp,
-Mode Focus's own code) already returns the moving card during the motion; `PanelRect` only has to read its right edge too.
+## 1. Top bar layout: the card's right edge (applied, in main since 0.3.1062)
 
-Where: `src/chat-host-ui.h`, function `RECT PanelRect(float shown)`, the Mode Focus branch:
+`PanelRect`, Mode Focus branch: `right = c.right - S(chrome.ClientWidth() - card.right)` — the card's right edge follows
+the entry / exit (W → W − 4) instead of stepping 4 DIP sideways. Nothing more to do.
+
+## 2. Side layouts (#127): the card's top (to route)
+
+Why: in the side layouts (branch `VALXXII/focus-transition`, design/focus-motion-report.md « Side layouts ») the chat card
+(mode Panneau) keeps its left, right and bottom edges between the normal layout and Focus; only its top moves, with the
+page's top (complete 40 / compact 32, plus the annotation banner → 4, or under the banner). `PanelRect`'s #127 branch reads
+`chrome.ContentTop()`, the live layout's top, which switches at once at the start of an entry (and at the end of an exit):
+the card's content jumps 36 DIP while the page glides (the motion's canvas band hides the card's top meanwhile).
+`FocusMotionChatTop()` (src/main.cpp, Mode Focus's own code, declared at the top of main.cpp next to
+`FocusChatCard`) returns the moving top during the motion and `chrome.ContentTop()` otherwise.
+
+Where: `src/chat-host-ui.h`, function `RECT PanelRect(float shown)`, the `if (chrome.sidebar)` branch, its return line.
+
+Before:
 
 ```cpp
-    if (chrome.floating) {   // Mode Focus (Paper 203J-0): the card, 4 DIP from the window's right and bottom edges, under the banner
-        const auto card = FocusChatCard(PanelDip()); const int in = S(NativeChrome::FocusMode::chatInset), right = c.right - in;
-        const int left = right - w + int(std::lround((1 - shown) * (w + in)));
-        return {left, S(card.top), left + w, S(card.bottom)};
-    }
-```
-
-Before (the second line of that branch):
-
-```cpp
-        const auto card = FocusChatCard(PanelDip()); const int in = S(NativeChrome::FocusMode::chatInset), right = c.right - in;
+        return {left, S(chrome.ContentTop()), left + w, c.bottom - in + (AnnotationBandSliding() ? S(chrome.annotationBand) : 0)};
 ```
 
 After:
 
 ```cpp
-        const auto card = FocusChatCard(PanelDip()); const int in = S(NativeChrome::FocusMode::chatInset), right = c.right - S(chrome.ClientWidth() - card.right);   // Mode Focus motion: the card's right edge follows the entry / exit (FocusChatCard), W - 4 at rest
+        return {left, S(FocusMotionChatTop()), left + w, c.bottom - in + (AnnotationBandSliding() ? S(chrome.annotationBand) : 0)};   // Mode Focus motion: the card's top glides with the page's (src/main.cpp)
 ```
 
 Effect:
-- At rest: identical (`card.right` is W − 4, so `right` is `c.right - S(4)` = `c.right - in`).
-- During the Focus entry / exit: the card's right edge moves with the page on the same spring (W → W − 4 and back), no step.
-- Before `VALXXII/focus-transition` is merged: a no-op (`FocusChatCard` never returns a moving card).
+- At rest: identical (`FocusMotionChatTop()` is `chrome.ContentTop()` when no motion is on screen).
+- During a Focus entry / exit in the side layouts: the card's top moves with the page on the same spring, no step.
+- Before `VALXXII/focus-transition` is merged: does not compile (`FocusMotionChatTop` is defined there): apply it with or
+  after that branch.
 
-Nothing else in lot R's files is needed for the motion.
+Nothing else in the chat files is needed for the motion.
