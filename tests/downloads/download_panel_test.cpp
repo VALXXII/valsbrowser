@@ -82,6 +82,11 @@ static void KeepChecks() {
     Expect(GuardMs(true) == GuardMarkedMs && GuardMs(false) == GuardForcedMs && GuardMarkedMs >= 60000 && GuardForcedMs > GuardMarkedMs, "keep: 60 s of guard, longer when the cap forced the cancel");
     Expect(LookAfterMs(1) == StepMs && LookAfterMs(600) == 1000, "keep: looked at every 100 ms, then once a second after a minute");
     Expect(EngineStub(0, 49667) && !EngineStub(0, 0) && !EngineStub(10, 49667) && !EngineStub(-1, 49667), "keep: only an empty file where our bytes are not empty is the engine's leftover (never a file with content)");
+    Expect(AtExit(false, At::Gone, false, true) == Exit::NextStart && AtExit(false, At::Left, false, true) == Exit::NextStart, "keep at exit: the engine still up (another window of this profile): our name stays for the next start, whatever the path");
+    Expect(AtExit(true, At::Gone, false, false) == Exit::GiveBackThenSettle && AtExit(true, At::Left, true, false) == Exit::GiveBackThenSettle, "keep at exit: the engine ended, its file removed (or an empty file left): given back from our name, then settled");
+    Expect(AtExit(true, At::Left, false, true) == Exit::Settle, "keep at exit: the engine ended, its removal already seen and undone: settled");
+    Expect(AtExit(true, At::Left, false, false) == Exit::NextStart && AtExit(true, At::Pending, false, true) == Exit::NextStart, "keep at exit: never removed by the engine (its next start may), or a removal pending: the next start's sweep");
+    Expect(ExitWaitMs == 5000, "keep at exit: the engine's end waited for 5 s at most");
     Expect(InsecureSource(L"http://insecure.test:8080/a.exe") && InsecureSource(L"HTTP://Example.org/x") && InsecureSource(L"http://user@files.example/x.bin"), "keep: a plain http file from another host is an insecure-download hold");
     Expect(!InsecureSource(L"https://example.org/a.exe") && !InsecureSource(L"http://127.0.0.1:5000/a.exe") && !InsecureSource(L"http://localhost/a.exe") && !InsecureSource(L"http://[::1]:80/a") && !InsecureSource(L"blob:https://x/1") && !InsecureSource(L"http://"), "keep: https, this computer, other schemes: not insecure");
     Item held; held.state = State::InProgress; held.held = true;

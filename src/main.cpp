@@ -1802,7 +1802,8 @@ void SyncDownload(int id){
 //      path proven ours;
 //   4. a file the engine marked needs no second pass; one without the mark gets Windows' attachment services pass with
 //      our name still alive: a removal by that pass without a virus verdict is undone (SettleKept);
-//   5. at exit before the end: the kept file takes a name the engine never knew (« name (1).exe »).
+//   5. at exit before the end: the engine's end awaited (5 s at most), the file given back if it removed it then; the
+//      engine still up: our name stays for the next start's sweep. Never a second name beside the download.
 // SmartScreen still checks the file when it is opened. A keep that cannot be made (no hard link, no copy) ends as
 // « Échec · Erreur de fichier » with « Retirer ».
 std::wstring UniqueDownloadPath(const std::wstring& folder,const std::wstring& suggested);
@@ -1811,9 +1812,11 @@ std::wstring UniqueDownloadPath(const std::wstring& folder,const std::wstring& s
 // removal by the engine seen since (guard counted from givenAt); settling: the final pass (at, saveDone / saveResult);
 // insecure: an insecure-download hold (DL::Keep::InsecureSource): no pass of the engine runs on it, nothing to wait for;
 // adopted: a leftover of a browser stopped in the middle of a keep (SweepKeptDownloads), watched until the guard counted from
-// this profile's engine being up (KeptDownloads::AdoptedLook).
-struct KeepJob{std::wstring path,backup,uri,at;bool cancelled=false,marked=false,seen=false,settling=false,insecure=false,adopted=false;int looks=0;ULONGLONG keptAt=0,cancelAt=0,givenAt=0;
-    std::shared_ptr<std::atomic<long>> copying;std::shared_ptr<std::atomic<int>> saveDone;std::shared_ptr<std::atomic<long>> saveResult;};
+// this profile's engine being up (KeptDownloads::AdoptedLook); engine: the engine's browser process (a handle that only
+// waits for its end, taken at « Conserver »); atExit: the window closed with the engine's removal still to come, its end
+// is awaited after the message loop (KeepsAfterEngine).
+struct KeepJob{std::wstring path,backup,uri,at;bool cancelled=false,marked=false,seen=false,settling=false,insecure=false,adopted=false,atExit=false;int looks=0;ULONGLONG keptAt=0,cancelAt=0,givenAt=0;
+    std::shared_ptr<std::atomic<long>> copying;std::shared_ptr<std::atomic<int>> saveDone;std::shared_ptr<std::atomic<long>> saveResult;std::shared_ptr<void> engine;};
 std::map<int,KeepJob> keepJobs;
 ULONGLONG keepEngineUpAt=0;   // when this process's engine was first up (EngineReady): the adopted keeps' guard starts then
 bool KeepWaitingForEngine(int id){auto k=keepJobs.find(id);return k!=keepJobs.end()&&!k->second.cancelled;}
@@ -1911,7 +1914,7 @@ void SettleKept(int id,KeepJob& k,const std::wstring& at){
 // Step 3: the engine was let go. Each removal of the path is undone from our name; once the guard is over with the file
 // at its path, step 4. No short limit before the first removal.
 void WatchKept(int id){
-    auto job=keepJobs.find(id);if(halted||job==keepJobs.end()||job->second.settling)return;
+    auto job=keepJobs.find(id);if(halted||job==keepJobs.end()||job->second.settling||job->second.atExit)return;
     auto& k=job->second;const ULONGLONG now=GetTickCount64();
     auto at=KeepPathState(k.path);
     if(at==DL::Keep::At::Left&&DL::Keep::EngineStub(KeptDownloads::SizeOf(k.path),KeptDownloads::SizeOf(k.backup))&&!KeptDownloads::SameFileId(k.path,k.backup)&&DeleteFileW(k.path.c_str())){
@@ -1951,7 +1954,7 @@ void WatchKept(int id){
 // download by itself.
 void KeepCopied(int id);
 void WaitEnginePass(int id){
-    auto job=keepJobs.find(id);if(halted||job==keepJobs.end()||job->second.cancelled)return;
+    auto job=keepJobs.find(id);if(halted||job==keepJobs.end()||job->second.cancelled||job->second.atExit)return;
     auto& k=job->second;auto found=downloadOps.find(id);
     if(found==downloadOps.end()||!found->second->op.p){   // the operation went (its profile closed): the path is watched, our name never dropped
         k.cancelled=true;k.marked=HasZoneMark(k.path);k.cancelAt=GetTickCount64();Log(L"DOWNLOAD keep: the engine's operation went before its pass ended, the path is watched");WatchKept(id);return;}
@@ -1973,9 +1976,19 @@ void WaitEnginePass(int id){
     WatchKept(id);
 }
 // Step 1: our own name (a hard link, else a copy off the UI thread), the row a finished download at once.
+// The engine's browser process behind a download, as a handle that only waits for its end (never reused, unlike its pid):
+// from the download's own tab, else any page of this window (one engine per profile). Null: unknown.
+std::shared_ptr<void> EngineProcessOf(const DownloadOperation& entry){
+    UINT32 pid=0;
+    if(entry.view&&entry.view->p){Com<ICoreWebView2> view;if(SUCCEEDED(entry.view->p->get_CoreWebView2(&view.p))&&view.p)view->get_BrowserProcessId(&pid);}
+    for(size_t i=0;!pid&&i<pages.size();++i)if(pages[i]->view.p&&FAILED(pages[i]->view->get_BrowserProcessId(&pid)))pid=0;
+    HANDLE h=pid?OpenProcess(SYNCHRONIZE,FALSE,pid):nullptr;
+    return h?std::shared_ptr<void>(h,CloseHandle):nullptr;
+}
 void KeepHeldDownload(int id){
     auto* item=FindDownload(id);auto found=downloadOps.find(id);if(!item||found==downloadOps.end()||!item->held||keepJobs.count(id)||!found->second->op.p)return;
     KeepJob job;job.path=item->path;job.uri=item->uri;job.backup=KeepBackupPath(id,item->path);job.keptAt=GetTickCount64();job.insecure=DL::Keep::InsecureSource(item->uri);KeptDownloads::Drop(job.backup);
+    job.engine=EngineProcessOf(*found->second);
     if(!KeptDownloads::WriteSidecar(job.backup,job.path))Log(L"DOWNLOAD keep: the note of where the file belongs could not be written beside our name");   // read at the next start if the browser is killed meanwhile
     Log(L"DOWNLOAD keep requested: "+DL::FileName(item->path));
     const bool linked=CreateHardLinkW(job.backup.c_str(),job.path.c_str(),nullptr)!=FALSE;
@@ -1991,7 +2004,7 @@ void KeepHeldDownload(int id){
     if(linked)WaitEnginePass(id);else KeepCopied(id);
 }
 void KeepCopied(int id){
-    auto job=keepJobs.find(id);if(halted||job==keepJobs.end()||!job->second.copying)return;
+    auto job=keepJobs.find(id);if(halted||job==keepJobs.end()||!job->second.copying||job->second.atExit)return;
     const long r=job->second.copying->load();
     if(!r){DeferAfter(DL::Keep::StepMs,[id]{KeepCopied(id);});return;}
     job->second.copying.reset();
@@ -2004,17 +2017,24 @@ void KeepCopied(int id){
 }
 // The window closes before a keep's end (step 5): a copy being made ends first (bounded); a final pass under way ends
 // (bounded); a file given back after the engine's removal (its pass over, the same file as our name) stays where it is and
-// our name goes. Any other keep (the engine's removal not seen, or seen after a cancel the cap forced) keeps our name and
-// its sidecar in kept-downloads: the next start's SweepKeptDownloads cleans it if the file at its path is ours, gives the
-// file back if the engine removed it meanwhile; never a second name beside the download. A kept file is never dropped.
+// our name goes. A keep whose removal by the engine may still come (not seen, or seen after a cancel the cap forced) waits
+// for the end of the engine's browser process after the message loop, 5 s at most (KeepsAfterEngine). An adopted leftover,
+// or a keep whose engine is unknown, keeps our name and its sidecar in kept-downloads: the next start's SweepKeptDownloads
+// gives the file back and watches it; never a second name beside the download. A kept file is never dropped.
+ULONGLONG keepsClosedAt=0;   // when the window closed with a keep waiting for the engine's end
 void KeepsAtExit(){
     if(keepJobs.empty())return;
     for(auto& [id,k]:keepJobs){
         if(k.copying){for(int i=0;i<600&&!k.copying->load();++i)Sleep(DL::Keep::StepMs);if(k.copying->load()!=1){KeptDownloads::Drop(k.backup);Log(L"DOWNLOAD keep at exit: the copy could not be made");continue;}}
         if(!k.settling){
-            if(k.adopted||!(k.cancelled&&k.seen&&k.marked&&KeptDownloads::SameFileId(k.path,k.backup))){   // the engine may still remove its file: the next start decides
+            if(k.adopted||!(k.cancelled&&k.seen&&k.marked&&KeptDownloads::SameFileId(k.path,k.backup))){   // the engine may still remove its file
                 if(auto* item=FindDownload(id)){item->state=DL::State::Completed;item->missing=false;item->held=false;}
-                Log(L"DOWNLOAD keep at exit: "+std::wstring(k.adopted?L"a leftover still watched":k.seen?L"the engine's removal seen after a forced cancel":L"the engine's removal not seen")+L", our name stays in the profile's folder until the next start: "+DL::FileName(k.path));
+                if(!k.adopted&&k.engine){
+                    k.atExit=true;keepsClosedAt=GetTickCount64();
+                    Log(L"DOWNLOAD keep at exit: the engine's removal "+std::wstring(k.seen?L"seen after a forced cancel":L"not seen")+L", its end is awaited: "+DL::FileName(k.path));
+                    continue;
+                }
+                Log(L"DOWNLOAD keep at exit: "+std::wstring(k.adopted?L"a leftover still watched":L"the engine unknown")+L", our name stays in the profile's folder until the next start: "+DL::FileName(k.path));
                 continue;
             }
             k.at=k.path;   // the engine's removal seen and undone, its pass over (one removal, measured): the path is the user's file
@@ -2024,6 +2044,43 @@ void KeepsAtExit(){
         if(k.saveDone)for(int i=0;i<100&&!k.saveDone->load();++i)Sleep(DL::Keep::StepMs);
         KeepSettled(id,k);
         Log(L"DOWNLOAD keep settled at exit: "+DL::FileName(k.at));
+    }
+    for(auto it=keepJobs.begin();it!=keepJobs.end();)it=it->second.atExit?std::next(it):keepJobs.erase(it);
+    SaveDownloads();
+}
+// After the message loop (the window and the engine's windows in it gone), only when a keep waits for the engine's end:
+// the engine's browser processes, 5 s at most in all. Then per keep (DL::Keep::AtExit): its file removed by the engine at
+// its end is given back from our name, checked ours, handed to Windows' attachment services if the engine never marked
+// it, and our name goes; the engine still up (another window of this profile uses it), or a file it never removed: our
+// name and its note stay, the next start's sweep gives the file back. Never a second name.
+void KeepsAfterEngine(){
+    std::vector<HANDLE> engines;
+    for(auto& [id,k]:keepJobs)if(k.atExit&&std::find(engines.begin(),engines.end(),k.engine.get())==engines.end())engines.push_back(k.engine.get());
+    if(engines.empty()){keepJobs.clear();return;}
+    const DWORD w=WaitForMultipleObjects((DWORD)engines.size(),engines.data(),TRUE,DL::Keep::ExitWaitMs);
+    const bool ended=w<WAIT_OBJECT_0+engines.size();
+    Log(std::wstring(ended?L"DOWNLOAD keep at exit: the engine ended ":L"DOWNLOAD keep at exit: the engine still runs ")+std::to_wstring((long long)(GetTickCount64()-keepsClosedAt))+L" ms after the window closed");
+    for(auto& [id,k]:keepJobs){
+        if(!k.atExit)continue;
+        const auto name=DL::FileName(k.path);
+        const auto at=KeepPathState(k.path);
+        const bool stub=at==DL::Keep::At::Left&&DL::Keep::EngineStub(KeptDownloads::SizeOf(k.path),KeptDownloads::SizeOf(k.backup))&&!KeptDownloads::SameFileId(k.path,k.backup);
+        auto next=DL::Keep::AtExit(ended,at,stub,k.seen);
+        if(next==DL::Keep::Exit::GiveBackThenSettle){
+            if(stub&&!DeleteFileW(k.path.c_str()))next=DL::Keep::Exit::NextStart;
+            else if(!PutKeptFileBack(k.backup,k.path))next=DL::Keep::Exit::NextStart;
+            else Log(L"DOWNLOAD kept file given back at its path: the engine removed it at its end");
+        }
+        if(next!=DL::Keep::Exit::NextStart&&!KeptFileIsOurs(k.path,k.backup))next=DL::Keep::Exit::NextStart;
+        if(next==DL::Keep::Exit::NextStart){
+            Log(std::wstring(L"DOWNLOAD keep at exit: ")+(!ended?L"the engine still runs":at==DL::Keep::At::Left&&!k.seen?L"the engine ended without removing the file":L"the file could not be given back")+L", our name stays in the profile's folder until the next start: "+name);
+            continue;
+        }
+        k.at=k.path;
+        if(!HasZoneMark(k.at)||KeepTestSaveRemoves()){k.saveDone=std::make_shared<std::atomic<int>>(0);k.saveResult=std::make_shared<std::atomic<long>>(0);QuarantineKeptFile(k.at,k.uri,k.saveDone,k.saveResult);
+            for(int i=0;i<100&&!k.saveDone->load();++i)Sleep(DL::Keep::StepMs);}
+        KeepSettled(id,k);
+        Log(L"DOWNLOAD keep settled at exit: "+name);
     }
     keepJobs.clear();SaveDownloads();
 }
@@ -6549,5 +6606,5 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){
      SetEnvironmentVariableW(L"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",nullptr);}
     StartWorkspaces();
     StartEngine(); // loader, probe, environment; a failure opens the recovery dialog
-    MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(motionLab.Window()&&IsDialogMessageW(motionLab.Window(),&msg))continue;if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);SyncAccessibility();continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}StopEngineStart();engineStart.reset();environment.set(nullptr);if(loader)FreeLibrary(loader);RunPendingRelaunch();suggestions.Dispose();downloadPanel.Dispose();downloadDrawer.Dispose();settingsDrawer.Dispose();historyDrawer.Dispose();bookmarkPopover.Dispose();bookmarkToast.Dispose();bookmarksDrawer.Dispose();contextMenu.Dispose();splitOverlay.Dispose();statusBubble.Dispose();motionLab.Dispose();chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();return halted?2:0;
+    MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){if(motionLab.Window()&&IsDialogMessageW(motionLab.Window(),&msg))continue;if(msg.message==WM_KEYDOWN||msg.message==WM_SYSKEYDOWN){int cmd=Key((UINT)msg.wParam);if(cmd){keyboardModality=true;Command(cmd);SyncAccessibility();continue;}}TranslateMessage(&msg);DispatchMessageW(&msg);}KeepsAfterEngine();StopEngineStart();engineStart.reset();environment.set(nullptr);if(loader)FreeLibrary(loader);RunPendingRelaunch();suggestions.Dispose();downloadPanel.Dispose();downloadDrawer.Dispose();settingsDrawer.Dispose();historyDrawer.Dispose();bookmarkPopover.Dispose();bookmarkToast.Dispose();bookmarksDrawer.Dispose();contextMenu.Dispose();splitOverlay.Dispose();statusBubble.Dispose();motionLab.Dispose();chrome.Dispose();DeleteObject(font);DeleteObject(paper);for(auto name:NativeChrome::FontFiles)RemoveFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);CoUninitialize();return halted?2:0;
 }
