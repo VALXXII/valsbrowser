@@ -34,6 +34,8 @@ import tempfile
 import time
 
 HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent / 'agents'))
+import offline_runtime   # noqa: E402  (the agents' private runtime for the fake profiles: local, never downloaded)
 URL = 'http://127.0.0.1:5173/'
 ONLINE = 'https://example.com/'   # a harmless public page (IANA's example domain): the « site en ligne » case
 ONLINE_HTTP = 'http://example.com/'   # the same page over http: « Non sécurisé » (the --local-pill trial's contrast)
@@ -137,9 +139,18 @@ def put_cli(folder: pathlib.Path, name: str, version: str, login: str, cli: path
     (folder / (name + '.login')).write_text(login, encoding='ascii')
 
 
-def agents_environment(root: pathlib.Path, profile: str, fresh: bool, mode: str, delay_ms: int, app: pathlib.Path) -> dict[str, str]:
+def agents_environment(root: pathlib.Path, profile: str, fresh: bool, mode: str, delay_ms: int, app: pathlib.Path,
+                       data_root: pathlib.Path | None = None) -> dict[str, str]:
+    """`data_root`: the browser copy's data folder (its <data>\\agents), required for a fake profile — with the launch-only
+    fake agent the browser's real preparation would download Node.js and the adapter from nodejs.org / npm (Fix's
+    « present » runs, 25 Nov 2026): the copy gets the pinned runtime from a local cache instead, and the launch is refused
+    unless no download can be needed (sandbox/agents/offline_runtime.py)."""
     if profile == 'real':
         return {}
+    if data_root is None:
+        raise SystemExit('agents_environment: a fake profile needs data_root= (the browser copy\'s data folder, where <data>\\agents is): '
+                         'without it the browser would download Node.js and the adapter from the network — refused')
+    offline_runtime.seed_and_guard(pathlib.Path(data_root), app)
     home, local, roaming = root / 'home', root / 'local', root / 'roaming'
     if fresh and root.exists():
         shutil.rmtree(root)
@@ -268,7 +279,9 @@ def main() -> int:
         env['BROWSER_ANNOTATIONS_TEST'] = '1'   # garde-fou : aucune écriture dans les vrais dossiers, même si la redirection échouait
         env.pop('BROWSER_ANNOTATIONS_CONNECT_PATH', None)
         if a.agents:
-            env.update(agents_environment(home / 'agents-profile', a.agents, fresh, a.install_mode, a.install_delay_ms, app))
+            env.update(agents_environment(home / 'agents-profile', a.agents, fresh, a.install_mode, a.install_delay_ms, app, data_root=run))
+            if a.agents != 'real':
+                print(f'Runtime        : Node.js et adaptateurs locaux (aucun téléchargement : {run}\\agents)')
             print(f'Agents        : profil « {a.agents} »' + (' — DÉTECTION ET INSTALLATEURS RÉELS (votre compte Windows)' if a.agents == 'real'
                   else f' (factice : dossiers sous {home / "agents-profile"}, faux installateur « {a.install_mode} »)'))
         if not a.agents or a.agents == 'real':
