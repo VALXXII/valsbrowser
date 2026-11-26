@@ -34,6 +34,8 @@ ap.add_argument('--scenario', choices=('enter-exit', 'interrupt'), default='ente
 ap.add_argument('--max-step', type=float, default=40.0, help='DIP the page edge may move between two frames (a jump above)')
 ap.add_argument('--start-focus', action='store_true', help='start in Mode Focus (the first press is an exit)')
 ap.add_argument('--frames-png', action='store_true')
+ap.add_argument('--screen', action='store_true', help='the REAL desktop (a screen slot only): captured as displayed (BitBlt of the screen)')
+ap.add_argument('--annotate', action='store_true', help='the annotation mode on first (its banner; the chat in Panneau, agents refused)')
 a = ap.parse_args()
 src, out = Path(a.app).resolve(), Path(a.out).resolve()
 shutil.rmtree(out, ignore_errors=True); out.mkdir(parents=True)
@@ -47,6 +49,9 @@ for f, args, res in [
     (u32.RedrawWindow, [W.HWND, ctypes.c_void_p, W.HANDLE, W.UINT], W.BOOL), (u32.PostMessageW, [W.HWND, W.UINT, W.WPARAM, W.LPARAM], W.BOOL), (u32.GetClientRect, [W.HWND, ctypes.POINTER(W.RECT)], W.BOOL),
     (u32.GetDpiForWindow, [W.HWND], W.UINT), (u32.GetDC, [W.HWND], W.HDC), (u32.ReleaseDC, [W.HWND, W.HDC], ctypes.c_int),
     (u32.SetWindowPos, [W.HWND, W.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, W.UINT], W.BOOL),
+    (u32.EnumWindows, [ctypes.c_void_p, W.LPARAM], W.BOOL), (u32.SetForegroundWindow, [W.HWND], W.BOOL),
+    (u32.ClientToScreen, [W.HWND, ctypes.POINTER(W.POINT)], W.BOOL),
+    (g32.BitBlt, [W.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, W.HDC, ctypes.c_int, ctypes.c_int, W.DWORD], W.BOOL),
     (u32.IsWindowVisible, [W.HWND], W.BOOL), (u32.GetClassNameW, [W.HWND, W.LPWSTR, ctypes.c_int], ctypes.c_int),
     (u32.GetWindowThreadProcessId, [W.HWND, ctypes.POINTER(W.DWORD)], W.DWORD), (u32.PrintWindow, [W.HWND, W.HDC, W.UINT], W.BOOL),
     (g32.CreateCompatibleDC, [W.HDC], W.HDC), (g32.CreateDIBSection, [W.HDC, ctypes.c_void_p, W.UINT, ctypes.POINTER(ctypes.c_void_p), W.HANDLE, W.DWORD], W.HBITMAP),
@@ -89,16 +94,20 @@ threading.Thread(target=srv.serve_forever, daemon=True).start()
 app = out / 'app'; shutil.copytree(src, app, ignore=shutil.ignore_patterns('session', 'sessions', 'settings', 'profile', 'profiles', 'prototype.log', 'history', 'bookmarks', 'downloads'))
 local = out / 'localappdata'; local.mkdir()
 (app / 'session').write_text(f'browser-session-2\n0\n1\n"{url}"\n0\n', encoding='utf-8', newline='\n')
-(app / 'settings').write_text('browser-settings 1\nrestore-tabs=1\nconfirm-close-tabs=0\nfocus-mode=' + ('1' if a.start_focus else '0') + '\nannotation-onboarded=1\n' +('reduce-motion=1\n' if a.reduced else ''), encoding='utf-8', newline='\n')
+(app / 'settings').write_text('browser-settings 1\nrestore-tabs=1\nconfirm-close-tabs=0\nfocus-mode=' + ('1' if a.start_focus else '0') + '\nannotation-onboarded=1\nannotation-connect-prompt=0\n' +('reduce-motion=1\n' if a.reduced else ''), encoding='utf-8', newline='\n')
 
 job = k32.CreateJobObjectW(None, None); info = EXT(); info.Basic.LimitFlags = 0x2000   # KILL_ON_JOB_CLOSE
 k32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info))
 desk_name = f'focus-transition-{os.getpid()}'
-hdesk = u32.CreateDesktopW(desk_name, None, None, 0, 0x10000000, None)
-assert hdesk, f'CreateDesktop failed {ctypes.get_last_error()}'
+hdesk = None if a.screen else u32.CreateDesktopW(desk_name, None, None, 0, 0x10000000, None)
+assert a.screen or hdesk, f'CreateDesktop failed {ctypes.get_last_error()}'
 env = dict(os.environ, LOCALAPPDATA=str(local), BROWSER_NO_ONBOARDING='1')
+if a.annotate:   # the « user's » folders point to an empty home under <out> (no real Claude / Codex seen), agents refused
+    home = out / 'home'
+    for sub in ('AppData/Roaming', 'AppData/Local'): (home / sub).mkdir(parents=True, exist_ok=True)
+    env.update(BROWSER_ANNOTATIONS_TEST='1', USERPROFILE=str(home), APPDATA=str(home / 'AppData/Roaming'), BROWSER_ANNOTATIONS_CONNECT_ROOT=str(home))
 block = ''.join(f'{k}={v}\0' for k, v in env.items()) + '\0'
-si = STARTUPINFO(); si.cb = ctypes.sizeof(si); si.lpDesktop = f'WinSta0\\{desk_name}'
+si = STARTUPINFO(); si.cb = ctypes.sizeof(si); si.lpDesktop = None if a.screen else f'WinSta0\\{desk_name}'
 pi = PROCESS_INFORMATION()
 cmd = f'"{app / "browser.exe"}"' + (f' --tab-layout={a.layout}' if a.layout != 'top' else '')
 ok = k32.CreateProcessW(None, ctypes.create_unicode_buffer(cmd), None, None, False, 0x4 | 0x400, ctypes.create_unicode_buffer(block), str(app), ctypes.byref(si), ctypes.byref(pi))   # SUSPENDED | UNICODE_ENVIRONMENT
@@ -111,7 +120,7 @@ report = {'layout': a.layout, 'reduced': a.reduced, 'scenario': a.scenario, 'fra
 result = {}
 
 def driver():
-    assert u32.SetThreadDesktop(hdesk), f'SetThreadDesktop {ctypes.get_last_error()}'
+    if hdesk: assert u32.SetThreadDesktop(hdesk), f'SetThreadDesktop {ctypes.get_last_error()}'
     found = []
     @ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
     def each(h, _):
@@ -120,12 +129,13 @@ def driver():
         return True
     win = None
     for _ in range(240):
-        found.clear(); u32.EnumDesktopWindows(hdesk, each, 0)
+        found.clear(); (u32.EnumDesktopWindows(hdesk, each, 0) if hdesk else u32.EnumWindows(each, 0))
         if found: win = found[0]; break
         time.sleep(0.25)
     assert win, 'browser window on the hidden desktop'
     s = u32.GetDpiForWindow(win) / 96
     u32.SetWindowPos(win, None, 40, 40, round(1180 * s), round(705 * s), 0x0014); time.sleep(0.8)
+    if a.screen: u32.SetForegroundWindow(win); time.sleep(0.3)
     r = W.RECT(); u32.GetClientRect(win, ctypes.byref(r)); w, h = r.right, r.bottom
     screen = u32.GetDC(win); mem = g32.CreateCompatibleDC(screen)
     class BIH(ctypes.Structure):
@@ -134,9 +144,12 @@ def driver():
     bi = BIH(); bi.biSize = ctypes.sizeof(bi); bi.biWidth = w; bi.biHeight = -h; bi.biPlanes = 1; bi.biBitCount = 32
     bits = ctypes.c_void_p(); dib = g32.CreateDIBSection(screen, ctypes.byref(bi), 0, ctypes.byref(bits), None, 0); g32.SelectObject(mem, dib)
     buf = (ctypes.c_uint32 * (w * h)).from_address(bits.value)
+    sdc = u32.GetDC(None) if a.screen else None
     def grab():
-        # (a hidden desktop composes only when something presents: the page's animated corner, see PAGE)
-        u32.PrintWindow(win, mem, 2)   # PW_RENDERFULLCONTENT
+        if a.screen:   # what is displayed: the window's client area copied from the screen (its layers composed by DWM)
+            o = W.POINT(0, 0); u32.ClientToScreen(win, ctypes.byref(o)); g32.BitBlt(mem, 0, 0, w, h, sdc, o.x, o.y, 0x00CC0020 | 0x40000000)
+        else:   # (a hidden desktop composes only when something presents: the page's animated corner, see PAGE)
+            u32.PrintWindow(win, mem, 2)   # PW_RENDERFULLCONTENT
         return bytes(memoryview(buf).cast('B'))
     def px(data, x, y):
         o = (y * w + x) * 4; return data[o + 2], data[o + 1], data[o]
@@ -154,8 +167,9 @@ def driver():
         # a grid every 8 px, below the bar in every layout (its own text and icons are white); the side layouts: right of the
         # docked column too (248 complete, 40 compact: its titles and icons are white, and its picture slides there)
         skip = 0 if a.layout == 'top' else round((250 if a.layout == 'side' else 42) * s)
+        keep = w - round(400 * s) if a.annotate else w   # the chat panel (its own white text) on the right
         for y in range(int(90 * s), h, 8):
-            line = data[y * stride + skip * 4:(y + 1) * stride]
+            line = data[y * stride + skip * 4:y * stride + keep * 4]
             for p in zip(line[2::32], line[1::32], line[0::32]):
                 if min(p) >= 245: white += 1
                 elif max(p) <= 8: black += 1
@@ -176,6 +190,13 @@ def driver():
     else:
         result['error'] = 'the page never showed (PrintWindow on the hidden desktop?)'; return
     time.sleep(1.0)
+    if a.annotate:   # the annotation mode (a local page: it starts there), its banner and the chat in Panneau, then Focus
+        logp = app / 'prototype.log'; n0 = len(logp.read_text(encoding='utf-8', errors='replace')) if logp.exists() else 0
+        u32.PostMessageW(win, Shortcut, 3060, 0)   # AnnotateCommand
+        t1 = time.time()
+        while time.time() - t1 < 20 and 'CHAT panel in place' not in (logp.read_text(encoding='utf-8', errors='replace')[n0:] if logp.exists() else ''): time.sleep(0.2)
+        report['annotate'] = 'CHAT panel in place' in (logp.read_text(encoding='utf-8', errors='replace')[n0:] if logp.exists() else '')
+        time.sleep(2.5)
     rest = analyse(grab()); report['rest'] = rest
     frames = []; marks = []
     def press(): marks.append(time.perf_counter()); u32.PostMessageW(win, Shortcut, FocusModeCommand, 0)
@@ -205,7 +226,7 @@ def driver():
 t = threading.Thread(target=driver, daemon=True); t.start(); t.join(120)
 srv.shutdown()
 k32.CloseHandle(job)   # KILL_ON_JOB_CLOSE: our copy of the browser goes with it
-u32.CloseDesktop(hdesk)
+if hdesk: u32.CloseDesktop(hdesk)
 
 fails = []
 def check(ok, what, detail=''):
@@ -248,19 +269,33 @@ else:
         traces = {'top': traced('top'), 'left': traced('left')}
         report['app_traces'] = traces
         if a.layout != 'top': check(bool(m), 'the app moved in its side layout (« FOCUS motion … side layout »)', m.group(0) if m else 'no side motion logged')
+        # Frame pacing (the app's « FOCUS motion landed (x …, N frames, T ms) »): on a busy machine or a hidden desktop the
+        # app may draw 30 frames a second with a 50 ms hitch now and then; the spring is in time, so a longer frame carries
+        # the edge further. The limit is the spring's largest move in the app's longest frame step (50 ms), never below 16
+        # DIP per 77 DIP of travel: the whole distance in one frame (the old switch) always fails; smoothness itself is the
+        # screen's eye check (the slowest motion's mean frame is reported).
+        paced = [int(t2) / max(1, int(n)) for n, t2 in re.findall(r'FOCUS motion landed \(x [-0-9.]+, (\d+) frames, (\d+) ms\)', log)]
+        frame_ms = max(paced) if paced else 16.7
+        report['frame_ms'] = [round(v, 1) for v in paced]
+        OMEGA_E = 2 * 3.141592653589793 / 0.3 / 2.718281828459045   # a critically damped spring's top speed per DIP of travel (1/s)
         for kind in kinds:
-            ts = traces[kind]; worst = max((abs(b - a2) for t in ts for a2, b in zip(t, t[1:])), default=None); limit = 16 * scale(kind)
-            check(bool(ts) and worst is not None and worst <= limit, f'no jump in any frame the app drew: the page\'s {kind} edge moves at most {limit:.0f} DIP per frame (16 per 77 DIP of travel)', f'{len(ts)} motions, {sum(len(t) for t in ts)} frames, largest step {worst if worst is None else round(worst, 1)} DIP')
+            travel = normal.get(kind, 81.0) - 4
+            ts = traces[kind]; worst = max((abs(b - a2) for t in ts for a2, b in zip(t, t[1:])), default=None)
+            limit = max(16 * scale(kind), travel * OMEGA_E * 0.05)   # one frame's step is capped at 50 ms by the app (FocusMotionFrame)
+            check(bool(ts) and worst is not None and worst <= limit and limit < travel * 0.6, f'no jump in any frame the app drew: the page\'s {kind} edge moves at most {limit:.0f} DIP per frame (the spring over the app\'s 50 ms frame cap; slowest mean frame {frame_ms:.0f} ms)', f'{len(ts)} motions, {sum(len(t) for t in ts)} frames, largest step {worst if worst is None else round(worst, 1)} DIP')
             end = normal.get(kind)
-            ends_ok = end is not None and all(t and min(abs(t[-1] - 4), abs(t[-1] - end)) < 1 for t in ts)
+            if a.annotate:   # under the banner: each motion lands where another started (the two layouts)
+                starts = [t[0] for t in ts if t]; end = 'a start'; ends_ok = bool(starts) and all(t and min(abs(t[-1] - v) for v in starts) < 1 for t in ts)
+            else: ends_ok = end is not None and all(t and min(abs(t[-1] - 4), abs(t[-1] - end)) < 1 for t in ts)
             check(ends_ok, f'every motion lands exactly on a layout ({kind}: 4 or {end} DIP)', [round(t[-1], 1) for t in ts if t])
+    if a.annotate: check(report.get('annotate'), 'the annotation mode on, its chat in place (Panneau)')
     check(sum(f['white'] for f in fr) == 0, 'no white pixel in any frame', f"{sum(f['white'] > 0 for f in fr)} frames with white")
     check(sum(f['holes'] for f in fr) == 0, 'no hole inside the page in any frame (canvas, black or white where the page is)', f"{sum(f['holes'] > 0 for f in fr)} frames with holes")
     # (black outside the page is not judged here: on a hidden desktop PrintWindow does not render the window's own Direct2D
     # surface — the bar and the canvas inset come out black at rest; the night QA judges those from the screen)
     edges = [f[EDGE] for f in fr if f[EDGE] is not None]
     if not a.reduced:
-        far = normal.get(EDGE, 81.0)
+        far = max(edges or [0]) if a.annotate else normal.get(EDGE, 81.0)
         moving = [f for f in fr if f[EDGE] is not None and 5 < f[EDGE] < far - 1]
         check(len(moving) >= 4, f'the page\'s {EDGE} edge is seen in between (a motion, not a switch)', f'{len(moving)} frames between the two layouts')
     if a.scenario == 'interrupt' and edges:

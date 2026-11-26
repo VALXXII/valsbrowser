@@ -6371,6 +6371,7 @@ struct FocusMotionState{
     bool holdBox=false;SV::Box heldBox{};
     // #127 side layouts: the docked column (the bar's picture is then the whole normal chrome: clipped into the column, it
     // slides left; into the window bar, it goes up and fades) and its offset along the path, from what is on screen.
+    bool keepColumn=false;   // #143 Q2: a drawer docked against the column when Focus comes: the column stays (the drawer brings it back in side Focus)
     bool side=false;float columnW=0;FX::Follow column;IDCompositionVisual2* columnV=nullptr;IDCompositionRectangleClip *columnClip=nullptr,*barClip=nullptr;
     // The column revealed over the page during the motion (left edge, Ctrl+Maj+,): its own picture follows the reveal's slide.
     bool revealFollow=false;IDCompositionSurface* revealS=nullptr;int revealW=0,revealH=0;float revealTop=0;
@@ -6600,7 +6601,7 @@ void FocusMotionToggle(bool toFocus){
         m.spring.Retarget(target);m.fade=FX::Fade::Toward(target,m.spring.x,m.opacity);m.lastMs=FocusMs(NativeChrome::Motion::Now());
         if(m.side){float shown=m.column.At(m.spring.x);   // the column from where it is shown (the revealed one, back in the docked picture)
             if(m.revealFollow&&target<.5){shown=(std::clamp(sideSlide.Value(NativeChrome::Motion::Now()),0.f,1.f)-1)*m.columnW;m.revealFollow=false;}
-            m.column=FX::Follow::Toward(target,m.spring.x,shown,target>=.5?-m.columnW:0.f);}
+            m.column=FX::Follow::Toward(target,m.spring.x,shown,target>=.5&&!m.keepColumn?-m.columnW:0.f);}
         Log(std::wstring(L"FOCUS motion turned back at x ")+std::to_wstring(m.spring.x)+L" (velocity "+std::to_wstring(m.spring.v)+L")");ScheduleMotion(NativeChrome::Motion::Now());return;}
     if(m.active)FocusMotionClear();   // landing or cross-fading: the live layout is the last one: a fresh start from it
     const bool live=chrome.sidebar?chrome.sideHidden:chrome.floating;   // Focus as shown now (side layouts: the column hidden)
@@ -6613,7 +6614,8 @@ void FocusMotionToggle(bool toFocus){
     const float revealed=chrome.sidebar&&!toFocus?(sideLive?1.f:sidePic.shown?std::clamp(sideSlide.Value(NativeChrome::Motion::Now()),0.f,1.f):0.f):0.f;
     m.normal=FocusLayoutFor(false);m.focus=FocusLayoutFor(true);m.reduced=motion.ReducedMotion();
     m.side=chrome.sidebar;m.columnW=m.normal.column;m.revealFollow=false;
-    m.column=toFocus?FX::Follow::Toward(1.0,0.0,0.f,-m.columnW):FX::Follow::Toward(0.0,1.0,(revealed-1)*m.columnW,0.f);
+    m.keepColumn=m.side&&toFocus&&DrawerReserveDip()>0&&NativeChrome::Downloads::DrawerLayout::Side::focusBringsColumn;
+    m.column=toFocus?FX::Follow::Toward(1.0,0.0,0.f,m.keepColumn?0.f:-m.columnW):FX::Follow::Toward(0.0,1.0,(revealed-1)*m.columnW,0.f);
     const FX::Layout& from=toFocus?m.normal:m.focus;const float s=GetDpiForWindow(window)/96.f;
     // the page as it is now, at its place now
     const RECT box{(LONG)std::lround(from.page.left*s),(LONG)std::lround(from.page.top*s),(LONG)std::lround(from.page.right*s),(LONG)std::lround(from.page.bottom*s)};
