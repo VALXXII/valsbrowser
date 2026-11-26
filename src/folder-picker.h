@@ -99,7 +99,9 @@ class Popover {
         }
         return true;
     }
+    Chrome* surface_ = nullptr; int testFocused_ = -1;   // RenderForTest
     void Paint() {
+        Chrome& chrome_ = surface_ ? *surface_ : this->chrome_;
         if (!chrome_.RenderTarget()) chrome_.Resize();
         auto* t = chrome_.RenderTarget(); if (!t || !chrome_.SolidBrush()) return;
         const auto now = Motion::Now(); const float h = Layout::Height(), w = Layout::width;
@@ -114,7 +116,7 @@ class Popover {
             chrome_.FadedText(name_, {Layout::nameLeft, Layout::headerTop, w - Layout::inset, Layout::headerTop + P::headerTile}, P::nameSize, 1, false, false, 0, FolderStyle::nameFade);
             chrome_.semibold = false;
         }
-        const int focus = keyboard_ && GetFocus() == hwnd_ ? model_.focus : -1;
+        const int focus = keyboard_ && (testFocused_ >= 0 ? testFocused_ == 1 : GetFocus() == hwnd_) ? model_.focus : -1;
         chrome_.PaintFolderPicker(Layout::inset, Layout::stopsTop, P::popoverGap, model_, [&](int stop) { return motion_.Visual(static_cast<int>(StopKey) + stop, now).hover; }, focus);
         // Border (#2E2E2E, 1 DIP) on the rounded outline.
         const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width));
@@ -227,6 +229,18 @@ public:
     void ChooseForTest(int stop) { Choose(stop, false); }
     const P::Model& ModelForTest() const { return model_; }
     void PaintForTest() { Paint(); }
+    // Windowless use (fixtures): opened on a folder without showing the window.
+    void OpenForTest(unsigned id, const std::wstring& name, const std::string& icon, const std::string& color, bool keyboard) {
+        id_ = id; name_ = name; model_ = {}; model_.color = FolderStyle::ColorIndex(color); model_.icon = FolderStyle::IconIndex(icon);
+        keyboard_ = keyboard; if (keyboard) model_.FocusChosen(); visible_ = true; hover_ = pressed_ = -1; motion_.ClearInteractions();
+    }
+    void HoverForTest(int stop) { hover_ = stop; motion_.SetInteraction(stop >= 0 ? static_cast<int>(StopKey) + stop : 0, 0, Motion::Now() - std::chrono::seconds(1)); }
+    void FocusForTest(int stop) { keyboard_ = stop >= 0; model_.focus = stop; }
+    bool RenderForTest(const std::wstring& root, const wchar_t* png, UINT dpi, bool focused) {
+        Chrome off; if (FAILED(off.InitOffscreen(root, dpi, Layout::width, Layout::Height()))) return false;
+        off.SetMotion(&motion_); surface_ = &off; testFocused_ = focused ? 1 : 0; Paint(); surface_ = nullptr; testFocused_ = -1;
+        const bool ok = SUCCEEDED(off.SavePng(png)); off.Dispose(); return ok;
+    }
     std::vector<Accessibility::Node> AccessibleNodesForTest() { return Nodes(); }
 };
 } // namespace FolderPicker

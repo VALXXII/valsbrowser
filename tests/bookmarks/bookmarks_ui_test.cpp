@@ -319,11 +319,50 @@ static void Interactions(){
     BookmarkStar(false);Expect(chrome.starred&&!bookmarks.Matching(L"https://example.org/nouvelle-page").empty()&&bookmarkPopover.Visible(),"Ctrl+D saves at once and opens « Favori ajouté »");
     Capture(bookmarkPopover.Window(),L"popover-added");Capture(window,L"window-added");bookmarkPopover.KeyForTest(VK_ESCAPE);
 }
+static void Customize(){
+    // #138 A folder's icon and colour in the real chrome: the right-click entry, applying, one undo step per visit, the
+    // band / menus / drawer following the store, the popover; Persistence() then saves the look (file version 2).
+    auto under=[](BM::Id id){const auto items=BookmarkMenuItems(id);for(size_t i=0;i+1<items.size();++i)if(items[i].label==TR(cmd_rename)&&items[i+1].label==TR(cmd_customize_folder))return true;return false;};
+    auto any=[](BM::Id id){for(const auto& it:BookmarkMenuItems(id))if(it.label==TR(cmd_customize_folder))return true;return false;};
+    Expect(under(veille)&&under(projet)&&!any(lemonde)&&!any(demoPaper),"right click: « Personnaliser… » under « Renommer… » on a folder, never on a link");
+    const size_t undo=bookmarkUndo.size();CustomizeVisit(veille);
+    Expect(RestyleFolder(veille,"newspaper","ambre")&&RestyleFolder(veille,"rocket","ambre"),"a picker's choices apply at once");
+    Expect(bookmarks.Find(veille)->icon=="rocket"&&bookmarks.Find(veille)->color=="ambre"&&bookmarkUndo.size()==undo+1,"one undo step for a whole visit of the picker");
+    CustomizeVisit(0);
+    auto band=[](BM::Id id)->const NativeChrome::Chrome::BandItem*{for(const auto& b:chrome.bandItems)if(b.id==id)return &b;return nullptr;};
+    Expect(band(veille)&&band(veille)->look.styled&&band(veille)->look.folder==0xE6AC3D&&band(veille)->look.emblemPath==FolderStyle::icons[FolderStyle::IconIndex("rocket")].emblem,"the band item takes the look at once");
+    Expect(band(veille)->sideTip==TRF(bookmarks_folder_tip_line,L"Veille",TRP(bookmarks_count,bookmarks.CountLinks(veille))),"the side grid's tip: « Veille · N favoris »");
+    UndoBookmark();
+    Expect(bookmarks.Find(veille)->icon.empty()&&bookmarks.Find(veille)->color.empty()&&band(veille)&&!band(veille)->look.styled,"Ctrl+Z: Veille is the grey folder again");
+    Expect(!RestyleFolder(lemonde,"star","vert")&&!RestyleFolder(BM::BarRoot,"star","vert"),"a link or a root takes no look");
+    CustomizeVisit(projet);RestyleFolder(projet,"palette","violet");CustomizeVisit(0);
+    bool moved=false;for(const auto& it:MoveToItems(lemonde))if(it.id==MenuId(MenuMoveTo,projet))moved=it.look.styled&&it.look.folder==0xB49BFF&&it.folderName;
+    Expect(moved,"« Déplacer vers »: Projet Lisière in violet, its name never cut with « … »");
+    bool sub=false;for(const auto& it:BookmarkFolderItems(BM::BarRoot))if(it.id==MenuId(MenuOpen,projet))sub=it.look.styled&&it.folderName;
+    Expect(sub,"folder menus: the subfolder row carries its look");
+    // From the band's menu: the popover over the folder; a choice applies, Escape closes it and the band item's open look goes.
+    int region=0;for(int i=0;i<chrome.band.visible&&i<(int)chrome.bandItems.size();++i)if(chrome.bandItems[i].id==veille)region=NativeChrome::BookmarkBase+i;
+    CustomizeFolder(veille,RenameBand,region,RegionScreen(region),true);
+    Expect(folderPicker.Visible()&&folderPicker.Folder()==veille&&chrome.bandOpen==region,"band: « Personnaliser… » opens the popover under Veille");
+    folderPicker.KeyForTest(VK_TAB);folderPicker.KeyForTest(VK_RIGHT);folderPicker.KeyForTest(VK_RETURN);   // grid: plain folder → briefcase
+    Expect(bookmarks.Find(veille)->icon=="briefcase",(std::string("popover keyboard: Tab, →, Entrée → briefcase (got ")+bookmarks.Find(veille)->icon+")").c_str());
+    folderPicker.ChooseForTest(FolderStyle::Picker::Model::SwatchOf(1));Expect(bookmarks.Find(veille)->color=="vert","popover click: vert");
+    folderPicker.KeyForTest(VK_ESCAPE);Expect(!folderPicker.Visible()&&chrome.bandOpen==0,"Escape closes the popover");
+    // The drawer: its row's look, the palette button, « Personnaliser… » from its row's menu unfolds the drawer's picker.
+    ShowBookmarksDrawer(true);bool row=false;for(const auto& r:bookmarksDrawer.Rows())if(r.id==veille)row=r.look.styled&&r.look.folder==0x6FD087;
+    Expect(row,"drawer: Veille's row in vert");
+    CustomizeFolder(veille,RenameDrawer,0,RECT{},true);
+    Expect(bookmarksDrawer.Picking()==veille&&!folderPicker.Visible(),"drawer row menu: « Personnaliser… » unfolds the drawer's picker, no popover");
+    bookmarksDrawer.KeyForTest(VK_ESCAPE);Expect(bookmarksDrawer.Picking()==0&&bookmarksDrawer.Visible(),"Escape folds the picker, the drawer stays");
+    bookmarksDrawer.Hide(false,false);
+}
 static void Persistence(){
     // Restart: what was saved reads back identical; a damaged file is kept aside and recovered from the backup.
     namespace fs=std::filesystem;smoke=false;dataDir=out+L"\\profile";fs::remove_all(dataDir);fs::create_directories(dataDir);
     SaveBookmarks();
     {std::ifstream in(fs::path(BookmarksFile()),std::ios::binary);bool damaged=true;auto again=BM::Store::Read(in,&damaged);Expect(!damaged&&again==bookmarks,"restart: the saved file reads back identical");}
+    {std::string head;std::ifstream in(fs::path(BookmarksFile()),std::ios::binary);std::getline(in,head);const auto* p=bookmarks.Find(projet);
+        Expect(head=="browser-bookmarks 2"&&p&&p->color=="violet"&&p->icon=="palette","#138: a folder's look is saved (file version 2) and reads back");}
     const auto before=bookmarks;LoadBookmarks();Expect(bookmarks==before&&fs::exists(BookmarksFile()+L".bak"),"launch keeps bookmarks.bak of the last clean file");
     {std::string text;{std::ifstream in(fs::path(BookmarksFile()),std::ios::binary);text.assign(std::istreambuf_iterator<char>(in),{});}
         std::ofstream outf(fs::path(BookmarksFile()),std::ios::binary|std::ios::trunc);outf<<text.substr(0,text.size()/2);}
@@ -356,7 +395,7 @@ int wmain(int argc,wchar_t** argv){setvbuf(stdout,nullptr,_IONBF,0);
     std::thread client(Client);
     MSG msg;while(GetMessageW(&msg,nullptr,0,0)>0){TranslateMessage(&msg);DispatchMessageW(&msg);}
     client.join();
-    Interactions();Persistence();
+    Interactions();Customize();Persistence();
     bookmarkPopover.Hide();bookmarkToast.HideNow();
     DestroyWindow(window);DestroyWindow(helper);
     if(failures){std::fprintf(stderr,"%d bookmark UI check(s) failed\n",failures);return 1;}

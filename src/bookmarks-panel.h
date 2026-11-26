@@ -38,6 +38,9 @@ namespace DrawerMotion = Downloads::DrawerMotion;
 using Downloads::Lane;
 namespace Layout {
 inline constexpr float width = Panel::width, indent = 16, firstRow = HistoryView::Layout::viewTop + 12; // 96
+// #138 The folder picker spans the board's row box, 9..259 (250 = 268 less the board drawer's 1 border and 8 padding a
+// side), whatever the level's indent: its 8 x 26 grid and its hint's line breaks need that width (board 23F4-0).
+inline constexpr float pickerLeft = 9, pickerRight = width - 9;
 inline constexpr float top = Downloads::DrawerLayout::top;
 }
 constexpr int CloseHit = 1, SearchHit = 2, ClearHit = 3, RowBase = 1000;
@@ -93,8 +96,7 @@ private:
     // #138 The picker: the folder it customizes (0: folded), that folder's row, the choice and keyboard stop, the hint's lines.
     Bookmarks::Id picking_ = 0; int pickerRow_ = -1; FolderStyle::Picker::Model picker_; std::vector<std::wstring> hintLines_;
     Tooltip::Tools tip_;   // « Personnaliser » on a folder's palette button (board 23E0-0; the app's C5 tip)
-    // The picker spans the rows' focus box without the level's indent (10..258): its 8 x 26 grid needs the width (board 23F4-0).
-    static constexpr float pickerLeft = Panel::padding - 6, pickerRight = Layout::width - Panel::padding + 6;
+    static constexpr float pickerLeft = Layout::pickerLeft, pickerRight = Layout::pickerRight;
     float PickerHeight() const { return FolderStyle::Picker::DrawerHeight(hintLines_.size() * FolderStyle::Picker::hintLine); }
     float PickerTop(float scroll) const { return RowTop(pickerRow_, scroll) + Panel::tile + (Panel::pitch - Panel::tile) / 2; }   // 8 under the tile, 8 above the next
     float StopsLeft() const { return pickerLeft + FolderStyle::Picker::padding; }
@@ -103,7 +105,8 @@ private:
     float Dpi() const { return static_cast<float>(GetDpiForWindow(hwnd_ ? hwnd_ : owner_)); }
     int Px(float dip) const { return static_cast<int>(std::lround(dip * Dpi() / 96.f)); }
     int OwnerPx(float dip) const { return static_cast<int>(std::lround(dip * GetDpiForWindow(owner_) / 96.f)); }
-    float Height() const { RECT r{}; if (hwnd_) GetClientRect(hwnd_, &r); return r.bottom * 96.f / Dpi(); }
+    float Height() const { if (testHeight_ > 0) return testHeight_; RECT r{}; if (hwnd_) GetClientRect(hwnd_, &r); return r.bottom * 96.f / Dpi(); }
+    Chrome* surface_ = nullptr; float testHeight_ = 0; int testFocused_ = -1;   // RenderForTest: offscreen target, its height, focus forced
     RECT OwnerClient() const { RECT r{}; GetClientRect(owner_, &r); MapWindowPoints(owner_, nullptr, reinterpret_cast<POINT*>(&r), 2); return r; }
     bool Reduced() const { return motion_.ReducedMotion(); }
     float RowTop(int i, float scroll) const { return Layout::firstRow + i * Panel::pitch - scroll + (pickerRow_ >= 0 && i > pickerRow_ ? PickerHeight() : 0.f); }
@@ -288,7 +291,7 @@ private:
         if (picker_.Press(k) == FolderStyle::Picker::Outcome::Moved) SetFocusHit(PickerBase + picker_.focus);
         return true;
     }
-    void PaintPicker(float scroll, bool focused, Motion::Time now) {
+    void PaintPicker(Chrome& chrome_, float scroll, bool focused, Motion::Time now) {
         namespace P = FolderStyle::Picker; const float top = PickerTop(scroll), h = PickerHeight();
         chrome_.FillBox({pickerLeft, top, pickerRight, top + h}, P::cellRadius, Chrome::Rgb(P::surface));   // #1E1E1E, radius 6
         const int focusStop = focused && keyboard_ && IsPickerHit(focus_) ? focus_ - PickerBase : -1;
@@ -354,10 +357,11 @@ private:
     }
     // ---- Paint ----------------------------------------------------------------------
     void Paint() {
+        Chrome& chrome_ = surface_ ? *surface_ : this->chrome_;   // RenderForTest draws offscreen
         if (!chrome_.RenderTarget()) chrome_.Resize();
         auto* t = chrome_.RenderTarget(); if (!t || !chrome_.SolidBrush()) return;
         const auto now = Motion::Now(); const float c = Design::Surface::canvas, h = Height(), scroll = scroll_.Value(now);
-        const bool focused = GetFocus() == hwnd_;
+        const bool focused = testFocused_ >= 0 ? testFocused_ == 1 : GetFocus() == hwnd_;
         t->BeginDraw(); t->Clear(D2D1::ColorF(c, c, c, 1)); t->SetTransform(D2D1::Matrix3x2F::Translation(LeadDip(), 0)); chrome_.keyboardModality = keyboard_;
         auto R = [](Design::Box b) { return D2D1_RECT_F{b.left, b.top, b.right, b.bottom}; };
         chrome_.Text(TR(bookmarks_title), R(Panel::Title()), Panel::line, Design::Text::muted, false, true, -.16f);
@@ -423,7 +427,7 @@ private:
                 }
             }
             if (focused && focus_ == row) chrome_.FocusRing({tile.left - 6, top - 6, Layout::width - Panel::padding + 6, top + Panel::tile + 6}, Design::Radius::control + 6);
-            if (picking_ && i == pickerRow_) PaintPicker(scroll, focused, now);   // #138: unfolded under its row
+            if (picking_ && i == pickerRow_) PaintPicker(chrome_, scroll, focused, now);   // #138: unfolded under its row
         }
         if (dropRow_ >= 0 && dropRow_ < static_cast<int>(rows_.size())) {   // drop feedback (owner's drag): accent tint into a folder, line before/after
             const Row& r = rows_[dropRow_]; const float top = RowTop(dropRow_, scroll); const auto tile = Tile(r, top); const auto a = Design::Accent::Get();
@@ -437,7 +441,7 @@ private:
         t->PopAxisAlignedClip();
         const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width));
         chrome_.Color(1, DownloadsUI::Popup::border); t->FillRectangle(D2D1::RectF(0, 0, px, h), chrome_.SolidBrush());
-        t->SetTransform(D2D1::Matrix3x2F::Identity()); chrome_.KeyOut(LeadDip()); KeyCorners();
+        t->SetTransform(D2D1::Matrix3x2F::Identity()); chrome_.KeyOut(LeadDip()); if (!surface_) KeyCorners();
         if (t->EndDraw() == D2DERR_RECREATE_TARGET) chrome_.RecreateTarget();
     }
     // The window never moves while sliding (NativeUI::KeyedDrawer): a slide step is one present, the content drawn
@@ -695,6 +699,17 @@ public:
     float RowTopForTest(int i) const { return RowTop(i, scroll_.Value(Motion::Now())); }
     float PickerTopForTest() const { return pickerRow_ >= 0 ? PickerTop(scroll_.Value(Motion::Now())) : -1; }
     void ScrollForTest(float to) { scroll_.Snap(std::clamp(to, 0.f, MaxScroll())); Invalidate(); }
+    // Windowless use (fixtures): the rows built as if it had opened, the window never shown.
+    void OpenForTest() { visible_ = true; closing_ = false; Rebuild(); focus_ = SearchHit; }
+    void FocusForTest(int hit, bool keyboard) { keyboard_ = keyboard; focus_ = hit; if (IsPickerHit(hit)) picker_.focus = hit - PickerBase; }
+    // The drawer as it paints now, offscreen at `dpi`, `height` DIP high, to `png` (`focused`: as if it held the keyboard).
+    bool RenderForTest(const std::wstring& root, const wchar_t* png, UINT dpi, float height, bool focused) {
+        Chrome off; if (FAILED(off.InitOffscreen(root, dpi, Layout::width, height))) return false;
+        off.SetMotion(&motion_); off.textCacheLimit = 1024; surface_ = &off; testHeight_ = height; testFocused_ = focused ? 1 : 0;
+        const int keepLead = lead_; lead_ = 0; Paint(); lead_ = keepLead;
+        surface_ = nullptr; testHeight_ = 0; testFocused_ = -1;
+        const bool ok = SUCCEEDED(off.SavePng(png)); off.Dispose(); return ok;
+    }
     Motion::Wake NextWake(Motion::Time now) const {
         if (!visible_) return {};
         const bool moving = slide_.Moving(now) || scroll_.Moving(now);

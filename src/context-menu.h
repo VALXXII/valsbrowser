@@ -721,6 +721,20 @@ public:
     }
     // Test and host hooks: the UIA snapshot of an open level, its window, the open depth.
     static std::vector<std::wstring> KeysForTest(const std::wstring& shortcut) { return Keys(shortcut); }
+    // `items` as one menu level, offscreen at `dpi`, to `png` (`hover`: that row lit, -1 none). Its width and height out.
+    bool RenderForTest(const std::vector<Item>& items, const std::wstring& root, UINT dpi, const wchar_t* png, int hover = -1, float* width = nullptr, float* height = nullptr) {
+        Level measure; measure.items = &items; measure.dpi = dpi;
+        if (FAILED(measure.chrome.InitOffscreen(root, dpi, Layout::maxWidth, 400))) return false;
+        Measure(measure); measure.chrome.Dispose();
+        Level l; l.items = &items; l.dpi = dpi;
+        if (FAILED(l.chrome.InitOffscreen(root, dpi, measure.width, measure.height))) return false;
+        Measure(l); l.motion.EnablePolish(); l.chrome.SetMotion(&l.motion);
+        if (hover >= 0) { l.hover = hover; l.motion.SetInteraction(hover + 1, 0, Motion::Now() - std::chrono::seconds(1)); }
+        auto* t = l.chrome.RenderTarget(); if (!t) return false;
+        t->BeginDraw(); PaintContent(l, Motion::Now() + std::chrono::seconds(1)); t->EndDraw();
+        if (width) *width = l.width; if (height) *height = l.height;
+        const bool ok = SUCCEEDED(l.chrome.SavePng(png)); l.chrome.Dispose(); return ok;
+    }
     std::vector<Accessibility::Node> AccessibleNodes(int index) const { return Nodes(index); }
     // fromChecked: a keyboard-opened list (a select's options) starts on its checked row, not the first.
     int Track(const std::vector<Item>& items, POINT at, const RECT* exclude = nullptr, bool keyboard = false, bool reduced = false, bool alignRight = false, bool fromChecked = false) {

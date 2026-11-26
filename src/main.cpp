@@ -4296,10 +4296,11 @@ void PromoteToBar(BM::Id id){
     PushUndo(std::move(steps),TR(bookmark_undo_move));
     const std::wstring text=TRP(bookmark_promoted_to_bar,r.moved.size());ShowBookmarkToast(text);AnnounceBookmark(TRF(bookmark_announce_undo_hint,text));
 }
-void BookmarkContextMenu(BM::Id id,POINT at,const RECT* anchor,bool keyboard){
-    const auto* n=bookmarks.Find(id);if(!n||BM::Store::IsRoot(id))return;const bool folder=n->kind==BM::Kind::Folder;
-    enum{OpenTab=1,OpenAll,Edit,Duplicate,Copy,Delete,NewFolderItem,AddHere,ToggleBar,Promote,Customize};
-    std::vector<CM::Item> items;
+namespace BookmarkMenu{enum{OpenTab=1,OpenAll,Edit,Duplicate,Copy,Delete,NewFolderItem,AddHere,ToggleBar,Promote,Customize};}
+// The rows of a bookmark's own menu (tests read them: #138 « Personnaliser… » under « Renommer… », folders only).
+std::vector<CM::Item> BookmarkMenuItems(BM::Id id){
+    using namespace BookmarkMenu;std::vector<CM::Item> items;
+    const auto* n=bookmarks.Find(id);if(!n||BM::Store::IsRoot(id))return items;const bool folder=n->kind==BM::Kind::Folder;
     if(folder){const size_t links=bookmarks.CountLinks(id);auto all=CM::Command(OpenAll,TRP(bookmark_open_all,links),L"",links>0);items.push_back(all);}
     else items.push_back(CM::Command(OpenTab,TR(history_open_new_tab)));
     items.push_back(CM::Separator());
@@ -4315,6 +4316,11 @@ void BookmarkContextMenu(BM::Id id,POINT at,const RECT* anchor,bool keyboard){
     CM::Item move;move.label=TR(cmd_move_to);move.children=MoveToItems(id);if(move.children.empty())move.enabled=false;items.push_back(move);
     if(folder&&n->parent!=BM::BarRoot)items.push_back(CM::Command(Promote,TR(bookmark_promote_to_bar),L"",!n->children.empty()));
     items.push_back(CM::Command(ToggleBar,BandToggleLabel(),TR(key_ctrl_shift_b)));
+    return items;
+}
+void BookmarkContextMenu(BM::Id id,POINT at,const RECT* anchor,bool keyboard){
+    const auto* n=bookmarks.Find(id);if(!n||BM::Store::IsRoot(id))return;const bool folder=n->kind==BM::Kind::Folder;
+    using namespace BookmarkMenu;const std::vector<CM::Item> items=BookmarkMenuItems(id);
     const int region=[&]{for(int i=0;i<chrome.band.visible&&i<(int)chrome.bandItems.size();++i)if(chrome.bandItems[i].id==id)return NativeChrome::BookmarkBase+i;return 0;}();
     if(region){chrome.bandOpen=region;InvalidateChrome();UpdateWindow(window);}
     bookmarksDrawer.holding_=bookmarksDrawer.Visible();
