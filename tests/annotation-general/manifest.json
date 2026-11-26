@@ -566,6 +566,16 @@
       "timeout": 1800
     },
     {
+      "id": "panel-model-click",
+      "title": "Chat à droite : un vrai clic sur le bouton du modèle ouvre son menu, aussi quand une autre fenêtre était devant",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/final/panel_model_click.py"
+      ],
+      "timeout": 600
+    },
+    {
       "id": "focus-annotation",
       "title": "Mode Focus avec le mode Annotation : bandeau et chat gardés, rien ne saute (barre du haut)",
       "part": "night",
