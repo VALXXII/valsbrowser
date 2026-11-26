@@ -1215,7 +1215,7 @@ public:
     void BuildSidebar(int count,int selected,const std::vector<std::wstring>* titles,Motion::Time now=Motion::Now()){
         namespace SB=Sidebar;
         sideTools.clear();if(annotateShown)sideTools.push_back('N');if(audioShown)sideTools.push_back('V');sideTools.push_back('Y');sideTools.push_back('D');sideTools.push_back('S');
-        side=SB::Compute(SideInput(sidebarMode,count,sidebarColumn!=SB::Width(sidebarMode,sidebarWidth)?sidebarColumn:-1));sidebarScroll=side.scroll;if(side.gridOpen||!side.grid.Scrolls())sidebarGridScroll=side.grid.scroll;SyncSideMotion(count,now);
+        side=SB::Compute(SideInput(sidebarMode,count,sidebarColumn));sidebarScroll=side.scroll;   /* the page's edge is always the presented width (the host's ContentBox): one value */if(side.gridOpen||!side.grid.Scrolls())sidebarGridScroll=side.grid.scroll;SyncSideMotion(count,now);
         if(sidebarOverlay){sideOver=SB::Compute(SideInput(SB::Mode::Complete,count,side.column,true));sideOver.scroll=side.scroll;}
         // The compact « » » popover: all the bookmarks, its tiles first (it covers the column's right and the page).
         if(sidebarPopover&&!sidebarOverlay&&side.more&&side.mode==SB::Mode::Compact&&!side.tiles.empty()){sidePop=SB::ComputePopover(side.column,side.tiles.back(),(int)bandItems.size(),sidebarPopoverScroll,height);sidebarPopoverScroll=sidePop.grid.scroll;
@@ -1357,7 +1357,7 @@ public:
         const auto t=Sidebar::TitleIn(rb,closeShown);
         const float rest=h>0?K::titleRest+(K::titleHover-K::titleRest)*h:asleep?.32f:K::titleRest;
         const float o=(rest+(K::titleActive-rest)*emphasis)*labels*alpha;
-        Text(title,R(t),Design::Type::label.size,o,false,active,0);
+        FadedText(title,R(t),Design::Type::label.size,o,false,active,0);
         if(closeShown){const auto cb=R(Sidebar::CloseIn(rb));const float press=motion?motion->Visual(CloseBase+i,now).press:0;
             SideGlyph(Sidebar::Glyph::close,cb,Sidebar::Complete::closeGlyph*Motion::PressScale(press,motion&&motion->ReducedMotion()),K::glyph*std::max(h,focus==CloseBase+i?1.f:0.f)*labels*alpha);
             if(focus==CloseBase+i)FocusRing(cb,Design::Radius::button);}
@@ -1572,7 +1572,7 @@ public:
             if(!L.gridToggle.Empty()){   // « Tous les favoris (N) » ⌄ / « Réduire » ⌃ (1WKW-0 / 1WRD-0)
                 const auto r=R(L.gridToggle);const float hv=Hovered(SidebarGridToggleId,hover,now);if(hv>0)White(r,Design::Radius::control,K::toolHover*hv);if(focus==SidebarGridToggleId)FocusRing(r,Design::Radius::control);
                 const D2D1_RECT_F caret{r.right-C::togglePad-C::toggleGlyph,r.top,r.right-C::togglePad,r.bottom};
-                Text(gridToggleTip,{r.left+C::togglePad,r.top,caret.left-C::togglePad,r.bottom},C::toggleFont,K::toggleText*labels,false,false,0);
+                FadedText(gridToggleTip,{r.left+C::togglePad,r.top,caret.left-C::togglePad,r.bottom},C::toggleFont,K::toggleText*labels,false,false,0);
                 SideGlyph(L.gridOpen?SB::Glyph::caretUp:SB::Glyph::caretDown,caret,C::toggleGlyph,K::toggleText*labels);}
             if(!L.manage.Empty())PaintManageRow(R(L.manage),false,hover,focus,now,labels);
             return;}
@@ -1596,7 +1596,25 @@ public:
         SideGlyph(Sidebar::Glyph::folder,{r.left+padL,cy-icon/2,r.left+padL+icon,cy+icon/2},icon,on(0xB3)*labels);
         const std::wstring key=TR(key_ctrl_shift_o);const float kw=TextWidth(key,C::manageKeyFont,false,false,0);
         Text(key,{r.right-padR-kw-1,r.top,r.right-padR+1,r.bottom},C::manageKeyFont,on(0x80)*labels);
-        Text(TR(bookmarks_manage),{r.left+padL+icon+gap,r.top,r.right-padR-kw-gap,r.bottom},C::manageFont,(popover?1.f:on(0xE6))*labels);}
+        FadedText(TR(bookmarks_manage),{r.left+padL+icon+gap,r.top,r.right-padR-kw-gap,r.bottom},C::manageFont,(popover?1.f:on(0xE6))*labels);}
+    // The docked column's soft edge at the page (x = `edge`): the canvas from 0 to 1 over its last edgeFade DIP.
+    void DrawEdgeFade(float edge){const float c=Design::Surface::canvas,from=edge-Sidebar::Complete::edgeFade;if(edge<=0)return;ID2D1GradientStopCollection* stops=nullptr;ID2D1LinearGradientBrush* g=nullptr;
+        D2D1_GRADIENT_STOP s[]={{0,D2D1::ColorF(c,c,c,0)},{1,D2D1::ColorF(c,c,c,1)}};
+        if(SUCCEEDED(target->CreateGradientStopCollection(s,2,&stops))&&SUCCEEDED(target->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({from,0},{edge,0}),stops,&g)))target->FillRectangle(D2D1::RectF(std::max(0.f,from),0,edge,height),g);
+        Drop(g);Drop(stops);}
+    // A column text cut by its slot (Sidebar::Complete::textFade): its glyphs fade over the slot's last 12 DIP (an opacity
+    // layer, whatever the row's fill under it); a text that fits is drawn as is.
+    void FadedText(const std::wstring& value,D2D1_RECT_F slot,float size,float opacity,bool tabular=false,bool medium=false,float tracking=0){
+        const float fade=Sidebar::Complete::textFade;const float full=value.empty()?0.f:TextWidth(value,size,medium,tabular,tracking);
+        if(value.empty()||slot.right-slot.left<=fade||full<=slot.right-slot.left+.5f){Text(value,slot,size,opacity,tabular,medium,tracking);return;}
+        ID2D1GradientStopCollection* stops=nullptr;ID2D1LinearGradientBrush* g=nullptr;ID2D1Layer* layer=nullptr;
+        D2D1_GRADIENT_STOP s[]={{0,D2D1::ColorF(0,0,0,1)},{1,D2D1::ColorF(0,0,0,0)}};
+        const D2D1_RECT_F whole{slot.left,slot.top,slot.left+full+2,slot.bottom};   // laid out whole (never an ellipsis), cut at the slot under the fade
+        if(SUCCEEDED(target->CreateGradientStopCollection(s,2,&stops))&&SUCCEEDED(target->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({slot.right-fade,0},{slot.right,0}),stops,&g))&&SUCCEEDED(target->CreateLayer(nullptr,&layer))){
+            target->PushLayer(D2D1::LayerParameters({slot.left,slot.top-size,slot.right,slot.bottom+size},nullptr,D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,D2D1::IdentityMatrix(),1.f,g,D2D1_LAYER_OPTIONS_NONE),layer);
+            Text(value,whole,size,opacity,tabular,medium,tracking);target->PopLayer();}
+        else Text(value,slot,size,opacity,tabular,medium,tracking);
+        Drop(layer);Drop(g);Drop(stops);}
     void DrawVerticalFade(float left,float from,float right,float to,bool overlay){(void)overlay;const float c=Design::Surface::canvas;ID2D1GradientStopCollection* stops=nullptr;ID2D1LinearGradientBrush* g=nullptr;
         D2D1_GRADIENT_STOP s[]={{0,D2D1::ColorF(c,c,c,1)},{1,D2D1::ColorF(c,c,c,0)}};
         if(SUCCEEDED(target->CreateGradientStopCollection(s,2,&stops))&&SUCCEEDED(target->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({0,from},{0,to}),stops,&g)))target->FillRectangle(D2D1::RectF(left,std::min(from,to),right,std::max(from,to)),g);
@@ -1677,8 +1695,13 @@ public:
         // Window bar: compact navigation + address (02 1Q3F-0), window buttons.
         if(!side.addressInColumn){for(int id:{'B','F','R'}){const auto& b=id=='B'?side.back:id=='F'?side.forward:side.reload;PaintSideButton(id,Morph(id,b,now),sidebarOverlay?0:hover,sidebarOverlay?0:focus,now,1,side.navPlates);}PaintSideAddress(side,editing&&!sidebarOverlay,hover,focus,now,1);}
         for(int id:{'m','M','X'})DrawWindowGlyph(id,id=='m'?R(side.minimize):id=='M'?R(side.maximize):R(side.close),hover,focus,now);
-        // Under the page windows: the canvas around the page's rounded corners is the window's own.
-        PaintSideColumn(side,titles,selected,editing&&!sidebarOverlay,sidebarOverlay?0:hover,sidebarOverlay?0:focus,now,false);
+        // Under the page windows: the canvas around the page's rounded corners is the window's own. The docked column's paint
+        // stops at the page's edge (Sidebar::Complete::minimumLayout): laid out wider than shown (it folds / unfolds) or its
+        // pieces gliding, its last 12 DIP fade into the canvas instead of being cut by the page (Val 25 nov., #143).
+        {const float edge=side.zone.left;target->PushAxisAlignedClip({0,0,std::max(0.f,edge),height},D2D1_ANTIALIAS_MODE_ALIASED);
+            PaintSideColumn(side,titles,selected,editing&&!sidebarOverlay,sidebarOverlay?0:hover,sidebarOverlay?0:focus,now,false);
+            target->PopAxisAlignedClip();
+            if(side.column>edge+.5f||sideMorphing)DrawEdgeFade(edge);}
         if(sidebarOverlay)PaintSideColumn(sideOver,titles,selected,editing,hover,focus,now,true);
         PaintSidePopover(hover,focus,now);
         PaintSideEdge(focus==SidebarEdgeId&&keyboardModality);   // keyboard focus: the dragging colour
