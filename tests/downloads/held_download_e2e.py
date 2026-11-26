@@ -31,6 +31,8 @@ Expected (« Conserver », src/main.cpp KeepHeldDownload / WaitEnginePass / Watc
   - keep-then-kill (x --kill-repeat): the browser and its engine killed right after « Conserver », then started again on
                      the same profile: the file still whole at its path 60 s after that start (the restarted engine's own
                      clean-up of its unfinished download: measured ~8 s after a kill), and our watched leftover gone in the end;
+  - keep-held-then-kill (x --kill-repeat): the same with the download still held at the kill (test hook
+                     BROWSER_TEST_KEEP_NO_CANCEL=1): the file in place at the restart, removed by the restarted engine, given back;
   - keep-then-restart: a keep settled, the browser closed and started again: the file still whole 60 s after that start;
   - keep-blocked:    our name cannot be made (a folder sits at it): « Échec · Erreur de fichier » with « Retirer », no dead
                      « Conserver », the engine's held file deleted, the folder left alone, nothing else left;
@@ -332,7 +334,8 @@ def main() -> int:
     uia = work / 'uia.ps1'; uia.write_text(UIA, encoding='utf-8')
     keeps = ['keep'] + [f'keep-r{n}' for n in range(2, a.repeat + 1)]
     kills = ['keep-then-kill'] + [f'keep-then-kill-r{n}' for n in range(2, a.kill_repeat + 1)]
-    for tag in keeps + kills + ['keep-again', 'keep-late-removal', 'keep-read', 'keep-then-discard', 'keep-then-close', 'keep-then-restart', 'keep-insecure', 'keep-blocked',
+    helds = ['keep-held-then-kill'] + [f'keep-held-then-kill-r{n}' for n in range(2, a.kill_repeat + 1)]
+    for tag in keeps + kills + helds + ['keep-again', 'keep-late-removal', 'keep-read', 'keep-then-discard', 'keep-then-close', 'keep-then-restart', 'keep-insecure', 'keep-blocked',
                         'keep-early-cancel', 'keep-save-removes', 'discard']:
         FILES[tag + '.exe'] = (fresh_exe(work, tag.replace('-', '_')), f'held-{tag}.exe')
     FILES['keep-early-cancel.exe'] = (FILES['keep-early-cancel.exe'][0] + os.urandom(150 << 20), 'held-keep-early-cancel.exe')   # a long scan
@@ -603,6 +606,12 @@ def main() -> int:
         if not only or 'keep-then-kill' in only:
             for name in kills:
                 keep_case(name, then='kill')
+        if not only or 'keep-held-then-kill' in only:
+            # The night run's exact path: the download still HELD at the kill (test hook: « Conserver » never lets the engine
+            # go), the file in place at the restart; measured, the restarted engine removes it ~1 s after its start. Our adopted
+            # leftover gives it back and watches it.
+            for name in helds:
+                keep_case(name, then='kill', extra_env={'BROWSER_TEST_KEEP_NO_CANCEL': '1'})
         if not only or 'keep-then-restart' in only:
             keep_case('keep-then-restart', then='restart')
         if not only or 'keep-then-close' in only:

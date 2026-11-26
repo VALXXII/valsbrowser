@@ -1823,9 +1823,11 @@ bool KeepWaitingForEngine(int id){auto k=keepJobs.find(id);return k!=keepJobs.en
 #ifndef BROWSER_CHANNEL_RELEASE
 std::int64_t KeepTestMs(const wchar_t* name,std::int64_t fallback){wchar_t v[32]{};if(GetEnvironmentVariableW(name,v,32)&&*v)return _wtoi64(v);return fallback;}
 bool KeepTestSaveRemoves(){wchar_t v[16]{};return GetEnvironmentVariableW(L"BROWSER_TEST_KEEP_SAVE",v,16)&&std::wstring(v)==L"remove";}
+bool KeepTestNoCancel(){wchar_t v[8]{};return GetEnvironmentVariableW(L"BROWSER_TEST_KEEP_NO_CANCEL",v,8)&&std::wstring(v)==L"1";}   // the engine never let go: a stop meanwhile leaves its download held
 #else
 #define KeepTestMs(name,fallback) (fallback)   /* the hooks' names are not even in a release binary */
 inline bool KeepTestSaveRemoves(){return false;}
+inline bool KeepTestNoCancel(){return false;}
 #endif
 // What is at a kept file's path (DL::Keep::At): a name whose removal is pending is still listed but cannot be opened.
 DL::Keep::At KeepPathState(const std::wstring& path){
@@ -1956,6 +1958,7 @@ void WaitEnginePass(int id){
     auto entry=found->second;auto* op=entry->op.p;
     COREWEBVIEW2_DOWNLOAD_STATE state=COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS;op->get_State(&state);
     COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON reason=COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE;if(state==COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED)op->get_InterruptReason(&reason);
+    if(KeepTestNoCancel()){DeferAfter(DL::Keep::StepMs,[id]{WaitEnginePass(id);});return;}   // test hook: the download stays held (a stop meanwhile)
     const bool marked=HasZoneMark(k.path)||k.insecure;   // measured: an insecure hold never gets the mark, its removal is at once and single
     const auto step=DL::Keep::BeforeCancel((int)state,(int)reason,marked,(std::int64_t)(GetTickCount64()-k.keptAt),KeepTestMs(L"BROWSER_TEST_KEEP_CAP_MS",DL::Keep::PassCapMs));
     if(step==DL::Keep::Before::Wait){DeferAfter(DL::Keep::StepMs,[id]{WaitEnginePass(id);});return;}
