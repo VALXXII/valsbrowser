@@ -196,13 +196,20 @@ Tous hors écran, dans des dossiers jetables ; le vrai navigateur installé n'es
   dans les tests seulement. Un certificat de test ne peut pas signer une version destinée au public
   (`package.py` le refuse).
 
+- **Vraie compilation complète** (version de développement, 26/11) : `package.py` a signé les 5 fichiers
+  (les 3 programmes, le désinstalleur, l'installateur) en 30 secondes, horodatés par le service de Certum ;
+  le ZIP, le paquet de mise à jour et l'installateur contiennent bien les fichiers signés ;
+  `WebView2Loader.dll` garde la signature de Microsoft.
+- **Suite complète après rebasage sur la dernière version** (bureau caché) : installateur 574 vérifications,
+  mise à jour, démarrage : tout vert ; tests natifs 117 réussis, 2 échecs identiques à ceux de `main`
+  (captures d'écran impossibles sur un bureau caché).
+
 Pas encore fait :
-- Signer et horodater une **vraie** compilation complète de bout en bout (interrompu par la pause des
-  compilations ; à refaire, 10 minutes).
 - Installer une vraie version signée : le programme de mise à jour d'une vraie version écrit dans le
   registre de l'utilisateur, donc cet essai se fait sur une machine propre ou pendant la répétition,
   pas sur ce PC.
 - Le passage du Contrôle intelligent : il faut le vrai certificat et un PC où il est actif.
+- La connexion automatique à Certum depuis GitHub : il faut le vrai compte (répétition).
 
 ## 6. Ce que Val doit faire
 
