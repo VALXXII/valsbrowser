@@ -608,8 +608,6 @@ struct FocusReveal {
     void Toggle() { if (open) Close(); else { open = pinned = true; wide = false; edgeSinceMs = -1; } }
     // The address needs the field: in, pinned; `compact`: the complete column.
     void ForAddress(bool compact) { if (!open) { open = pinned = true; edgeSinceMs = -1; } else pinned = true; wide = wide || compact; }
-    // #143: a drawer docks against it: in, not pinned (the host holds it while the drawer is open, then it goes as usual).
-    void ForDrawer() { if (!open) { open = true; pinned = wide = false; edgeSinceMs = -1; } }
     void Close() { open = pinned = wide = false; edgeSinceMs = -1; }
 };
 // The compact « » » popover (« compact, 40 » 1WSC-0): all the bookmarks, 4 right of the column, top on the « » » tile

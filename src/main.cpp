@@ -5256,7 +5256,7 @@ void CloseDockedDrawers(){CloseDownloadSurfaces();settingsDrawer.Hide(false,true
 // drawer is open (sideDrawerHold, board 15's rule); when the drawer closes it leaves again unless the pointer is on it.
 void SideFocusForDrawer(){
     namespace DS=NativeChrome::Downloads::DrawerLayout::Side;if(!chrome.sideHidden||!window||!DS::focusBringsColumn)return;
-    sideDrawerHold=true;const bool rest=sideReveal.open&&sideLive&&!sidePic.shown;sideReveal.ForDrawer();if(rest)return;
+    sideDrawerHold=true;const bool rest=sideReveal.open&&sideLive&&!sidePic.shown;if(!sideReveal.open){sideReveal.ForAddress(false);sideReveal.pinned=false;}if(rest)return;   /* in like for the field, but not pinned: held by the drawer only */
     KillTimer(window,SideSlideTimerId);SidePictureHide();sideSlide.Snap(1);sideFade.Snap(1);
     if(!sideLive)SideRevealLive(true);else BuildChrome();
     Layout();Log(L"FOCUS column in (drawer)");
