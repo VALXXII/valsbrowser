@@ -298,34 +298,34 @@ int wmain(int argc, wchar_t** argv) {
             bool accept = false; for (auto& btn : s.buttons) accept = accept || btn.id == Modal::AcceptButton; Check(accept, "preset: accepting action is AcceptButton");
         }
     }
-    {   // A8 About: status button stays open and calls onButton; link closes with its id.
+    {   // « À propos » B (A8's successor): the card's button stays open and calls onButton; a tile / the link closes with its id.
         int calls = 0, button = -9, pressed = -1;
         auto spec = Modal::AboutSpec(L"0.3.113", Modal::AboutUpToDate, L"Vérifié aujourd'hui à 9h42");
         spec.onButton = [&](int id) { pressed = id; d.SetStatus(Modal::AboutStatus(Modal::AboutChecking)); };
-        Check(spec.body == L"Version 0.3.113 · Windows 64 bits", "about: version line");
+        Check(spec.about.version == L"Version 0.3.113 · Windows 64 bits", "about: version line");
         d.Show(spec, Area(), [&](const Modal::Result& r) { ++calls; button = r.button; });
         d.ActivateForTest(D::StatusHit);
         Check(pressed == Modal::AboutCheckButton && d.Visible() && calls == 0, "about: Rechercher keeps the dialog open");
-        d.ActivateForTest(D::LinkHit(1));
+        d.ActivateForTest(D::LinkHit(4));
         Check(calls == 1 && button == Modal::AboutLicensesLink, "about: link closes with its id");
         d.FinishAnimationsForTest();
     }
-    {   // A8 status row: 48 minimum, grows (padding 6) for a 2-line detail; button and icon stay centred.
+    {   // « À propos » B card (Paper 257J-0): 55 with a one-line detail, grows by the detail's lines; button and icon stay centred.
         auto spec = Modal::AboutSpec(L"0.3.132", Modal::AboutUpToDate, L"Dernière vérification réussie");
         d.Show(spec, Area(), [](const Modal::Result&) {});
         const float h1 = d.HeightForTest(); const auto b1 = d.BoxForTest(D::StatusHit);
         auto two = Modal::AboutStatus(Modal::AboutOffline, L"La recherche de mises à jour a échoué. Réessayez.");
         d.SetStatus(two); d.PaintForTest();
         const float h2 = d.HeightForTest(); const auto b2 = d.BoxForTest(D::StatusHit);
-        Check(h2 > h1 && std::fabs((h2 - h1) - 20) < .5f, "A8: a 2-line detail grows the row from 48 to 68 (20 + 36 + 2x6)");
-        Check(std::fabs((b2.top - b1.top) - 10) < .5f && b2.bottom - b2.top == 32, "A8: the status button stays centred in the taller row");
+        Check(h2 > h1 && std::fabs((h2 - h1) - 16) < .5f, "B: a 2-line detail grows the card by one 16 DIP line (55 -> 71)");
+        Check(std::fabs((b2.top - b1.top) - 8) < .5f && b2.bottom - b2.top == 28, "B: the card's 28 DIP button stays centred in the taller card");
         for (UINT dpi : {96u, 144u, 192u}) Check(d.RenderForTest(root + L"/build/popups/a8-status-2lines-" + std::to_wstring(dpi) + L".png", dpi), "A8 2-line render sample");
         auto one = Modal::AboutStatus(Modal::AboutReady, L"", L"0.3.133"); d.SetStatus(one);
-        Check(std::fabs(d.HeightForTest() - h1) < .5f, "A8: a one-line detail keeps the 48 row");
-        auto none = Modal::AboutStatus(Modal::AboutChecking); none.title = L"Installation…"; none.hasButton = false; d.SetStatus(none); d.PaintForTest();        Check(std::fabs(d.HeightForTest() - h1) < .5f, "A8: no detail, no button: 48 row");
+        Check(std::fabs(d.HeightForTest() - h1) < .5f, "B: a one-line detail keeps the 55 card");
+        auto none = Modal::AboutStatus(Modal::AboutChecking); none.title = L"Installation…"; none.hasButton = false; d.SetStatus(none); d.PaintForTest();        Check(std::fabs(d.HeightForTest() - (h1 - 7)) < .5f, "B: no detail, no button: the 48 minimum (A8's, not in Paper)");
         auto lng = Modal::AboutStatus(Modal::AboutChecking); lng.title = L"Téléchargement de la version 0.3.133-beta.2026.11.10+build.4567…"; lng.detail = L"42 %";
         lng.button = Modal::Make(Modal::AboutCancelButton, L"Annuler", Modal::Role::Quiet, false, false, false, L"AboutCancel"); lng.button.closes = false; d.SetStatus(lng); d.PaintForTest();
-        Check(std::fabs(d.HeightForTest() - h1) < .5f && d.BoxForTest(D::StatusHit).right <= d.WidthForTest() - 16, "A8: long version title stays one line (ellipsis), Annuler inside");
+        Check(std::fabs(d.HeightForTest() - h1) < .5f && d.BoxForTest(D::StatusHit).right <= d.WidthForTest() - 16, "B: long version title stays one line (ellipsis), Annuler inside");
         Check(d.RenderForTest(root + L"/build/popups/a8-status-long-144.png", 144), "A8 long render sample");
         d.Abort(); d.FinishAnimationsForTest();
     }

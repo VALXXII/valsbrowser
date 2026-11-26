@@ -54,6 +54,7 @@
 #include "accessibility.h"
 #include "context-menu.h"
 #include "site-request.h"
+#include "about-icons.h"
 
 namespace NativeChrome {
 // ---------------------------------------------------------------------------------------
@@ -109,7 +110,7 @@ inline constexpr const char* flower = "M1178.594 144a49.5 49.5 0 0 0-49.297-85.3
 // SvgGeometry (SVG path data to a Direct2D geometry) lives in svg-path.h, shared with the toolbar.
 
 // Text styles straight from Paper (size/line-height in px = DIP, tracking in em).
-struct Style { float size = 14, line = 20; bool medium = false; float trackingEm = 0; bool tabular = false; };
+struct Style { float size = 14, line = 20; bool medium = false; float trackingEm = 0; bool tabular = false; bool semibold = false; };   // semibold: 600 (« À propos » B title)
 namespace Type {
 inline constexpr Style title{16, 20, true, -.01f}, aboutTitle{20, 24, true, -.01f};   // SemiBold 600 in Paper: Medium (only Regular/Medium ship)
 inline constexpr Style body{14, 20}, detail{14, 18}, message{16, 22, false, -.01f}, field{16, 20, false, -.01f};
@@ -122,7 +123,7 @@ class Kit {
     Chrome* chrome_ = nullptr;
     std::map<const char*, ID2D1PathGeometry*> glyphs_;
     ID2D1PathGeometry* spinner_ = nullptr;
-    float ascent_ = .96875f, descent_ = .2421875f; bool metrics_ = false;
+    float ascent_ = .96875f, descent_ = .2421875f, underline_ = -.1f; bool metrics_ = false;
     void Metrics() {
         if (metrics_ || !chrome_ || !chrome_->FontCollection()) return;
         metrics_ = true; UINT32 index = 0; BOOL found = FALSE;
@@ -130,7 +131,7 @@ class Kit {
         IDWriteFontFamily* family = nullptr; IDWriteFont* font = nullptr;
         if (SUCCEEDED(chrome_->FontCollection()->GetFontFamily(index, &family)) && SUCCEEDED(family->GetFirstMatchingFont(DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, &font))) {
             DWRITE_FONT_METRICS m{}; font->GetMetrics(&m);
-            if (m.designUnitsPerEm) { ascent_ = static_cast<float>(m.ascent) / m.designUnitsPerEm; descent_ = static_cast<float>(m.descent) / m.designUnitsPerEm; }
+            if (m.designUnitsPerEm) { ascent_ = static_cast<float>(m.ascent) / m.designUnitsPerEm; descent_ = static_cast<float>(m.descent) / m.designUnitsPerEm; underline_ = static_cast<float>(m.underlinePosition) / m.designUnitsPerEm; }
         }
         if (font) font->Release(); if (family) family->Release();
     }
@@ -145,7 +146,7 @@ public:
         if (!chrome_ || !chrome_->WriteFactory() || !chrome_->FontCollection()) return nullptr;
         Metrics();
         IDWriteTextFormat* format = nullptr; IDWriteTextLayout* layout = nullptr;
-        if (FAILED(chrome_->WriteFactory()->CreateTextFormat(L"Inter Display", chrome_->FontCollection(), s.medium ? DWRITE_FONT_WEIGHT_MEDIUM : DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, s.size, L"fr-FR", &format))) return nullptr;
+        if (FAILED(chrome_->WriteFactory()->CreateTextFormat(L"Inter Display", chrome_->FontCollection(), s.semibold ? DWRITE_FONT_WEIGHT_SEMI_BOLD : s.medium ? DWRITE_FONT_WEIGHT_MEDIUM : DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, s.size, L"fr-FR", &format))) return nullptr;
         format->SetWordWrapping(wrap ? DWRITE_WORD_WRAPPING_EMERGENCY_BREAK : DWRITE_WORD_WRAPPING_NO_WRAP);
         // CSS line box: the content area (ascent+descent) centred in `line`.
         format->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, s.line, (s.line - (ascent_ + descent_) * s.size) / 2 + ascent_ * s.size);
@@ -191,6 +192,10 @@ public:
         t->DrawRoundedRectangle(D2D1::RoundedRect({r.left + px / 2, r.top + px / 2, r.right - px / 2, r.bottom - px / 2}, std::max(0.f, radius - px / 2), std::max(0.f, radius - px / 2)), b, px);
     }
     float Pixel() const { auto* t = Target(); if (!t) return 1; return t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width)); }
+    // Baseline of a `s` line box whose top is `top` (the CSS line box of Text), and the font's underline offset under it
+    // (OpenType: the top of the underline, from the baseline; « text-underline-position: from-font »).
+    float Baseline(Style s, float top) { Metrics(); return top + (s.line - (ascent_ + descent_) * s.size) / 2 + ascent_ * s.size; }
+    float UnderlineTop(Style s, float top) { return Baseline(s, top) - underline_ * s.size; }
     void DrawGlyph(const char* d, D2D1_RECT_F box, float size, D2D1_COLOR_F color, float viewMin = 0, float viewSize = 256, float viewMinY = 0) {
         auto* t = Target(); auto* b = Brush(); if (!t || !b || !chrome_ || !chrome_->Factory()) return;
         auto& g = glyphs_[d]; if (!g) g = SvgGeometry(chrome_->Factory(), d); if (!g) return;
@@ -228,7 +233,7 @@ public:
         if (on) { b->SetColor(White(.9f * opacity)); t->FillEllipse(D2D1::Ellipse({cx, cy}, 4.f, 4.f), b); }
     }
     // Paper 16 px spinner: r 6.5 track #FFFFFF26, quarter arc #FFFFFFB3, 1.5 px, round caps.
-    void Spinner(D2D1_RECT_F box, float turn) {
+    void Spinner(D2D1_RECT_F box, float turn, D2D1_COLOR_F arc = White(0xB3 / 255.f)) {   // `arc`: « À propos » B draws it in the profile ink
         auto* t = Target(); auto* b = Brush(); if (!t || !b || !chrome_ || !chrome_->Factory()) return;
         const float cx = (box.left + box.right) / 2, cy = (box.top + box.bottom) / 2;
         b->SetColor(White(0x26 / 255.f)); t->DrawEllipse(D2D1::Ellipse({cx, cy}, 6.5f, 6.5f), b, 1.5f);
@@ -242,7 +247,7 @@ public:
         ID2D1StrokeStyle* round = nullptr; chrome_->Factory()->CreateStrokeStyle(D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND), nullptr, 0, &round);
         D2D1_MATRIX_3X2_F old; t->GetTransform(&old);
         t->SetTransform(D2D1::Matrix3x2F::Rotation(turn * 360.f) * D2D1::Matrix3x2F::Translation(cx, cy) * old);
-        b->SetColor(White(0xB3 / 255.f)); t->DrawGeometry(spinner_, b, 1.5f, round); t->SetTransform(old);
+        b->SetColor(arc); t->DrawGeometry(spinner_, b, 1.5f, round); t->SetTransform(old);
         if (round) round->Release();
     }
     // Dialog buttons (A1 « Boutons de dialogue »): role, hover/press 0..1, focus, disabled.
@@ -338,7 +343,7 @@ enum class Scope { Page, Window, Anchor, Corner };
 inline constexpr int CancelButton = 0, AcceptButton = 1;
 inline constexpr int PrivateClearDataButton = 2;                        // A9 « Effacer les données… »
 inline constexpr int AboutCheckButton = 3, AboutRestartButton = 4, AboutDownloadButton = 5, AboutCancelButton = 7;   // A8 status actions (7: engine Cancel while downloading)
-inline constexpr int AboutNotesLink = 101, AboutLicensesLink = 102, AboutReportLink = 103;
+inline constexpr int AboutNotesLink = 101, AboutLicensesLink = 102, AboutReportLink = 103, AboutSourceLink = 104, AboutWebsiteLink = 105;
 struct Button {
     int id = CancelButton; std::wstring label; Role role = Role::Secondary;
     bool isDefault = false, isCancel = false, disabled = false, initialFocus = false;
@@ -421,8 +426,47 @@ inline constexpr const char* check = "M116.245 40.245l-64 64a6 6 0 0 1-8.5 0l-28
 // The logo's still pose (146I-0, 13 x 12.25 centred in the slot): used only when the Lottie cannot play.
 inline constexpr const char* logoPoster = "M48.001 250.363L48.049 240.981C48.051 240.535 48.43 240.178 48.89 240.19L59.287 240.226C61.157 240.272 61.667 242.743 59.96 243.484L54.486 245.391C54.03 245.589 53.645 245.909 53.375 246.314 53.342 246.363 53.316 246.416 53.293 246.47L51.265 251.246C50.347 252.733 47.992 252.096 48.001 250.363Z";   // 48 239.883 13 x 12.26
 }
+// « À propos de Browser » B (Paper p-1-0, 257B-0 « À propos — B (validée) », owner's go 2026-11-24). It replaces A8.
+// The tiles are the spec's first links (a tile closes the window with its link id, the host acts); the link after them is
+// the footer's « Licences des composants tiers ». The update card is the spec's status (A8 states, same engine).
+struct AboutTile { std::wstring subtitle, spoken; const AboutIcons::Icon* icon = nullptr; };   // title = the link's label
+struct AboutCard {
+    bool shown = false;
+    std::wstring version;            // « Version 0.3.132 · Windows 64 bits »
+    std::vector<AboutTile> tiles;    // 2 x 2, parallel to Spec::links
+    std::wstring copyright;          // « © 2026 Val · WebView2 »
+    std::wstring logo;               // an .ico to draw (test hosts); empty: the executable's own icon
+};
+namespace AboutPaper {   // every value read from Paper (get_jsx 257B-0 and its notes 25JY-0)
+inline constexpr float width = 420, radius = 12, border = 1;
+inline constexpr unsigned long inkEdge = 0x262626, inkHead = 0x1C1C1C, inkCard = 0x202020, inkVersion = 0xA6A6A6, inkMuted = 0x8C8C8C, inkDim = 0x6B6B6B, inkPlate = 0x262626;
+// 257C-0 header: padding 20 / 16 / 18 / 20, gap 14, bottom hairline; logo 52 radius 14; name 20/26 SemiBold -0.02em,
+// gap 2, version 13/17; close 16 (viewBox 24, « m7 7 10 10m0-10L7 17 », stroke 1.8 round), top-aligned.
+inline constexpr float headTop = 20, headRight = 16, headBottom = 18, headLeft = 20, headGap = 14, logo = 52, logoRadius = 14, nameGap = 2, close = 16, closeStroke = 1.8f;
+inline constexpr float closeHit = 24;   // not in Paper: the dialogs' 24 DIP close target, centred on the 16 DIP glyph
+inline constexpr DialogKit::Style name{20, 26, false, -.02f, false, true}, version{13, 17};
+// 257J-0 update card: margin 14 / 16, padding 10 / 10 / 10 / 12, gap 10, radius 8; icon 16; title 14/18 Medium, gap 1,
+// detail 12/16; button 28 high, padding 0 10, radius 6, 13/16 Medium.
+inline constexpr float cardTop = 14, cardSide = 16, cardPadY = 10, cardPadLeft = 12, cardPadRight = 10, cardGap = 10, cardRadius = 8, cardIcon = 16, cardLineGap = 1;
+inline constexpr float button = 28, buttonPad = 10, buttonRadius = 6;
+inline constexpr DialogKit::Style cardTitle{14, 18, true}, cardDetail{12, 16}, buttonText{13, 16, true};
+// 257R-0 tiles: grid 2 columns, gap 8, padding 14 / 16 / 6; tile padding 12, gap 6, radius 8; icon 26; title 14/18
+// Medium, subtitle 12/16.
+inline constexpr float tilesTop = 14, tilesSide = 16, tilesBottom = 6, tileGap = 8, tilePad = 12, tileInner = 6, tileRadius = 8, tileIcon = 26;
+inline constexpr DialogKit::Style tileTitle{14, 18, true}, tileSubtitle{12, 16};
+inline constexpr float TileHeight() { return tilePad + tileIcon + tileInner + tileTitle.line + tileInner + tileSubtitle.line + tilePad; }   // 96
+// 258C-0 footer: padding 10 / 20 / 16, space-between, 12/16; the link underlined 1 px (from-font).
+inline constexpr float footTop = 10, footSide = 20, footBottom = 16;
+inline constexpr DialogKit::Style foot{12, 16};
+// 25KB-0 focus: after a mouse click, 1 px white 5 % (257X-0 box-shadow 0 0 0 1px #FFFFFF0D, outside the box); from the
+// keyboard, 1 px white 50 %.
+inline constexpr float mouseRing = 0x0D / 255.f, keyRing = .5f;
+// 257K-0: Phosphor download-simple (bold, MIT), viewBox 0 0 112 112, verbatim.
+inline constexpr const char* download = "M99.75 63v28a5.25 5.25 0 0 1-5.25 5.25H17.5a5.25 5.25 0 0 1-5.25-5.25V63a5.25 5.25 0 0 1 10.5 0v22.75H89.25V63a5.25 5.25 0 0 1 10.5 0Zm-47.464 3.714a5.25 5.25 0 0 0 7.437 0l17.5-17.5a5.25 5.25 0 0 0-7.437-7.437L61.25 50.313V14a5.25 5.25 0 0 0-10.5 0v36.313L42.214 41.786a5.25 5.25 0 0 0-7.437 7.437Z";
+}
 struct Spec {
     Kind kind = Kind::Generic; Scope scope = Scope::Window;
+    AboutCard about;                                           // « À propos » B (Kind::About)
     std::wstring automationId, title, subtitle, body, origin /* « exemple.com indique » */, message /* page text */, footnote;
     std::shared_ptr<const FaviconImage> favicon;               // page dialogs: the site icon (else a neutral glyph)
     bool appTile = false, closeButton = false, largeTitle = false;
@@ -566,6 +610,11 @@ private:
     ID2D1Bitmap* logoBitmap_ = nullptr; ID2D1RenderTarget* logoTarget_ = nullptr; unsigned logoSide_ = 0;
     void DropLogoBitmap() { if (logoBitmap_) logoBitmap_->Release(); if (logoTarget_) logoTarget_->Release(); logoBitmap_ = nullptr; logoTarget_ = nullptr; logoSide_ = 0; }
     static constexpr long long GroupKey = 1, DangerKey = 7500;   // DangerKey: B07 card group (UIA only, not a hit)
+    // « À propos » B: tile icons and header logo (device resources of the current target), the control a mouse click
+    // focused (its 5 % ring), UIA text keys (never hits). hiddenForTest_: ShowHiddenForTest, nothing shown or activated.
+    AboutIcons::Painter aboutIcons_; AboutIcons::Logo aboutLogo_; int clicked_ = 0; bool hiddenForTest_ = false, assumeFocusForTest_ = false;
+    static constexpr long long AboutStatusKey = 7700, AboutCopyrightKey = 7701, AboutVersionKey = 7702;
+    void ReleaseAbout() { aboutIcons_.Release(); aboutLogo_.Release(); }
 
     UINT Dpi() const { return GetDpiForWindow(hwnd_ ? hwnd_ : owner_); }
     int Px(float dip) const { return static_cast<int>(std::lround(dip * Dpi() / 96.f)); }
@@ -788,8 +837,64 @@ private:
         if (uia_.Listening()) uia_.ChildrenChanged(GroupKey);
         if (spec_.onButton) spec_.onButton(NotesExpandHit);
     }
+    // ---- « À propos » B layout (Paper 257B-0; AboutPaper) ---------------------------------------------------------
+    // Blocks: Head (the grey band, hairline under it), Status (the update card), Footnote (the footer row). Hits: CloseHit,
+    // StatusHit (the card's button), LinkHit(i) for the tiles then the footer's licences link.
+    bool AboutOn() const { return spec_.about.shown; }
+    size_t AboutTiles() const { return std::min(spec_.about.tiles.size(), spec_.links.size()); }
+    float AboutButtonWidth() { return spec_.status.hasButton ? std::ceil(kit_.Width(spec_.status.button.label, AboutPaper::buttonText)) + 2 * AboutPaper::buttonPad : 0; }
+    // The card's text block: the title (one line), then the detail (wrapping) 1 DIP under it.
+    float AboutStatusTextHeight(float width) {
+        namespace A = AboutPaper;
+        if (spec_.status.detail.empty()) return A::cardTitle.line;
+        return A::cardTitle.line + A::cardLineGap + std::max(A::cardDetail.line, kit_.Height(spec_.status.detail, A::cardDetail, width));
+    }
+    D2D1_RECT_F AboutStatusText(const D2D1_RECT_F& card) {   // the text column of the card (its left and right)
+        namespace A = AboutPaper;
+        const float bw = AboutButtonWidth();
+        return {card.left + A::cardPadLeft + A::cardIcon + A::cardGap, card.top, card.right - A::cardPadRight - (bw > 0 ? bw + A::cardGap : 0), card.bottom};
+    }
+    float AboutLicensesWidth() {   // the link's text, never over the copyright (16 DIP apart at least)
+        namespace A = AboutPaper; const size_t n = AboutTiles(); if (n >= spec_.links.size()) return 0;
+        const float room = width_ - 2 * A::border - 2 * A::footSide - std::ceil(kit_.Width(spec_.about.copyright, A::foot)) - 16;
+        return std::max(0.f, std::min(std::ceil(kit_.Width(spec_.links[n].label, A::foot)), room));
+    }
+    void BuildAbout() {
+        namespace A = AboutPaper;
+        messageHeight_ = messageFull_ = 0;
+        const float in = A::border, right = width_ - A::border;
+        // Header: content 52 high (the logo), the hairline under it.
+        const float headEnd = in + A::headTop + A::logo + A::headBottom;
+        blocks_.push_back({B::Head, 0, {in, in, right, headEnd}});
+        const float gx = right - A::headRight - A::close, gy = in + A::headTop, pad = (A::closeHit - A::close) / 2;
+        boxes_.push_back({CloseHit, {gx - pad, gy - pad, gx + A::close + pad, gy + A::close + pad}});
+        float y = headEnd + 1;
+        if (spec_.hasStatus) {   // the update card: icon, text block and button centred on one row
+            y += A::cardTop;
+            const D2D1_RECT_F card{in + A::cardSide, y, right - A::cardSide, y};
+            const auto text = AboutStatusText(card); const float bw = AboutButtonWidth();
+            // Never under the card with its 28 DIP button (48, A8's minimum; not in Paper): a title-only state such as
+            // « Installation… » keeps the tiles where they were.
+            const float h = 2 * A::cardPadY + std::max({AboutStatusTextHeight(text.right - text.left), A::button, A::cardIcon});
+            blocks_.push_back({B::Status, 0, {card.left, y, card.right, y + h}});
+            if (bw > 0) { const float by = y + (h - A::button) / 2; boxes_.push_back({StatusHit, {card.right - A::cardPadRight - bw, by, card.right - A::cardPadRight, by + A::button}}); }
+            y += h;
+        }
+        const size_t n = AboutTiles();
+        y += A::tilesTop;
+        const float gl = in + A::tilesSide, gr = right - A::tilesSide, tw = (gr - gl - A::tileGap) / 2, th = A::TileHeight();
+        for (size_t i = 0; i < n; ++i) { const float x = gl + (i % 2) * (tw + A::tileGap), ty = y + (i / 2) * (th + A::tileGap); boxes_.push_back({LinkHit(i), {x, ty, x + tw, ty + th}}); }
+        const size_t rows = (n + 1) / 2;
+        y += rows * th + (rows ? (rows - 1) * A::tileGap : 0) + A::tilesBottom;
+        y += A::footTop;
+        blocks_.push_back({B::Footnote, 0, {in + A::footSide, y, right - A::footSide, y + A::foot.line}});
+        if (n < spec_.links.size()) boxes_.push_back({LinkHit(n), {in + A::footSide, y, in + A::footSide + AboutLicensesWidth(), y + A::foot.line}});
+        y += A::foot.line + A::footBottom;
+        height_ = y + A::border;
+    }
     void Build() {
         if (NotesOn()) { blocks_.clear(); boxes_.clear(); fieldTops_.assign(spec_.fields.size(), 0); BuildNotes(); return; }
+        if (AboutOn()) { blocks_.clear(); boxes_.clear(); fieldTops_.assign(spec_.fields.size(), 0); BuildAbout(); return; }
         blocks_.clear(); boxes_.clear(); fieldTops_.assign(spec_.fields.size(), 0); messageHeight_ = messageFull_ = 0;
         const float left = Pad(), cw = ContentWidth(), right = left + cw;
         float y = Pad(); bool first = true; bool actionsLift = true;
@@ -1042,6 +1147,12 @@ private:
     // ---- focus ----------------------------------------------------------------------------------
     std::vector<int> Order() const {
         std::vector<int> o;
+        if (AboutOn()) {   // « À propos » B (brief): × in the header, the card's button, the tiles, the footer link
+            o.push_back(CloseHit);
+            if (spec_.hasStatus && spec_.status.hasButton && !spec_.status.button.disabled) o.push_back(StatusHit);
+            for (size_t i = 0; i < spec_.links.size(); ++i) o.push_back(LinkHit(i));
+            return o;
+        }
         if (NotesOn() && spec_.notes.collapsed) o.push_back(NotesExpandHit);
         for (size_t i = 0; i < spec_.fields.size(); ++i) { o.push_back(FieldStop(i)); if (spec_.fields[i].reveal) o.push_back(RevealHit(i)); }
         if (spec_.hasSelect) o.push_back(SelectHit);
@@ -1063,7 +1174,8 @@ private:
         if (stop >= 7000 && stop < 8000) {   // field stops (7000..7999); 8000+ are B08 picker ids
             focus_ = 0; const size_t i = static_cast<size_t>(stop - 7000);
             if (i < edits_.size() && edits_[i].edit) { SetFocus(edits_[i].edit); SendMessageW(edits_[i].edit, EM_SETSEL, 0, -1); }
-        } else { focus_ = stop; SetFocus(hwnd_); }
+        } else { focus_ = stop; if (!hiddenForTest_) SetFocus(hwnd_); }
+        if (keyboard_) clicked_ = 0;   // « À propos » B: a keyboard move ends the click's 5 % ring
         InvalidateRect(hwnd_, nullptr, FALSE);
         if (uia_.Listening() && stop > 0 && (stop < 7000 || stop >= 8000)) uia_.Raise(stop, UIA_AutomationFocusChangedEventId);
     }
@@ -1121,12 +1233,12 @@ private:
         EnableWindow(hwnd_, FALSE);
         HWND back = restore_ && IsWindow(restore_) ? restore_ : owner_;
         const bool hadFocus = !Cornered() || GetForegroundWindow() == hwnd_ || GetFocus() == hwnd_;
-        if (hadFocus) { if (owner_) SetForegroundWindow(owner_); if (back) SetFocus(back); }
+        if (hadFocus && !hiddenForTest_) { if (owner_) SetForegroundWindow(owner_); if (back) SetFocus(back); }
         if (hooks_.wake) hooks_.wake();
         if (done) done(result);
         for (auto& v : result.values) SecureZeroMemory(v.data(), v.size() * sizeof(wchar_t));
     }
-    void ReleaseLogo() { DropLogoBitmap(); logo_.Clear(); logoTried_ = logoOk_ = false; logoPixels_.clear(); logoPixels_.shrink_to_fit(); }
+    void ReleaseLogo() { DropLogoBitmap(); ReleaseAbout(); logo_.Clear(); logoTried_ = logoOk_ = false; logoPixels_.clear(); logoPixels_.shrink_to_fit(); }
     void FinishClosing() {
         closing_ = false; fade_.Snap(0); ReleaseLogo();
         if (hwnd_) ShowWindow(hwnd_, SW_HIDE);
@@ -1334,7 +1446,7 @@ private:
         case WM_APP + 2: if (open_ && Anchored() && !choosing_ && GetForegroundWindow() != hwnd_) Close(Collect(-1)); return 0;
         case WM_MOUSEMOVE: { TRACKMOUSEEVENT t{sizeof(t), TME_LEAVE, h, 0}; TrackMouseEvent(&t); int hit = HitAt(GET_X_LPARAM(l) * scale, GET_Y_LPARAM(l) * scale); if (!Enabled(hit)) hit = 0; if (hit != hover_) { hover_ = hit; Interact(); } return 0; }
         case WM_MOUSELEAVE: hover_ = 0; Interact(); return 0;
-        case WM_LBUTTONDOWN: { keyboard_ = false; int hit = HitAt(GET_X_LPARAM(l) * scale, GET_Y_LPARAM(l) * scale); if (!Enabled(hit)) hit = 0; pressed_ = hit; if (hit) SetCapture(h); Interact(); return 0; }
+        case WM_LBUTTONDOWN: { keyboard_ = false; int hit = HitAt(GET_X_LPARAM(l) * scale, GET_Y_LPARAM(l) * scale); if (!Enabled(hit)) hit = 0; pressed_ = hit; if (hit) SetCapture(h); if (hit && AboutOn()) { focus_ = clicked_ = hit; } Interact(); return 0; }   // « À propos » B: a click focuses (5 % ring)
         case WM_LBUTTONUP: { const int hit = HitAt(GET_X_LPARAM(l) * scale, GET_Y_LPARAM(l) * scale); const int was = pressed_; pressed_ = 0; if (GetCapture() == h) ReleaseCapture(); Interact(); if (was && was == hit) Activate(hit, false); return 0; }
         case WM_MOUSEWHEEL: Scroll(-static_cast<float>(GET_WHEEL_DELTA_WPARAM(w)) / WHEEL_DELTA * 3 * DialogKit::Type::message.line); return 0;
         case WM_KEYDOWN: if ((l & (1 << 30)) && (w == VK_RETURN || w == VK_SPACE)) return 0; if (Key(w)) return 0; break;   // review N1: auto-repeat of Entrée / Espace never activates
@@ -1350,7 +1462,8 @@ private:
     // ---- paint ----------------------------------------------------------------------------------
     static Kit::Tone ToneOf(Role r) { switch (r) { case Role::Primary: return Kit::Tone::Primary; case Role::Danger: return Kit::Tone::Danger; case Role::Quiet: return Kit::Tone::Quiet; default: return Kit::Tone::Secondary; } }
     float SpinTurn(Motion::Time now) const { return static_cast<float>(std::fmod(std::chrono::duration<double>(now - spinStart_).count(), 1.0)); }
-    bool Focused(int hit) const { return keyboard_ && focus_ == hit && GetFocus() == hwnd_; }
+    bool HasFocus() const { return assumeFocusForTest_ || GetFocus() == hwnd_; }
+    bool Focused(int hit) const { return keyboard_ && focus_ == hit && HasFocus(); }
     D2D1_COLOR_F RowFill(int hit, Motion::Time now) const { const auto v = motion_.Visual(hit, now); return DialogKit::Mix(DialogKit::Gray(Design::Surface::hover, v.hover), DialogKit::Gray(Design::Surface::pressed), v.press); }
     void PaintHead(const Block& b, Motion::Time now) {
         const float left = b.r.left, cw = b.r.right - b.r.left; float y = b.r.top;
@@ -1521,11 +1634,129 @@ private:
             kit_.Button(r, spec_.notes.showAll, Kit::Tone::Secondary, v.hover, v.press, Focused(NotesExpandHit), false);
         }
     }
+    // ---- « À propos » B paint (Paper 257B-0) -------------------------------------------------------------------------
+    // Focus (25KB-0): 1 px outside the control, white 50 % from the keyboard, white 5 % after a mouse click on it.
+    void AboutRing(D2D1_RECT_F r, float radius, int hit) {
+        if (focus_ != hit || !HasFocus()) return;
+        const float a = keyboard_ ? AboutPaper::keyRing : clicked_ == hit ? AboutPaper::mouseRing : 0.f; if (a <= 0) return;
+        kit_.Ring({r.left - 1, r.top - 1, r.right + 1, r.bottom + 1}, radius + 1, DialogKit::White(a));
+    }
+    static D2D1_COLOR_F InkColor() { const auto k = Design::Accent::Ink(); return D2D1::ColorF(k.r, k.g, k.b, 1); }
+    // Hover / press of a #202020 surface (tiles; not in Paper): the app's surface steps, #333333 then #3E3E3E.
+    D2D1_COLOR_F AboutSurface(int hit, Motion::Time now) const {
+        const auto v = motion_.Visual(hit, now);
+        return DialogKit::Mix(DialogKit::Mix(DialogKit::Rgb(AboutPaper::inkCard), DialogKit::Gray(Design::Surface::hover), v.hover), DialogKit::Gray(Design::Surface::pressed), v.press);
+    }
+    void PaintAboutHead(const Block& b, Motion::Time now) {
+        namespace A = AboutPaper; auto* t = pc_->RenderTarget();
+        // The grey band, clipped by the window's inner rounded edge (Paper: overflow clip, radius 12 outside the border).
+        ID2D1RoundedRectangleGeometry* inner = nullptr; ID2D1Layer* layer = nullptr;
+        const bool clip = pc_->Factory() && SUCCEEDED(pc_->Factory()->CreateRoundedRectangleGeometry(D2D1::RoundedRect({A::border, A::border, width_ - A::border, height_ - A::border}, A::radius - A::border, A::radius - A::border), &inner)) && SUCCEEDED(t->CreateLayer(nullptr, &layer));
+        if (clip) t->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), inner, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE), layer);
+        kit_.Fill(b.r, 0, DialogKit::Rgb(A::inkHead));
+        if (clip) t->PopLayer();
+        if (layer) layer->Release();
+        if (inner) inner->Release();
+        { const float px = kit_.Pixel(), y = std::round(b.r.bottom / px) * px; kit_.Fill({b.r.left, y, b.r.right, y + std::max(px, std::round(1 / px) * px)}, 0, DialogKit::Rgb(A::inkEdge)); }   // border-bottom 1 px #262626, on the pixel grid
+        const float top = b.r.top + A::headTop, left = b.r.left + A::headLeft;
+        const D2D1_RECT_F logo{left, top, left + A::logo, top + A::logo};
+        kit_.Fill(logo, A::logoRadius, DialogKit::Rgb(A::inkPlate));
+        aboutLogo_.SetFile(spec_.about.logo); aboutLogo_.Draw(t, pc_->Factory(), logo, A::logoRadius);
+        const auto close = Find(CloseHit); const float glyph = close.left + (A::closeHit - A::close) / 2;
+        const float tx = logo.right + A::headGap, tw = glyph - A::headGap - tx;
+        const float block = A::name.line + A::nameGap + A::version.line, ty = top + (A::logo - block) / 2;   // align-items: center
+        kit_.Text(spec_.title, A::name, tx, ty, tw, DialogKit::White(1));
+        kit_.Text(spec_.about.version, A::version, tx, ty + A::name.line + A::nameGap, tw, DialogKit::Rgb(A::inkVersion));
+        // ×: Paper's two strokes; hover keeps the dialogs' close behaviour (plate, ink to white).
+        const auto v = motion_.Visual(CloseHit, now);
+        if (v.hover > 0 || v.press > 0) kit_.Fill(close, Design::Radius::inset, RowFill(CloseHit, now));
+        auto* br = pc_->SolidBrush(); ID2D1StrokeStyle* round = nullptr;
+        if (pc_->Factory()) pc_->Factory()->CreateStrokeStyle(D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND), nullptr, 0, &round);
+        const float k = A::close / 24, gy = close.top + (A::closeHit - A::close) / 2;
+        br->SetColor(DialogKit::Mix(DialogKit::Rgb(A::inkMuted), DialogKit::White(1), std::max(v.hover, v.press)));
+        t->DrawLine({glyph + 7 * k, gy + 7 * k}, {glyph + 17 * k, gy + 17 * k}, br, A::closeStroke * k, round);
+        t->DrawLine({glyph + 17 * k, gy + 7 * k}, {glyph + 7 * k, gy + 17 * k}, br, A::closeStroke * k, round);
+        if (round) round->Release();
+        AboutRing(close, Design::Radius::inset, CloseHit);
+    }
+    // The card's button: Primary in the profile's fill (Paper 257P-0), any other role the app's secondary button
+    // (#292929, #333333 hover, #3E3E3E pressed, text 80 % then white; not in Paper), both at Paper's 28 DIP / 13 px size.
+    void PaintAboutButton(Motion::Time now) {
+        namespace A = AboutPaper; auto* t = pc_->RenderTarget();
+        const auto& b = spec_.status.button; const auto r = Find(StatusHit); auto v = motion_.Visual(StatusHit, now);
+        const bool disabled = b.disabled || busy_; if (disabled) v.hover = v.press = 0;
+        D2D1_COLOR_F fill, ink = DialogKit::White(1);
+        if (b.role == Role::Primary) { const auto c = Design::Accent::StateColor(Design::Accent::Get(), v.hover, v.press); fill = D2D1::ColorF(c.r, c.g, c.b, 1); }
+        else { fill = DialogKit::Mix(DialogKit::Mix(DialogKit::Gray(Design::Surface::raised), DialogKit::Gray(Design::Surface::hover), v.hover), DialogKit::Gray(Design::Surface::pressed), v.press); ink = DialogKit::White(P::secondaryText + (1 - P::secondaryText) * std::max(v.hover, v.press)); }
+        ID2D1Layer* layer = nullptr;
+        if (disabled && SUCCEEDED(t->CreateLayer(nullptr, &layer))) t->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(), P::disabled), layer);
+        kit_.Fill(r, A::buttonRadius, fill);
+        const float w = std::ceil(kit_.Width(b.label, A::buttonText));
+        kit_.Text(b.label, A::buttonText, (r.left + r.right - w) / 2, r.top + (A::button - A::buttonText.line) / 2, w + 2, ink);
+        if (layer) { t->PopLayer(); layer->Release(); }
+        if (!disabled) AboutRing(r, A::buttonRadius, StatusHit);
+    }
+    void PaintAboutCard(const Block& b, Motion::Time now) {
+        namespace A = AboutPaper;
+        kit_.Fill(b.r, A::cardRadius, DialogKit::Rgb(A::inkCard));
+        const float h = b.r.bottom - b.r.top, iy = b.r.top + (h - A::cardIcon) / 2;
+        const D2D1_RECT_F icon{b.r.left + A::cardPadLeft, iy, b.r.left + A::cardPadLeft + A::cardIcon, iy + A::cardIcon};
+        switch (spec_.status.icon) {   // the profile's ink (Paper 257K-0); a failure keeps the danger colour
+        case StatusIcon::Check: kit_.DrawGlyph(DialogKit::Glyph::checkCircle, icon, A::cardIcon, InkColor()); break;
+        case StatusIcon::Download: kit_.DrawGlyph(A::download, icon, A::cardIcon, InkColor(), 0, 112); break;
+        case StatusIcon::Warning: kit_.DrawGlyph(DialogKit::Glyph::warning, icon, A::cardIcon, DialogKit::Danger()); break;
+        case StatusIcon::Busy: kit_.Spinner(icon, reduced_ ? .125f : SpinTurn(now), InkColor()); break;
+        case StatusIcon::None: break;
+        }
+        const auto text = AboutStatusText(b.r); const float tw = text.right - text.left;
+        const float th = AboutStatusTextHeight(tw), ty = b.r.top + (h - th) / 2;
+        kit_.Text(spec_.status.title, A::cardTitle, text.left, ty, tw, DialogKit::White(1));
+        if (!spec_.status.detail.empty()) kit_.Text(spec_.status.detail, A::cardDetail, text.left, ty + A::cardTitle.line + A::cardLineGap, tw, DialogKit::Rgb(A::inkMuted), true);
+        if (spec_.status.hasButton) PaintAboutButton(now);
+    }
+    void PaintAboutTiles(Motion::Time now) {
+        namespace A = AboutPaper; auto* t = pc_->RenderTarget(); const auto ink = Design::Accent::Ink();
+        for (size_t i = 0; i < AboutTiles(); ++i) {
+            const auto r = Find(LinkHit(i)); const auto& tile = spec_.about.tiles[i]; const float w = r.right - r.left - 2 * A::tilePad, x = r.left + A::tilePad;
+            kit_.Fill(r, A::tileRadius, AboutSurface(LinkHit(i), now));
+            if (tile.icon) aboutIcons_.Draw(t, *tile.icon, x, r.top + A::tilePad, A::tileIcon, ink.r, ink.g, ink.b);
+            const float ty = r.top + A::tilePad + A::tileIcon + A::tileInner;
+            kit_.Text(spec_.links[i].label, A::tileTitle, x, ty, w, DialogKit::White(1));
+            kit_.Text(tile.subtitle, A::tileSubtitle, x, ty + A::tileTitle.line + A::tileInner, w, DialogKit::Rgb(A::inkMuted));
+            AboutRing(r, A::tileRadius, LinkHit(i));
+        }
+    }
+    void PaintAboutFooter(const Block& b, Motion::Time now) {
+        namespace A = AboutPaper; const size_t n = AboutTiles();
+        const float cw = std::ceil(kit_.Width(spec_.about.copyright, A::foot));
+        kit_.Text(spec_.about.copyright, A::foot, b.r.right - cw, b.r.top, cw + 1, DialogKit::Rgb(A::inkDim));
+        if (n >= spec_.links.size()) return;
+        const auto r = Find(LinkHit(n)); const auto v = motion_.Visual(LinkHit(n), now);
+        const auto ink = DialogKit::Mix(DialogKit::Rgb(A::inkMuted), DialogKit::White(1), std::max(v.hover, v.press));   // hover: white (the app's text actions; not in Paper)
+        kit_.Text(spec_.links[n].label, A::foot, r.left, r.top, r.right - r.left + 1, ink);
+        const float px = kit_.Pixel(), u = std::round(kit_.UnderlineTop(A::foot, r.top) / px) * px;
+        kit_.Fill({r.left, u, r.left + std::min(r.right - r.left, std::ceil(kit_.Width(spec_.links[n].label, A::foot))), u + std::max(px, std::round(1 / px) * px)}, 0, ink);   // text-decoration: underline 1px (from-font), on the pixel grid
+        AboutRing({r.left - 3, r.top - 1, r.right + 3, r.bottom + 1}, 3, LinkHit(n));
+    }
+    void PaintAbout(Motion::Time now) {
+        for (const auto& b : blocks_) {
+            if (b.type == B::Head) PaintAboutHead(b, now);
+            else if (b.type == B::Status) PaintAboutCard(b, now);
+            else if (b.type == B::Footnote) PaintAboutFooter(b, now);
+        }
+        PaintAboutTiles(now);
+        kit_.Ring({0, 0, width_, height_}, AboutPaper::radius, DialogKit::Rgb(AboutPaper::inkEdge));   // 1 px #262626, radius 12
+    }
     void Paint() {
         if (pc_ == &chrome_ && !chrome_.RenderTarget()) chrome_.Resize();
         auto* t = pc_->RenderTarget(); if (!t || !pc_->SolidBrush()) return;
         const auto now = Motion::Now(); const float c = Design::Surface::canvas;
         t->BeginDraw(); t->Clear(D2D1::ColorF(c, c, c, 1));
+        if (AboutOn()) {
+            PaintAbout(now);
+            if (t->EndDraw() == D2DERR_RECREATE_TARGET && pc_ == &chrome_) { kit_.Release(); DropLogoBitmap(); ReleaseAbout(); chrome_.RecreateTarget(); }
+            return;
+        }
         if (NotesOn()) {
             // Mini: the overlay covers the bottom border row (Paper bottom -1), so the frame is drawn first.
             if (spec_.notes.collapsed) kit_.Ring({0, 0, width_, height_}, P::radius, DialogKit::White(NotesPaper::border));
@@ -1797,7 +2028,7 @@ private:
         if (!spec_.danger.text.empty()) s += (s.empty() ? L"" : L". ") + spec_.danger.text;
         return s;
     }
-    std::wstring AccessibleName() const { if (!spec_.title.empty()) return spec_.title; if (!spec_.origin.empty()) return spec_.origin; if (spec_.danger.shown) return spec_.danger.title; if (!spec_.accountsTitle.empty()) return spec_.accountsTitle; return TR(dialog_name); }
+    std::wstring AccessibleName() const { if (AboutOn()) return TR(settings_about); if (!spec_.title.empty()) return spec_.title; if (!spec_.origin.empty()) return spec_.origin; if (spec_.danger.shown) return spec_.danger.title; if (!spec_.accountsTitle.empty()) return spec_.accountsTitle; return TR(dialog_name); }
     // « Nouveautés »: the whole text is the dialog's description (read on open, the Mini's hidden part
     // included); each heading / item is a text node whose bounds follow the view (offscreen when clipped).
     void NotesNodes(std::vector<Accessibility::Node>& nodes) {
@@ -1819,10 +2050,29 @@ private:
         if (mini) { Accessibility::Node n; n.key = NotesExpandHit; n.parent = GroupKey; n.name = spec_.notes.showAll; n.bounds = ScreenOf(Find(NotesExpandHit)); n.automationId = L"ReleaseNotesShowAll"; nodes.push_back(n); }
         Accessibility::Node c; c.key = CloseHit; c.parent = GroupKey; c.name = TR(common_close); c.bounds = ScreenOf(Find(CloseHit)); c.automationId = L"DialogClose"; nodes.push_back(c);
     }
+    // « À propos » B, in reading order: ×, the version, the update state and its button, the four tiles (name = title,
+    // help = the subtitle without its ↗), the licences link, the copyright.
+    void AboutNodes(std::vector<Accessibility::Node>& nodes) {
+        auto add = [&](long long key, Accessibility::Role role, const std::wstring& name, D2D1_RECT_F r, bool focusable, const std::wstring& id) -> Accessibility::Node& {
+            Accessibility::Node n; n.key = key; n.parent = GroupKey; n.role = role; n.name = name; n.bounds = ScreenOf(r); n.focusable = focusable; n.automationId = id; nodes.push_back(n); return nodes.back();
+        };
+        add(CloseHit, Accessibility::Role::Button, TR(common_close), Find(CloseHit), true, L"DialogClose");
+        for (const auto& b : blocks_) if (b.type == B::Head) add(AboutVersionKey, Accessibility::Role::Text, spec_.about.version, b.r, false, L"AboutVersion");
+        if (spec_.hasStatus) {
+            std::wstring state = spec_.status.title; if (!spec_.status.detail.empty()) state += L". " + spec_.status.detail;
+            for (const auto& b : blocks_) if (b.type == B::Status) add(AboutStatusKey, Accessibility::Role::Text, state, b.r, false, L"AboutStatus");
+            if (spec_.status.hasButton) { auto& n = add(StatusHit, Accessibility::Role::Button, spec_.status.button.label, Find(StatusHit), true, spec_.status.button.automationId); n.enabled = Enabled(StatusHit); n.help = spec_.status.title + (spec_.status.detail.empty() ? L"" : L" · " + spec_.status.detail); }
+        }
+        const size_t n = AboutTiles();
+        for (size_t i = 0; i < n; ++i) { auto& t = add(LinkHit(i), Accessibility::Role::Button, spec_.links[i].label, Find(LinkHit(i)), true, spec_.links[i].automationId); t.help = spec_.about.tiles[i].spoken; t.enabled = !busy_; }
+        if (n < spec_.links.size()) add(LinkHit(n), Accessibility::Role::Button, spec_.links[n].label, Find(LinkHit(n)), true, spec_.links[n].automationId);
+        for (const auto& b : blocks_) if (b.type == B::Footnote) add(AboutCopyrightKey, Accessibility::Role::Text, spec_.about.copyright, b.r, false, L"AboutCopyright");
+    }
     std::vector<Accessibility::Node> Nodes() {
         std::vector<Accessibility::Node> nodes; if (!open_) return nodes;
         Accessibility::Node g; g.key = GroupKey; g.role = Accessibility::Role::Group; g.name = AccessibleName();
         if (NotesOn()) { g.help = spec_.notes.spoken; g.automationId = spec_.automationId; g.focusable = false; RECT wr{}; GetWindowRect(hwnd_, &wr); g.bounds = wr; nodes.push_back(g); NotesNodes(nodes); return nodes; }
+        if (AboutOn()) { g.help = spec_.about.version; g.automationId = spec_.automationId; g.focusable = false; RECT wr{}; GetWindowRect(hwnd_, &wr); g.bounds = wr; nodes.push_back(g); AboutNodes(nodes); return nodes; }
         g.help = !spec_.message.empty() ? spec_.message : !spec_.body.empty() ? spec_.body : spec_.subtitle;
         if (g.help.empty()) for (const auto& row : spec_.rows) if (!row.note.empty()) g.help += (g.help.empty() ? L"" : L" ") + row.label + L". " + row.note;   // what the rows say (share confirmation)
         if (spec_.message.empty() && !spec_.body.empty() && !spec_.bodyKeys.empty()) { g.help += L" "; for (size_t i = 0; i < spec_.bodyKeys.size(); ++i) g.help += (i ? L" + " : L"") + spec_.bodyKeys[i]; g.help += L"."; } if (!error_.empty()) g.help = error_;
@@ -1898,19 +2148,31 @@ public:
         hwnd_ = scrim_ = nullptr; closing_ = false; scrimRadius_ = 0; scrimSize_ = {};
         if (!choosing_) menu_.reset();
     }
-    bool Show(Spec spec, RECT area, std::function<void(const Result&)> done) {
+    bool Show(Spec spec, RECT area, std::function<void(const Result&)> done) { return Open(std::move(spec), area, std::move(done), true); }
+    // Native tests only: everything Show does (layout, focus stop, UIA tree, renders) but the window and its veil are
+    // never shown, activated or brought forward, and Close gives nothing back to the owner: screen-free.
+    bool ShowHiddenForTest(Spec spec, RECT area, std::function<void(const Result&)> done) { return Open(std::move(spec), area, std::move(done), false); }
+private:
+    bool Open(Spec spec, RECT area, std::function<void(const Result&)> done, bool visible) {
         if (!hwnd_ || open_) return false;
         if (closing_) FinishClosing();
+        hiddenForTest_ = !visible;
         spec_ = std::move(spec); done_ = std::move(done); area_ = area; ++generation_;
         ReleaseLogo(); logoStart_ = Motion::Now();
-        busy_ = submitted_ = false; error_.clear(); fieldError_.clear(); busyLabel_.clear(); scroll_ = 0; notesBarShown_ = false; hover_ = pressed_ = 0; focus_ = 0; motion_.ClearInteractions();
+        busy_ = submitted_ = false; error_.clear(); fieldError_.clear(); busyLabel_.clear(); scroll_ = 0; notesBarShown_ = false; hover_ = pressed_ = 0; focus_ = clicked_ = 0; motion_.ClearInteractions();
         keyboard_ = OpenedFromKeyboard(); open_ = true; spinStart_ = Motion::Now(); armedFrom_ = GetTickCount64() + static_cast<ULONGLONG>(spec_.armMs); foregroundForTest_ = false;
         HWND f = GetFocus(); restore_ = f && f != hwnd_ && !IsChild(hwnd_, f) ? f : nullptr;
         SetWindowTextW(hwnd_, AccessibleName().c_str());
         EnableWindow(hwnd_, TRUE);
         CreateEdits();
+        NativeUI::ConfigureShadowlessPopup(hwnd_, AboutOn() ? AboutPaper::radius : P::radius);   // « À propos » B: radius 12
         fade_.Snap(0); fade_.Set(1, Motion::Now(), Motion::Milliseconds(static_cast<int>(P::enterMs)), false, Motion::Curve::EaseOut);
         Place(true); ApplyAlpha();
+        if (!visible) {
+            focus_ = InitialStop();
+            if (uia_.Listening()) uia_.ChildrenChanged(GroupKey);
+            return true;
+        }
         if (Scrimmed()) ShowWindow(scrim_, SW_SHOWNOACTIVATE); else ShowWindow(scrim_, SW_HIDE);
         if (Cornered() && !spec_.activate) {   // the page keeps the keyboard; a click or UIA reaches the card
             restore_ = nullptr; keyboard_ = false; focus_ = InitialStop();
@@ -1925,6 +2187,7 @@ public:
         if (open_ && IsWindowVisible(hwnd_) && spec_.onShown) { auto shown = spec_.onShown; shown(); }   // really on screen (not queued)
         return true;
     }
+public:
     // Replace the content of an open dialog (B05 list ↔ detail ↔ confirmation); keeps `done`.
     void Update(Spec spec) {
         if (!open_) return;
@@ -2001,6 +2264,15 @@ public:
     }
     void SetReducedMotion(bool reduced) { reduced_ = reduced; motion_.SetReducedMotion(reduced); if (open_) InvalidateRect(hwnd_, nullptr, FALSE); }
     // Test helpers (native harness).
+    // « À propos » B: paint focus as if the window had it (hidden test windows never get it), pointer states, the Tab
+    // order, whether the frosted layer used the real blur and the logo was read, the head / card / footer blocks.
+    void AssumeFocusForTest(bool on) { assumeFocusForTest_ = on; }
+    void PointerStateForTest(int hover, int press) { hover_ = hover; pressed_ = press; keyboard_ = false; Interact(); }
+    int ClickedForTest() const { return clicked_; }
+    std::vector<int> OrderForTest() const { return Order(); }
+    bool IconsFrostedForTest() const { return aboutIcons_.FrostedForTest(); }
+    bool AboutLogoForTest() const { return aboutLogo_.Drawn(); }
+    D2D1_RECT_F AboutBlockForTest(int which) const { const B type = which == 0 ? B::Head : which == 1 ? B::Status : B::Footnote; for (auto& b : blocks_) if (b.type == type) return b.r; return {}; }
     bool FocusVisibleForTest() const { return keyboard_ && focus_ != 0; }   // the ring is drawn (window focus aside)
     int FocusForTest() const { return CurrentStop(); }
     float HeadLeftForTest() const { return HeadLeft(); }
@@ -2038,6 +2310,7 @@ public:
         kit_.Release(); kit_.Bind(&off); pc_ = &off;
         Paint();
         const bool ok = SUCCEEDED(off.SavePng(png.c_str()));
+        ReleaseAbout();   // their device resources belong to the offscreen target
         kit_.Release(); kit_.Bind(&chrome_); pc_ = &chrome_; off.Dispose();
         return ok;
     }
@@ -2183,13 +2456,28 @@ inline Status AboutStatus(int state, const std::wstring& detail = L"", const std
     }
     return st;
 }
+// « À propos de Browser » B (Paper 257B-0): the grey header (logo, « Browser », the version line, ×), the update card
+// (`state` / `detail` / `next`: AboutStatus; the host replaces it with the engine's real state), four tiles (Nouveautés,
+// Code source, Site web, Signaler un problème: each closes the window with its link id) and the footer (licences link,
+// credit line). 420 wide, the window's own scrim, motion and keys (Échap closes).
+inline std::wstring AboutSpoken(std::wstring subtitle) {   // a tile's help for screen readers: its subtitle without the ↗
+    const std::wstring arrow = L" \x2197"; if (subtitle.size() >= arrow.size() && subtitle.compare(subtitle.size() - arrow.size(), arrow.size(), arrow) == 0) subtitle.resize(subtitle.size() - arrow.size());
+    return subtitle;
+}
 inline Spec AboutSpec(const std::wstring& version, int state, const std::wstring& detail = L"", const std::wstring& next = L"") {
     Spec s; s.kind = Kind::About; s.scope = Scope::Window; s.automationId = L"AboutBrowser";
-    s.appTile = true; s.closeButton = true; s.title = L"Browser";
-    s.body = TRF(about_version_line, version.rfind(L"Version ", 0) == 0 ? version.substr(8) : version);   // i18n-exempt: legacy « Version » prefix in the given text
+    s.width = AboutPaper::width; s.closeButton = true; s.title = L"Browser";
+    const std::wstring bare = version.rfind(L"Version ", 0) == 0 ? version.substr(8) : version;   // i18n-exempt: legacy « Version » prefix in the given text
+    s.about.shown = true; s.about.version = TRF(about_version_line, bare);
     s.status = AboutStatus(state, detail, next); s.hasStatus = true;
-    s.links = {{AboutNotesLink, TR(about_release_notes)}, {AboutLicensesLink, TR(about_licenses)}, {AboutReportLink, TR(about_report)}};
-    s.footnote = TR(about_engine_footnote);
+    s.links = {{AboutNotesLink, TR(release_notes_title), L"AboutWhatsNew"}, {AboutSourceLink, TR(about_tile_source), L"AboutSourceCode"},
+               {AboutWebsiteLink, TR(about_tile_website), L"AboutWebsite"}, {AboutReportLink, TR(about_report), L"AboutReport"},
+               {AboutLicensesLink, TR(about_licenses), L"AboutLicenses"}};
+    const std::wstring website = std::wstring(L"valsbrowser.com") + L" \x2197";
+    s.about.tiles = {{TRF(about_tile_notes_subtitle, bare), L"", &AboutIcons::gift}, {TR(about_tile_source_subtitle), L"", &AboutIcons::terminal},
+                     {website, L"", &AboutIcons::compass}, {TR(about_tile_report_subtitle), L"", &AboutIcons::bug}};
+    for (auto& t : s.about.tiles) t.spoken = AboutSpoken(t.subtitle);
+    s.about.copyright = L"\x00A9 2026 Val \x00B7 WebView2";   // i18n-exempt: the owner's credit line and the engine's name (Paper 258E-0), the same in every language
     return s;
 }
 // A9: the shipped « indisponible » modal; `future` (the concept) marks the future idea as Démonstration.

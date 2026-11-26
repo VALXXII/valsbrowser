@@ -928,9 +928,12 @@ std::wstring RunningVersion(){
 // A8 live status: the update engine's real view (defined with the update host in main.cpp).
 MD::Status AboutStatusNow();
 void AboutUpdateAction(int button);
-// Public project destinations (the releases repository is public; the source repository is not).
+// Public project destinations: the releases repository, the public source (VALXXII/valsbrowser, MIT) and its issues,
+// the website (« À propos » B tiles, Paper 257R-0).
 constexpr const wchar_t* ReleasesUrl=L"https://github.com/VALXXII/browser-releases/releases";
-constexpr const wchar_t* IssuesUrl=L"https://github.com/VALXXII/browser-releases/issues/new";
+constexpr const wchar_t* SourceUrl=L"https://github.com/VALXXII/valsbrowser";
+constexpr const wchar_t* WebsiteUrl=L"https://valsbrowser.com";
+constexpr const wchar_t* IssuesUrl=L"https://github.com/VALXXII/valsbrowser/issues/new";
 std::wstring ReleaseNotesUrl(const std::wstring& version){
     const bool numbered=!version.empty()&&iswdigit(version[0]);
     return numbered?std::wstring(ReleasesUrl)+L"/tag/v"+version:std::wstring(ReleasesUrl);
@@ -956,6 +959,8 @@ void ShowAboutDialog(int demoState){
         if(r.button==MD::AboutLicensesLink){std::wstring dir=base;ShellExecuteW(window,L"open",dir.c_str(),nullptr,nullptr,SW_SHOWNORMAL);}
         else if(r.button==MD::AboutNotesLink){Log(L"ABOUT release notes: Nouveautés (full)");Defer([]{ShowReleaseNotes(false,nullptr,true);});}
         else if(r.button==MD::AboutReportLink){Log(L"ABOUT report a problem");Defer([]{NewTab(IssuesUrl,-1,L"");});}
+        else if(r.button==MD::AboutSourceLink){Log(L"ABOUT source code");Defer([]{NewTab(SourceUrl,-1,L"");});}
+        else if(r.button==MD::AboutWebsiteLink){Log(L"ABOUT website");Defer([]{NewTab(WebsiteUrl,-1,L"");});}
         else if(!demo&&r.button==MD::AboutRestartButton)AboutUpdateAction(MD::AboutRestartButton);
     });
 }

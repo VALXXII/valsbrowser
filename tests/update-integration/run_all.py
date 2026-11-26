@@ -95,6 +95,13 @@ def existing_fixtures() -> None:
     about_evidence.mkdir(parents=True, exist_ok=True)
     fixture('settings_about_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/settings_about_test.cpp', 'src/native-lottie.cpp', THORVG,
             *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt'], [ROOT, about_evidence])
+    # The « À propos de Browser » B window it opens (src/modal.h Kind::About, src/about-icons.h; Paper 257B-0): layout
+    # values, the six update states, tile actions, Tab order, focus styles, FR/EN, profile colours. Screen-free: laid out
+    # with ShowHiddenForTest (never shown nor activated), pictures drawn off screen.
+    about_window_evidence = ROOT / 'build/about-window/captures'
+    about_window_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('about_window_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/about_window_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt'], [ROOT, about_window_evidence])
     language_evidence = ROOT / 'build/browser-languages/captures/settings'
     language_evidence.mkdir(parents=True, exist_ok=True)
     fixture('language_settings_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/language_settings_test.cpp', 'src/native-lottie.cpp', THORVG,
