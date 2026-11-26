@@ -33,6 +33,11 @@ DOM.getBoxModel: the element's border box in the top viewport, through its frame
   frame removed   the iframe leaves the page: the element is « gone » (after the 500 ms of C3)
   another origin  the iframe of another origin is ONE box (script header: « a cross-origin iframe is annotated as a box »):
                   hover, selection « cross-origin », bubble frame around the whole iframe
+  case 2          (Paper « Iframes · cas 2 · iframe d'un autre site · v2 ») its label « iframe · autre site » inside the
+                  frame (inner corner rounded), the size label in its place; ONE « frameHover » on entering it, ONE on
+                  leaving it, none during the moves, none for a same-origin iframe or the page; a scroll under a still
+                  pointer: one « off » (moved), the next real move one « on »; Ctrl, a click, the bubble's frame: « off » /
+                  nothing; the card's « Annoter le cadre » (xoSelect n) = its click, a stale n selects nothing
   canvas          one box: the canvas element
   page element    an element of the page itself: unchanged
   margins         (the owner's choice B, 24 Nov 2026; Paper « 5.3 · Espacements au survol — padding, gap et marges ») the
@@ -236,7 +241,7 @@ try:
         cdp.js("new Promise(r=>{const f=()=>{const a=document.getElementById('same');const d=a&&a.contentDocument&&a.contentDocument.getElementById('deep');"
                "(document.readyState==='complete'&&d&&d.contentDocument&&d.contentDocument.getElementById('leaf'))?r(1):setTimeout(f,20)};f()})")
         cdp.js("scrollTo(0,0)"); cdp.js("window.__msgs.length=0")
-        params = {"nonce": "nf", "navStamp": 1, "styles": [], "attrs": ["id", "class"], "accent": "62,103,255", "reduced": False,
+        params = {"nonce": "nf", "navStamp": 1, "styles": [], "attrs": ["id", "class"], "accent": "62,103,255", "reduced": False, "xoLabel": "iframe · autre site",
                   "cursor": {"svg": "<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><circle cx='16' cy='16' r='4' fill='red'/></svg>", "x": 16, "y": 16}}
         ok = cdp.js("(" + PAGE_JS + ")(" + json.dumps(params) + ")")
         frames()
@@ -392,6 +397,68 @@ try:
         check(around(box('.bf'), t) and anchored(t), f"{pc} · iframe of another origin: the bubble's frame is around the whole iframe", {"frame": box('.bf'), "anchor": anchor(), "element": t})
         cdp.js(f"{H}.cmd('follow',null)"); frames(2)
 
+        # ---------------- case 2 (Paper « Iframes · cas 2 · iframe d'un autre site · v2 »): the label « iframe · autre site »
+        # inside the frame; ONE message when the hover enters the iframe of another site, ONE when it leaves it, none during
+        # the moves over it; none for a same-origin iframe or an element of the page; the card's « Annoter le cadre »
+        XO = "window.__msgs.filter(m=>m.op==='frameHover')"
+        cdp.js(f"{H}.cmd('resume')"); mouse(990, 690); frames(3); cdp.js("window.__msgs.length=0")
+        t = truth("document.getElementById('cross')")
+        for i in range(6):
+            mouse(t[0] + 30 + i * 37, t[1] + 20 + i * 19); frames(2)
+        wait(150)
+        ms = cdp.js(XO)
+        ok1 = len(ms) == 1 and ms[0]["on"] is True and all(abs(ms[0]["rect"][k] - v) <= .6 for k, v in zip(("x", "y", "width", "height"), t)) and ms[0].get("origin") == OBASE and ms[0]["n"] >= 1
+        check(ok1, f"{pc} · case 2: one « frameHover » on entering the iframe of another site (its rectangle, its origin), none during six moves over it", ms)
+        lab = cdp.js(f"""(()=>{{const r={R},f=r.querySelector('.f'),fb=f.getBoundingClientRect(),e=parseFloat(getComputedStyle(f).borderTopWidth),l=r.querySelectorAll('.l'),a=l[0].getBoundingClientRect(),b=l[1].getBoundingClientRect();
+            return {{f:[fb.left,fb.top,fb.width,fb.height],e:e,name:l[0].textContent,xi:l[0].classList.contains('xi'),radius:getComputedStyle(l[0]).borderRadius,a:[a.left,a.top,a.width,a.height],size:l[1].textContent,b:[b.left,b.top,b.width,b.height]}}}})()""")
+        check(around(lab["f"], t) and lab["name"] == "iframe · autre site" and lab["xi"] and abs(lab["a"][0] - (lab["f"][0] + lab["e"])) <= .81 and abs(lab["a"][1] - (lab["f"][1] + lab["e"])) <= .81,
+              f"{pc} · case 2: the whole iframe framed, « iframe · autre site » INSIDE the frame at its inner top-left corner", lab)
+        check(lab["radius"] == "0px 0px 3px" and lab["size"] == f"{round(t[2])}x{round(t[3])}" and lab["b"][1] + lab["b"][3] <= lab["f"][1] + .01 and abs(lab["b"][0] + lab["b"][2] - (lab["f"][0] + lab["f"][2])) <= .81,
+              f"{pc} · case 2: the inside label's inner corner rounded (3 px), the size label where it always is (on the frame's top, at its right)", lab)
+        mouse(200, 185); frames(3)   # onto #mail (an element of the page)
+        ms = cdp.js(XO)
+        check(len(ms) == 2 and ms[1]["on"] is False and ms[1]["n"] == ms[0]["n"] and not ms[1].get("moved"), f"{pc} · case 2: one « frameHover » off on leaving it (the same n)", ms)
+        back = cdp.js(f"(()=>{{const l={R}.querySelector('.l');return [l.textContent,l.classList.contains('xi'),getComputedStyle(l).borderRadius]}})()")
+        check(back[0].startswith("div") and not back[1] and back[2] == "3px 3px 0px 0px", f"{pc} · case 2: the next element's label as before (above, its top corners)", back)
+        # a same-origin iframe (its elements are reached) and the page itself: nothing
+        cdp.js("window.__msgs.length=0"); s = truth("document.getElementById('same')")
+        for i in range(5):
+            mouse(s[0] + 40 + i * 50, s[1] + 30 + i * 30); frames(2)
+        mouse(300, 330); frames(2); mouse(200, 185); frames(3)
+        check(cdp.js(XO) == [], f"{pc} · case 2: a same-origin iframe and the page's elements: no « frameHover »", cdp.js(XO))
+        # the page scrolls under a still pointer: one « off » (moved); the next real move over it: one « on », the new rectangle
+        mouse(t[0] + 60, t[1] + 40); frames(3); cdp.js("window.__msgs.length=0")
+        cdp.js("scrollTo(0,30)"); frames(3); wait(60)
+        a = cdp.js(XO)
+        check(len(a) == 1 and a[0]["on"] is False and a[0].get("moved") is True, f"{pc} · case 2: the page scrolled under a still pointer: one « off » (moved), none after", a)
+        mouse(t[0] + 61, t[1] + 41); frames(3)
+        a = cdp.js(XO)
+        check(len(a) == 2 and a[1]["on"] is True and abs(a[1]["rect"]["y"] - (t[1] - 30)) <= .6, f"{pc} · case 2: the next real move over it: one « on » with the new rectangle", a)
+        # Ctrl held (the site as usual): « off »; released: « on » again (the pointer is still over it)
+        cdp.js("window.__msgs.length=0"); cdp.js(f"{H}.cmd('ctrl', true)"); frames(3)
+        c1 = cdp.js(XO); cdp.js(f"{H}.cmd('ctrl', false)"); frames(3); c2 = cdp.js(XO)
+        check(len(c1) == 1 and c1[0]["on"] is False and len(c2) == 2 and c2[1]["on"] is True, f"{pc} · case 2: Ctrl held: « off »; released: « on »", c2)
+        # the click on it: « off » before the selection, the selection the iframe (« cross-origin »)
+        n0 = cdp.js("window.__msgs.length"); x, y = t[0] + 62, t[1] + 12
+        mouse(x, y); frames(2); mouse(x, y, "mousePressed", "left", 1); mouse(x, y, "mouseReleased", "left", 1); frames(3)
+        ops = cdp.js(f"window.__msgs.slice({n0}).filter(m=>m.op==='frameHover'||m.op==='select'||m.op==='selecting').map(m=>[m.op,m.on===undefined?null:m.on,m.frame?m.frame.kind:null])")
+        check(ops == [["frameHover", False, None], ["select", None, "cross-origin"]], f"{pc} · case 2: a click on it: « off » first, then its selection (one box, « cross-origin »)", ops)
+        # the bubble's frame on screen (Mode Commentaire): no card while hovering
+        cdp.js(f"{H}.cmd('follow',{{selector:'#cross',draw:{{label:'iframe'}}}})"); cdp.js(f"{H}.cmd('resume')"); frames(3); cdp.js("window.__msgs.length=0")
+        mouse(t[0] + 90, t[1] + 50); frames(3); mouse(t[0] + 120, t[1] + 60); frames(3)
+        check(cdp.js(XO) == [], f"{pc} · case 2: the bubble's frame on screen: no « frameHover »", cdp.js(XO))
+        cdp.js(f"{H}.cmd('follow',null)"); frames(2)
+        # « Annoter le cadre »: xoSelect n = the click on that frame; a stale n: nothing
+        mouse(200, 185); frames(3); cdp.js("window.__msgs.length=0"); mouse(t[0] + 70, t[1] + 50); frames(3)
+        m = cdp.js(XO); nn = m[-1]["n"] if m else -1
+        stale = cdp.js(f"{H}.cmd('xoSelect',{nn + 99})"); n0 = cdp.js("window.__msgs.length")
+        okSel = cdp.js(f"{H}.cmd('xoSelect',{nn})"); frames(3)
+        sel = cdp.js(f"window.__msgs.slice({n0}).filter(m=>m.op==='select').pop()||null"); off = cdp.js(f"window.__msgs.slice({n0}).filter(m=>m.op==='frameHover').map(m=>m.on)")
+        check(stale is False and okSel is True and bool(sel) and (sel.get("frame") or {}).get("kind") == "cross-origin" and sel["target"]["path"][-1].startswith("iframe") and off == [False],
+              f"{pc} · case 2: « Annoter le cadre » (xoSelect n): the iframe selected as one box, as its click; a stale n selects nothing",
+              {"stale": stale, "ok": okSel, "select": sel and [sel.get("frame"), sel["target"]["path"][-1]], "off": off})
+        cdp.js("scrollTo(0,0)"); cdp.js(f"{H}.cmd('resume')"); mouse(990, 690); frames(2)
+
         # ---------------- a canvas: one box
         t, hov, sel = select("document.getElementById('cv')", "canvas")
         check(around(hov, t) and bool(sel) and sel["target"]["path"][-1].startswith("canvas") and around(box('.bf'), t) and anchored(t),
@@ -475,7 +542,7 @@ try:
         cdp.call("Emulation.setDeviceMetricsOverride", width=1100, height=700, deviceScaleFactor=dpr, mobile=False)
         cdp.call("Page.navigate", url=BASE + "/spacing.html")
         cdp.js("new Promise(r=>{const f=()=>document.readyState==='complete'?r(1):setTimeout(f,20);f()})"); cdp.js("window.__msgs.length=0")
-        params = {"nonce": "nf", "navStamp": 1, "styles": [], "attrs": ["id", "class"], "accent": "62,103,255", "reduced": False,
+        params = {"nonce": "nf", "navStamp": 1, "styles": [], "attrs": ["id", "class"], "accent": "62,103,255", "reduced": False, "xoLabel": "iframe · autre site",
                   "cursor": {"svg": "<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><circle cx='16' cy='16' r='4' fill='red'/></svg>", "x": 16, "y": 16}}
         ok = cdp.js("(" + PAGE_JS + ")(" + json.dumps(params) + ")"); frames()
         return ok == "ok"

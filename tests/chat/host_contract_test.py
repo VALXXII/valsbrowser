@@ -578,6 +578,31 @@ check('SetTimer(post, KeysBackTimer, 100, nullptr)' in csr and 'if (!BrowserInFr
       and 'if (w == KeysBackTimer) { void KeysBackTick(); KeysBackTick(); return 0; }' in ui,
       '« Ton agent »: ready while its sign-in console holds the foreground — the keys go back once the browser is in front again (never over the person\'s own focus, bounded in time)')
 
+# Iframes case 2 (Paper « Iframes · cas 2 · iframe d'un autre site · v2 carte + En savoir plus », validated by Val): the page
+# says ONCE that the hover entered an iframe of another site and ONCE that it left it (never per move: the script's header
+# promises no message during the hover); the host shows its card, « Annoter le cadre » = the click on that frame
+xo_js = code('annotation-script.h'); sync = block_after(xo_js, 'function xoSync(info, moved) {')
+check(xo_js.count("op: 'frameHover'") == 2 and sync.count("op: 'frameHover'") == 2 and 'if (want && xo && want.el === xo.el) return;' in sync,
+      'iframes case 2: « frameHover » is posted only by xoSync — once on entering, once on leaving, nothing while the hover stays on the same frame')
+fr = block_after(xo_js, 'function frame() {')
+check('cur = info; place(cur);\n  xoSync(cur);' in fr and 'frameHover' not in block_after(xo_js, 'function onMove(e) {'),
+      'iframes case 2: the hook is in frame(), right after « cur = info; place(cur); » (one hit per frame), never in the pointer moves')
+check('xoSync(null, true)' in block_after(xo_js, 'function onScroll() {') and 'xoSync(null);' in block_after(xo_js, 'function onLeave(e) {')
+      and 'frozen = true; xoSync(null); place(cur); sendSelect(cur, null, e);' in block_after(xo_js, 'function onClick(e) {'),
+      'iframes case 2: a scroll under the pointer, the pointer out of the page and a click end it (« off » before the selection)')
+check("if (op === 'xoSelect') return xoSelect(+arg);" in xo_js and 't.n !== n || !t.el.isConnected' in block_after(xo_js, 'function xoSelect(n) {'),
+      "iframes case 2: « Annoter le cadre » selects the very frame its card was shown for (its n), nothing when that frame is gone")
+xo_host = code('annotation-host.h')
+check('Mods, FrameHover };' in xo_host and 'else if (op->string == "frameHover") {' in xo_host and 'e.op = Op::FrameHover;' in xo_host,
+      'iframes case 2: the host knows the « frameHover » op (validated: on, n, the rectangle, an origin without a path)')
+xo_mode = code('annotation-mode.h'); ofh = block_after(xo_mode, 'void OnFrameHover(')
+check('case AH::Op::FrameHover: OnFrameHover(t, c.env); break;' in xo_mode and 'SetTimer(post, XoShowTimer, FC::CardSpec::showDelayMs, nullptr)' in ofh
+      and 'if (e.serial != xo.n) return;' in ofh and 'if (e.gone) { XoCardGone(true); return; }' in ofh and 'SetTimer(post, XoHideTimer, FC::CardSpec::leaveGraceMs, nullptr)' in ofh,
+      'iframes case 2: the card shows after its delay, its own leave only hides it (after the grace; at once when the page scrolled)')
+check('Cmd(t, L"xoSelect", std::to_wstring(n));' in block_after(xo_mode, 'void XoAnnotate(std::int64_t n) {') and 'xoHelp.Show(Reduced(), std::move(h));' in block_after(xo_mode, 'void XoHelpOpen() {')
+      and 'XoReset(); xoCard.Destroy(); xoHelp.Hide(false, true);' in block_after(xo_mode, 'void Exit(const wchar_t* why) {'),
+      'iframes case 2: « Annoter le cadre » = the page\'s xoSelect, « En savoir plus » = the help panel; both go with the mode')
 
+ok = all(checks)   # every contract above counts (the checks added after the first total were printed but never failed the run)
 print(f'{sum(checks)} / {len(checks)} host contracts')
 sys.exit(0 if ok else 1)

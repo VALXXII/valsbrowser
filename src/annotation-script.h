@@ -70,6 +70,16 @@
 // R33 the size label goes under the name, inside the frame, when the two do not fit side by side; R36 the
 // « browser-restyle » event (chat-transition.h) = follow the element frame by frame while its values glide; R37 the
 // selected element's inspector is placed in the frame's own frame and transitions only when a value changes.
+// Iframes case 2 (Paper « Iframes · cas 2 · iframe d'un autre site · v2 carte + En savoir plus », validated): an iframe of
+// ANOTHER site under the pointer is one box (its content belongs to the other site: unreadable). Its name label is
+// « iframe · autre site » (P.xoLabel, the host's language), INSIDE the frame at its inner top-left corner (only its inner
+// corner rounded); the size label keeps its place. The host shows a card under the frame (src/annotation-frame-card.h):
+// ONE message when the pointer enters such a frame — { op: 'frameHover', on: true, n, rect, vw, vh, origin } — and ONE
+// when it leaves it — { op: 'frameHover', on: false, n } (moved: true when the page scrolled under the pointer) — never
+// during the moves over it. Nothing for a same-origin iframe (its elements are reached). A scroll under a still pointer
+// ends it (the card would stay behind); the next real pointer move over the frame starts it again. Nothing either while
+// the hover is off (Ctrl, « pick » false, a selection, a peek, the bubble's frame). The card's « Annoter le cadre »:
+// `xoSelect` n = the click on that very frame (the same selection).
 // The page could tamper with all of this (same world): the host validates every message and
 // the note itself is typed in a native control the page never sees.
 #include <cstring>
@@ -136,6 +146,8 @@ var hostCtrl = false;   // final pass 1: the host says Ctrl is held (its keyboar
 var keyCtrl = false;    // C1: Ctrl seen as a KEY in this page (its keydown) — not only as a pointer event's flag
 var peek = null;   // R26: the element of a chip the user rests on (panel / bubble), shown as hovered
 var trackUntil = 0;   // R36: a restyle glides: everything follows the element frame by frame until then
+var XO_LABEL = String(P.xoLabel || 'iframe');   // iframes case 2: the name label of an iframe of another site (host's language)
+var xo = null, xoN = 0, xoLast = null, xoHold = false;   // … the one announced to the host (enter / leave), its counter, a scroll's hold
 function idle() { return off || ctrl; }
 function tracking() { return performance.now() < trackUntil; }
 
@@ -171,6 +183,8 @@ root.innerHTML = '<style>' +
   'font-kerning:normal;font-feature-settings:normal;font-synthesis:none;text-rendering:auto;will-change:transform,opacity;' +
   // final pass 1, defect 3: the width is the text's own (never the containing block's: .bx is 0 wide, the hover's is the viewport)
   'width:max-content;flex:none}' +
+  // iframes case 2 (Paper 26EO-0): the name label of an iframe of another site sits inside the frame, its inner corner rounded
+  '.l.xi{border-radius:0 0 3px 0}' +
   // R16: the selected element's inspector follows a change of its values softly (same path structure: interpolated)
   '.pb.sm,.gb.sm,.mb.sm{transition:clip-path 160ms cubic-bezier(.23,1,.32,1)}.pl.sm,.gl.sm,.ml.sm{transition:transform 160ms cubic-bezier(.23,1,.32,1)}' +
   '.s{position:fixed;left:0;top:0;width:0;height:0;pointer-events:auto;background:transparent}' +
@@ -683,6 +697,16 @@ function labelsPlace(fb, lw, rw) {
   var e = edgeShown(), ix = Math.max(2, Math.min(fb.x + e, innerWidth - 2 - rw));
   return above ? { lx: lx, rx: ix, y: y, ry: fb.y + e, both: false } : { lx: lx, rx: lx, y: y, ry: Math.min(y + 20, innerHeight - 20), both: false };
 }
+// Iframes case 2 (Paper 26EN-0 / 26EO-0): the name label of an iframe of another site INSIDE the frame, flush with its inner
+// top-left corner (kept in the viewport when the frame's top is out of it); the size label where it always is (flush with
+// the frame's right edge on its top, under the frame when there is no room above: labelsPlace's rules).
+function xoOf(info) { return info && !info.range && info.kind === 'cross-origin' && info.el === info.frame ? info : null; }
+function xoLabelsPlace(fb, lw, rw) {
+  var e = edgeShown(), above = fb.y - 20 >= 0;
+  var lx = Math.max(2, Math.min(fb.x + e, innerWidth - 2 - lw)), ly = Math.min(Math.max(fb.y + e, 0), innerHeight - 20);
+  var rx = Math.min(innerWidth - 2, fb.x + fb.w) - rw, ry = above ? fb.y - 20 : Math.min(fb.y + fb.h, innerHeight - 20);
+  return { lx: lx, y: ly, rx: rx, ry: ry, both: false };
+}
 // The value labels keep off the element labels (both boxes, + 2 px of air).
 function labelBoxes(lp, lw, rw) {
   var a = { x: lp.lx - 2, y: lp.y - 2, w: lw + 4, h: 24 }, b = { x: lp.rx - 2, y: lp.ry - 2, w: rw + 4, h: 24 };
@@ -708,9 +732,11 @@ function place(info) {
   var fb = frameBox(r), x = fb.x, y = fb.y, w = fb.w, h = fb.h;
   boxTo(fill, fb); void x; void y; void w; void h;   // R27: one bordered box, the conversation frame's rectangle
   if (cmOn(info.el)) fill.classList.add('nb'); else fill.classList.remove('nb');   // R27: its contour is already there: drawn once
-  var tag = seg(info.el === info.frame && info.kind === 'cross-origin' ? info.frame : info.el);
-  label.textContent = info.range ? 'texte' : tag; label2.textContent = Math.round(r.w) + 'x' + Math.round(r.h);   // R14 (Paper writes « 240x44 »)
-  var lw = label.offsetWidth || 120, rw = label2.offsetWidth || 60, lp = labelsPlace(fb, lw, rw);
+  var other = xoOf(info);   // iframes case 2: an iframe of another site — « iframe · autre site », inside the frame
+  var tag = seg(other ? info.frame : info.el);
+  label.textContent = info.range ? 'texte' : other ? XO_LABEL : tag; label2.textContent = Math.round(r.w) + 'x' + Math.round(r.h);   // R14 (Paper writes « 240x44 »)
+  if (other) label.classList.add('xi'); else label.classList.remove('xi');
+  var lw = label.offsetWidth || 120, rw = label2.offsetWidth || 60, lp = other ? xoLabelsPlace(fb, lw, rw) : labelsPlace(fb, lw, rw);
   atPx(label, lp.lx, lp.y); atPx(label2, lp.rx, lp.ry);   // R33: the size label never disappears; R45: device pixels
   labelBox = labelBoxes(lp, lw, rw);
   if (first) { void getComputedStyle(fill).transform; moveOnly(false); setOpacity(1); shown = true; }
@@ -731,6 +757,20 @@ function syncShields() {
   }
   for (var j = n; j < shields.length; j++) shields[j].style.cssText = 'display:none';
 }
+// Iframes case 2: what the host is told of the iframe of another site under the pointer — ONE message when the hover enters
+// it, ONE when it leaves it (or the hover stops: Ctrl, « pick » false, a selection, a peek, the bubble's frame, a scroll
+// under a still pointer: `moved`), nothing while it stays on it. `info` null: the hover is on nothing of that kind.
+function xoSync(info, moved) {
+  var want = !idle() && !frozen && !peek && !xoHold && !(follow && follow.draw) ? xoOf(info) : null;
+  if (want && xo && want.el === xo.el) return;
+  if (xo) { var gone = { op: 'frameHover', on: false, n: xo.n }; if (moved) gone.moved = true; xo = null; post(gone); }
+  if (!want) return;
+  var r = rectOf(want), origin = '';
+  try { var src = String(want.el.src || ''); origin = src ? new URL(src).origin : ''; } catch (e) { origin = ''; }   // the origin only (no path)
+  xo = { el: want.el, n: ++xoN, info: want }; xoLast = xo;
+  post({ op: 'frameHover', on: true, n: xo.n, rect: { x: r2(r.x), y: r2(r.y), width: r2(r.w), height: r2(r.h) }, vw: innerWidth, vh: innerHeight,
+         origin: origin.length <= 256 ? origin : '' });
+}
 function same(a, b) { return a && b && a.el === b.el && a.range === b.range; }
 function frame() {
   raf = 0; if (!alive) return;
@@ -738,6 +778,7 @@ function frame() {
   if (mark) markPlace();
   cmPlaceAll(); followCheck();
   if (shown && placed) { if (cmOn(placed.el)) fill.classList.add('nb'); else fill.classList.remove('nb'); }   // R27
+  if (xo && (peek || off || frozen || ctrl || (follow && follow.draw))) xoSync(null);   // iframes case 2: the hover stopped
   if (tracking()) { schedule(); if (px >= 0 && !frozen) haveMove = true; }   // R36: every frame while the page's values glide
   if (peek) { if (peek.el.isConnected) place(peek); else peekSet(null); return; }   // R26
   if (off) return;
@@ -748,6 +789,7 @@ function frame() {
   var info = hit(px, py);
   if (!same(info, cur)) down = [];
   cur = info; place(cur);
+  xoSync(cur);   // iframes case 2: one message on entering an iframe of another site, one on leaving it — never per move
 }
 function schedule() { if (!raf && alive) raf = requestAnimationFrame(frame); }
 
@@ -755,6 +797,7 @@ function schedule() { if (!raf && alive) raf = requestAnimationFrame(frame); }
 var modsAt = 0;
 function onMove(e) {
   if (e.isTrusted && !e.ctrlKey) { var tn = performance.now(); if (tn - modsAt > 30) { modsAt = tn; post({ op: 'mods' }); } }   // R31: the host reads Ctrl (its keyboard)
+  if (xoHold && (e.clientX !== px || e.clientY !== py)) xoHold = false;   // iframes case 2: a real move after a scroll (not the engine's hover update)
   px = e.clientX; py = e.clientY; if (e.isTrusted && !!e.ctrlKey !== ctrl && !(hostCtrl && !e.ctrlKey)) setCtrl(!!e.ctrlKey); if (idle()) return; haveMove = true; keyboard = false; schedule(); }
 // R31: Ctrl held = the page as usual: its own cursors (the sheet is emptied), no hover frame nor inspector, no iframe
 // shields; clicks, scrolling and typing reach the site, nothing is selected. Released = the selection at once. A
@@ -763,7 +806,7 @@ function cursorSheet(on) { try { if (sheet) sheet.replaceSync(on ? '*,*::before,
 function setCtrl(v) {
   v = !!v; if (!v) keyCtrl = false; if (v === ctrl) return; ctrl = v;
   if (off) return;
-  if (ctrl) { cursorSheet(false); if (!frozen && !peek) { cur = null; down = []; haveMove = false; place(null); } syncShields(); }
+  if (ctrl) { cursorSheet(false); if (!frozen && !peek) { cur = null; down = []; haveMove = false; place(null); } syncShields(); xoSync(null); }
   else { cursorSheet(true); syncShields(); haveMove = px >= 0; schedule(); }
 }
 function onKeyUp(e) { if (e.isTrusted && e.key === 'Control') { hostCtrl = false; setCtrl(false); } }
@@ -798,7 +841,7 @@ function onClick(e) {
   var info = hit(px, py);
   if (!info) return;
   if (e.altKey) { var p = parentInfo(info); if (p) info = p; }
-  cur = info; down = []; frozen = true; place(cur); sendSelect(cur, null, e);
+  cur = info; down = []; frozen = true; xoSync(null); place(cur); sendSelect(cur, null, e);   // iframes case 2: the card goes before the selection
 }
 function onKey(e) {
   if (e.isTrusted && e.key === 'Control') { setCtrl(true); keyCtrl = ctrl; return; }   // R31 (never consumed: Ctrl+... stay the site's and the host's); C1: a key
@@ -808,7 +851,7 @@ function onKey(e) {
   if (frozen) return;
   if (k === 'ArrowUp' && cur && !e.altKey) { stop(e); var p = parentInfo(cur); if (p) { down.push(cur); cur = p; keyboard = true; place(cur); } return; }
   if (k === 'ArrowDown' && cur && !e.altKey) { stop(e); var c = down.length ? down.pop() : childInfo(cur); if (c) { cur = c; keyboard = true; place(cur); } return; }
-  if (k === 'Enter' && cur) { stop(e); keyboard = true; frozen = true; place(cur); sendSelect(cur, null, e); return; }
+  if (k === 'Enter' && cur) { stop(e); keyboard = true; frozen = true; xoSync(null); place(cur); sendSelect(cur, null, e); return; }
 }
 function onFocus(e) {
   if (frozen || idle() || peek) return;
@@ -820,8 +863,9 @@ function onFocus(e) {
   down = []; keyboard = true; place(cur);
 }
 function onScroll() { if (follow) followPost();   // R39: the bubble moves with this very scroll, before any drawing
+  if (xo) { xoHold = true; xoSync(null, true); }   // iframes case 2: the frame moved under a still pointer: its card goes (back at the next move)
   if (peek || tracking()) { schedule(); return; } if (follow || cmAny()) schedule(); if (off && !mark) return; if (!cur && !mark) return; if (cur && !frozen && px >= 0) haveMove = true; schedule(); }
-function onLeave(e) { if (!idle() && !peek && !e.relatedTarget && !frozen) { haveMove = false; cur = null; place(null); } }
+function onLeave(e) { if (!idle() && !peek && !e.relatedTarget && !frozen) { haveMove = false; cur = null; place(null); xoSync(null); } }   // iframes case 2: out of the page (onto the card, too)
 
 function selectionInfo(text) {
   var sel = null; try { sel = window.getSelection(); } catch (e) {}
@@ -842,12 +886,20 @@ function selectionInfo(text) {
 function selectAtPoint(x, y) {
   var dpr = devicePixelRatio || 1; px = x / dpr; py = y / dpr;
   var info = hit(px, py); if (!info) return;
-  cur = info; down = []; frozen = true; place(cur); sendSelect(cur, null);
+  cur = info; down = []; frozen = true; xoSync(null); place(cur); sendSelect(cur, null);
+}
+// Iframes case 2, the card's « Annoter le cadre »: the click on the iframe of another site the card was shown for (its
+// enter message's n) — the same selection as onClick's. False: that frame is no longer there (or the hover is off).
+function xoSelect(n) {
+  var t = xoLast;
+  if (off || ctrl || !t || t.n !== n || !t.el.isConnected) return false;
+  keyboard = false; cur = t.info; down = []; frozen = true; xoSync(null); place(cur); sendSelect(cur, null);
+  return true;
 }
 function selectSelection(text) {
   var s = selectionInfo(text);
   if (!s) { return false; }
-  cur = s.info; down = []; frozen = true; place(cur); sendSelect(cur, s.text || String(text || '').slice(0, MAX_TEXT));
+  cur = s.info; down = []; frozen = true; xoSync(null); place(cur); sendSelect(cur, s.text || String(text || '').slice(0, MAX_TEXT));
   return true;
 }
 
@@ -1303,7 +1355,7 @@ function cmd(op, arg) {
     if (want === off) return true;
     off = want;
     if (off) {
-      frozen = false; cur = null; down = []; haveMove = false; place(null);
+      frozen = false; cur = null; down = []; haveMove = false; place(null); xoSync(null);
       try { if (sheet) sheet.replaceSync(''); } catch (e) {}
       syncShields();
     } else {
@@ -1317,6 +1369,7 @@ function cmd(op, arg) {
   if (op === 'follow') return followSet(arg);
   if (op === 'peek') return peekSet(arg);   // R26: { selector, active }
   if (op === 'ctrl') { hostCtrl = !!arg; setCtrl(hostCtrl); return true; }   // final pass 1, R31: Ctrl from the host's keyboard
+  if (op === 'xoSelect') return xoSelect(+arg);   // iframes case 2: the card's « Annoter le cadre »
 }
 
 var opts = { capture: true, passive: true };

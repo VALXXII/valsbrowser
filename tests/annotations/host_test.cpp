@@ -270,8 +270,62 @@ static void V3B() {
     CHECK(std::all_of(vp.begin(), vp.end(), [](std::uint32_t p) { return p == 0; }));   // k = 0: nothing at all
 }
 
+// Iframes case 2 (src/annotation-frame-card.h): the « frameHover » message (one on entering an iframe of another site, one
+// on leaving it) and where its card goes (Paper 26GX-0: 12 under the iframe, its left on the iframe's left; above it when
+// there is no room under; 8 from the page area's edges; inside it when it is taller than the page).
+static void FrameCase2() {
+    const std::string n = "clm_abcdefghijklmnopqrstuvwxyz";
+    auto check = [&](const std::string& extra) { return AH::CheckMessage(Message(n, 7, "frameHover", extra), n, 7); };
+    auto on = check(",\"on\":true,\"n\":3,\"rect\":{\"x\":500,\"y\":420.5,\"width\":300,\"height\":160},\"vw\":1100,\"vh\":700,\"origin\":\"http://127.0.0.1:5174\"");
+    CHECK(on.env.op == AH::Op::FrameHover && on.env.on && on.env.serial == 3 && on.env.x == 500 && on.env.y == 420.5 && on.env.w == 300 && on.env.h == 160 &&
+          on.env.vw == 1100 && on.env.vh == 700 && on.env.origin == "http://127.0.0.1:5174");
+    auto bare = check(",\"on\":true,\"n\":4,\"rect\":{\"x\":-20,\"y\":0,\"width\":0,\"height\":10}");   // vw / vh / origin optional
+    CHECK(bare.env.op == AH::Op::FrameHover && bare.env.on && bare.env.vw == 0 && bare.env.origin.empty());
+    CHECK(check(",\"on\":true,\"n\":4,\"rect\":{\"x\":1,\"y\":1,\"width\":1,\"height\":1},\"origin\":\"null\"").env.op == AH::Op::FrameHover);   // a sandboxed frame
+    auto off = check(",\"on\":false,\"n\":3");
+    CHECK(off.env.op == AH::Op::FrameHover && !off.env.on && off.env.serial == 3 && !off.env.gone);
+    auto moved = check(",\"on\":false,\"n\":3,\"moved\":true");
+    CHECK(moved.env.op == AH::Op::FrameHover && !moved.env.on && moved.env.gone);
+    // refused: no on / n, wrong types, a rectangle missing or out of bounds, an origin with a path, control characters, too long
+    for (const char* bad : {",\"n\":3", ",\"on\":true", ",\"on\":\"yes\",\"n\":3", ",\"on\":false,\"n\":0", ",\"on\":false,\"n\":-2", ",\"on\":false,\"n\":2.5",
+                            ",\"on\":false,\"n\":3,\"moved\":1", ",\"on\":true,\"n\":3", ",\"on\":true,\"n\":3,\"rect\":{\"x\":1,\"y\":1,\"width\":-1,\"height\":1}",
+                            ",\"on\":true,\"n\":3,\"rect\":{\"x\":1e9,\"y\":1,\"width\":1,\"height\":1}", ",\"on\":true,\"n\":3,\"rect\":{\"x\":1,\"y\":1,\"width\":1}",
+                            ",\"on\":true,\"n\":3,\"rect\":{\"x\":1,\"y\":1,\"width\":1,\"height\":1},\"vw\":0",
+                            ",\"on\":true,\"n\":3,\"rect\":{\"x\":1,\"y\":1,\"width\":1,\"height\":1},\"origin\":\"https://pay.example/checkout?card=1\"",
+                            ",\"on\":true,\"n\":3,\"rect\":{\"x\":1,\"y\":1,\"width\":1,\"height\":1},\"origin\":\"pay.example\"",
+                            ",\"on\":true,\"n\":3,\"rect\":{\"x\":1,\"y\":1,\"width\":1,\"height\":1},\"origin\":\"https://a\\nb\"",
+                            ",\"on\":true,\"n\":3,\"rect\":{\"x\":1,\"y\":1,\"width\":1,\"height\":1},\"origin\":7"})
+        CHECK(check(bad).env.op == AH::Op::Invalid);
+    CHECK(check(",\"on\":true,\"n\":3,\"rect\":{\"x\":1,\"y\":1,\"width\":1,\"height\":1},\"origin\":\"https://" + std::string(260, 'a') + "\"").env.op == AH::Op::Invalid);
+    CHECK(AH::CheckMessage(Message(n, 8, "frameHover", ",\"on\":false,\"n\":3"), n, 7).env.op == AH::Op::Invalid);   // another navigation
+    // the page script: one message each way, the label from the host, the card's « Annoter le cadre »
+    const std::wstring js = NativeChrome::Annotations::PageScript();
+    CHECK(js.find(L"op: 'frameHover', on: true") != std::wstring::npos && js.find(L"op: 'frameHover', on: false") != std::wstring::npos);
+    CHECK(js.find(L"P.xoLabel") != std::wstring::npos && js.find(L"op === 'xoSelect'") != std::wstring::npos);
+    // where the card goes (screen px): a page area 0..1100 x 100..800, the card 300 x 150
+    const AH::CardBox area{0, 100, 1100, 800};
+    auto p = AH::PlaceFrameCard({500, 420, 800, 580}, 300, 150, area, 12, 8);   // room under the frame: under it, left on its left
+    CHECK(p.side == AH::CardSide::Below && p.x == 500 && p.y == 592);
+    p = AH::PlaceFrameCard({500, 560, 800, 720}, 300, 150, area, 12, 8);        // near the bottom: above it
+    CHECK(p.side == AH::CardSide::Above && p.x == 500 && p.y == 560 - 12 - 150);
+    p = AH::PlaceFrameCard({950, 300, 1090, 400}, 300, 150, area, 12, 8);       // near the right edge: slid left, 8 from the edge
+    CHECK(p.side == AH::CardSide::Below && p.x == 1100 - 8 - 300 && p.y == 412);
+    p = AH::PlaceFrameCard({-40, 300, 200, 400}, 300, 150, area, 12, 8);        // partly out on the left: 8 from the left edge
+    CHECK(p.side == AH::CardSide::Below && p.x == 8);
+    p = AH::PlaceFrameCard({100, 300, 400, 640}, 300, 150, area, 12, 8);        // no room under (640+12+150 > 792), room above (300-162 >= 108)
+    CHECK(p.side == AH::CardSide::Above && p.y == 138);
+    p = AH::PlaceFrameCard({100, 250, 400, 640}, 300, 150, area, 12, 8);        // room neither under nor above (250-162 < 108): inside, at its bottom
+    CHECK(p.side == AH::CardSide::Inside && p.y == 640 - 8 - 150);
+    p = AH::PlaceFrameCard({100, 120, 900, 1500}, 300, 150, area, 12, 8);       // taller than the page: inside, at the bottom of what is visible
+    CHECK(p.side == AH::CardSide::Inside && p.x == 100 && p.y == 800 - 8 - 150);
+    p = AH::PlaceFrameCard({100, 300, 400, 630}, 300, 150, area, 12, 8);        // the card just fits under (630+12+150 = 792)
+    CHECK(p.side == AH::CardSide::Below && p.y == 642);
+    p = AH::PlaceFrameCard({0, 100, 50, 150}, 300, 150, AH::CardBox{0, 100, 200, 260}, 12, 8);   // a page area narrower than the card: its left margin wins
+    CHECK(p.x == 8);
+}
+
 int main() {
-    Envelopes(); Crops(); Clips(); Origins(); Status(); Texts(); Script(); V3Capture(); V3B();
+    Envelopes(); Crops(); Clips(); Origins(); Status(); Texts(); Script(); V3Capture(); V3B(); FrameCase2();
     std::printf("host_test: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

@@ -46,6 +46,7 @@
 #include "annotation-sites.h"        // #125: « Annoter » on local projects and files only (the one rule)
 #include "annotation-onboarding.h"   // #125 v2: the mode's tutorial, in the place of « Connecter un agent » the first time
 #include "annotation-local-card.h"   // #125 v2 E1b: « Annoter marche sur vos projets et fichiers locaux » on a live site
+#include "annotation-frame-card.h"   // iframes case 2: the card of an iframe of another site, its « En savoir plus » panel
 RECT RegionScreen(int id);           // src/main.cpp: a chrome control in screen pixels (the card sits under the button)
 #include "ton-agent-entry.h"          // « Ton agent »: the band's reminder opens the agents' screen (worker B defines it)
 #include "chat-agents-view.h"        // « Ton agent »: the chat agents' one status, as the reminder and Réglages › Agents read it
@@ -80,6 +81,11 @@ bool onboardingMode = false;        // the mode was on over that tab when the tu
 AnnotationPrivate::Ledger privateLedger; std::atomic<int> jobsInFlight{0};
 bool OnboardingOpen() { return onboarding && onboarding->Visible(); }
 NativeChrome::AnnotationLocalCard::Card localCard;   // #125 v2 E1b
+// Iframes case 2 (src/annotation-frame-card.h): the card of the iframe of another site under the pointer and its « En savoir
+// plus » panel. The page tells when the hover enters / leaves such a frame (« frameHover »): its n and its rectangle (CSS px).
+NativeChrome::AnnotationFrameCard::Card xoCard; NativeChrome::AnnotationFrameCard::Help xoHelp;
+struct XoHover { bool on = false; std::int64_t n = -1; double x = 0, y = 0, w = 0, h = 0; } xo;
+constexpr UINT_PTR XoShowTimer = 8, XoHideTimer = 16;   // the card's 120 ms before showing, its 300 ms after the hover left
 bool buttonOff = false;                              // #125 v2 E1a: the toolbar button greyed on a live site (still clickable)
 // V3 capture pipeline (src/annotation-frame.h): one shot at a time; the page is only told to resume once the engine
 // has its frame.
@@ -305,10 +311,12 @@ RECT PageClient(const std::shared_ptr<Tab>& t) {
 RECT ClientScreen() { RECT r{}; GetClientRect(window, &r); MapWindowPoints(window, nullptr, reinterpret_cast<POINT*>(&r), 2); return r; }
 RECT PageScreen(const std::shared_ptr<Tab>& t) { RECT r = PageClient(t); MapWindowPoints(window, nullptr, reinterpret_cast<POINT*>(&r), 2); return r; }
 void EnsureUi();
+void XoReposition();
 void Place() {
     if (s.active) banner.Move(BandRect());
     if (veil.Running()) veil.Move(PageClient(Active()));
     Chat::Layout();
+    XoReposition();   // iframes case 2: the frame card and its panel follow the layout
 }
 
 // ---------------------------------------------------------------- page script
@@ -366,6 +374,7 @@ std::wstring Params(const std::shared_ptr<Tab>& t, const Start& st) {
     SJ::Value attrs = SJ::Value::Arr(); for (const auto& n : BA::AllowedAttributes()) attrs.Push(SJ::Value::Str(n));
     p.Set("styles", std::move(styles)); p.Set("attrs", std::move(attrs)); p.Set("reduced", SJ::Value::Bool(Reduced()));
     p.Set("accent", SJ::Value::Str(AccentInts(s.pageAccent)));
+    p.Set("xoLabel", SJ::Value::Str(AH::Utf8(TR(annotation_frame_label))));   // iframes case 2: « iframe · autre site » (the host's language)
     SJ::Value start = SJ::Value::Obj();
     start.Set("kind", SJ::Value::Str(st.kind == 1 ? "point" : st.kind == 2 ? "selection" : "none"));
     start.Set("x", SJ::Value::Int(st.at.x)); start.Set("y", SJ::Value::Int(st.at.y));
@@ -826,6 +835,78 @@ void ShowLocalCard(const std::shared_ptr<Tab>& t) {
     POINT column{}; const bool fromColumn = ColumnPopoverAt('N', NativeChrome::AnnotationLocalCard::Below, column);   // #127: the button is in the column
     if (localCard.Show(instance, window, base, button, host, accent, Reduced(), std::move(h), fromColumn ? &column : nullptr)) { ChromeTipBlock(true); Log(L"ANNOTATE live-site card shown (the mode is for local projects and files)"); }
 }
+// ---------------------------------------------------------------- iframes case 2 (src/annotation-frame-card.h)
+// The page tells when the hover enters an iframe of another site (its n and rectangle) and when it leaves it; the card shows
+// 120 ms after the entry under the frame (PlaceFrameCard), stays 300 ms after the leave so the pointer can reach it, goes
+// at once when the page scrolled under the pointer. « Annoter le cadre » = the click on that frame (the page's `xoSelect`);
+// « En savoir plus » opens the panel at the drawers' place.
+namespace FC = NativeChrome::AnnotationFrameCard;
+// The iframe's rectangle (CSS px of the top viewport) in screen pixels, with the page's zoom now.
+RECT XoScreen(const std::shared_ptr<Tab>& t) {
+    const double k = GetDpiForWindow(window) / 96.0 * (s.zoom > 0 ? s.zoom : 1.0); const RECT pa = PageScreen(t);
+    return {pa.left + LONG(std::lround(xo.x * k)), pa.top + LONG(std::lround(xo.y * k)), pa.left + LONG(std::lround((xo.x + xo.w) * k)), pa.top + LONG(std::lround((xo.y + xo.h) * k))};
+}
+void XoCardGone(bool fade) {
+    if (post) { KillTimer(post, XoShowTimer); KillTimer(post, XoHideTimer); }
+    if (!xoCard.Visible()) return;
+    if (fade) xoCard.Close(); else xoCard.Hide();
+}
+void XoAnnotate(std::int64_t n) {
+    XoCardGone(true);
+    auto t = ModeTab(); if (!t || !s.injected || s.paused) return;
+    Log(L"ANNOTATE frame card: « Annoter le cadre » (the iframe of another site, selected as one box)");
+    Cmd(t, L"xoSelect", std::to_wstring(n));   // the page's click on that frame: its « select » follows (OnSelect)
+}
+void XoHelpOpen() {
+    XoCardGone(true);
+    if (!xoHelp.Create(instance, window, base)) { Log(L"ANNOTATE frame help panel unavailable"); return; }
+    FC::HelpHooks h;
+    h.closed = [](bool keyboard) { Log(L"ANNOTATE frame help panel closed"); if (keyboard && s.active) FocusPage(); };
+    h.announce = [](const std::wstring& text) { Announce(text); };
+    xoHelp.Show(Reduced(), std::move(h));
+    Log(L"ANNOTATE frame help panel opened (« En savoir plus »)");
+}
+bool XoCardPlace() {
+    auto t = ModeTab(); if (!s.active || s.paused || !t || t != Active()) return false;
+    if (!xoCard.Ensure(instance, window, base)) { Log(L"ANNOTATE frame card unavailable"); return false; }
+    const RECT f = XoScreen(t), pa = PageScreen(t); const SIZE sz = xoCard.SizePx(); const double k = GetDpiForWindow(window) / 96.0;
+    const auto p = AH::PlaceFrameCard({f.left, f.top, f.right, f.bottom}, sz.cx, sz.cy, {pa.left, pa.top, pa.right, pa.bottom},
+                                      int(std::lround(FC::CardSpec::below * k)), int(std::lround(FC::CardSpec::margin * k)));
+    const std::int64_t n = xo.n;
+    FC::CardHooks h;
+    h.annotate = [n] { XoAnnotate(n); };
+    h.more = [] { XoHelpOpen(); };
+    h.entered = [] { if (post) KillTimer(post, XoHideTimer); };   // the pointer reached the card: it stays
+    h.left = [] { if (!xo.on && post && xoCard.Visible()) SetTimer(post, XoHideTimer, FC::CardSpec::leaveGraceMs, nullptr); };
+    const bool was = xoCard.Visible();
+    if (!xoCard.Show({p.x, p.y}, AccentRgb(), std::move(h))) return false;
+    if (!was) {
+        Log(std::wstring(L"ANNOTATE frame card shown ") + (p.side == AH::CardSide::Below ? L"under" : p.side == AH::CardSide::Above ? L"above" : L"inside") + L" the iframe of another site (" +
+            std::to_wstring(f.right - f.left) + L"x" + std::to_wstring(f.bottom - f.top) + L" px)");
+        Announce(TR(annotation_frame_card_title));
+    }
+    return true;
+}
+void OnFrameHover(const std::shared_ptr<Tab>& t, const AH::Envelope& e) {
+    if (!EnsurePost()) return;
+    if (e.on) {
+        if (s.paused) return;
+        RefreshZoom(t);
+        xo.on = true; xo.n = e.serial; xo.x = e.x; xo.y = e.y; xo.w = e.w; xo.h = e.h;
+        KillTimer(post, XoHideTimer);
+        if (xoCard.Visible()) XoCardPlace();   // another frame while the card is up: it goes there at once
+        else SetTimer(post, XoShowTimer, FC::CardSpec::showDelayMs, nullptr);
+        return;
+    }
+    if (e.serial != xo.n) return;   // the leave of an older entry
+    xo.on = false; KillTimer(post, XoShowTimer);
+    if (!xoCard.Visible()) return;
+    if (e.gone) { XoCardGone(true); return; }   // the page scrolled under a still pointer: the card would stay behind
+    if (!xoCard.PointerInside()) SetTimer(post, XoHideTimer, FC::CardSpec::leaveGraceMs, nullptr);
+}
+// The window moved or its layout changed: the card follows its frame, the panel its column.
+void XoReposition() { if (xoCard.Visible()) XoCardPlace(); xoHelp.Reposition(); }
+void XoReset() { XoCardGone(false); xo = XoHover{}; }
 void Activate(const Start& st) {
     auto t = Active(); std::wstring why;
     if (!Available(t, &why)) {
@@ -897,7 +978,7 @@ void SetSelecting(bool on) {
     auto t = ModeTab();
     s.paused = !on;
     if (!on) {
-        s.frozen = false;
+        s.frozen = false; XoCardGone(true);   // iframes case 2: no hover, no frame card
         Cmd(t, L"pick", L"false");
     } else {
         Cmd(t, L"pick", L"true");
@@ -923,6 +1004,7 @@ void Exit(const wchar_t* why) {
     Cmd(t, L"exit");
     if (post) { KillTimer(post, HideTimer); KillTimer(post, FrameTimer); }
     frame.Destroy(); shot = ShotJob{}; resumeOwed = false; frameSerial = 0;   // the page's frame is gone with its script
+    XoReset(); xoCard.Destroy(); xoHelp.Hide(false, true);   // iframes case 2: the frame card and its panel go with the mode
     s = Session{}; ++serials;
     CtrlWatch();   // R31: the mode is off: no more reading, the state forgotten
     banner.Hide(); if (connect.Visible()) connect.Close(false);
@@ -969,7 +1051,7 @@ void Rearm(const std::shared_ptr<Tab>& t, std::function<void(bool)> then = nullp
     std::wstring why;
     if (!Available(t, &why)) { Exit(L"navigation"); if (then) then(false); return; }
     if (post) { KillTimer(post, HideTimer); KillTimer(post, FrameTimer); }
-    frame.Destroy(); shot = ShotJob{}; resumeOwed = false; frameSerial = 0;
+    frame.Destroy(); shot = ShotJob{}; resumeOwed = false; frameSerial = 0; XoReset();   // iframes case 2: a new document, no frame card
     ++serials; s.serial = serials; s.frozen = s.captureWanted = s.injected = false; s.pageSeq = -1;
     s.navStamp = t->navStamp; s.nonce = BA::NewClaimToken(); s.source.clear();
     { LPWSTR src = nullptr; if (SUCCEEDED(t->view->get_Source(&src)) && src) s.source = src; CoTaskMemFree(src); }
@@ -999,6 +1081,8 @@ LRESULT CALLBACK PostProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == WM_TIMER && w == HideTimer) { KillTimer(h, HideTimer); if (s.active && shot.waiting) { s.captureWanted = false; Log(L"ANNOTATE page did not confirm the hidden frame: capturing anyway"); Capture(ModeTab(), shot.serial); } return 0; }
     if (m == WM_TIMER && w == CtrlTimer) { if (!s.active || !OursInFront()) { CtrlWatch(); return 0; } CtrlArm(PointerOverPage() ? 30 : 200); CtrlPoll(); return 0; }   // R31, PERF-20
     if (m == WM_TIMER && w == FrameTimer) { KillTimer(h, FrameTimer); frame.Hide(); return 0; }
+    if (m == WM_TIMER && w == XoShowTimer) { KillTimer(h, XoShowTimer); if (s.active && xo.on) XoCardPlace(); return 0; }   // iframes case 2
+    if (m == WM_TIMER && w == XoHideTimer) { KillTimer(h, XoHideTimer); if (!xo.on && !xoCard.PointerInside()) xoCard.Close(); return 0; }
     return DefWindowProcW(h, m, w, l);
 }
 } // namespace Ann
@@ -1027,17 +1111,20 @@ bool AnnotationBandSliding() { return Ann::s.active && Ann::bandSliding; }   // 
 bool AnnotationSurfaceFocus() {
     if (!Ann::uiReady) return false;
     HWND f = GetFocus(); if (!f) return false;
-    for (HWND w : {Ann::connect.Window(), Ann::onboarding ? Ann::onboarding->Handle() : HWND(nullptr), Ann::localCard.Window(), Ann::banner.Window()})
+    for (HWND w : {Ann::connect.Window(), Ann::onboarding ? Ann::onboarding->Handle() : HWND(nullptr), Ann::localCard.Window(), Ann::banner.Window(), Ann::xoHelp.Window()})   // iframes case 2: the « En savoir plus » panel keeps its keys (Échap closes it)
         if (w && (f == w || IsChild(w, f))) return true;
     return false;
 }
 void AnnotationSyncChrome() { Ann::SyncChrome(); }
 void AnnotationLayout() { Ann::Place(); }
-void AnnotationWindowState() { if (Ann::uiReady) Ann::banner.WindowStateChanged(); Ann::CtrlWatch(); Ann::AgentsFocusBack(); }   // R31: Ctrl read only in front   // V3-B: the wave's clock   // « Ton agent »: back from a sign-in elsewhere
+void AnnotationWindowState() { if (Ann::uiReady) Ann::banner.WindowStateChanged(); Ann::CtrlWatch(); Ann::AgentsFocusBack();   // R31: Ctrl read only in front   // V3-B: the wave's clock   // « Ton agent »: back from a sign-in elsewhere
+    if (IsIconic(window)) { Ann::XoCardGone(false); Ann::xoHelp.Hide(false, false); } }   // iframes case 2: minimised, the frame card and its panel go
+void AnnotationOwnerMoved() { Ann::XoReposition(); }   // iframes case 2: the window moved (WM_MOVE): the frame card and its panel follow
 void AnnotationAccentChanged() { Ann::AccentChanged(); }   // profiles-integration.h: the window's accent changed
 void AnnotationNavigation(const std::shared_ptr<Tab>& t) {
     if (Ann::localCard.Visible()) Ann::localCard.Close();   // #125 v2 E1b: the card was about the page that leaves
     if (!Ann::s.active || Ann::ModeTab() != t) return;
+    Ann::XoReset();   // iframes case 2: the frame card was about the page that leaves
     if (Chat::KeepsMode(t)) Chat::PageNavigating(t);   // chat intégré: the mode survives a reload of its page (Ann::Rearm)
     else Ann::Exit(L"navigation");
 }
@@ -1073,6 +1160,7 @@ bool AnnotationPageMessage(const std::shared_ptr<Tab>& t, ICoreWebView2WebMessag
         double lag = -1;   // click -> host, from the page's Date.now() (same system clock)
         if (c.selection.at > 0) { FILETIME ft; GetSystemTimeAsFileTime(&ft); ULARGE_INTEGER u{}; u.LowPart = ft.dwLowDateTime; u.HighPart = ft.dwHighDateTime;
             const double now = double(u.QuadPart / 10000ULL) - 11644473600000.0; if (now - c.selection.at > -50 && now - c.selection.at < 10000) lag = std::max(0.0, now - c.selection.at); }
+        XoCardGone(true);   // iframes case 2: a selection, no frame card
         const double h0 = NowMs(); OnSelect(t, c.selection, lag);
         Log(L"ANNOTATE « select » handled in " + Ms(NowMs() - h0) + L" ms on the UI thread"); break; }
     case AH::Op::Hidden: OnHidden(t, c.env.serial); break;
@@ -1083,7 +1171,8 @@ bool AnnotationPageMessage(const std::shared_ptr<Tab>& t, ICoreWebView2WebMessag
     case AH::Op::NoSelection: Announce(TR(annotation_no_selection)); break;
     case AH::Op::Anchor: Chat::OnAnchor(c.env); break;
     case AH::Op::Mods: CtrlPoll(); break;   // R31: a pointer move over the page: Ctrl read now
-    case AH::Op::Selecting: if (!s.paused) Chat::OpenEarly(t, c.env); break;   // R18: before the full « select » of the same seq
+    case AH::Op::Selecting: XoCardGone(true); if (!s.paused) Chat::OpenEarly(t, c.env); break;   // R18: before the full « select » of the same seq
+    case AH::Op::FrameHover: OnFrameHover(t, c.env); break;   // iframes case 2: entered / left an iframe of another site
     default: LogOnce(AH::Wide(c.why.empty() ? std::string("invalid") : c.why)); break;
     }
     return true;
@@ -1205,6 +1294,7 @@ void AnnotationLayout() {}
 HWND ChatHostWindow() { return nullptr; }
 void ChatCornersOnTop() {}
 void AnnotationWindowState() {}
+void AnnotationOwnerMoved() {}
 void AnnotationNavigation(const std::shared_ptr<Tab>&) {}
 void AnnotationTabChanged() {}
 void AnnotationTabSleeping(const std::shared_ptr<Tab>&) {}

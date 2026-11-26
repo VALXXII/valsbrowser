@@ -1482,6 +1482,26 @@
         "lot": 5,
         "why": "une modification acceptée, refusée, « toujours » — Claude Code et Codex réels (dont « Additional sandbox permissions » de Codex, titre encore en anglais)"
       }
+    },
+    "iframes-cas2-carte-autre-site": {
+      "tests": [
+        {
+          "suite": "page-frames",
+          "what": "tests/chat/final/page_frames.py « case 2 » — étiquette « iframe · autre site » dans le cadre (coin intérieur arrondi), un seul « frameHover » à l'entrée et un seul à la sortie, rien pendant les mouvements ni pour un iframe de même origine ; défilement, Ctrl, clic, cadre de la bulle ; « Annoter le cadre » (xoSelect) ; 100 % et 125 %"
+        },
+        {
+          "suite": "annotations",
+          "what": "tests/annotations/host_test.cpp FrameCase2 — contrat du message « frameHover » (accepté / refusé) et place de la carte (dessous, dessus, près des bords, dedans)"
+        },
+        {
+          "suite": "chat-units",
+          "what": "tests/chat/host_contract_test.py « iframes case 2 » (7 contrats)"
+        },
+        {
+          "suite": "annotation-units",
+          "what": "frame_card_test — carte et panneau « En savoir plus » rendus hors écran (100 / 125 / 150 %, FR / EN), leurs fenêtres sur un bureau à part : boutons de la carte, panneau à la place des tiroirs, ouvert / fermé (×, Échap, mouvement réduit)"
+        }
+      ]
     }
   }
 }

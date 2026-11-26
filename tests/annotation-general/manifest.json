@@ -82,7 +82,7 @@
     },
     {
       "id": "annotation-units",
-      "title": "Unités du mode : où Annoter est allumé (#125), notes d'une fenêtre privée, tutoriel hors écran",
+      "title": "Unités du mode : où Annoter est allumé (#125), notes d'une fenêtre privée, tutoriel hors écran, carte d'un iframe d'un autre site (cas 2)",
       "part": "day",
       "cmd": [
         "{python}",
