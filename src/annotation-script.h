@@ -73,7 +73,8 @@
 // Iframes case 2 (Paper « Iframes · cas 2 · iframe d'un autre site · v2 carte + En savoir plus », validated): an iframe of
 // ANOTHER site under the pointer is one box (its content belongs to the other site: unreadable). Its name label is
 // « iframe · autre site » (P.xoLabel, the host's language), INSIDE the frame at its inner top-left corner (only its inner
-// corner rounded); the size label keeps its place. The host shows a card under the frame (src/annotation-frame-card.h):
+// corner rounded), in the board's JetBrains Mono 400 10/12 (bundled, embedded: « Browser Annotation Mono »); the size label
+// keeps its place and its font. The host shows a card under the frame (src/annotation-frame-card.h):
 // ONE message when the pointer enters such a frame — { op: 'frameHover', on: true, n, rect, vw, vh, origin } — and ONE
 // when it leaves it — { op: 'frameHover', on: false, n } (moved: true when the page scrolled under the pointer) — never
 // during the moves over it. Nothing for a same-origin iframe (its elements are reached). A scroll under a still pointer
@@ -85,6 +86,7 @@
 #include <cstring>
 #include <string>
 #include "annotation-font.h"   // R45: the labels' font, bundled (generated)
+#include "annotation-font-mono.h"   // iframes case 2: the label « iframe · autre site » in JetBrains Mono, bundled (generated)
 
 namespace NativeChrome { namespace Annotations {
 
@@ -104,6 +106,16 @@ try {
     for (var bi = 0; bi < bin.length; bi++) buf[bi] = bin.charCodeAt(bi);
     var face = new FontFace('Browser Annotation Inter', buf.buffer, { weight: fw, style: 'normal' });
     D.fonts.add(face); faces.push(face);
+  }
+} catch (e) {}
+// Iframes case 2 (Paper 26EP-0): the label of an iframe of another site is JetBrains Mono 400 10/12 — the bundled JetBrains
+// Mono, subset and embedded the same way (« Browser Annotation Mono », src/annotation-font-mono.h); removed at the exit.
+try {
+  if (window.FontFace && D.fonts && window.atob) {
+    var mbin = atob('@@FONTMONO@@'), mbuf = new Uint8Array(mbin.length);
+    for (var mi = 0; mi < mbin.length; mi++) mbuf[mi] = mbin.charCodeAt(mi);
+    var mface = new FontFace('Browser Annotation Mono', mbuf.buffer, { weight: '400', style: 'normal' });
+    D.fonts.add(mface); faces.push(mface);
   }
 } catch (e) {}
 var STYLE_PROPS = P.styles || [], ATTRS = P.attrs || [];
@@ -183,8 +195,9 @@ root.innerHTML = '<style>' +
   'font-kerning:normal;font-feature-settings:normal;font-synthesis:none;text-rendering:auto;will-change:transform,opacity;' +
   // final pass 1, defect 3: the width is the text's own (never the containing block's: .bx is 0 wide, the hover's is the viewport)
   'width:max-content;flex:none}' +
-  // iframes case 2 (Paper 26EO-0): the name label of an iframe of another site sits inside the frame, its inner corner rounded
-  '.l.xi{border-radius:0 0 3px 0}' +
+  // iframes case 2 (Paper 26EO-0 / 26EP-0): the name label of an iframe of another site sits inside the frame, its inner corner
+  // rounded: 18 high, padding 0 6 (the 12 px line centred), JetBrains Mono 400 10/12, white, normal tracking
+  '.l.xi{font:400 10px/12px "Browser Annotation Mono","JetBrains Mono",ui-monospace,monospace;height:18px;padding:3px 6px;border-radius:0 0 3px 0;letter-spacing:0}' +
   // R16: the selected element's inspector follows a change of its values softly (same path structure: interpolated)
   '.pb.sm,.gb.sm,.mb.sm{transition:clip-path 160ms cubic-bezier(.23,1,.32,1)}.pl.sm,.gl.sm,.ml.sm{transition:transform 160ms cubic-bezier(.23,1,.32,1)}' +
   '.s{position:fixed;left:0;top:0;width:0;height:0;pointer-events:auto;background:transparent}' +
@@ -1406,7 +1419,7 @@ inline const wchar_t* PageScript() {
     static const std::wstring full = [] {
         std::wstring js = PageScriptSource();
         auto put = [&](const wchar_t* mark, const char* b64) { const auto at = js.find(mark); if (at != std::wstring::npos) js.replace(at, wcslen(mark), std::wstring(b64, b64 + strlen(b64))); };
-        put(L"@@FONT400@@", LabelFontRegular()); put(L"@@FONT500@@", LabelFontMedium());
+        put(L"@@FONT400@@", LabelFontRegular()); put(L"@@FONT500@@", LabelFontMedium()); put(L"@@FONTMONO@@", LabelFontMono());   // iframes case 2
         return js;
     }();
     return full.c_str();

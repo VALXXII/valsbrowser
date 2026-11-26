@@ -302,6 +302,12 @@ static void FrameCase2() {
     const std::wstring js = NativeChrome::Annotations::PageScript();
     CHECK(js.find(L"op: 'frameHover', on: true") != std::wstring::npos && js.find(L"op: 'frameHover', on: false") != std::wstring::npos);
     CHECK(js.find(L"P.xoLabel") != std::wstring::npos && js.find(L"op === 'xoSelect'") != std::wstring::npos);
+    // the label's JetBrains Mono (Paper 26EP-0): embedded (a TrueType file, base64 « AAEAAA… »), placed in the script, styled 400 10/12
+    const std::string mono = NativeChrome::Annotations::LabelFontMono();
+    CHECK(mono.size() > 20000 && mono.rfind("AAEAAA", 0) == 0 && mono.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=") == std::string::npos);
+    CHECK(js.find(L"@@FONTMONO@@") == std::wstring::npos && js.find(std::wstring(mono.begin(), mono.begin() + 64)) != std::wstring::npos);
+    CHECK(js.find(L"new FontFace('Browser Annotation Mono'") != std::wstring::npos &&
+          js.find(L".l.xi{font:400 10px/12px \"Browser Annotation Mono\",\"JetBrains Mono\"") != std::wstring::npos);
     // where the card goes (screen px): a page area 0..1100 x 100..800, the card 300 x 150
     const AH::CardBox area{0, 100, 1100, 800};
     auto p = AH::PlaceFrameCard({500, 420, 800, 580}, 300, 150, area, 12, 8);   // room under the frame: under it, left on its left

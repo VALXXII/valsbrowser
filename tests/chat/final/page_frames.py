@@ -130,7 +130,10 @@ form.checkout input{height:44px;border:1px solid #ddd;padding:0 12px}form.checko
 class Site(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **k): super().__init__(*a, directory=SITE, **k)
     def log_message(self, *a): pass
-    def end_headers(self): self.send_header("Cache-Control", "no-store"); super().end_headers()
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-store")
+        if "csp=1" in self.path: self.send_header("Content-Security-Policy", "font-src 'none'")   # case 2: a site that forbids every font
+        super().end_headers()
 
 
 class Other(http.server.SimpleHTTPRequestHandler):
@@ -235,9 +238,24 @@ try:
     def mouse(x, y, kind="mouseMoved", button="none", clicks=0):
         cdp.call("Input.dispatchMouseEvent", type=kind, x=x, y=y, modifiers=0, button=button, clickCount=clicks)
 
-    def load(dpr):
+    def label_type():
+        """The inside label's computed type and whether the bundled face is the one drawn (canvas advances: monospaced only
+        when « Browser Annotation Mono » is really there — a missing face falls back to the default proportional font)."""
+        return cdp.js(f"""(()=>{{const l={R}.querySelector('.l'),c=getComputedStyle(l),k=document.createElement('canvas').getContext('2d');k.font='400 10px "Browser Annotation Mono"';
+            const w=['i','m','\\u00b7',' ','W'].map(x=>k.measureText(x).width);
+            return {{family:c.fontFamily,size:c.fontSize,line:c.lineHeight,weight:c.fontWeight,tracking:c.letterSpacing,color:c.color,height:l.getBoundingClientRect().height,pl:c.paddingLeft,pr:c.paddingRight,
+                     loaded:document.fonts.check('10px "Browser Annotation Mono"'),status:[...document.fonts].filter(f=>f.family.indexOf('Browser Annotation Mono')>=0).map(f=>f.status),
+                     mono:Math.max(...w)-Math.min(...w)<0.01,advances:w}}}})()""")
+
+    def label_shot(lab, name, dpr):
+        """The frame's top-left corner with the inside label, as the engine draws it (a render for the audit with Paper 26EN-0)."""
+        x, y = lab["f"][0] - 6, lab["f"][1] - 24
+        raw = base64.b64decode(cdp.call("Page.captureScreenshot", format="png", clip={"x": x, "y": y, "width": 220, "height": 64, "scale": 1}, captureBeyondViewport=False)["data"])
+        open(os.path.join(OUT, name), "wb").write(raw)
+
+    def load(dpr, query=""):
         cdp.call("Emulation.setDeviceMetricsOverride", width=1100, height=700, deviceScaleFactor=dpr, mobile=False)
-        cdp.call("Page.navigate", url=BASE + "/index.html")
+        cdp.call("Page.navigate", url=BASE + "/index.html" + query)
         cdp.js("new Promise(r=>{const f=()=>{const a=document.getElementById('same');const d=a&&a.contentDocument&&a.contentDocument.getElementById('deep');"
                "(document.readyState==='complete'&&d&&d.contentDocument&&d.contentDocument.getElementById('leaf'))?r(1):setTimeout(f,20)};f()})")
         cdp.js("scrollTo(0,0)"); cdp.js("window.__msgs.length=0")
@@ -299,6 +317,7 @@ try:
         cdp.js(f"{H}.cmd('follow',{{current:true,draw:{{label:{json.dumps(label)}}}}})"); frames(3)
         return t, hov, sel
 
+    XO_LABEL_W = None   # case 2: the inside label's width at 100 % (compared under a site CSP below)
     for dpr in (1.0, 1.25):
         pc = f"{int(dpr * 100)} %"
         if not check(load(dpr), f"{pc} · page script injected"):
@@ -415,6 +434,13 @@ try:
               f"{pc} · case 2: the whole iframe framed, « iframe · autre site » INSIDE the frame at its inner top-left corner", lab)
         check(lab["radius"] == "0px 0px 3px" and lab["size"] == f"{round(t[2])}x{round(t[3])}" and lab["b"][1] + lab["b"][3] <= lab["f"][1] + .01 and abs(lab["b"][0] + lab["b"][2] - (lab["f"][0] + lab["f"][2])) <= .81,
               f"{pc} · case 2: the inside label's inner corner rounded (3 px), the size label where it always is (on the frame's top, at its right)", lab)
+        ty = label_type()
+        check(ty["family"].startswith('"Browser Annotation Mono"') and ty["size"] == "10px" and ty["line"] == "12px" and ty["weight"] == "400" and ty["tracking"] in ("normal", "0px")
+              and ty["color"] == "rgb(255, 255, 255)" and abs(ty["height"] - 18) < .01 and ty["pl"] == "6px" and ty["pr"] == "6px",
+              f"{pc} · case 2: the label's type as the board (Paper 26EP-0 / 26EO-0): JetBrains Mono 400 10/12, white, normal tracking, 18 high, padding 0 6", ty)
+        check(ty["loaded"] and ty["status"] == ["loaded"] and ty["mono"], f"{pc} · case 2: the bundled JetBrains Mono is loaded in the page (no fallback): its advances are monospaced", ty)
+        label_shot(lab, f"case2-label-{int(dpr * 100)}.png", dpr)
+        if dpr == 1.0: XO_LABEL_W = lab["a"][2]
         mouse(200, 185); frames(3)   # onto #mail (an element of the page)
         ms = cdp.js(XO)
         check(len(ms) == 2 and ms[1]["on"] is False and ms[1]["n"] == ms[0]["n"] and not ms[1].get("moved"), f"{pc} · case 2: one « frameHover » off on leaving it (the same n)", ms)
@@ -608,6 +634,19 @@ try:
         check(bool(sp) and len(sp["gaps"]) == 4 and all(l[0] in (0, 1) for l in sp["labels"]) and sorted(l[5] for l in sp["labels"]) == ["14", "20", "20"],
               f"{pc} · margins · the selection's message keeps its form (padding, 4 gaps, labels of kinds 0 / 1): the native copy is not given the margins", sp)
         cdp.js(f"{H}.cmd('resume')"); mouse(990, 690); frames(2)
+
+    # ---------------- case 2 under a site CSP that forbids every font (font-src 'none'): the label's JetBrains Mono is an
+    # embedded FontFace (an ArrayBuffer, no request): still loaded, the same label to the pixel width
+    if load(1.0, "?csp=1"):
+        csp = cdp.js("fetch(location.href).then(r=>r.headers.get('content-security-policy'))")
+        cdp.js(f"{H}.cmd('resume')"); t = truth("document.getElementById('cross')"); mouse(t[0] + 50, t[1] + 50); frames(3); wait(150)
+        ty = label_type()
+        w = cdp.js(f"{R}.querySelector('.l').getBoundingClientRect().width")
+        check(csp == "font-src 'none'" and ty["family"].startswith('"Browser Annotation Mono"') and ty["loaded"] and ty["status"] == ["loaded"] and ty["mono"]
+              and XO_LABEL_W is not None and abs(w - XO_LABEL_W) < .01,
+              "case 2 · a site whose CSP forbids fonts (font-src 'none'): the label's JetBrains Mono still loads (embedded, no request) — the same label width",
+              {"csp": csp, "type": ty, "width": w, "width without CSP": XO_LABEL_W})
+        mouse(990, 690); frames(2)
 
     # ---------------- the iframe leaves the page while its element is followed
     if load(1.0):

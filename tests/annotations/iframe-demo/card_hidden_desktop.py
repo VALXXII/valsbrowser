@@ -223,6 +223,17 @@ try:
         ex = u32.GetWindowLongPtrW(h, -20) if hasattr(u32, 'GetWindowLongPtrW') else u32.GetWindowLongW(h, -20)
         check((ex & 0x08000000) != 0, 'the card never takes the keyboard (WS_EX_NOACTIVATE)', hex(ex))
     check(wait_log(r'frame card shown under the iframe of another site', 2) or any('frame card shown under' in l for l in lines_out), 'the log says « under »')
+    # the label's JetBrains Mono (Paper 26EP-0) is loaded in this page (the page script's embedded face), and what it draws
+    fonts = ev("(function(){var a=[];document.fonts.forEach(function(f){if(f.family.indexOf('Browser Annotation')>=0)a.push(f.family+' '+f.weight+' '+f.status)});"
+               "return {mono:document.fonts.check('10px \"Browser Annotation Mono\"'),faces:a}})()")
+    check(bool(fonts) and fonts.get('mono') and any('Mono' in f and f.endswith('loaded') for f in fonts.get('faces', [])),
+          'the label\'s JetBrains Mono is loaded in the page of the real browser (no fallback)', fonts)
+    try:
+        import base64
+        t = page_target(); shot = ws(t).call('Page.captureScreenshot', {'format': 'png', 'clip': {'x': p[0] - 10, 'y': p[1] - 30, 'width': 340, 'height': 90, 'scale': 1}})
+        (BASE / f'label-{args.layout}.png').write_bytes(base64.b64decode(shot['data'])); say(f'    capture: {BASE / f"label-{args.layout}.png"}')
+    except Exception as e:
+        say(f'    capture failed: {e}')
     t0 = time.perf_counter(); move(40, 20)   # the shop's header: an element of the page
     left = wait_log(r'frame hover left: the card goes in 300 ms', 4); t1 = time.perf_counter()
     hid = wait_log(r'frame card hidden \(the pointer left', 4); t2 = time.perf_counter()
