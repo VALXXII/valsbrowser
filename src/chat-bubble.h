@@ -124,7 +124,7 @@ inline int RoomBelow(const Rect& element, const Rect& area, int gap, int margin)
 inline int RoomAbove(const Rect& element, const Rect& area, int gap, int margin) { return (element.top - gap) - (area.top + margin); }
 // R2: an element carries its frame + icon (Paper 18IJ-0) only once a message left its bubble — sent, waiting in the
 // queue, or kept as an annotation (Ctrl+Entrée). A click on an element then closing its bubble leaves nothing on it.
-inline bool SentItem(const std::string& type) { return type == "message.user" || type == "annotation.kept"; }
+inline bool SentItem(const std::string& type) { return type == "message.user"; }
 template <class Types> bool Sent(const Types& itemTypes, bool queued) { if (queued) return true; for (const auto& t : itemTypes) if (SentItem(t)) return true; return false; }
 // R6: a click on an element that has a conversation. Its conversation opens in the bubble when it is in memory or can be
 // read from the history; when it cannot (never saved, removed), the element is NOT left without a bubble: it forgets that
@@ -282,6 +282,9 @@ inline std::string UnsafeAnchorKey(const std::string& frameKind, const std::stri
     if (selector.empty() || frameKind == "cross-origin") return "";
     std::string k = frameKind + "|"; for (const auto& s : shadowPath) k += s + ">>"; return k + "|" + selector;
 }
+// Lot 1d, case 3: the key of an element of a same-origin iframe, outside any shadow root (« same-origin||<selector> ») —
+// the only kind the page script can find again in the page's frames (annotation-script.h, keyFind).
+inline bool FrameKey(const std::string& key) { return key.rfind("same-origin||", 0) == 0 && key.size() > 13; }
 // A bubble asked open while one is open: the same one (kept as it is) only for the same conversation — or, when a
 // conversation is not known yet on one side, the same element. Anything else is another element: a new opening.
 inline bool SameBubble(const std::string& openConv, const std::string& openSelector, const std::string& conv, const std::string& selector) {

@@ -28,6 +28,11 @@ document. Rien n'a été lancé en vraie fenêtre ; seules des suites sans fenê
   ± 2 px sont des objectifs, pas des conditions de sortie. Builder code l'extinction hors projet local.
 - **Lot 0 fait** (§7) : documents de retours commités, diagnostics fusionnés, test général écrit dans
   `tests/annotation-general/`.
+- **Lot R (§14), 24 novembre : l'ancien système d'annotation est retiré.** Il ne reste que deux modes, choisis avec
+  l'interrupteur du bandeau : Commentaire (bulle) et Panneau (chat à droite). Le lanceur, l'historique des annotations
+  (Ctrl+Maj+H), les cartes, l'ancienne note « Ajouter », « Garder en annotation » (Ctrl+Entrée) et le « lot » ont
+  disparu. Le chat est maintenant allumé sur les fichiers locaux et en fenêtre privée, et s'ouvre dès le lancement du
+  mode en Panneau. Les lignes de l'inventaire qui ne concernaient que l'ancien système sont marquées « retiré ».
 
 ## 1. Sources et versions
 
@@ -88,12 +93,12 @@ Niveaux de preuve utilisés dans les tableaux :
 | O4 | **R39 / R39b** — la bulle suit son élément en retard au défilement, et sa coupe est visible au bord de la zone de page | bulle | régression du 20/11 (correctif de R37), jamais fermée | QA 22/11, défaut 3 : molette 10 px, molette rapide 62 px, clavier 70 px, bords 9 et 16 px, pour ± 2 px visés. La fenêtre est déplacée « tout de suite », sans attendre l'image de la page (`src/chat-comment.h:351`, `FollowFrames` = 0) | Ouvert |
 | O5 | **Bulle mal placée après un redimensionnement ou un menu** : la saisie sort de la bulle après une zone réduite à 1458 × 444 ; la bulle de `h2.section-title` bouge après un menu | bulle | ≤ 0.3.611 | QA 22/11, défaut 4 : monkey #110 (variante de M15) et #82 (variante de E4) | Ouvert |
 | O6 | **Ouverture de la bulle en 151–216 ms** au lieu de 150 | bulle | ≤ 0.3.611 | QA 22/11, défaut 2 ; parcours `m5_bascule_puis_clic` : 178 ms | Ouvert, gêne faible. **Objectif, pas condition de sortie** (décision 5) |
-| O7 | **Le « lot » (Traiter les annotations) à moitié retiré** : la suggestion a été supprimée (R24), le reste du code et ses tests sont toujours là ; des échecs du lot vus le 23/11 n'ont jamais été confirmés | chat | 20/11 (R24) | `src/chat-host-batch.h`, 44 mentions dans `panel.js`, `tests/chat/chat_qa_run.py:509-547` ; PR #113 : « batch-panel failures that look unrelated », vérification arrêtée | **Décision 3 : à retirer en entier** (lot 5) |
+| O7 | **Le « lot » (Traiter les annotations) à moitié retiré** : la suggestion a été supprimée (R24), le reste du code et ses tests sont toujours là ; des échecs du lot vus le 23/11 n'ont jamais été confirmés | chat | 20/11 (R24) | `src/chat-host-batch.h`, 44 mentions dans `panel.js`, `tests/chat/chat_qa_run.py:509-547` ; PR #113 : « batch-panel failures that look unrelated », vérification arrêtée | **Retiré au lot R** (§10) : hôte, page, tests, textes |
 | O8 | **Chemin « profil neuf » jamais testé** : pas de cache des modèles, agent pas installé, pas connecté, Node.js à télécharger | menu des modèles, connexion | 0.3.630 | C'est la cause commune du bug « Claude Code » (PR #111) et de #129 : tous les tests partent d'un faux agent qui donne ses modèles | Trou de test |
 | O9 | **Vrais agents jamais prouvés** : Claude lit une annotation mais ne la « prend » ni ne la « termine » ; Codex n'a jamais eu d'essai réel dans le chat | MCP, connexion | V2 (14/11) | `design/annotations-v2-validation.md` §6 : « Que Claude appelle désormais claim / resolve n'est pas démontré » ; `design/chat-v1-validation.md` : « Codex n'a pas eu d'essai réel » | À prouver |
 | O10 | **Autorisations après 0.3.690** : la carte ne prend plus le focus sur « Autoriser » et attend 600 ms avant d'accepter une touche (SEC-23) ; jamais rejoué en vraie fenêtre en entier | autorisations | 0.3.690 (commit `c9e91cf`) | `assets/chat-panel/panel.js:1149-1195`, `:1512-1516` ; PR #106 : seuls 3 parcours rejoués (r02, r38, r47) | À revalider |
 | O11 | **Diagnostic resté dans la version publiée** : tant qu'une bulle est ouverte, un fil envoie un message toutes les 10 ms à la fenêtre | bulle (performance) | 0.3.630 | `src/chat-comment.h:180-190` (`UiWatchStart`), lancé à chaque clic (`:1037`), sans condition de mode test | Ouvert, gêne faible |
-| O12 | **Fichiers locaux (`file://`) et fenêtre privée** : le chat y est coupé et l'ancienne note s'ouvre à la place | local / en ligne | V1 du chat | `src/chat-host-ui.h:150-156` (`AskAvailable`, `CommentFirst`) | **Décision 2 : Annoter y reste allumé.** Le comportement d'aujourd'hui est gardé ; il reste à le tester (lot 3) |
+| O12 | **Fichiers locaux (`file://`) et fenêtre privée** : le chat y est coupé et l'ancienne note s'ouvre à la place | local / en ligne | V1 du chat | `src/chat-host-ui.h:150-156` (`AskAvailable`, `CommentFirst`) | **Changé au lot R** (décision A du 24/11, §10) : le chat est allumé sur les fichiers locaux et en fenêtre privée ; l'ancienne note n'existe plus |
 
 Aussi ouverts, côté tests et non côté produit :
 
@@ -212,12 +217,12 @@ D'après `design/annotations-v2-validation.md` et `design/chat-v1-validation.md`
 | V2-1 « Redémarrez Claude » après la connexion | Corrigé (0.3.294) | Validation V3-A, planche 5.6 |
 | V2-2, V2-3 Flashs à la capture et dans l'interface | Corrigé | Validation V3-A §4 |
 | V2-4 Curseur viseur | Corrigé | Validation V3-B |
-| V2-5 L'historique ne dit pas que l'agent s'en occupe | Corrigé côté navigateur ; **comportement du vrai agent non prouvé** | O9 |
-| V2-6 Lanceur seulement en mode annotation | Corrigé | Validation V3-A, planche 5.8 |
+| V2-5 L'historique ne dit pas que l'agent s'en occupe | **Retiré au lot R** : l'historique des annotations n'existe plus | — |
+| V2-6 Lanceur seulement en mode annotation | **Retiré au lot R** : le lanceur n'existe plus | — |
 | V2-7 Connexion en un clic pour Claude Code | Remplacé par le chat intégré | PR #99 |
 | V2-8, V2-9, V2-10 Espacements, entrée animée, trame vivante | Corrigé | Validation V3-B, planches 5.1 à 5.3 |
-| V2-11 Aperçu « Ce que l'agent verra » coupé | Corrigé ; ne concerne que l'ancienne note | Validation V3-A, planche 5.7 |
-| V1.2-1 à V1.2-7 (texte de la note perdu, effort, puce dossier, jauge, cadre décalé, curseur, clic = chat) | Corrigés (0.3.630) | `tests/chat/chat_qa_v12.py`, en échec puis adaptée le 22/11, pas rejouée |
+| V2-11 Aperçu « Ce que l'agent verra » coupé | **Retiré au lot R** : l'ancienne note n'existe plus | — |
+| V1.2-1 à V1.2-7 (texte de la note perdu, effort, puce dossier, jauge, cadre décalé, curseur, clic = chat) | Corrigés (0.3.630) ; les points qui passaient par la note (texte perdu, « Garder en annotation ») sont **retirés au lot R** | `tests/chat/chat_qa_v12.py`, adaptée au lot R, à rejouer la nuit |
 | Mauvais dossier de projet | Corrigé en 0.3.715 | §2.3 |
 | Compteur et « Tout annuler » comptaient les fichiers d'autres programmes | Corrigé en 0.3.715 | `fb45f8a`, `tests/snapshots` (vert aujourd'hui) |
 | Bandeau gris « Préparation » vide | Corrigé en 0.3.715 | `b6d5dd3` ; essai en vraie fenêtre d'un seul cas |
@@ -241,8 +246,11 @@ pour un agent extérieur (une annotation gardée par Ctrl + Entrée part toujour
 et le nouveau bouton éteint avec son explication.
 
 Je n'ai trouvé dans les sources **aucun bug ouvert qui n'existe que sur un site en ligne**. #125 retire donc des chemins à
-tester, pas des lignes de l'inventaire. Décision 2 : Annoter reste allumé sur les fichiers locaux et en fenêtre privée ;
-la note native n'est donc pas retirée, elle reste le chemin de ces deux cas et doit rester testée.
+tester, pas des lignes de l'inventaire. Décision 2 : Annoter reste allumé sur les fichiers locaux et en fenêtre privée.
+
+**Mise à jour du lot R (24/11).** La note native est retirée partout. Sur un fichier local et en fenêtre privée, c'est
+le chat qui prend sa place (décision A, §14). Le pont MCP et « Connecter un agent » sont gardés tels quels (option a du
+§14) ; « une annotation gardée par Ctrl + Entrée » n'existe plus.
 
 ## 3. Plan
 
@@ -272,8 +280,8 @@ la note native n'est donc pas retirée, elle reste le chemin de ces deux cas et 
 | Menu des modèles | O2 | Suivre la branche en cours | Scénario de page « aucun modèle connu » ; parcours « profil neuf, clic sur le bouton modèle » |
 | Menu des modèles, connexion | O8 | Pas de correctif connu : écrire les scénarios, corriger ce qu'ils trouvent | 4 parcours sur profil neuf : agent absent, agent pas connecté, Node.js à télécharger, cache vide puis liste reçue |
 | Autorisations | O10 | Rien à corriger a priori | Parcours clavier : Tab, Entrée, Échap sur la carte, délai de 600 ms, touche maintenue, deux cartes de suite ; bulle et panneau |
-| Chat | O7 | Décision 3 : retirer « Traiter les annotations ensemble » en entier — hôte (`src/chat-host-batch.h`, `src/chat-batch.h`, appels), page (`panel.js`, `panel.css`, `dev-host.js`), tests (`chat_qa_run.py` étapes 6.15 à 6.17, unités, scénarios de page), textes | Contrat : plus aucune mention du lot dans l'hôte ni dans la page ; test général vert sans les étapes du lot |
-| Local / en ligne | #125, O12 | L'extinction d'Annoter hors projet local est codée par **Builder** sur `VALXXII/125-annotation-onboarding` (commit `a65f50b`, pas encore fusionné), dans `src/annotation-sites.h`, avec la même règle que le chat (`ChatLocal::Classify`). **Allumé** : `localhost`, `*.localhost`, `127.x`, `[::1]`, fichier local `file://`. **Éteint** : tout le reste, y compris une adresse du réseau local (192.168.x, nom de machine) et un partage réseau `file://serveur/…`. Une fenêtre privée suit la même règle (décision 2). Sur un site éteint : bouton Annoter en état indisponible, la note native ne s'ouvre plus. De notre côté, après la fusion de #125 : les tests, et O12 (protections du chat sur `file://` et en fenêtre privée, non touchées par Builder) | Parcours `local_en_ligne` : `localhost`, `127.0.0.1`, `*.localhost`, `[::1]` = allumé avec chat ; `file://` local = allumé avec la note ; fenêtre privée = même règle ; site en ligne, **adresse du réseau local**, faux localhost (`localhost.example.com`), partage réseau = éteint, aucune note. Deux tests en vraie fenêtre vont sur un site non local et attendent l'ancien état « site pas local » du chat : `tests/chat/chat_qa_run.py:600` et `tests/chat/chat_qa_v12.py:220` — à réécrire (le mode s'arrête). Unités de Builder : `tests/annotations/annotation_sites_test.cpp` |
+| Chat | O7 | **Fait au lot R** : « Traiter les annotations ensemble » retiré en entier — hôte (`src/chat-host-batch.h`, `src/chat-batch.h`, appels), page (`panel.js`, `panel.css`, `dev-host.js`), tests (`chat_qa_run.py` étapes 6.15 à 6.18, unités, scénarios de page), textes | Contrat « lot R (O7 and the removal) » : plus aucune mention du lot dans l'hôte ni dans la page ; test de page « no batch in the input, no batch card » |
+| Local / en ligne | #125, O12 | L'extinction d'Annoter hors projet local est codée par **Builder** sur `VALXXII/125-annotation-onboarding` (commit `a65f50b`, pas encore fusionné), dans `src/annotation-sites.h`, avec la même règle que le chat (`ChatLocal::Classify`). **Allumé** : `localhost`, `*.localhost`, `127.x`, `[::1]`, fichier local `file://`. **Éteint** : tout le reste, y compris une adresse du réseau local (192.168.x, nom de machine) et un partage réseau `file://serveur/…`. Une fenêtre privée suit la même règle (décision 2). Sur un site éteint : bouton Annoter en état indisponible, la note native ne s'ouvre plus. De notre côté : les tests, et O12. **Lot R** : le chat est allumé sur `file://` (son site est le dossier du fichier) et en fenêtre privée (ce qu'il garde est effacé avec la fenêtre) ; plus aucune note native | **Écrit au lot R** (`tests/chat/chat_qa_lot_r.py`, suite `lot-r`, à prouver la nuit) : parcours `local_en_ligne` : `localhost`, `127.0.0.1`, `*.localhost`, `[::1]` = allumé avec chat ; `file://` local = allumé **avec le chat** ; fenêtre privée = allumé avec le chat, tout effacé à la fermeture ; site en ligne, **adresse du réseau local**, faux localhost (`localhost.example.com`), partage réseau = éteint, aucune note. Deux tests en vraie fenêtre vont sur un site non local et attendent l'ancien état « site pas local » du chat : `tests/chat/chat_qa_run.py:600` et `tests/chat/chat_qa_v12.py:220` — à réécrire (le mode s'arrête). Unités de Builder : `tests/annotations/annotation_sites_test.cpp` |
 | MCP, agents | O9 | Rien à corriger avant d'avoir vu | Sans fenêtre : annotation gardée, lue, prise, terminée par le client de test du pont (`tests/annotations`). En vrai (décision 4, accordée) : **un** essai avec Claude Code et **un** avec Codex, une petite demande chacun, sur une copie de test seulement, avec les comptes du propriétaire ; rien d'autre que cette copie n'est touché, empreintes des configurations vérifiées avant et après |
 
 ### 3.3 Lots
@@ -285,9 +293,10 @@ Les durées sont des **estimations**. Elles comptent le travail et une nuit de t
 | **0 — Filet de sécurité** | **Fait le 24/11** (§7). Aucun changement de comportement du produit. Documents de retours commités, 2 commits de diagnostic fusionnés, test général écrit, option « sans console » du test ACP, tests de R29 mis à jour. Reste : la première nuit complète, qui donnera la vraie liste des échecs | 1 jour + 1 nuit | Fusion de `fix-129-bubble-model-menu` pour la nuit |
 | **1 — Bulle et clic** | O1 (règles 1 à 4 de la variante C) et O2 revérifiés par le test général, O3, O5 | 1 à 1,5 jour + 1 nuit | Lot 0 ; règles 1 à 4 fusionnées depuis `fix-129-bubble-model-menu` |
 | **2 — Premier lancement et autorisations** | O8, O10 | 1 jour + 1 nuit | Lot 0 |
-| **3 — Projets locaux seulement** | Pas l'extinction elle-même (Builder, `a65f50b`). Le parcours `local_en_ligne` (adresse du réseau local = éteint ; `file://` et fenêtre privée selon la règle), la réécriture de `chat_qa_run.py:600` et `chat_qa_v12.py:220`, le retrait des tests des chemins « site en ligne », O12 | 0,5 à 1 jour + 1 nuit | `VALXXII/125-annotation-onboarding` fusionnée dans main |
+| **3 — Projets locaux seulement** | **Rattaché au lot R le 24/11** (décision du propriétaire) : le parcours `local_en_ligne` et O12 sont dans le lot R | — | — |
 | **4 — Défilement et vitesse** | O4, **règle 5 de #130** (recalcul pendant le défilement, glissement de 120 ms), O6 | 1,5 à 2,5 jours + 1 nuit. Incertain : O4 peut finir en décision de design | Lot 1 |
-| **5 — Agents réels, nettoyage** | O9 : un essai réel Claude Code et un essai réel Codex sur une copie de test. O7 : retrait complet du lot. O11 ; passage avec le Narrateur | 1,5 jour + 1 nuit | — |
+| **5 — Agents réels, nettoyage** | O9 : un essai réel Claude Code et un essai réel Codex sur une copie de test. O11 ; passage avec le Narrateur. (O7 est fait au lot R.) | 1,5 jour + 1 nuit | — |
+| **R — Retrait de l'ancien système** | §14 : lanceur, historique, cartes, ancienne note, « Garder en annotation », lot (O7) retirés ; Réglages › Annotations allégés ; chat sur fichier local et en fenêtre privée (O12, décision A) ; chat ouvert au lancement en Panneau ; message « 10 éléments » ; parcours `local_en_ligne` (ancien lot 3) | 1 jour + la nuit commune | Lot 1 (fusionne après lui et après le Mode Focus) |
 
 Total estimé : 6,5 à 8 jours de travail et 6 nuits. Règle de sortie : un lot ne part que si le test général est vert **en
 entier** sur le commit exact qui sort.
@@ -323,7 +332,7 @@ entrée, la liste complète, et l'interdiction des raccourcis. À écrire au lot
 python tests/annotation-general/run.py --day
 ```
 
-Durée mesurée le 24/11 : **13 min 10 s** (11 suites). Aucune fenêtre à l'écran.
+Durée mesurée le 24/11 : **13 min 10 s** (11 suites). Aucune fenêtre à l'écran. Lot R : mêmes 11 suites, mesure au §14.
 
 | Suite (id du manifeste) | Commande | Couvre |
 |---|---|---|
@@ -334,9 +343,10 @@ Durée mesurée le 24/11 : **13 min 10 s** (11 suites). Aucune fenêtre à l'éc
 | `chat-panel` | `python -I tests/chat-panel/run.py` | Page du chat : états Paper, clavier, accessibilité, menus, autorisations, brouillons |
 | `page-v4` | `python tests/annotations-ui/page_v4.py` | Script de la page : cadres, étiquettes, inspecteur, Ctrl maintenu. N'était dans aucun ancien lanceur |
 | `fake-agent` | `python -I tests/chat/final/fake_agent_scenarios.py` | Le faux agent se comporte comme un vrai (annonces, autorisation, erreurs) |
+| `replay-opening` | `python -I tests/chat/final/replay_opening.py` | Ouverture d'une bulle rejouée sans fenêtre : la page n'annonce qu'une hauteur, la sienne ; saisie et boutons dans la surface (lot 1b) |
 | `snapshots` | `python -I tests/snapshots/run_tests.py` | « Tout annuler », compteur de fichiers |
-| `annotations` | `python -I tests/annotations/run_tests.py` | Magasin et pont MCP : annotation gardée, lue, prise, terminée ; connexion Claude / Codex sur dossiers redirigés |
-| `annotations-ui` | `python tests/annotations-ui/run.py --no-window` | Bandeau, lanceur, historique, note. La nuit : avec ses fenêtres |
+| `annotations` | `python -I tests/annotations/run_tests.py` | Magasin et pont MCP (gardés au lot R, option a) : annotation écrite, lue, prise, terminée ; connexion Claude / Codex sur dossiers redirigés |
+| `annotations-ui` | `python tests/annotations-ui/run.py --no-window` | Bandeau, « Connecter un agent », cadre natif, voile d'entrée (lot R : plus de lanceur, d'historique ni de note). La nuit : avec ses fenêtres |
 | `acp` | `python -I tests/acp/run_tests.py --quick --no-console` | Client ACP, runtime des agents. La nuit : avec la connexion en console et les vrais téléchargements |
 
 ### 4.3 Partie en vraie fenêtre (nuit)
@@ -353,15 +363,16 @@ Durée estimée : **1 h 45, à prévoir 2 h 15**. Base : build neuf ≈ 15 min ;
 ≈ 17 min (13 min mesurées, plus les téléchargements et la console du test ACP) ; suites du dépôt ≈ 13 min ; 12 suites du
 chat en vraie fenêtre ≈ 14 min ; parcours ≈ 21 min ; monkey 3 graines ≈ 25 min (durées du 22/11).
 
-Ordre (celui de `manifest.json`, 32 suites) :
+Ordre (celui de `manifest.json`, 33 suites depuis le lot R) :
 
 1. Build neuf du commit exact dans `build/annotation-general-app` (`tools/release/build.py … --channel dev --preview`).
    Si le build n'est pas celui du commit testé, les suites en vraie fenêtre ne sont pas lancées et le passage est rouge.
 2. Les 11 suites de la partie sans fenêtre, dans leur version complète.
 3. `smoke` (`test.ps1`), `shortcuts`, `annotation-settings`, `accessibility`, `uia-offscreen`.
 4. Chat en vraie fenêtre : `chat-v1`, `v12`, `comment`, `comment-switch`, `comment-v2`, `v3`, `v4`, `v4b`, `v5`, `v5b`,
-   `r43`, `comment-129-130`.
-5. `journeys` : les 39 parcours (R1 à R48 et la revue).
+   `r43`, `comment-129-130`, `lot-r` (lot R : chat au lancement, 10 éléments, `local_en_ligne`, fichier local, fenêtre
+   privée).
+5. `journeys` : les 38 parcours (R1 à R48 et la revue ; `c3_historique_du_lanceur` est retiré avec le lanceur).
 6. `monkey-1`, `monkey-2`, `monkey-3` : 320 actions chacun, invariants après chaque action.
 7. Rapport : `build/annotation-general/night/report.md` ; pour chaque échec, la suite, son journal, ses lignes en échec.
 
@@ -455,6 +466,7 @@ main `86697e0` et seront à relire après sa fusion.
 | 4 | ~~Un essai réel avec Claude Code et un avec Codex ?~~ **Tranchée le 24/11 : oui**, une petite demande chacun, sur une copie de test seulement | Lot 5 ; comptes du propriétaire, rien d'autre que la copie |
 | 5 | ~~150 ms et ± 2 px : obligatoires ou objectifs ?~~ **Tranchée le 24/11 : objectifs.** Rapportés, jamais bloquants | Marqués « objectif » dans `tests/annotation-general/manifest.json` |
 | 6 | ~~Qui code l'extinction hors projet local ?~~ **Tranchée le 24/11 : Builder**, avec l'onboarding #125 | Même fichier (`src/annotation-mode.h`). Notre lot 3 ne garde que les tests et le reste de O12 |
+| 7 | **Lot R, tranchées le 24/11** : l'ancien système est retiré ; chat allumé sur `file://` et en fenêtre privée (A) ; conversation orpheline retrouvée dans l'historique du chat en Panneau, sans nouvelle entrée (B) ; « Garder en annotation » retiré, pont MCP et « Connecter un agent » gardés tels quels (C / F, option a) ; Réglages › Annotations : lignes d'historique retirées, « Effacer toutes les annotations… » gardé (D) ; code du magasin sans appelant seulement listé (E) ; chat ouvert au lancement en Panneau ; message « 10 éléments au maximum… » | §10 |
 
 Maquettes : je n'ai **pas ouvert Paper** pour ce document. Points à confirmer avec Designer avant de coder :
 
@@ -609,6 +621,49 @@ test (deux éléments qui partagent une conversation) ou un vrai mélange de con
 3. Les suites écrites pour l'ancienne place de la bulle sur les éléments larges peuvent demander une mise à jour
    d'attente (règles 9 et 10) : chacune sera listée dans le rapport.
 
+## 8 bis. Lot 1b — tri des deux points laissés par le monkey (24/11, branche `VALXXII/annotation-lot1b`)
+
+Fait sans fenêtre, à partir du journal du monkey (graine 1) et d'un rejeu de la page dans un navigateur invisible
+(`tests/chat/final/replay_opening.py`, ajouté à la partie sans fenêtre du test général).
+
+### a) Les 8 ouvertures « message d'une autre conversation » : erreur du test
+
+Le monkey numérote ses messages (`jt1x1`, `jt1x2`…) et cherchait ces jetons comme de simples morceaux de texte : à partir du
+10ᵉ message, `jt1x1` se retrouve dans `jt1x13`, `jt1x14`… Les 8 échecs portent tous sur des messages 11 à 17, et la capture
+montre bien les seuls messages de l'élément cliqué. **Aucun mélange de conversations dans le produit**, donc rien à chercher
+dans 0.3.833. Corrigé dans le harnais (`qa_final.holds()` : jeton entier).
+
+### b) Le clic qui traverse la bulle (#185, #219) : même cause que la saisie qui sort (#110)
+
+Le rejeu reproduit le journal au pixel près. Deux défauts distincts, tous deux **déjà présents dans 0.3.833** :
+
+1. **Le pied de la bulle est dessiné hors de la bulle quand des messages attendent.** Les messages en attente s'empilent
+   au-dessus de la saisie sans limite de hauteur : avec 4 messages, la saisie et les boutons du mode et du modèle sont
+   dessinés 340 à 370 px sous la surface, donc invisibles et hors de la zone cliquable. Le test cliquait à l'endroit où la
+   page situe le bouton : le clic arrivait sur le site et ouvrait la bulle d'un autre élément. Pour l'utilisateur : une
+   bulle sans saisie. **Pas corrigé ici** — c'est dans `assets/chat-panel/` (lot R) et il faut la décision de design
+   (combien de messages en attente montrer). **Corrigé depuis par le lot R** (`358676e`, `d9dbf03` : 2 messages au plus,
+   « +N en attente », saisie toujours entière). Le rejeu regarde si la page testée contient ce correctif : sans lui il
+   dit « DÉFAUT CONNU, corrigé par le lot R » sans faire échouer ; avec lui — donc dès la fusion du lot R, sans rien
+   changer — le contrôle est bloquant, à 269, 150, 120 et 104 px offerts (vérifié sur la branche du lot R : 7 / 7).
+2. **La bulle s'ouvre à une mauvaise hauteur, puis se corrige** (vu : 460 → 250 → 460 px en un instant). Quand un autre
+   élément travaille ou attend une autorisation, l'hôte envoyait la conversation à la page *avant* le message d'ouverture,
+   puis les nouvelles limites, puis l'ouverture. La page répondait aussitôt avec une hauteur calculée pour la bulle
+   d'avant ; l'hôte la prenait pour la réponse à l'ouverture, choisissait le côté avec (dessus au lieu de dessous) et
+   affichait la bulle, corrigée deux fois ensuite. **Corrigé** dans `src/chat-comment.h` : l'ouverture est le seul message
+   envoyé, la conversation part avec elle (`ShowAside(…, forBubble)`, `AsideForBubbleShown`, `bubble.opening`). Trois
+   contrats ; le rejeu montre une seule hauteur annoncée et une bulle affichée une fois.
+
+### À vérifier en vraie fenêtre
+
+- Ouvrir une bulle sur un élément pendant qu'un autre attend une autorisation : elle apparaît une fois, à sa hauteur, sans
+  rétrécir ni regrandir (journal : plus de lignes « bubble frame … (carried) » juste après « shown at its place »).
+- Le délai d'ouverture (objectif 150 ms) ne s'allonge pas : la bulle attend maintenant la vraie réponse de la page.
+- La bande « Commencera après le travail en cours sur … » s'affiche toujours dans une bulle ouverte pendant qu'un autre
+  élément travaille.
+- Monkey graine 1 : les 8 échecs « autre conversation » ont disparu ; #185 / #219 restent tant que le point 1 est ouvert.
+- Le correctif du lot 1 pour la bulle qui saute après la bascule (#82) n'a toujours pas été revu en vraie fenêtre.
+
 ## 9. À prévoir — les trois dispositions des onglets (#127)
 
 Pas encore fait : à ajouter au test général quand la branche `VALXXII/127-sidebar` de Builder sera fusionnée dans main.
@@ -671,3 +726,317 @@ Règles communes :
   Objectif : deux passes complètes par jour, annoncées, en journée aussi.
 - **Arrêter un processus** seulement par son numéro, jamais par son nom ou sa ligne de commande.
 - **Pause** : le fichier `build/annotation-general/PAUSE` quand le propriétaire a besoin de l'écran.
+
+## 11. Lot 1c — cadre de la bulle pour un élément dans un iframe (24/11 soir, branche `VALXXII/annotation-lot1c`)
+
+Défaut vu par le propriétaire sur la page bac à sable : un clic sur « Standard · 3 à 5 jours », dans le bloc « iframe même
+origine », ouvrait la bulle près du clic, mais le cadre de sélection (« div.opt 254x35 ») était dessiné **en haut à gauche de
+la page**, par-dessus le champ e-mail.
+
+### Cause et correction
+
+Le cadre de la bulle est dessiné par le script de page (`src/annotation-script.h`, `bxPlace`). Il utilisait la position de
+l'élément **dans son iframe**, sans ajouter la place de l'iframe dans la page. La position envoyée au navigateur pour placer
+la bulle, elle, ajoutait bien ce décalage — mais celui du moment du clic, jamais relu : la bulle ne suivait donc pas un
+défilement de la page (second défaut, trouvé en écrivant le test).
+
+Corrigé : la place des iframes de l'élément est relue à chaque vérification et à chaque défilement (`frameChain`, `chainAt`) —
+iframes imbriqués, bordure et marge intérieure de l'iframe, page défilée, iframe défilé (son propre défilement est écouté).
+Un élément en partie caché par son iframe n'est encadré que pour sa partie visible ; entièrement caché, aucun cadre n'est
+dessiné par-dessus la page ; un iframe retiré de la page = élément disparu (règle des 500 ms déjà en place).
+
+### Autre origine et canvas : ce que fait le produit
+
+- **Iframe d'une autre origine** : le navigateur ne peut pas lire son contenu (sécurité). Le produit le traite comme **une
+  seule boîte** (règle déjà écrite dans le script : « a cross-origin iframe is annotated as a box ») : survol, sélection et
+  cadre de la bulle entourent l'iframe entier. Vérifié, correct.
+- **Canvas** : une seule boîte aussi, le canvas lui-même (il n'a pas d'éléments à l'intérieur). Vérifié, correct.
+
+### Questions pour Designer (aucune règle validée, rien n'a été inventé)
+
+1. Élément dans un iframe, **sorti de la zone visible de son iframe** (l'iframe a défilé) : le cadre disparaît (fait, c'est
+   la seule chose exacte), mais la bulle reste accrochée à la position de l'élément, donc à côté d'un endroit vide. Doit-elle
+   se comporter comme pour un élément sorti de l'écran (règle 6 de #130 : elle part avec lui) ?
+2. Iframe d'une autre origine : faut-il dire à l'utilisateur pourquoi il ne peut viser que le bloc entier ?
+3. Après un rechargement de la page (modification de l'agent), le cadre d'un élément situé dans un iframe n'est pas redessiné
+   (le navigateur ne retrouve par son nom que les éléments de la page elle-même) ; de même la marque de conversation
+   (« En attente »…) n'est pas dessinée sur ces éléments. Limites d'avant, à décider.
+
+### Tests
+
+- Sans fenêtre : `tests/chat/final/page_frames.py` (suite `page-frames`, partie jour) — 46 contrôles à 100 % et 125 % ; la
+  vérité des positions est celle du moteur (DevTools), pas le calcul du script. Sur l'ancien script : 20 échecs, dont le cadre
+  en haut à gauche ; sur le nouveau : 0.
+- Nuit (vraie fenêtre) : parcours `e1b_cadre_dans_iframe` dans `tests/chat/final/journeys.py` — clic dans l'iframe du site
+  d'essai, cadre autour de l'élément, encore après un défilement de la page ; les invariants habituels vérifient que la
+  bulle suit.
+
+## 12. Lot 1d — la bulle dans les iframes : décisions du propriétaire (24/11 soir, branche `VALXXII/annotation-lot1d`)
+
+Réponses aux questions du §11, planches Paper validées (page « #127 — Panneau latéral », tout en bas).
+
+### Cas 1 = A — l'élément sort de son iframe : la bulle reste collée au bord
+
+Planche « Iframes · cas 1 · l'élément sort de l'iframe · A (maquette prête) ». Quand on fait défiler **l'intérieur** d'un
+iframe et que l'élément choisi en sort, sa bulle ne disparaît pas : elle reste collée au bord de l'iframe, du côté par où
+l'élément est sorti, et ce qu'on est en train d'écrire n'est jamais perdu. Quand l'élément revient, tout redevient normal.
+Dans la page elle-même, rien ne change (un élément sorti de l'écran emporte sa bulle).
+
+Fait dans le script de page (`src/annotation-script.h`, `stick`) : la position donnée au navigateur pour placer la bulle
+est celle de l'élément **tant que l'iframe le montre** — la partie encore visible, puis un point du bord par lequel il est
+sorti. Valeur Paper reprise : le haut de la bulle se trouve 4 px au-dessus du bord haut de l'iframe (c'est le « −4 » habituel
+de la bulle à côté de son élément). Le cadre de sélection, lui, n'est plus dessiné quand l'élément n'est plus visible (§11).
+
+**Un point de la planche n'est pas codé** : la petite flèche « ↑ » dessinée sur le bord de la bulle. La planche ne dit pas
+si c'est un vrai repère à afficher dans le produit ni ses mesures dans la vraie bulle (elle se dessinerait dans la page du
+chat, fichiers du lot R). À confirmer avec Designer avant de la coder.
+
+### Cas 3 — l'iframe se recharge
+
+Planche « Iframes · cas 3 · l'iframe se recharge (maquette prête) ». Avant : l'élément a son cadre et sa marque
+« En attente ». Pendant le rechargement : ils disparaissent un instant. Après : si l'élément est retrouvé, ils reviennent,
+comme après le rechargement de la page ; sinon rien n'est redessiné et la conversation garde sa puce.
+
+Fait :
+- le script de page retrouve un élément d'iframe par son nom **dans** l'iframe, cherché dans tous les iframes de même
+  origine de la page (`deepFind`, `keyFind`) : un seul élément dans un seul iframe, sinon rien ;
+- la marque de conversation (« En attente »…) est maintenant dessinée aussi pour un élément d'iframe (elle ne l'était
+  pas du tout) : le navigateur la demande par la clé de l'élément (`SyncMarks`, `src/chat-comment.h`) ;
+- après le rechargement de la page, le navigateur redonne l'élément de la bulle par cette même clé (`FollowBubbleElement`).
+
+Limites dites clairement : deux iframes qui contiennent le même élément au même nom = élément non retrouvé (rien n'est
+dessiné) ; un élément dans un composant web (shadow DOM) reste sans marque, comme avant ; si le rechargement de l'iframe
+dure plus d'une demi-seconde et que rien n'est en cours dans la bulle, la bulle se ferme comme pour un élément disparu de
+la page (règle déjà en place), sa conversation reste dans l'historique.
+
+### Cas 2 — iframe d'un autre site
+
+Pas codé ici : carte d'explication + « En savoir plus », par Builder, d'après la planche v2.
+
+### Tests
+
+- Sans fenêtre : `tests/chat/final/page_frames.py`, 70 contrôles (cas 1 : sortie par le haut, par le bas, iframe imbriqué,
+  page défilée pendant que la bulle est collée, retour ; cas 3 : cadre et marque retrouvés, élément absent, retour, clé
+  après rechargement de la page, clés refusées). Contrats du navigateur : 4 de plus ; une unité (`FrameKey`).
+- Nuit (vraie fenêtre) : le parcours `e1b_cadre_dans_iframe` a trois étapes de plus — bulle collée au bord haut de
+  l'iframe sans cadre, retour, iframe rechargé.
+
+## 13. Lot 1e — inspecteur d'espacements : la marge d'un enfant à part du gap (branche `VALXXII/annotation-lot1e`)
+
+Question du propriétaire (24/11) : au survol de `form.checkout`, toutes les bandes entre les champs étaient hachurées mais
+une seule portait une valeur, « 6 », alors que la première faisait 26 px de haut. Ce n'était pas un défaut du code : la
+règle validée était « une valeur par valeur distincte », et le code hachurait tout l'espace réel entre deux enfants, marges
+des enfants comprises.
+
+Choix du propriétaire : **B**, planche « 5.3 · Espacements au survol — padding, gap et marges (maquette prête) », page
+« MCP - Design UI UX ». Quand un enfant a sa propre marge, l'espace réel = la marge + le gap, chacun avec sa bande et sa
+valeur :
+
+- **marge de l'enfant** : aplat clair `#FBE3EF`, sans hachures, collé à l'enfant ; valeur dans une pastille de 14 px de
+  haut, fond `#FBE3EF`, contour 1 px `#D63E92`, texte `#B0307A` ;
+- **gap** : les hachures roses habituelles, dans ce qui reste entre les marges, avec sa pastille pleine `#D63E92` ;
+- une valeur par valeur distincte et par axe, pour les marges comme pour le gap ; rien sous 4 px ;
+- la pastille d'une marge se place 12 px après celle du gap quand elles se toucheraient (valeurs de la planche : 192 = 160
+  + 20 + 12).
+
+Sur `form.checkout` : « 20 » en aplat sous le titre, puis « 6 » hachuré, puis « 10 » en aplat au-dessus du libellé.
+
+Fait dans le script de page seulement (`src/annotation-script.h` : `spaceGeometry`, `drawSpace`, `labelPlace`).
+
+Décidé (24/11, 22 h 40) :
+- **Police des valeurs** : on garde Inter Display (décision D8), comme les pastilles voisines ; la planche, qui écrit
+  JetBrains Mono, sera alignée par Designer.
+- La pastille d'une marge ne se déplace que si elle recouvrirait vraiment une autre pastille (elle se met alors 12 px après,
+  valeur de la planche) ; les pastilles de padding et de gap gardent leur règle d'avant.
+- Les marges ne sont montrées qu'entre deux enfants, là où il y a un gap (pas la marge du premier enfant vers le haut du
+  conteneur, ni les conteneurs sans gap) : la planche ne montre que ce cas.
+
+**Suite à prévoir, après la fusion du lot R dans main** : la copie native du cadre au moment du clic. Pendant la capture, le
+cadre et les hachures sont redessinés par le navigateur lui-même (`src/annotation-frame.h`, `src/annotation-host.h`, et
+`src/annotation-mode.h` qui appartient au lot R). Cette copie ne connaît pas encore les marges : elle montre le padding et
+le gap (réduit à sa vraie part), sans l'aplat. Elle devra dessiner l'aplat et sa pastille aussi ; le message de sélection
+garde pour l'instant sa forme (padding, gaps, deux sortes de pastilles), vérifié par le test.
+
+Test sans fenêtre : `tests/chat/final/page_frames.py`, partie « margins » — la carte de la planche au pixel, un formulaire
+comme celui du bac à sable, une rangée, une grille, un conteneur sans marges, et le message de sélection inchangé :
+104 contrôles sur 104 (dont 34 pour cette partie), à 100 % et 125 %.
+
+## 14. Lot R — retrait de l'ancien système (24/11, branche `VALXXII/annotation-lotR`)
+
+État : **codé, partie sans fenêtre verte (11 suites sur 11, commit `88ac0bd`) ; pas encore prouvé en vraie fenêtre.** Le lot ne sort qu'après la nuit commune
+(lots 1, 2, R et 5 ensemble) verte sur le commit final. Le lot R contient le lot 1 et fusionne après lui et après le Mode
+Focus.
+
+### Ce qui est retiré
+
+| Élément | Où | Preuve sans fenêtre |
+|---|---|---|
+| Lanceur (bouton en bas à droite de la page, pastille, anneau) et ses cartes (« Annotation ajoutée », « Lue par… », « … n'a pas pu la traiter », « … s'en occupe », « … a terminé ») | `src/annotation-launcher.h` supprimé ; état et suivi du magasin retirés de `src/annotation-mode.h` | Contrat « lot R » ; `annotations-ui` |
+| Historique des annotations et Ctrl+Maj+H (filtres, détail, « Rouvrir », « Copier en Markdown », suppression et son annulation) | `src/annotation-history.h` supprimé ; commande retirée de `src/main.cpp` | Contrat « Ctrl+Maj+H is no longer a shortcut » |
+| Ancienne note (« Ajouter », « Ce que l'agent verra », « Demander à l'agent » de la note, « Capture impossible ») | `src/annotation-note.h` supprimé ; `OnSubmit`, la capture « en retard » et le panneau différé retirés | Contrat « a selection goes to the chat or nowhere » |
+| « Garder en annotation » (Ctrl+Entrée dans le chat) et sa ligne « Gardé en annotation » | hôte (`KeepAnnotation`) et page (`panel.js`, `panel.css`) | Page : « lot R: Ctrl+Entrée keeps no annotation » |
+| Le « lot » « Traiter les annotations » (O7) | `src/chat-batch.h`, `src/chat-host-batch.h` supprimés ; page, scénarios de démonstration, tests | Contrat et page « no batch » |
+| Clic droit « Copier la dernière annotation en Markdown » | `src/annotation-mode.h` | Contrat |
+| Réglages › Annotations : « Conserver les terminées », « Ouvrir le dossier des annotations », « Ctrl+Maj+H ouvre l'historique » | `src/settings-panel.h`, `src/annotation-settings.h` | `tests/annotation_settings_test.cpp` (nuit), `settings_test` |
+| 156 textes français / anglais sans usage, les aides d'affichage et `src/annotation-problem.h` | `src/i18n-catalog.inc`, `src/annotation-host.h`, `src/annotation-kit.h`, `src/annotation-capture.h` | Barrière de traduction : 0 constat |
+| 7 scripts de promenade de l'ancienne note et de l'ancien historique (hors test général) | `tests/annotations/sandbox_qa_v2.py`, `…_v3b.py`, `capture_timing.py`, `flash_only.py`, `global_store_walk.py`, `settings_walk.py`, `idle_measure.py` | — |
+
+Gardés : le bandeau, l'interrupteur Commentaire / Panneau, la bulle, le chat et son historique de conversations, la
+capture et le cadre natif, « Connecter un agent », le tutoriel #125, le magasin et le pont MCP avec ses 5 outils. Dans
+Réglages › Annotations : les agents, « Proposer de connecter un agent », « Ctrl+Maj+A lance le mode Annotation. » et
+« Effacer toutes les annotations… » (avec sa confirmation).
+
+### Ce qui change (décisions du propriétaire, 24/11)
+
+| Sujet | Comportement | Preuve sans fenêtre |
+|---|---|---|
+| **A — Fichier local (`file://`)** | Le chat y est allumé, en Commentaire comme en Panneau. Le « site » d'un fichier est le **dossier qui le contient** : ses conversations, ses choix et son dossier de projet sont ceux de ce dossier, pas ceux de tous les fichiers du disque | Unités « file site », « SiteOf » ; contrats « decision A » |
+| **A — Fenêtre privée** | Le chat y est allumé. Ce qu'il garde (conversations, mémoire site → dossier, copies des fichiers prises avant un tour) va dans un dossier propre à la fenêtre, à côté de son registre : `annotations-private\<aléa>.data`. Tout est effacé à la fermeture, et au démarrage suivant si la fenêtre a été tuée. Les éléments envoyés sont inscrits au registre avant d'être écrits au magasin | `annotation_private_test` : 3 cas ajoutés (fermeture, arrêt brutal, écriture tardive ; un lien dans le dossier n'est jamais suivi) |
+| **B — Conversation dont l'élément a disparu** | Plus d'entrée dans Commentaire : on la retrouve dans l'historique du chat, en Panneau | — |
+| **C / F — Pont MCP** | Option (a) : le pont et ses 5 outils sont gardés tels quels, « Connecter un agent » aussi. Fait vérifié dans le code : les 5 outils ne font que lire et traiter des annotations stockées ; **aucun n'agit dans le navigateur** | — |
+| **D — Réglages** | « Effacer toutes les annotations… » est gardé, dernière ligne du groupe « Mode Annotation ». Le nettoyage automatique reste, à la durée déjà enregistrée (30 jours par défaut), sans réglage | `settings_test` |
+| **Chat ouvert au lancement** | En Panneau, le chat s'ouvre dès que le mode démarre (vue vide et suggestions), sans prendre le clavier. La page ne bouge donc plus au premier élément choisi. Commentaire : inchangé | Contrats « opens with the mode », « takes no keyboard focus » |
+| **Ctrl+Maj+D** | Sur le chat ouvert par le lancement : le premier appui met le curseur dans la saisie, le suivant le ferme | Contrat |
+| **Messages en attente dans la bulle (O5)** | La bulle montre au plus les 2 messages en attente les plus récents, chacun coupé à 2 lignes sous un fondu (jamais « … »). Au-delà de 2, une ligne « +N en attente » (13 px, gris #A6A6A6, chevron) au-dessus d'eux ouvre toute la liste (160 px au plus, défilement propre, fondu en haut) et la referme. La saisie reste toujours entière : c'est la file qui rétrécit. C'est la cause de O5 #110 (4 messages = 532 px pour 428) | Page : 8 vérifications « bubble (queue, lot R) » ; contrat |
+| **10 éléments** | Un 11ᵉ clic en Panneau n'ajoute rien, ne dessine ni cadre ni capture, et le bandeau neutre au-dessus de la saisie dit « 10 éléments au maximum. Envoyez la demande ou retirez-en un. » pendant 4 s, à chaque clic en trop | Contrats « 11th element » ; test de langue |
+
+### Sécurité d'un fichier local
+
+- Le dossier donné à l'agent est **celui du fichier ouvert, jamais un dossier au-dessus**. L'utilisateur peut en choisir un
+  autre lui-même, avec l'écran existant.
+- Un dossier large (Bureau, Documents, Téléchargements, racine OneDrive) n'est que **proposé** : l'écran existant « Où est
+  le code de ce site ? » demande. Un dossier refusé (racine d'un disque, dossier du profil, Windows, Program Files)
+  n'est même pas proposé. Ce sont les règles déjà appliquées aux projets locaux.
+- Un partage réseau (`file://serveur/…`) reste éteint (règle de #125).
+- Le pont des annotations **n'est pas donné** à la session d'un fichier local : le magasin n'a pas de « site » pour un
+  fichier, le pont n'aurait pas pu être limité à ce dossier.
+- Les autorisations (Demander / Auto / Planifier), les cartes Refuser / Autoriser et « Tout annuler » sont les mêmes
+  que sur un projet local. Rien de nouveau n'est accordé.
+- Comme sur un projet local, le texte d'un élément de la page part dans la demande à l'agent : un fichier HTML reçu
+  d'ailleurs peut contenir un texte piégé. Rien de nouveau, mais un fichier téléchargé est un cas plus courant.
+
+### Limites à connaître en fenêtre privée
+
+- L'agent lui-même (Claude Code, Codex) garde ses propres traces de session sur le PC, comme pour tout usage hors du
+  navigateur. Le navigateur ne les écrit pas et ne peut pas les effacer.
+- La liste des modèles des agents (`annotations-chat\agent-options.json`) reste commune : ce n'est pas une trace de
+  navigation. La préférence Commentaire / Panneau est lue depuis les fenêtres normales.
+- Si l'effacement ne peut pas finir à la fermeture (un fichier encore ouvert), le registre reste et le démarrage suivant
+  finit le travail.
+
+### Conséquences visibles, sans nouveau design
+
+1. En Panneau, le rappel du bandeau « Aucun agent connecté · Connecter » ne se montre plus : il se cachait déjà quand le
+   chat est ouvert, et le chat est ouvert dès le lancement. Il se montre toujours en Commentaire, et quand le panneau est
+   fermé. La fenêtre « Connecter un agent » au lancement et le tutoriel s'ouvrent comme avant.
+2. En Panneau, le mode survit à un rechargement de la page (comme en Commentaire).
+3. Ctrl+Entrée dans le chat envoie comme Entrée.
+4. L'infobulle du bouton d'envoi n'a plus qu'une ligne (« Demander à l'agent ») ; la rangée de touches sous la saisie n'a
+   plus « Ctrl ↵ Annotation ».
+5. Une conversation enregistrée qui contenait une ligne « Gardé en annotation » la perd à la réouverture.
+
+### À montrer à Designer
+
+- Réglages › Annotations : la place de « Effacer toutes les annotations… » (dernière ligne de « Mode Annotation », sous
+  l'interrupteur, au-dessus du rappel du raccourci).
+- L'infobulle d'envoi sur une ligne et la rangée de touches à deux entrées.
+- Textes qui parlent encore de « notes » lues par un agent extérieur : « Vos notes et captures… » (fenêtre « Connecter
+  un agent » et tutoriel), « Connecté · a lu vos annotations … » (Réglages).
+- Le message « 10 éléments » réutilise le bandeau neutre existant, sans valeur nouvelle ; Paper n'a pas été ouvert.
+
+### Laissé tel quel et listé, sans deviner
+
+- Le chat écrit toujours chaque élément envoyé dans le magasin (pris puis terminé par son agent) et donne toujours le pont
+  à sa session sur un projet local. Plus rien dans le navigateur ne lit ces entrées ; seul un agent extérieur connecté le
+  peut. À décider dans un lot à part (option b du pont).
+- Fonctions du magasin sans appelant dans le navigateur ni dans le pont, gardées avec leurs tests : mise à la corbeille
+  et restauration, réouverture, comptage des annotations prises, libération forcée, chemin d'une capture.
+- Un fichier dans un dossier large (Bureau, Téléchargements) : la question « Où est le code de ce site ? » est prouvée
+  par contrat seulement, pas par un essai (il faudrait écrire dans le vrai Bureau de l'utilisateur).
+
+### Fichiers du lot 1 touchés (accord du coordinateur)
+
+`src/chat-comment.h` (code du lanceur et de son historique, drapeau « annotate » de l'envoi retenu, tests « fenêtre
+privée » et « fichier » remplacés par la règle commune, drapeau `noFollow`), `src/chat-bubble.h` (une ligne),
+`tests/chat-panel/run.py`, `tests/chat/final/journeys.py` (parcours `c3_historique_du_lanceur` retiré),
+`tests/annotation-general/manifest.json` et `coverage.json` (une suite et 5 lignes de plus, O7 et O12 prouvés). La
+fonction `CloseStaleNote` du lot 1 (elle fermait l'ancienne note) est retirée à la fusion : il n'y a plus de note.
+
+### Vérifications sans fenêtre
+
+Trois passages complets de la partie sans fenêtre (`python tests/annotation-general/run.py --day`) le 24/11, arbre
+propre, chacun sur un nouveau commit, aucune relance d'une suite dans un passage :
+
+| Passage | Commit | Verdict |
+|---|---|---|
+| 1 | `ea7f36e` | ROUGE, 10 sur 11 (`chat-panel` : la mesure de vitesse à 16,3 ms) |
+| 2 | `3d36be2` | ROUGE, 10 sur 11 (`chat-panel` : une autre vérification liée à la vitesse) |
+| 3 | `88ac0bd` (code final du lot) | **VERT, 11 sur 11**, 16 min 20 s ; objectif `accuse-ouverture-16ms` manqué et rapporté |
+
+Tableau du premier passage :
+
+| Suite | Résultat |
+|---|---|
+| `i18n` | réussi (0 constat) |
+| `chat-units` | réussi (unités + 129 contrats sur 129) |
+| `model-switch-128` | réussi |
+| `annotation-units` | réussi (dont `annotation_private_test` : 68 vérifications) |
+| `chat-panel` | **échec : 1 vérification sur 830** |
+| `page-v4`, `fake-agent`, `snapshots` | réussi |
+| `annotations` | réussi (magasin, pont, connexion Claude / Codex sur dossiers redirigés) |
+| `annotations-ui` (hors écran) | réussi (985 vérifications) |
+| `acp` (sans console) | réussi |
+
+- **Premier passage** : une **mesure de vitesse** (la page doit accuser l'ouverture d'une bulle en moins de 16 ms) :
+  16,3 ms, puis 16,4 ms sur la suite relancée seule, 12,6 ms sur un passage antérieur du même code. Sur le commit du
+  lot 1 seul, la même suite donne 15,0 ms : la mesure est à sa limite avec ou sans le lot R. Décision du coordinateur
+  (24/11, dans l'esprit de la décision 5) : c'est maintenant l'**objectif** `accuse-ouverture-16ms`, mesuré et écrit à
+  chaque passage, plus jamais bloquant.
+- **Second passage** : l'objectif est rapporté (« manque », 19,3 ms) et ne bloque plus ; c'est une autre vérification
+  qui échoue, « bubble: the next `layout` shows it again, opening from the element's side (180 ms) », qui lit une
+  animation de 180 ms et dépend elle aussi de la vitesse de la machine. Elle avait réussi aux trois passages
+  précédents du même code. Les 10 autres suites sont vertes aux deux passages.
+- **Troisième passage** (commit `88ac0bd`, avec les corrections pour le lecteur d'écran) : vert, les 11 suites. La
+  vérification du second passage réussit ; l'objectif de vitesse est manqué et écrit dans le rapport.
+- Pendant ces passages, plusieurs autres agents compilaient et jouaient leurs tests sur la même machine. À retenir :
+  la suite `chat-panel` contient des vérifications qui dépendent de la vitesse de la machine et peuvent échouer une
+  fois sur trois quand elle est chargée. La nuit, rien d'autre ne doit tourner.
+
+Aussi vérifié : le produit entier compile sans avertissement (vérification de syntaxe de `src/main.cpp` avec le mode
+annotation et le chat) ; `settings_test`, `i18n_test` (78 vérifications) ; la page du chat seule : 843 sur 844 (les 9
+vérifications de la file d'attente de la bulle réussies, la même mesure de vitesse en échec). Deux défauts du passage
+« Narrateur » du lot 5 sont corrigés dans la page : l'infobulle du bouton d'envoi n'est plus lue quand elle est cachée,
+et les boutons (suggestions, fichiers modifiés, conversations) ne sont plus annoncés « élément de liste ».
+
+### Ce qui n'est pas prouvé (nuit)
+
+- Tout ce qui demande une vraie fenêtre : `tests/chat/chat_qa_lot_r.py` (suite `lot-r`, jamais lancée), et les scripts
+  adaptés sans pouvoir être rejoués : `chat_qa_run.py` (étapes du lot et de « Garder en annotation » remplacées, chat
+  ouvert au lancement), `chat_qa_v12.py`, `chat_qa_comment.py`, `chat_qa_comment_v4b.py`, `journeys.py`,
+  `tests/annotation_settings_test.cpp` (il affiche le tiroir des Réglages).
+- Le chat ouvert au lancement change le début de presque tous les scripts qui démarrent en Panneau : des attentes
+  « le chat s'ouvre au premier clic » peuvent rester dans des scripts que je n'ai pas le droit de réécrire en entier
+  (`tests/chat/final/`). La première nuit le dira, script par script.
+- En fenêtre privée le navigateur n'écrit pas de journal : le script de nuit lit les fichiers sur le disque et la page
+  du chat, pas le journal.
+- L'adresse du réseau local et les sites en ligne du parcours `local_en_ligne` sont des noms renvoyés vers 127.0.0.1
+  par une règle du moteur ; si le moteur n'applique pas cette règle à une adresse IP, l'étape « la page se charge »
+  échouera et il faudra un autre moyen.
+- Les trois dispositions des onglets (#127) : le script du lot R ne joue que la disposition par défaut. À étendre
+  (`--tab-layout`) quand #127 sera fusionné.
+
+### Ajouts du 24/11 après-midi (page du chat)
+
+- **Deux corrections du lot 2 reprises** (O10, O8) : Échap maintenu ne fait qu'une chose ; la carte d'autorisation en
+  cours de réponse n'est plus redessinée ; « Se connecter » lance la connexion de l'outil dès le premier clic. Ajouté
+  par le lot R : quand le navigateur redonne le clavier au chat, il va sur la carte, jamais sur « Autoriser ».
+- **Le symbole Entrée dit vrai** (décision du propriétaire) : « ↵ » sur « Autoriser » et l'annonce « Autoriser avec
+  Entrée » n'apparaissent que lorsque la carte a le clavier. Après un message de l'utilisateur, le bouton dit seulement
+  « Autoriser » ; la règle de sécurité (SEC-23) ne change pas.
+- **« Claude Code n'est pas connecté. »** (décision du propriétaire) pour quelqu'un qui ne s'est jamais connecté ;
+  « Vous n'êtes plus connecté à … » seulement si Browser l'a vu connecté depuis son lancement. D'un lancement à l'autre,
+  Browser ne le retient pas : la phrase par défaut est alors « n'est pas connecté », toujours vraie.
+- **La saisie ne sort plus de la bulle** (#110, et le clic qui traverse la bulle #185 / #219, trouvés par le rejeu du
+  lot 1b) : quand la bulle a peu de hauteur, la liste des messages en attente prend ce qui reste (coupée en haut sous
+  le fondu, défilable) ; sans place pour une ligne, il ne reste que « +N en attente » ; la saisie et ses boutons restent
+  entiers dans la bulle. Avec de la place, rien ne change par rapport au dessin validé.

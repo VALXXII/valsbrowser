@@ -96,13 +96,6 @@ svg.i { display: block; flex-shrink: 0; }
 .sendw.tip-on:not(.no-tip) .tip, .sendw:not(.no-tip):has(.send:focus-visible) .tip { opacity: 1; transform: none; }
 @media (prefers-reduced-motion: reduce) { .sendw .tip { transform: none; } }
 :root.reduce-motion .sendw .tip { transform: none; }
-/* « Gardé en annotation » (B 1.6): the user's side, quieter than a bubble — dashed hairline, no fill */
-.kept { align-self: flex-end; max-width: 88%; display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; border-radius: 12px; border: 1px dashed var(--line2); }
-.kept-note { color: var(--w90); font-size: 14px; line-height: 20px; overflow-wrap: anywhere; }
-.kept-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--w60); font-size: 12px; line-height: 16px; }
-.kept-meta .ck { width: 12px; height: 12px; color: var(--ok); flex-shrink: 0; }
-.kept-els { display: inline-flex; flex-wrap: wrap; gap: 4px; }
-.kept-sub { color: var(--w40); font-size: 11px; line-height: 14px; }
 @media (prefers-reduced-motion: reduce) { .gauge .tip, .gauge:focus-visible .tip { transform: translate(-50%, 0); } .gauge .arc { transition: none; } }
 .hd-btn { width: 28px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .hd-btn svg { opacity: .7; width: 15px; height: 15px; }
@@ -175,14 +168,16 @@ svg.i { display: block; flex-shrink: 0; }
 .step.run { color: var(--w80); }
 .step.done svg { opacity: .5; }
 .step.fail { color: var(--w50); }
+.step.want { color: #A6A6A6; }   /* waits for the user's agreement: a still clock, the words and colour of the panel's line (Paper, boards 8 / 9 of the permission card) */
 .step.fail svg { color: var(--danger); }
 .step .fail-tag { color: var(--danger); }
 .spin svg, svg.spin { animation: spin 800ms linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .text { color: var(--w90); font-size: 14px; line-height: 20px; display: flex; flex-direction: column; gap: 10px; }
 /* R48: no typing caret at the end of the agent's text (follow-up lines and answers, bubble and panel) — nothing replaces it */
-.waiting { display: flex; align-items: center; gap: 8px; color: var(--w80); font-size: 13px; line-height: 18px; }
-.waiting svg { width: 16px; height: 16px; }
+/* Paper, boards 8 / 9 of the permission card (262S-0, 24 Nov 2026): a clock 14 px and the words, both #A6A6A6, 13 / 16 */
+.waiting { display: flex; align-items: center; gap: 8px; color: #A6A6A6; font-size: 13px; line-height: 16px; }
+.waiting svg { width: 14px; height: 14px; flex-shrink: 0; }
 .working { font-size: 14px; font-weight: 500; line-height: 16px; color: var(--w40); }
 @media (prefers-reduced-motion: no-preference) {
   :root:not(.reduce-motion) .working { color: transparent; background-image: linear-gradient(91deg, #FFFFFF66 0%, #FFFFFF66 30%, #FFFFFFCC 40%, #FFFFFF66 50%, #FFFFFF66 100%);
@@ -256,7 +251,9 @@ svg.i { display: block; flex-shrink: 0; }
 .btn.l { height: 30px; padding: 0 12px; }
 .btn.primary { background: var(--accent); }
 .btn.ghost { background: transparent; color: var(--w80); padding: 0 10px; }
-.btn .kbd { color: #FFFFFF80; font-size: 12px; font-weight: 400; }
+/* the key on « Autoriser » (Paper, « carte d'autorisation · la carte a le clavier »): 16 high, radius 3, white 16 % on the accent (#3F995F on #1A8641), 11 / 14 white */
+.btn .kbd { display: flex; align-items: center; flex-shrink: 0; height: 16px; padding: 0 4px; border-radius: 3px; background: rgb(255 255 255 / 16%); color: #FFFFFF; font-size: 11px; line-height: 14px; font-weight: 400; }
+.perm:not(.kbd-on) .btn.primary .kbd { display: none; }   /* « ↵ » only while Entrée really allows (the keyboard is in the card) */
 @media (hover: hover) { .btn:hover { background: var(--hover); } .btn.primary:hover { background: #5579FF; } .btn.ghost:hover { background: var(--fill6); color: #FFFFFF; } }
 
 /* error card (6.7 D) */
@@ -314,6 +311,31 @@ svg.i { display: block; flex-shrink: 0; }
 .sug .lb { flex: 1; }
 .sug .ct { display: flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 4px; background: #3E67FF33; color: var(--accent-ink); font-size: 11px; font-weight: 500; line-height: 14px; }
 @media (hover: hover) { .sug:hover { background: var(--fill4); border-color: var(--line2); } }
+
+/* « Ton agent » (worker B): the first message's block while no agent is ready (Paper 22N3-0) — at the bottom, right above the
+   input, like the empty chat. Rows: the state as an icon and its words (the Designer's rule for Réglages › Agents: no coloured
+   dot); ONE strong button on the missing action in the profile's accent (--ta-accent, sent by the host; #0099A0 on the board). */
+.tas { display: flex; flex-direction: column; justify-content: flex-end; gap: 12px; padding: 16px 12px; flex: 1; min-height: 100%; }
+.tas-h { margin: 0; font-size: 16px; font-weight: 600; line-height: 22px; color: #FFFFFF; }
+.tas-sub, .tas-note { margin: 0; font-size: 12px; line-height: 17px; color: #A6A6A6; }
+.tas-note { color: #8C8C8C; }
+.tas-card { display: flex; flex-direction: column; gap: 2px; padding: 4px; border: 1px solid #262626; border-radius: 12px; background: #1C1C1C; }
+.tas-row { display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 10px; }
+.tas-logo { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 32px; height: 32px; border-radius: 8px; background: #262626; }
+.tas-logo .tas-l { width: 16px; height: 16px; color: #FFFFFF; }
+.tas-tx { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; flex: 1; min-width: 0; }
+.tas-nm { font-size: 14px; font-weight: 500; line-height: 18px; color: #FFFFFF; }
+.tas-st { display: flex; align-items: center; gap: 4px; font-size: 12px; line-height: 16px; color: #A6A6A6; }
+.tas-st.accent { color: #2FD1D9; }
+.tas-st.danger { color: var(--danger); }
+.tas-st .tas-i { width: 14px; height: 14px; }
+.tas-rn { font-size: 13px; line-height: 17px; color: #8C8C8C; }
+.tas-btn { display: flex; align-items: center; flex-shrink: 0; height: 28px; padding: 0 10px; border-radius: 6px; background: #2A2A2A; color: #FFFFFF; font-size: 13px; font-weight: 500; line-height: 16px; white-space: pre; }
+.tas-btn.strong { background: var(--ta-accent, var(--accent)); }
+@media (hover: hover) { .tas-btn:not(.strong):hover { background: var(--hover); } .tas-btn.strong:hover { filter: brightness(1.08); } }
+.tas-link { color: #E6E6E6; font-size: 13px; font-weight: 500; line-height: 17px; text-decoration: underline 1px; text-underline-position: from-font; border-radius: 4px; }
+@media (hover: hover) { .tas-link:hover { color: #FFFFFF; } }
+.bub .tas { min-height: 0; padding: 0; flex: 0 0 auto; }
 
 /* new steps pill */
 .newsteps { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px;
@@ -394,6 +416,9 @@ svg.i { display: block; flex-shrink: 0; }
 .send.stop svg { opacity: 1; }
 @media (hover: hover) { .send.ready:hover { background: #5579FF; } }
 .keys { display: flex; align-items: center; gap: 12px; padding: 2px 0 0 4px; }
+/* « Ton agent »: « Connectez un agent pour envoyer » under the input (no board yet: the keys row's look, provisional) */
+.send-hint { padding: 2px 0 0 4px; color: var(--w50); font-size: 12px; line-height: 16px; }
+.send-hint[hidden] { display: none; }
 .keys span.k { display: flex; align-items: center; gap: 6px; color: var(--w50); font-size: 12px; line-height: 16px; }
 .kc { display: inline-flex; align-items: center; justify-content: center; height: 20px; min-width: 20px; padding: 2px 6px; border-radius: 4px; background: var(--fill6); color: var(--w50); font-size: 12px; line-height: 16px; }
 .kcs { display: flex; gap: 2px; }
@@ -413,7 +438,8 @@ svg.i { display: block; flex-shrink: 0; }
 .instead::placeholder { color: var(--w40); }
 .perm-ft { display: flex; align-items: center; gap: 8px; padding-left: 2px; }
 .always { flex: 1; display: flex; align-items: center; gap: 6px; color: var(--w70); font-size: 12px; line-height: 16px; white-space: pre; border-radius: 6px; align-self: stretch; }
-.sw { width: 28px; height: 16px; border-radius: 8px; padding: 2px; background: #FFFFFF26; display: flex; justify-content: flex-start; flex-shrink: 0; transition: background-color 150ms ease; }
+/* off: white 12 % — #3A3A3A on the card (Paper, the permission card's boards of 24 Nov 2026; the white knob carries the control's boundary and state: 16.5:1 on the card) */
+.sw { width: 28px; height: 16px; border-radius: 8px; padding: 2px; background: rgb(255 255 255 / 12%); display: flex; justify-content: flex-start; flex-shrink: 0; transition: background-color 150ms ease; }
 .sw i { width: 12px; height: 12px; border-radius: 6px; background: #FFFFFF; transition: transform 150ms var(--ease-ui); }
 .always[aria-checked="true"] .sw { background: var(--accent); }
 .always[aria-checked="true"] .sw i { transform: translateX(12px); }
@@ -555,92 +581,35 @@ svg.i { display: block; flex-shrink: 0; }
 .mi[data-sub] { gap: 8px; }
 .menu.models .mi[aria-checked="true"] { background: var(--fill6); }
 .menu.models .mi .lead { margin-top: 0; }
-/* #128 model menu, variant A (Paper « #128 Menu des modèles · A liste groupée (validée) »), panel and bubble alike: 280 px,
-   #242424, border white 8 %, radius 8, padding 4, no shadow, rows touching. A provider's header 28 px (logo 14, 12/16 Medium
-   at 50 %, 8 apart); not ready: 32 px, « Codex · non connecté » and its accent button (24 px, 0 8, radius 6, 12/16 Medium
-   white). Model rows 32 px, 0 8, radius 6, 14/20 at 90 %; « Par défaut » 11/14 at 60 % on white 8 % (1/5, radius 4), 8 px
-   after the name; hover white 8 %, chosen white 6 % with the accent check (14); greyed 32 %. Another provider's model
-   (hover, keyboard focus): 44 px, its hint 12/16 at 50 % 2 px under the name. Separators white 6 %, 4 px / 8 px. Effort:
-   14/20 at 90 %, its level 13/18 at 50 %, chevron 12 at 50 %, 6 apart. */
-.menu.models.mm-list { border-color: var(--line); border-radius: 8px; padding: 4px; gap: 0; }
-.menu.mm-list .sep { background: var(--fill6); margin: 4px 8px; }
-.mm-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 28px; padding: 0 8px; flex-shrink: 0; }
-.mm-head.mm-off { height: 32px; padding: 0 4px 0 8px; }
-.mm-hl { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* #128 v2 (Paper « #128 Menu des modèles · v2 ancien menu + groupes (maquette prête) »): the old menu above, as it was
+   (6.4, 17US-0 / 17VU-0: 300 px, #242424, border #3A3A3A, radius 12, padding 6, rows 13/18 Medium 6/10 radius 8, hover and
+   chosen row #313131 with the check #8FA9FF, « Par défaut » on #353535 (#414141 on a filled row), dividers #363636 4/10,
+   « Plus de modèles › » and « Effort  Élevé › » at the bottom, sub-menus 214 px), and ONE addition — a header per agent:
+   its logo 14 + its name 12/16 Medium #929292, 8 apart, padding 6 10 2, not clickable; an agent not ready: « Codex · non
+   connecté » and its accent button at the right (22 px, 0 8, radius 6, 12/16 Medium white), its models greyed (32 %). The
+   back row of the panel's views (« ‹ Plus de modèles », « ‹ Effort »): chevron 11 #929292, 8 apart, the label white.
+   Another agent's model shows, on hover / keyboard focus, that it opens a new chat (12/16 at 50 %, 1 px under its name). */
+/* the board writes the old translucent whites as their opaque equivalents on the menu's #242424 (#3A3A3A, #313131, #353535 /
+   #414141, #363636: the same pixels) — the old values stay (6.4's other boards are measured with them); only the badge's
+   text is the board's own #C6C6C6 */
+.menu.models .mi .tag { color: #C6C6C6; }
+.mm-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px 2px; flex-shrink: 0; }
+.mm-hl { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; }
 .mm-hl .mm-logo { width: 14px; height: 14px; color: #FFFFFF; }
-.mm-hn { color: var(--w50); font-size: 12px; font-weight: 500; line-height: 16px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
-.mm-act { display: flex; align-items: center; height: 24px; padding: 0 8px; border-radius: 6px; background: var(--accent); color: #FFFFFF; font-size: 12px; font-weight: 500; line-height: 16px; white-space: pre; flex-shrink: 0; }
+.mm-hn { color: #929292; font-size: 12px; font-weight: 500; line-height: 16px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+.mm-act { display: flex; align-items: center; height: 22px; padding: 0 8px; border-radius: 6px; background: var(--accent); color: #FFFFFF; font-size: 12px; font-weight: 500; line-height: 16px; white-space: pre; flex-shrink: 0; }
 @media (hover: hover) { .mm-act:hover { background: #5579FF; } }
-.menu.mm-list .mi.mm-row, .menu.mm-list .mi.mm-eff { height: 32px; padding: 0 8px; border-radius: 6px; gap: 6px; color: var(--w90); font-size: 14px; font-weight: 400; line-height: 20px; flex-shrink: 0; }
-.menu.mm-list .mi.mm-row .grow { gap: 2px; }
-.menu.mm-list .mi.mm-row .row1 { gap: 8px; }
-.menu.mm-list .mi.mm-row .tag { height: auto; padding: 1px 5px; color: var(--w60); font-size: 11px; font-weight: 400; line-height: 14px; }
-.menu.mm-list .mi.mm-row[aria-disabled="true"] { opacity: .32; }
-.mm-hint { display: none; color: var(--w50); font-size: 12px; line-height: 16px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
-.menu.mm-list .mi.mm-x:focus-visible { height: 44px; }
-.menu.mm-list .mi.mm-x:focus-visible .mm-hint { display: block; }
-.menu.mm-list .mi.mm-eff .val { color: var(--w50); font-size: 13px; line-height: 18px; }
-.menu.mm-list .mi.mm-eff .sub { width: 12px; height: 12px; }
-.menu.mm-list .mi:focus-visible { border-radius: 6px; }
+.menu.models .mi[aria-disabled="true"] { opacity: .32; }
+.menu.models .mi.back { color: #FFFFFF; gap: 8px; }
+.menu.models .mi .lead.backi { opacity: .5; margin: 0; }
+.mm-hint { display: none; color: var(--w50); font-size: 12px; font-weight: 400; line-height: 16px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+.menu.models .mi.mm-x:focus-visible .mm-hint { display: block; }
 @media (hover: hover) {
-  .menu.mm-list .mi.mm-row:not([aria-disabled="true"]):hover, .menu.mm-list .mi.mm-eff:hover { background: var(--fill8); }
-  .menu.mm-list .mi.mm-row[aria-disabled="true"]:hover { background: none; }
-  .menu.mm-list .mi.mm-x:hover { height: 44px; }
-  .menu.mm-list .mi.mm-x:hover .mm-hint { display: block; }
+  .menu.models .mi[aria-disabled="true"]:hover { background: none; }
+  .menu.models .mi.mm-x:hover .mm-hint { display: block; }
 }
 .menu .btn-s.primary { background: var(--accent); }
 @media (hover: hover) { .menu .btn-s.primary:hover { background: #5579FF; } }
-
-/* « Traiter les annotations » — composer block (Paper 186S-0) */
-.batch { display: flex; flex-direction: column; gap: 2px; padding: 4px; border-radius: 10px; background: #FFFFFF08; border: 1px solid var(--line); max-height: 300px; overflow-y: auto; overscroll-behavior: contain; }
-.batch-hd { display: flex; align-items: center; gap: 8px; padding: 6px 4px 6px 8px; }
-.batch-hd .ic, .ann-hd .ic { width: 14px; height: 14px; opacity: .8; flex-shrink: 0; }
-.batch-hd .t, .ann-hd .t { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; line-height: 18px; color: #FFFFFF; }
-.batch-hd .site { color: var(--w50); font-size: 12px; line-height: 16px; white-space: pre; }
-.batch-hd .icon-btn svg { width: 10px; height: 10px; }
-.batch-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px; border-radius: 8px; text-align: left; width: 100%; }
-@media (hover: hover) { .batch-row:hover { background: var(--fill4); } }
-.batch-row .box { width: 16px; height: 16px; margin-top: 8px; border-radius: 4px; background: var(--accent); display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: background-color 120ms ease; }
-.batch-row .box svg { width: 10px; height: 10px; color: #FFFFFF; }
-.batch-row.off .box { background: transparent; box-shadow: inset 0 0 0 1.5px #FFFFFF4D; }
-.batch-row.off .note { color: var(--w50); }
-.batch-row.off .ann-thumb { opacity: .45; }
-.ann-thumb { width: 44px; height: 32px; border-radius: 5px; object-fit: cover; flex-shrink: 0; display: block; background: #2A2A2A; outline: 1px solid #FFFFFF14; outline-offset: -1px; }
-.ann-thumb.blank { background: linear-gradient(#FFFFFF14, #FFFFFF0A); }
-.batch-row .tx, .ann-row .tx { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.batch-row .note, .ann-row .note { color: #FFFFFF; font-size: 13px; line-height: 18px; }
-.batch-row .meta { color: var(--w50); font-family: var(--mono); font-size: 11px; line-height: 14px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
-.batch-more { align-self: flex-start; margin: 0 0 4px 34px; padding: 2px 6px; border-radius: 4px; color: var(--accent-ink); font-size: 12px; font-weight: 500; line-height: 16px; }
-@media (hover: hover) { .batch-more:hover { background: var(--fill6); } }
-
-/* « Traiter les annotations » — live card in the thread (Paper 188L-0, 18B2-0) */
-.um.ann { align-items: flex-end; }
-.ann-card { width: 320px; max-width: 100%; background: var(--raised); border-radius: 16px; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
-.ann-hd { display: flex; align-items: center; gap: 8px; padding: 6px 8px 4px; }
-.ann-prog { display: flex; align-items: center; gap: 4px; color: var(--w50); font-size: 12px; line-height: 16px; white-space: pre; font-variant-numeric: tabular-nums; }
-.ann-prog svg { width: 12px; height: 12px; }
-.ann-prog.ok { color: var(--plus); }
-.ann-prog.mixed { color: #E6AC3D; }
-.ann-extra { padding: 0 8px 4px 30px; color: var(--w80); font-size: 13px; line-height: 18px; white-space: pre-wrap; }
-.ann-row { display: flex; align-items: flex-start; gap: 10px; padding: 8px; border-radius: 10px; text-align: left; width: 100%; transition: background-color 150ms ease; }
-.ann-row .note { color: var(--w80); }
-.ann-row.is-working { background: var(--fill4); }
-.ann-row.is-working .note { color: #FFFFFF; }
-@media (hover: hover) { .ann-row:hover { background: var(--fill6); } }
-.ann-st { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; line-height: 16px; }
-.ann-st svg { width: 12px; height: 12px; flex-shrink: 0; margin-top: 2px; }
-.ann-st.is-working { color: var(--accent-ink); font-weight: 500; align-items: center; }
-.ann-st.is-working svg { margin-top: 0; }
-.ann-st.is-pending { color: var(--w50); align-items: center; }
-.ann-st.is-pending i { width: 6px; height: 6px; margin: 0 2px; border-radius: 3px; background: #FFFFFF4D; flex-shrink: 0; }
-.ann-st.is-done { color: var(--w60); }
-.ann-st.is-done svg { color: var(--ok); }
-.ann-st.is-skipped { color: #E6AC3D; }
-.ann-inst { display: flex; align-items: center; gap: 6px; align-self: flex-start; padding: 6px 8px 4px; border-radius: 6px; color: var(--w40); font-size: 12px; line-height: 16px; }
-.ann-inst .cv { width: 11px; height: 11px; opacity: .6; transform: rotate(-90deg); transition: transform 150ms var(--ease-out); }
-.ann-inst[aria-expanded="true"] .cv { transform: none; }
-@media (hover: hover) { .ann-inst:hover { color: var(--w80); } }
-.ann-card .detail { margin: 2px 6px 4px; }
 
 /* ---------- comment-mode bubble (B 1.8) — Paper 18NS-0, 1B30-0, 1AIE-0, 1AE7-0, 1ANU-0, 19ON-0, 1AAE-0, 1A6L-0, 1AWI-0, 19IO-0 ----------
    Same page, another layout: `:root.bub`. The surface fills the window the host sizes from `bubble.size`; around it the
@@ -694,9 +663,6 @@ svg.i { display: block; flex-shrink: 0; }
 .bub .bubble { background: var(--accent); border-radius: 12px 12px 4px 12px; max-width: 210px; padding: 6px 10px; color: var(--w90); font-size: 13px; font-weight: 500; line-height: 20px; }
 .bub .bubble .chip { border-color: #FFFFFF80; background: #FFFFFF1F; color: #FFFFFF; font-size: 13px; }
 .bub .um-attach { max-width: 210px; }
-.bub .kept { max-width: 100%; padding: 6px 10px; }
-.bub .kept-note { font-size: 13px; }
-.bub .ann-card { width: 100%; }
 /* agent turn (1B64-0): « modèle · effort » + status on one line, the words in one block */
 .bub .turn.bt { gap: 2px; }
 .bt-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 24px; }
@@ -772,7 +738,6 @@ button.bt-st[aria-describedby="b-tip"] { background: #FFFFFF1A; border-radius: 4
 .bub .model .m { gap: 4px; }
 /* cv4 R28 (user's decision): the chevron of the model button never disappears, in the bubble too */
 .bub .model .mcv { margin-left: 0; }
-.bub .batch { max-height: 170px; }
 .bub .strip { border-radius: 10px; padding: 8px 8px 8px 10px; }
 .bub .strip + .composer, .bub .strip.danger + .composer { margin-top: 0; }
 .bub .strip.danger { padding-bottom: 8px; }
@@ -782,7 +747,22 @@ button.bt-st[aria-describedby="b-tip"] { background: #FFFFFF1A; border-radius: 4
 .bub .send.stop { background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); }
 @media (hover: hover) { .bub .send.stop:hover { background: color-mix(in srgb, var(--danger) 18%, transparent); } }
 /* a request waiting for the agent's current work on another element */
-.bq { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.bq { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
+/* lot R (2026-11-24): 2 waiting messages at most, 2 lines each under a fade; « +N en attente » opens the whole list */
+.bqs { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.bq-list { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.bqs.open .bq-list { max-height: 160px; }
+.bqs.open .bq-list, .bqs.tight .bq-list { overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; }   /* tight: little height offered — the list takes what is left (bQueueRoom) */
+.bqs[hidden], .bq-list[hidden] { display: none; }
+.bq-more:disabled { cursor: default; }
+.bq-more:disabled .cv { display: none; }
+.bqs.open .bq-list.scrolled, .bqs.tight .bq-list.scrolled { -webkit-mask-image: linear-gradient(transparent, #000 20px); mask-image: linear-gradient(transparent, #000 20px); }
+.bq-tx { display: block; max-height: 40px; overflow: hidden; }
+.bq-tx.cut { -webkit-mask-image: linear-gradient(#000 calc(100% - 18px), transparent); mask-image: linear-gradient(#000 calc(100% - 18px), transparent); }
+.bq-more { display: flex; align-items: center; gap: 4px; padding: 0 2px; border-radius: 4px; color: #A6A6A6; font-size: 13px; line-height: 18px; }
+.bq-more .cv { width: 11px; height: 11px; transform: rotate(-90deg); transition: transform 150ms var(--ease-out); }
+.bq-more[aria-expanded="true"] .cv { transform: none; }
+@media (hover: hover) { .bq-more:hover { color: var(--w80); } }
 .bq .bubble.pending { opacity: .55; }
 .bq-cap { display: flex; align-items: center; gap: 2px; max-width: 100%; color: var(--w50); font-size: 12px; line-height: 16px; text-align: right; }
 .bq-cap .tx { min-width: 0; text-wrap: balance; }
@@ -798,30 +778,50 @@ button.bt-st[aria-describedby="b-tip"] { background: #FFFFFF1A; border-radius: 4
 .btn.danger { background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); }
 @media (hover: hover) { .btn.danger:hover { background: color-mix(in srgb, var(--danger) 18%, transparent); } }
 
-/* permission in the bubble (1ARF-0) */
-.bperm { display: flex; flex-direction: column; gap: 6px; border-radius: 16px; background: var(--composer); }
-.bperm-rows { display: flex; flex-direction: column; gap: 6px; }
-.bperm-file { display: flex; align-items: center; gap: 8px; width: 100%; height: 32px; padding: 0 8px; border-radius: 10px; background: var(--fill8); text-align: left; flex-shrink: 0; }
-.bperm-file .t { flex: 1; min-width: 0; color: var(--w90); font-size: 13px; font-weight: 500; line-height: 16px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
-.bperm-file .cv { width: 11px; height: 11px; opacity: .45; transform: rotate(-90deg); }
-@media (hover: hover) { button.bperm-file:hover { background: #FFFFFF1F; } button.bperm-file:hover .cv { opacity: .9; } }
-.bperm-in { display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 8px; border-radius: 10px; background: var(--raised); flex-shrink: 0; }
-.bperm-in .ic { width: 14px; height: 14px; opacity: .5; }
-.bperm-in .instead { flex: 1; min-width: 0; height: 100%; padding: 0; border-radius: 0; background: none; font-size: 13px; line-height: 16px; }
-.bperm-in .instead::placeholder { color: var(--w50); line-height: 16px; }
+/* permission in the bubble — a real card (Designer, 24 Nov 2026): Paper « 2 - Prompt envoyé » 1ANU-0, card 26HS-0, the same
+   as « App réelle · Mode Commentaire 4 » (1V51-0). #292929 with a 1 px border on the #171717 bubble, radius 12, 10 px
+   around and between its three rows. (Before: a #1F1F1F patch without padding, read as a card cut at the bottom.) */
+.bperm { display: flex; flex-direction: column; gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--raised); }
+.bperm-rows { display: flex; flex-direction: column; gap: 10px; }
+.bperm-file { display: flex; align-items: center; gap: 6px; width: 100%; height: 18px; border-radius: 4px; text-align: left; flex-shrink: 0; }
+.bperm-file .t { flex: 1; min-width: 0; color: var(--w90); font-size: 13px; font-weight: 500; line-height: 18px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+.bperm-file .num { font-family: inherit; }   /* 26IB-0 / 26IA-0: Inter Display 12 / 16 */
+.bperm-file .cv { width: 12px; height: 12px; opacity: .5; transform: rotate(-90deg); }
+@media (hover: hover) { button.bperm-file:hover .cv { opacity: .9; } }
+.bperm-in { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px; border-radius: 8px; background: var(--composer); flex-shrink: 0; }
+.bperm-in .ic { width: 12px; height: 12px; opacity: .4; }
+.bperm-in .instead { flex: 1; min-width: 0; height: 100%; padding: 0; border-radius: 0; background: none; font-size: 12px; line-height: 16px; }
+.bperm-in .instead::placeholder { color: var(--w40); line-height: 16px; }
 .bperm-in .instead:focus-visible { outline: none; }
 .bperm-in:focus-within { box-shadow: inset 0 0 0 1px #FFFFFF33; }
-.bperm-ft { display: flex; align-items: center; gap: 8px; padding-left: 4px; }
-.bperm .always { align-self: center; height: 28px; }
+.bperm-ft { display: flex; align-items: center; gap: 8px; }
+.bperm .always { flex: 0 0 auto; margin-right: auto; align-self: center; height: 28px; }   /* 26HY-0: the room left of the buttons is empty, not the switch */
+.bperm .sw { background: rgb(255 255 255 / 15%); }   /* 26I1-0, off: #FFFFFF26 */
+.bperm .btn { padding: 0 10px; }
+.bperm .btn:not(.primary) { background: var(--fill6); color: var(--w80); }   /* 26HW-0 */
+@media (hover: hover) { .bperm .btn:not(.primary):hover { background: var(--fill8); color: #FFFFFF; } }
 .bub .perm-of { flex-shrink: 0; }
+/* the mode and « Arrêter » under the card (26K6-0), 12 px below it; with too little height the card stays whole and the row goes */
+.bub .dock.has-perm { gap: 12px; }
+.bub .dock.has-perm.tight > .composer { display: none; }
+.bub #app.perm-tight2 .body, .bub #app.perm-tight2 .b-rule { display: none; }
+.bub #app.perm-tight3 .bperm-in { display: none; }
 
 /* the diff « en grand » (19RN-0, 1B19-0) */
 .bub #app.view { padding: 6px; }
 .bub #app.view .b-rule { margin: 0 6px; }
 .bub #app.view .dock { padding: 0 6px 6px; }
 .bub #app.view .dock.has-perm { padding: 0; }
-.bub #app.view .bperm { padding: 0 6px 6px; }
+/* the diff « en grand » of a request (19RN-0, redrawn 24 Nov 2026): ONE card (26KG-0) holds the diff and the answer, the
+   mode and « Arrêter » sit under it (26JW-0), in the bubble's 12 px. The diff of a finished turn (1B19-0) is not this.
+   Designer, 25 Nov 2026: the answer keeps the NORMAL card's values (field 12 px, « Refuser » #FFFFFFCC, 10 px in the
+   buttons, nothing more around it) — no value of its own here; the row leaves the resize grip its corner. */
 .bub #app.view .bperm-file { display: none; }
+.bub #app.view-perm { gap: 12px; padding: 12px; }   /* 19RN-0 aligned on 25 Nov: the bubble's own 12 px, as with the normal card (the finished turn's diff keeps 6) */
+.bub #app.view-perm .main { gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--raised); }
+.bub #app.view-perm .bview { padding: 0; background: none; }   /* 1ANA-0 */
+.bub #app.view-perm .bperm { padding: 0; border: 0; border-radius: 0; background: none; }   /* the card is .main here */
+.bub #app.view-perm > .composer { flex-shrink: 0; margin-right: 16px; }   /* the grip's 12 px + 4: « Arrêter » never under it */
 .bub #app.view .main { flex: 1 1 auto; }
 .bub .bview { display: flex; flex-direction: column; gap: 8px; flex: 1 1 0; min-height: 0; padding: 8px; border-radius: 10px; background: var(--fill8); }
 .bview-hd { display: flex; align-items: center; gap: 8px; padding: 0 2px; flex-shrink: 0; }

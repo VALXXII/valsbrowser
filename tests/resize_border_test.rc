@@ -1,0 +1,3 @@
+// tests/resize_border_test.cpp: the browser's own manifest (Windows 8-11 declared), so its grips can be layered child
+// windows as in the browser. Compiled from the repository root (tests/update-integration/run_all.py).
+1 24 "src/browser.manifest"

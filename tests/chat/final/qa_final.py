@@ -423,12 +423,41 @@ EMBEDDED_BOX = {'#qa-frame': "(function(){var f=document.getElementById('qa-fram
                 '#qa-card': "(function(){var b=document.getElementById('qa-card').shadowRoot.getElementById('qa-sh').getBoundingClientRect();return [b.left,b.top,b.right,b.bottom]})()"}
 
 
+def bubble_frame_box():
+    '''The frame the page draws around the bubble's element (`.bf`, in the page script's closed shadow root, read through
+    DevTools as chat_qa_comment.conv_marks does): [left, top, right, bottom] in CSS px of the page's viewport. None: not drawn.'''
+    ws = C.ws_for(C.URL)
+    if not ws:
+        return None
+    try:
+        ws.call('DOM.enable'); doc = ws.call('DOM.getDocument', {'depth': -1, 'pierce': True})['root']
+    except Exception:
+        return None
+    found = []
+
+    def walk(n):
+        a = n.get('attributes', []); d = dict(zip(a[::2], a[1::2]))
+        if 'bf' in d.get('class', '').split():
+            found.append(n['nodeId'])
+        for k in n.get('children', []) + n.get('shadowRoots', []):
+            walk(k)
+    walk(doc)
+    if not found:
+        return None
+    try:
+        q = ws.call('DOM.getBoxModel', {'nodeId': found[-1]})['model']['border']
+    except Exception:
+        return None   # no box: hidden
+    xs, ys = q[0::2], q[1::2]
+    return [min(xs), min(ys), max(xs), max(ys)]
+
+
 def inject_embedded():
     """The iframe (same origin) and the web component; again after a reload (they are not in the site's files)."""
     r = page(EMBED_JS); time.sleep(0.5 if r else 0); return r
 
 
-def embedded_point(host):
+def embedded_point(host, strict=False):
     """Screen point of the block INSIDE the iframe / the shadow root of `host` (its anchor is the host); never under the
     open bubble (the click would reach the bubble, not the page): then the page is scrolled to free it."""
     inject_embedded()
@@ -439,10 +468,21 @@ def embedded_point(host):
             return None
         pg = page_area(); k = dpr(); p = (int(pg[0] + r[0] * k), int(pg[1] + r[1] * k))
         shown, rb = bubble_shown()
-        if not (shown and isinstance(rb, tuple) and rb[0] - 6 <= p[0] <= rb[2] + 6 and rb[1] - 6 <= p[1] <= rb[3] + 6):
+        under = shown and isinstance(rb, tuple) and rb[0] - 6 <= p[0] <= rb[2] + 6 and rb[1] - 6 <= p[1] <= rb[3] + 6
+        inside = pg[0] + 4 <= p[0] <= pg[2] - 20 and pg[1] + 4 <= p[1] <= pg[3] - 4
+        if inside and not under:
             return p
-        u32.SetCursorPos(pg[0] + 20, (pg[1] + pg[3]) // 2); wheel(2 if p[1] < (pg[1] + pg[3]) // 2 else -2, 0.05); time.sleep(0.6)
-    return p
+        u32.SetCursorPos(pg[0] + 20, (pg[1] + pg[3]) // 2)
+        if not inside:   # scrolled out of the page area (by the line below, a turn earlier): brought back, by one notch
+            wheel(1 if p[1] > pg[3] - 4 else -1, 0.05)
+        else:
+            wheel(2 if p[1] < (pg[1] + pg[3]) // 2 else -2, 0.05)
+        time.sleep(0.6)
+    # monkey seed 2 on the 20:00 release (#102, twice): freeing the block from under the bubble scrolled it OUT of the page area and
+    # the point was returned all the same — the click went under the browser's window, to the desktop (« foreground: Progman
+    # (another application), mouse button down ») or to the window behind it; no bubble could open. A point that is not in the
+    # page area, or still under the bubble, is not a point to click (`strict`: None; the journeys, whose bubble is closed, keep the point).
+    return None if strict else p
 
 
 def keyboard_to_page(avoid=None):
@@ -721,12 +761,14 @@ def holds(text, token):
     '''The token is in the text AS A WHOLE: « jt1x1 » is not in « … jt1x13 … ». The monkey numbers its messages (jt<seed>x<n>): from
     the 10th on, a plain `in` found the 1st one's token in every conversation (real-window monkey of 24 Nov 2026, seed 1: 8
     openings said to show « another conversation's message » — the test's, not the product's).
-    Only a DIGIT right after the token is refused: chat_state() reads document.body.textContent, where neighbouring elements
-    are glued without a space (« …jeton1x435Revenir »), so a letter on either side is normal (20:00 release, 24 Nov).'''
+    Only a DIGIT right after the token says it is another one: the chat's text is the page's textContent, where neighbours are
+    glued without a space (« …jeton1x435Revenir », « echo jt1x4Sonnet ») — refusing a letter before or after it rejected tokens
+    that were there (about 25 false « right conversation » in the journeys, 20:00 release's pass of 24 Nov 2026).'''
     return bool(token) and re.search(re.escape(token) + r'(?![0-9])', text or '') is not None
 
 
 assert holds('vrai-lent jt1x13 et jt1x14', 'jt1x13') and not holds('vrai-lent jt1x13 et jt1x14', 'jt1x1') and holds('« jt1x1 »', 'jt1x1')
+assert holds('echo jeton1x435Revenir', 'jeton1x435') and holds('Envoyéjt1x4Sonnet', 'jt1x4') and not holds('Envoyéjt1x41Sonnet', 'jt1x4')
 
 
 # ---------------------------------------------------------------- the chat, through real input

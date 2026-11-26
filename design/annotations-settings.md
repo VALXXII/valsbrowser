@@ -1,5 +1,12 @@
 # Réglages › « Annotations et agents » (V2-D)
 
+> **« Ton agent » (24/11/2026, worker C) — ce document décrit l'état d'avant.** Les agents ont quitté « Annotations » :
+> les agents du chat (Claude Code, Codex, leur statut unique `src/agent-status.h`) sont dans **Réglages › Agents**
+> (Paper « Onboarding agents — Ton agent » › « Réglages › Agents » ; `View::Agents`, `tests/agents_settings_test.cpp`),
+> et « Connecter un agent » (apps externes, MCP) y est l'option avancée « Connecter un agent externe ». Les rangées
+> Claude Desktop / Codex, « Autre app ou réglage manuel » et l'interrupteur « Proposer de connecter un agent » sont
+> retirés : la fenêtre « Connecter un agent » ne s'ouvre plus jamais d'elle-même. Le rappel du bandeau suit le chat.
+
 Section du tiroir Réglages pour connecter un agent **plus tard** et régler le mode Annotation. Contrat :
 `plan-annotations-mcp-local/design/annotations-v2-brief.md`. Composants, tokens et règles repris tels quels des
 sections existantes (Paper « Browser — référence unifiée », planches Réglages, relues en lecture seule) : aucun

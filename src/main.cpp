@@ -46,6 +46,7 @@
 #include "split-view.h"
 #include "split-overlay.h"
 #include "status-bubble.h"
+#include "resize-border.h"   // the window's resize border kept over the chat's WebView and the drawers
 #include "site-name.h"
 #include "debug-sandbox.h"
 #include "motion-lab.h"
@@ -76,6 +77,7 @@
 #define BROWSER_ANNOTATIONS 1
 #endif
 #include "profile-store.h"
+#include "screen-share-blocks.h"
 #include "window-sessions.h"
 #include "trace-erase.h"
 #include "log-privacy.h"
@@ -132,6 +134,8 @@ GUID_TEXT(ICoreWebView2BrowserExtensionRemoveCompletedHandler,"{8e41909a-9b18-4b
 GUID_TEXT(ICoreWebView2WebMessageReceivedEventHandler,"{57213f19-00e6-49fa-8e07-898ea01ecbd2}")
 GUID_TEXT(ICoreWebView2ScriptDialogOpeningEventHandler,"{ef381bf9-afa8-4e37-91c4-8ac48524bdfb}")
 GUID_TEXT(ICoreWebView2PermissionRequestedEventHandler,"{15e1c6a3-c72a-4df3-91d7-d097fbec6bfd}")
+GUID_TEXT(ICoreWebView2ScreenCaptureStartingEventHandler,"{e24ff05a-1db5-59d9-89f3-3c864268db4a}")
+GUID_TEXT(ICoreWebView2GetProcessExtendedInfosCompletedHandler,"{f45e55aa-3bc2-11ee-be56-0242ac120002}")
 GUID_TEXT(ICoreWebView2BasicAuthenticationRequestedEventHandler,"{58b4d6c2-18d4-497e-b39b-9a96533fa278}")
 GUID_TEXT(ICoreWebView2ClientCertificateRequestedEventHandler,"{d7175ba2-bcc3-11eb-8529-0242ac130003}")
 GUID_TEXT(ICoreWebView2LaunchingExternalUriSchemeEventHandler,"{74f712e0-8165-43a9-a13f-0cce597e75df}")
@@ -187,6 +191,14 @@ inline unsigned NextTabSerial(){static unsigned serial=0;return ++serial;}
 // whose "not secure" interstitial the tab displays (NavigateToString), `token` authenticates
 // its button messages and `from` is where "Revenir" leads.
 struct HttpsOnlyState { std::wstring insecure,expectHost,shown,token,from; UINT64 upgrade=0; bool pending=false; };
+// Crashed tab (src/crash-page.h, #121): our page replaced the engine's after the tab's renderer died. It is one of our
+// internal pages like the error pages (ErrorPageState below carries shown = the crashed address, its token and kind
+// CrashPage::PageKind while it is on screen); this record outlives it so the same page works again when history brings
+// it back. url: the crashed address; dataSize/dataHash: our document's entry as NavigationStarting reports it (a
+// data: address of megabytes, kept as size + hash); entryBefore: the crashed entry had a previous one (Back from our
+// page goes there); ownPage: what crashed was one of our own pages (error / HTTPS-only), so « Recharger » opens its
+// address again; recharging / skipping: the next back navigation is ours (« Recharger », or Back resolved).
+struct CrashPageState { std::wstring url,token; size_t dataSize=0,dataHash=0; bool pending=false,entryBefore=false,ownPage=false,recharging=false,skipping=false; };
 // Network error page (src/error-pages.h) shown in place of `shown`, authenticated by `token`.
 struct ErrorPageState { std::wstring shown,token; bool pending=false; int kind=0; int forced=-1; bool forcedRetrying=false,forcedRestored=false; /* sandbox: the variant to show */
     std::wstring starting; UINT64 startingId=0; /* last top-level navigation: only its failure gets the page */
@@ -198,7 +210,7 @@ struct ErrorPageState { std::wstring shown,token; bool pending=false; int kind=0
     std::wstring code,triedUri; int tries=0;
     int forcedCert=-1; std::wstring forcedIssuer; /* sandbox: a certificate case to show (status, example issuer) */ };
 struct Tab { unsigned serial=NextTabSerial(); Com<ICoreWebView2Controller> controller; Com<ICoreWebView2> view; Com<ICoreWebView2_15> faviconView; NativeChrome::FaviconState favicon; NativeChrome::Loading::State loading; std::wstring title=TR(tab_new),uri; bool closed=false,home=true,refreshing=false,certificateError=false;
-    ULONGLONG hiddenAt=GetTickCount64(); bool sleeping=false; HttpsOnlyState https; // hiddenAt: when it last stopped being shown
+    ULONGLONG hiddenAt=GetTickCount64(); bool sleeping=false; HttpsOnlyState https; bool holed=false; /* #127: window region cut under the column over the page */ // hiddenAt: when it last stopped being shown
     // Split view: group id (0 = none), relative size, use order (rails collapse the least
     // recent), on screen now, first navigation done (until then the controller stays hidden).
     int group=0; float weight=1; std::uint64_t usedAt=0; bool shown=false,revealed=false; RECT placed{}; int placedVisible=-1; HWND host=nullptr; /* its WebView host window, once known (switch transition capture allowlist) */
@@ -208,6 +220,7 @@ struct Tab { unsigned serial=NextTabSerial(); Com<ICoreWebView2Controller> contr
     // `frozen`: bounds held while the preview stands in for the page.
     std::uint64_t navStamp=0; bool frozen=false;
     std::uint64_t navInFlight=0;   // the engine id of the top-level navigation started and not yet completed (review N13)
+    bool navigationHeld=false; std::wstring heldUri;   // its first navigation waits while the ad blocker is replaced (AdBlockHoldStart)
     // Overlay scrollbar (Paper V3 "Scrollbar minimale"): root scroll metrics posted by the page.
     NativeChrome::Scrollbar::Metrics scroll;
     // Link preview: the engine's status text (hovered link), drawn by our own bubble.
@@ -215,6 +228,10 @@ struct Tab { unsigned serial=NextTabSerial(); Com<ICoreWebView2Controller> contr
     // Paper p-D-0 surfaces: network error page, debug sandbox (opened by the user in this tab),
     // page element in fullscreen.
     ErrorPageState errorPage; bool sandbox=false,sandboxPending=false,pageFullscreen=false;
+    CrashPageState crash;   // crashed tab page (#121)
+    // Frozen page (#121 « Page qui ne répond plus »): a script sent to the page is waiting for it to run again
+    // (`probing`); « Recharger » is ending its renderer (`reloading`: the exit that follows reloads, no crash page).
+    struct { bool probing=false,reloading=false; std::wstring uri; } hang;   // uri: the frozen document's address
     // Script-opened target (window.open): its about:blank is a web document, never the native home, until the user
     // deliberately goes Home (Navigate with an empty address sets blankIsHome again). popupSetup: created for a
     // pending request, not yet assigned: no script removal/reinjection meanwhile (queued in audioReinject).
@@ -245,13 +262,14 @@ std::wstring base,dataDir,profileDir,sessionFile,logFile,downloadsFile,settingsF
 NativeChrome::Chrome chrome; NativeChrome::DownloadsUI::Popover downloadPanel; NativeChrome::DownloadsUI::Drawer downloadDrawer; NativeChrome::SettingsUI::Drawer settingsDrawer; NativeChrome::ContextMenu::Menu contextMenu; BrowserSettings::State settings; NativeUI::AddressKeyState addressKeys; NativeChrome::Motion::State motion; int pressed=0; bool motionMinimized=false; constexpr UINT_PTR MotionTimerId=72; std::optional<NativeChrome::Motion::Time> motionDeadline; HWND tooltip; int hover=0,keyboardFocus=0; bool editing=false,keyboardModality=false;
 namespace SV=NativeChrome::Split;
 // `origin`: index at the press, restored by Escape. `lifted`: dragged out of the strip into the split overlay.
-struct TabDrag { std::shared_ptr<Tab> tab; POINT start{}; float grab=0; bool active=false; int origin=-1; bool lifted=false; float grabY=0; SV::Target target; } tabDrag;
+// #127 column: `at` the last pointer (client px: the drop on the grid, outside the window), `cardW` the lifted card's width.
+struct TabDrag { std::shared_ptr<Tab> tab; POINT start{}; float grab=0; bool active=false; int origin=-1; bool lifted=false; float grabY=0; SV::Target target; POINT at{}; float cardW=0; } tabDrag;
 std::map<int,SV::Orientation> splitGroups; int nextSplitGroup=1; std::uint64_t useClock=0; int splitResize=-1;
 NativeChrome::SplitUI::Overlay splitOverlay;NativeChrome::StatusBubble::Bubble statusBubble;unsigned statusSerial=0;
 struct SeparatorDrag { bool active=false; int handle=-1,slot=-1; float grab=0; std::vector<float> extents; float last=0; DWORD lastTime=0; float velocity=0; } sepDrag; int lastSeparator=-1; DWORD lastSeparatorClick=0;
 // Annotation mode entry points (src/annotation-mode.h; no-op stubs when the feature is compiled out).
-constexpr int AnnotateCommand=3060,AnnotateExitCommand=3061,AnnotateHistoryCommand=3062,ChatCommand=3063; /* chat intégré (src/chat-host.h): Ctrl+Maj+D, the panel's width taken from the page area, the reload hook, shutdown */ float ChatInsetDip(); void ChatNavigationCompleted(const std::shared_ptr<Tab>& t); void ChatShutdown(); void AnnotationStartup(); void AnnotationShutdown(); /* #125: a private window's notes erased at its close, leftovers at the next start */ bool AnnotationHistoryAvailable(); bool AnnotationsCompiled(); bool AnnotationModeActive(); bool AnnotationBandSliding(); bool AnnotationSurfaceFocus(); void AnnotationSyncChrome(); void AnnotationLayout(); void AnnotationWindowState(); void AnnotationNavigation(const std::shared_ptr<Tab>& t); void AnnotationTabChanged(); void AnnotationTabSleeping(const std::shared_ptr<Tab>& t); bool AnnotationPageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceivedEventArgs* a); bool AnnotationCommand(int cmd);
-#include "annotation-entry.h" // settings section « Annotations » and menus: connect/disconnect, status, folder, clear all
+constexpr int AnnotateCommand=3060,AnnotateExitCommand=3061,ChatCommand=3063; /* chat intégré (src/chat-host.h): Ctrl+Maj+D, the panel's width taken from the page area, the reload hook, shutdown */ float ChatInsetDip(); void ChatNavigationCompleted(const std::shared_ptr<Tab>& t); void ChatShutdown(); void ChatAgentsStartup(); void ChatAgentsShutdown(); /* « Ton agent »: the agents' one status (src/agent-status.h) */ void AnnotationStartup(); void AnnotationShutdown(); /* #125: a private window's notes erased at its close, leftovers at the next start */ bool AnnotationChatShortcut(); bool AnnotationSettingsAvailable(); bool AnnotationsCompiled(); bool AnnotationModeActive(); bool AnnotationBandSliding(); bool AnnotationSurfaceFocus(); void AnnotationSyncChrome(); void AnnotationLayout(); void AnnotationWindowState(); void AnnotationNavigation(const std::shared_ptr<Tab>& t); void AnnotationTabChanged(); void AnnotationTabSleeping(const std::shared_ptr<Tab>& t); bool AnnotationPageMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceivedEventArgs* a); bool AnnotationCommand(int cmd);
+#include "annotation-entry.h" // settings section « Annotations » and menus: connect/disconnect, status, clear all
 namespace CM=NativeChrome::ContextMenu; extern std::vector<CM::Item> lastSplitMenu; void TabContextMenu(int tabIndex,int anchor); void AnnotationMenuItems(const std::shared_ptr<Tab>& tab,ICoreWebView2ContextMenuRequestedEventArgs* args,std::vector<CM::Item>& items); void AnnotationMenuChoice(const std::shared_ptr<Tab>& tab,int choice); bool ResizePlaceholdersUp(); extern std::vector<HWND> splitGrips; void SyncGripLooks(); bool PointerOnGrip(); bool GripsAnimating(); void GripFrame(NativeChrome::Motion::Time now); void Select(int n); void EndSplitDrag(bool restore); void SyncSplitDecor(); void ApplyPages(); bool SplitDragMove(POINT point); bool SplitAnimating(); void SplitFrame(NativeChrome::Motion::Time now);
 // Address bar (issue #20): visited-sites history, the suggestion list and the text the
 // user typed (the field may also show an inline completion or an arrowed row).
@@ -271,7 +289,7 @@ D2D1_POINT_2F ChromeOrigin(); D2D1_RECT_F ChromeClient(D2D1_RECT_F r); RECT Chro
 void FocusAbove(); HWND AnnotationBannerWindow(); D2D1_RECT_F FocusChatCard(float widthDip);
 constexpr UINT_PTR FocusMotionTimerId=0x464F,FocusWarmTimerId=0x4650; void FocusMotionTimer(); void FocusMotionWarm(); void FocusMotionFrame(NativeChrome::Motion::Time now); NativeChrome::Motion::Wake FocusMotionWake(NativeChrome::Motion::Time now); bool FocusMotionKeepsFocus(); bool FocusMotionSliding(); void FocusMotionToggle(bool toFocus); void FocusMotionLayoutChanged(); // Mode Focus entry / exit motion (src/focus-motion.h) // Mode Focus with the annotation mode: the banner above the panel, the chat card beside it
 // restore=true (Escape, lost capture, Alt+Tab): the order before the press comes back.
-void CancelTabDrag(bool restore=false){EndSplitDrag(restore);tabDrag={};chrome.dragIndex=-1;chrome.dragOffset=0;InvalidateChrome();}
+void CancelTabDrag(bool restore=false){EndSplitDrag(restore);tabDrag={};chrome.dragIndex=-1;chrome.dragOffset=0;chrome.sidebarDrag=-1;chrome.sidebarInsert=-1;InvalidateChrome();}
 int S(float value){return (int)std::lround(value*GetDpiForWindow(window)/96.f);}
 void RefreshTools();
 struct ICoreWebView2ContextMenuRequestedEventArgs; HRESULT PageContextMenu(const std::shared_ptr<Tab>& tab,ICoreWebView2ContextMenuRequestedEventArgs* args);
@@ -287,7 +305,9 @@ void OpenSandbox(std::shared_ptr<Tab> in=nullptr); void OpenFindBar(); bool InFu
 void AskClearBrowsingData(bool demo=false,std::function<void(bool)> result=nullptr); bool CloseWindowAllowed(bool demo=false,std::function<void(bool)> result=nullptr);
 void ShowAboutDialog(); void ShowPrivateDialog(bool future=false); bool ElementSurfaceKey(UINT key,bool ctrl,bool alt,bool shift,int& cmd);
 void ElementsFrame(NativeChrome::Motion::Time now); NativeChrome::Motion::Wake ElementsNextWake(NativeChrome::Motion::Time now);
-void ElementsReducedMotion(bool reduced); void RepositionElementSurfaces(); void ChromeTipHover(int x,int y); void ChromeTipHide(); bool sandboxNextTab=false,debugSandboxAtStart=false;
+void ElementsReducedMotion(bool reduced); void RepositionElementSurfaces(); void ChromeTipHover(int x,int y); void ChromeTipHide(); void ChromeTipFocus(int id); bool sandboxNextTab=false,debugSandboxAtStart=false;
+// Our print window (#121, src/print-integration.h, included after SavePageAsPdf).
+void PrintFrame(NativeChrome::Motion::Time now); NativeChrome::Motion::Wake PrintNextWake(NativeChrome::Motion::Time now); void PrintReposition(); bool PrintSurfaceFocus(HWND f); void PrintTabChanged(); void PrintTabClosed(const std::shared_ptr<Tab>& t); void CreatePrintSurfaces(); void DisposePrintSurfaces(); bool PrintPageMessage(const std::shared_ptr<Tab>& t,const std::wstring& message); void RegisterPrintScript(const std::shared_ptr<Tab>& t,const PopupHost::RequestPtr& popup);
 constexpr int FindNextCommand=3050,FindPreviousCommand=3051,FullscreenCommand=3052,SandboxCommandId=3053,ShortcutsCommand=3054,ExitFullscreenCommand=3055; bool PageFullscreenActive(); void ExitPageFullscreen(); void OpenShortcutsPanel();
 // Bookmarks (section "Bookmarks" below).
 constexpr int BookmarkBarCommand=3030,BookmarksDrawerCommand=3031,BookmarkUndoCommand=3032;
@@ -295,6 +315,8 @@ constexpr long long AccessibleBandKey=0x10003;
 constexpr long long AccessibleToolbarKey=0x10001; // = AccessibleToolbar (declared with the UIA tree below)
 extern Accessibility::Bridge accessibility;
 NativeChrome::BookmarkPopover::Popover bookmarkPopover; NativeChrome::BookmarkToast::Toast bookmarkToast; NativeChrome::BookmarksUI::Drawer bookmarksDrawer;
+// Panneau latéral (#127): section « Panneau latéral » below (src/sidebar.h, Chrome::BuildSidebar / PaintSidebar).
+constexpr int SidebarToggleCommand=NativeChrome::Chrome::SidebarToggleId;int forcedLayout=-1;BrowserSettings::TabsPosition LayoutInEffect();void LogLayout();std::wstring LayoutLine();int TabLayoutArg(const wchar_t* args);bool SidebarEdgeDown(float x);void SidebarEdgeMove(float x);void SidebarEdgeUp(bool commit);void SidebarEdgeLook(int state);bool SidebarEdgeKey(WPARAM key);void SidebarEdgeReset();bool SidebarEdgeDragging();void ApplyLayout();float DrawerReserveDip();void SyncDrawerReserve();void SetTabsPosition(BrowserSettings::TabsPosition p);void SidebarPopover(bool open);bool AnnotationButtonDimmed();RECT RegionScreen(int id);bool ColumnPopoverAt(int id,float gap,POINT& bottomLeft);void UpdateFont();void SidebarPrepare();void ToggleSidebar();void SidebarHoles();bool SidebarDragMove(POINT point);void SidebarDragEnd(bool commit);
 bool SyncBookmarkChrome();void BookmarksChanged();void ToggleBookmarksDrawer(bool keyboard);bool BookmarkedSite(const std::wstring& site);long long AccessibleBandItemKey(int region);
 // Self-update host hooks (no-ops in unstamped builds).
 std::wstring AboutTitle(){
@@ -308,7 +330,8 @@ void CheckForUpdates(); bool UpdateCheckAvailable(); bool FocusUpdateToast(); bo
 void SetUpdateToastTop(float dip); float UpdateToastHeight(); // the bookmarks band and the undo toast keep clear of it
 void SyncUpdateToastMotion();
 constexpr int CheckUpdatesCommand=3020;
-void InvalidateChrome(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */if(chrome.floating){InvalidateFocusPanel();return;}RECT r;GetClientRect(window,&r);r.bottom=std::min(r.bottom,(LONG)S(chrome.ContentTop()));InvalidateRect(window,&r,FALSE);}
+bool SideFocusWanted();void SideFocusReset();void SideFocusEvaluate();void SideRevealChanged();void SideSlideFrame();void SidePictureHide();void SideFocusForAddress();void SideFocusCommand(int cmd);bool SideFocusEscape();
+void InvalidateChrome(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */if(chrome.floating){InvalidateFocusPanel();return;}RECT r;GetClientRect(window,&r);if(!chrome.sidebar)r.bottom=std::min(r.bottom,(LONG)S(chrome.ContentTop()));InvalidateRect(window,&r,FALSE);}
 // Frame wakes are display-paced by FrameClock (one outstanding notification, worker
 // dormant when idle). Deadline-only dwells keep a single one-shot SetTimer. If the
 // clock is unavailable the legacy SetTimer path remains (not display synchronised).
@@ -337,26 +360,27 @@ void InvalidateMotion(NativeChrome::Motion::Time now){
     FocusMotionFrame(now); // Mode Focus entry / exit: the bar and the page's picture on the spring (src/focus-motion.h)
     FocusFrame(now); // Mode Focus: the floating panel's slide (the page windows' hole, then its own repaint)
     ScrollbarRefresh(now); // overlay handles only: never repaints the chrome
+    PrintFrame(now);
     SplitFrame(now);GripFrame(now);ElementsFrame(now);downloadPanel.Frame(now);downloadDrawer.Frame(now);settingsDrawer.Frame(now);historyDrawer.Frame(now);bookmarksDrawer.Frame(now);
     // Downloads icon: its own button only (also the frame that lands its last pose).
     chrome.downloadIcon.Settle(now);chrome.nav.Settle(now);AudioFrame(now);
     // Repainted only when its pose changes (60 poses a second at most at the authored speed), not on every compositor tick.
     {static NativeChrome::DownloadIcon::Pose painted;static bool known=false;const auto pose=chrome.downloadIcon.At(now);if(!known||pose!=painted){InvalidateDownloadIcon();painted=pose;known=true;}}
-    const bool full=motionFullFrames||motion.NextWake(now).delay||chrome.tabMotion.NextWake(now).delay||chrome.lottie.NextWake(now,motion.ReducedMotion()).delay||chrome.nav.NextWake(now).delay;
+    const bool full=motionFullFrames||motion.NextWake(now).delay||chrome.TabsNextWake(now).delay||chrome.lottie.NextWake(now,motion.ReducedMotion()).delay||chrome.nav.NextWake(now).delay;
     if(full){InvalidateChrome();return;}
     auto t=Active();if(chrome.LoadingSignature(t?t->loading.Sample(now,motion.ReducedMotion()):NativeChrome::Loading::Visual{})==paintedLoading)return;
     if(chrome.floating&&!chrome.panelLive)return;   // Mode Focus: no panel painted by the window (hidden, or its picture slides)
     RECT r=ChromePx(chrome.LoadingDirty());InvalidateRect(window,&r,FALSE);
 }
 void ScheduleMotion(NativeChrome::Motion::Time now){
-    const bool reduced=motion.ReducedMotion();auto ui=NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(motion.NextWake(now),chrome.tabMotion.NextWake(now)),chrome.lottie.NextWake(now,reduced)),chrome.nav.NextWake(now));motionFullFrames=ui.delay.has_value();
-    auto wake=NativeChrome::Motion::Earlier(ui,NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(downloadPanel.NextWake(now),downloadDrawer.NextWake(now)),settingsDrawer.NextWake(now)),NativeChrome::Motion::Earlier(historyDrawer.NextWake(now),bookmarksDrawer.NextWake(now))));wake=NativeChrome::Motion::Earlier(wake,chrome.downloadIcon.NextWake(now));wake=NativeChrome::Motion::Earlier(wake,AudioNextWake(now));wake=NativeChrome::Motion::Earlier(wake,ElementsNextWake(now));if(current>=0&&current<(int)pages.size())wake=NativeChrome::Motion::Earlier(wake,pages[current]->loading.NextWake(now,reduced));if(SplitAnimating()||GripsAnimating())wake=NativeChrome::Motion::Earlier(wake,NativeChrome::Motion::Frame());wake=NativeChrome::Motion::Earlier(wake,ScrollbarWake(now));wake=NativeChrome::Motion::Earlier(wake,FocusWake(now));wake=NativeChrome::Motion::Earlier(wake,FocusMotionWake(now));if(halted||motionMinimized||!wake.delay){KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();return;}
+    const bool reduced=motion.ReducedMotion();auto ui=NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(motion.NextWake(now),chrome.TabsNextWake(now)),chrome.lottie.NextWake(now,reduced)),chrome.nav.NextWake(now));motionFullFrames=ui.delay.has_value();
+    auto wake=NativeChrome::Motion::Earlier(ui,NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(NativeChrome::Motion::Earlier(downloadPanel.NextWake(now),downloadDrawer.NextWake(now)),settingsDrawer.NextWake(now)),NativeChrome::Motion::Earlier(historyDrawer.NextWake(now),bookmarksDrawer.NextWake(now))));wake=NativeChrome::Motion::Earlier(wake,chrome.downloadIcon.NextWake(now));wake=NativeChrome::Motion::Earlier(wake,AudioNextWake(now));wake=NativeChrome::Motion::Earlier(wake,ElementsNextWake(now));if(current>=0&&current<(int)pages.size())wake=NativeChrome::Motion::Earlier(wake,pages[current]->loading.NextWake(now,reduced));if(SplitAnimating()||GripsAnimating())wake=NativeChrome::Motion::Earlier(wake,NativeChrome::Motion::Frame());wake=NativeChrome::Motion::Earlier(wake,ScrollbarWake(now));wake=NativeChrome::Motion::Earlier(wake,FocusWake(now));wake=NativeChrome::Motion::Earlier(wake,FocusMotionWake(now));wake=NativeChrome::Motion::Earlier(wake,PrintNextWake(now)); /* our print window (#121): before the nothing-moves exit, or its fade never gets a frame */if(halted||motionMinimized||!wake.delay){KillTimer(window,MotionTimerId);motionDeadline.reset();frameClock.Cancel();return;}
     // A deadline due within one nominal frame is served by the next compositor tick.
     if(frameClockReady&&(wake.frames||*wake.delay<=*NativeChrome::Motion::Frame().delay)){if(motionDeadline){KillTimer(window,MotionTimerId);motionDeadline.reset();}frameClock.Request();return;}
     frameClock.Cancel();
     auto due=now+*wake.delay;if(motionDeadline&&*motionDeadline<=due)return;
     KillTimer(window,MotionTimerId);motionDeadline=due;
-    if(!SetTimer(window,MotionTimerId,(UINT)wake.delay->count(),nullptr)){motionDeadline.reset();motion.SetReducedMotion(true);chrome.tabMotion.Settle();motion.copy.Clear();ClearChromeMotion();motion.SetInteraction(hover,0,now);InvalidateChrome();}
+    if(!SetTimer(window,MotionTimerId,(UINT)wake.delay->count(),nullptr)){motionDeadline.reset();motion.SetReducedMotion(true);chrome.SettleTabs();motion.copy.Clear();ClearChromeMotion();motion.SetInteraction(hover,0,now);InvalidateChrome();}
 }
 void UpdateInteraction(int newHover,int newPressed){hover=newHover;pressed=newPressed;auto now=NativeChrome::Motion::Now();int group=NativeChrome::IsClose(hover)?NativeChrome::TabBase+NativeChrome::TabIndex(hover):hover;motion.SetInteraction(group,pressed==hover?pressed:0,now);InvalidateChrome();ScheduleMotion(now);}
 
@@ -406,7 +430,7 @@ bool Check(HRESULT hr,const wchar_t* op){if(FAILED(hr)){Fail(op,hr);return false
 // A refused per-tab operation (find, reload, favicon, interstitial): logged, never the loss of the engine.
 bool CheckTab(HRESULT hr,const wchar_t* op){if(FAILED(hr)){wchar_t code[32];swprintf(code,32,L"0x%08lX",(unsigned long)hr);Log(std::wstring(L"WEBVIEW2 refused ")+op+L" "+code);return false;}return !halted;}
 std::shared_ptr<Tab> Active(){return current>=0&&current<(int)pages.size()?pages[current]:nullptr;}
-void FocusAddress(){if(InFullscreen())return; /* no address field over a fullscreen page */editing=true;FocusAnchor(L"address field"); /* Mode Focus: the panel at once, at rest (the field sits there); i18n-exempt: log tag */ShowWindow(address,SW_SHOW);SetFocus(address);SendMessageW(address,EM_SETSEL,0,-1);InvalidateRect(window,nullptr,FALSE);}
+void FocusAddress(){if(InFullscreen())return; /* no address field over a fullscreen page */editing=true;SideFocusForAddress(); /* #127 Focus: the column at once, with its field */FocusAnchor(L"address field"); /* Mode Focus: the panel at once, at rest (the field sits there); i18n-exempt: log tag */ShowWindow(address,SW_SHOW);SetFocus(address);SendMessageW(address,EM_SETSEL,0,-1);InvalidateRect(window,nullptr,FALSE);}
 std::vector<std::wstring> Titles(){std::vector<std::wstring> titles;for(auto& t:pages)titles.push_back(t->title);return titles;}
 std::shared_ptr<const NativeChrome::FaviconImage> SiteIcon(const std::wstring& site);
 // What the field reads: the active tab's address and security outside editing; while
@@ -417,7 +441,7 @@ void SyncAddressDisplay(){auto t=Active();chrome.address=t&&!t->home?AddressBar:
 // without index reuse transferring one tab's visual state to its neighbour.
 void SyncTabKeys(){chrome.tabKeys.clear();for(auto& t:pages)chrome.tabKeys.push_back(t->serial);}
 void SyncVaultKey(); void FormsSync(); void FormsHideAll();
-void BuildChrome(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */FormsSync(); /* #121: the list and the bubble belong to one tab, document and place (P8) */chrome.privateChip=false; /* user polish: the incognito control in the profile slot replaces the « Privée » chip (privacy stays in its name, tooltip and title) */SyncVaultKey(); /* decision 7: the chip is the private indication; P stays a normal command */SyncAddressDisplay();SyncBookmarkChrome();SyncTabKeys();auto titles=Titles();auto now=NativeChrome::Motion::Now();chrome.contentOnly=InFullscreen(); /* fullscreen: the page alone */chrome.Build((int)pages.size(),current,&titles,now);SyncSplitDecor();if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(now);}}
+void BuildChrome(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */FormsSync(); /* #121: the list and the bubble belong to one tab, document and place (P8) */chrome.privateChip=false; /* user polish: the incognito control in the profile slot replaces the « Privée » chip (privacy stays in its name, tooltip and title) */SyncVaultKey(); /* decision 7: the chip is the private indication; P stays a normal command */SyncAddressDisplay();SyncBookmarkChrome();SyncTabKeys();auto titles=Titles();auto now=NativeChrome::Motion::Now();chrome.contentOnly=InFullscreen(); /* fullscreen: the page alone */SidebarPrepare();chrome.Build((int)pages.size(),current,&titles,now);SyncSplitDecor();if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(now);}}
 // After a pointer close the strip keeps its tab width until the pointer leaves
 // it, so repeated clicks keep landing on close buttons.
 void LockTabWidth(){chrome.lockedTab=chrome.strip.tab;}
@@ -450,9 +474,17 @@ void FindInPage(){
 }
 void CancelContentTransitionIfMoved();
 void SyncFolderRename();
+// The window's resize border over its children (src/resize-border.h). In « Panneau » the chat's WebView, a window of the
+// WebView2 process, lies flush with the right and bottom edges: the border's band never got the pointer there. Four
+// invisible grips sit on the band above every other child; each layout puts them back on top, and so does the chat's
+// placement (src/chat-host-ui.h SyncCardFrame: a WebView given to the window later, put_ParentWindow, lands above them).
+// Hidden while the window has no band (maximized, fullscreen, minimized).
+NativeChrome::ResizeBorder::Grips resizeGrips;
+void SyncResizeGrips(){if(window)resizeGrips.Sync(window,!IsZoomed(window)&&!IsIconic(window)&&!InFullscreen());}
 void Layout(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */if(!window)return;CancelContentTransitionIfMoved();FocusMotionLayoutChanged();SyncFocusMode();FocusAbove();chrome.Resize();BuildChrome();FocusPlace();SyncFolderRename();auto r=chrome.edit;
     HDC dc=GetDC(address);auto old=SelectObject(dc,font?font:GetStockObject(DEFAULT_GUI_FONT));TEXTMETRICW metrics{};GetTextMetricsW(dc,&metrics);SelectObject(dc,old);ReleaseDC(address,dc);
-    auto placement=chrome.MeasureText(L"Ag",{r.left,44,r.right,76},16,false,false,-.16f);
+    {static float fontSize=0;if(fontSize!=chrome.addressFont){fontSize=chrome.addressFont;UpdateFont();HDC d2=GetDC(address);auto o2=SelectObject(d2,font?font:GetStockObject(DEFAULT_GUI_FONT));GetTextMetricsW(d2,&metrics);SelectObject(d2,o2);ReleaseDC(address,d2);}}
+    auto placement=chrome.MeasureText(L"Ag",{r.left,r.top,r.right,r.bottom},chrome.addressFont,false,false,chrome.AddressTracking());
     // Mode Focus: the field sits in the floating panel at rest (editing keeps the panel there).
     const D2D1_POINT_2F to=ChromeOrigin();
     const int baseline=S(to.y+placement.originY+placement.baseline);int editHeight=std::max(S(22),(int)(metrics.tmHeight+metrics.tmExternalLeading+2));
@@ -462,9 +494,10 @@ void Layout(){if(WorkspaceParked())return; /* a hidden profile's event: the wind
     // The page (and a split view's panels, see ContentBox) starts right under the chrome:
     // 81 DIP, 121 with the bookmarks band, no top padding (Paper c-v7q0dg). Mode Focus: 4 DIP, the panel floats over it.
     SetUpdateToastTop(ChromeBottomDip());bookmarkToast.Reposition();
-    ApplyPages();
+    ApplyPages();SyncResizeGrips(); // the resize border's grips above the pages and the chat (src/resize-border.h)
     RefreshTools();InvalidateRect(window,nullptr,FALSE);
 }
+bool CrashPageOn(const std::shared_ptr<Tab>& t);   // src/elements-integration.h (crashed tab page, #121)
 void Update(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
     auto t=Active();if(!t)return;
     BOOL canGoBack=FALSE,canGoForward=FALSE;
@@ -472,6 +505,7 @@ void Update(){if(WorkspaceParked())return; /* a hidden profile's event: the wind
         if(!Check(t->view->get_CanGoBack(&canGoBack),L"get_CanGoBack")||
            !Check(t->view->get_CanGoForward(&canGoForward),L"get_CanGoForward"))return;
     }
+    if(CrashPageOn(t)&&!t->crash.ownPage)canGoBack=t->crash.entryBefore;   // Back from our page skips the crashed entry
     chrome.SetEnabled('B',canGoBack!=FALSE);chrome.SetEnabled('F',canGoForward!=FALSE);
     chrome.SetEnabled('C',!t->home&&!t->uri.empty());AnnotationSyncChrome();if(!editing)SetWindowTextW(address,t->home?L"":t->uri.c_str());NativeUI::SetTextIfChanged(window,privateWindow?TRF(window_title_private,t->title):TRF(window_title,t->title)); /* only a new title reaches Windows: Update runs on every address, history and load event */RefreshTools(); /* builds the chrome (PERF-07: no second BuildChrome) */InvalidateRect(window,nullptr,FALSE);
     ScrollbarRefresh(NativeChrome::Motion::Now()); // home <-> page hides or restores the handle
@@ -491,14 +525,19 @@ void MoveTab(int from,int to){
     current=(int)(std::find(pages.begin(),pages.end(),active)-pages.begin());
     motion.ClearInteractions();hover=pressed=keyboardFocus=0;Update();
 }
+// #127 motion spec §1: 6 DIP before a tab (top bar) or a row (column) lifts, for a reorder or a split view: ONE threshold.
+constexpr float TabDragThreshold=6;
 void DragTab(POINT point){
     if(!tabDrag.tab||halted)return;
     auto it=std::find(pages.begin(),pages.end(),tabDrag.tab);if(it==pages.end()){CancelTabDrag();return;}
+    tabDrag.at=point;
     if(!tabDrag.active){
-        if(std::abs(point.x-tabDrag.start.x)<=GetSystemMetrics(SM_CXDRAG)&&std::abs(point.y-tabDrag.start.y)<=GetSystemMetrics(SM_CYDRAG))return;
+        // #127 motion spec: 6 DIP before the tab lifts (a click otherwise), or the system's drag distance when larger.
+        if(std::abs(point.x-tabDrag.start.x)<std::max(S(TabDragThreshold),GetSystemMetrics(SM_CXDRAG)+1)&&std::abs(point.y-tabDrag.start.y)<std::max(S(TabDragThreshold),GetSystemMetrics(SM_CYDRAG)+1))return;
         tabDrag.active=true;
     }
     if(SplitDragMove(point))return;
+    if(chrome.sidebar){SidebarDragMove(point);return;}
     float x=point.x*96.f/GetDpiForWindow(window)-ChromeOrigin().x; // chrome-local (Mode Focus: the panel's offset)
     // Drop slot = the visible tab under the pointer on the adaptive, scrolled strip.
     const auto* strip=&chrome.strip;int from=(int)(it-pages.begin()),lo=0,hi=(int)pages.size()-1;
@@ -542,7 +581,8 @@ SV::Box ContentBox(){namespace View=NativeChrome::Design::Viewport;
     // With the annotation mode (Paper 203J-0): under the banner, 4 DIP before the chat card. R25: while the banner slides the
     // page keeps its size and only moves (no relayout per frame), as in the normal chrome.
     if(chrome.floating&&!InFullscreen()){auto f=FM::Content(chrome.ClientWidth(),chrome.height,FM::ChatReserve(ChatInsetDip()),chrome.annotationBand);if(AnnotationBandSliding())f.bottom+=f.top-FM::pageInset;return {f.left,f.top,f.right,f.bottom};}
-    auto c=SV::Content(chrome.width,chrome.height);c.top=chrome.ContentTop();c.left=View::inset;c.right=std::max(c.left,chrome.width-View::inset-ChatInsetDip()); /* the chat panel sits at the right of the page area: the page shrinks, it is never covered */c.bottom=chrome.height-View::inset;if(AnnotationBandSliding())c.bottom+=chrome.annotationBand; /* R25: while the annotation band slides, the page keeps its size and only moves (its bottom goes past the window, unseen): no relayout per frame */if(InFullscreen()){c={0,0,chrome.width,chrome.height};}c.bottom=std::max(c.top,c.bottom);return c;}
+    auto c=SV::Content(chrome.width,chrome.height);c.top=chrome.ContentTop();const float inset=NativeChrome::Sidebar::Zone::inset; /* #127 (Val): 4 DIP around the page in both layouts */c.left=chrome.sidebar?chrome.SidebarZoneLeft():inset;c.right=std::max(c.left,chrome.width-inset-ChatInsetDip());   /* #127 panel layouts: ChatInsetDip includes the 4 DIP gap to the chat card */
+    if(const float drawer=DrawerReserveDip();drawer>0)c.right=std::max(c.left,std::min(c.right,chrome.width-drawer-inset)); /* #127 (Val, B): an open drawer: the page stops 4 DIP before it, its right corners rounded */ /* the chat panel sits at the right of the page area: the page shrinks, it is never covered */c.bottom=chrome.height-inset;if(AnnotationBandSliding())c.bottom+=chrome.annotationBand; /* R25: while the annotation band slides, the page keeps its size and only moves (its bottom goes past the window, unseen): no relayout per frame */if(InFullscreen()){c={0,0,chrome.width,chrome.height};}c.bottom=std::max(c.top,c.bottom);return c;}
 struct SplitView{int group=0,active=-1;float min=SV::minWidthCss;std::vector<std::shared_ptr<Tab>> members;std::vector<float> weights;SV::Arrangement a;};
 SplitView CurrentSplit(){
     // A page element in fullscreen (video, game…) is presented alone at the whole ContentBox: the other panels,
@@ -597,6 +637,19 @@ RECT PixelRect(const SV::Box& b){return {S(b.left),S(b.top),S(b.right),S(b.botto
 // rules (home hidden, a new controller hidden until its first navigation completes);
 // a visible group shows every non-collapsed member at its slot. Hidden tabs start
 // their sleep clock, shown ones wake: a visible site is never suspended.
+// #127 (Fix's real window, 25 nov.): under 900 DIP in a side layout the chat card goes OVER the page (validated rule), so
+// its WebView window must come before every page window in the sibling order: a page WebView created or re-created
+// later lands on top, and nothing else lifts the chat. Run after every placement (ApplyPages: relayout, resize across
+// 900 either way, tab switch, a drawer opening or closing, a page's WebView created) and whenever the chat moves; its
+// corner masks go back above it. Beside the page (wider, or the top bar) the order does not matter; the drawers are
+// popups, above anyway. `chatWindowForTest`: a stand-in window for the chat (tests/ui/sidebar_split_drag_test.cpp).
+HWND chatWindowForTest=nullptr;HWND ChatHostWindow();void ChatCornersOnTop();
+bool ChatOverlaysPage(){return chrome.sidebar&&chrome.ClientWidth()<NativeChrome::Sidebar::chatOverlayBelow;}
+void KeepChatAbovePages(){
+    if(!window)return;HWND chat=chatWindowForTest?chatWindowForTest:ChatHostWindow();
+    if(!chat||GetParent(chat)!=window||!(GetWindowLongW(chat,GWL_STYLE)&WS_VISIBLE)||!ChatOverlaysPage())return;
+    SetWindowPos(chat,HWND_TOP,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOOWNERZORDER);ChatCornersOnTop();
+}
 void ApplyPages(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */
     if(!window||halted)return;
     DissolveSmallGroups();if(!ResizePreviewValid())ClearResizePreview();auto v=CurrentSplit();auto active=Active();
@@ -626,7 +679,7 @@ void ApplyPages(){if(WorkspaceParked())return; /* a hidden profile's event: the 
     }
     if(under)ReleaseDC(window,under);
     FocusHoles(true); // Mode Focus: Chromium may reset a page window's region when it resizes; the hole goes back at once
-    SyncGrips(v);SyncCornerMasks();SyncSplitDecor();SyncStatusBubble();SyncScrollbars();AnnotationLayout();InvalidateRect(window,nullptr,FALSE);
+    SyncGrips(v);SyncCornerMasks();SidebarHoles();SyncSplitDecor();SyncStatusBubble();SyncScrollbars();AnnotationLayout();KeepChatAbovePages();InvalidateRect(window,nullptr,FALSE);
 }
 // Separator grips. Pages are child windows of another process: over them the main
 // window gets no mouse input, so the 4 DIP gap alone would be the target. A layered
@@ -726,40 +779,49 @@ void GripFrame(NativeChrome::Motion::Time now){
 // inside it, where the page shows and keeps the pointer. It really hides the page there,
 // for a single page and for split views (side by side: the outer panels; stacked: the
 // bottom one). Top corners meet the toolbar and stay square, as in Paper.
-// Mode Focus (Paper 1J9P-0): the page's four corners are round (6 DIP): boxes on the content's top edge get top
-// corners too. They step away while the floating panel covers them (they would cut its corners).
 struct PageCorner{SV::Box page;bool right=false,top=false;};
-float PageCornerRadius(){return chrome.floating?FM::pageRadius:SV::pageRadius;}
+// The page card's corner (Designer, 24 nov.): 6 DIP with the top bar, 8 DIP with the side panel (the column's cards).
+// Mode Focus (Paper 1J9P-0): 6, its four corners round; they step away while the floating panel covers them.
+float PageRadiusDip(){return chrome.floating?FM::pageRadius:chrome.sidebar?NativeChrome::Sidebar::Zone::pageRadius:NativeChrome::Sidebar::Zone::topBarPageRadius;}
 std::vector<PageCorner> PageCorners(){
-    std::vector<PageCorner> out;if(IsZoomed(window)||InFullscreen())return out; // square like the window (Paper V3)
+    // Val (24 nov.): the page card keeps its rounded corners and 4 DIP inset when the window is MAXIMIZED too; only F11
+    // fullscreen is square, edge to edge. One switch to go back to square-when-maximized: kRoundWhenMaximized = false.
+    constexpr bool kRoundWhenMaximized=true;
+    std::vector<PageCorner> out;if((!kRoundWhenMaximized&&IsZoomed(window))||InFullscreen())return out;
     const auto c=ContentBox();auto v=CurrentSplit();std::vector<SV::Box> boxes;
     if(v.group){for(auto& s:v.a.slots)if(!s.rail)boxes.push_back(s.box);}else{auto t=Active();if(t&&t->shown)boxes.push_back(c);}
-    for(auto& b:boxes){if(std::fabs(b.bottom-c.bottom)>.5f)continue;if(std::fabs(b.left-c.left)<.5f)out.push_back({b,false});if(std::fabs(b.right-c.right)<.5f)out.push_back({b,true});}
-    if(chrome.floating)for(auto& b:boxes){if(std::fabs(b.top-c.top)>.5f)continue;
-        if(std::fabs(b.left-c.left)<.5f)out.push_back({b,false,true});if(std::fabs(b.right-c.right)<.5f)out.push_back({b,true,true});}
+    const bool leftCovered=chrome.sidebar&&(chrome.sidebarOverlay||(chrome.sideHidden&&chrome.sideShown));
+    for(auto& b:boxes){for(int top=0;top<2;++top){if(std::fabs((top?b.top:b.bottom)-(top?c.top:c.bottom))>.5f)continue;if(!leftCovered&&std::fabs(b.left-c.left)<.5f)out.push_back({b,false,top!=0});if(std::fabs(b.right-c.right)<.5f)out.push_back({b,true,top!=0});}}
     return out;
 }
-std::vector<HWND> cornerMasks;struct CornerLook{int x=0,y=0,size=0;bool right=false,top=false;float radius=0;UINT dpi=0;std::vector<std::uint32_t> pixels;};std::vector<CornerLook> cornerLooks;
+std::vector<HWND> cornerMasks;struct CornerLook{int x=0,y=0,size=0;bool right=false,top=false;float radius=0;UINT dpi=0;unsigned edge=0;int edgeAlpha=255;std::vector<std::uint32_t> pixels;};std::vector<CornerLook> cornerLooks;
 LRESULT CALLBACK CornerProc(HWND h,UINT msg,WPARAM w,LPARAM l){if(msg==WM_NCHITTEST)return HTCLIENT;if(msg==WM_ERASEBKGND)return 1;if(msg==WM_PAINT){PAINTSTRUCT ps;BeginPaint(h,&ps);EndPaint(h,&ps);return 0;}return DefWindowProcW(h,msg,w,l);}
-void RenderCorner(size_t i,bool right,int size,UINT dpi,bool top=false,float radius=SV::pageRadius){
-    auto& L=cornerLooks[i];if(L.size==size&&L.right==right&&L.top==top&&L.radius==radius&&L.dpi==dpi)return;HWND g=cornerMasks[i];
+// `edge` (#127 « Redimensionner »): 0, or 0x1RRGGBB: the column edge's line, whose arc (radius pageRadius + 1, 2 DIP wide,
+// faded over 12 DIP from its end) crosses this left corner's square (Chrome::PaintSideEdge draws the rest).
+void RenderCorner(size_t i,bool right,int size,UINT dpi,bool top=false,unsigned edge=0,float edgeAlpha=1){
+    const int alpha255=(int)std::lround(std::clamp(edgeAlpha,0.f,1.f)*255);
+    auto& L=cornerLooks[i];const float radius=PageRadiusDip();if(L.size==size&&L.radius==radius&&L.right==right&&L.top==top&&L.dpi==dpi&&L.edge==edge&&L.edgeAlpha==alpha255)return;HWND g=cornerMasks[i];
     BITMAPINFO bi{};bi.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);bi.bmiHeader.biWidth=size;bi.bmiHeader.biHeight=-size;bi.bmiHeader.biPlanes=1;bi.bmiHeader.biBitCount=32;bi.bmiHeader.biCompression=BI_RGB;
     HDC screen=GetDC(nullptr);HDC mem=CreateCompatibleDC(screen);void* bits=nullptr;HBITMAP bmp=CreateDIBSection(mem,&bi,DIB_RGB_COLORS,&bits,nullptr,0);if(!bmp||!bits){if(bmp)DeleteObject(bmp);DeleteDC(mem);ReleaseDC(nullptr,screen);return;}
     HGDIOBJ old=SelectObject(mem,bmp);auto* px=(std::uint32_t*)bits;const float r=radius*dpi/96.f;
-    // Mask origin: the corner square's top-left. Arc centre: r inside the page from the corner (a top corner: from the top).
+    // Mask origin: the corner square's top-left. Arc centre: r inside the page from the corner.
     const float cx=right?(float)size-r:r,cy=top?r:(float)size-r;const std::uint32_t canvas=GetRValue(BG);
     for(int y=0;y<size;++y)for(int x=0;x<size;++x){const float px0=x+.5f,py0=y+.5f;const bool beyond=right?px0>cx:px0<cx;float a=0;
-        if(beyond&&(top?py0<cy:py0>cy)){const float d=std::hypot(px0-cx,py0-cy);a=std::clamp(d-r+.5f,0.f,1.f);}  // outside the arc: canvas
-        const auto A=(std::uint32_t)std::lround(a*255),C=(std::uint32_t)std::lround(canvas*a);px[y*size+x]=(A<<24)|(C<<16)|(C<<8)|C;}
+        float lr=0,lg=0,lb=0,la=0;
+        if(beyond&&(top?py0<cy:py0>cy)){const float d=std::hypot(px0-cx,py0-cy);a=std::clamp(d-r+.5f,0.f,1.f);  // outside the arc: canvas
+            if(edge&&!right){const float k=dpi/96.f,ring=r+NativeChrome::Sidebar::Resize::line/2*k,half=NativeChrome::Sidebar::Resize::line/2*k;
+                const float cover=std::clamp(half+.5f-std::fabs(d-ring),0.f,1.f),fromEnd=(top?py0:(float)size-py0)/k+1;
+                la=cover*std::clamp(fromEnd/NativeChrome::Sidebar::Resize::fade,0.f,1.f)*alpha255/255.f;lr=((edge>>16)&255)*la;lg=((edge>>8)&255)*la;lb=(edge&255)*la;}}
+        const float A0=la+a*(1-la);const auto A=(std::uint32_t)std::lround(A0*255);
+        const auto R=(std::uint32_t)std::lround(lr+canvas*a*(1-la)),G=(std::uint32_t)std::lround(lg+canvas*a*(1-la)),B=(std::uint32_t)std::lround(lb+canvas*a*(1-la));px[y*size+x]=(A<<24)|(R<<16)|(G<<8)|B;}
     POINT src{0,0};SIZE sz{size,size};BLENDFUNCTION blend{AC_SRC_OVER,0,255,AC_SRC_ALPHA};
-    if(UpdateLayeredWindow(g,screen,nullptr,&sz,mem,&src,0,&blend,ULW_ALPHA)){L.size=size;L.right=right;L.top=top;L.radius=radius;L.dpi=dpi;if(splitTest)L.pixels.assign(px,px+(size_t)size*size);}
+    if(UpdateLayeredWindow(g,screen,nullptr,&sz,mem,&src,0,&blend,ULW_ALPHA)){L.size=size;L.radius=radius;L.right=right;L.top=top;L.dpi=dpi;L.edge=edge;L.edgeAlpha=alpha255;if(splitTest)L.pixels.assign(px,px+(size_t)size*size);}
     SelectObject(mem,old);DeleteObject(bmp);DeleteDC(mem);ReleaseDC(nullptr,screen);
 }
 void BlendLayered(HDC dc,POINT client,HWND h,const std::vector<std::uint32_t>& pixels,int w,int hgt);
 void BlendCorners(HDC dc,POINT client){for(size_t i=0;i<cornerMasks.size()&&i<cornerLooks.size();++i)BlendLayered(dc,client,cornerMasks[i],cornerLooks[i].pixels,cornerLooks[i].size,cornerLooks[i].size);}
 void SyncCornerMasks(){
-    const float radius=PageCornerRadius();
-    const auto corners=halted?std::vector<PageCorner>{}:PageCorners();const UINT dpi=GetDpiForWindow(window);const int size=(int)std::ceil(radius*dpi/96.f)+1;
+    const auto corners=halted?std::vector<PageCorner>{}:PageCorners();const UINT dpi=GetDpiForWindow(window);const int size=(int)std::ceil(PageRadiusDip()*dpi/96.f)+1;
     while(cornerMasks.size()<corners.size()){
         static bool registered=false;if(!registered){WNDCLASSW wc{};wc.lpfnWndProc=CornerProc;wc.hInstance=instance?instance:GetModuleHandleW(nullptr);wc.lpszClassName=L"BrowserPageCorner";RegisterClassW(&wc);registered=true;}
         HWND g=CreateWindowExW(WS_EX_LAYERED|WS_EX_NOACTIVATE,L"BrowserPageCorner",L"",WS_CHILD,0,0,1,1,window,nullptr,instance?instance:GetModuleHandleW(nullptr),nullptr);if(!g)break;
@@ -769,7 +831,9 @@ void SyncCornerMasks(){
         if(i>=corners.size()){if(GetWindowLongW(cornerMasks[i],GWL_STYLE)&WS_VISIBLE)ShowWindow(cornerMasks[i],SW_HIDE);continue;}
         const auto& c=corners[i];const int x=c.right?S(c.page.right)-size:S(c.page.left),y=c.top?S(c.page.top):S(c.page.bottom)-size;
         if(c.top&&FocusHoleOver({x,y,x+size,y+size})){if(GetWindowLongW(cornerMasks[i],GWL_STYLE)&WS_VISIBLE)ShowWindow(cornerMasks[i],SW_HIDE);continue;}
-        SetWindowPos(cornerMasks[i],HWND_TOP,x,y,size,size,SWP_NOACTIVATE|SWP_SHOWWINDOW);RenderCorner(i,c.right,size,dpi,c.top,radius);
+        const bool keyed=keyboardFocus==NativeChrome::Chrome::SidebarEdgeId&&keyboardModality;
+        const unsigned edge=!c.right&&chrome.sidebar&&std::fabs(c.page.left-chrome.side.page.left)<.5f?chrome.EdgeLineColor(keyed):0;
+        SetWindowPos(cornerMasks[i],HWND_TOP,x,y,size,size,SWP_NOACTIVATE|SWP_SHOWWINDOW);RenderCorner(i,c.right,size,dpi,c.top,edge,keyed?1.f:chrome.EdgeAlpha(NativeChrome::Motion::Now()));
     }
 }
 // ---- Resize readiness probe ----------------------------------------------------------
@@ -853,56 +917,68 @@ void ApplySplitTarget(std::shared_ptr<Tab> tab,const SV::Target& target,std::sha
 }
 // ---- Drag overlay animation (springs from src/split-view.h, display-paced frames)
 bool resizePreviewFading();void ClearResizePreviewNow();
-struct SplitAnim{SV::BoxSpring plate,card;SV::Spring plateOpacity,cardOpacity,tileOpacity;float fade=.30f;bool returning=false,committing=false;NativeChrome::Motion::Time last{};NativeChrome::SplitUI::Frame frame;} splitAnim;
-bool SplitAnimating(){return splitOverlay.Visible()&&(!splitAnim.plate.Settled()||!splitAnim.card.Settled()||!splitAnim.plateOpacity.Settled()||!splitAnim.cardOpacity.Settled()||!splitAnim.tileOpacity.Settled());}
+// #127 motion spec: the lifted card grows to x1.02 (spring 1.0 / 0.15 s) around the point it was grabbed (`anchor`, a
+// fraction of the card). `cardScale` is in percent (100 = rest): the springs settle within 0.25 of their unit.
+struct SplitAnim{SV::BoxSpring plate,card;SV::Spring plateOpacity,cardOpacity,tileOpacity,cardScale;float fade=.30f,anchorX=.5f,anchorY=.5f;bool returning=false,committing=false;NativeChrome::Motion::Time last{};NativeChrome::SplitUI::Frame frame;} splitAnim;
+bool SplitAnimating(){return splitOverlay.Visible()&&(!splitAnim.plate.Settled()||!splitAnim.card.Settled()||!splitAnim.plateOpacity.Settled()||!splitAnim.cardOpacity.Settled()||!splitAnim.tileOpacity.Settled()||!splitAnim.cardScale.Settled());}
 void RenderSplitOverlay(){
     auto& f=splitAnim.frame;f.plate.box=splitAnim.plate.Value();f.plate.opacity=std::clamp(splitAnim.plateOpacity.x,0.f,1.f);f.plate.shown=f.plate.opacity>.01f;
-    f.card.box=splitAnim.card.Value();f.card.opacity=std::clamp(splitAnim.cardOpacity.x,0.f,1.f);f.tileOpacity=std::clamp(splitAnim.tileOpacity.x,0.f,1.f);splitOverlay.Show(f);
+    f.card.box=splitAnim.card.Value();f.card.opacity=std::clamp(splitAnim.cardOpacity.x,0.f,1.f);f.tileOpacity=std::clamp(splitAnim.tileOpacity.x,0.f,1.f);
+    if(const float s=splitAnim.cardScale.ready?splitAnim.cardScale.x/100:1;s!=1){auto& b=f.card.box;const float ax=b.left+(b.right-b.left)*splitAnim.anchorX,ay=b.top+(b.bottom-b.top)*splitAnim.anchorY;b={ax-(ax-b.left)*s,ay-(ay-b.top)*s,ax+(b.right-ax)*s,ay+(b.bottom-ay)*s};}
+    splitOverlay.Show(f);
 }
 void FinishSplitAnimation(){splitOverlay.Hide();splitAnim.returning=splitAnim.committing=false;splitAnim.frame={};chrome.liftedIndex=-1;SyncSplitDecor();InvalidateRect(window,nullptr,FALSE);}
 void SplitFrame(NativeChrome::Motion::Time now){
     if(!splitOverlay.Visible())return;
     const float dt=std::clamp(std::chrono::duration<float>(now-splitAnim.last).count(),0.f,.05f);splitAnim.last=now;
-    splitAnim.plate.Step(dt,.30f);splitAnim.card.Step(dt,.35f);splitAnim.plateOpacity.Step(dt,splitAnim.fade);splitAnim.cardOpacity.Step(dt,.20f);splitAnim.tileOpacity.Step(dt,.12f);
+    splitAnim.plate.Step(dt,.20f);splitAnim.card.Step(dt,.35f);splitAnim.plateOpacity.Step(dt,splitAnim.fade);splitAnim.cardOpacity.Step(dt,.20f);splitAnim.tileOpacity.Step(dt,.12f);splitAnim.cardScale.Step(dt,.15f);   /* #127 motion spec: the zone morphs 1.0 / 0.2 s */
     if(resizePreviewFading()&&splitAnim.tileOpacity.x<=.01f&&splitAnim.tileOpacity.Settled())ClearResizePreviewNow();
     if((splitAnim.returning||splitAnim.committing)&&!SplitAnimating()){FinishSplitAnimation();return;}
     RenderSplitOverlay();
 }
+// #127 column (section « Panneau latéral »): its right edge is the lift line, the lift empties its row and sizes the card.
+float SidebarDropEdge();void SidebarLift();
 // Lift / track / drop. Returns true while the tab is lifted (the strip reorder is off).
 bool SplitDragMove(POINT point){
     if(!tabDrag.tab||halted)return false;const float d=GetDpiForWindow(window)/96.f,x=point.x/d,y=point.y/d;
     const bool reduced=motion.ReducedMotion();auto& f=splitAnim.frame;
     if(!tabDrag.lifted){
-        // Lift below the address row; one tab alone has no partner and stays in the strip. Mode Focus: below the floating panel.
-        if(y<ChromeBottomDip()||pages.size()<2)return false;
+        // Lift below the address row (the column: past its right edge); one tab alone has no partner and stays in the strip.
+        // Mode Focus: below the floating panel.
+        if((chrome.sidebar?x<SidebarDropEdge():y<ChromeBottomDip())||pages.size()<2)return false;
         if(splitAnim.returning||splitAnim.committing)FinishSplitAnimation();
         tabDrag.lifted=true;tabDrag.target={};chrome.liftedIndex=TabIndexOf(tabDrag.tab);chrome.dragIndex=-1;chrome.dragOffset=0;splitResize=-1;chrome.split.hotHandle=-1;
-        splitAnim=SplitAnim{};f.card.shown=true;f.card.title=SiteLabel(tabDrag.tab);f.card.favicon=tabDrag.tab->favicon.image;
+        if(chrome.sidebar)SidebarLift();
+        splitAnim=SplitAnim{};f.card.shown=true;f.card.title=chrome.sidebar?TabLabel(tabDrag.tab):SiteLabel(tabDrag.tab);f.card.favicon=tabDrag.tab->favicon.image;   /* the column's card is its row lifted: the row's title (Paper 24BU-0) */
         splitAnim.cardOpacity.Snap(1);splitAnim.plateOpacity.Snap(0);splitAnim.last=NativeChrome::Motion::Now();
+        {const float w=chrome.sidebar?tabDrag.cardW:chrome.strip.tab;splitAnim.anchorX=w>0?std::clamp(tabDrag.grab/w,0.f,1.f):.5f;splitAnim.anchorY=std::clamp(tabDrag.grabY/32,0.f,1.f);
+         splitAnim.cardScale.Snap(100);if(!reduced)splitAnim.cardScale.Set(102);}   // lifted: x1.02 around the grab point (none under reduced motion)
         AnnounceSplit(TRF(split_announce_drag,SiteLabel(tabDrag.tab)));
         SyncSplitDecor();InvalidateRect(window,nullptr,FALSE);
-    }else if(y<SV::reattachY+ChromeOrigin().y){
-        // Back above the address row: reordering in the strip resumes.
+    }else if(chrome.sidebar?x<SidebarDropEdge()-20:y<SV::reattachY+ChromeOrigin().y){
+        // Back above the address row (into the column): reordering in the strip resumes.
         tabDrag.lifted=false;tabDrag.target={};chrome.liftedIndex=-1;splitOverlay.Hide();splitAnim=SplitAnim{};
         SetCursor(LoadCursor(nullptr,IDC_ARROW));SyncSplitDecor();InvalidateRect(window,nullptr,FALSE);return false;
     }
     auto v=CurrentSplit();SV::Target target;std::shared_ptr<Tab> partner;
-    if(y>=ChromeBottomDip()){
+    if(chrome.sidebar?x>=SidebarDropEdge()&&y>=ContentBox().top:y>=ChromeBottomDip()){
         if(v.group){int dragged=-1;for(int i=0;i<(int)v.members.size();++i)if(v.members[i]==tabDrag.tab)dragged=i;target=SV::GroupTarget(v.a,v.weights,dragged,x,y,v.min,&tabDrag.target);}
         else if((partner=SplitPartner(tabDrag.tab)))target=SV::SingleTarget(ContentBox(),x,y,SV::MinExtent(SV::Orientation::Row,PageZoom()),SV::MinExtent(SV::Orientation::Column,PageZoom()),&tabDrag.target);
     }
     const bool changed=!(target==tabDrag.target);tabDrag.target=target;
     // The tab follows 1:1 from where it was grabbed: never animated.
-    const float w=chrome.strip.tab;splitAnim.card.Snap({x-tabDrag.grab,y-tabDrag.grabY,x-tabDrag.grab+w,y-tabDrag.grabY+32});
+    const float w=chrome.sidebar?tabDrag.cardW:chrome.strip.tab;splitAnim.card.Snap({x-tabDrag.grab,y-tabDrag.grabY,x-tabDrag.grab+w,y-tabDrag.grabY+32});
     const bool valid=target.kind!=SV::Kind::None&&target.kind!=SV::Kind::Refuse;
     if(valid){
+        // #127 motion spec: the zone morphs from one zone to the next (position and size, never gone and back); reduced
+        // motion: it jumps there and fades in (80 ms).
         if(!f.plate.shown||reduced)splitAnim.plate.Snap(target.preview);else splitAnim.plate.Set(target.preview);
+        if(reduced&&changed)splitAnim.plateOpacity.Snap(0);
         // The chip names only the dragged tab; where it lands is shown by the preview itself
         // and spoken to screen readers (TargetText below), never written in the chip.
         splitAnim.plateOpacity.Set(1);f.plate.title=SiteLabel(tabDrag.tab);f.plate.detail.clear();f.plate.favicon=tabDrag.tab->favicon.image;
     }else splitAnim.plateOpacity.Set(0);
-    if(reduced)splitAnim.plateOpacity.Snap(splitAnim.plateOpacity.target);
-    splitAnim.fade=valid?.20f:.12f;  // the preview answers within ~100 ms, a refusal clears faster
+    splitAnim.fade=reduced?.08f:valid?.20f:.10f;  // the preview answers within ~200 ms; outside any zone it fades out in 100 ms (80 ms reduced)
     f.pill.shown=target.kind==SV::Kind::Refuse;if(f.pill.shown){f.pill.x=x+14;f.pill.y=y+22;f.pill.title=RefusalTitle(target.needed);f.pill.detail=RefusalDetail(target.orientation);}
     SetCursor(LoadCursor(nullptr,target.kind==SV::Kind::Refuse?IDC_NO:IDC_ARROW));
     if(changed&&target.kind!=SV::Kind::None)AnnounceSplit(target.kind==SV::Kind::Refuse?RefusalTitle(target.needed)+L", "+RefusalDetail(target.orientation):TRF(split_announce_target,SiteLabel(tabDrag.tab),TargetText(target,v,partner,tabDrag.tab)));
@@ -931,7 +1007,8 @@ void EndSplitDrag(bool restore){
         tabDrag.lifted=false;const int i=TabIndexOf(tabDrag.tab);
         if(restore&&i>=0&&!motion.ReducedMotion()&&splitOverlay.Visible()){
             chrome.liftedIndex=i;auto s=chrome.strip.Surface(i);splitAnim.card.Set({s.left,s.top,s.right,s.bottom});
-            splitAnim.fade=.30f;splitAnim.plateOpacity.Set(0);splitAnim.frame.pill.shown=false;splitAnim.returning=true;
+            if(chrome.sidebar&&i<(int)chrome.SideColumn().tabs.size()){const auto& r=chrome.SideColumn().tabs[i];splitAnim.card.Set({r.left,r.top,r.right,r.bottom});}   /* #127: back to its row in the column */
+            splitAnim.fade=.30f;splitAnim.plateOpacity.Set(0);splitAnim.cardScale.Set(100);splitAnim.frame.pill.shown=false;splitAnim.returning=true;
             splitAnim.last=NativeChrome::Motion::Now();ScheduleMotion(splitAnim.last);
             if(restore)AnnounceSplit(TR(split_announce_drag_canceled));
         }else FinishSplitAnimation();
@@ -982,7 +1059,7 @@ void RenderResizePreview(){
         for(auto& t:resizePreview.tabs){const int m=(int)(std::find(v.members.begin(),v.members.end(),t)-v.members.begin());const int s=v.a.SlotOf(m);if(s<0||v.a.slots[s].rail)continue;
             NativeChrome::SplitUI::Tile tile;tile.box=v.a.slots[s].box;tile.icon=t->favicon.image;tile.name=SiteLabel(t);tile.domain=BareDomain(t->uri);f.tiles.push_back(tile);}
         if(resizePreview.slot>=0&&resizePreview.slot+1<(int)v.a.slots.size())f.gaps.push_back(v.a.SeparatorBox(resizePreview.slot));
-        for(auto& c:PageCorners())f.corners.push_back({c.right?c.page.right:c.page.left,c.page.bottom,c.right});
+        for(auto& c:PageCorners())if(!c.top)f.corners.push_back({c.right?c.page.right:c.page.left,c.page.bottom,c.right});
     }
     splitAnim.last=NativeChrome::Motion::Now();RenderSplitOverlay();
 }
@@ -1113,7 +1190,7 @@ void ReopenTab(){if(closedTabs.empty()||pages.size()>=128)return;auto tab=closed
 std::wstring HomeDocument(); // NEWTAB: HomeHtml, or the most visited sites (defined with the site icons)
 // SETTINGS(newtab): what a new tab (Ctrl+T, "+", a fresh start) opens: "" is the home tab.
 std::wstring NewTabTarget(){return settings.newTabPage==BrowserSettings::NewTabPage::Custom?settings.homepage:L"";}
-void Navigate(std::shared_ptr<Tab> t,const std::wstring& uri){if(!t||!t->view.p||halted)return;t->navigateFrom=t->uri;t->navigateFromHome=t->home;t->navigateTo=uri; /* what the tab showed, in case this becomes a download */t->home=uri.empty();t->uri=uri;if(uri.empty()){t->blankIsHome=true;const auto html=HomeDocument();homeTiles.Set(*t,html!=HomeHtml());Check(t->view->NavigateToString(html.c_str()),L"NavigateToString");return;}
+void Navigate(std::shared_ptr<Tab> t,const std::wstring& uri){if(!t||!t->view.p||halted)return;t->navigationHeld=false; /* any navigation replaces a held one (AdBlockHoldStart) */t->navigateFrom=t->uri;t->navigateFromHome=t->home;t->navigateTo=uri; /* what the tab showed, in case this becomes a download */t->home=uri.empty();t->uri=uri;if(uri.empty()){t->blankIsHome=true;const auto html=HomeDocument();homeTiles.Set(*t,html!=HomeHtml());Check(t->view->NavigateToString(html.c_str()),L"NavigateToString");return;}
     // An address the engine refuses (E_INVALIDARG) is not the loss of the engine: the tab keeps what it showed (its home
     // page when it had nothing), so a bad link, bookmark or restored session never stops the browser.
     const HRESULT hr=t->view->Navigate(uri.c_str());if(hr==E_INVALIDARG){Log(L"NAVIGATE refused: invalid address");t->uri=t->navigateFrom;t->home=t->navigateFromHome;t->navigateTo.clear();if(t->uri.empty()||t->home)Navigate(t,L"");else if(t==Active())Update();return;}
@@ -1130,7 +1207,7 @@ void SetAddressText(const std::wstring& s,int from,int to){addressSetting=true;S
 void PlaceSuggestions(AddressBar::Suggestions data,int active){
     // SETTINGS(privacy): "Suggestions de recherche" off keeps the list closed (inline completion stays).
     if(!settings.searchSuggestions){HideSuggestions();return;}
-    RECT r=ChromePx(chrome.bar);MapWindowPoints(window,nullptr,(POINT*)&r,2);
+    RECT r=ChromePx(chrome.bar);if(chrome.sidebar&&chrome.SideColumn().addressInColumn)r.right=S(chrome.bar.left+430);MapWindowPoints(window,nullptr,(POINT*)&r,2);
     const bool was=suggestions.Visible();
     suggestions.Show(std::move(data),active,BrowserSettings::Info(settings.engine).name,r.left,r.bottom,r.right,GetDpiForWindow(window));
     InvalidateChrome();if(suggestions.Visible()!=was)SuggestionsStructureChanged();
@@ -1209,25 +1286,34 @@ void CloseAt(int index,CloseReason why=CloseReason::User){if(halted||index<0||in
 enum ShortcutCommand { FocusChrome=3000, FindPage, PrintActive, FocusChromeBack, MoveTabLeft='{', MoveTabRight='}', SelectTabBase=3010 };
 std::vector<int> ShownPanels(){std::vector<int> out;auto v=CurrentSplit();if(v.group)for(auto& s:v.a.slots)if(!s.rail)out.push_back(TabIndexOf(v.members[s.member]));return out;}
 void Close(){CloseAt(current);}
-void Command(int cmd){if(cmd==MotionLabCommand){if(motionLabMode)motionLab.Toggle();return;}if(halted||!chrome.Enabled(cmd))return;
+void Command(int cmd){if(cmd==MotionLabCommand){if(motionLabMode)motionLab.Toggle();return;}if(halted||!chrome.Enabled(cmd))return;SideFocusCommand(cmd);
     if(tabDrag.tab){CancelTabDrag();if(GetCapture()==window)ReleaseCapture();UpdateInteraction(hover,0);}auto t=Active();if(cmd>=SelectTabBase&&cmd<SelectTabBase+9){Select(cmd==SelectTabBase+8?(int)pages.size()-1:cmd-SelectTabBase);return;}switch(cmd){case FocusChrome:ToggleChromeFocus();break;case FocusChromeBack:ToggleChromeFocus(true);break;case FindPage:OpenFindBar();break;case '{':MoveTab(current,current-1);break;case '}':MoveTab(current,current+1);break;case 'L':FocusAddress();break;case ']':if(!pages.empty())Select((current+1)%(int)pages.size());break;case '[':if(!pages.empty())Select((current+(int)pages.size()-1)%(int)pages.size());break;case 'T':NewTab(NewTabTarget(),UserTabIndex());FocusAddress();break;case 'W':Close();break;case 'U':ReopenTab();break;case 'R':if(t&&t->view.p&&t->loading.IsLoading()){Check(t->view->Stop(),L"Stop");break;}if(t&&t->view.p&&CheckTab(t->view->Reload(),L"Reload")){t->refreshing=true;auto now=NativeChrome::Motion::Now();chrome.lottie.RefreshBegin(now);SyncStopMorph(now);InvalidateChrome();ScheduleMotion(now);}break;case 'H':Navigate(t,L"");break;case 'B':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoBack(&yes);if(yes&&Check(t->view->GoBack(),L"GoBack")){auto now=NativeChrome::Motion::Now();chrome.nav.back.Kick(-1,now,motion.ReducedMotion(),TravelParams(true));InvalidateChrome();ScheduleMotion(now);}}break;case 'F':if(t&&t->view.p){BOOL yes=FALSE;t->view->get_CanGoForward(&yes);if(yes&&Check(t->view->GoForward(),L"GoForward")){auto now=NativeChrome::Motion::Now();chrome.nav.forward.Kick(1,now,motion.ReducedMotion(),TravelParams(false));InvalidateChrome();ScheduleMotion(now);}}break;default:ExtraCommand(cmd);break;}}
 bool BookmarkPopoverFocus();bool SmokeBookmarks();bool FolderRenameFocus();
 bool EscapeOwnedBySurface(HWND focus); // below, after the surfaces: a drawer or a toolbar popover with the keyboard closes on its own Échap
 bool EscapeLeavesAnnotation(bool modeActive,HWND focus); // below: Key()'s decision for Échap in the annotation mode (tests/shortcuts_test.cpp)
+// The annotation banner is a row of buttons (no text field): with the keyboard on it (Tab / F6, a screen reader, UI
+// Automation) it keeps its own navigation keys — Tab, the arrows, Entrée, Espace, Échap — but never the browser's
+// shortcuts (night 25/11, published 0.3.842: Ctrl+Maj+F did nothing once the banner held the keyboard). The other
+// annotation surfaces (the note, the connect window, the tutorial, the cards) have text: they keep every key.
+bool BannerLetsShortcutThrough(HWND focus,HWND banner,UINT key,bool ctrl,bool alt){
+    if(!focus||!banner||(focus!=banner&&!IsChild(banner,focus)))return false;
+    return ctrl||alt||(key>=VK_F1&&key<=VK_F24);
+}
 int Key(UINT key){
     const bool ctrl=GetKeyState(VK_CONTROL)<0,alt=GetKeyState(VK_MENU)<0,shift=GetKeyState(VK_SHIFT)<0;
     // The bookmark popover's fields keep every key (Ctrl+D, Ctrl+Z… belong to the text there).
     if(BookmarkPopoverFocus())return 0;
     if(FolderRenameFocus())return 0; // the in-place folder name keeps every key (text undo, Ctrl+W, F5…)
-    if(AnnotationSurfaceFocus())return 0; // the note popover, onboarding, launcher and band keep their keys
+    if(AnnotationSurfaceFocus()&&!BannerLetsShortcutThrough(GetFocus(),AnnotationBannerWindow(),key,ctrl,alt))return 0; // the note popover, onboarding, launcher and band keep their keys (the band: not the browser's shortcuts)
     // Modal, prompt and find bar fields keep their keys (Ctrl+W must not close the tab under a dialog).
     {int cmd=0;if(ElementSurfaceKey(key,ctrl,alt,shift,cmd))return cmd;}
     if(motionLabMode&&ctrl&&alt&&shift&&key=='M')return MotionLabCommand;
     if(ctrl&&!alt){
         if(!shift&&key=='D')return 'K';
         if(shift&&key=='B')return BookmarkBarCommand;
+        if(shift&&key==VK_OEM_COMMA&&chrome.sidebar)return SidebarToggleCommand; // Ctrl+Maj+, : plier / déplier le panneau (#127), panel layout only
         if(shift&&key=='A')return AnnotateCommand; // Ctrl+Maj+A: mode Annotation (toggle)
-        if(shift&&key=='D'&&AnnotationHistoryAvailable())return ChatCommand; // Ctrl+Maj+D: « Demander à l'agent » (chat intégré; starts the mode if needed)
+        if(shift&&key=='D'&&AnnotationChatShortcut())return ChatCommand; // Ctrl+Maj+D: « Demander à l'agent » (chat intégré; starts the mode if needed)
         if(shift&&key=='O')return BookmarksDrawerCommand;
         // Ctrl+Z undoes a bookmark change only from the chrome, the toast or the Favoris drawer, never in a text field or the page.
         if(!shift&&key=='Z'){HWND f=GetFocus();return f&&(f==window||f==bookmarkToast.Window()||f==bookmarksDrawer.Window())?BookmarkUndoCommand:0;}
@@ -1244,10 +1330,10 @@ int Key(UINT key){
         if(shift&&key=='F')return FocusModeCommand; // Ctrl+Maj+F: Mode Focus (toggle; Réglages › Affichage)
         if(shift&&key==VK_F12)return SandboxCommandId;
         if(!shift&&key==VK_OEM_2)return ShortcutsCommand; // Ctrl+/ : raccourcis clavier (C5)
-        // Ctrl+P likewise: the page opens the same browser print preview itself (no double dialog).
-        if(!shift&&key=='P')return GetFocus()==window||GetFocus()==address||(Active()&&Active()->home)?PrintActive:0; // a home tab (frequent sites shown) never prints
+        // Ctrl+P opens our print window everywhere, the page included (the engine's preview is never shown, #121);
+        // PrintActive does nothing on a home tab (frequent sites shown).
+        if(!shift&&key=='P')return PrintActive;
         if(!shift&&(key=='L'||key=='T'||key=='W'||key=='R'))return key;
-        if(shift&&key=='H'&&AnnotationHistoryAvailable())return AnnotateHistoryCommand; // Ctrl+Maj+H: historique des annotations
         if(!shift&&key=='H')return 'Y'; // history, as in every desktop browser
     }
     if(!ctrl&&!alt&&!shift&&key==VK_F6)return FocusChrome;
@@ -1467,7 +1553,7 @@ void RestoreSession(){KeepContentTransition keep; // a cold profile's tabs come 
     if(!overflow.empty())Defer([overflow]{ShowPartialRestoreToast(overflow);});
     if(pages.empty())NewTab(opening.empty()?NewTabTarget():opening);else{if(pages.size()==state.urls.size())ApplySessionGroups(state.groups);Select(state.active);if(!opening.empty()){NewTab(opening);Select((int)pages.size()-1);}}
     // Restored (or first) tabs are the initial state: no entrance cascade, no selection fade.
-    BuildChrome();chrome.tabMotion.Settle();motion.selection.Settle();BuildChrome();InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());
+    BuildChrome();chrome.SettleTabs();motion.selection.Settle();BuildChrome();InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());
     sessionReady=true;if(splitTest)SetTimer(window,SplitTestTimer,1500,nullptr);
 }
 
@@ -1716,7 +1802,9 @@ void ShowDownloads(){if(WorkspaceParked())return; /* a hidden profile's event: t
     CloseAudioDrawer();RefreshMissing();settingsDrawer.Hide(false,true);historyDrawer.Hide(false,true);bookmarksDrawer.Hide(false,true);
     // Right edge on the toolbar's 6 DIP margin, just under the toolbar row.
     RECT anchor=ChromePx({0,48,chrome.width-NativeChrome::Design::Space::sm,76});MapWindowPoints(window,nullptr,(POINT*)&anchor,2);
-    chrome.latched='D';InvalidateChrome();downloadPanel.Show(anchor);
+    chrome.latched='D';InvalidateChrome();
+    POINT from{};if(ColumnPopoverAt('D',NativeChrome::Downloads::Panel::anchorGap,from))downloadPanel.ShowFrom((float)from.x,(float)from.y);
+    else downloadPanel.Show(anchor);
     // Once the popover has settled, prepare the drawer so "View all" never waits.
     SetTimer(window,DrawerWarmTimerId,260,nullptr);
 }
@@ -1883,7 +1971,7 @@ void SaveSettings(){
         [&text](const BrowserSettings::State& b,const BrowserSettings::State& m,const BrowserSettings::State& t){std::istringstream in(ProfileStore::MergeKeyValues(text(b),text(m),text(t)));return BrowserSettings::Read(in);},5000,{"browser-settings 1"});
     if(r==ProfileStore::Result::Failed||r==ProfileStore::Result::Busy)Log(L"SETTINGS save failed");
 }
-void LoadSettings(){if(smoke)return;std::string bytes;{ProfileStore::Lock lock(dataDir);ProfileStore::ReadAll(settingsFile,bytes);}std::istringstream in(bytes);settings=BrowserSettings::Read(in);settingsBase=settings;}
+void LoadSettings(){if(smoke)return;std::string bytes;{ProfileStore::Lock lock(dataDir);ProfileStore::ReadAll(settingsFile,bytes);}std::istringstream in(bytes);settings=BrowserSettings::Read(in);settingsBase=settings;ApplyLayout();}
 // Download folder: the chosen one, else the system Downloads folder.
 std::wstring SystemDownloadFolder(){PWSTR known=nullptr;std::wstring path;if(SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Downloads,0,nullptr,&known))&&known)path=known;CoTaskMemFree(known);return path;}
 std::wstring EffectiveDownloadFolder(){return settings.downloadFolder.empty()?SystemDownloadFolder():settings.downloadFolder;}
@@ -1931,7 +2019,7 @@ bool ReducedMotionPreferred(){NativeChrome::Motion::SetAppReducedMotion(settings
 void ApplyReducedMotion(){
     const bool reduced=ReducedMotionPreferred();
     // Settles running interactions; a half-played copy Lottie must not resume later.
-    motion.SetReducedMotion(reduced);chrome.tabMotion.SetReducedMotion(reduced);if(reduced)ClearChromeMotion();
+    motion.SetReducedMotion(reduced);chrome.SetTabsReducedMotion(reduced);if(reduced)ClearChromeMotion();
     downloadPanel.SetReducedMotion(reduced);downloadDrawer.SetReducedMotion(reduced);historyDrawer.SetReducedMotion(reduced);bookmarksDrawer.SetReducedMotion(reduced);
     SyncUpdateToastMotion();
     settingsDrawer.SetReducedMotion();ElementsReducedMotion(reduced);
@@ -2116,6 +2204,28 @@ void QueryPermissions(std::function<void(std::vector<EnginePermission>)> done){
     HRESULT hr=profile->GetNonDefaultPermissionSettings(cb);cb->Release();
     if(FAILED(hr)){LogPermissionHr(L"GetNonDefaultPermissionSettings call",hr);done({});}
 }
+// #121 « Toujours bloquer ce site » (src/screen-share-blocks.h): this profile's file, read under the profile lock. A
+// private window keeps its list for the session only (nothing written, like its other permissions).
+std::vector<std::wstring> screenShareBlockedPrivate;
+std::wstring ScreenShareBlocksFile(){return dataDir+L"\\screen-share-blocked";}
+std::vector<std::wstring> ScreenShareBlocked(){
+    if(privateWindow)return screenShareBlockedPrivate;
+    if(smoke||dataDir.empty())return {};
+    std::string bytes;{ProfileStore::Lock lock(dataDir);if(!lock.Held()||!ProfileStore::ReadAll(ScreenShareBlocksFile(),bytes))return {};}
+    return NativeChrome::ScreenShareBlocks::Parse(bytes);
+}
+bool ScreenShareIsBlocked(const std::wstring& origin){return NativeChrome::ScreenShareBlocks::Contains(ScreenShareBlocked(),origin);}
+// Adds (blocked) or removes `origin`; empty origin with !blocked: every site.
+void SetScreenShareBlocked(const std::wstring& origin,bool blocked){
+    namespace SB=NativeChrome::ScreenShareBlocks;
+    if(privateWindow){if(origin.empty()&&!blocked)screenShareBlockedPrivate.clear();else SB::Set(screenShareBlockedPrivate,origin,blocked);return;}
+    if(smoke||dataDir.empty())return;
+    ProfileStore::Lock lock(dataDir);if(!lock.Held()){Log(L"SCREEN CAPTURE block list: profile busy, not saved");return;}
+    std::string bytes;if(!ProfileStore::ReadAll(ScreenShareBlocksFile(),bytes))return;
+    auto list=SB::Parse(bytes);const bool changed=origin.empty()&&!blocked?(list.clear(),true):SB::Set(list,origin,blocked);
+    if(changed&&!ProfileStore::WriteAtomic(ScreenShareBlocksFile(),SB::Serialize(list)))Log(L"SCREEN CAPTURE block list: write failed");
+    if(changed)Log(std::wstring(L"SCREEN CAPTURE block list: ")+(blocked?L"added ":L"removed ")+(origin.empty()?std::wstring(L"every site"):origin));
+}
 // SETTINGS(permissions): the panel's Autorisations views. Load is asynchronous (engine call);
 // `done` runs on the UI thread with the sites that have at least one non-default permission.
 void LoadSitePermissions(std::function<void(std::vector<BrowserSettings::Site>)> done){
@@ -2132,11 +2242,14 @@ void LoadSitePermissions(std::function<void(std::vector<BrowserSettings::Site>)>
             // Several engine kinds fold into Other: one row, a block anywhere wins.
             if(!perms.empty()&&perms.back().kind==r.second.kind){if(r.second.state==PermissionState::Block)perms.back().state=PermissionState::Block;continue;}
             perms.push_back(r.second);}
+        // Screen sharing blocked by « Toujours bloquer ce site » (#121): Browser's own list, shown on the same site.
+        NativeChrome::ScreenShareBlocks::MergeInto(sites,ScreenShareBlocked(),SitePermission{Permission::ScreenShare,PermissionState::Block});
         done(std::move(sites));});
 }
 void SetSitePermission(const std::wstring& origin,BrowserSettings::Permission kind,BrowserSettings::PermissionState state){
     using namespace BrowserSettings;
     if(origin.empty()||halted)return;
+    if(kind==Permission::ScreenShare){SetScreenShareBlocked(origin,state==PermissionState::Block);return;}   // #121: Browser's own list, Block or nothing
     const auto engineState=state==PermissionState::Allow?COREWEBVIEW2_PERMISSION_STATE_ALLOW:state==PermissionState::Block?COREWEBVIEW2_PERMISSION_STATE_DENY:COREWEBVIEW2_PERMISSION_STATE_DEFAULT;
     if(kind!=Permission::Other){
         const auto k=kind==Permission::Camera?COREWEBVIEW2_PERMISSION_KIND_CAMERA:kind==Permission::Microphone?COREWEBVIEW2_PERMISSION_KIND_MICROPHONE:kind==Permission::Location?COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION:kind==Permission::Notifications?COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS:COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ;
@@ -2153,6 +2266,7 @@ void SetSitePermission(const std::wstring& origin,BrowserSettings::Permission ki
 // Empty origin: every site.
 void ResetSitePermissions(const std::wstring& origin){
     if(halted)return;
+    SetScreenShareBlocked(origin,false);   // #121: « Toujours bloquer ce site » goes with the site's other permissions
     ++permissionWrites;
     QueryPermissions([origin](std::vector<EnginePermission> raw){
         Com<ICoreWebView2Profile4> profile;
@@ -2299,20 +2413,12 @@ bool HttpsNavigationStarting(const std::shared_ptr<Tab>& t,ICoreWebView2Navigati
 }
 // NavigationCompleted hook for a failed navigation: an https:// upgrade that could not connect
 // (DNS, TCP, TLS or certificate) gives the interstitial. True when it was shown.
-bool HttpsUpgradeFailed(const std::shared_ptr<Tab>& t,UINT64 id,COREWEBVIEW2_WEB_ERROR_STATUS error){
-    auto& h=t->https;if(!h.upgrade||h.upgrade!=id||h.insecure.empty())return false;h.upgrade=0;
-    switch(error){
-    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT:case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_EXPIRED:
-    case COREWEBVIEW2_WEB_ERROR_STATUS_CLIENT_CERTIFICATE_CONTAINS_ERRORS:case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_REVOKED:
-    case COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID:case COREWEBVIEW2_WEB_ERROR_STATUS_SERVER_UNREACHABLE:
-    case COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT:case COREWEBVIEW2_WEB_ERROR_STATUS_ERROR_HTTP_INVALID_SERVER_RESPONSE:
-    case COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED:case COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET:
-    case COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT:case COREWEBVIEW2_WEB_ERROR_STATUS_HOST_NAME_NOT_RESOLVED:
-    case COREWEBVIEW2_WEB_ERROR_STATUS_REDIRECT_FAILED:case COREWEBVIEW2_WEB_ERROR_STATUS_UNEXPECTED_ERROR:
-        Log(L"HTTPS upgrade failed WebErrorStatus="+std::to_wstring(error)+L" "+h.insecure);
-        ShowInsecureInterstitial(t,h.insecure);return true;
-    default:return false; // offline, cancelled, authentication: the engine's own page
-    }
+bool HttpsUpgradeFailed(const std::shared_ptr<Tab>& t,UINT64 id,COREWEBVIEW2_WEB_ERROR_STATUS error,int httpStatus){
+    auto& h=t->https;if(!h.upgrade||h.upgrade!=id||h.insecure.empty())return false;
+    if(!NativeChrome::ErrorPages::UpgradeFallsBack((int)error,httpStatus))return false; // offline, cancelled, authentication, a real answer: their own page
+    h.upgrade=0;
+    Log(L"HTTPS upgrade failed WebErrorStatus="+std::to_wstring(error)+L" "+h.insecure);
+    ShowInsecureInterstitial(t,h.insecure);return true;
 }
 // The interstitial's buttons. Only the document the tab shows as interstitial, with its token.
 HRESULT InterstitialMessage(const std::shared_ptr<Tab>& t,ICoreWebView2WebMessageReceivedEventArgs* a){
@@ -2339,6 +2445,7 @@ ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler* PopupScriptBar
 const std::wstring& PopupQa();
 void InjectAudioScript(const std::shared_ptr<Tab>& t,const PopupHost::RequestPtr& popup); // audio-integration.h
 #include "elements-integration.h"
+#include "tabs-position-icon.h"
 #include "forms-integration.h"   // #121: our list under a page field, our validation bubble (design/security-review-autofill-under-field.md)
 void SyncLatch();
 #include "audio-integration.h"
@@ -2369,12 +2476,69 @@ void ApplySecuritySettings(){
 // dataDir\adblock remembers "<folder>\n<id>" of the current install; any other "uBlock Origin Lite"
 // in the profile is an older version's leftover and is removed. One sync at a time.
 bool adBlockSynced=false,adBlockBusy=false,adBlockAgain=false,adBlockNoProfileLogged=false;void ApplyAdBlock();
+bool adBlockHold=false;int adBlockRemoving=0;   // the tabs wait while this profile's ad blocker is replaced; removals not finished
 const wchar_t* const AdBlockName=L"uBlock Origin Lite";
 // Installed from a folder that survives updates (src/adblock-folder.h): <data root>\extensions\ublock-lite-<version>.
 // Resolved once per launch; the bundled versions\<v>\assets\... folder only when that copy is not possible.
-std::wstring AdBlockSource(){static const std::wstring folder=[]{std::wstring note;const std::wstring f=AdBlockFolder::Stable(base+L"\\assets\\extensions\\ublock-lite",profileRoot.empty()?dataDir:profileRoot,&note);Log(L"SETTINGS adblock source: "+note);return f;}();return folder;}
+// Resolved OFF the UI thread, started as soon as the settings are read (AdBlockPrepare). The first copy (a new profile,
+// or the first launch of an update that ships another uBlock version) is ~1000 files / 47 MB that the antivirus scans
+// one by one: measured ~10 s on a busy machine (24 Nov 2026). On the UI thread it froze the window that long, and the
+// restored tabs, whose loads need that thread, only came after it (tests/restore-first-load). The sync now waits for
+// it without blocking (AdBlockWaitSource): the pages load meanwhile, the install comes once the folder is ready.
+std::wstring AdBlockBundled(){return base+L"\\assets\\extensions\\ublock-lite";}
+std::wstring AdBlockRoot(){return profileRoot.empty()?dataDir:profileRoot;}
+struct AdBlockSourceJob{std::atomic<bool> done{false};std::wstring folder,note;};
+AdBlockSourceJob& AdBlockSourceState(){static AdBlockSourceJob* job=new AdBlockSourceJob();return *job;}   // never freed: its thread may still run at exit
+bool adBlockSourceStarted=false,adBlockSourceLogged=false;   // UI thread only (one resolution per process: the data root is the same for every profile)
+void AdBlockSourceStart(){
+    if(adBlockSourceStarted)return;adBlockSourceStarted=true;
+    AdBlockSourceJob* job=&AdBlockSourceState();const std::wstring bundled=AdBlockBundled(),root=AdBlockRoot();
+    auto resolve=[job,bundled,root]{std::wstring note;std::wstring folder=AdBlockFolder::Stable(bundled,root,&note);job->folder=std::move(folder);job->note=std::move(note);job->done.store(true,std::memory_order_release);};
+    try{std::thread(resolve).detach();}catch(...){resolve();}   // no thread to be had: the former way, on this one
+}
+// True once the folder is known (its note logged once, on the UI thread); starts the resolution if it has not started.
+bool AdBlockSourceReady(){AdBlockSourceStart();AdBlockSourceJob& job=AdBlockSourceState();if(!job.done.load(std::memory_order_acquire))return false;if(!adBlockSourceLogged){adBlockSourceLogged=true;Log(L"SETTINGS adblock source: "+job.note);}return true;}
+std::wstring AdBlockSource(){AdBlockSourceJob& job=AdBlockSourceState();return job.done.load(std::memory_order_acquire)?job.folder:std::wstring();}   // read after AdBlockSourceReady() only
+// At startup, right after the settings: the folder is prepared while the engine and the first tab start.
+void AdBlockPrepare(){if(!privateWindow&&!smoke&&settings.adBlock)AdBlockSourceStart();}
+// The sync needs the folder when the blocker is on (it installs from it) or when this profile installed it once (its
+// marker names the folder: ours is told from a leftover). Off and never installed here: no copy at all, as before.
+bool AdBlockNeedsSource(){return settings.adBlock||GetFileAttributesW((dataDir+L"\\adblock").c_str())!=INVALID_FILE_ATTRIBUTES;}
+std::string AdBlockMarkerText(){std::string marker;std::ifstream in(std::filesystem::path(dataDir+L"\\adblock"),std::ios::binary);marker.assign(std::istreambuf_iterator<char>(in),std::istreambuf_iterator<char>());return marker;}
 std::string AdBlockMarker(const std::wstring& id){return Utf8(AdBlockSource())+"\n"+Utf8(id);}
-void AdBlockDone(){adBlockBusy=false;if(adBlockAgain&&!halted){adBlockAgain=false;ApplyAdBlock();}}
+// ---- The restored tabs while the ad blocker is replaced ------------------------------------------------------------
+// Removing an installed extension aborts the profile's loads in flight: at the first launch of an update that ships
+// another uBlock version, the sync removes the previous install and the restored tab got « La connexion a été
+// interrompue » (WebErrorStatus=9; 3 launches out of 3, tests/restore-first-load « update »). An install alone aborts
+// nothing (a page waiting for its server through a whole install loads fine, 2 out of 2). Until 24 Nov 2026 the copy on
+// the UI thread (above) happened to delay the restored tabs past that removal. The removal is foreseen before the first
+// tab navigates: this profile installed uBlock from another folder than this version's (AdBlockRemovalExpected). Its
+// tabs then hold their first navigation, address shown and bar « loading », until the replacement is over (removals
+// done, new version installed) or AdBlockHoldMaxMs at most. A tab navigated meanwhile goes there (Navigate clears it).
+constexpr UINT AdBlockHoldMaxMs=15000;
+bool AdBlockRemovalExpected(){const std::string marker=AdBlockMarkerText();return !marker.empty()&&marker.substr(0,marker.find('\n'))!=Utf8(AdBlockFolder::Expected(AdBlockBundled(),AdBlockRoot()));}
+void AdBlockReleaseTabs(bool late){
+    if(!adBlockHold)return;adBlockHold=false;int n=0;
+    const auto held=pages;   // (a copy: navigating never changes the tab list, but nothing here depends on it)
+    for(const auto& t:held)if(t&&!t->closed&&t->navigationHeld){++n;Navigate(t,t->heldUri);}
+    Log(std::wstring(late?L"TABS restored tabs released after the longest wait, the replacement goes on (":L"TABS restored tabs released once the ad blocker was replaced (")+std::to_wstring(n)+L" tab(s))");
+}
+void AdBlockHoldStart(){
+    adBlockHold=true;Log(L"TABS restored tabs wait while the ad blocker is replaced (another uBlock version)");
+    DeferAfter(AdBlockHoldMaxMs,[]{AdBlockReleaseTabs(true);});
+}
+void AdBlockMaybeRelease(){if(adBlockHold&&!adBlockBusy&&adBlockRemoving==0)AdBlockReleaseTabs(false);}
+// A new tab's first navigation (CreateTab, its controller ready), or its hold.
+void NavigateOrHold(const std::shared_ptr<Tab>& t,const std::wstring& uri){
+    if(!adBlockHold){Navigate(t,uri);return;}
+    t->navigationHeld=true;t->heldUri=uri;t->loading.Wait(NativeChrome::Motion::Now());
+    if(t==Active()){RefreshTools();InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());}
+}
+void AdBlockSync(ICoreWebView2Profile7* profile);
+// The sync waits for the folder without blocking the UI thread: looked at every 50 ms, then the sync goes on in the
+// same profile (DeferAfter keeps the workspace). Busy meanwhile: a settings change waits its turn (adBlockAgain).
+void AdBlockWaitSource(){DeferAfter(50,[]{if(halted)return;if(!AdBlockSourceReady()){AdBlockWaitSource();return;}Com<ICoreWebView2Profile7> profile;if(!LiveProfile(IID_ICoreWebView2Profile7,(void**)&profile.p)){adBlockBusy=false;AdBlockMaybeRelease();return;}AdBlockSync(profile.p);});}
+void AdBlockDone(){adBlockBusy=false;AdBlockMaybeRelease();if(adBlockAgain&&!halted){adBlockAgain=false;ApplyAdBlock();}}
 void AdBlockEnable(ICoreWebView2BrowserExtension* ext,bool on){
     auto done=Callback<ICoreWebView2BrowserExtensionEnableCompletedHandler,HRESULT>([on](HRESULT hr)->HRESULT{
         Log(FAILED(hr)?L"SETTINGS adblock Enable failed":on?L"SETTINGS adblock on (uBlock Origin Lite enabled)":L"SETTINGS adblock off (uBlock Origin Lite disabled)");AdBlockDone();return S_OK;});
@@ -2398,24 +2562,31 @@ void ApplyAdBlock(){
     if(smoke||halted)return;if(adBlockBusy){adBlockAgain=true;return;}
     Com<ICoreWebView2Profile7> profile;
     if(!LiveProfile(IID_ICoreWebView2Profile7,(void**)&profile.p)){if(!adBlockNoProfileLogged){adBlockNoProfileLogged=true;Log(L"SETTINGS adblock: no ICoreWebView2Profile7 yet (no live tab or old runtime)");}return;}
-    adBlockSynced=adBlockBusy=true;
+    const bool first=!adBlockSynced;adBlockSynced=adBlockBusy=true;
+    if(first&&AdBlockRemovalExpected())AdBlockHoldStart();   // before the profile's first tab navigates (its caller navigates right after)
+    AdBlockSync(profile.p);
+}
+// The sync itself (busy): the folder when it is needed, the profile's extensions, then keep / enable / disable / remove /
+// install.
+void AdBlockSync(ICoreWebView2Profile7* profile){
+    if(AdBlockNeedsSource()&&!AdBlockSourceReady()){AdBlockWaitSource();return;}   // its folder is still being prepared, off the UI thread
     auto listed=Callback<ICoreWebView2ProfileGetBrowserExtensionsCompletedHandler,HRESULT,ICoreWebView2BrowserExtensionList*>([](HRESULT hr,ICoreWebView2BrowserExtensionList* list)->HRESULT{
         Com<ICoreWebView2Profile7> profile;
         if(halted||FAILED(hr)||!list||!LiveProfile(IID_ICoreWebView2Profile7,(void**)&profile.p)){if(!halted)Log(L"SETTINGS adblock: extension list unavailable");AdBlockDone();return S_OK;}
-        std::string marker;{std::ifstream in(std::filesystem::path(dataDir+L"\\adblock"),std::ios::binary);marker.assign(std::istreambuf_iterator<char>(in),std::istreambuf_iterator<char>());}
+        const std::string marker=AdBlockMarkerText();
         Com<ICoreWebView2BrowserExtension> ours;UINT count=0;list->get_Count(&count);
         for(UINT i=0;i<count;++i){
             Com<ICoreWebView2BrowserExtension> ext;LPWSTR id=nullptr,name=nullptr;
             if(FAILED(list->GetValueAtIndex(i,&ext.p))||!ext.p)continue;
             if(SUCCEEDED(ext->get_Id(&id))&&id&&SUCCEEDED(ext->get_Name(&name))&&name&&std::wstring(name)==AdBlockName){
                 if(!ours.p&&marker==AdBlockMarker(id))ours.set(ext.p);
-                else{Log(L"SETTINGS adblock removing a previous install "+std::wstring(id));auto removed=Callback<ICoreWebView2BrowserExtensionRemoveCompletedHandler,HRESULT>([](HRESULT r)->HRESULT{if(FAILED(r))Log(L"SETTINGS adblock remove failed");return S_OK;});if(FAILED(ext->Remove(removed)))Log(L"SETTINGS adblock Remove call failed");removed->Release();}}
+                else{Log(L"SETTINGS adblock removing a previous install "+std::wstring(id));++adBlockRemoving;auto removed=Callback<ICoreWebView2BrowserExtensionRemoveCompletedHandler,HRESULT>([](HRESULT r)->HRESULT{if(FAILED(r))Log(L"SETTINGS adblock remove failed");--adBlockRemoving;AdBlockMaybeRelease();return S_OK;});if(FAILED(ext->Remove(removed))){Log(L"SETTINGS adblock Remove call failed");--adBlockRemoving;}removed->Release();}}
             if(id)CoTaskMemFree(id);if(name)CoTaskMemFree(name);
         }
         if(ours.p){BOOL on=FALSE;ours->get_IsEnabled(&on);if(!!on!=settings.adBlock){AdBlockEnable(ours.p,settings.adBlock);return S_OK;}Log(settings.adBlock?L"SETTINGS adblock on":L"SETTINGS adblock off");AdBlockDone();return S_OK;}
         if(settings.adBlock){AdBlockInstall(profile.p);return S_OK;}
         Log(L"SETTINGS adblock off (not installed)");AdBlockDone();return S_OK;});
-    HRESULT hr=profile->GetBrowserExtensions(listed);listed->Release();if(FAILED(hr)){Log(L"SETTINGS adblock GetBrowserExtensions call failed");adBlockBusy=false;}
+    HRESULT hr=profile->GetBrowserExtensions(listed);listed->Release();if(FAILED(hr)){Log(L"SETTINGS adblock GetBrowserExtensions call failed");adBlockBusy=false;AdBlockMaybeRelease();}
 }
 // SETTINGS(memory): settings.memorySaver asks the engine to trim background tabs
 // (MemoryUsageTargetLevel LOW, scripts keep running); the active tab, and every tab once it is
@@ -2456,11 +2627,10 @@ void SettingChanged(BrowserSettings::Change change){
     case Change::CustomSearch:break;
     case Change::TabPosition:case Change::ConfirmCloseTabs:case Change::CloseWithLastTab:case Change::MuteBackground:ApplyTabSettings();break;
     case Change::Autoplay:ApplyMediaSettings();break;
+    case Change::TabsPosition:forcedLayout=-1;ApplyLayout();if(window&&chrome.sidebar)Layout();settingsDrawer.Changed();Log(std::wstring(L"SETTINGS tabs position ")+BrowserSettings::Info(settings.tabsPosition).label);break;
     case Change::GrayscaleText:Log(settings.grayscaleText?L"SETTINGS grayscale text on: applies at next launch":L"SETTINGS grayscale text off: applies at next launch");break;
-    // Réglages › « Annotations »: the launcher shows / hides at once; the launch prompt and the
-    // retention are read by the mode when it next needs them (src/annotation-mode.h, Prefs).
-    case Change::AnnotationConnectPrompt:Log(BrowserSettings::ConnectPromptActive(settings)?L"SETTINGS annotation connect prompt on (« Plus tard » count reset)":L"SETTINGS annotation connect prompt off");AnnotationSettingsChanged();break;
-    case Change::AnnotationRetention:Log(L"SETTINGS annotation retention "+std::to_wstring(settings.annotationRetentionDays)+L" days");AnnotationSettingsChanged();break;
+    // Réglages › « Annotations »: the launch prompt is read by the mode when it next needs it (src/annotation-mode.h, Prefs).
+    case Change::AnnotationConnectPrompt:Log(BrowserSettings::ConnectPromptActive(settings)?L"SETTINGS annotation connect prompt on (« Plus tard » count reset)":L"SETTINGS annotation connect prompt off");break;
     case Change::DefaultBrowserLater:Log(L"SETTINGS default browser card: later (30 days)");break;
     case Change::FocusMode:{Log(settings.focusMode?L"SETTINGS focus mode on":L"SETTINGS focus mode off");const auto t0=std::chrono::steady_clock::now();FocusMotionToggle(settings.focusMode);const auto t1=std::chrono::steady_clock::now();Layout();const auto t2=std::chrono::steady_clock::now();
         Log(L"FOCUS switch: motion setup "+std::to_wstring((int)std::chrono::duration<double,std::milli>(t1-t0).count())+L" ms, layout "+std::to_wstring((int)std::chrono::duration<double,std::milli>(t2-t1).count())+L" ms");break;} // the motion (src/focus-motion.h) over the relayout
@@ -2530,15 +2700,17 @@ void CreateSettingsPanel(){
     // « Annotations » (design/annotations-settings.md): dev / preview builds with the mode, never in a
     // private window. The drawer only asks; every disk / other-app access runs in src/annotation-mode.h, off the UI thread.
     namespace AS=AnnotationSettings;
-    hooks.annotations=[]{return AnnotationsCompiled()&&AnnotationHistoryAvailable();};
-    hooks.loadAgents=[](std::function<void(AS::Agents)> done){AnnotationAgentsStatus([done](const AnnotationAgentState& claude,const AnnotationAgentState& codex){
-        auto to=[](const AnnotationAgentState& s){AS::Agent a;a.detected=s.detected;a.configured=s.configured;a.connected=s.connected;a.stalePath=s.stalePath;a.lastReadAt=s.lastReadAt;a.restart=s.restart;return a;};
-        AS::Agents agents;agents.claude=to(claude);agents.codex=to(codex);agents.codex.app=AS::App::Codex;if(done)done(agents);});};
-    hooks.connectAgent=[](AS::App app,bool on,std::function<void(bool,std::wstring)> done){   // explicit click only: same path, backups and test guard as the modal
-        AnnotationConnectAgent(app==AS::App::Claude?AnnotationApp::Claude:AnnotationApp::Codex,on,[done](bool ok,const std::wstring& message){if(done)done(ok,message);});};
-    hooks.openConnect=[]{settingsDrawer.Hide(false,true);AnnotationOpenConnect(true);};   // « Autre app ou réglage manuel »: the modal on its manual fallback
-    hooks.annotationFolder=[]{return AnnotationStoreRoot();};
-    hooks.openAnnotationFolder=[]{AnnotationOpenFolder();};
+    hooks.annotations=[]{return AnnotationsCompiled()&&AnnotationSettingsAvailable();};
+    // « Agents » (« Ton agent », Paper « Réglages › Agents »): the chat agents' one status (src/agent-status.h, worker A);
+    // the row's button acts on its click only (ChatAgentAct takes the install's consent there). « Connecter un agent
+    // externe »: the MCP « Connecter un agent » window, its only way in besides the tutorial (it never opens by itself).
+    if(ChatAgentsAvailable()){
+        hooks.chatAgents=[]{return ChatAgentsStatus();};
+        hooks.refreshChatAgents=[]{ChatAgentsRefresh();};
+        hooks.chatAgentAction=[](AS::ChatApp app,AS::ChatAction action){ChatAgentAct(app,action);};
+        hooks.openExternalAgents=[]{settingsDrawer.Hide(false,true);AnnotationOpenConnect(false);};
+        ChatAgentsWatch([]{settingsDrawer.ChatAgentsChanged();});
+    }
     hooks.countAnnotations=[](std::function<void(std::size_t)> done){AnnotationCount(std::move(done));};
     hooks.clearAnnotations=[](std::size_t n,bool keyboard){
         keyboardModality=keyboard;   // the confirmation's focus ring follows how the row was activated (as « Effacer les données… »)
@@ -2691,12 +2863,12 @@ void DownloadNavigationAsked(const std::shared_ptr<Tab>& t,const std::wstring& u
     if(t->downloadNav.DownloadAsked(uri,GetTickCount64()))NavigationBecameDownload(t);
 }
 // A failed top-level navigation that is not a download: the error page, the HTTPS-only interstitial, the site's own
-// HTTP error page or the engine's (unchanged behaviour).
-HRESULT NavigationFailed(const std::shared_ptr<Tab>& t,UINT64 navigationId,COREWEBVIEW2_WEB_ERROR_STATUS error,int httpStatus){
+// HTTP error page or the engine's (unchanged behaviour). `netCode`: the engine's own code when it was read (below).
+HRESULT NavigationFailedAs(const std::shared_ptr<Tab>& t,UINT64 navigationId,COREWEBVIEW2_WEB_ERROR_STATUS error,int httpStatus,const std::wstring& netCode){
     if(halted||!t||t->closed)return S_OK;
     {
         if(error==COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED)return S_OK;
-        if(HttpsUpgradeFailed(t,navigationId,error))return S_OK;
+        if(HttpsUpgradeFailed(t,navigationId,error,httpStatus))return S_OK;
         Log(L"NAVIGATION FAILED engine WebErrorStatus="+std::to_wstring(error)+L" HttpStatusCode="+std::to_wstring(httpStatus)+(navigationId==t->errorPage.startingId?L" latest":L" older"));   // engine facts only (no URL, no body)
         // An HTTP 4xx/5xx answer (e.g. a 403 challenge page) IS the site's page: shown as received, never replaced.
         // Only for the tab's latest top-level navigation, never when WE refused this page's own certificate
@@ -2723,7 +2895,7 @@ HRESULT NavigationFailed(const std::shared_ptr<Tab>& t,UINT64 navigationId,COREW
             t->revealed=true;ApplyPages();if(t==Active())Update();
             return S_OK;
         }
-        if(ShowErrorPage(t,error,navigationId)){t->revealed=true;ApplyPages();if(t==Active())Update();return S_OK;}
+        if(ShowErrorPage(t,error,navigationId,netCode)){t->revealed=true;ApplyPages();if(t==Active())Update();return S_OK;}
         Log(L"NAVIGATION FAILED WebErrorStatus="+std::to_wstring(error)+L" "+t->uri);
         // A new controller starts hidden until its first navigation completes.
         // Reveal the error document too, including a failed first address.
@@ -2732,6 +2904,25 @@ HRESULT NavigationFailed(const std::shared_ptr<Tab>& t,UINT64 navigationId,COREW
     }
 }
 // The failure of a possible download (either order with DownloadStarting): settled now, or held.
+// WebView2 reports a refused connection (and ERR_FAILED, ERR_ACCESS_DENIED...) as UNKNOWN without an HTTP status, which
+// gave the generic page and no « non sécurisé » page (night 24/11; tests/error-pages/status_probe.py). The engine's own
+// error document (chrome-error:, never a site page) names the real error: it is read first, then the page is chosen
+// as before with ERR_CONNECTION_REFUSED as a connection that could not be made, and the real code in the sheet.
+HRESULT NavigationFailed(const std::shared_ptr<Tab>& t,UINT64 navigationId,COREWEBVIEW2_WEB_ERROR_STATUS error,int httpStatus){
+    if(halted||!t||t->closed)return S_OK;
+    if(error==COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN&&httpStatus==0&&t->view.p){
+        std::weak_ptr<Tab> weak=t;
+        auto cb=Callback<ICoreWebView2ExecuteScriptCompletedHandler,HRESULT,LPCWSTR>([weak,navigationId](HRESULT hr,LPCWSTR json)->HRESULT{
+            auto tab=weak.lock();if(halted||!tab||tab->closed)return S_OK;
+            const std::wstring code=SUCCEEDED(hr)&&json?NativeChrome::ErrorPages::EngineErrorCode(json):std::wstring();
+            Log(L"NAVIGATION FAILED engine error document: "+(code.empty()?std::wstring(L"no code"):code));
+            return NavigationFailedAs(tab,navigationId,(COREWEBVIEW2_WEB_ERROR_STATUS)NativeChrome::ErrorPages::RefineUnknown(COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN,0,code),0,code);});
+        const HRESULT hr=t->view->ExecuteScript(NativeChrome::ErrorPages::EngineErrorCodeScript(),cb);cb->Release();
+        if(SUCCEEDED(hr))return S_OK;
+        Log(L"NAVIGATION FAILED engine error document unreadable hr="+std::to_wstring((long)hr));
+    }
+    return NavigationFailedAs(t,navigationId,error,httpStatus,L"");
+}
 HRESULT DownloadNavigationFailed(const std::shared_ptr<Tab>& t,UINT64 navigationId,COREWEBVIEW2_WEB_ERROR_STATUS error,int httpStatus){
     namespace DN=NativeChrome::DownloadNavigation;
     switch(t->downloadNav.Failed(navigationId,(int)error,httpStatus,GetTickCount64())){
@@ -2779,14 +2970,22 @@ HRESULT ProcessFailed(const std::shared_ptr<Tab>& t,ICoreWebView2ProcessFailedEv
     if(kind==COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED){
         Fail(L"ProcessFailed kind="+std::to_wstring(kind),E_FAIL);return S_OK;
     }
-    Log(L"TAB PROCESS FAILED kind="+std::to_wstring(kind)+L" "+t->uri);
-    if(kind==COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED){
-        // WebView2 replaces the crashed document with its error page. Keep the
-        // existing URL/history so Reload (or F5) can recover just this tab.
+    COREWEBVIEW2_PROCESS_FAILED_REASON reason=COREWEBVIEW2_PROCESS_FAILED_REASON_UNEXPECTED;
+    {Com<ICoreWebView2ProcessFailedEventArgs2> a2;if(SUCCEEDED(a->QueryInterface(IID_ICoreWebView2ProcessFailedEventArgs2,(void**)&a2.p))&&a2.p)a2->get_Reason(&reason);}
+    Log(L"TAB PROCESS FAILED kind="+std::to_wstring(kind)+L" reason="+std::to_wstring(reason)+L" "+t->uri);
+    if(NativeChrome::CrashPage::Shows(kind)){
         t->loading.Clear();t->refreshing=false;ElementsTabClosed(t);
+        if(t->hang.reloading){   // « Recharger » of the frozen page ended this renderer: the page reloads, no crash page
+            t->hang.reloading=t->hang.probing=false;Log(L"PAGE UNRESPONSIVE renderer ended: reloading");if(FAILED(t->view->Reload()))Log(L"PAGE UNRESPONSIVE reload failed");
+        }else
+        // The tab's own renderer died: our page (src/crash-page.h) replaces the engine's. The address and the
+        // history stay; « Recharger » (or F5) goes back to the crashed entry, which recovers just this tab.
+        ShowCrashPage(t);
         if(t==Active()){chrome.lottie.RefreshEnd();RefreshTools();InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());}
     }
-    // Subframe and auxiliary process failures recover within WebView2.
+    // The page stopped answering (#121 « Page qui ne répond plus »): our window over the veiled page (elements-integration.h).
+    if(kind==COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE)PageUnresponsive(t);
+    // Frame, GPU, utility and helper process failures recover within WebView2.
     return S_OK;
 }
 
@@ -2907,11 +3106,12 @@ void CreateTab(std::wstring uri,int index,std::wstring title,const PopupHost::Re
         // Overlay scrollbar (Paper V3): the page script hides the root scrollbar and posts its
         // metrics; PageMessage hands them to ScrollbarMessageFrom.
         {auto* barrier=PopupScriptBarrier(popup,L"scrollbar");HRESULT added=t->view->AddScriptToExecuteOnDocumentCreated(ScrollbarScript,barrier);if(barrier){if(FAILED(added))popups.Finish(popup,false);barrier->Release();}Check(added,L"AddScriptToExecuteOnDocumentCreated scrollbar");}
+        RegisterPrintScript(t,popup);   // window.print() opens our print window (#121)
         IID faviconInterface;CLSIDFromString(L"{517B2D1D-7DAE-4A66-A4F4-10352FFB9518}",&faviconInterface);
         if(!Check(t->view->QueryInterface(faviconInterface,(void**)&t->faviconView.p),L"QueryInterface favicon"))return S_OK;
         auto faviconChanged=Callback<ICoreWebView2FaviconChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2*,IUnknown*)->HRESULT{auto tab=weak.lock();if(tab&&!tab->closed&&!halted)RequestFavicon(tab);return S_OK;});
         HRESULT faviconResult=t->faviconView->add_FaviconChanged(faviconChanged,&token);faviconChanged->Release();if(!Check(faviconResult,L"add_FaviconChanged"))return S_OK;
-        auto starting=Callback<ICoreWebView2NavigationStartingEventHandler,ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs*>([weak](ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs* args)->HRESULT{auto tab=weak.lock();if(!tab||tab->closed||halted)return S_OK;tab->certificateError=false;AnnotationNavigation(tab);++tab->navStamp;SetTabStatus(tab,L"");LPWSTR uri=nullptr;if(!Check(args->get_Uri(&uri),L"NavigationStarting get_Uri"))return S_OK;UINT64 navigationId=0;if(!Check(args->get_NavigationId(&navigationId),L"NavigationStarting id")){CoTaskMemFree(uri);return S_OK;}if(SandboxNavigationStarting(tab,args,uri?uri:L"")){CoTaskMemFree(uri);return S_OK;}ElementsNavigationStarting(tab);VaultNavigationStarting(tab,navigationId,uri?uri:L"");tab->navInFlight=navigationId;ErrorPageNavigationStarting(tab,uri?uri:L"",navigationId);tab->downloadNav.Starting(navigationId,uri?uri:L"",GetTickCount64());if(HttpsNavigationStarting(tab,args,uri?uri:L"",navigationId)){CoTaskMemFree(uri);return S_OK;}if(uri&&wcscmp(uri,L"about:blank")!=0)tab->loading.Start(navigationId,NativeChrome::Motion::Now());else tab->loading.Clear();if(tab==Active()){RefreshTools();ScheduleMotion(NativeChrome::Motion::Now());}tab->favicon.Navigation(uri?uri:L"");CoTaskMemFree(uri);InvalidateChrome();return S_OK;});
+        auto starting=Callback<ICoreWebView2NavigationStartingEventHandler,ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs*>([weak](ICoreWebView2*,ICoreWebView2NavigationStartingEventArgs* args)->HRESULT{auto tab=weak.lock();if(!tab||tab->closed||halted)return S_OK;tab->certificateError=false;AnnotationNavigation(tab);++tab->navStamp;SetTabStatus(tab,L"");LPWSTR uri=nullptr;if(!Check(args->get_Uri(&uri),L"NavigationStarting get_Uri"))return S_OK;UINT64 navigationId=0;if(!Check(args->get_NavigationId(&navigationId),L"NavigationStarting id")){CoTaskMemFree(uri);return S_OK;}if(SandboxNavigationStarting(tab,args,uri?uri:L"")){CoTaskMemFree(uri);return S_OK;}if(CrashPageNavigationStarting(tab,args,uri?uri:L"")){CoTaskMemFree(uri);return S_OK;}ElementsNavigationStarting(tab);VaultNavigationStarting(tab,navigationId,uri?uri:L"");tab->navInFlight=navigationId;ErrorPageNavigationStarting(tab,uri?uri:L"",navigationId);tab->downloadNav.Starting(navigationId,uri?uri:L"",GetTickCount64());if(HttpsNavigationStarting(tab,args,uri?uri:L"",navigationId)){CoTaskMemFree(uri);return S_OK;}if(uri&&wcscmp(uri,L"about:blank")!=0)tab->loading.Start(navigationId,NativeChrome::Motion::Now());else tab->loading.Clear();if(tab==Active()){RefreshTools();ScheduleMotion(NativeChrome::Motion::Now());}tab->favicon.Navigation(uri?uri:L"");CoTaskMemFree(uri);InvalidateChrome();return S_OK;});
         HRESULT startingResult=t->view->add_NavigationStarting(starting,&token);starting->Release();if(!Check(startingResult,L"add_NavigationStarting favicon"))return S_OK;
         auto source=Callback<ICoreWebView2SourceChangedEventHandler,ICoreWebView2*,ICoreWebView2SourceChangedEventArgs*>([weak](ICoreWebView2* v,ICoreWebView2SourceChangedEventArgs*)->HRESULT{if(halted)return S_OK;auto t=weak.lock();if(!t||t->closed)return S_OK;LPWSTR s=nullptr;AnnotationNavigation(t);++t->navStamp;if(Check(v->get_Source(&s),L"get_Source")&&s){t->uri=s;CoTaskMemFree(s);/* our own pages (error, HTTPS-only) report about:blank or data: in EVERY tab, a script-opened one included: the real address comes back regardless of blankIsHome, which only decides « home » */const bool hostPage=t->uri==L"about:blank"||t->uri.rfind(L"data:",0)==0;t->home=t->uri==L"about:blank"&&t->blankIsHome;if(!t->https.shown.empty()&&hostPage){t->uri=t->https.shown;t->home=false;}if(!t->errorPage.shown.empty()&&hostPage){t->uri=t->errorPage.shown;t->home=false;}}t->loading.Committed(NativeChrome::Motion::Now());AudioSiteChanged(t);if(t==Active()){Update();ScheduleMotion(NativeChrome::Motion::Now());}return S_OK;});
         HRESULT result=t->view->add_SourceChanged(source,&token);source->Release();if(!Check(result,L"add_SourceChanged"))return S_OK;
@@ -2953,7 +3153,7 @@ void CreateTab(std::wstring uri,int index,std::wstring title,const PopupHost::Re
 #endif
         Layout();if(!Check(c->put_IsVisible(FALSE),L"put_IsVisible initial"))return S_OK;t->placedVisible=0;
         if(popup){settle.armed=false;popups.Step(popup,true);return S_OK;}   // the engine navigates the target itself: never Navigate/NavigateToString here
-        Navigate(t,uri);return S_OK;
+        NavigateOrHold(t,uri);return S_OK;   // held while the ad blocker is replaced (AdBlockHoldStart)
     });
     if(popup){unownedCallbacks=false;PopupHost::Registry::Arm(popup,1);}   // the controller setup itself
     HRESULT hr=E_FAIL;ICoreWebView2Environment* creating=popup?PopupEnvironment(popup):environment.p;
@@ -3350,14 +3550,8 @@ bool CopyToClipboard(const std::wstring& text){
     CloseClipboard();return done;
 }
 // ---- Print / PDF -------------------------------------------------------------
-// Print: the engine's own print preview (ICoreWebView2_16); older runtimes get window.print().
-void PrintPage(std::shared_ptr<Tab> tab){
-    if(halted||!tab||tab->closed||!tab->view.p)return;
-    Com<ICoreWebView2_16> view16;
-    if(SUCCEEDED(tab->view->QueryInterface(IID_ICoreWebView2_16,(void**)&view16.p))&&view16.p&&SUCCEEDED(view16->ShowPrintUI(COREWEBVIEW2_PRINT_DIALOG_KIND_BROWSER)))return;
-    Log(L"PRINT ShowPrintUI unavailable: window.print()");
-    if(FAILED(tab->view->ExecuteScript(L"window.print()",nullptr)))Log(L"PRINT window.print failed");
-}
+// Print: our print window (src/print-integration.h, #121), the engine's preview only as a fallback.
+void PrintPage(std::shared_ptr<Tab> tab);
 // PDF name: page title, else host; characters Windows refuses become spaces.
 std::wstring PdfFileName(const Tab& tab){
     std::wstring name=tab.home?L"":tab.title;if(name.empty())name=AddressBar::SiteOf(tab.uri);
@@ -3389,6 +3583,7 @@ void SavePageAsPdf(std::shared_ptr<Tab> tab){
     const HRESULT hr=view7->PrintToPdf(path.c_str(),nullptr,done);done->Release();
     if(FAILED(hr))Log(L"PDF PrintToPdf failed hr="+std::to_wstring((unsigned long)hr));
 }
+#include "print-integration.h"
 // ---- Split block of the tab menu (Paper p-7-0, "V2 · Bloc à plat, site nommé en en-tête") ----
 // The block names its target once, in a read-only header: the page on screen (the active
 // tab, or its group when split). No "last used" guess. "Avec un autre site ›" reaches every
@@ -3486,17 +3681,47 @@ void RunSplitMenuAction(const std::shared_ptr<Tab>& source,const SplitMenuAction
     auto v=GroupView(a.group);if(!v.group)return;t.orientation=v.a.orientation;ApplySplitTarget(source,t,nullptr,v);
 }
 // Highlighting a row designates its target in the strip (1 DIP white 50 %) and reads it out.
+// #127: the side column outlines the right-clicked tab too (Paper 2473-0 « 2 · Survol du menu »): `splitMenuSource`.
+std::shared_ptr<Tab> splitMenuSource;
 void SplitMenuHighlight(const CM::Item* item){
     std::vector<int> targets;
     if(item&&item->tag>0&&item->tag-1<(int)pages.size())targets.push_back(item->tag-1);
     else if(item&&item->tag<0)for(auto& t:Members(-item->tag))targets.push_back(TabIndexOf(t));
-    if(targets!=chrome.menuTargets){chrome.menuTargets=targets;InvalidateRect(window,nullptr,FALSE);}
+    const int source=targets.empty()?-1:TabIndexOf(splitMenuSource);
+    if(targets!=chrome.menuTargets||source!=chrome.menuSource){chrome.menuTargets=targets;chrome.menuSource=source;InvalidateRect(window,nullptr,FALSE);}
     if(item&&!item->accessible.empty())AnnounceSplit(item->accessible);
 }
 // Tab right click (Paper "Clic droit menu — poli"): acts on the tab that was clicked.
+// « Position des onglets » at the bottom of a tab's menu (Paper « Proposition — Clic droit · 3 icônes segmentées
+// (validée) » 1XO9-0): a full-width segmented control, icons only (src/tabs-position-icon.h), the current choice
+// highlighted, each named in a tooltip; a click changes the layout at once and closes the menu. Ids base .. base+2.
+CM::Item TabsPositionMenu(int base){std::vector<CM::Segment> seg;
+    for(int i=0;i<BrowserSettings::TabsPositionCount;++i){const auto p=static_cast<BrowserSettings::TabsPosition>(i);seg.push_back({base+i,BrowserSettings::Info(p).label,settings.tabsPosition==p});}
+    return CM::Segmented(TR(settings_tabs_position),std::move(seg),[](ID2D1RenderTarget* t,ID2D1Factory* f,ID2D1SolidColorBrush* b,D2D1_RECT_F box,int i,int state){
+        NativeChrome::TabsPositionIcon::Paint(t,f,b,box,NativeChrome::ContextMenu::Layout::segIcon,i,static_cast<NativeChrome::TabsPositionIcon::State>(state));});}
+// #127 (Paper « Clic droit zone vide · barre du haut / panneau latéral / compact », maquette prête): a right-click on
+// the tab bar, the side panel or the compact column anywhere but a tab (and the bookmarks, the bar's / grid's blank
+// and the address, which keep their own menus) opens the short menu: « Nouvel onglet », « Rouvrir l'onglet fermé »,
+// then the 3-view picker of the tab menu (same component, items, strings and commands).
+enum EmptyAreaItem{EmptyNewTab=1,EmptyReopen=2,EmptyPosition=40};
+std::vector<CM::Item> EmptyAreaMenuItems(){return {CM::Command(EmptyNewTab,TR(tab_new),L"Ctrl+T"),CM::Command(EmptyReopen,TR(cmd_reopen_tab),TR(key_ctrl_shift_t),!closedTabs.empty()&&pages.size()<128),CM::Separator(),TabsPositionMenu(EmptyPosition)};}
+// Where the short menu answers (client DIP; `id` the region under the pointer): the top bar's tab row, the column
+// (docked or over the page) — never a tab or its close, a bookmark tile, « » », the address or the grid's blank.
+bool EmptyAreaMenuAt(int id,float x,float y){
+    if(NativeChrome::TabIndex(id)>=0||NativeChrome::IsBookmark(id)||id=='O'||id=='L'||id==NativeChrome::Chrome::SidebarGridToggleId||id==NativeChrome::Chrome::SidebarManageId)return false;
+    if(!chrome.sidebar)return y<44;   /* the tab row, above the toolbar (the former blank-strip threshold) */
+    const auto& L=chrome.SideColumn();const float column=chrome.sidebarOverlay?L.column:chrome.side.column;
+    if(x>=column)return false;if(!id&&chrome.bandShown&&L.gridBlock.Contains(x,y))return false;
+    return true;}
+void EmptyAreaMenu(int anchor){
+    contextMenu.onSegment=[](RECT r,const std::wstring& tip,bool keyboard){if(tip.empty()){ChromeTipHide();return;}RECT bounds=NativeChrome::TooltipPlacement::VisibleRect(window);if(keyboard)chromeTip.Show(TipContent(tip.c_str()),r,&bounds);else chromeTip.Hover(TipContent(tip.c_str()),r,&bounds);};
+    const int chosen=ShowMenu(EmptyAreaMenuItems(),anchor);contextMenu.onSegment=nullptr;ChromeTipHide();
+    if(chosen==EmptyNewTab)Command('T');else if(chosen==EmptyReopen)Command('U');
+    else if(chosen>=EmptyPosition&&chosen<EmptyPosition+BrowserSettings::TabsPositionCount)SetTabsPosition(static_cast<BrowserSettings::TabsPosition>(chosen-EmptyPosition));
+}
 void TabContextMenu(int tabIndex,int anchor){
     if(tabIndex<0||tabIndex>=(int)pages.size())return;
-    enum{NewTabItem=1,ReloadItem,CopyItem,ReopenItem,CloseItem,CloseOthersItem,PrintItem,PdfItem,PlaceRight=20,PlaceLeft,PlaceTop,PlaceBottom,ReverseItem,OrientItem,ResizeItem,QuitItem};
+    enum{NewTabItem=1,ReloadItem,CopyItem,ReopenItem,CloseItem,CloseOthersItem,PrintItem,PdfItem,PlaceRight=20,PlaceLeft,PlaceTop,PlaceBottom,ReverseItem,OrientItem,ResizeItem,QuitItem,TabsPositionItem=40};
     auto tab=pages[tabIndex];const bool link=!tab->home&&!tab->uri.empty(),page=link&&tab->view.p;
     auto v=CurrentSplit();std::vector<CM::Item> split;
     if(v.group&&tab->group==v.group){
@@ -3517,7 +3742,9 @@ void TabContextMenu(int tabIndex,int anchor){
         CM::Command(ReopenItem,TR(cmd_reopen_tab),TR(key_ctrl_shift_t),!closedTabs.empty()&&pages.size()<128),CM::Separator(),
         CM::Command(CloseItem,TR(cmd_close_tab),L"Ctrl+W"),CM::Command(CloseOthersItem,TR(cmd_close_other_tabs),L"",pages.size()>1)};
     items.insert(items.end(),rest.begin(),rest.end());
-    contextMenu.onHighlight=SplitMenuHighlight;const int chosen=ShowMenu(items,anchor);contextMenu.onHighlight=nullptr;SplitMenuHighlight(nullptr);
+    items.push_back(CM::Separator());items.push_back(TabsPositionMenu(TabsPositionItem));
+    contextMenu.onSegment=[](RECT r,const std::wstring& tip,bool keyboard){if(tip.empty()){ChromeTipHide();return;}RECT bounds=NativeChrome::TooltipPlacement::VisibleRect(window);if(keyboard)chromeTip.Show(TipContent(tip.c_str()),r,&bounds);else chromeTip.Hover(TipContent(tip.c_str()),r,&bounds);};
+    splitMenuSource=tab;contextMenu.onHighlight=SplitMenuHighlight;const int chosen=ShowMenu(items,anchor);contextMenu.onHighlight=nullptr;contextMenu.onSegment=nullptr;ChromeTipHide();SplitMenuHighlight(nullptr);splitMenuSource=nullptr;
     if(chosen>=SplitMenuBase&&chosen-SplitMenuBase<(int)block.actions.size()){RunSplitMenuAction(tab,block.actions[chosen-SplitMenuBase]);return;}
     switch(chosen){
     case PlaceRight:PlaceFromMenu(tab,SV::Side::Right);break;
@@ -3525,6 +3752,7 @@ void TabContextMenu(int tabIndex,int anchor){
     case PlaceTop:PlaceFromMenu(tab,SV::Side::Top);break;
     case PlaceBottom:PlaceFromMenu(tab,SV::Side::Bottom);break;
     case ReverseItem:ReverseGroup(tab->group);break;
+    case TabsPositionItem:case TabsPositionItem+1:case TabsPositionItem+2:SetTabsPosition(static_cast<BrowserSettings::TabsPosition>(chosen-TabsPositionItem));break;
     case OrientItem:if(splitGroups.count(tab->group)){auto& o=splitGroups[tab->group];o=o==SV::Orientation::Row?SV::Orientation::Column:SV::Orientation::Row;ApplyPages();AnnounceSplit(o==SV::Orientation::Row?TR(split_announce_side_by_side):TR(split_announce_stacked));}break;
     case ResizeItem:StartKeyboardResize();break;
     case QuitItem:QuitGroup(tab->group);break;
@@ -3574,6 +3802,7 @@ void ReadPageMenu(ICoreWebView2ContextMenuItemCollection* list,std::vector<CM::I
         if(kind==COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SUBMENU){Com<ICoreWebView2ContextMenuItemCollection> children;if(SUCCEEDED(item->get_Children(&children.p))&&children.p)ReadPageMenu(children.p,m.children,commands);if(m.children.empty())continue;}
         else{INT32 command=0;item->get_CommandId(&command);commands.push_back(command);m.id=(int)commands.size();}
         text=nullptr;std::wstring name;if(SUCCEEDED(item->get_Name(&text))&&text){name=text;CoTaskMemFree(text);}
+        if(name==L"print"&&kind!=COREWEBVIEW2_CONTEXT_MENU_ITEM_KIND_SUBMENU&&!commands.empty()){commands.pop_back();m.id=PagePrintItem;} // our print window, not the engine's preview (#121)
         out.push_back(std::move(m));
         if(name==L"print")out.push_back(CM::Command(PagePdfItem,TR(cmd_save_pdf))); // beside the engine's own print
     }
@@ -3766,6 +3995,11 @@ std::vector<std::tuple<unsigned,int,std::wstring>> FolderChoices(BM::Id exclude)
     return out;
 }
 RECT ClientScreen(){RECT r{};GetClientRect(window,&r);MapWindowPoints(window,nullptr,(POINT*)&r,2);return r;}
+// A popover from a column tool (#127): its bottom-left corner in screen pixels. Complete column: above the tools row,
+// on the footer line's left; compact: at the column's right, level with the button's bottom. False in the top bar.
+bool ColumnPopoverAt(int id,float gap,POINT& at){if(!chrome.sidebar||!window)return false;const RECT b=RegionScreen(id);if(IsRectEmpty(&b))return false;
+    const auto& L=chrome.SideColumn();POINT o{0,0};ClientToScreen(window,&o);
+    if(L.mode==NativeChrome::Sidebar::Mode::Complete)at={o.x+S(L.footerLine.left),b.top-S(gap)};else at={o.x+S(L.column+gap),b.bottom};return true;}
 RECT RegionScreen(int id){FocusAnchor(L"region"); /* Mode Focus: whatever opens at a chrome region opens under the panel at rest */for(auto& r:chrome.regions)if(r.id==id){RECT p=ChromePx(r.rect);MapWindowPoints(window,nullptr,(POINT*)&p,2);return p;}return {};}
 // The popover under `anchor` (screen); `returnTo`: chrome region keeping the keyboard after Escape (0 = page).
 void EditBookmark(BM::Id id,RECT anchor,bool alignRight,bool keyboard,bool added=false,int returnTo=0){
@@ -4163,6 +4397,11 @@ BookmarkDrag::Drop DropTargetAt(BM::Id id,POINT client){
         return drop;
     }
     bookmarksDrawer.SetDropMarker(-1,BookmarkDrag::Mark::None);
+    // #127 column (Paper « Favoris · clic droit sur un favori »: « Glisser une case sur un dossier la range aussi »): a tile
+    // of the grid, the compact column or the « » » popover dropped on a folder tile goes inside it (at its end).
+    if(chrome.sidebar){const int i=chrome.SideFolderAt(x,y,(unsigned)id);
+        if(i>=0&&BookmarkDrag::Accepts(bookmarks,id,chrome.bandItems[i].id)){drop.parent=chrome.bandItems[i].id;drop.index=BM::End;drop.valid=true;chrome.bandDropInto=i;}
+        return drop;}
     if(onChrome&&chrome.bandShown&&y>=BookmarksBar::Layout::top-6&&y<BookmarksBar::Layout::bottom+6&&x>=0){
         std::vector<BookmarkDrag::Box> boxes;for(int i=0;i<chrome.band.visible;++i){const auto r=chrome.BandRect(i);boxes.push_back({r.left,r.right});}
         RECT client{};GetClientRect(window,&client);const float end=chrome.band.overflow?chrome.band.overflowLeft:chrome.floating?chrome.width:client.right*k;
@@ -4297,8 +4536,12 @@ bool BookmarkPopoverFocus(){HWND f=GetFocus();return bookmarkPopover.Visible()&&
 void ExtraCommand(int cmd){auto t=Active();if(AnnotationCommand(cmd))return;if(NativeChrome::IsBookmark(cmd)){BandActivate(NativeChrome::BookmarkIndex(cmd),false,false,KeyboardAnchor()!=0||keyboardModality);return;}switch(cmd){
 case 'K':BookmarkStar(KeyboardAnchor()!=0||keyboardModality);break;
 case 'E':lastFolder=BM::BarRoot;BookmarkStar(KeyboardAnchor()!=0||keyboardModality);break;
-case 'O':OverflowMenu(KeyboardAnchor()!=0);break;
+case 'O':if(chrome.sidebar){SidebarPopover(!chrome.sidebarPopover);break;}OverflowMenu(KeyboardAnchor()!=0);break;
+case NativeChrome::Chrome::SidebarManageId:SidebarPopover(false);ShowBookmarksDrawer(keyboardModality);break;   // « Gérer les favoris »: the whole drawer (Ctrl+Maj+O)
+case NativeChrome::Chrome::SidebarEdgeId:SidebarEdgeReset();break;   // UI Automation Invoke / Entrée: 248
+case NativeChrome::Chrome::SidebarGridToggleId:chrome.sidebarGridOpen=!chrome.sidebarGridOpen;if(!chrome.sidebarGridOpen)chrome.sidebarGridScroll=0;BuildChrome();InvalidateChrome();{const std::wstring said=chrome.sidebarGridOpen?std::wstring(TR(sidebar_collapse_grid)):TRF(sidebar_all_bookmarks,std::to_wstring(chrome.bandItems.size()));accessibility.Notify('K',said.c_str(),L"Bookmarks" /* i18n-exempt: UIA activity id */);}break;
 case BookmarkBarCommand:ToggleBookmarkBar();break;
+case SidebarToggleCommand:ToggleSidebar();break;
 case FocusModeCommand:ToggleFocusMode();break;
 case BookmarksDrawerCommand:if(bookmarksDismissClick){bookmarksDismissClick=false;break;}ToggleBookmarksDrawer(keyboardModality);break;
 case BookmarkUndoCommand:UndoBookmark();break;
@@ -4325,7 +4568,7 @@ case SandboxCommandId:OpenSandbox();break;
 case ShortcutsCommand:OpenShortcutsPanel();break;
 }}
 #ifndef BROWSER_UPDATES
-void SyncUpdateToastReserve(){} void CheckForUpdates(){} void SetUpdateToastTop(float){} float UpdateToastHeight(){return 0;} bool UpdateCheckAvailable(){return false;} bool FocusUpdateToast(){return false;} bool UpdateToastHasFocus(){return false;}
+void SyncUpdateToastReserve(){SyncDrawerReserve();} void CheckForUpdates(){} void SetUpdateToastTop(float){} float UpdateToastHeight(){return 0;} bool UpdateCheckAvailable(){return false;} bool FocusUpdateToast(){return false;} bool UpdateToastHasFocus(){return false;}
 NativeChrome::SettingsUI::Drawer::Version SettingsVersion(){return {AboutTitle(),false,false};}
 NativeChrome::Modal::Status AboutStatusNow(){namespace MD=NativeChrome::Modal;auto st=MD::AboutStatus(MD::AboutUpToDate);st.icon=MD::StatusIcon::None;st.title=TR(updates_unavailable);st.detail=TR(updates_unavailable_build);st.hasButton=false;return st;}
 void AboutUpdateAction(int){}
@@ -4468,7 +4711,7 @@ bool ForwardToInstalled(const std::wstring& installRoot=L""){
 }
 void LayoutUpdateToast(){if(updateToast.Window())updateToast.Layout();}
 // The bottom-left card keeps clear of the download drawer docked on the right.
-void SyncUpdateToastReserve(){const bool open=(downloadDrawer.Visible()&&!downloadDrawer.Closing())||settingsDrawer.Open()||historyDrawer.Open()||bookmarksDrawer.Open();updateToast.SetReservedRight(open?(settingsDrawer.Open()?NativeChrome::SettingsUI::Layout::width:NativeChrome::Downloads::DrawerLayout::width)+NativeChrome::Downloads::DrawerLayout::margin:0.f);}
+void SyncUpdateToastReserve(){SyncDrawerReserve();const bool open=(downloadDrawer.Visible()&&!downloadDrawer.Closing())||settingsDrawer.Open()||historyDrawer.Open()||bookmarksDrawer.Open();updateToast.SetReservedRight(open?(settingsDrawer.Open()?NativeChrome::SettingsUI::Layout::width:NativeChrome::Downloads::DrawerLayout::width)+NativeChrome::Downloads::DrawerLayout::margin:0.f);}
 bool FocusUpdateToast(){return updateToast.Shown()&&updateToast.Focus();}
 bool UpdateToastHasFocus(){HWND toast=updateToast.Window();HWND focus=GetFocus();return toast&&focus&&(focus==toast||IsChild(toast,focus));}
 void SyncUpdateToastMotion(){updateToast.SyncReducedMotion();} // no-op before Init/after Close
@@ -4612,6 +4855,11 @@ std::vector<Accessibility::Node> AccessibleNodes(){
     if(auto* r=region('K')){auto label=AccessibleButton('K');Node n;n.key='K';n.parent=AccessibleToolbar;n.name=label.name;n.accelerator=label.accelerator;n.automationId=label.id;n.bounds=screen(r->rect);n.enabled=chrome.Enabled('K');n.focusable=n.enabled;n.toggle=chrome.starred?2:1;nodes.push_back(std::move(n));}
     if(auto* r=region('N')){auto label=AccessibleButton('N');Node n;n.key='N';n.parent=AccessibleToolbar;n.name=label.name;n.accelerator=label.accelerator;n.help=label.help;n.automationId=label.id;n.bounds=screen(r->rect);n.enabled=chrome.Enabled('N');n.focusable=n.enabled;n.toggle=chrome.annotateActive?2:1;nodes.push_back(std::move(n));}
     for(int id:{'V','Y','D','S'})button(id,AccessibleToolbar);
+    // #127 side panel: the fold button, « Tous les favoris (N) » / « Réduire », the edge (« Largeur du panneau »: ← → resize it).
+    if(auto* r=region(NativeChrome::Chrome::SidebarToggleId)){Node n;n.key=NativeChrome::Chrome::SidebarToggleId;n.parent=AccessibleToolbar;n.name=r->tip?r->tip:L"";n.automationId=L"SidePanelFold";n.bounds=screen(r->rect);n.focusable=true;nodes.push_back(std::move(n));}
+    if(auto* r=region(NativeChrome::Chrome::SidebarGridToggleId)){Node n;n.key=NativeChrome::Chrome::SidebarGridToggleId;n.parent=AccessibleToolbar;n.name=chrome.gridToggleTip;n.automationId=L"BookmarksGridToggle";n.bounds=screen(r->rect);n.expand=chrome.sidebarGridOpen?2:1;n.focusable=true;nodes.push_back(std::move(n));}
+    if(auto* r=region(NativeChrome::Chrome::SidebarManageId)){Node n;n.key=NativeChrome::Chrome::SidebarManageId;n.parent=AccessibleToolbar;n.name=TR(bookmarks_manage);n.accelerator=TR(key_ctrl_shift_o);n.automationId=L"ManageBookmarks";n.bounds=screen(r->rect);n.focusable=true;nodes.push_back(std::move(n));}
+    if(auto* r=region(NativeChrome::Chrome::SidebarEdgeId)){Node n;n.key=NativeChrome::Chrome::SidebarEdgeId;n.parent=AccessibleToolbar;n.name=TR(sidebar_tip_resize);n.help=TR(sidebar_resize_help);n.automationId=L"SidePanelEdge";n.bounds=screen(r->rect);n.focusable=true;nodes.push_back(std::move(n));}
     // Decision 7: the private chip is plain text for UIA (not a button: no focus, no Invoke).
     if(auto* r=region(NativeChrome::Chrome::PrivateChipId)){Node n;n.key=AccessiblePrivateChip;n.role=Role::Text;n.name=TR(a11y_private_chip);n.automationId=L"PrivateWindowChip";n.focusable=false;n.bounds=screen(r->rect);nodes.push_back(std::move(n));}
     // "Barre de favoris": every item of the bar root, those behind » listed off screen (still invocable).
@@ -4722,7 +4970,390 @@ LRESULT CALLBACK AddressProc(HWND h,UINT msg,WPARAM w,LPARAM l,UINT_PTR,DWORD_PT
     if(msg==WM_KEYDOWN&&w==VK_TAB&&addressKeys.HandleKey(VK_TAB)){editing=false;ShowWindow(h,SW_HIDE);SetFocus(window);keyboardFocus=chrome.Enabled('C')?'C':chrome.Enabled('K')?'K':'Y';keyboardModality=true;InvalidateRect(window,nullptr,FALSE);SyncAccessibility();return 0;}
     return DefSubclassProc(h,msg,w,l);
 }
-void UpdateFont(){if(font)DeleteObject(font);font=CreateFontW(-S(16),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,0,0,ANTIALIASED_QUALITY,0,L"Inter Display");SendMessageW(address,WM_SETFONT,(WPARAM)font,TRUE);}
+// ---- Panneau latéral (#127, variante A finale) ----------------------------------------------------------------
+// src/sidebar.h holds the Paper values and the geometry; Chrome::BuildSidebar / PaintSidebar draw the column. Here: the
+// mode (« Position des onglets » `settings.tabsPosition`, compact by itself under 800 DIP without touching it),
+// the fold animation (the page follows the column), the complete column opened over the page after 400 ms on the
+// compact one (the page windows get a hole there: the page does not move), the vertical tab drag, the list's wheel.
+// Focus mode (branch VALXXII/Mode-Focus, not in main) plugs in here: design/127-sidebar-plan.md § 4.
+HWND PageHostWindow(Tab& t);
+namespace SBar=NativeChrome::Sidebar;
+SBar::Fold sidebarFold;SBar::Hover sidebarHover;SBar::FocusReveal sideReveal;NativeChrome::Motion::Spring sideSlide;NativeChrome::Motion::Tween sideFade;bool sideLive=false,sideDrawerHold=false,sidePolling=false;bool sidebarReady=false;int sidebarShownTab=-1;
+// The panel's presented width (motion spec §5): a spring towards the profile's width; a rubber-banded release springs
+// back to its bound (.3 s), a double-click goes to 248 (.35 s); at rest it sits on the saved width.
+NativeChrome::Motion::Spring sideWidthSpring{.05f};bool sideWidthKnown=false;
+constexpr UINT_PTR SidebarFoldTimerId=0x5161,SidebarHoverTimerId=0x5162;
+double SidebarNowMs(){return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();}
+// --tab-layout=top|side|compact (Fix's tests; --side-panel = side): this run's layout, never saved. Réglages and the
+// tab menu (SetTabsPosition) take over again; the fold button, Ctrl+Maj+, and the edge switch it for the run only.
+BrowserSettings::TabsPosition LayoutInEffect(){return forcedLayout>=0?static_cast<BrowserSettings::TabsPosition>(forcedLayout):settings.tabsPosition;}
+SBar::Mode SidebarEffective(){if(SidebarEdgeDragging())return chrome.sidebarMode;   // the edge drag sets it live (SidebarEdgeMove)
+    const bool compact=LayoutInEffect()==BrowserSettings::TabsPosition::Compact;
+    return SBar::Effective(compact?SBar::Mode::Compact:SBar::Mode::Complete,chrome.width);}
+// One log line with the active layout at start and at every change (Fix's tests read it): « layout: top|side|compact »,
+// « (narrow window) » when a window under 800 DIP shows the side panel compact by itself, « (this run) » when forced.
+std::wstring LayoutLine(){std::wstring line=L"layout: ";
+    if(!chrome.sidebar)line+=L"top";else{const bool chosenCompact=LayoutInEffect()==BrowserSettings::TabsPosition::Compact;const bool compact=SidebarEffective()==SBar::Mode::Compact;
+        line+=compact?L"compact":L"side";if(compact&&!chosenCompact)line+=L" (narrow window)" /* i18n-exempt: log line read by tests */;if(!compact)line+=L" "+std::to_wstring((int)std::lround(chrome.sidebarWidth));}
+    if(forcedLayout>=0)line+=L" (this run)" /* i18n-exempt: log line read by tests */;return line;}
+bool layoutApplied=false;   // LogLayout waits for the first ApplyLayout (the settings are read): never a passing « top » at start
+void LogLayout(){static std::wstring last;if(!window||!layoutApplied||SidebarEdgeDragging())return;   /* an edge drag logs its result at the release, not every pixel */const auto line=LayoutLine();if(line==last)return;last=line;Log(line);}
+// The start switches: --tab-layout=top|side|compact (a whole word), else --side-panel (side); -1 when neither.
+int TabLayoutArg(const wchar_t* args){if(!args)return -1;if(const wchar_t* tl=wcsstr(args,L"--tab-layout=")){tl+=13;
+        for(int i=0;i<BrowserSettings::TabsPositionCount;++i){const char* k=BrowserSettings::Info(static_cast<BrowserSettings::TabsPosition>(i)).key;size_t n=0;while(k[n]&&tl[n]==(wchar_t)k[n])++n;if(!k[n]&&(!tl[n]||tl[n]==L' '||tl[n]==L'"'))return i;}return -1;}
+    return wcsstr(args,L"--side-panel")?static_cast<int>(BrowserSettings::TabsPosition::Side):-1;}
+// The window's layout (Val, 24 nov.): the tab bar at the top by default; the side panel when the setting « layout=
+// side-panel » is on (Réglages row to come: Change::SidePanel) or for a run started with --side-panel (not saved).
+// Called when the settings are loaded (start, profile switch) and when the setting changes: live, no restart. The
+// panel's own complete / compact choice is kept either way.
+bool SidePanelWanted(){return !smoke&&BrowserSettings::SidePanel(LayoutInEffect());}
+// The one source of truth (Val, 24 nov.): Réglages, the tab menu, the fold button and Ctrl+Maj+, all set this value.
+void SetTabsPosition(BrowserSettings::TabsPosition p){if(settings.tabsPosition==p&&forcedLayout<0)return;settings.tabsPosition=p;SettingChanged(BrowserSettings::Change::TabsPosition);}
+// #127 (Val, B): the drawer docked open on the right (its column's width), 0 when none: the page stops 4 DIP before it.
+float DrawerReserveDip(){if(InFullscreen()||halted)return 0;if(settingsDrawer.Open())return NativeChrome::SettingsUI::Layout::width;
+    if((downloadDrawer.Visible()&&!downloadDrawer.Closing())||historyDrawer.Open()||bookmarksDrawer.Open())return NativeChrome::Downloads::DrawerLayout::width;
+    if(audioPanel.Docked())return NativeChrome::AudioPanel::Layout::width;return 0;}
+void SyncDrawerReserve(){static float applied=0;const float r=DrawerReserveDip();if(r==applied)return;applied=r;if(window&&!halted)Layout();}
+void ApplyLayout(){
+    layoutApplied=true;
+    const bool want=SidePanelWanted();NativeChrome::ShortcutsPanel::SidePanelRows()=want;if(want==chrome.sidebar)return;
+    if(tabDrag.tab)CancelTabDrag(true);sidebarHover.Close();chrome.sidebarOverlay=false;chrome.sidebarDrag=-1;chrome.sidebarInsert=-1;
+    if(window){KillTimer(window,SidebarFoldTimerId);KillTimer(window,SidebarHoverTimerId);}
+    for(auto& t:pages)if(t&&t->holed){if(t->host&&IsWindow(t->host))SetWindowRgn(t->host,nullptr,TRUE);t->holed=false;}
+    chrome.sidebar=want;sidebarReady=false;sidebarShownTab=-1;chrome.ResetTabMotion();   // the other layout starts settled
+    if(window){HideSuggestions();chrome.latched=0;CloseDownloadSurfaces(false);audioPanel.Close(false);settingsDrawer.Hide(false,false);historyDrawer.Hide(false,false);bookmarksDrawer.Hide(false,false);
+        Layout();bookmarkToast.Reposition();RepositionElementSurfaces();}
+    Log(want?L"LAYOUT side panel":L"LAYOUT top bar");
+}
+// The compact « » » popover (grid B « compact, 40 »): every bookmark in a card at the column's right, over the page
+// (a hole in the page windows like the column over the page). Closed by « » », Échap, a click elsewhere or on the page,
+// opening a bookmark, or the column leaving compact.
+void SidebarPopover(bool open){if(!chrome.sidebar)open=false;if(open==chrome.sidebarPopover)return;chrome.sidebarPopover=open;chrome.sidebarPopoverScroll=0;BuildChrome();if(window){ApplyPages();InvalidateChrome();}
+    accessibility.Notify('K',open?TR(sidebar_all_bookmarks_tip):L"",L"Bookmarks" /* i18n-exempt: UIA activity id */);}
+// Before every Build: the mode, the drawn width and titles (fold), the column over the page, per-tab details.
+void SidebarPrepare(){
+    namespace V=NativeChrome::Design::Vertical;chrome.sidebarReserve=DrawerReserveDip();
+    {const bool hidden=SideFocusWanted();if(hidden!=chrome.sideHidden){chrome.sideHidden=hidden;SideFocusReset();}}   // Mode Focus: the column hides
+    // Drawers start under the window bar: 40 in the complete layout, 25 in the compact one (Paper 07 / 11); in Focus at the
+    // page's top (4, under the annotation banner when it is there).
+    V::DrawerTopValue()=!chrome.sidebar?V::top:chrome.sideHidden?std::max(chrome.annotationBand,SBar::Zone::inset):(SidebarEffective()==SBar::Mode::Compact?SBar::Zone::compactDrawerTop:SBar::Zone::drawerTop);
+    if(window){bookmarkToast.pageLeftPx=chrome.sidebar?S(chrome.SidebarZoneLeft()):0;bookmarkToast.pageBottomPx=chrome.sidebar?S(SBar::Zone::inset):0;}
+    if(!chrome.sidebar){chrome.sidebarResizable=false;chrome.sidebarEdge=0;LogLayout();return;}const double now=SidebarNowMs();const auto mode=SidebarEffective();
+    // The complete width: the profile's « side-width », or the edge being dragged.
+    if(!SidebarEdgeDragging()){const auto mnow=NativeChrome::Motion::Now();const float saved=SBar::Resize::Clamp((float)settings.sideWidth);
+        if(!sideWidthKnown){sideWidthSpring.Snap(saved);sideWidthKnown=true;}
+        else if(!sideWidthSpring.Moving(mnow)&&!sidebarFold.Moving(now)&&sideWidthSpring.Target()!=saved)sideWidthSpring.Snap(saved);
+        else if(sideWidthSpring.Moving(mnow)&&sideWidthSpring.Target()!=saved)sideWidthSpring.Set(saved,mnow,SBar::Resize::settleResponse,motion.ReducedMotion());
+        chrome.sidebarWidth=sideWidthSpring.Value(mnow);}
+    sidebarFold.panel=chrome.sidebarWidth;
+    if(!sidebarReady){sidebarFold.Set(mode,now,false);sidebarReady=true;}
+    else if(mode!=sidebarFold.target){sidebarFold.Set(mode,now,!SidebarEdgeDragging()&&!motion.ReducedMotion()&&window&&IsWindowVisible(window)&&!IsIconic(window));if(window&&sidebarFold.Moving(now))SetTimer(window,SidebarFoldTimerId,15,nullptr);}
+    sidebarFold.Update(now);sidebarFold.Settle(now);const bool moving=sidebarFold.Moving(now);   /* motion spec §2: the titles' fade-in starts past 70 % */
+    if(sidebarFold.target!=SBar::Mode::Compact||moving){sidebarHover.Close();chrome.sidebarPopover=false;}
+    chrome.sidebarMode=SidebarEdgeDragging()?chrome.sidebarMode:sidebarFold.CompleteLayout(now)?SBar::Mode::Complete:SBar::Mode::Compact;   /* folding: complete for the titles' 80 ms, then compact (its pieces glide); unfolding: complete at once */
+    chrome.sidebarColumn=sidebarFold.ColumnWidth(now);chrome.sidebarTitles=sidebarFold.Titles(now);chrome.sidebarOverlay=sidebarHover.open;
+    if(chrome.sideHidden){sidebarHover.Close();chrome.sidebarOverlay=false;if(sideReveal.wide){chrome.sidebarMode=SBar::Mode::Complete;chrome.sidebarTitles=1;}}   // Focus: its own way back (SideFocusEvaluate); the address in compact: the complete column
+    chrome.sideMorphing=moving||chrome.MorphMoving(NativeChrome::Motion::Now());   // §2: the pieces glide while the column folds
+    chrome.annotateDimmed=chrome.annotateShown&&AnnotationButtonDimmed();
+    // The edge handle: docked, settled, and the window wide enough for the chosen layout (not compact by itself).
+    chrome.sidebarResizable=!sidebarHover.open&&!moving&&chrome.width>=SBar::autoCompactBelow&&!InFullscreen()&&!chrome.sideHidden;if(!chrome.sidebarResizable&&!SidebarEdgeDragging())chrome.sidebarEdge=0;
+    LogLayout();
+    chrome.sideHome.clear();chrome.sideDetails.clear();for(auto& t:pages){chrome.sideHome.push_back(t->home);chrome.sideDetails.push_back(t->home?std::wstring():BareDomain(t->uri));}
+    // The selected tab's row is brought into the list's view (a new tab, Ctrl+Tab, Ctrl+1…9).
+    if(current!=sidebarShownTab&&current>=0&&current<(int)pages.size()){sidebarShownTab=current;const auto L=SBar::Compute(chrome.SideInput(chrome.sidebarOverlay?SBar::Mode::Complete:chrome.sidebarMode,(int)pages.size()));chrome.sidebarScroll=SBar::ScrollToShow(L,current);}
+}
+// The fold button and Ctrl+Maj+,: the user's choice flips (saved). In a window too narrow for the complete column,
+// the choice is kept and the complete column opens over the page instead (Designer, answer 11).
+void ToggleSidebar(){
+    if(!chrome.sidebar)return;
+    if(chrome.sideHidden){sideReveal.Toggle();SideRevealChanged();if(sideReveal.open){SetFocus(window);keyboardModality=true;keyboardFocus=NativeChrome::TabBase+std::max(0,current);InvalidateChrome();}return;}   // Mode Focus: in, then out
+    if(chrome.width<SBar::autoCompactBelow){if(sidebarHover.open)sidebarHover.Close();else sidebarHover.Open();Layout();return;}
+    sidebarHover.Close();
+    // The fold button and Ctrl+Maj+, switch Panneau latéral <-> Panneau compact in the setting (a trial run forced with
+    // --side-panel while the setting says « En haut » folds for this run only).
+    using BrowserSettings::TabsPosition;
+    if(forcedLayout>=0){forcedLayout=static_cast<int>(LayoutInEffect()==TabsPosition::Side?TabsPosition::Compact:TabsPosition::Side);Layout();return;}
+    if(BrowserSettings::SidePanel(settings.tabsPosition)){settings.tabsPosition=settings.tabsPosition==TabsPosition::Side?TabsPosition::Compact:TabsPosition::Side;SettingChanged(BrowserSettings::Change::TabsPosition);}
+}
+// ---- « Redimensionner » the column (Paper « Redimensionner · 1 à 4 (validées) »; model in src/sidebar.h Resize) ----
+// The edge (a 6 DIP handle inside the column along the page) is dragged live: the page follows, the grid re-flows; under
+// 160 the column snaps to compact and back past 160 it opens at 220. The release saves: a complete column its width in
+// the profile (« side-width ») and « Panneau latéral »; a compact one « Panneau compact » (the width is kept for the next
+// time it opens). Double-click (or Entrée on the focused edge): 248, from compact too. Échap / a lost capture: undone.
+// A run forced with --tab-layout keeps the layout change in the run (the width is saved either way).
+struct EdgeDrag{bool active=false;float offset=0;SBar::Resize::State state{SBar::Mode::Complete,SBar::Complete::width};bool startedCompact=false;float raw=0;
+    struct Sample{float x;double ms;};std::vector<Sample> trail;   // the pointer's last positions (velocity at the release)
+    float Velocity()const{if(trail.size()<2)return 0;const auto& a=trail.front();const auto& b=trail.back();const double dt=(b.ms-a.ms)/1000;return dt>.001?(float)((b.x-a.x)/dt):0.f;}
+} edgeDrag;DWORD edgeClickAt=0;
+void SidebarWidthTo(float w,float response){const auto mnow=NativeChrome::Motion::Now();if(!sideWidthKnown||!window){sideWidthSpring.Snap(w);sideWidthKnown=true;return;}sideWidthSpring.Set(w,mnow,response,motion.ReducedMotion());if(window)SetTimer(window,0x5161 /* SidebarFoldTimerId */,15,nullptr);}
+bool SidebarEdgeDragging(){return edgeDrag.active;}
+constexpr UINT_PTR SidebarEdgeFadeTimerId=0x5163,SideFocusPollTimerId=0x5164,SideSlideTimerId=0x5165,SideSlideLiveTimerId=0x5166;
+void SidebarEdgeLook(int state){if(edgeDrag.active)state=2;if(!chrome.sidebarResizable&&!edgeDrag.active)state=0;if(chrome.sidebarEdge==state)return;
+    if(state==1&&chrome.sidebarEdge==0){chrome.edgeHoverAt=NativeChrome::Motion::Now();if(window)SetTimer(window,SidebarEdgeFadeTimerId,15,nullptr);}   // §5: the line fades in (120 ms) after 150 ms
+    chrome.sidebarEdge=state;if(window){SyncCornerMasks();InvalidateChrome();}}
+// The layout the edge leaves: « Panneau latéral » or « Panneau compact » (saved, or for this run when forced).
+void SidebarEdgeMode(SBar::Mode m){using BrowserSettings::TabsPosition;const auto p=m==SBar::Mode::Compact?TabsPosition::Compact:TabsPosition::Side;
+    if(forcedLayout>=0){forcedLayout=static_cast<int>(p);if(window)Layout();return;}
+    if(settings.tabsPosition!=p)SetTabsPosition(p);else if(window)Layout();}
+void SidebarEdgeAnnounce(){const std::wstring text=SidebarEffective()==SBar::Mode::Compact?std::wstring(TR(sidebar_resize_compact)):TRF(sidebar_resize_announce,std::to_wstring((int)std::lround(chrome.sidebarWidth)));
+    accessibility.Notify(NativeChrome::Chrome::SidebarEdgeId,text.c_str(),L"PanelWidth" /* i18n-exempt: UIA activity id */);}
+void SidebarEdgeReset(){settings.sideWidth=BrowserSettings::SideWidthDefault;SaveSettings();SidebarWidthTo(SBar::Complete::width,(float)SBar::Timing::foldResponse);   // §5: the same spring as the fold
+    if(!window)chrome.sidebarWidth=SBar::Complete::width;SidebarEdgeMode(SBar::Mode::Complete);if(window)Layout();SidebarEdgeAnnounce();Log(L"SIDEBAR width reset to 248");}
+bool SidebarEdgeDown(float x){if(!chrome.sidebar||!chrome.sidebarResizable)return false;ChromeTipHide();
+    const DWORD now=GetMessageTime();if(edgeClickAt&&now-edgeClickAt<=GetDoubleClickTime()){edgeClickAt=0;SidebarEdgeReset();return true;}
+    edgeClickAt=now;edgeDrag.active=true;edgeDrag.offset=chrome.side.column-x;edgeDrag.state={SidebarEffective(),chrome.sidebarWidth};keyboardFocus=0;keyboardModality=false;
+    edgeDrag.startedCompact=edgeDrag.state.mode==SBar::Mode::Compact;edgeDrag.raw=chrome.side.column;edgeDrag.trail.clear();edgeDrag.trail.push_back({edgeDrag.raw,SidebarNowMs()});
+    if(window){SetFocus(window);if(!splitTest)SetCapture(window);}SidebarEdgeLook(2);return true;}
+void SidebarEdgeMove(float x){if(!edgeDrag.active)return;edgeDrag.raw=x+edgeDrag.offset;const double t=SidebarNowMs();
+    edgeDrag.trail.push_back({edgeDrag.raw,t});while(edgeDrag.trail.size()>2&&t-edgeDrag.trail.front().ms>80)edgeDrag.trail.erase(edgeDrag.trail.begin());   // the last 80 ms
+    const auto s=SBar::Resize::Dragging(edgeDrag.raw,edgeDrag.startedCompact);
+    if(s.mode==edgeDrag.state.mode&&std::fabs(s.width-edgeDrag.state.width)<.01f)return;edgeDrag.state=s;
+    chrome.sidebarMode=s.mode;if(s.mode==SBar::Mode::Complete){chrome.sidebarWidth=s.width;sideWidthSpring.Snap(s.width);sideWidthKnown=true;}
+    if(window)Layout();}
+void SidebarEdgeUp(bool commit){if(!edgeDrag.active)return;const auto s=edgeDrag.state;const float v=edgeDrag.Velocity(),raw=edgeDrag.raw;edgeDrag.active=false;if(window&&GetCapture()==window)ReleaseCapture();
+    if(commit){
+        const auto r=edgeDrag.startedCompact&&s.mode==SBar::Mode::Compact?SBar::Resize::Release{SBar::Mode::Compact,SBar::Resize::Clamp(raw),false}:SBar::Resize::Released(raw,v);
+        if(r.mode==SBar::Mode::Complete){settings.sideWidth=BrowserSettings::SideWidth((int)std::lround(r.width));SaveSettings();
+            if(r.springBack)SidebarWidthTo((float)settings.sideWidth,SBar::Resize::settleResponse);}   // §5: back to the bound
+        else if(s.mode==SBar::Mode::Complete){   // §5: folded with the gesture's speed (.85 / .3 s) from the width it shows
+            const double t=SidebarNowMs();const float w=chrome.sidebarWidth;sidebarFold.panel=w;sideWidthSpring.Snap(w);
+            sidebarFold.Set(SBar::Mode::Compact,t,!motion.ReducedMotion()&&window&&IsWindowVisible(window),std::min(0.f,v)/std::max(1.f,w-SBar::Compact::width),SBar::Resize::throwDamping);
+            if(window)SetTimer(window,0x5161 /* SidebarFoldTimerId */,15,nullptr);}
+        SidebarEdgeMode(r.mode);
+        Log(r.mode==SBar::Mode::Compact?std::wstring(L"SIDEBAR edge released (projected under 160): compact"):L"SIDEBAR width "+std::to_wstring(settings.sideWidth));}
+    else{if(window)Layout();}
+    chrome.sidebarEdge=0;POINT p{};if(window&&GetCursorPos(&p)){ScreenToClient(window,&p);const float d=GetDpiForWindow(window)/96.f;SidebarEdgeLook(chrome.Hit(p.x/d,p.y/d)==NativeChrome::Chrome::SidebarEdgeId?1:0);}
+    if(window){SyncCornerMasks();InvalidateChrome();}if(commit)SidebarEdgeAnnounce();}
+// Keyboard on the focused edge (a separator, like the split view's): ← → 16 DIP (Maj 64), Début 220, Fin 360, Entrée / Espace
+// 248. Past the minimum to the left it goes compact; to the right from compact it opens at 220.
+bool SidebarEdgeKey(WPARAM key){if(!chrome.sidebar)return false;const bool shift=GetKeyState(VK_SHIFT)<0;const float step=shift?64.f:16.f;
+    const bool compact=SidebarEffective()==SBar::Mode::Compact;float w=chrome.sidebarWidth;SBar::Mode m=compact?SBar::Mode::Compact:SBar::Mode::Complete;
+    if(key==VK_RETURN||key==VK_SPACE){SidebarEdgeReset();return true;}
+    if(key==VK_LEFT){if(compact)return true;if(w<=SBar::Resize::minimum+.5f)m=SBar::Mode::Compact;else w=SBar::Resize::Clamp(w-step);}
+    else if(key==VK_RIGHT){if(compact){m=SBar::Mode::Complete;w=SBar::Resize::minimum;}else w=SBar::Resize::Clamp(w+step);}
+    else if(key==VK_HOME){m=SBar::Mode::Complete;w=SBar::Resize::minimum;}
+    else if(key==VK_END){m=SBar::Mode::Complete;w=SBar::Resize::maximum;}
+    else return false;
+    keyboardModality=true;if(m==SBar::Mode::Complete){settings.sideWidth=BrowserSettings::SideWidth((int)std::lround(w));chrome.sidebarWidth=(float)settings.sideWidth;SaveSettings();}
+    SidebarEdgeMode(m);if(window){Layout();SyncCornerMasks();InvalidateChrome();}SidebarEdgeAnnounce();return true;}
+// While the complete column is open over the page, every page window under it gets a window region without the
+// column: the main window draws the column there and gets the pointer; the page keeps its size and place.
+void SidebarHoles(){
+    const bool focusCol=chrome.sidebar&&chrome.sideHidden&&chrome.sideShown&&!InFullscreen();   // Mode Focus: the column back at rest
+    const bool over=chrome.sidebar&&(chrome.sidebarOverlay||focusCol)&&!InFullscreen(),pop=chrome.sidebar&&chrome.sidebarPopover&&!InFullscreen()&&!chrome.sidePop.box.Empty();const bool open=over||pop;
+    const RECT hole=focusCol?RECT{0,S(chrome.side.top),S(chrome.side.column+SBar::FocusSide::border),S(chrome.height)}:over?RECT{0,0,S(chrome.sideOver.column+SBar::Overlay::border),S(chrome.height)}:RECT{0,S(chrome.sidePop.box.top),S(chrome.sidePop.box.right),S(chrome.sidePop.box.bottom)};
+    for(auto& t:pages){if(!t||!t->controller.p)continue;HWND h=t->host&&IsWindow(t->host)?t->host:(t->placedVisible==1?PageHostWindow(*t):nullptr);if(!h)continue;
+        RECT w{};GetWindowRect(h,&w);MapWindowPoints(nullptr,window,(POINT*)&w,2);RECT cut{};
+        if(open&&t->placedVisible==1&&IntersectRect(&cut,&hole,&w)){HRGN all=CreateRectRgn(0,0,w.right-w.left,w.bottom-w.top),sub=CreateRectRgn(cut.left-w.left,cut.top-w.top,cut.right-w.left,cut.bottom-w.top);
+            CombineRgn(all,all,sub,RGN_DIFF);DeleteObject(sub);SetWindowRgn(h,all,TRUE);t->holed=true;}
+        else if(t->holed){SetWindowRgn(h,nullptr,TRUE);t->holed=false;}}
+}
+// Pointer on the compact column: 400 ms of rest opens the complete column over the page (03); leaving it closes it.
+// Val (24 nov.): the compact column ALWAYS stays icons: resting the pointer on it no longer opens the complete column over
+// the page (the titles are the icons' tooltips, on hover and on keyboard focus). The column over the page remains only
+// for the fold button in a window too narrow for the complete one; it closes when the pointer leaves it. The 400 ms
+// hover-to-open (SBar::Hover, SidebarHoverDue) stays as the hook for Focus mode's hidden panel (plan § 4).
+void SidebarPointer(float x,float y){(void)y;
+    if(!chrome.sidebar||!sidebarHover.open||tabDrag.tab)return;
+    if(x>=chrome.sideOver.column+SBar::Overlay::border){sidebarHover.Leave();Layout();}
+}
+void SidebarPointerLeft(){if(!chrome.sidebar||tabDrag.tab)return;KillTimer(window,SidebarHoverTimerId);const bool was=sidebarHover.open;sidebarHover.Leave();if(was&&!sidebarHover.open)Layout();}
+void SidebarHoverDue(){KillTimer(window,SidebarHoverTimerId);if(!sidebarHover.Due(SidebarNowMs()))return;POINT p;GetCursorPos(&p);ScreenToClient(window,&p);const float d=GetDpiForWindow(window)/96.f;
+    if(p.x<0||p.x/d>=chrome.side.column||p.y<0||p.y/d>=chrome.height){sidebarHover.Leave();return;}sidebarHover.Open();Layout();}
+// ---- #127 × Mode Focus: the side layouts' hidden column (src/sidebar.h FocusSide; Designer 24 nov., Paper 2091-0 / 20EJ-0)
+// Focus in a side layout hides the column: the page takes the window minus 4 DIP. The pointer resting 400 ms in the
+// window's left 8 DIP brings it back over the page (under the annotation banner); it leaves when the pointer leaves it,
+// unless something holds it (a drawer opened from it, a menu, a drag, the field being typed in). Ctrl+Maj+, (and the
+// fold button) bring it / send it away and Échap sends it away. Over the pages it is a hole in their windows, like the
+// column over the page in a narrow window; while it slides a picture of it moves instead (a moving hole would lag the
+// pages by a frame, the same reason as Focus's top panel): in on a critically damped 0.3 s spring, out 0.2 s, from the
+// displayed position (caught mid-flight, it turns back); reduced motion: in place, a 120 ms fade.
+bool SideFocusWanted(){return settings.focusMode&&chrome.sidebar&&!halted&&!InFullscreen();}
+struct SidePicture{HWND hwnd=nullptr;HDC mem=nullptr;HBITMAP bmp=nullptr;HGDIOBJ old=nullptr;int w=0,h=0,alpha=-1;bool shown=false,broken=false;} sidePic;
+void SideRevealLive(bool live);
+LRESULT CALLBACK SidePictureProc(HWND h,UINT msg,WPARAM w,LPARAM l){
+    switch(msg){
+    case WM_NCHITTEST:return HTCLIENT;
+    case WM_ERASEBKGND:return 1;
+    case WM_PAINT:{PAINTSTRUCT ps;BeginPaint(h,&ps);EndPaint(h,&ps);return 0;}
+    case WM_MOUSEACTIVATE:return MA_NOACTIVATE;
+    case WM_SETCURSOR:SetCursor(LoadCursor(nullptr,IDC_ARROW));return TRUE;
+    // A press on the sliding column: at rest at once (live), then the same press on the column under the pointer.
+    case WM_LBUTTONDOWN:case WM_RBUTTONDOWN:case WM_MBUTTONDOWN:case WM_LBUTTONDBLCLK:{if(sideReveal.open){sideSlide.Snap(1);sideFade.Snap(1);SideRevealLive(true);}POINT p{};GetCursorPos(&p);ScreenToClient(window,&p);return SendMessageW(window,msg,w,MAKELPARAM(p.x,p.y));}
+    case WM_MOUSEMOVE:case WM_LBUTTONUP:case WM_RBUTTONUP:case WM_MBUTTONUP:{POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};MapWindowPoints(h,window,&p,1);return SendMessageW(window,msg,w,MAKELPARAM(p.x,p.y));}
+    }
+    return DefWindowProcW(h,msg,w,l);
+}
+void SidePictureRelease(){if(sidePic.mem){if(sidePic.old)SelectObject(sidePic.mem,sidePic.old);DeleteDC(sidePic.mem);}if(sidePic.bmp)DeleteObject(sidePic.bmp);sidePic.mem=nullptr;sidePic.bmp=nullptr;sidePic.old=nullptr;sidePic.alpha=-1;}
+void SidePictureHide(){if(sidePic.hwnd&&sidePic.shown)ShowWindow(sidePic.hwnd,SW_HIDE);sidePic.shown=false;SidePictureRelease();}
+// The picture at slide position `pos` (0 off to the left .. 1 at rest), `alpha` 0 .. 1 (reduced motion's fade).
+void SidePictureMove(float pos,float alpha){
+    if(!sidePic.shown||!sidePic.hwnd||!sidePic.mem)return;const float s=GetDpiForWindow(window)/96.f;
+    const int a=(int)std::lround(std::clamp(alpha,0.f,1.f)*255);
+    if(a!=sidePic.alpha){HDC screen=GetDC(nullptr);POINT src{0,0};SIZE size{sidePic.w,sidePic.h};BLENDFUNCTION blend{AC_SRC_OVER,0,(BYTE)a,AC_SRC_ALPHA};
+        UpdateLayeredWindow(sidePic.hwnd,screen,nullptr,&size,sidePic.mem,&src,0,&blend,ULW_ALPHA);ReleaseDC(nullptr,screen);sidePic.alpha=a;}
+    SetWindowPos(sidePic.hwnd,HWND_TOP,(int)std::lround((std::clamp(pos,0.f,1.f)-1)*sidePic.w),(int)std::lround(chrome.side.top*s),0,0,SWP_NOSIZE|SWP_NOACTIVATE|SWP_SHOWWINDOW);
+}
+// A fresh picture of the column at rest. False when it cannot be made: the column then comes and goes in place (live).
+bool SidePictureShow(){
+    if(sidePic.broken||!window)return false;
+    SyncAddressDisplay();std::vector<std::wstring> titles;std::vector<std::shared_ptr<const NativeChrome::FaviconImage>> icons;
+    for(auto& t:pages){titles.push_back(t->title);icons.push_back(t->favicon.image);}chrome.SetFavicons(std::move(icons));
+    {std::vector<bool> asleep;for(auto& t:pages)asleep.push_back(t->sleeping);chrome.sleeping=std::move(asleep);}
+    std::vector<std::uint32_t> px;UINT w=0,h=0;
+    if(!chrome.RenderSideColumn(titles,current,editing,0,0,NativeChrome::Motion::Now(),px,w,h)){sidePic.broken=true;Log(L"FOCUS column picture unavailable: the column comes in place");return false;}
+    HINSTANCE inst=instance?instance:GetModuleHandleW(nullptr);
+    if(!sidePic.hwnd){static bool registered=false;if(!registered){WNDCLASSW wc{};wc.lpfnWndProc=SidePictureProc;wc.hInstance=inst;wc.lpszClassName=L"BrowserSideSlide";wc.style=CS_DBLCLKS;RegisterClassW(&wc);registered=true;}
+        sidePic.hwnd=CreateWindowExW(WS_EX_LAYERED|WS_EX_NOACTIVATE,L"BrowserSideSlide",L"",WS_CHILD,0,0,1,1,window,nullptr,inst,nullptr);
+        if(!sidePic.hwnd){sidePic.broken=true;Log(L"FOCUS column picture window unavailable: the column comes in place");return false;}}
+    SidePictureRelease();
+    BITMAPINFO bi{};bi.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);bi.bmiHeader.biWidth=(LONG)w;bi.bmiHeader.biHeight=-(LONG)h;bi.bmiHeader.biPlanes=1;bi.bmiHeader.biBitCount=32;bi.bmiHeader.biCompression=BI_RGB;
+    HDC screen=GetDC(nullptr);sidePic.mem=CreateCompatibleDC(screen);void* bits=nullptr;sidePic.bmp=CreateDIBSection(sidePic.mem,&bi,DIB_RGB_COLORS,&bits,nullptr,0);ReleaseDC(nullptr,screen);
+    if(!sidePic.mem||!sidePic.bmp||!bits){SidePictureRelease();sidePic.broken=true;Log(L"FOCUS column picture refused: the column comes in place");return false;}
+    memcpy(bits,px.data(),px.size()*4);sidePic.old=SelectObject(sidePic.mem,sidePic.bmp);sidePic.w=(int)w;sidePic.h=(int)h;sidePic.alpha=-1;sidePic.shown=true;
+    return true;
+}
+// Live: the column painted by the window in a hole of the pages (at rest); not live: the pages whole again.
+void SideRevealLive(bool live){
+    if(live==sideLive)return;sideLive=live;chrome.sideShown=live&&chrome.sideHidden;
+    BuildChrome();SidebarHoles();SyncCornerMasks();InvalidateRect(window,nullptr,FALSE);if(!IsIconic(window))UpdateWindow(window);
+    if(live&&sidePic.shown)SetTimer(window,SideSlideLiveTimerId,60,nullptr);   // the picture bridges the frame the pages' new region takes
+    Log(live?L"FOCUS column shown":L"FOCUS column away");
+}
+void SideSlideFrame(){
+    if(!window)return;const auto now=NativeChrome::Motion::Now();
+    const float pos=sideSlide.Value(now),alpha=sideFade.Value(now);SidePictureMove(pos,alpha);
+    if(sideSlide.Moving(now)||sideFade.Moving(now))return;
+    KillTimer(window,SideSlideTimerId);
+    if(sideReveal.open)SideRevealLive(true);else SidePictureHide();
+}
+// The reveal changed (pointer, shortcut, Échap, the address): the slide (or the fade) from where it is shown.
+void SideRevealChanged(){
+    if(!window||!chrome.sideHidden)return;const auto now=NativeChrome::Motion::Now();const bool reduced=motion.ReducedMotion(),open=sideReveal.open;
+    namespace FS=SBar::FocusSide;
+    if(!open&&(GetFocus()==window||editing)){keyboardFocus=0;FocusPage();}   // the column goes: the keyboard back to the page
+    if(!open&&sideLive){if(!SidePictureShow()){SideRevealLive(false);return;}sideSlide.Snap(1);sideFade.Snap(1);SidePictureMove(1,1);SideRevealLive(false);}
+    else if(open&&!sideLive&&!sidePic.shown){if(!SidePictureShow()){SideRevealLive(true);return;}if(reduced){sideSlide.Snap(1);sideFade.Snap(0);}else{sideFade.Snap(1);if(sideSlide.Value(now)<=0)sideSlide.Snap(0);}SidePictureMove(sideSlide.Value(now),sideFade.Value(now));}
+    if(reduced){sideSlide.Snap(1);sideFade.Set(open?1.f:0.f,now,std::chrono::milliseconds((int)FS::reducedFadeMs),false,NativeChrome::Motion::Curve::SmoothStep);}
+    else{sideFade.Snap(1);sideSlide.Set(open?1.f:0.f,now,open?FS::enterResponse:FS::exitResponse);}
+    SetTimer(window,SideSlideTimerId,15,nullptr);SideSlideFrame();
+    Log(open?(sideReveal.pinned?L"FOCUS column in (shortcut)":L"FOCUS column in (left edge)"):L"FOCUS column out");
+}
+// Focus on / off or the layout changed: nothing shown, nothing moving.
+void SideFocusReset(){
+    sideReveal.Close();sideDrawerHold=false;sideSlide.Snap(0);sideFade.Snap(1);
+    if(window){KillTimer(window,SideSlideTimerId);KillTimer(window,SideSlideLiveTimerId);}
+    SidePictureHide();if(sideLive){sideLive=false;chrome.sideShown=false;}
+    if(!chrome.sideHidden&&sidePolling&&window){KillTimer(window,SideFocusPollTimerId);sidePolling=false;}
+    if(chrome.sideHidden&&window)SideFocusEvaluate();
+}
+// What keeps the column while the pointer is elsewhere: Focus's own rules (a menu, the field, a drag, a popover…), a
+// drawer opened from the column (Designer: it stays while that drawer is open), the « » » popover.
+bool FocusHold();bool FocusKeep();
+bool SideFocusHolds(){
+    if(sideDrawerHold&&DrawerReserveDip()<=0&&!downloadDrawer.Visible())sideDrawerHold=false;
+    return sideDrawerHold||chrome.sidebarPopover||FocusHold()||FocusKeep();
+}
+// Every ~30 ms while the window is in front or the column is there (over a page the window gets no mouse message).
+void SideFocusEvaluate(){
+    if(!window)return;
+    if(!chrome.sideHidden){if(sidePolling){KillTimer(window,SideFocusPollTimerId);sidePolling=false;}return;}
+    POINT sp{};const bool pointer=GetCursorPos(&sp)!=FALSE;POINT cp=sp;ScreenToClient(window,&cp);
+    const float k=96.f/GetDpiForWindow(window),x=cp.x*k,y=cp.y*k;
+    HWND fg=GetForegroundWindow();const bool front=fg&&(fg==window||GetAncestor(fg,GA_ROOTOWNER)==window)&&IsWindowVisible(window)&&!IsIconic(window);
+    const bool buttons=GetAsyncKeyState(VK_LBUTTON)<0||GetAsyncKeyState(VK_RBUTTON)<0||GetAsyncKeyState(VK_MBUTTON)<0;
+    RECT wr{};GetWindowRect(window,&wr);const bool ours=pointer&&front&&PtInRect(&wr,sp);
+    const float top=chrome.side.top;namespace FS=SBar::FocusSide;
+    const bool inBand=ours&&!buttons&&x>=0&&x<FS::edge&&y>=top&&y<chrome.height;
+    const bool overColumn=ours&&(sideLive||sidePic.shown)&&x>=0&&x<chrome.side.column+FS::border&&y>=top&&y<chrome.height;
+    const double ms=SidebarNowMs();
+    if(sideReveal.Pointer(ms,inBand,overColumn,sideReveal.open&&SideFocusHolds()))SideRevealChanged();
+    const bool poll=front||sideReveal.open||sidePic.shown;
+    if(poll&&!sidePolling)sidePolling=SetTimer(window,SideFocusPollTimerId,30,nullptr)!=0;
+    else if(!poll&&sidePolling){KillTimer(window,SideFocusPollTimerId);sidePolling=false;}
+}
+// The field needs the column (Ctrl+L, F6, typing): at rest at once (the keyboard does not wait for a slide).
+void SideFocusForAddress(){
+    if(!chrome.sideHidden||!window)return;
+    sideReveal.ForAddress(SidebarEffective()==SBar::Mode::Compact);KillTimer(window,SideSlideTimerId);SidePictureHide();sideSlide.Snap(1);sideFade.Snap(1);
+    if(!sideLive)SideRevealLive(true);else BuildChrome();
+    Layout();
+}
+// A drawer opened from the shown column keeps it (Designer, board 15's rule).
+void SideFocusCommand(int cmd){
+    if(!chrome.sideHidden||!sideReveal.open)return;
+    if(cmd=='Y'||cmd=='S'||cmd=='D'||cmd=='V'||cmd==BookmarksDrawerCommand||cmd==NativeChrome::Chrome::SidebarManageId)sideDrawerHold=true;
+}
+bool SideFocusEscape(){if(!chrome.sideHidden||!sideReveal.open)return false;sideReveal.Close();sideDrawerHold=false;SideRevealChanged();return true;}
+// Window dragging: the bar right of the column, and the column's top above the field (complete) / the fold button (compact).
+bool SidebarCaption(float x,float y){if(!chrome.sidebar)return false;const auto& L=chrome.SideColumn();const float col=chrome.sidebarOverlay?L.column:chrome.side.column;
+    if(x>=col)return y<chrome.side.bar;return y<(L.mode==SBar::Mode::Complete?L.address.top:L.toggle.bottom);}
+// Wheel over the tab list scrolls it (answer 4).
+void SidebarWheel(POINT client,int delta){const float d=GetDpiForWindow(window)/96.f,x=client.x/d,y=client.y/d;const auto& L=chrome.SideColumn();
+    if(chrome.sidebarPopover&&chrome.sidePop.box.Contains(x,y)){chrome.sidebarPopoverScroll=std::clamp(chrome.sidePop.grid.scroll-delta/120.f*48.f,0.f,chrome.sidePop.grid.maxScroll);BuildChrome();InvalidateChrome();return;}
+    if(L.gridOpen&&L.grid.view.Contains(x,y)){chrome.sidebarGridScroll=std::clamp(L.grid.scroll-delta/120.f*48.f,0.f,L.grid.maxScroll);BuildChrome();InvalidateChrome();return;}
+    if(!L.tabsView.Contains(x,y))return;
+    chrome.sidebarScroll=std::clamp(L.scroll-delta/120.f*48.f,0.f,L.maxScroll);BuildChrome();InvalidateChrome();}
+// A right click on the list's empty space opens the tab list menu, as on the empty tab row before.
+// Vertical drag in the list (05): the row follows the pointer, its place stays hollow, an accent line marks the drop.
+struct RowSample{float y;double ms;};std::vector<RowSample> rowTrail;   // the lifted row's last positions (its speed at the drop)
+bool SidebarDragMove(POINT point){
+    if(!tabDrag.tab)return false;const float d=GetDpiForWindow(window)/96.f,y=point.y/d;
+    const int from=TabIndexOf(tabDrag.tab);if(from<0){CancelTabDrag();return true;}
+    const auto& L=chrome.SideColumn();if(from>=(int)L.tabs.size())return true;
+    const float h=L.tabs[from].Height();
+    // §1: 1:1 from the grab point; past the list's ends a rubber band instead of a hard stop.
+    {const float raw=y-tabDrag.grabY,lo=L.tabsView.top-h/2,hi=L.tabsView.bottom-h/2;chrome.sidebarDragY=raw<lo?lo-SBar::Resize::Rubber(lo-raw)*.5f:raw>hi?hi+SBar::Resize::Rubber(raw-hi)*.5f:raw;}
+    {const double t=SidebarNowMs();rowTrail.push_back({chrome.sidebarDragY,t});while(rowTrail.size()>2&&t-rowTrail.front().ms>80)rowTrail.erase(rowTrail.begin());}
+    chrome.sidebarDrag=from;
+    chrome.sidebarInsert=SBar::BlockMove(L.split,from,SBar::DropSlot(L,y)).insert;   // a split view block moves whole, never lands inside another
+    if(y<L.tabsView.top+16&&L.scroll>0)chrome.sidebarScroll=std::max(0.f,L.scroll-8);else if(y>L.tabsView.bottom-16&&L.scroll<L.maxScroll)chrome.sidebarScroll=std::min(L.maxScroll,L.scroll+8);
+    InvalidateChrome();return true;
+}
+// Split view from the column (answer 9, Paper « Vue partagée dans la colonne » 3): a row dragged past the column's right
+// edge into the page lifts like a top bar tab (SplitDragMove: the same card, drop preview, refusal and split creation);
+// back 20 DIP inside the column, reordering resumes. The column open over the page (narrow window) is column too: its
+// own edge, and it closes at the lift so the whole page takes the drop.
+float SidebarDropEdge(){if(chrome.sideHidden)return chrome.sideShown?chrome.side.column+SBar::FocusSide::border:ContentBox().left;return chrome.sidebarOverlay?chrome.sideOver.column+SBar::Overlay::border:ContentBox().left;}
+void SidebarLift(){
+    chrome.sidebarDrag=-1;chrome.sidebarInsert=-1;   // no row follows in the list: the row's place stays empty (liftedIndex)
+    // The card fits its title (Paper 24BU-0: 8 · favicon 16 · 8 · title 14 medium · 10), at most 240 like the drop chip;
+    // it keeps the grab point when it can, never so far right that the card is left behind the pointer.
+    tabDrag.cardW=std::min(240.f,8+16+8+splitOverlay.painter.TextWidth(TabLabel(tabDrag.tab),true)+10);tabDrag.grab=std::min(tabDrag.grab,tabDrag.cardW-16);
+    if(sidebarHover.open){sidebarHover.Leave();Layout();}
+}
+// Released outside the window (the release point `up`, client px): the tab opens in a new window (answer 9). True when handled.
+bool SidebarTearOff(POINT up){
+    if(!chrome.sidebar||!tabDrag.tab||!tabDrag.active)return false;ClientToScreen(window,&up);RECT w;GetWindowRect(window,&w);if(PtInRect(&w,up))return false;
+    auto t=tabDrag.tab;CancelTabDrag(true);
+    if(!t->home&&!t->uri.empty()&&pages.size()>1&&!privateWindow){if(splitAnim.returning)FinishSplitAnimation(); /* lifted onto the page first: the card leaves with the tab, no flight home */
+        OpenWindowWith({t->uri});CloseAt(TabIndexOf(t));Log(L"SIDEBAR tab moved to a new window");}
+    return true;
+}
+// A split view block dropped in the list (Paper 2473-0 « la paire se déplace d'un bloc »): its tabs move together, as MoveTab moves one.
+void SidebarMoveBlock(int first,int count,int dest){
+    if(count==1){MoveTab(first,dest);return;}
+    if(halted||first<0||count<=0||first+count>(int)pages.size()||dest<0||dest+count>(int)pages.size()||dest==first)return;
+    auto active=Active();SBar::MoveRange(pages,first,count,dest);
+    current=(int)(std::find(pages.begin(),pages.end(),active)-pages.begin());
+    motion.ClearInteractions();hover=pressed=keyboardFocus=0;Update();
+}
+void SidebarDragEnd(bool commit){
+    const int from=chrome.sidebarDrag,to=chrome.sidebarInsert;chrome.sidebarDragTopAtDrop=chrome.sidebarDragY;chrome.sidebarDrag=-1;chrome.sidebarInsert=-1;
+    if(!commit||from<0||!tabDrag.tab)return;
+    const float d=GetDpiForWindow(window)/96.f,x=tabDrag.at.x/d,y=tabDrag.at.y/d;   // the last pointer of the drag (what the list showed)
+    const auto& L=chrome.SideColumn();
+    if(!L.gridBlock.Empty()&&L.gridBlock.Contains(x,y)){   // onto the grid: a new bookmark (answer 9)
+        auto t=tabDrag.tab;if(t->home||!BM::Admissible(t->uri))return;
+        const BM::Id id=bookmarks.Add(BM::BarRoot,BM::End,t->title==TR(tab_new)?L"":t->title,t->uri,NativeChrome::DownloadsUI::UnixNowMs());
+        if(id){PushUndo({{BookmarkStep::Created,id}},TR(bookmark_undo_add));SaveBookmarks();BookmarksChanged();AnnounceBookmark(TRF(bookmark_added_to,bookmarks.Find(BM::BarRoot)->title));}
+        return;}
+    {const float v=rowTrail.size()>=2&&rowTrail.back().ms>rowTrail.front().ms?(float)((rowTrail.back().y-rowTrail.front().y)/((rowTrail.back().ms-rowTrail.front().ms)/1000)):0.f;rowTrail.clear();
+        chrome.RowDropped(chrome.TabKey(from),chrome.sidebarDragTopAtDrop,v,NativeChrome::Motion::Now());}   // §1: to its place with the pointer's speed
+    if(to>=0&&to!=from){const auto m=SBar::BlockMove(L.split,from,to);if(m.Moves())SidebarMoveBlock(m.first,m.count,m.dest);}
+    if(window){InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());}
+}
+void UpdateFont(){if(font)DeleteObject(font);font=CreateFontW(-S(chrome.addressFont),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,0,0,ANTIALIASED_QUALITY,0,L"Inter Display");SendMessageW(address,WM_SETFONT,(WPARAM)font,TRUE);}
 // WebView2 startup recovery (defined before wWinMain): installer worker notifications, shutdown.
 constexpr UINT EngineInstallMessage=WM_APP+41;void OnEngineInstallMessage();void StopEngineStart();
 // « Importer depuis un navigateur… » (src/browser-import-integration.h): the worker's result reaches the UI thread.
@@ -4756,7 +5387,7 @@ case WM_CREATE:window=h;address=CreateWindowExW(0,L"EDIT",L"",WS_CHILD|WS_TABSTO
 // Alt alone (or F10) asks for the menu bar; this window has none, and the system-menu state it starts instead freezes
 // the WebView that had the keyboard (page or chat panel) until the next key. Alt+Espace (lParam = the key) still opens the system menu.
 case WM_SYSCOMMAND:if((w&0xFFF0)==SC_KEYMENU&&l==0)return 0;break;
-case WM_NCHITTEST:{if(InFullscreen())return HTCLIENT;POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(h,&p);RECT r;GetClientRect(h,&r);int edge=S(4);if(!IsZoomed(h)){bool left=p.x<edge,right=p.x>=r.right-edge,top=p.y<S(3),bottom=p.y>=r.bottom-edge;if(top&&left)return HTTOPLEFT;if(top&&right)return HTTOPRIGHT;if(bottom&&left)return HTBOTTOMLEFT;if(bottom&&right)return HTBOTTOMRIGHT;if(left)return HTLEFT;if(right)return HTRIGHT;if(top)return HTTOP;if(bottom)return HTBOTTOM;}float x=p.x*96.f/GetDpiForWindow(h),y=p.y*96.f/GetDpiForWindow(h);int id=chrome.Hit(x,y);if(id=='M')return HTMAXBUTTON;
+case WM_NCHITTEST:{if(InFullscreen())return HTCLIENT;POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(h,&p);RECT r;GetClientRect(h,&r);int edge=S(4);if(!IsZoomed(h)){bool left=p.x<edge,right=p.x>=r.right-edge,top=p.y<S(3),bottom=p.y>=r.bottom-edge;if(top&&left)return HTTOPLEFT;if(top&&right)return HTTOPRIGHT;if(bottom&&left)return HTBOTTOMLEFT;if(bottom&&right)return HTBOTTOMRIGHT;if(left)return HTLEFT;if(right)return HTRIGHT;if(top)return HTTOP;if(bottom)return HTBOTTOM;}float x=p.x*96.f/GetDpiForWindow(h),y=p.y*96.f/GetDpiForWindow(h);int id=chrome.Hit(x,y);if(id=='M')return HTMAXBUTTON;if(chrome.sidebar){if(!id&&SidebarCaption(x,y))return HTCAPTION;return HTCLIENT;}
     if(chrome.Local(x,y)&&y<44&&!id)return HTCAPTION; /* the tab row's empty space (Mode Focus: only while the floating panel shows it) */return HTCLIENT;}
 case WM_NCLBUTTONDOWN:if(w==HTMAXBUTTON){Command('M');return 0;}break;
 // A click on the B01 request chip must not take activation from its popover (light dismiss
@@ -4778,7 +5409,7 @@ case WM_SIZE:HideSuggestions();FormsHideAll();motionMinimized=w==SIZE_MINIMIZED;
     updateToast.SetOwnerVisible(!motionMinimized);
 #endif
     return 0;
-case WM_PARENTNOTIFY:{const UINT e=LOWORD(w);if(e==WM_LBUTTONDOWN||e==WM_RBUTTONDOWN||e==WM_MBUTTONDOWN||e==WM_XBUTTONDOWN||e==0x0246 /* WM_POINTERDOWN */)ContentTransitionInput(L"click");break;}
+case WM_PARENTNOTIFY:{const UINT e=LOWORD(w);if(e==WM_LBUTTONDOWN||e==WM_RBUTTONDOWN||e==WM_MBUTTONDOWN||e==WM_XBUTTONDOWN||e==0x0246 /* WM_POINTERDOWN */){ContentTransitionInput(L"click");if(chrome.sidebarPopover)SidebarPopover(false);}break;}
 case WM_MOVE:contentTransition.Cancel();RepositionElementSurfaces();HideSuggestions();FormsHideAll();SyncStatusBubble();audioPanel.OwnerChanged();downloadDrawer.Reposition();settingsDrawer.Reposition();historyDrawer.Reposition();bookmarksDrawer.Reposition();bookmarkToast.Reposition();if(bookmarkPopover.Visible())bookmarkPopover.Hide();
 #ifdef BROWSER_UPDATES
     LayoutUpdateToast();
@@ -4790,29 +5421,32 @@ case UpdateMessage:if(updatesStarted&&updates.OnNotify(w)){ShowUpdateView();ArmU
 #endif
 case WM_ERASEBKGND:return 1;
 case WM_SETCURSOR:if(LOWORD(l)==HTCLIENT&&(HWND)w==h){POINT p;GetCursorPos(&p);ScreenToClient(h,&p);const float d=GetDpiForWindow(h)/96.f;auto v=CurrentSplit();
+    if(SidebarEdgeDragging()||chrome.Hit(p.x/d,p.y/d)==NativeChrome::Chrome::SidebarEdgeId){SetCursor(LoadCursor(nullptr,IDC_SIZEWE));return TRUE;}   // #127: the column's edge
     float px=p.x/d,py=p.y/d;const bool overPanel=chrome.floating&&chrome.Local(px,py); // Mode Focus: no separator under the floating panel
     if(v.group&&(sepDrag.active||(!overPanel&&SeparatorAt(p.x/d,p.y/d,v)>=0))){SetCursor(LoadCursor(nullptr,v.a.orientation==SV::Orientation::Row?IDC_SIZEWE:IDC_SIZENS));return TRUE;}}break;
 case WM_PAINT:{PAINTSTRUCT paint;BeginPaint(h,&paint);++chromePaints;SyncAddressDisplay();std::vector<std::wstring> titles;std::vector<std::shared_ptr<const NativeChrome::FaviconImage>> icons;for(auto&t:pages){titles.push_back(t->title);icons.push_back(t->favicon.image);}chrome.SetFavicons(std::move(icons));{std::vector<bool> asleep;for(auto&t:pages)asleep.push_back(t->sleeping);chrome.sleeping=std::move(asleep);}auto t=Active();D2D1_RECT_F dirty{paint.rcPaint.left*96.f/GetDpiForWindow(h),paint.rcPaint.top*96.f/GetDpiForWindow(h),paint.rcPaint.right*96.f/GetDpiForWindow(h),paint.rcPaint.bottom*96.f/GetDpiForWindow(h)};chrome.loading=t?t->loading.Sample(NativeChrome::Motion::Now(),motion.ReducedMotion()):NativeChrome::Loading::Visual{};{auto b=ChromeClient(chrome.LoadingDirty());if(dirty.left<=b.left&&dirty.top<=b.top&&dirty.right>=b.right&&dirty.bottom>=b.bottom)paintedLoading=chrome.LoadingSignature(chrome.loading);}chrome.keyboardModality=keyboardModality;SyncTabKeys();chrome.Paint(titles,current,t&&!t->home?t->uri:L"",editing,hover,GetFocus()==address?'L':GetFocus()==h?keyboardFocus:0,&dirty);EndPaint(h,&paint);if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());}if(editing)RedrawWindow(address,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_UPDATENOW);return 0;}
-case WM_MOUSEMOVE:{if(chrome.floating)FocusEvaluate(true); /* Mode Focus: the pointer on the window's own surface (hit box strip, panel) */
-    if(outerDrag.active){OuterDragMove({GET_X_LPARAM(l),GET_Y_LPARAM(l)});return 0;}ChromeTipHover(GET_X_LPARAM(l),GET_Y_LPARAM(l));{const float d=GetDpiForWindow(h)/96.f,x=GET_X_LPARAM(l)/d,y=GET_Y_LPARAM(l)/d;
+case WM_MOUSEMOVE:{if(chrome.floating)FocusEvaluate(true); /* Mode Focus: the pointer on the window's own surface (hit box strip, panel) */if(chrome.sideHidden)SideFocusEvaluate(); /* #127: its left band, its column */
+    if(outerDrag.active){OuterDragMove({GET_X_LPARAM(l),GET_Y_LPARAM(l)});return 0;}ChromeTipHover(GET_X_LPARAM(l),GET_Y_LPARAM(l));{const float d=GetDpiForWindow(h)/96.f,x=GET_X_LPARAM(l)/d,y=GET_Y_LPARAM(l)/d;SidebarPointer(x,y);
     if(sepDrag.active){SeparatorMove(x,y);return 0;}
+    if(SidebarEdgeDragging()){SidebarEdgeMove(x);return 0;}
     if(!tabDrag.tab){auto v=CurrentSplit();float px=x,py=y;const int hot=v.group&&!(chrome.floating&&chrome.Local(px,py))?SeparatorAt(x,y,v):-1;if(hot!=chrome.split.hotHandle&&!sepDrag.active){chrome.split.hotHandle=hot;SyncGripLooks();InvalidateRect(h,nullptr,FALSE);}}}
-    if(tabDrag.tab){DragTab({GET_X_LPARAM(l),GET_Y_LPARAM(l)});if(tabDrag.active)return 0;}if(bandDrag.index>=0){BandDragMove({GET_X_LPARAM(l),GET_Y_LPARAM(l)});if(bandDrag.active)return 0;}int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(NativeChrome::TabIndex(id)<0)UnlockTabWidth();if(id!=hover)UpdateInteraction(id,pressed);TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,h,0};TrackMouseEvent(&track);return 0;}
+    if(tabDrag.tab){DragTab({GET_X_LPARAM(l),GET_Y_LPARAM(l)});if(tabDrag.active)return 0;}if(bandDrag.index>=0){BandDragMove({GET_X_LPARAM(l),GET_Y_LPARAM(l)});if(bandDrag.active)return 0;}int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));SidebarEdgeLook(id==NativeChrome::Chrome::SidebarEdgeId?1:0);if(NativeChrome::TabIndex(id)<0)UnlockTabWidth();if(id!=hover)UpdateInteraction(id,pressed);TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,h,0};TrackMouseEvent(&track);return 0;}
 case WM_COMMAND:if((HWND)l==address&&HIWORD(w)==EN_CHANGE){AddressEdited();return 0;}break;
-case WM_MOUSELEAVE:ChromeTipHide();UnlockTabWidth();if(chrome.split.hotHandle>=0&&!sepDrag.active&&!PointerOnGrip()){chrome.split.hotHandle=-1;SyncGripLooks();InvalidateRect(h,nullptr,FALSE);}UpdateInteraction(0,pressed);return 0;
+case WM_MOUSELEAVE:ChromeTipHide();UnlockTabWidth();SidebarPointerLeft();if(!SidebarEdgeDragging())SidebarEdgeLook(0);if(chrome.split.hotHandle>=0&&!sepDrag.active&&!PointerOnGrip()){chrome.split.hotHandle=-1;SyncGripLooks();InvalidateRect(h,nullptr,FALSE);}UpdateInteraction(0,pressed);return 0;
 case WM_LBUTTONDOWN:{if(folderRename.Active()&&folderRename.Host()==h)SetFocus(h);ChromeTipHide();
     // Mode Focus: a press on the panel while it moves first lands it at rest (live): every hit test of this press and of
     // its release then reads the same panel under the pointer (code review: a lost click / stray drag otherwise).
     if(chrome.floating&&(focusBar.Moving(FocusMs(NativeChrome::Motion::Now()))||!focusLive)&&chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h)))FocusAnchor(L"press");
     {const float d=GetDpiForWindow(h)/96.f,x=GET_X_LPARAM(l)/d,y=GET_Y_LPARAM(l)/d;if(splitResize>=0){splitResize=-1;SyncSplitDecor();InvalidateRect(h,nullptr,FALSE);}
-    if(y>=(chrome.floating?std::max(PageTopDip(),chrome.PanelVisible().bottom):SV::liftY)&&!chrome.Hit(x,y)&&SplitPointerDown(x,y))return 0;}
-    int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));vaultKeyPress=id==NativeChrome::Chrome::VaultKeyId?(VaultKeyArmed()?1:0):-1;downloadDismissClick=id=='D'&&GetTickCount64()-std::max(downloadPanel.hiddenAt,downloadDrawer.hiddenAt)<150;settingsDismissClick=id=='S'&&GetTickCount64()-settingsDrawer.hiddenAt<150;historyDismissClick=id=='Y'&&GetTickCount64()-historyDrawer.hiddenAt<150;audioDismissClick=id=='V'&&GetTickCount64()-audioPanel.hiddenAt<150;if(id){keyboardFocus=0;keyboardModality=false;if(!NativeChrome::IsClose(id)&&id!='Q')SetFocus(h); /* B01 chip: focus stays with its popover (no light dismiss) */if(!splitTest)SetCapture(h);UpdateInteraction(id,id);if(NativeChrome::IsTab(id)){tabDrag.tab=pages[NativeChrome::TabIndex(id)];tabDrag.start={GET_X_LPARAM(l),GET_Y_LPARAM(l)};tabDrag.grab=GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-ChromeOrigin().x-chrome.ShownTabLeft(NativeChrome::TabIndex(id));tabDrag.grabY=GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h)-ChromeOrigin().y-chrome.strip.Surface(NativeChrome::TabIndex(id)).top;tabDrag.origin=NativeChrome::TabIndex(id);}
+    if(y>=(chrome.floating?std::max(PageTopDip(),chrome.PanelVisible().bottom):SV::liftY)&&!chrome.Hit(x,y)&&SplitPointerDown(x,y))return 0;if(chrome.Hit(x,y)==NativeChrome::Chrome::SidebarEdgeId&&SidebarEdgeDown(x))return 0;}
+    int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));vaultKeyPress=id==NativeChrome::Chrome::VaultKeyId?(VaultKeyArmed()?1:0):-1;downloadDismissClick=id=='D'&&GetTickCount64()-std::max(downloadPanel.hiddenAt,downloadDrawer.hiddenAt)<150;settingsDismissClick=id=='S'&&GetTickCount64()-settingsDrawer.hiddenAt<150;historyDismissClick=id=='Y'&&GetTickCount64()-historyDrawer.hiddenAt<150;audioDismissClick=id=='V'&&GetTickCount64()-audioPanel.hiddenAt<150;if(id){keyboardFocus=0;keyboardModality=false;if(!NativeChrome::IsClose(id)&&id!='Q')SetFocus(h); /* B01 chip: focus stays with its popover (no light dismiss) */if(!splitTest)SetCapture(h);UpdateInteraction(id,id);if(NativeChrome::IsTab(id)){tabDrag.tab=pages[NativeChrome::TabIndex(id)];tabDrag.start={GET_X_LPARAM(l),GET_Y_LPARAM(l)};tabDrag.grab=GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-ChromeOrigin().x-chrome.ShownTabLeft(NativeChrome::TabIndex(id));tabDrag.grabY=GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h)-ChromeOrigin().y-chrome.strip.Surface(NativeChrome::TabIndex(id)).top;tabDrag.origin=NativeChrome::TabIndex(id);
+        if(chrome.sidebar&&NativeChrome::TabIndex(id)<(int)chrome.SideColumn().tabs.size()){tabDrag.grabY=GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.SideColumn().tabs[NativeChrome::TabIndex(id)].top;tabDrag.grab=GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.SideColumn().tabs[NativeChrome::TabIndex(id)].left;}}
     if(NativeChrome::IsBookmark(id)){const int i=NativeChrome::BookmarkIndex(id);if(i<(int)chrome.bandItems.size()){const BM::Id bid=chrome.bandItems[i].id;bandDrag={i,bid,{GET_X_LPARAM(l),GET_Y_LPARAM(l)},GET_X_LPARAM(l)*96.f/GetDpiForWindow(h)-chrome.BandRect(i).left,false,BM::BarRoot,bookmarks.IndexOf(bid)};}}}
     if(chrome.floating&&id)FocusAnchor(L"press"); /* Mode Focus: a press on the floating panel: it is in use, at rest (no slide left under the pointer) */return 0;}
-case WM_LBUTTONUP:{const POINT up{GET_X_LPARAM(l),GET_Y_LPARAM(l)};if(outerDrag.active){OuterDragEnd(false,&up);return 0;}if(sepDrag.active){SeparatorUp();return 0;}bool dragged=tabDrag.active||bandDrag.active;if(tabDrag.lifted)CommitSplitDrag();else if(tabDrag.active)FinishReorder();CancelTabDrag();BandDragEnd(false,&up);int original=pressed;int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(GetCapture()==h)ReleaseCapture();UpdateInteraction(id,0);
+case WM_LBUTTONUP:{const POINT up{GET_X_LPARAM(l),GET_Y_LPARAM(l)};if(outerDrag.active){OuterDragEnd(false,&up);return 0;}if(sepDrag.active){SeparatorUp();return 0;}if(SidebarEdgeDragging()){SidebarEdgeUp(true);return 0;}bool dragged=tabDrag.active||bandDrag.active;if(SidebarTearOff(up)){}else if(tabDrag.lifted)CommitSplitDrag();else if(tabDrag.active){if(chrome.sidebar)SidebarDragEnd(true);FinishReorder();}CancelTabDrag();BandDragEnd(false,&up);int original=pressed;int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));if(GetCapture()==h)ReleaseCapture();UpdateInteraction(id,0);
     if(!dragged&&original&&original==id&&NativeChrome::IsBookmark(id)){BandActivate(NativeChrome::BookmarkIndex(id),(w&MK_CONTROL)!=0,(w&MK_SHIFT)!=0,false);return 0;}
     if(!dragged&&original&&original==id){if(NativeChrome::IsClose(id)){LockTabWidth();CloseAt(NativeChrome::TabIndex(id));}else if(NativeChrome::IsTab(id))Select(NativeChrome::TabIndex(id));else Command(id);}vaultKeyPress=-1;return 0;}   /* review R3: a press never outlives its release */
-case WM_CAPTURECHANGED:case WM_CANCELMODE:if(outerDrag.active&&(msg==WM_CANCELMODE||(HWND)l!=h))OuterDragEnd(true);CancelSeparator();CancelTabDrag(true);if(bandDrag.index>=0&&(HWND)l!=h)BandDragEnd(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;
+case WM_CAPTURECHANGED:case WM_CANCELMODE:if(outerDrag.active&&(msg==WM_CANCELMODE||(HWND)l!=h))OuterDragEnd(true);CancelSeparator();if(SidebarEdgeDragging()&&(msg==WM_CANCELMODE||(HWND)l!=h))SidebarEdgeUp(false);CancelTabDrag(true);if(bandDrag.index>=0&&(HWND)l!=h)BandDragEnd(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;
 case WM_COPYDATA:if(const int answer=ProfileCopyDataMessage(l))return answer;break;
 // Files dropped from Explorer on the tab strip or the toolbar (the page area is the engine's own drop): each opens
 // in a new tab, the last one shown.
@@ -4820,7 +5454,7 @@ case WM_DROPFILES:{HDROP drop=(HDROP)w;const UINT n=DragQueryFileW(drop,0xFFFFFF
     for(UINT i=0;i<n&&i<32;++i){const UINT len=DragQueryFileW(drop,i,nullptr,0);if(!len)continue;std::wstring path(len+1,L'\0');DragQueryFileW(drop,i,path.data(),len+1);path.resize(len);NewTab(AddressBar::FileUrlFromPath(path));++opened;}
     DragFinish(drop);if(opened){Select((int)pages.size()-1);Log(L"OPEN dropped files: "+std::to_wstring(opened));}return 0;}
 case WM_ACTIVATE:if(LOWORD(w)!=WA_INACTIVE){vaultKeyShownAt=GetTickCount64();PublishProfileWindow();settingsDrawer.RefreshDefaultBrowser();}   /* review N6: the key re-arms when the window is activated */
-    if(chrome.floating)FocusEvaluate(); /* Mode Focus: the pointer poll runs while the window is in front (or the panel still shows) */
+    if(chrome.floating)FocusEvaluate(); /* Mode Focus: the pointer poll runs while the window is in front (or the panel still shows) */if(chrome.sideHidden)SideFocusEvaluate(); /* #127: the same for the column's left band */
     if(LOWORD(w)==WA_INACTIVE){FormsHideAll();CancelTabDrag(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(0,0);}else if(!smoke&&!halted)Defer([]{if(!bandDrag.active)SaveBookmarks();if(sessionReady){SaveHistory();SaveDownloads();if(!WorkspaceParked())historyDrawer.Changed();DownloadsChanged();}}); /* pick up the other windows' changes, a wipe included (S5) */return 0;
 case WM_SHOWWINDOW:AnnotationWindowState();break; // V3-B: the annotation band's wave stops in the background (WM_ACTIVATEAPP: below)
 case WM_DISPLAYCHANGE:Layout();break;
@@ -4831,25 +5465,28 @@ case WM_MBUTTONUP:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET
 case WM_RBUTTONUP:{int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));float x=GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),y=GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h);
     if(!chrome.Local(x,y))return 0;   // Mode Focus: outside the floating panel there is no chrome to open a menu on (y is chrome-local below)
     if(NativeChrome::IsBookmark(id)&&NativeChrome::BookmarkIndex(id)<(int)chrome.bandItems.size()){POINT p{};GetCursorPos(&p);BookmarkContextMenu(chrome.bandItems[NativeChrome::BookmarkIndex(id)].id,p,nullptr,false);return 0;}
-    if(chrome.bandShown&&y>=NativeChrome::Design::Vertical::toolbarBottom&&y<chrome.ContentTop()){POINT p{};GetCursorPos(&p);BandContextMenu(p);return 0;}
-    if(NativeChrome::TabIndex(id)>=0)TabContextMenu(NativeChrome::TabIndex(id),0);else if(S(y)<S(44))TabMenu(0);return 0;}
+    if(!chrome.sidebar&&chrome.bandShown&&y>=NativeChrome::Design::Vertical::toolbarBottom&&y<chrome.ContentTop()){POINT p{};GetCursorPos(&p);BandContextMenu(p);return 0;}
+    if(chrome.sidebar&&!id&&chrome.bandShown&&chrome.SideColumn().gridBlock.Contains(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),y)){POINT p{};GetCursorPos(&p);BandContextMenu(p);return 0;}
+    if(NativeChrome::TabIndex(id)>=0)TabContextMenu(NativeChrome::TabIndex(id),0);else if(EmptyAreaMenuAt(id,GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),y))EmptyAreaMenu(0);return 0;}   /* #127: the short menu with the 3 views */
 // Menu key / Shift+F10 arrive with lParam (-1,-1): on a focused tab or its close button, open the right-click menu
 // below it; on the flower or the gear, open their own menu.
 case WM_CONTEXTMENU:if(GET_X_LPARAM(l)==-1&&GET_Y_LPARAM(l)==-1&&GetFocus()==h){int tabIndex=NativeChrome::TabIndex(keyboardFocus);if(tabIndex>=0&&tabIndex<(int)pages.size()){keyboardModality=true;TabContextMenu(tabIndex,keyboardFocus);return 0;}if(keyboardFocus==900||keyboardFocus=='S'){keyboardModality=true;Command(keyboardFocus);return 0;}
     if(NativeChrome::IsBookmark(keyboardFocus)&&NativeChrome::BookmarkIndex(keyboardFocus)<(int)chrome.bandItems.size()){keyboardModality=true;const RECT r=RegionScreen(keyboardFocus);BookmarkContextMenu(chrome.bandItems[NativeChrome::BookmarkIndex(keyboardFocus)].id,{r.left,r.bottom},&r,true);if(GetForegroundWindow()==window&&!bookmarkPopover.Visible())SetFocus(window);InvalidateChrome();return 0;}}break;
-case WM_MOUSEWHEEL:{POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(h,&p);float wx=p.x*96.f/GetDpiForWindow(h),wy=p.y*96.f/GetDpiForWindow(h);if(chrome.Local(wx,wy)&&S(wy)<S(44)&&!pages.empty())Command(GET_WHEEL_DELTA_WPARAM(w)>0?'[':']');return 0;}
-case WM_KEYDOWN:if(w==VK_ESCAPE&&sepDrag.active){CancelSeparator();return 0;}if(splitResize>=0&&SplitResizeKey(w))return 0;if(w==VK_ESCAPE&&tabDrag.tab){CancelTabDrag(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;}
+case WM_MOUSEWHEEL:{POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};ScreenToClient(h,&p);if(chrome.sidebar){SidebarWheel(p,GET_WHEEL_DELTA_WPARAM(w));return 0;}float wx=p.x*96.f/GetDpiForWindow(h),wy=p.y*96.f/GetDpiForWindow(h);if(chrome.Local(wx,wy)&&S(wy)<S(44)&&!pages.empty())Command(GET_WHEEL_DELTA_WPARAM(w)>0?'[':']');return 0;}
+case WM_KEYDOWN:if(w==VK_ESCAPE&&chrome.sidebarPopover){SidebarPopover(false);return 0;}if(w==VK_ESCAPE&&SideFocusEscape())return 0;if(w==VK_ESCAPE&&chrome.sidebar&&sidebarHover.open&&!tabDrag.tab){sidebarHover.Close();Layout();return 0;} /* #127: Échap closes the column opened over the page */if(w==VK_ESCAPE&&sepDrag.active){CancelSeparator();return 0;}if(splitResize>=0&&SplitResizeKey(w))return 0;if(w==VK_ESCAPE&&tabDrag.tab){CancelTabDrag(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;}
     if(w==VK_ESCAPE&&outerDrag.active){OuterDragEnd(true);return 0;}
     if(w==VK_ESCAPE&&bandDrag.index>=0){BandDragEnd(true);if(GetCapture()==h)ReleaseCapture();UpdateInteraction(hover,0);return 0;}
-    if(GetFocus()==h&&BandKey(w)){SyncAccessibility();return 0;}if(w==VK_TAB||((w==VK_RETURN||w==VK_SPACE)&&keyboardFocus)||((w==VK_LEFT||w==VK_RIGHT)&&NativeChrome::IsTab(keyboardFocus)))keyboardModality=true;if(w==VK_TAB){auto order=chrome.FocusOrder();if(order.empty())return 0;auto it=std::find(order.begin(),order.end(),keyboardFocus);int index=it==order.end()?-1:(int)(it-order.begin());index=it==order.end()?(GetKeyState(VK_SHIFT)<0?(int)order.size()-1:0):(index+(GetKeyState(VK_SHIFT)<0?-1:1)+(int)order.size())%(int)order.size();keyboardFocus=order[index];InvalidateRect(h,nullptr,FALSE);return 0;}if((w==VK_RETURN||w==VK_SPACE)&&keyboardFocus){if(NativeChrome::IsClose(keyboardFocus))CloseAt(NativeChrome::TabIndex(keyboardFocus));else if(NativeChrome::IsTab(keyboardFocus)){Select(NativeChrome::TabIndex(keyboardFocus));SetFocus(h);}else Command(keyboardFocus);return 0;}
-    if((w==VK_LEFT||w==VK_RIGHT)&&NativeChrome::IsTab(keyboardFocus)&&!pages.empty()){int next=(NativeChrome::TabIndex(keyboardFocus)+(w==VK_LEFT?-1:1)+(int)pages.size())%(int)pages.size();keyboardFocus=NativeChrome::TabBase+next;Select(next);SetFocus(h);return 0;}break;
+    if(GetFocus()==h&&BandKey(w)){SyncAccessibility();return 0;}if(w==VK_TAB||((w==VK_RETURN||w==VK_SPACE)&&keyboardFocus)||((w==VK_LEFT||w==VK_RIGHT||(chrome.sidebar&&(w==VK_UP||w==VK_DOWN)))&&NativeChrome::IsTab(keyboardFocus)))keyboardModality=true;if(w==VK_TAB){auto order=chrome.FocusOrder();if(order.empty())return 0;auto it=std::find(order.begin(),order.end(),keyboardFocus);int index=it==order.end()?-1:(int)(it-order.begin());index=it==order.end()?(GetKeyState(VK_SHIFT)<0?(int)order.size()-1:0):(index+(GetKeyState(VK_SHIFT)<0?-1:1)+(int)order.size())%(int)order.size();keyboardFocus=order[index];InvalidateRect(h,nullptr,FALSE);ChromeTipFocus(keyboardFocus);return 0;}if((w==VK_RETURN||w==VK_SPACE)&&keyboardFocus){if(NativeChrome::IsClose(keyboardFocus))CloseAt(NativeChrome::TabIndex(keyboardFocus));else if(NativeChrome::IsTab(keyboardFocus)){Select(NativeChrome::TabIndex(keyboardFocus));SetFocus(h);}else Command(keyboardFocus);return 0;}
+    if(keyboardFocus==NativeChrome::Chrome::SidebarEdgeId&&SidebarEdgeKey(w))return 0;
+    if(chrome.sidebar&&(w==VK_UP||w==VK_DOWN)&&NativeChrome::IsTab(keyboardFocus))w=w==VK_UP?VK_LEFT:VK_RIGHT; /* #127: the column's list is vertical */
+    if((w==VK_LEFT||w==VK_RIGHT)&&NativeChrome::IsTab(keyboardFocus)&&!pages.empty()){int next=(NativeChrome::TabIndex(keyboardFocus)+(w==VK_LEFT?-1:1)+(int)pages.size())%(int)pages.size();keyboardFocus=NativeChrome::TabBase+next;Select(next);SetFocus(h);ChromeTipFocus(keyboardFocus);return 0;}break;
 case WM_CTLCOLOREDIT:{
     if(folderRename.Owns((HWND)l))return folderRename.Color((HDC)w);
     using namespace NativeChrome::Design;
     static NativeUI::AddressBackground background;
     HDC dc=(HDC)w;RECT rect;GetClientRect(address,&rect);
     POINT origin{};MapWindowPoints(address,window,&origin,1);
-    const float surface=Surface::raised;
+    const float surface=chrome.EditSurface();   /* #127: the field's own colour in every layout (no lighter box in the column / compact bar) */
     const float alpha=AddressLoading::opacity*chrome.loading.opacity;
     const auto field=ChromeClient(chrome.bar);   // client DIP (Mode Focus: the floating panel's offset), like the EDIT's own place
     const int edge=S(field.left+(field.right-field.left)*chrome.loading.fraction)-origin.x;
@@ -4874,6 +5511,12 @@ case WM_TIMER:
     if(w==UpdateTimerId){UpdateTimerFired();return 0;}
 #endif
     if(w==SleepTimerId){SleepTabs();return 0;}
+    if(w==SidebarFoldTimerId){Layout();if(!sidebarFold.Moving(SidebarNowMs())&&!chrome.MorphMoving(NativeChrome::Motion::Now())&&!sideWidthSpring.Moving(NativeChrome::Motion::Now())){KillTimer(h,SidebarFoldTimerId);Layout();}return 0;}
+    if(w==SidebarEdgeFadeTimerId){SyncCornerMasks();InvalidateChrome();if(chrome.sidebarEdge!=1||chrome.EdgeAlpha(NativeChrome::Motion::Now())>=1)KillTimer(h,SidebarEdgeFadeTimerId);return 0;}
+    if(w==SidebarHoverTimerId){SidebarHoverDue();return 0;}
+    if(w==SideFocusPollTimerId){SideFocusEvaluate();return 0;}
+    if(w==SideSlideTimerId){SideSlideFrame();return 0;}
+    if(w==SideSlideLiveTimerId){KillTimer(h,SideSlideLiveTimerId);if(chrome.sideShown)SidePictureHide();return 0;}
     if(w==FocusPollTimerId){FocusEvaluate();return 0;}
     if(w==FocusMotionTimerId){KillTimer(h,FocusMotionTimerId);FocusMotionTimer();return 0;}
     if(w==FocusWarmTimerId){KillTimer(h,FocusWarmTimerId);FocusMotionWarm();return 0;}   // Mode Focus: the composition device made before the first Ctrl+Maj+F   // Mode Focus entry / exit: readiness polls, the cross-fade's end
@@ -4892,7 +5535,7 @@ case ImportIconsMessage:ImportIconsArrived();return 0;
 // relaunch or the next start. Release also gives up this window's open marker inside the profile lock.
 case WM_ACTIVATEAPP:if(!w)contentTransition.Cancel();AnnotationWindowState();break; /* another application came to the foreground; V3-B: the annotation band's wave stops in the background */
 case WM_CLOSE:OuterDragEnd(true);BandDragEnd(true);if(!CloseWindowAllowed())return 0;windowClosing=true;popups.CancelAll(); /* pending window.open requests: settled before the profiles close */contentTransition.Cancel();SaveSession();ProfilesClosing();if(!smoke&&!privateWindow&&!windowId.empty()&&WindowSessions::Release(dataDir,windowId,closeWithoutPrompt||!sessionReady,windowLive))Log(L"WINDOW closed among others: session removed");SaveDownloads();if(!bookmarksSaveFailed)SaveBookmarks();if(!ClearOnExitAndClose())DestroyWindow(h);return 0;
-case WM_DESTROY:ChatShutdown(); /* the agent's process tree and the panel's WebView go first */AnnotationShutdown(); /* #125: a private window's annotations go with it */contentTransition.Destroy();StopEngineStart();accessibility.Detach();DisposeElementSurfaces();
+case WM_DESTROY:ChatShutdown();ChatAgentsShutdown(); /* the agent's process tree and the panel's WebView go first, then the agents' hub (a running install, a sign-in console) */AnnotationShutdown(); /* #125: a private window's annotations go with it */contentTransition.Destroy();StopEngineStart();accessibility.Detach();DisposeElementSurfaces();
 #ifdef BROWSER_UPDATES
     StopUpdates(); // bounded: cancels transfers; an already launched install helper is a separate process
 #endif
@@ -5141,7 +5784,7 @@ std::vector<HWND> ShownPageWindows(){std::vector<HWND> v;for(auto& t:pages)if(t&
 double FocusMs(NativeChrome::Motion::Time t){return std::chrono::duration<double,std::milli>(t.time_since_epoch()).count();}
 float focusPlaced=-1;bool focusPolling=false,focusCovering=false,focusCoveringLive=false;RECT focusPainted{};
 struct FocusHole{HWND host=nullptr;std::vector<FM::Pixels> spans;};std::map<unsigned,FocusHole> focusHoles;   // by tab serial
-bool FocusWanted(){return (settings.focusMode||FocusMotionKeepsFocus())&&!halted&&!InFullscreen();}   // an exit slide keeps the live Focus until it lands
+bool FocusWanted(){return (settings.focusMode||FocusMotionKeepsFocus())&&!halted&&!InFullscreen()&&!chrome.sidebar;}   // an exit slide keeps the live Focus until it lands; the side layouts hide their column instead (#127, SideFocusWanted)
 // The panel's surroundings (Layout, before the chrome is measured): the annotation banner's height above it and the chat
 // card's strip on its right; nothing outside focus mode.
 void FocusAbove(){chrome.SetPanelAbove(chrome.floating?FM::Above{std::max(0.f,chrome.annotationBand),FM::ChatReserve(ChatInsetDip())}:FM::Above{});}
@@ -5395,7 +6038,7 @@ void FocusPlace(){
     // With the annotation mode (Paper « Annotation + Focus · barre du haut · tiroir ouvert »): under the panel under the
     // banner (124), at W - 4 over the chat card (FocusMode::drawerOverChat; the chat is back when the drawer closes).
     namespace DL=NativeChrome::Downloads::DrawerLayout;
-    const float top=chrome.floating?FM::DrawerTop(chrome.bandShown,chrome.panelAbove.banner):DL::top,right=chrome.floating?FM::pageInset+(FM::drawerOverChat?0.f:chrome.panelAbove.reserve):0.f,radius=chrome.floating?FM::pageRadius:0.f,bottom=chrome.floating?FM::drawerBottom:0.f;
+    const float top=chrome.floating?FM::DrawerTop(chrome.bandShown,chrome.panelAbove.banner):NativeChrome::Design::Vertical::DrawerTop() /* #127: 40 / 32 in the panel layouts */,right=chrome.floating?FM::pageInset+(FM::drawerOverChat?0.f:chrome.panelAbove.reserve):0.f,radius=chrome.floating?FM::pageRadius:0.f,bottom=chrome.floating?FM::drawerBottom:0.f;
     if(!FocusMotionSliding()&&(top!=DL::liveTop||right!=DL::liveRight||radius!=DL::liveRadius||bottom!=DL::liveBottom)){DL::liveTop=top;DL::liveRight=right;DL::liveRadius=radius;DL::liveBottom=bottom;
         downloadDrawer.Reposition();settingsDrawer.Reposition();historyDrawer.Reposition();bookmarksDrawer.Reposition();audioPanel.OwnerChanged();}
     if(!chrome.floating)return;
@@ -5411,7 +6054,7 @@ bool EscapeOwnedBySurface(HWND focus){
         if(s&&(focus==s||root==s))return true;
     return false;
 }
-bool EscapeLeavesAnnotation(bool modeActive,HWND focus){return modeActive&&focus!=address&&!EscapeOwnedBySurface(focus);}
+bool EscapeLeavesAnnotation(bool modeActive,HWND focus){if(focus==window&&chrome.sidebar&&((chrome.sideHidden&&sideReveal.open)||chrome.sidebarPopover||sidebarHover.open))return false;   /* #127: the column / popover over the page first (top-most layer first) */return modeActive&&focus!=address&&!EscapeOwnedBySurface(focus);}
 void ToggleFocusMode(){
     settings.focusMode=!settings.focusMode;SettingChanged(BrowserSettings::Change::FocusMode);
     if(settingsDrawer.Visible())settingsDrawer.Changed();   // the switch follows the shortcut
@@ -5750,7 +6393,7 @@ bool HandOverLaunchTarget(){
 // Receiver side (ProfileCopyDataMessage « open <target> »): a new tab, this window brought forward.
 void OpenHandedTarget(const std::wstring& target){
     const std::wstring url=LaunchUrl(target);if(url.empty())return;
-    NewTab(url);Select((int)pages.size()-1);Log(L"OPEN handed target in a new tab");
+    NewTab(url);Select((int)pages.size()-1);ChatAgentsPageOpened(url); /* « Ton agent »: a CLI's sign-in page, Browser being the default browser */Log(L"OPEN handed target in a new tab");
     if(IsIconic(window))ShowWindow(window,SW_RESTORE);SetForegroundWindow(window);
 }
 // browser.exe [switches] [<url>|<path>] or [switches] --single-argument <url|path>: the target apart from the switches.
@@ -5779,7 +6422,7 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){
 #if defined(BROWSER_E2E_VAULT_HOST)||defined(BROWSER_E2E_VAULT_ACTIVE)
     Vault::ActiveFlag()=true;   /* TEST HOSTS (tests/e2e/vault_host.cpp, tests/e2e/vault_product_host.cpp): already the default since activation; kept explicit */
 #endif
-    if(const wchar_t* r=wcsstr(args,L"--restore-window ")){r+=17;while(*r==L' ')++r;const wchar_t* e=r;while(*e&&*e!=L' ')++e;windowRequested.assign(r,e);}smoke=smoke||splitTest;engineRelaunched=wcsstr(args,L"--webview2-recovered")!=nullptr;launchArgs=args?args:L"";motionLabMode=!smoke&&wcsstr(args,L"--motion-lab")!=nullptr;instance=hi;SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(FAILED(init))return 1;wchar_t path[32768];GetModuleFileNameW(nullptr,path,32768);PathRemoveFileSpecW(path);base=path;ResolveBrowserPaths();
+    if(const wchar_t* r=wcsstr(args,L"--restore-window ")){r+=17;while(*r==L' ')++r;const wchar_t* e=r;while(*e&&*e!=L' ')++e;windowRequested.assign(r,e);}smoke=smoke||splitTest;engineRelaunched=wcsstr(args,L"--webview2-recovered")!=nullptr;launchArgs=args?args:L"";motionLabMode=!smoke&&wcsstr(args,L"--motion-lab")!=nullptr;forcedLayout=smoke?-1:TabLayoutArg(args);   /* --tab-layout=top|side|compact, or the older --side-panel (no line comment here: the rest of this line is code) */ /* #127: the top bar is the default (Val, 24 nov.); --side-panel shows the panel for this run without saving (trial launcher); the smoke suites assert the toolbar */instance=hi;SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);HRESULT init=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);if(FAILED(init))return 1;wchar_t path[32768];GetModuleFileNameW(nullptr,path,32768);PathRemoveFileSpecW(path);base=path;ResolveBrowserPaths();
     // Interface language, pinned for this process BEFORE any dialog, window or WebView2 (src/ui-language.h): the
     // browser-wide preference at the data root (portable: next to the exe; installed: <root>\data). French by default.
     const UiLanguage::Loaded uiLanguage=UiLanguage::Load(dataDir);I18n::SetForProcess(uiLanguage.locale);
@@ -5803,7 +6446,7 @@ int WINAPI wWinMain(HINSTANCE hi,HINSTANCE,LPWSTR args,int show){
 #ifdef BROWSER_E2E_VAULT_ACTIVE
     Log(L"E2E VAULT ACTIVE: product path, vault forced active, every foreground condition in force (test build only)");   /* review R-5 host marker, absent from dev/release (tests/e2e/product_markers.ps1) */
 #endif
-    INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);RunOnboarding(onboardingReason);/* first-run window: returns when the person is done, then the normal start */paper=CreateSolidBrush(BG);WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);{const UINT dpi=GetDpiForSystem();/* channel app icon (src/app-icon.rc), picked from its multi-size ICO at the system DPI for the title bar/Alt+Tab and the taskbar */wc.hIcon=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXICON,dpi),GetSystemMetricsForDpi(SM_CYICON,dpi),LR_DEFAULTCOLOR);wc.hIconSm=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXSMICON,dpi),GetSystemMetricsForDpi(SM_CYSMICON,dpi),LR_DEFAULTCOLOR);}wc.hbrBackground=paper;RegisterClassExW(&wc);window=CreateWindowW(wc.lpszClassName,privateWindow?TR(window_title_private_bare):L"Browser",WS_POPUP|WS_CAPTION/* Windows' minimize / restore / maximize animations (no caption is drawn: WM_NCCALCSIZE gives the whole window to the client) */|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);StampTaskbarIdentity();DragAcceptFiles(window,TRUE);NativeUI::ConfigureFullClientFrame(window);NativeUI::RoundNatively(window);if(FAILED(chrome.Init(window,base))){MessageBoxW(window,TR(startup_graphics_failed),L"Browser",MB_OK|MB_ICONERROR);return 3;}splitOverlay.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());statusBubble.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());LoadSettings();ClaimWindowSession();LoadAudioVolumes();motion.SetReducedMotion(ReducedMotionPreferred());NativeChrome::Design::Accent::Set(settings.accent);ProfilesStarted(args);AnnotationStartup(); /* #125: notes of a private window that did not close normally */LoadDownloads();LoadHistory();LoadBookmarks();CreateDownloadPanel();CreateAudioPanel();CreateSuggestions();CreateSettingsPanel();CreateHistoryPanel();CreateBookmarkSurfaces();CreateElementSurfaces();CreateFormsSurfaces();FormsEngineImport(); /* #121 P13: once, before the engine starts (it holds its file while it runs) */contextMenu.Init(instance,window,base);profileMenu.Init(instance,window,base);profileDialog.Init(instance,window,base);profileDeleteDialog.Init(instance,window,base);frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();OnboardingShowBrowser(show);/* plain ShowWindow + UpdateWindow, or the scale-in after a completed onboarding */OnboardingAfterStart();if(motionLabMode){motionLab.changed=[]{ApplyMotionTuning();InvalidateChrome();};motionLab.replay=MotionLabReplay;if(motionLab.Create(hi,window,base+L"\\motion-tuning.ini")){ApplyMotionTuning();motionLab.Show();}}if(smoke)SetTimer(window,1,splitTest?180000:60000,nullptr);
+    INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_TAB_CLASSES|ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);for(auto name:NativeChrome::FontFiles)AddFontResourceExW((base+L"\\assets\\fonts\\"+name).c_str(),FR_PRIVATE,nullptr);RunOnboarding(onboardingReason);/* first-run window: returns when the person is done, then the normal start */paper=CreateSolidBrush(BG);WNDCLASSEXW wc{sizeof(wc)};wc.hInstance=hi;wc.lpfnWndProc=WndProc;wc.lpszClassName=L"LisiereBrowser";wc.hCursor=LoadCursor(nullptr,IDC_ARROW);{const UINT dpi=GetDpiForSystem();/* channel app icon (src/app-icon.rc), picked from its multi-size ICO at the system DPI for the title bar/Alt+Tab and the taskbar */wc.hIcon=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXICON,dpi),GetSystemMetricsForDpi(SM_CYICON,dpi),LR_DEFAULTCOLOR);wc.hIconSm=(HICON)LoadImageW(hi,MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetricsForDpi(SM_CXSMICON,dpi),GetSystemMetricsForDpi(SM_CYSMICON,dpi),LR_DEFAULTCOLOR);}wc.hbrBackground=paper;RegisterClassExW(&wc);window=CreateWindowW(wc.lpszClassName,privateWindow?TR(window_title_private_bare):L"Browser",WS_POPUP|WS_CAPTION/* Windows' minimize / restore / maximize animations (no caption is drawn: WM_NCCALCSIZE gives the whole window to the client) */|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU|WS_CLIPCHILDREN,CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(1180,GetDpiForSystem(),96),MulDiv(815,GetDpiForSystem(),96),nullptr,nullptr,hi,nullptr);StampTaskbarIdentity();DragAcceptFiles(window,TRUE);NativeUI::ConfigureFullClientFrame(window);NativeUI::RoundNatively(window);if(const HRESULT gfx=chrome.Init(window,base);FAILED(gfx)){wchar_t code[16];swprintf(code,16,L"0x%08lX",(unsigned long)gfx);Log(std::wstring(L"STARTUP graphics failed at ")+chrome.initStep+L": hr="+code+L" (assets "+base+L"\\assets)");MessageBoxW(window,TR(startup_graphics_failed),L"Browser",MB_OK|MB_ICONERROR);return 3;}   /* the step and the HRESULT in the log (startup_graphics_failed) */splitOverlay.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());statusBubble.Init(hi,window,chrome.Factory(),chrome.WriteFactory(),chrome.FontCollection());LoadSettings();AdBlockPrepare();ClaimWindowSession();LoadAudioVolumes();motion.SetReducedMotion(ReducedMotionPreferred());NativeChrome::Design::Accent::Set(settings.accent);ProfilesStarted(args);AnnotationStartup();ChatAgentsStartup(); /* #125: notes of a private window that did not close normally */LoadDownloads();LoadHistory();LoadBookmarks();CreateDownloadPanel();CreateAudioPanel();CreateSuggestions();CreateSettingsPanel();CreateHistoryPanel();CreateBookmarkSurfaces();CreateElementSurfaces();CreateFormsSurfaces();FormsEngineImport(); /* #121 P13: once, before the engine starts (it holds its file while it runs) */contextMenu.Init(instance,window,base);profileMenu.Init(instance,window,base);profileDialog.Init(instance,window,base);profileDeleteDialog.Init(instance,window,base);frameClockReady=frameClock.Start(window,FrameMessage);motion.EnablePolish();chrome.animateSelection=true;chrome.SetMotion(&motion);UpdateFont();Layout();OnboardingShowBrowser(show);/* plain ShowWindow + UpdateWindow, or the scale-in after a completed onboarding */OnboardingAfterStart();if(motionLabMode){motionLab.changed=[]{ApplyMotionTuning();InvalidateChrome();};motionLab.replay=MotionLabReplay;if(motionLab.Create(hi,window,base+L"\\motion-tuning.ini")){ApplyMotionTuning();motionLab.Show();}}if(smoke)SetTimer(window,1,splitTest?180000:60000,nullptr);
 #ifdef BROWSER_UPDATES
     StartUpdates(); // never blocks: the delayed startup check runs on the engine's thread
 #endif

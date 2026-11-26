@@ -38,6 +38,13 @@
       "value": "la bulle suit son élément à ± 2 px pendant un défilement",
       "decision": "décision 5 du 24/11 : objectif, pas condition de sortie",
       "where": "chat_qa.objective() dans chat_qa_comment_v5.py et monkey.py"
+    },
+    {
+      "id": "accuse-ouverture-16ms",
+      "kind": "objectif",
+      "value": "la page du chat accuse l'ouverture d'une bulle en moins de 8 ms (bulle neuve) ou 16 ms (avec une conversation), première image moins de 8 ms après",
+      "decision": "coordinateur, 24/11, dans l'esprit de la décision 5 : un seuil de temps est mesuré et rapporté, jamais bloquant (16,3 ms mesurés sur machine chargée, 12,6 ms seule)",
+      "where": "tests/chat-panel/run.py, « Q's journeys » (ligne OBJECTIF)"
     }
   ],
   "suites": [
@@ -96,6 +103,30 @@
       "timeout": 1800
     },
     {
+      "id": "permission-keys-page",
+      "title": "Carte d'autorisation au clavier (O10), page sans tête : panneau et bulle",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat-panel/permission_keys_o10.py"
+      ],
+      "timeout": 900,
+      "pendingMerge": "VALXXII/annotation-lot2"
+    },
+    {
+      "id": "first-launch-page",
+      "title": "Premier lancement (O8), page sans tête : les quatre états, panneau et bulle",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat-panel/first_launch_o8.py"
+      ],
+      "timeout": 600,
+      "pendingMerge": "VALXXII/annotation-lot2"
+    },
+    {
       "id": "page-v4",
       "title": "Script de la page (cadres, étiquettes, inspecteur), sans tête",
       "part": "day",
@@ -104,6 +135,16 @@
         "tests/annotations-ui/page_v4.py"
       ],
       "timeout": 1800
+    },
+    {
+      "id": "page-frames",
+      "title": "Cadre de la bulle pour un élément dans un iframe (script de page, navigateur sans tête)",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "tests/chat/final/page_frames.py"
+      ],
+      "timeout": 900
     },
     {
       "id": "fake-agent",
@@ -115,6 +156,17 @@
         "tests/chat/final/fake_agent_scenarios.py"
       ],
       "timeout": 900
+    },
+    {
+      "id": "replay-opening",
+      "title": "Ouverture d'une bulle rejouée sans fenêtre : un seul accusé, pied dans la surface",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/final/replay_opening.py"
+      ],
+      "timeout": 600
     },
     {
       "id": "snapshots",
@@ -140,7 +192,7 @@
     },
     {
       "id": "annotations-ui",
-      "title": "Rendu natif du mode (bandeau, lanceur, historique, note)",
+      "title": "Rendu natif du mode (bandeau, « Connecter un agent », cadre natif)",
       "part": "day",
       "cmd": [
         "{python}",
@@ -178,6 +230,18 @@
         "la connexion en console (fenêtre visible)",
         "les vrais téléchargements de Node.js et des adaptateurs"
       ]
+    },
+    {
+      "id": "real-trial-records",
+      "title": "O9 : comptes rendus des deux essais réels (Claude Code, Codex) — toutes les étapes passées, aucune configuration réelle modifiée",
+      "part": "day",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/real_trial_record_test.py"
+      ],
+      "timeout": 300,
+      "pendingMerge": "VALXXII/annotation-lot5"
     },
     {
       "id": "smoke",
@@ -228,6 +292,17 @@
         "tests/chat/chat_qa_uia_offscreen.py"
       ],
       "timeout": 1800
+    },
+    {
+      "id": "narrator-window",
+      "title": "Lecteur d'écran, vraie fenêtre : ce que le Narrateur reçoit du bandeau, de la bulle et de la carte d'autorisation",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/chat_qa_narrator.py"
+      ],
+      "timeout": 900,
+      "pendingMerge": "VALXXII/annotation-lot5"
     },
     {
       "id": "chat-v1",
@@ -351,6 +426,135 @@
       "timeout": 1800
     },
     {
+      "id": "first-launch-absent",
+      "title": "Premier lancement (O8) : aucun agent sur l'ordinateur",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/first_launch_o8.py",
+        "--journey",
+        "absent"
+      ],
+      "timeout": 900,
+      "pendingMerge": "VALXXII/annotation-lot2"
+    },
+    {
+      "id": "first-launch-non-connecte",
+      "title": "Premier lancement (O8) : agent installé, pas connecté",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/first_launch_o8.py",
+        "--journey",
+        "non-connecte"
+      ],
+      "timeout": 1200,
+      "pendingMerge": "VALXXII/annotation-lot2"
+    },
+    {
+      "id": "first-launch-node",
+      "title": "Premier lancement (O8) : Node.js à télécharger (vrai téléchargement, ≈ 60 Mo)",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/first_launch_o8.py",
+        "--journey",
+        "node"
+      ],
+      "timeout": 1200,
+      "pendingMerge": "VALXXII/annotation-lot2"
+    },
+    {
+      "id": "first-launch-liste",
+      "title": "Premier lancement (O8) : aucun modèle connu, puis la liste reçue ; deuxième lancement",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/first_launch_o8.py",
+        "--journey",
+        "liste"
+      ],
+      "timeout": 1200,
+      "after": "first-launch-node (it reuses what that journey downloaded: build/o8-cache)",
+      "pendingMerge": "VALXXII/annotation-lot2"
+    },
+    {
+      "id": "permission-keys-bulle",
+      "title": "Carte d'autorisation au clavier (O10), vrai navigateur : bulle",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/permission_keys_o10.py",
+        "--journey",
+        "bulle"
+      ],
+      "timeout": 900,
+      "pendingMerge": "VALXXII/annotation-lot2"
+    },
+    {
+      "id": "permission-keys-panneau",
+      "title": "Carte d'autorisation au clavier (O10), vrai navigateur : panneau",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/permission_keys_o10.py",
+        "--journey",
+        "panneau"
+      ],
+      "timeout": 900,
+      "pendingMerge": "VALXXII/annotation-lot2"
+    },
+    {
+      "id": "permission-circuit-bulle",
+      "title": "Circuit des autorisations (essai 0.3.952), vrai navigateur : bulle",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/permission_circuit.py",
+        "--journey",
+        "bulle"
+      ],
+      "timeout": 900,
+      "pendingMerge": "VALXXII/annotation-lot2",
+      "needs": [
+        "tests/chat/lot2_desktop.py"
+      ]
+    },
+    {
+      "id": "permission-circuit-panneau",
+      "title": "Circuit des autorisations (essai 0.3.952), vrai navigateur : panneau",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "-I",
+        "tests/chat/permission_circuit.py",
+        "--journey",
+        "panneau"
+      ],
+      "timeout": 900,
+      "pendingMerge": "VALXXII/annotation-lot2",
+      "needs": [
+        "tests/chat/lot2_desktop.py"
+      ]
+    },
+    {
+      "id": "lot-r",
+      "title": "Lot R : chat ouvert au lancement, 10 éléments, local / en ligne, fichier local, fenêtre privée",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/chat_qa_lot_r.py"
+      ],
+      "timeout": 1800
+    },
+    {
       "id": "focus-annotation",
       "title": "Mode Focus avec le mode Annotation : bandeau et chat gardés, rien ne saute (barre du haut)",
       "part": "night",
@@ -362,6 +566,17 @@
       ],
       "timeout": 900,
       "pendingMerge": "VALXXII/mode-focus-2"
+    },
+    {
+      "id": "o11-idle-bubble",
+      "title": "O11 : processeur au repos avec une bulle ouverte, fil de diagnostic éteint (navigateur publié) puis allumé",
+      "part": "night",
+      "cmd": [
+        "{python}",
+        "tests/chat/chat_qa_idle_bubble.py"
+      ],
+      "timeout": 900,
+      "pendingMerge": "VALXXII/annotation-lot5"
     },
     {
       "id": "journeys",

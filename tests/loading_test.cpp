@@ -19,6 +19,12 @@ int wmain(int argc,wchar_t** argv){
  a.Finish(2,at(1300));Check(a.Sample(at(1660)).fraction==1);Check(a.Sample(at(1760)).opacity==.5f);
  Check(a.Sample(at(1860)).opacity==0&&!a.NextWake(at(1860),false).delay);
  a.Start(3,at(2000));Check(a.Sample(at(2000),true).fraction==.15f&&!a.NextWake(at(2000),true).delay);
+ // A held navigation (restored tabs while the ad blocker is replaced): the bar shows at once, its navigation's own Start
+ // continues it (no jump back), and that navigation's completion ends it.
+ Loading::State w;w.Wait(at(0));Check(w.IsLoading()&&w.Sample(at(360)).fraction==.15f);
+ w.Start(7,at(400));Check(w.Sample(at(400)).fraction==.15f);w.Committed(at(420));Check(w.Sample(at(780)).fraction==.65f);
+ w.Finish(7,at(800));Check(!w.IsLoading()&&w.Sample(at(1160)).fraction==1);
+ w.Clear();w.Wait(at(2000));w.Clear();Check(!w.IsLoading());w.Start(8,at(2100));Check(w.Sample(at(2100)).fraction==0);   // Clear forgets the wait
  Chrome chrome;Check(SUCCEEDED(chrome.InitOffscreen(argv[1],96,1180,100)));
  chrome.Paint({L"Loading"},0,L"https://example.test/",false,0,0);const float inField=chrome.bar.left+18; // the standalone Reload now sits at 83..115
  auto rest=chrome.SurfacePixel(inField,48)&255;

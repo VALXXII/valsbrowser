@@ -15,6 +15,7 @@
 #include <windowsx.h>
 #include <dwmapi.h>
 #include "drawer-corners.h"   // Mode Focus: the docked drawer's antialiased top corners
+#include "resize-border.h"     // the window's resize border wins over the drawer on the window's edges
 #include <commctrl.h>
 #include <functional>
 #include <set>
@@ -385,6 +386,7 @@ private:
     static LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM w, LPARAM l) {
         auto* self = reinterpret_cast<Drawer*>(GetWindowLongPtrW(h, GWLP_USERDATA));
         if (msg == WM_NCCREATE) { self = static_cast<Drawer*>(reinterpret_cast<CREATESTRUCTW*>(l)->lpCreateParams); SetWindowLongPtrW(h, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self)); self->hwnd_ = h; }
+        { LRESULT border = 0; if (NativeChrome::ResizeBorder::Claim(h, msg, w, l, border)) return border; }   // flush with the window's right edge and bottom: its resize border wins there (src/resize-border.h)
         return self ? self->Handle(h, msg, w, l) : DefWindowProcW(h, msg, w, l);
     }
     LRESULT Handle(HWND h, UINT msg, WPARAM w, LPARAM l) {

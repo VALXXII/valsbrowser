@@ -556,8 +556,9 @@ namespace DrawerMotion {
 // Every drawer motion starts from rest on a critically damped spring (no click
 // carries velocity, so nothing should leave at speed): enter, exit (snappier),
 // section fold. Wheel steps keep the short emphasized curve.
-inline constexpr Spring enterSpring{.32f}, exitSpring{.24f}, foldSpring{.26f};
-inline constexpr Motion::Milliseconds enter = Settle(.32f), exit = Settle(.24f), fold = Settle(.26f), scroll{160};
+// #127 motion spec §3 (Designer): drawers open on 1.0 / .30 s and close on 1.0 / .25 s, the same path both ways.
+inline constexpr Spring enterSpring{.30f}, exitSpring{.25f}, foldSpring{.26f};
+inline constexpr Motion::Milliseconds enter = Settle(.30f), exit = Settle(.25f), fold = Settle(.26f), scroll{160};
 // The morph rides a critically damped spring (response 0.32 s): it leaves the
 // popover from rest, so the hand-off frame is identical to the popover.
 inline constexpr Spring morphSpring{.32f};

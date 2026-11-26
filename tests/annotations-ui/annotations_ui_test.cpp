@@ -72,33 +72,11 @@ static void Geo(const char* surface, float width, float paper, float native, flo
 
 // ---------------------------------------------------------------------------------------
 // Fixtures
-static Shot MakeShot(unsigned w, unsigned h, float bw, float bh, float pad) {   // a page with the dark pay button (premultiplied BGRA)
-    Shot s; s.width = w; s.height = h; s.pixels.assign(size_t(w) * h, 0xFFF4F4F3);
-    const unsigned x0 = unsigned((w - bw) / 2), y0 = unsigned((h - bh) / 2);
-    for (unsigned y = y0; y < y0 + unsigned(bh); ++y) for (unsigned x = x0; x < x0 + unsigned(bw); ++x) s.pixels[y * w + x] = 0xFF1C1C1C;
-    s.mark = {x0 - pad, y0 - pad, x0 + bw + pad, y0 + bh + pad}; return s;
-}
 static ConnectSetup SampleSetup() {
     ConnectSetup s; s.command = L"C:\\Users\\vous\\AppData\\Local\\browser\\bin\\browser-annotations-mcp.exe";
     s.args = {L"--store", L"C:\\Users\\vous\\AppData\\Local\\browser\\annotations"}; return s;
 }
 static ConnectView ConnectState_(ConnectSetup s) { ConnectView v; v.setup = std::move(s); return v; }
-static NoteContext SampleContext() {
-    NoteContext c; c.page = L"http://localhost:5173/checkout"; c.element = L"form > button.btn-primary"; c.label = L"Bouton « Payer 48,00 € »";
-    c.styles = L"display: inline-flex\nwidth: 240px"; return c;
-}
-static const wchar_t* sampleNote = L"Le bouton devrait être aligné à droite comme sur la maquette, et passer en pleine largeur sur mobile.";
-static HistoryData SampleHistory() {
-    HistoryData d; d.currentSite = L"localhost:5173";
-    auto e = [](const wchar_t* id, const wchar_t* site, const wchar_t* note, EntryStatus st, AgentKind a, const wchar_t* age) {
-        HistoryEntry x; x.id = id; x.site = site; x.page = std::wstring(site) + L"/checkout"; x.note = note; x.status = st; x.agent = a; x.age = age; return x; };
-    d.entries.push_back(e(L"a1", L"localhost:5173", L"Le bouton devrait être aligné à droite comme sur la maquette", EntryStatus::Working, AgentKind::Claude, L"2 min"));
-    d.entries.push_back(e(L"a2", L"localhost:5173", L"Le titre « Paiement » est trop proche du champ e-mail", EntryStatus::Pending, AgentKind::Claude, L"10 min"));
-    d.entries.push_back(e(L"a3", L"localhost:5173", L"Faute : « dès 50 € » au lieu de « à partir de 50 € »", EntryStatus::Done, AgentKind::Claude, L"Hier"));
-    d.entries.push_back(e(L"a4", L"localhost:4173", L"Le lien « Guide » mène vers une page vide", EntryStatus::Done, AgentKind::Codex, L"Mardi"));
-    d.entries[0].note = std::wstring(sampleNote); d.entries[0].followUp = L"Ajoutée à 14:02 · prise en charge à 14:04";
-    return d;
-}
 
 static bool Save(Ink& ink, const Canvas& c, const wchar_t* name) {
     const std::wstring path = outDir + L"\\" + name; const HRESULT hr = SavePng(ink, c, path);
@@ -143,20 +121,15 @@ static void PaintChrome(Ink& ink, float w) {   // the browser chrome (placeholde
     ink.Text(L"localhost:5173/checkout", F(16, 20, 400, -.01f), {154, 50, 600, 70}, {1, 1, 1, 1});
     ToolbarVisual tv; tv.active = true; PaintToolbarButton(ink.Target(), ink.Factory(), ink.Brush({1, 1, 1, 1}), {w - 156, 48, w - 132, 72}, tv);
 }
-static void PaintLauncherAt(Ink& ink, float right, float bottom, LauncherState st, int count, bool open) {
-    LauncherVisual lv; lv.state = st; lv.count = count; lv.expanded = open;
-    At_(ink, right - LauncherSpec::size, bottom - LauncherSpec::size - LauncherSpec::badgeOut, [&] { PaintLauncher(ink, lv); });
-}
 
 // ---------------------------------------------------------------------------------------
 static void ZeroCostTests() {
     CHECK(!Ink::Exists());
     CHECK(!Animator::Exists());
     CHECK(Layer::Created() == 0);
-    Banner banner; NotePopover note; Launcher launcher; ConnectModal connect;
-    banner.Init(GetModuleHandleW(nullptr), nullptr, L".", {}); note.Init(GetModuleHandleW(nullptr), nullptr, L".", {});
-    launcher.Init(GetModuleHandleW(nullptr), nullptr, L".", {}); connect.Init(GetModuleHandleW(nullptr), nullptr, L".", {});
-    CHECK(!banner.Created() && !note.Created() && !launcher.Created() && !connect.Created());
+    Banner banner; ConnectModal connect;
+    banner.Init(GetModuleHandleW(nullptr), nullptr, L".", {}); connect.Init(GetModuleHandleW(nullptr), nullptr, L".", {});
+    CHECK(!banner.Created() && !connect.Created());
     CHECK(!Ink::Exists() && !Animator::Exists() && Layer::Created() == 0);   // Init stores context only
     report << L"\"zeroCost\":{\"inkBeforeUse\":false,\"animatorBeforeUse\":false,\"windowsBeforeUse\":0},";
 }
@@ -198,14 +171,6 @@ static void MotionTests() {
     Presence red{ModalTiming()}; red.Show(At(0), true, true); const double redIn = EndOf(red, 0);
     CHECKM(Near(redIn, 150, 1), "reduced in %.1f", redIn); Row(L"modal", L"reduced t=1/2", 75, red.Sample(At(75), true)); CHECK(red.Sample(At(75), true).scale == 1);
     red.Hide(At(400), true, true); CHECKM(Near(EndOf(red, 400), 120, 1), "reduced out");
-    // Note panel: 180 ms; its pill follows 60 ms later.
-    Presence note{NoteTiming()}; note.Show(At(0)); CHECKM(Near(EndOf(note, 0), 180, 1), "note in");
-    Row(L"note", L"enter t=1/2", 90, note.Sample(At(90), false, -8, 0));
-    Ramp pill; pill.Set(1, At(0), Spec::pillUnfold, Curves::out, Spec::pillDelay);
-    CHECK(pill.Value(At(59)) == 0 && pill.Value(At(61)) > 0 && pill.Value(At(260)) == 1);
-    // Cards / history panel: 200 / 150 from the launcher.
-    Presence card{PanelTiming()}; card.Show(At(0)); CHECKM(Near(EndOf(card, 0), 200, 1), "card in");
-    Row(L"card", L"enter t=1/2", 100, card.Sample(At(100), false));
     // State cross-fade (button « En cours » -> « Connecté »): 0.3 s critical spring, interrupt from the presented alpha.
     Crossfade fade; fade.Reset(0); fade.Go(1, At(0));
     double t98 = -1; for (double t = 0; t < 1000; t += .5) if (fade.Incoming(At(t)) >= .98f) { t98 = t; break; }
@@ -230,10 +195,6 @@ static void ConfigTests() {
     s.serverName = L"browser annotations"; CHECK(ConnectToml(s).find(L"[mcp_servers.\"browser annotations\"]") == 0);
     CHECK(JsonQuote(L"a\"b\\c\n") == L"\"a\\\"b\\\\c\\n\"");
     CHECK(TomlQuote(L"it's") == L"\"it's\"");
-    CHECK(SiteOf(L"http://localhost:5173/checkout?x=1") == L"localhost:5173" && SiteOf(L"localhost:4173") == L"localhost:4173");
-    HistoryEntry e; e.note = L"Titre\nDétail"; e.site = L"localhost:5173"; e.page = L"localhost:5173/x"; e.status = EntryStatus::Done; e.agentName = L"Claude"; e.summary = L"Corrigé.";
-    const std::wstring md = EntryMarkdown(e);
-    CHECK(md.find(L"## Titre\n") == 0 && md.find(L"- Statut : Claude a terminé") != std::wstring::npos && md.find(L"> Corrigé.") != std::wstring::npos);
     std::printf("ConnectJson:\n%s\nConnectToml:\n%s\n", Utf8(ConnectJson(SampleSetup())).c_str(), Utf8(ConnectToml(SampleSetup())).c_str());
 }
 
@@ -260,18 +221,6 @@ static void GeometryTests(Ink& ink) {
         for (const ConnectView* s : {&w, &c, &f, &m, &r}) { const auto l = LayoutConnect(ink, *s); const auto* b = l.Find(BHeader);
             CHECK(b && Near(b->h, rb->h, .01) && b->state == rb->state && Near(l.headerButton.left, ref.headerButton.left, .01) && Near(l.headerButton.top, ref.headerButton.top, .01)); }
         Geo("1.1-1.7 header", 438, 62, rb->h); }
-    NoteView n; n.context = SampleContext(); n.fieldHeight = 40;
-    Geo("2.1 note panel (2 lines)", 350, 102, LayoutNote(ink, n).height);
-    n.fieldHeight = 0; Geo("2.1 note panel min-height", 350, 84, LayoutNote(ink, n).height);
-    Geo("2.2 pill unfolded", 350, 301.19f - 80 - 102 - 8, PillExpandedH());
-    Geo("2.3 « Capture impossible » pill width", 0, 320, PillCollapsed(ink, CaptureState::Unavailable).width, 2);
-    CardContent k; k.kind = CardKind::NoAgent; Geo("3.1 card", 320, 206.59f - 24 - 16 - 8 - 40, LayoutCard(ink, k).height);
-    k.kind = CardKind::Working; k.agent = L"Claude"; k.since = L"depuis 2 min"; k.note = sampleNote; Geo("3.2 card", 320, 138, LayoutCard(ink, k).height);
-    k.kind = CardKind::Done; k.summary = L"Bouton aligné à droite et en pleine largeur sur mobile, dans CheckoutActions.tsx."; Geo("3.3 card", 320, 138, LayoutCard(ink, k).height);
-    HistoryView h; h.data = SampleHistory(); h.maxHeight = 2000;
-    Geo("4.1 history panel", 360, 362, LayoutHistory(ink, h).height);
-    h.detailId = L"a1"; Geo("4.2 detail", 360, 466.59f - 24 - 16 - 8 - 40, LayoutHistory(ink, h).height);
-    HistoryView e; e.maxHeight = 2000; Geo("4.3 empty", 360, 291.59f - 24 - 16 - 8 - 40, LayoutHistory(ink, e).height);
     report << L"\"geometry\":[";
     for (auto& g : geometry) report << L"{\"surface\":\"" << Wide(g.surface) << L"\",\"width\":" << g.width << L",\"paperHeight\":" << g.paper << L",\"height\":" << g.native << L"},";
     report << L"{}],";
@@ -342,7 +291,6 @@ static void Captures(Ink& ink) {
         return Save(ink, c, name);
     };
     scene([&](Ink& i) {
-        PaintLauncherAt(i, 1180 - 16, 815 - 16, LauncherState::Rest, 0, false);
         i.Fill({0, 0, 1180, 815}, 0, Hex(0x0000008C));
         const auto l = LayoutConnect(i, launch); const float gh = ConnectGroupHeight(i, launch, l);
         At_(i, (1180 - 440) / 2.f, (815 - gh) / 2.f, [&] { PaintConnectStatic(i, launch, l); });
@@ -360,86 +308,6 @@ static void Captures(Ink& ink) {
     {   const auto l = LayoutBanner(ink, 1180, true); const Rgb chip = Px(c.At(int((l.beta.left + 1.5f) * k), int((85 + 16) * k)));
         sampled.push_back({"BETA chip accent 16 % over the band", "(composited)", Hex6(chip)});
         MeasureText(c, k, {l.beta.left + 3, 85 + l.beta.top + 2, l.beta.right - 3, 85 + l.beta.bottom - 2}, chip, 0x6A8FFFFF, "band « BETA » 12 medium #6A8FFF (Paper #5B84FF: 4.14:1)"); }
-    // ---- 2.x note panel + pill
-    Shot pillShot = MakeShot(192, 124, 124, 30, 6);
-    auto noteBoard = [&](NoteView v, CaptureState cap, float fold, const wchar_t* name) {
-        v.capture = cap; v.shot = cap == CaptureState::Ready ? &pillShot : nullptr; const auto l = LayoutNote(ink, v);
-        PillView pv; pv.context = v.context; pv.capture = cap; pv.shot = v.shot; pv.fold = fold;
-        const D2D1_RECT_F pr = PillRect(ink, cap, NoteSpec::width / 2, l.height + 8, fold);
-        Render(ink, 430, pr.bottom + 80, dpi, 0x0E0E0EFF, [&](Ink& i, float, float) { At_(i, 40, 40, [&] { PaintNote(i, v, l); PaintPill(i, pv, pr); }); }, c);
-        Save(ink, c, name); return std::make_pair(l, pr);
-    };
-    NoteView nv; nv.context = SampleContext(); nv.note = sampleNote; nv.fieldHeight = 40;
-    {   auto [l, pr] = noteBoard(nv, CaptureState::Ready, 0, L"2.1-note-panel.png");
-        Sample(c, k, 40 + 30, 40 + 50, canvasRgb, "2.1 note surface #171717");
-        Sample(c, k, 40 + 0.25f, 40 + 50, Over(0x3E67FF99, canvasRgb), "2.1 focused border #3E67FF99", 10);
-        Sample(c, k, 40 + l.add.left + 3, 40 + l.add.top + 12, accentRgb, "2.1 « Ajouter » accent");
-        MeasureText(c, k, {40 + l.field.left, 40 + l.field.top, 40 + l.field.right, 40 + l.field.bottom}, canvasRgb, 0xFFFFFFE6, "note text 14/20 #FFFFFFE6");
-        MeasureText(c, k, {40 + l.site.left + 22, 40 + l.site.top + 4, 40 + l.site.left + 100, 40 + l.site.bottom - 4}, canvasRgb, 0xFFFFFF99, "site 12/16 #FFFFFF99");
-        MeasureText(c, k, {40 + l.add.left + 8, 40 + l.add.top + 4, 40 + l.add.right - 8, 40 + l.add.bottom - 4}, accentRgb, 0xFFFFFFFF, "« Ajouter » 13/16 white on accent");
-        MeasureText(c, k, {40 + pr.left + 6, 40 + pr.top + 6, 40 + pr.right - 26, 40 + pr.bottom - 6}, canvasRgb, 0xFFFFFF99, "pill « Ce que l'agent verra » 12/16 #FFFFFF99"); }
-    {   NoteView empty = nv; empty.note.clear(); empty.fieldHeight = 22; auto [l, pr] = noteBoard(empty, CaptureState::Pending, 0, L"2.1b-note-placeholder.png"); (void)pr;
-        MeasureText(c, k, {40 + l.field.left, 40 + l.field.top, 40 + l.field.left + 150, 40 + l.field.top + 20}, canvasRgb, 0xFFFFFF99, "placeholder « Que faut-il changer ? » #FFFFFF99"); }
-    {   auto [l, pr] = noteBoard(nv, CaptureState::Ready, 1, L"2.2-note-what-the-agent-sees.png"); (void)l;
-        const float rx = pr.left + 13 + 96 + 12;
-        MeasureText(c, k, {40 + rx, 40 + pr.top + 37, 40 + rx + 48, 40 + pr.top + 53}, canvasRgb, 0xFFFFFF99, "pill row label 12/16 #FFFFFF99");
-        MeasureText(c, k, {40 + rx + 56, 40 + pr.top + 37, 40 + pr.right - 13, 40 + pr.top + 53}, canvasRgb, 0xFFFFFFE6, "pill row value 12/16 #FFFFFFE6");
-        MeasureText(c, k, {40 + pr.left + 100, 40 + pr.top + 11, 40 + pr.right - 120, 40 + pr.top + 27}, canvasRgb, 0xFFFFFFE6, "pill header 12/16 medium #FFFFFFE6"); }
-    noteBoard(nv, CaptureState::Pending, 1, L"2.2b-note-capture-pending.png");
-    {   auto [l, pr] = noteBoard(nv, CaptureState::Unavailable, 0, L"2.3-note-capture-unavailable.png"); (void)l;
-        MeasureText(c, k, {40 + pr.left + 28, 40 + pr.top + 6, 40 + pr.right - 8, 40 + pr.bottom - 6}, canvasRgb, 0xFFFFFFCC, "« Capture impossible ici » 12/16 #FFFFFFCC"); }
-    {   NoteView err = nv; err.note.clear(); err.fieldError = true; err.fieldFocused = true; err.message = L"Écrivez ce qu'il faut changer."; err.fieldHeight = 22; noteBoard(err, CaptureState::Ready, 0, L"2.4-note-empty-validation.png"); }
-    {   NoteView saving = nv; saving.status = NoteStatus::Saving; noteBoard(saving, CaptureState::Ready, 0, L"2.5-note-saving.png"); }
-    {   NoteView fail = nv; fail.status = NoteStatus::Failed; fail.message = L"Impossible d'enregistrer l'annotation. Votre note est conservée ; réessayez."; auto [l, pr] = noteBoard(fail, CaptureState::Ready, 0, L"2.6-note-write-failed.png"); (void)pr;
-        MeasureText(c, k, {40 + l.message.left + 19, 40 + l.message.top, 40 + l.message.right, 40 + l.message.bottom}, canvasRgb, 0xFF7B6EFF, "write error 12/16 #FF7B6E"); }
-    {   NoteView kb = nv; kb.focus = NoteAdd; kb.keyboard = true; kb.fieldFocused = false; noteBoard(kb, CaptureState::Ready, 0, L"2.7-note-focus-add-keyboard.png"); }
-    // ---- chat intégré: the note's two actions — « Ajouter » (secondary, neutral plate) then « Demander à l'agent »
-    //      (the main one: last, right, the only accent fill) — and the band's button (left of « Quitter »)
-    {   NoteView ask = nv; ask.ask = true; auto [l, pr] = noteBoard(ask, CaptureState::Ready, 0, L"6.a-note-ask-agent.png"); (void)pr;
-        const NoteLayout alone = LayoutNote(ink, nv);
-        Geo("6.a note « Demander à l'agent » ends the row (where « Ajouter » alone ends)", 350, alone.add.right, l.ask.right);
-        Geo("6.a note « Ajouter » — 6 left of « Demander à l'agent »", 350, 6, l.ask.left - l.add.right);
-        Geo("6.a note « Demander à l'agent » — same height as « Ajouter »", 350, l.add.bottom - l.add.top, l.ask.bottom - l.ask.top);
-        Geo("6.a note site label ends 8 before the first button", 350, 8, l.add.left - l.site.right);
-        Geo("6.a note site label keeps room for « localhost:5173 »", 350, 1, l.site.right - l.site.left >= 96 ? 1.f : 0.f, .1f);
-        Geo("6.a note panel height unchanged by the button", 350, alone.height, l.height);
-        Sample(c, k, 40 + l.ask.left + 3, 40 + l.ask.top + 12, accentRgb, "6.a « Demander à l'agent » accent (the main action)");
-        Sample(c, k, 40 + l.add.left + 3, 40 + l.add.top + 12, Over(0xFFFFFF0F, canvasRgb), "6.a « Ajouter » neutral plate #FFFFFF0F (secondary)");
-        MeasureText(c, k, {40 + l.ask.left + 8, 40 + l.ask.top + 4, 40 + l.ask.right - 8, 40 + l.ask.bottom - 4}, accentRgb, 0xFFFFFFFF, "« Demander à l'agent » 13/16 white on accent");
-        MeasureText(c, k, {40 + l.add.left + 6, 40 + l.add.top + 4, 40 + l.add.right - 6, 40 + l.add.bottom - 4}, Over(0xFFFFFF0F, canvasRgb), 0xFFFFFFE6, "« Ajouter » 13/16 on its plate");
-        CHECK(NoteHitAt(l, (l.ask.left + l.ask.right) / 2, l.ask.top + 12) == NoteAsk && NoteHitAt(l, (l.add.left + l.add.right) / 2, l.add.top + 12) == NoteAdd);
-        NoteView kbAsk = ask; kbAsk.focus = NoteAsk; kbAsk.keyboard = true; kbAsk.fieldFocused = false; noteBoard(kbAsk, CaptureState::Ready, 0, L"6.a2-note-ask-agent-focus-keyboard.png");
-        NoteView saving = ask; saving.status = NoteStatus::Saving; noteBoard(saving, CaptureState::Ready, 0, L"6.a3-note-ask-agent-saving.png"); }
-    // ---- 7.a smooth corners of the note panel, at 100 % and 150 %. « before » = what a window region does (the old
-    //      window: a 1-bit round-rect mask over a surface cleared to the canvas); « after » = the per-pixel-alpha layer
-    //      (the same paint code over whatever is behind). Light page behind, where a stair-stepped edge shows most.
-    //      Each board: the top-left corner (20 x 20 DIP), enlarged 12 times: before | after.
-    for (const UINT cd : {96u, 144u}) {
-        NoteView v = nv; v.fieldFocused = false; const NoteLayout l = LayoutNote(ink, v); const float sc = cd / 96.f;
-        Canvas after, dark;
-        Render(ink, NoteSpec::width, l.height, cd, 0xF4F4F3FF, [&](Ink& i, float, float) { PaintNote(i, v, l); }, after);
-        Render(ink, NoteSpec::width, l.height, cd, 0x171717FF, [&](Ink& i, float, float) { PaintNote(i, v, l); }, dark);
-        Canvas before = dark; const int d = 2 * int(NoteSpec::radius * sc + .5f);
-        HRGN rgn = CreateRoundRectRgn(0, 0, int(before.width) + 1, int(before.height) + 1, d, d);
-        for (unsigned y = 0; y < before.height; ++y) for (unsigned x = 0; x < before.width; ++x) if (!PtInRegion(rgn, int(x), int(y))) before.pixels[size_t(y) * before.width + x] = 0xFFF4F4F3;
-        DeleteObject(rgn);
-        // An edge pixel that is neither the page (light) nor the panel (dark): the antialiasing of the silhouette.
-        auto between = [&](const Canvas& cv) { int nb = 0; const int box = int(NoteSpec::radius * sc + .5f);
-            for (int y = 0; y < box; ++y) for (int x = 0; x < box; ++x) { const Rgb p = Px(cv.At(x, y)); const double lum = .2126 * p.r + .7152 * p.g + .0722 * p.b; if (lum > 96 && lum < 226) ++nb; }
-            return nb; };
-        const int nbBefore = between(before), nbAfter = between(after);
-        CHECKM(nbBefore == 0, "7.a window region at %u dpi: a 1-bit silhouette (%d blended pixels)", cd, nbBefore);
-        CHECKM(nbAfter >= int(4 * sc), "7.a layer at %u dpi: antialiased corner (%d blended pixels)", cd, nbAfter);
-        CHECK(Close(Px(after.At(0, 0)), pageRgb) && Close(Px(after.At(int(20 * sc), int(20 * sc))), canvasRgb));
-        const int crop = int(20 * sc + .5f), zoom = 12, gapPx = 24; Canvas board; board.width = unsigned(crop * zoom * 2 + gapPx); board.height = unsigned(crop * zoom);
-        board.pixels.assign(size_t(board.width) * board.height, 0xFFFFFFFF);
-        for (int y = 0; y < crop * zoom; ++y) for (int x = 0; x < crop * zoom; ++x) {
-            board.pixels[size_t(y) * board.width + x] = before.At(x / zoom, y / zoom) | 0xFF000000;
-            board.pixels[size_t(y) * board.width + crop * zoom + gapPx + x] = after.At(x / zoom, y / zoom) | 0xFF000000; }
-        Save(ink, board, cd == 96 ? L"7.a-note-corner-100-before-after.png" : L"7.a-note-corner-150-before-after.png");
-        Save(ink, after, cd == 96 ? L"7.a-note-panel-on-light-100.png" : L"7.a-note-panel-on-light-150.png");
-        sampled.push_back({cd == 96 ? "7.a note corner at 100 %: blended edge pixels, region / layer" : "7.a note corner at 150 %: blended edge pixels, region / layer", std::to_string(nbBefore), std::to_string(nbAfter)});
-    }
     {   Render(ink, 1180, 32, dpi, 0x171717FF, [&](Ink& i, float w, float) { BannerVisual bv; bv.beta = true; bv.chatShown = true; bv.chatActive = true; PaintBanner(i, w, 32, bv); }, c);
         Save(ink, c, L"6.b-band-layout-switch-comment.png");
         const auto l = LayoutBanner(ink, 1180, true, true), plain = LayoutBanner(ink, 1180, true, false);
@@ -450,116 +318,6 @@ static void Captures(Ink& ink) {
         Geo("6.b band without the chat: no switch", 1180, 0, plain.sw.right - plain.sw.left);
         Render(ink, 1180, 32, dpi, 0x171717FF, [&](Ink& i, float w, float) { BannerVisual bv; bv.beta = true; bv.chatShown = true; bv.reminder = 1; bv.focus = true; bv.focusItem = BannerChat; bv.keyboard = true; PaintBanner(i, w, 32, bv); }, c);
         Save(ink, c, L"6.b2-band-layout-switch-reminder-focus.png"); }
-    scene([&](Ink& i) {
-        NoteView v = nv; v.capture = CaptureState::Ready; const auto l = LayoutNote(i, v);
-        PillView pv; pv.context = v.context; pv.capture = CaptureState::Ready; const D2D1_RECT_F pr = PillRect(i, CaptureState::Ready, NoteSpec::width / 2, l.height + 8, 0);
-        At_(i, 315, 117 + 346, [&] { PaintNote(i, v, l); PaintPill(i, pv, pr); });
-        PaintLauncherAt(i, 1180 - 16, 815 - 16, LauncherState::Rest, 0, false);
-    }, true, false, true, true, L"2.1-scene-write-note.png");
-    // ---- 3.x cards (on the page colour, launcher below)
-    auto cardBoard = [&](const CardContent& content, LauncherState st, int count, const wchar_t* name, CardVisual cv = {}) {
-        const auto l = LayoutCard(ink, content); const float h = 24 + l.height + 8 + 40 + 16;
-        Render(ink, 420, h, dpi, 0xF4F4F3FF, [&](Ink& i, float w, float hh) {
-            At_(i, w - 16 - 320, 24, [&] { PaintCard(i, content, l, cv); });
-            PaintLauncherAt(i, w - 16, hh - 16, st, count, false);
-        }, c);
-        Save(ink, c, name); return l;
-    };
-    CardContent added; added.kind = CardKind::NoAgent;
-    {   const auto l = cardBoard(added, LauncherState::Rest, 1, L"3.1-card-added-no-agent.png");
-        Sample(c, k, 420 - 16 - 300 + 290, 24 + 52, canvasRgb, "3.1 card surface #171717");
-        Sample(c, k, 420 - 16 - 320 + l.primary.left + 4, 24 + l.primary.top + 16, raisedRgb, "3.1 « Connecter un agent » raised");
-        Sample(c, k, 420 - 16 - 320 + 1 + 14 + 9, 24 + 1 + 14 + 13 - 6, accentRgb, "3.1 check disc accent", 6);
-        const float x = 420 - 16 - 320;
-        MeasureText(c, k, {x + 41, 24 + l.header.top + 3, x + 200, 24 + l.header.bottom - 3}, canvasRgb, 0xFFFFFFFF, "card title 14/20 600 white");
-        MeasureText(c, k, {x + l.body.left, 24 + l.body.top, x + l.body.right, 24 + l.body.bottom}, canvasRgb, 0xFFFFFFB3, "card body 13/19 #FFFFFFB3");
-        MeasureText(c, k, {x + l.primary.left + 120, 24 + l.primary.top + 8, x + l.primary.right - 80, 24 + l.primary.bottom - 8}, raisedRgb, 0xFFFFFFFF, "card action 13/16 white on #292929");
-        Sample(c, k, 420 - 16 - 8, (24 + l.height + 8) + 2 + 3, raisedRgb, "3.1 launcher badge raised #292929", 8);
-    }
-    CardContent work; work.kind = CardKind::Working; work.agent = L"Claude"; work.since = L"depuis 2 min"; work.note = L"Le bouton devrait être aligné à droite comme sur la maquette, et passer en pleine largeur sur mobile.";
-    {   const auto l = cardBoard(work, LauncherState::Working, 1, L"3.2-card-agent-working.png"); const float x = 420 - 16 - 320;
-        MeasureText(c, k, {x + 160, 24 + l.header.top + 3, x + 260, 24 + l.header.bottom - 3}, canvasRgb, 0xFFFFFF99, "card « · depuis 2 min » 14/20 #FFFFFF99");
-        Sample(c, k, 420 - 16 - 9, (24 + l.height + 8) + 3, accentRgb, "3.2 launcher badge accent", 8); }
-    CardContent done; done.kind = CardKind::Done; done.agent = L"Claude"; done.summary = L"Bouton aligné à droite et en pleine largeur sur mobile, dans CheckoutActions.tsx.";
-    cardBoard(done, LauncherState::Rest, 0, L"3.3-card-agent-done.png");
-    CardContent addedAgent; addedAgent.kind = CardKind::Added; cardBoard(addedAgent, LauncherState::Rest, 0, L"3.4-card-added-agent-connected.png");
-    {   CardVisual cv; cv.focus = CardReopen; cv.keyboard = true; cardBoard(done, LauncherState::Rest, 0, L"3.3b-card-done-focus-keyboard.png", cv); }
-    CardContent codex = work; codex.agent = L"Codex"; codex.agentKind = AgentKind::Codex; cardBoard(codex, LauncherState::Working, 2, L"3.2b-card-codex-working.png");
-    // Launcher states.
-    auto launcherBoard = [&](LauncherState st, int count, bool open, LauncherVisual extra, const wchar_t* name) {
-        Render(ink, 72, 72, dpi, 0xF4F4F3FF, [&](Ink& i, float, float) { LauncherVisual lv = extra; lv.state = st; lv.count = count; lv.expanded = open; At_(i, 16, 10, [&] { PaintLauncher(i, lv); }); }, c); Save(ink, c, name);
-    };
-    launcherBoard(LauncherState::Rest, 0, false, {}, L"3.0-launcher-rest.png");
-    Sample(c, k, 16 + 4, 10 + 6 + 20, canvasRgb, "launcher surface #171717");
-    launcherBoard(LauncherState::Working, 1, false, {}, L"3.0b-launcher-working.png");
-    launcherBoard(LauncherState::Rest, 0, true, {}, L"3.0c-launcher-history-open.png");
-    { LauncherVisual f; f.focus = true; f.keyboard = true; launcherBoard(LauncherState::Rest, 0, false, f, L"3.0d-launcher-focus-keyboard.png"); }
-    { LauncherVisual f; f.iv.hover = 1; launcherBoard(LauncherState::Rest, 0, false, f, L"3.0e-launcher-hover.png"); }
-    // ---- 4.x history
-    Shot detailShot = MakeShot(668, 300, 400, 88, 12);
-    auto historyBoard = [&](HistoryView v, const wchar_t* name, bool open = true) {
-        v.maxHeight = 2000; const auto l = LayoutHistory(ink, v); const float h = 24 + l.height + 8 + 40 + 16;
-        Render(ink, 440, h, dpi, 0xF4F4F3FF, [&](Ink& i, float w, float hh) {
-            At_(i, w - 16 - 360, 24, [&] { PaintHistory(i, v, l, l.height); });
-            PaintLauncherAt(i, w - 16, hh - 16, LauncherState::Working, 1, open);
-        }, c);
-        Save(ink, c, name); return l;
-    };
-    HistoryView hv; hv.data = SampleHistory(); hv.hot = 0;
-    {   const auto l = historyBoard(hv, L"4.1-history-list.png"); const float x = 440 - 16 - 360;
-        Sample(c, k, x + l.segment[0].left + 3, 24 + l.segment[0].top + 13, Solid(0x3E3E3E), "4.1 chosen segment #3E3E3E");
-        Sample(c, k, x + l.filters.left + 2, 24 + l.filters.top + 16, raisedRgb, "4.1 filters raised #292929");
-        float rowTop = 0; for (auto& it : l.items) if (!it.section && it.entry == 0) rowTop = l.listTop + it.y;
-        Sample(c, k, x + 5 + 2, 24 + rowTop + 26, Over(0xFFFFFF0A, canvasRgb), "4.1 hovered row #FFFFFF0A");
-        MeasureText(c, k, {x + 41, 24 + 15, x + 140, 24 + 39}, canvasRgb, 0xFFFFFFFF, "« Historique » 16/20 600 white");
-        MeasureText(c, k, {x + l.segment[1].left + 10, 24 + l.segment[1].top + 5, x + l.segment[1].right - 22, 24 + l.segment[1].bottom - 5}, raisedRgb, 0xFFFFFFB3, "segment 12/16 medium #FFFFFFB3 on #292929");
-        { Font n = F(11, 14); n.tabular = true; const float cw = ink.Width(L"2", n), tw = ink.Width(L"En cours", F(12, 16, 500)) + 5 + cw, cr = (l.segment[1].left + l.segment[1].right) / 2 + tw / 2;
-          MeasureText(c, k, {x + cr - cw - 1, 24 + l.segment[1].top + 5, x + cr + 1, 24 + l.segment[1].bottom - 5}, raisedRgb, 0xFFFFFF80, "segment count 11/14 #FFFFFF80 on #292929"); }
-        MeasureText(c, k, {x + 5 + 10, 24 + l.listTop + 1 + 10, x + 100, 24 + l.listTop + 1 + 26}, canvasRgb, 0xFFFFFFB3, "section site 12/16 medium #FFFFFFB3");
-        MeasureText(c, k, {x + 100, 24 + l.listTop + 1 + 10, x + 160, 24 + l.listTop + 1 + 26}, canvasRgb, 0xFFFFFF80, "« · cette page » 11/14 #FFFFFF80");
-        MeasureText(c, k, {x + 5 + 62, 24 + rowTop + 28, x + 5 + 140, 24 + rowTop + 44}, Over(0xFFFFFF0A, canvasRgb), 0xFFFFFF99, "row status 12/16 #FFFFFF99");
-        float doneTop = 0; for (auto& it : l.items) if (!it.section && it.entry == 2) doneTop = l.listTop + it.y;
-        MeasureText(c, k, {x + 5 + 62, 24 + doneTop + 28, x + 5 + 200, 24 + doneTop + 44}, canvasRgb, 0xFFFFFF99, "done row status 12/16 #FFFFFF99 (kept at 100 %)");
-        MeasureText(c, k, {x + 5 + 62, 24 + doneTop + 8, x + 300, 24 + doneTop + 26}, canvasRgb, 0xFFFFFFB3, "done row note 13/18 white at 70 %");
-    }
-    { HistoryView m = hv; m.menuEntry = 0; m.menuHot = HMenuDelete; historyBoard(m, L"4.1b-history-row-menu.png"); }
-    { HistoryView f = hv; f.filter = HistoryFilter::Open; f.hot = -1; historyBoard(f, L"4.1c-history-filter-open.png"); }
-    { HistoryView f = hv; f.filter = HistoryFilter::Done; f.hot = -1; f.selected = 2; f.focus = HList; f.keyboard = true; historyBoard(f, L"4.1d-history-filter-done-keyboard.png"); }
-    { HistoryView d = hv; d.data.entries[0].capture = detailShot; d.detailId = L"a1"; d.hot = -1;
-      const auto l = historyBoard(d, L"4.2-history-detail.png"); const float x = 440 - 16 - 360;
-      Sample(c, k, x + l.del.left + 4, 24 + l.del.top + 15, Over(0xFF7B6E1A, canvasRgb), "4.2 « Supprimer » danger 10 %");
-      MeasureText(c, k, {x + l.del.left + 40, 24 + l.del.top + 6, x + l.del.right - 40, 24 + l.del.bottom - 6}, Over(0xFF7B6E1A, canvasRgb), 0xFF7B6EFF, "« Supprimer » 12/16 #FF7B6E on danger 10 %");
-      MeasureText(c, k, {x + l.follow.left + 12, 24 + l.follow.top + 34, x + l.follow.right - 12, 24 + l.follow.bottom - 10}, raisedRgb, 0xFFFFFF99, "follow-up 12/17 #FFFFFF99 on #292929");
-      MeasureText(c, k, {x + l.page.left, 24 + l.page.top + 4, x + l.page.left + 140, 24 + l.page.bottom - 4}, canvasRgb, 0xFFFFFFB3, "detail page 13/18 #FFFFFFB3");
-      MeasureText(c, k, {x + l.copy.left + 20, 24 + l.copy.top + 6, x + l.copy.right - 20, 24 + l.copy.bottom - 6}, raisedRgb, 0xFFFFFFFF, "« Copier en Markdown » 12/16 white on #292929"); }
-    { HistoryView d = hv; d.data.entries[2].summary = L"Libellé corrigé dans PromoBanner.tsx."; d.detailId = L"a3"; d.hot = -1; historyBoard(d, L"4.2b-history-detail-done.png"); }
-    { HistoryView e; const auto l = historyBoard(e, L"4.3-history-empty.png", true); const float x = 440 - 16 - 360;
-      MeasureText(c, k, {x + 80, 24 + 1 + 50 + 20 + 36, x + 280, 24 + 1 + 50 + 20 + 56}, canvasRgb, 0xFFFFFF80, "empty « Aucune annotation pour l'instant... » 14/20 #FFFFFF80");
-      Sample(c, k, x + l.annotate.left + 3, 24 + l.annotate.top + 16, accentRgb, "4.3 « Annoter cette page » accent"); }
-    { HistoryView f = hv; f.data.entries.resize(2); f.filter = HistoryFilter::Done; f.hot = -1; historyBoard(f, L"4.3b-history-filter-empty.png"); }
-    {   HistoryView many = hv; many.hot = -1; for (int i = 0; i < 14; ++i) { auto e = hv.data.entries[size_t(i % 4)]; e.id = L"m" + std::to_wstring(i); e.age = std::to_wstring(i + 3) + L" j"; many.data.entries.push_back(e); }
-        many.maxHeight = 520; many.scroll = 140; const auto l = LayoutHistory(ink, many); CHECK(MaxScroll(l) > 0 && l.height <= 520.5f);
-        Render(ink, 440, 24 + l.height + 64, dpi, 0xF4F4F3FF, [&](Ink& i, float w, float hh) { At_(i, w - 16 - 360, 24, [&] { PaintHistory(i, many, l, l.height); }); PaintLauncherAt(i, w - 16, hh - 16, LauncherState::Working, 1, true); }, c);
-        Save(ink, c, L"4.4-history-scrolled.png"); }
-    // Toast.
-    Render(ink, ToastWidth(ink) + 80, 80, dpi, 0xF4F4F3FF, [&](Ink& i, float, float) { At_(i, 40, 20, [&] { PaintToast(i, {}, false, false, false); }); }, c);
-    Save(ink, c, L"4.5-history-toast-undo.png");
-    MeasureText(c, k, {40 + 13, 20 + 12, 40 + 140, 20 + 28}, canvasRgb, 0xFFFFFFE6, "toast « Annotation supprimée » 13/16 #FFFFFFE6");
-    // 4.1 scene.
-    Render(ink, 1180, 815, dpi, 0x171717FF, [&](Ink& i, float w, float h) {
-        PaintChrome(i, w); PaintPage(i, 0, 85, w, h - 85, false);
-        HistoryView v = hv; v.maxHeight = 2000; const auto l = LayoutHistory(i, v);
-        At_(i, w - 16 - 360, h - 64 - l.height, [&] { PaintHistory(i, v, l, l.height); });
-        PaintLauncherAt(i, w - 16, h - 16, LauncherState::Working, 1, true);
-    }, c);
-    Save(ink, c, L"4.1-scene-history.png");
-    // Scenes for the cards (3.2 on the page).
-    Render(ink, 1180, 815, dpi, 0x171717FF, [&](Ink& i, float w, float h) {
-        PaintChrome(i, w); BannerVisual bv; At_(i, 0, 85, [&] { PaintBanner(i, w, 32, bv); }); PaintPage(i, 0, 117, w, h - 117, false);
-        const auto l = LayoutCard(i, work); At_(i, w - 16 - 320, h - 64 - l.height, [&] { PaintCard(i, work, l, {}); });
-        PaintLauncherAt(i, w - 16, h - 16, LauncherState::Working, 1, false);
-    }, c);
-    Save(ink, c, L"3.2-scene-card-working.png");
 }
 
 // ---------------------------------------------------------------------------------------
@@ -597,20 +355,6 @@ static void MotionStrips(Ink& ink) {
       strip(L"m6-local-pill-unfold.png", 4, 440, 150, [&](Ink& i, int f) {
           const float fold = Motion::Clamp(s.Value(At(ts[f]))), desc = Motion::Clamp(d.Value(At(ts[f])));
           PaintLocal(i, v, LayoutLocal(i, v.setup, 220, 20, fold), fold, desc, false); }); }
-    // Card born from the launcher (origin bottom-right), and a history panel.
-    { CardContent cc; cc.kind = CardKind::NoAgent; const auto cl = LayoutCard(ink, cc); Presence p{PanelTiming()}; p.Show(At(0)); const double ts[4] = {0, 50, 100, 200};
-      strip(L"m7-card-from-launcher.png", 4, 380, cl.height + 100, [&](Ink& i, int f) {
-          i.Fill({0, 0, 380, cl.height + 100}, 0, Hex(0xF4F4F3FF));
-          At_(i, 30, 20, [&] { Posed(i, p.Sample(At(ts[f]), false), {320 - 20, cl.height + 28}, [&] { PaintCard(i, cc, cl, {}); }); });
-          PaintLauncherAt(i, 30 + 320, 20 + cl.height + 8 + 40 + 6, LauncherState::Rest, 1, false); }); }
-    { HistoryView hv; hv.data = SampleHistory(); hv.maxHeight = 2000; const auto hl = LayoutHistory(ink, hv); Presence p{PanelTiming()}; p.Show(At(0), false); p.Hide(At(0)); const double ts[4] = {0, 50, 100, 150};
-      strip(L"m8-history-back-to-launcher.png", 4, 420, hl.height + 100, [&](Ink& i, int f) {
-          i.Fill({0, 0, 420, hl.height + 100}, 0, Hex(0xF4F4F3FF));
-          At_(i, 30, 20, [&] { Posed(i, p.Sample(At(ts[f]), false), {360 - 20, hl.height + 28}, [&] { PaintHistory(i, hv, hl, hl.height); }); });
-          PaintLauncherAt(i, 30 + 360, 20 + hl.height + 8 + 40 + 6, LauncherState::Working, 1, true); }); }
-    // Note pill unfolding into its card (200 ms).
-    { NoteContext ctx = SampleContext(); Ramp r; r.Set(1, At(0), Spec::pillUnfold, Curves::out); const double ts[4] = {0, 40, 100, 200};
-      strip(L"m9-note-pill-unfold.png", 4, 390, 150, [&](Ink& i, int f) { PillView pv; pv.context = ctx; pv.fold = r.Value(At(ts[f])); PaintPill(i, pv, PillRect(i, CaptureState::Ready, 195, 20, pv.fold)); }); }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -758,223 +502,22 @@ static void WindowTests(Ink& ink, const std::wstring& root) {
     // Reduced motion: a fade, never scaled.
     modal.Show(SampleSetup(), clientScreen, true); CHECK(Near(modal.PresenceForTest().Sample(Motion::Now(), true).scale, 1, 1e-6)); Settle(); modal.Close(true, ConnectEnd::Closed); Settle();
 
-    // ---- Note panel + pill
-    NotePopover note; std::vector<NoteSubmission> submits; std::wstring cancelled; bool cancelledKb = false;
-    NoteHooks nh; nh.submit = [&](const NoteSubmission& x) { submits.push_back(x); }; nh.cancel = [&](const std::wstring& d, bool kb) { cancelled = d; cancelledKb = kb; }; nh.announce = announce;
-    std::wstring asked; int asks = 0; nh.ask = [&](const std::wstring& d) { asked = d; ++asks; };
-    note.Init(inst, host, root, nh);
-    RECT target{int(64 * dpiScale), pageTop + int(350 * dpiScale), int(304 * dpiScale), pageTop + int(394 * dpiScale)}; MapWindowPoints(host, nullptr, reinterpret_cast<POINT*>(&target), 2);
-    RECT pageScreen = page; MapWindowPoints(host, nullptr, reinterpret_cast<POINT*>(&pageScreen), 2);
-    NoteRequest req; req.context = SampleContext(); req.capture = CaptureState::Pending;
-    ForceForeground(host);
-    CHECK(note.Show(req, target, pageScreen, false, false));
-    CHECK(GetFocus() == note.Edit());                                        // keystrokes accepted from frame 0
-    CHECK((GetWindowLongPtrW(note.GhostForTest().Window(), GWL_EXSTYLE) & WS_EX_TRANSPARENT) != 0);   // the ghost never takes a click
-    CHECK(note.LiftXForTest() < 0 && note.FinalForTest().left > target.right);   // born beside the element, on its side
-    Pump(70); SaveLayer(ink, note.GhostForTest(), L"w9-window-note-entering.png");
-    CHECK(Settle()); CHECK(note.SettledForTest());
-    {   // Smooth corners at the root: the settled panel is a per-pixel-alpha layer; neither it nor the field's window
-        // has a window region (GetWindowRgn = ERROR); the corner pixels carry partial alpha, the very corner none.
-        HRGN probe = CreateRectRgn(0, 0, 0, 0);
-        CHECK(GetWindowRgn(note.PanelWindow(), probe) == ERROR); CHECK(GetWindowRgn(note.Window(), probe) == ERROR);
-        DeleteObject(probe);
-        CHECK((GetWindowLongPtrW(note.PanelWindow(), GWL_EXSTYLE) & WS_EX_LAYERED) != 0 && IsWindowVisible(note.PanelWindow()) && !IsWindowVisible(note.GhostForTest().Window()));
-        const auto px = note.PanelForTest().Pixels(); const RECT pr = note.PanelForTest().Rect(), fin = note.FinalForTest(); const int pw = pr.right - pr.left;
-        CHECK(EqualRect(&pr, &fin) && px.size() == size_t(pw) * size_t(pr.bottom - pr.top));
-        int partial = 0; const int box = int(NoteSpec::radius * dpiScale + .5f);
-        if (!px.empty()) for (int y = 0; y < box; ++y) for (int x = 0; x < box; ++x) { const unsigned a = px[size_t(y) * pw + x] >> 24; if (a > 0 && a < 255) ++partial; }
-        CHECK(!px.empty() && (px[0] >> 24) == 0); CHECKM(partial >= 4, "note panel corner: %d pixels with partial alpha", partial);
-        // The field's window: owned by the panel, exactly on the field, 13 DIP inside the edge (never under a corner).
-        RECT fr{}; GetWindowRect(note.Window(), &fr); const int inset = int(12 * dpiScale);
-        CHECK(GetWindow(note.Window(), GW_OWNER) == note.PanelWindow());
-        {   bool above = false, pillAbove = false;   // z-order, top to bottom: the pill, the field's window, the panel
-            for (HWND w = GetWindow(note.Window(), GW_HWNDNEXT); w; w = GetWindow(w, GW_HWNDNEXT)) if (w == note.PanelWindow()) { above = true; break; }
-            for (HWND w = GetWindow(note.PillWindow(), GW_HWNDNEXT); w; w = GetWindow(w, GW_HWNDNEXT)) if (w == note.PanelWindow()) { pillAbove = true; break; }
-            CHECK(above && pillAbove); }
-        CHECK(fr.left >= fin.left + inset && fr.top >= fin.top + inset && fr.right <= fin.right - inset && fr.bottom <= fin.bottom - inset);
-        RECT er{}; GetWindowRect(note.Edit(), &er); CHECK(EqualRect(&er, &fr));
-        SaveLayer(ink, note.PanelForTest(), L"w9b-window-note-panel-layer.png");
-    }
-    SaveLayer(ink, note.PillForTest(), L"w10-window-note-pill.png");
-    {   auto n = note.NodesForTest(); CHECK(HasNode(n, L"Ajouter") && HasNode(n, L"Ce que l'agent verra") && HasNode(n, L"Site")); }
-    // Empty: validation on submit, never a disabled button.
-    note.KeyForTest(VK_RETURN, true); CHECK(submits.empty() && note.ViewForTest().fieldError && lastSaid(L"Écrivez ce qu'il faut changer."));
-    note.TypeForTest(sampleNote); CHECK(!note.ViewForTest().fieldError);
-    // Tab order: field -> Ajouter -> pill; Space unfolds the pill; Échap folds it, then cancels.
-    note.KeyForTest(VK_TAB, true); CHECK(note.FocusForTest() == NoteAdd);
-    note.KeyForTest(VK_TAB, false); CHECK(note.FocusForTest() == NotePill);
-    note.KeyForTest(VK_SPACE, false); CHECK(note.PillOpenForTest());
-    note.SetShot(CaptureState::Ready, nullptr);
-    CHECK(Settle()); SaveLayer(ink, note.PillForTest(), L"w11-window-note-pill-unfolded.png");
-    { auto n = note.NodesForTest(); CHECK(HasNode(n, L"Page") && HasNode(n, L"Élément") && HasNode(n, L"Style")); }
-    note.KeyForTest(VK_ESCAPE, false); CHECK(!note.PillOpenForTest() && note.Visible());
-    note.KeyForTest(VK_TAB, false); CHECK(note.FocusForTest() == NoteField);
-    note.KeyForTest(VK_RETURN, true);
-    CHECK(submits.size() == 1 && submits[0].note == sampleNote && submits[0].site == L"localhost:5173" && submits[0].includeShot);
-    note.Saved(); CHECK(!note.Visible()); CHECK(Settle());
-    // Capture impossible: the pill says so and leaves the Tab order.
-    req.capture = CaptureState::Unavailable; req.draft = L"brouillon"; note.Show(req, target, pageScreen, true, false); Settle();
-    note.KeyForTest(VK_TAB, true); note.KeyForTest(VK_TAB, false); CHECK(note.FocusForTest() == NoteField);
-    { auto n = note.NodesForTest(); CHECK(HasNode(n, NoteSpec::unavailable()) && !HasNode(n, L"Ce que l'agent verra")); }
-    SaveLayer(ink, note.PillForTest(), L"w12-window-note-capture-unavailable.png");
-    note.KeyForTest(VK_ESCAPE, true); CHECK(cancelled == L"brouillon" && cancelledKb && !note.Visible()); Settle();
-    CHECK(!IsWindowVisible(note.PanelWindow()) && !IsWindowVisible(note.Window()));
-    // Chat intégré: « Demander à l'agent » is the main action (right, accent, Entrée); « Ajouter » comes before it
-    // (Tab order = reading order) and keeps Ctrl+Entrée.
-    {   req.capture = CaptureState::Ready; req.draft = L"Aligne-le à droite"; req.askAgent = true; note.Show(req, target, pageScreen, true, false); Settle();
-        const auto n = note.NodesForTest(); std::wstring askKey, addKey;
-        for (const auto& x : n) { if (x.automationId == L"AnnotationNoteAskAgent") askKey = x.accelerator; if (x.automationId == L"AnnotationAdd") addKey = x.accelerator; }
-        CHECK(askKey == L"Entrée" && addKey == L"Ctrl+Entrée");
-        const NoteLayout l = note.LayoutForTest(); CHECK(l.ask.left > l.add.right && l.ask.right > l.add.right);
-        note.KeyForTest(VK_TAB, true); CHECK(note.FocusForTest() == NoteAdd);
-        note.KeyForTest(VK_TAB, false); CHECK(note.FocusForTest() == NoteAsk);
-        SaveLayer(ink, note.PanelForTest(), L"w13-window-note-ask-agent-focus.png");
-        note.KeyForTest(VK_TAB, false); CHECK(note.FocusForTest() == NotePill);
-        note.KeyForTest(VK_TAB, false); CHECK(note.FocusForTest() == NoteField);
-        const size_t before = submits.size(); note.KeyForTest(VK_RETURN, true);
-        CHECK(asks == 1 && asked == L"Aligne-le à droite" && submits.size() == before);   // Entrée in the field asks the agent, writes nothing
-        // The pointer goes to the panel's layer (it never takes activation): a click on a button activates it.
-        const auto click = [&](D2D1_RECT_F r) {
-            const LPARAM at = MAKELPARAM(int((r.left + r.right) / 2 * dpiScale), int((r.top + r.bottom) / 2 * dpiScale));
-            SendMessageW(note.PanelWindow(), WM_MOUSEMOVE, 0, at); SendMessageW(note.PanelWindow(), WM_LBUTTONDOWN, MK_LBUTTON, at); SendMessageW(note.PanelWindow(), WM_LBUTTONUP, 0, at); };
-        click(l.ask); CHECK(asks == 2 && submits.size() == before);
-        CHECK(MA_NOACTIVATE == SendMessageW(note.PanelWindow(), WM_MOUSEACTIVATE, 0, 0));
-        note.KeyForTest(VK_TAB, true); note.KeyForTest(VK_RETURN, false);                   // Tab to « Ajouter », Entrée on it: adds
-        CHECK(asks == 2 && submits.size() == before + 1);
-        click(l.ask); CHECK(asks == 2);                                                      // while the note is being written: « Demander à l'agent » is off
-        note.Failed(L"Impossible d'enregistrer."); click(note.LayoutForTest().add); CHECK(submits.size() == before + 2);   // « Réessayer » with the pointer
-        note.Saved(); CHECK(!note.Visible()); Settle(); req.askAgent = false; }
-    // Reduced motion: the same ghost, a fade only (never scaled, never moved); then the same settled panel.
-    {   req.draft = L"brouillon"; note.Show(req, target, pageScreen, true, true);
-        const Pose rp = note.PresenceForTest().Sample(Motion::Now(), true, note.LiftXForTest(), 0);
-        CHECK(Near(rp.scale, 1, 1e-6) && Near(rp.dx, 0, 1e-6) && Near(rp.dy, 0, 1e-6));
-        CHECK(GetFocus() == note.Edit() && !IsWindowVisible(note.PanelWindow()));
-        CHECK(Settle()); CHECK(note.SettledForTest() && IsWindowVisible(note.PanelWindow()) && !IsWindowVisible(note.GhostForTest().Window()));
-        note.Close(true); CHECK(!IsWindowVisible(note.PanelWindow()) && !IsWindowVisible(note.Window()));
-        CHECK(Settle()); CHECK(!IsWindowVisible(note.GhostForTest().Window())); }
-
-    // ---- Launcher, cards, history, toast
-    Launcher launcher; int toggles = 0, cardConnects = 0, views = 0, reloads = 0, reopens = 0, dismissedKb = -1, annotates = 0;
-    std::vector<std::wstring> removed, undone, finals; std::wstring markdown;
-    LauncherHooks lh; lh.connect = [&] { ++cardConnects; }; lh.open = [&] { ++views; }; lh.reload = [&] { ++reloads; }; lh.reopen = [&] { ++reopens; };
-    lh.dismissed = [&](bool kb) { dismissedKb = kb ? 1 : 0; }; lh.announce = announce;
-    lh.history.remove = [&](const std::wstring& id) { removed.push_back(id); }; lh.history.undo = [&](const std::wstring& id) { undone.push_back(id); };
-    lh.history.removeFinal = [&](const std::wstring& id) { finals.push_back(id); }; lh.history.copy = [&](const std::wstring& m) { markdown = m; }; lh.history.annotate = [&] { ++annotates; };
-    lh.toggle = [&] { ++toggles; if (launcher.HistoryVisible()) launcher.HideHistory(); else launcher.ShowHistory(SampleHistory(), true); };
-    launcher.Init(inst, host, root, lh); launcher.Place(page);
-    CHECK(launcher.Show(LauncherState::Rest, 0, false)); CHECK(Settle());
-    {   RECT lw{}; GetWindowRect(launcher.LauncherWindow(), &lw); const int b6 = int(std::lround(6 * dpiScale));
-        POINT center{(lw.left + lw.right - b6) / 2, (lw.top + b6 + lw.bottom) / 2}, overhang{lw.right - 2, lw.top + 2}, corner{lw.left + 1, lw.bottom - 1};
-        CHECK(WindowFromPoint(center) == launcher.LauncherWindow());
-        CHECKM(WindowFromPoint(overhang) != launcher.LauncherWindow(), "transparent overhang must not take the click");
-        CHECKM(WindowFromPoint(corner) != launcher.LauncherWindow(), "rounded corner pixel must not take the click");
-        auto n = launcher.ButtonNodesForTest(); CHECK(n.size() == 1 && n[0].name == L"Annotations" && n[0].expand == 1 && n[0].accelerator == L"Ctrl+Maj+H"); }
-    SaveLayer(ink, launcher.ButtonLayerForTest(), L"w13-window-launcher-rest.png");
-    // Card 3.1: born from the launcher; « Connecter un agent » from the keyboard.
-    CardContent noAgent; noAgent.kind = CardKind::NoAgent; launcher.Show(LauncherState::Rest, 1, false);
-    const auto cf0 = Animator::Get().Frames(); const DWORD ct0 = GetTickCount();
-    launcher.ShowCard(noAgent); CHECK(lastSaid(L"Annotation ajoutée. Aucun agent"));
-    Pump(90); SaveLayer(ink, launcher.CardLayerForTest(), L"w14-window-card-entering.png");
-    CHECK(Settle()); const DWORD cardMs = GetTickCount() - ct0; const auto cardFrames = Animator::Get().Frames() - cf0;
-    std::printf("Card enter in a real window: %lu ms, %llu frames\n", cardMs, cardFrames); CHECK(cardFrames >= 5);
-    report << L"\"liveCard\":{\"enterMs\":" << cardMs << L",\"frames\":" << cardFrames << L"},";
-    SaveLayer(ink, launcher.CardLayerForTest(), L"w15-window-card-no-agent.png");
-    IdleCheck("card");
-    launcher.FocusCard(); CHECK(GetFocus() == launcher.CardWindow());
-    SendMessageW(launcher.CardWindow(), WM_KEYDOWN, VK_RETURN, 0); CHECK(cardConnects == 1);
-    // 3.2 -> 3.3: the same card cross-fades in place.
-    CardContent work; work.kind = CardKind::Working; work.agent = L"Claude"; work.since = L"depuis 2 min"; work.note = sampleNote; work.id = L"a1";
-    launcher.Show(LauncherState::Working, 1, false); launcher.ShowCard(work); CHECK(Settle(800) || true);
-    { auto n = launcher.ButtonNodesForTest(); CHECK(n.size() == 1 && n[0].name == L"Annotations · 1 en cours"); }
-    CardContent done; done.kind = CardKind::Done; done.agent = L"Claude"; done.summary = L"Bouton aligné à droite et en pleine largeur sur mobile, dans CheckoutActions.tsx."; done.id = L"a1";
-    launcher.Show(LauncherState::Rest, 0, false); launcher.ShowCard(done);
-    Pump(60); SaveLayer(ink, launcher.CardLayerForTest(), L"w16-window-card-crossfade-working-to-done.png");
-    CHECK(Settle()); SaveLayer(ink, launcher.CardLayerForTest(), L"w17-window-card-done.png");
-    launcher.FocusCard(); SendMessageW(launcher.CardWindow(), WM_KEYDOWN, VK_RETURN, 0); CHECK(reloads == 1);
-    SendMessageW(launcher.CardWindow(), WM_KEYDOWN, VK_TAB, 0); SendMessageW(launcher.CardWindow(), WM_KEYDOWN, VK_RETURN, 0); CHECK(reopens == 1);
-    SendMessageW(launcher.CardWindow(), WM_KEYDOWN, VK_ESCAPE, 0); CHECK(!launcher.CardVisible() && dismissedKb == 1 && GetFocus() == launcher.LauncherWindow());
-    // « Annotation ajoutée » with an agent: leaves by itself (one-shot dwell).
-    CardContent added; added.kind = CardKind::Added; launcher.ShowCard(added); CHECK(launcher.DwellArmedForTest());
-    SendMessageW(launcher.CardWindow(), WM_TIMER, 7, 0); CHECK(!launcher.CardVisible() && dismissedKb == 0); Settle();
-    // History: opened from the launcher (keyboard), filters, detail, delete + undo, toast expiry, contained scroll.
-    // (Rest: the « en cours » ring turns by design while an agent works, which would keep frames coming.)
-    launcher.Show(LauncherState::Rest, 1, false);
-    SetFocus(launcher.LauncherWindow()); SendMessageW(launcher.LauncherWindow(), WM_KEYDOWN, VK_RETURN, 0);
-    CHECK(toggles == 1 && launcher.HistoryVisible());
-    {   // Smooth corners everywhere: the band, the modal, the note panel, the launcher, the card, the history and its toast
-        // are per-pixel-alpha layers; none is cut by a window region (the note panel was the only one that was).
+    {   // Smooth corners: the band and the modal are per-pixel-alpha layers; neither is cut by a window region.
         HRGN probe = CreateRectRgn(0, 0, 0, 0); int surfaces = 0, regions = 0, plain = 0;
-        for (HWND w : {banner.Window(), modal.Window(), note.PanelWindow(), launcher.LauncherWindow(), launcher.CardWindow(), launcher.HistoryWindow(), launcher.ToastWindow()}) {
+        for (HWND w : {banner.Window(), modal.Window()}) {
             if (!w) continue;
             ++surfaces; if (GetWindowRgn(w, probe) != ERROR) ++regions; if (!(GetWindowLongPtrW(w, GWL_EXSTYLE) & WS_EX_LAYERED)) ++plain; }
         DeleteObject(probe);
-        CHECKM(surfaces >= 6 && regions == 0 && plain == 0, "annotation surfaces: %d checked, %d with a window region, %d not layered", surfaces, regions, plain);
+        CHECKM(surfaces >= 2 && regions == 0 && plain == 0, "annotation surfaces: %d checked, %d with a window region, %d not layered", surfaces, regions, plain);
     }
-    Pump(80); SaveLayer(ink, launcher.HistoryForTest().LayerForTest(), L"w18-window-history-entering.png");
-    CHECK(Settle()); SaveLayer(ink, launcher.HistoryForTest().LayerForTest(), L"w19-window-history.png");
-    { auto n = launcher.ButtonNodesForTest(); CHECK(n[0].expand == 2); }
-    auto& hp = launcher.HistoryForTest();
-    {   auto n = hp.NodesForTest(); CHECK(HasNode(n, L"Toutes") && HasNode(n, L"En cours (2)") && HasNode(n, L"Terminées (2)") && HasNode(n, L"Fermer l'historique")); }
-    CHECK(GetFocus() == launcher.HistoryWindow() && hp.ViewForTest().focus == HList && hp.ViewForTest().selected == 0);
-    hp.KeyForTest(VK_DOWN); CHECK(hp.ViewForTest().selected == 1);
-    hp.KeyForTest(VK_RETURN); CHECK(!hp.ViewForTest().detailId.empty());
-    Pump(60); SaveLayer(ink, hp.LayerForTest(), L"w20-window-history-detail-sliding.png");
-    CHECK(Settle()); SaveLayer(ink, hp.LayerForTest(), L"w21-window-history-detail.png");
-    hp.KeyForTest(VK_TAB); hp.KeyForTest(VK_TAB); CHECK(hp.ViewForTest().focus == HCopy);
-    hp.KeyForTest(VK_RETURN); CHECK(markdown.find(L"## Le titre « Paiement »") == 0);
-    hp.KeyForTest(VK_ESCAPE); CHECK(hp.ViewForTest().detailId.empty() && hp.ViewForTest().focus == HList); Settle();
-    hp.KeyForTest(VK_DELETE); CHECK(removed.size() == 1 && removed[0] == L"a2" && hp.ViewForTest().data.entries.size() == 3);
-    CHECK(launcher.HistoryForTest().ToastVisible() && lastSaid(L"Annotation supprimée"));
-    CHECK(Settle()); SaveLayer(ink, hp.ToastForTest(), L"w22-window-toast-undo.png");
-    {   auto n = hp.ToastNodesForTest(); CHECK(HasNode(n, L"Annuler")); }
-    hp.KeyForTest('Z' | 0); // without Ctrl: nothing
-    CHECK(undone.empty());
-    {   BYTE keys[256]; GetKeyboardState(keys); keys[VK_CONTROL] = 0x80; SetKeyboardState(keys); hp.KeyForTest('Z'); keys[VK_CONTROL] = 0; SetKeyboardState(keys); }
-    CHECK(undone.size() == 1 && undone[0] == L"a2" && hp.ViewForTest().data.entries.size() == 4 && lastSaid(L"Suppression annulée"));
-    hp.KeyForTest(VK_DELETE); CHECK(removed.size() == 2); hp.ExpireToastForTest(); CHECK(finals.size() == 1 && finals[0] == removed[1]);
-    // Filters with the arrows.
-    hp.KeyForTest(VK_TAB); CHECK(hp.ViewForTest().focus == HClose); hp.KeyForTest(VK_TAB); CHECK(hp.ViewForTest().focus == HFilters);
-    hp.KeyForTest(VK_RIGHT); CHECK(hp.ViewForTest().filter == HistoryFilter::Open); hp.KeyForTest(VK_RIGHT); CHECK(hp.ViewForTest().filter == HistoryFilter::Done);
-    hp.KeyForTest(VK_RIGHT); CHECK(hp.ViewForTest().filter == HistoryFilter::All);
-    // Internal scroll, contained: many entries, a wheel notch scrolls the list and never reaches the page.
-    {   HistoryData many = SampleHistory(); for (int i = 0; i < 20; ++i) { auto e = many.entries[size_t(i % 4)]; e.id = L"x" + std::to_wstring(i); many.entries.push_back(e); }
-        launcher.UpdateHistory(many); CHECK(Settle());
-        const int before = hostWheel; RECT hr{}; GetWindowRect(launcher.HistoryWindow(), &hr);
-        SendMessageW(launcher.HistoryWindow(), WM_MOUSEWHEEL, MAKEWPARAM(0, WORD(-120)), MAKELPARAM((hr.left + hr.right) / 2, hr.bottom - 40));
-        CHECK(hp.ScrollForTest() > 0 && hostWheel == before);
-        for (int i = 0; i < 40; ++i) SendMessageW(launcher.HistoryWindow(), WM_MOUSEWHEEL, MAKEWPARAM(0, WORD(-120)), 0);   // past the end: clamped, still contained
-        CHECK(Near(hp.ScrollForTest(), MaxScroll(hp.LayoutForTest()), .01) && hostWheel == before);
-        SaveLayer(ink, hp.LayerForTest(), L"w23-window-history-scrolled.png"); }
-    hp.KeyForTest(VK_ESCAPE); CHECK(!launcher.HistoryVisible() && GetFocus() == launcher.LauncherWindow());
-    CHECK(Settle());
-    // Empty state: « Annoter cette page ».
-    launcher.ShowHistory(HistoryData{}, true); CHECK(Settle()); SaveLayer(ink, hp.LayerForTest(), L"w24-window-history-empty.png");
-    hp.KeyForTest(VK_RETURN); CHECK(annotates == 1 && !launcher.HistoryVisible()); Settle();
-    // All surfaces at rest: zero wake-ups (launcher, band).
-    launcher.Show(LauncherState::Rest, 0, false); Settle();
+    // All surfaces at rest: zero wake-ups (band).
+    Settle();
     IdleCheck("rest");
     DestroyWindow(host); Pump(50);
 }
 
 // ---------------------------------------------------------------------------------------
-// V3-A (retours du premier test réel): band slide, launcher entrance, « Lue par » / « n'a pas pu la traiter »,
-// one restart line for both apps, wide capture laid out vertically (contain), the native frame copy.
-static Shot WideShot() { return MakeShot(420, 120, 322, 52, 6); }   // span.badge 161 x 26 + 24 margin at DPR 2: 3.5:1
-static HistoryData V3History() {
-    HistoryData d = SampleHistory();
-    auto& read = d.entries[1]; read.readBy = L"Claude"; read.readAge = L"il y a 1 min";
-    using Step = HistoryEntry::Step;
-    read.steps = {Step{Step::Added, AgentKind::Other, L"Ajoutée", L"15:34", L""}, Step{Step::Read, AgentKind::Claude, L"Lue par Claude", L"15:36", L""}};
-    HistoryEntry back; back.id = L"a5"; back.site = L"localhost:4173"; back.page = L"localhost:4173/"; back.note = L"Le badge « Code promo » devrait tenir sur une ligne";
-    back.status = EntryStatus::Pending; back.unhandled = true; back.agent = AgentKind::Claude; back.agentName = L"Claude"; back.age = L"4 min";
-    back.reason = L"Je n'ai pas accès aux fichiers du site depuis cette conversation.";
-    back.steps = {Step{Step::Added, AgentKind::Other, L"Ajoutée", L"15:34", L""}, Step{Step::Read, AgentKind::Claude, L"Lue par Claude", L"15:36", L""},
-                  Step{Step::Claimed, AgentKind::Claude, L"Prise en charge par Claude", L"15:36", L""},
-                  Step{Step::Unhandled, AgentKind::Claude, L"Claude n'a pas pu la traiter", L"15:37", back.reason}};
-    back.capture = WideShot();
-    d.entries.push_back(back);
-    return d;
-}
+// V3-A (retours du premier test réel): band slide, one restart line for both apps, the native frame copy.
 static void V3Tests(Ink& ink) {
     const UINT dpi = 192; const float k = 2; Canvas c;
     // ---- band: -32 -> 0 + fade, 220 ms (0.32, 0.72, 0, 1); back up in 160 ms; reduced: a 150 ms fade
@@ -998,50 +541,6 @@ static void V3Tests(Ink& ink) {
         }, c);
         Save(ink, c, L"v3-6-band-slide-0-40-90-220ms.png");
     }
-    // ---- launcher: appears 120 ms after the band, 0.9 -> 1 + opacity in 200 ms; back into its corner in 150 ms
-    {   Timing t = LauncherTiming(); CHECK(t.enter == 200 && t.exit == 150 && Near(t.from, .9, 1e-6) && Near(t.to, .9, 1e-6));
-        t.delay = 120; Presence p(t); p.Show(At(0), true, false);
-        CHECK(Near(p.Progress(At(100)), 0, 1e-4) && Near(p.Scale(At(119)), .9, 1e-4) && Near(p.Progress(At(320)), 1, 1e-4) && Near(p.Scale(At(320)), 1, 1e-4));
-        p.Hide(At(400), true, false); CHECK(Near(p.Progress(At(550)), 0, 1e-4) && Near(p.Scale(At(550)), .9, 1e-4));
-    }
-    // ---- 5.5 history: « Lue par Claude » (eye), « Claude n'a pas pu la traiter » (amber, full strength, counted « En cours »)
-    {   const HistoryData d = V3History();
-        CHECK(StatusLine(d.entries[1]) == L"Lue par Claude" && StatusTitle(d.entries[1]) == L"Lue par Claude · il y a 1 min");
-        CHECK(StatusLine(d.entries[4]) == L"Claude n'a pas pu la traiter" && Matches(d.entries[4], HistoryFilter::Open) && !Matches(d.entries[4], HistoryFilter::Done));
-        HistoryEntry claimed = d.entries[0]; claimed.readBy = L"Claude"; CHECK(StatusLine(claimed) == L"Claude");   // held: the claim wins over the read
-        HistoryView v; v.data = d; v.hot = -1; v.maxHeight = 2000; const auto l = LayoutHistory(ink, v);
-        Render(ink, 440, 24 + l.height + 24, dpi, 0xF4F4F3FF, [&](Ink& i, float w, float) { At_(i, w - 16 - 360, 24, [&] { PaintHistory(i, v, l, l.height); }); }, c);
-        Save(ink, c, L"v3-5.5-history-read-unhandled.png");
-        const float x = 440 - 16 - 360; float readTop = 0, backTop = 0;
-        for (auto& it : l.items) if (!it.section) { if (it.entry == 1) readTop = l.listTop + it.y; if (it.entry == 4) backTop = l.listTop + it.y; }
-        MeasureText(c, k, {x + 5 + 62 + 17, 24 + readTop + 28, x + 5 + 170, 24 + readTop + 44}, canvasRgb, 0xFFFFFF99, "5.5 « Lue par Claude » 12/16 #FFFFFF99");
-        MeasureText(c, k, {x + 5 + 62 + 17, 24 + backTop + 28, x + 5 + 230, 24 + backTop + 44}, canvasRgb, 0xE6AC3DFF, "5.5 « Claude n'a pas pu la traiter » 12/16 amber #E6AC3D");
-        MeasureText(c, k, {x + 5 + 62, 24 + backTop + 8, x + 300, 24 + backTop + 26}, canvasRgb, 0xFFFFFFFF, "5.5 unhandled row note 13/18 white (full strength)");
-        // Detail: « Suivi » steps, the reason quoted, the help box; the wide capture contained (retours §11).
-        HistoryView dv = v; dv.detailId = L"a5"; const auto dl = LayoutHistory(ink, dv);
-        CHECK(dl.detail && dl.help.bottom > dl.help.top && dl.follow.bottom > dl.follow.top + 100);
-        Render(ink, 440, 24 + dl.height + 24, dpi, 0xF4F4F3FF, [&](Ink& i, float w, float) { At_(i, w - 16 - 360, 24, [&] { PaintHistory(i, dv, dl, dl.height); }); }, c);
-        Save(ink, c, L"v3-5.5-history-detail-steps-unhandled.png");
-        MeasureText(c, k, {x + dl.follow.left + 38, 24 + dl.follow.top + 34, x + dl.follow.left + 200, 24 + dl.follow.top + 50}, raisedRgb, 0xFFFFFFCC, "5.5 step « Ajoutée » 13/16 #FFFFFFCC on #292929");
-        MeasureText(c, k, {x + dl.help.left + 12, 24 + dl.help.top + 10, x + dl.help.right - 12, 24 + dl.help.top + 28}, Over(0xFFFFFF0D, canvasRgb), 0xFFFFFFCC, "5.5 help 13/18 #FFFFFFCC on #FFFFFF0D");
-        {   // contain: the whole wide image inside the 334 x 150 box, the page colour around it (never cropped)
-            const Rgb above = Px(c.At(int((x + (dl.capture.left + dl.capture.right) / 2) * k), int((24 + dl.capture.top + 6) * k)));
-            CHECKM(Close(above, pageRgb, 3), "detail capture: page colour above a contained wide image (%s)", Hex6(above).c_str()); }
-        HistoryView rv = v; rv.detailId = L"a2"; const auto rl = LayoutHistory(ink, rv);
-        Render(ink, 440, 24 + rl.height + 24, dpi, 0xF4F4F3FF, [&](Ink& i, float w, float) { At_(i, w - 16 - 360, 24, [&] { PaintHistory(i, rv, rl, rl.height); }); }, c);
-        Save(ink, c, L"v3-5.5-history-detail-read.png");
-        CHECK(EntryMarkdown(d.entries[4]).find(L"- Suivi : Ajoutée 15:34 · Lue par Claude 15:36") != std::wstring::npos);
-    }
-    // ---- cards: « Lue par Claude », « Claude n'a pas pu la traiter » (Voir l'annotation)
-    {   CardContent r; r.kind = CardKind::Read; r.agent = L"Claude"; r.note = sampleNote;
-        CardContent u; u.kind = CardKind::Unhandled; u.agent = L"Claude"; u.summary = L"Je n'ai pas accès aux fichiers du site depuis cette conversation."; u.note = sampleNote;
-        CHECK(CardTitle(r) == L"Lue par Claude" && CardTitle(u) == L"Claude n'a pas pu la traiter");
-        for (auto* card : {&r, &u}) {
-            const auto l = LayoutCard(ink, *card); CHECK(l.primary.right > l.primary.left && CardHitAt(l, *card, (l.primary.left + l.primary.right) / 2, (l.primary.top + l.primary.bottom) / 2) == CardOpen);
-            Render(ink, 400, l.height + 80, dpi, 0xF4F4F3FF, [&](Ink& i, float, float) { At_(i, 40, 40, [&] { PaintCard(i, *card, l, {}); }); }, c);
-            Save(ink, c, card == &r ? L"v3-5.5-card-read.png" : L"v3-5.5-card-unhandled.png");
-        }
-    }
     // ---- 5.6 one restart line for both apps
     {   ConnectView v = ConnectState_(SampleSetup());
         v.setup.claude = {ConnectState::Connected, L"Redémarrez Claude pour l'activer"}; v.setup.codex = {ConnectState::Connected, L"Redémarrez Codex pour l'activer"};
@@ -1052,20 +551,6 @@ static void V3Tests(Ink& ink) {
         MeasureText(c, k, {40 + 120, 40 + l.codexMsg.top, 40 + 400, 40 + l.codexMsg.bottom}, canvasRgb, 0xFFFFFF99, "5.6 « Redémarrez Claude et Codex pour les activer » 12/16 #FFFFFF99");
         ConnectView one = v; one.setup.codex = {ConnectState::Idle, L""};
         CHECK(!one.BothRestart() && one.Message(AgentKind::Claude) == L"Redémarrez Claude pour l'activer");
-    }
-    // ---- 5.7 « Ce que l'agent verra »: wide image => vertical card, image full width, contained
-    {   Shot wide = WideShot(), normal = MakeShot(192, 124, 124, 30, 6);
-        CHECK(PillWide(&wide) && !PillWide(&normal) && PillExpandedH(true) > PillExpandedH(false));
-        auto pillBoard = [&](const Shot& s, const wchar_t* name) {
-            PillView pv; pv.context = SampleContext(); pv.context.label = L"Badge « Code promo AUTOMNE10 »"; pv.capture = CaptureState::Ready; pv.shot = &s; pv.fold = 1;
-            const D2D1_RECT_F pr = PillRect(ink, CaptureState::Ready, NoteSpec::width / 2, 0, 1, PillWide(&s));
-            Render(ink, 430, pr.bottom + 80, dpi, 0x0E0E0EFF, [&](Ink& i, float, float) { At_(i, 40, 40, [&] { PaintPill(i, pv, pr); }); }, c);
-            Save(ink, c, name); return pr; };
-        const auto pw = pillBoard(wide, L"v3-11a-pill-wide-vertical.png");
-        CHECK(Near(pw.bottom - pw.top, PillExpandedH(true), .01));
-        {   // the image spans the card's width: the page colour 4 DIP in from the image box's left edge, at mid-height
-            const Rgb left = Px(c.At(int((40 + 13 + 4) * k), int((40 + 11 + 16 + 10 + 32) * k))); CHECKM(Close(left, pageRgb, 3), "wide pill: image box full width (%s)", Hex6(left).c_str()); }
-        pillBoard(normal, L"v3-11b-pill-normal-contain.png");
     }
     // ---- 2 the frame's native copy: same pixels as the page's edges and label, nothing else
     {   FrameMark m; m.page = {0, 0, 1200, 600}; m.dpr = 2; m.x = 100.25; m.y = 80.5; m.w = 240; m.h = 44; m.lx = 100.25; m.ly = 58.5; m.lw = 152; m.lh = 20;
@@ -1100,29 +585,14 @@ static void V3Tests(Ink& ink) {
         CHECKM(woff == 0, "R45 native copy: the whole box as on screen, pixel for pixel (%d of %d differ)", woff, wn);
     }
 }
-// Live: the launcher's windows are destroyed at rest outside the mode; the history opens alone, anchored low.
+// Live: the band and the native frame in a real window.
 static void V3Windows(Ink& ink, const std::wstring& root) {
     HINSTANCE inst = GetModuleHandleW(nullptr);
     HWND host = CreateWindowExW(0, L"AnnotationHarnessHost", L"Annotations harness V3", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, 60, 60, 1200, 820, nullptr, nullptr, inst, nullptr);
     CHECK(host != nullptr); if (!host) return;
     ShowWindow(host, SW_SHOW); UpdateWindow(host); Pump(80);
     RECT page{}; GetClientRect(host, &page); page.top = 120;
-    Launcher launcher; LauncherHooks lh; lh.announce = [](const std::wstring&) {}; launcher.Init(inst, host, root, lh); launcher.Place(page);
-    launcher.Show(LauncherState::Rest, 0, false, 120); CHECK(launcher.WindowsForTest() == 2);   // button + card (history: created on demand)
-    CHECK(Settle()); launcher.Hide(true); launcher.SetDormant(true);
-    CHECK(Settle()); CHECKM(launcher.WindowsForTest() == 0, "outside the mode, at rest: %d launcher windows", launcher.WindowsForTest());
-    // Ctrl+Maj+H outside the mode: the panel alone, 16 DIP from the bottom.
-    CHECK(launcher.ShowHistory(SampleHistory(), true) && launcher.WindowsForTest() == 2 && launcher.HistoryForTest().LowAnchor());
-    CHECK(Settle()); RECT hr{}; GetWindowRect(launcher.HistoryWindow(), &hr); RECT pc = page; MapWindowPoints(host, nullptr, reinterpret_cast<POINT*>(&pc), 2);
     const float s = GetDpiForWindow(host) / 96.f;
-    CHECKM(std::abs((pc.bottom - hr.bottom) - std::lround((16 - 4) * s)) <= 2, "history 16 DIP from the bottom outside the mode (window has 4 DIP of room below: %ld px)", pc.bottom - hr.bottom);
-    SaveLayer(ink, launcher.HistoryForTest().LayerForTest(), L"v3-5.8-window-history-outside-the-mode.png");
-    launcher.HideHistory(true); CHECK(Settle()); CHECKM(launcher.WindowsForTest() == 0, "history closed outside the mode: %d windows", launcher.WindowsForTest());
-    IdleCheck("v3 outside the mode");
-    // The mode again: windows come back, the history above the launcher.
-    launcher.Show(LauncherState::Rest, 0, false, 120); CHECK(launcher.WindowsForTest() == 2 && !launcher.Dormant());
-    CHECK(Settle()); launcher.ShowHistory(SampleHistory(), false); CHECK(!launcher.HistoryForTest().LowAnchor()); launcher.HideHistory(false);
-    launcher.Hide(false); launcher.SetDormant(true); CHECK(launcher.WindowsForTest() == 0);
     // Band in a real window: mid-slide frame, then at rest.
     Banner band; BannerHooks bh; band.Init(inst, host, root, bh); band.SetLiveForTest(0);
     CHECK(band.Show({0, 88, page.right, 120}, false)); Pump(40); SaveLayer(ink, band.LayerForTest(), L"v3-6-window-band-entering.png");
@@ -1139,7 +609,7 @@ static void V3Windows(Ink& ink, const std::wstring& root) {
 
 
 // =======================================================================================
-// V3-B (Paper 5.1 – 5.5): entry veil, living band, cursor, spacing inspector, « Rouvrir ».
+// V3-B (Paper 5.1 – 5.4): entry veil, living band, cursor, spacing inspector.
 namespace V3B {
 namespace D = NativeChrome::Annotations::Dither;
 // The veil's pixels as a bitmap drawn at (x, y) DIP of the current target (same raster as the live window).
@@ -1330,22 +800,6 @@ static void Static(Ink& ink) {
         Sample(c, k, cx + 4 * 48 / 32.f / 2, cy + 4 * 48 / 32.f / 2, Solid(0xF3F3F2), "5.4 viseur: background between the dot and the strokes (48 px)", 6);
         if (cross) cross->Release(); if (cap) cap->Release();
     }
-    // ---- 5.5 « Rouvrir » in the detail of an annotation an agent gave back
-    {   HistoryView v; v.data = V3History(); v.hot = -1; v.maxHeight = 2000; v.detailId = L"a5"; const auto l = LayoutHistory(ink, v);
-        CHECK(l.reopen.right > l.reopen.left && l.reopen.right + 8 <= l.copy.left + .01f && l.copy.right < l.del.left);
-        CHECK(HistoryHitAt(l, v, (l.reopen.left + l.reopen.right) / 2, (l.reopen.top + l.reopen.bottom) / 2) == HReopen);
-        HistoryView o = v; o.detailId = L"a2"; const auto ol = LayoutHistory(ink, o); CHECK(ol.reopen.right <= ol.reopen.left);   // only when given back
-        Render(ink, 440, 24 + l.height + 24, dpi, 0xF4F4F3FF, [&](Ink& i, float w, float) { At_(i, w - 16 - 360, 24, [&] { PaintHistory(i, v, l, l.height); }); }, c);
-        Save(ink, c, L"v3b-5.5-history-detail-reopen.png");
-        const float x = 440 - 16 - 360;
-        MeasureText(c, k, {x + l.reopen.left + 6, 24 + l.reopen.top + 6, x + l.reopen.right - 6, 24 + l.reopen.bottom - 6}, raisedRgb, 0xFFFFFFFF, "5.5 « Rouvrir » 12/16 medium white on raised");
-        // After « Rouvrir »: the entry is waiting again, « Rouverte » closes the follow-up.
-        HistoryView after = v; auto& e = after.data.entries[4]; e.unhandled = false; e.reason.clear();
-        HistoryEntry::Step s; s.kind = HistoryEntry::Step::Reopened; s.label = L"Rouverte"; s.time = L"15:40"; e.steps.push_back(s);
-        const auto al = LayoutHistory(ink, after); CHECK(al.reopen.right <= al.reopen.left && al.help.bottom <= al.help.top);
-        Render(ink, 440, 24 + al.height + 24, dpi, 0xF4F4F3FF, [&](Ink& i, float w, float) { At_(i, w - 16 - 360, 24, [&] { PaintHistory(i, after, al, al.height); }); }, c);
-        Save(ink, c, L"v3b-5.5-history-detail-reopened.png");
-    }
 }
 
 // Live windows: the band's wave clock (30 frames/s at most, paused in the background, zero wake-up outside the
@@ -1430,17 +884,6 @@ static void Windows(Ink& ink, const std::wstring& root) {
     PumpUntil([&] { return !veil.Running(); }, 2000);
     CHECKM(veil.Peak() <= .5001f && veil.Peak() > .45f && ended >= 300 && ended < 360, "reduced veil: peak %.3f, ended %.1f ms", veil.Peak(), ended);
     IdleCheck("v3b after the entry veil");
-    // ---- « Rouvrir » end to end in the live history panel
-    {   Launcher launcher; LauncherHooks lh; std::vector<std::wstring> reopened; lh.announce = [](const std::wstring&) {}; lh.history.reopen = [&](const std::wstring& id) { reopened.push_back(id); };
-        launcher.Init(inst, host, root, lh); launcher.Place(page);
-        CHECK(launcher.ShowHistory(V3History(), true)); launcher.ShowHistoryDetail(L"a5"); CHECK(Settle());
-        auto& panel = launcher.HistoryForTest();
-        const auto nodes = panel.NodesForTest(); CHECK(HasNode(nodes, L"Rouvrir"));
-        panel.ActivateForTest(HReopen); CHECK(reopened.size() == 1 && reopened[0] == L"a5");
-        // keyboard: Rouvrir sits between Fermer and Copier in the Tab order
-        SaveLayer(ink, panel.LayerForTest(), L"v3b-5.5-window-history-reopen.png");
-        launcher.HideHistory(false); launcher.SetDormant(true); CHECK(Settle());
-    }
     DestroyWindow(host); Pump(50);
 }
 } // namespace V3B
@@ -1501,24 +944,7 @@ static void Static(Ink& ink) {
             MeasureRows(c, k, {l.beta.left + 3, l.beta.top, l.beta.right - 3, l.beta.bottom}, l.beta.left + 1.5f, tone.beta, Name("band « BETA » per row", p));
             Save(ink, c, (L"pc-band-solid-" + tag + L".png").c_str());   // the measured render (texture off)
         }
-        // ---- note panel: « Ajouter » at rest and hovered (deepened, never lightened), the focused field border
-        for (int hover = 0; hover < 2; ++hover) {
-            NoteView nv; nv.context = SampleContext(); nv.note = sampleNote; nv.fieldHeight = 40; nv.fieldFocused = true;
-            if (hover) { Motion::InteractionVisual iv; iv.hover = 1; nv.visuals[NoteAdd] = iv; }
-            const auto l = LayoutNote(ink, nv);
-            Render(ink, 430, l.height + 80, dpi, 0x0E0E0EFF, [&](Ink& i, float, float) { At_(i, 40, 40, [&] { PaintNote(i, nv, l); }); }, c);
-            Save(ink, c, (L"pc-note-" + tag + (hover ? L"-hover.png" : L".png")).c_str());
-            const auto st = Design::Accent::StateColor(Design::Accent::Get(), hover ? 1.f : 0.f, 0);
-            const Rgb add{st.r * 255.0, st.g * 255.0, st.b * 255.0};
-            Sample(c, k, 40 + l.add.left + 3, 40 + l.add.top + 12, add, Name(hover ? "« Ajouter » hovered (deepened)" : "« Ajouter » at rest = fill", p).c_str(), 3);
-            MeasureText(c, k, {40 + l.add.left + 4, 40 + l.add.top + 4, 40 + l.add.right - 4, 40 + l.add.bottom - 4}, add, 0xFFFFFFFF, Name(hover ? "« Ajouter » white, hovered" : "« Ajouter » white, rest", p).c_str());
-            if (!hover) Sample(c, k, 40 + .25f, 40 + l.height / 2, Of(AccentTone::Over(p.fill, .6, 0x171717)), Name("note border, field focused (accent 60 %)", p).c_str(), 14);
-        }
-        // ---- launcher (history open: accent 60 % contour, working badge) and the toolbar « Annoter » (active)
-        {   LauncherVisual lv; lv.expanded = true; lv.state = LauncherState::Working; lv.count = 3;
-            Render(ink, 120, 120, dpi, 0x171717FF, [&](Ink& i, float, float) { At_(i, 40, 34, [&] { PaintLauncher(i, lv); }); }, c);
-            Save(ink, c, (L"pc-launcher-" + tag + L".png").c_str());
-        }
+        // ---- the toolbar « Annoter » (active)
         {   ToolbarVisual tv; tv.active = true;
             Render(ink, 40, 40, dpi, 0x171717FF, [&](Ink& i, float, float) { PaintToolbarButton(i.Target(), i.Factory(), i.Brush({1, 1, 1, 1}), {8, 6, 32, 30}, tv); }, c);
             Save(ink, c, (L"pc-toolbar-" + tag + L".png").c_str());
@@ -1614,57 +1040,7 @@ static void Run(Ink& ink) {
             if (id == I18n::Id::agent_claude_not_installed_folder) { std::wstring n = L"textfit-connect-failed-" + std::wstring(LangName()) + L"-" + std::to_wstring(dpi) + L".png"; Save(ink, c, n.c_str()); }
         }
     }
-    // 2. Note « Capture impossible » pill: never wider than the note's 350 DIP layer, its text inside the pill's padding.
-    for (auto lang : {I18n::Locale::Fr, I18n::Locale::En}) {
-        I18n::SetForProcess(lang);
-        for (UINT dpi : {96u, 120u}) {
-            const float k = dpi / 96.f; const auto r = PillRect(ink, CaptureState::Unavailable, NoteSpec::width / 2, 10, 0);
-            CHECKM(r.left >= 0 && r.right <= NoteSpec::width, "« capture impossible » pill inside its 350 DIP layer (%ls: %g..%g)", LangName(), r.left, r.right);
-            PillView pv; pv.capture = CaptureState::Unavailable;
-            Render(ink, NoteSpec::width, 50, dpi, 0x0E0E0EFF, [&](Ink& i, float, float) { PaintPill(i, pv, r); }, c);
-            const bool in = Bare(c, k, r.left + 2, r.top + 9, r.left + 1 + 7, r.bottom - 9, canvasRgb) && Bare(c, k, r.right - 1 - 7, r.top + 9, r.right - 2, r.bottom - 9, canvasRgb);   // clear of the rounded corners
-            CHECKM(in, "« capture impossible » pill: text inside its padding (%ls, %u dpi)", LangName(), dpi);
-            std::wstring n = L"textfit-note-capture-unavailable-" + std::wstring(LangName()) + L"-" + std::to_wstring(dpi) + L".png"; Save(ink, c, n.c_str());
-        }
-    }
     I18n::SetForProcess(I18n::Locale::Fr);
-    // 3. History detail « Suivi »: the card is sized with the width its quotes wrap at in paint (left of each step's time).
-    {   HistoryView h; h.data = SampleHistory(); h.maxHeight = 2000; h.detailId = L"a1";
-        auto& e = h.data.entries[0]; using Step = HistoryEntry::Step;
-        const wchar_t* times[] = {L"14:05", L"12 nov. 14:05", L"28 sept. 23:59"};
-        const std::wstring quotes[] = {sampleNote, L"Le bouton est aligné à droite, en pleine largeur sous 640 px ; les marges du formulaire sont reprises du composant Paiement.", L"Je ne trouve pas le composant qui dessine ce bouton dans le dépôt ouvert."};
-        for (int i = 0; i < 3; ++i) { Step s; s.kind = i == 2 ? Step::Unhandled : Step::Claimed; s.agent = AgentKind::Claude; s.label = L"Prise en charge par Claude"; s.time = times[i]; s.quote = quotes[i]; e.steps.push_back(s); }
-        const auto l = LayoutHistory(ink, h); const float lane = (l.follow.right - 12) - (l.follow.left + 12);
-        float need = 10 + 16 + 8; bool differs = false;
-        for (size_t i = 0; i < e.steps.size(); ++i) {
-            const std::wstring q = L"« " + e.steps[i].quote + L" »";
-            const float painted = ink.Height(q, F(13, 18), lane - 26 - ink.Width(e.steps[i].time, F(12, 16)) - 8), old = ink.Height(q, F(13, 18), 358 - 24 - 24 - 26 - 40);
-            need += 16 + 4 + painted + (i + 1 < e.steps.size() ? 10 : 0); differs |= painted != old;
-        }
-        need += 12;
-        CHECKM(differs, "history « Suivi » fixture: a dated step wraps differently than the old fixed width (test sensitivity)");
-        CHECKM(Near(l.follow.bottom - l.follow.top, need, .01), "history « Suivi » card fits its quotes as painted (layout %g, painted %g)", l.follow.bottom - l.follow.top, need);
-        for (UINT dpi : {96u, 120u}) {
-            Render(ink, 400, l.height + 40, dpi, 0x0E0E0EFF, [&](Ink& i, float, float) { At_(i, 20, 20, [&] { PaintHistory(i, h, l, l.height); }); }, c);
-            std::wstring n = L"textfit-history-follow-" + std::to_wstring(dpi) + L".png"; Save(ink, c, n.c_str());
-        }
-    }
-    // 4. History list: a long site name in a section header trims before its count, never under it.
-    {   HistoryView h; h.data = SampleHistory(); h.maxHeight = 2000;
-        for (auto& e : h.data.entries) e.site = L"tres-long-sous-domaine.environnement-de-recette.exemple-entreprise.fr";
-        h.data.currentSite = h.data.entries[0].site;
-        const auto l = LayoutHistory(ink, h); const HistoryItem* head = nullptr; for (auto& it : l.items) if (it.section) { head = &it; break; }
-        CHECK(head != nullptr);
-        if (head) for (UINT dpi : {96u, 120u}) {
-            const float k = dpi / 96.f;
-            Render(ink, 400, l.height + 40, dpi, 0x0E0E0EFF, [&](Ink& i, float, float) { At_(i, 20, 20, [&] { PaintHistory(i, h, l, l.height); }); }, c);
-            const float top = 20 + l.listTop + head->y, right = 20 + 1 + 358 - 4 - 10; Font n = F(11, 14); n.tabular = true;
-            const float cw = ink.Width(std::to_wstring(head->count), n);
-            const Rgb ref = Px(c.At(int((20 + 1 + 6) * k), int((top + 18) * k)));
-            CHECKM(Bare(c, k, right - cw - 7.5f, top + 10, right - cw - .5f, top + 26, ref), "history section header: site trimmed before its count (%u dpi)", dpi);
-            std::wstring name = L"textfit-history-section-" + std::to_wstring(dpi) + L".png"; Save(ink, c, name.c_str());
-        }
-    }
 }
 }
 

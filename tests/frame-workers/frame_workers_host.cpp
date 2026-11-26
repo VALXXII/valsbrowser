@@ -138,6 +138,9 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (url.empty() || udf.empty() || (attach != L"none" && attach != L"vault" && attach != L"iframe-only")) { Say(L"usage: --url U --udf DIR --attach none|vault|iframe-only"); return 2; }
     Vault::ActiveFlag() = true;
+    // WebView2 158 refuses a controller in a process that is not DPI-aware (0x8007139F, ERROR_INVALID_STATE): the browser
+    // declares it in its manifest, this host does it here, before the environment.
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     WNDCLASSW wc{}; wc.lpfnWndProc = WindowProc; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"FrameWorkersHost"; RegisterClassW(&wc);
     // Never shown: the page renders, nothing appears on screen and the focus is never taken.

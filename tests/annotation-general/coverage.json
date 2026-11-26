@@ -36,10 +36,6 @@
           "what": "c3_element_disparait_pendant_tour"
         },
         {
-          "suite": "journeys",
-          "what": "c3_historique_du_lanceur"
-        },
-        {
           "suite": "chat-units",
           "what": "host_contract_test.py — C3"
         }
@@ -202,6 +198,10 @@
         {
           "suite": "chat-units",
           "what": "host_contract_test.py — M8"
+        },
+        {
+          "suite": "first-launch-liste",
+          "what": "2e lancement : le bouton du mode est là au premier clic"
         }
       ]
     },
@@ -562,6 +562,10 @@
         {
           "suite": "chat-panel",
           "what": "profil neuf : repli sur le modèle, jamais « Claude Code »"
+        },
+        {
+          "suite": "first-launch-liste",
+          "what": "profil neuf : le bouton nomme un modèle, jamais l'outil ; listes relues au 2e lancement"
         }
       ]
     },
@@ -926,6 +930,10 @@
         {
           "suite": "journeys",
           "what": "r46_coller_mode_stable"
+        },
+        {
+          "suite": "first-launch-liste",
+          "what": "le mode n'affiche jamais « Auto » pendant que la session démarre (agent qui démarre en « auto »)"
         }
       ]
     },
@@ -998,6 +1006,10 @@
         {
           "suite": "comment-129-130",
           "what": "vraie fenêtre : menu des modèles sur profil sans modèle connu ; bulle basse, autorisation, boutons à l'écran"
+        },
+        {
+          "suite": "first-launch-absent",
+          "what": "menu des modèles jamais vide sans aucun agent ; « liste » : avant toute liste"
         }
       ]
     },
@@ -1032,10 +1044,24 @@
       ]
     },
     "O5": {
-      "gap": {
-        "lot": 1,
-        "why": "#82 : le clic du test est passé à travers la bulle (journal : « selecting #prix ») — à rejouer ; #110 : la saisie sort de la surface après une zone réduite à 444 px — l'échec enregistre maintenant l'état de la page et de l'hôte ; cause non prouvée sans vraie fenêtre"
-      }
+      "tests": [
+        {
+          "suite": "replay-opening",
+          "what": "tests/chat/final/replay_opening.py — 4 messages en attente : saisie et boutons du mode / du modèle dans la surface que l'hôte montre et rend cliquable, à 269, 150, 120 et 104 px offerts (bloquant dès que la page contient le correctif du lot R) ; c'était aussi le « clic qui traverse la bulle » (#185, #219) et #110"
+        },
+        {
+          "suite": "chat-panel",
+          "what": "« bubble (queue, #110) » : peu de hauteur offerte (269, 150, 120, 104 px) — la liste des messages en attente prend ce qui reste, puis « +N en attente » seul ; saisie, boutons et « envoyer » entiers dans la surface ; la place revenue, la file revient comme validée"
+        },
+        {
+          "suite": "chat-panel",
+          "what": "« bubble (queue, lot R) » : 2 messages en attente au plus, 2 lignes chacun sous un fondu, « +N en attente », liste dépliée de 160 px au plus, saisie toujours entière"
+        },
+        {
+          "suite": "lot-r",
+          "what": "vraie fenêtre : 4 messages en attente dans une bulle, saisie entière ; #82 (bulle qui saute après la bascule, corrigé au lot 1 : areaMoving) à revoir en vraie fenêtre"
+        }
+      ]
     },
     "O6": {
       "tests": [
@@ -1050,34 +1076,76 @@
       ]
     },
     "O7": {
-      "gap": {
-        "lot": 5,
-        "why": "retrait complet du lot (décision 3), puis contrat « plus aucune mention »"
-      }
+      "tests": [
+        {
+          "suite": "chat-units",
+          "what": "host_contract_test.py — « lot R (O7 and the removal) » : plus aucune mention du lot dans l'hôte ; fichiers chat-batch.h et chat-host-batch.h supprimés"
+        },
+        {
+          "suite": "chat-panel",
+          "what": "« lot R: no batch in the input, no batch card » : un message de lot d'un ancien hôte est ignoré"
+        },
+        {
+          "suite": "chat-v1",
+          "what": "« lot R: « Traiter les annotations » is gone — the old request poses nothing »"
+        }
+      ]
     },
     "O8": {
-      "gap": {
-        "lot": 2,
-        "why": "4 parcours sur profil neuf à écrire"
-      }
+      "tests": [
+        {
+          "suite": "first-launch-absent",
+          "what": "absent : bulle sans agent, rien ne part, « Installer » ne télécharge rien, panneau"
+        },
+        {
+          "suite": "first-launch-non-connecte",
+          "what": "non-connecte : « Se connecter » en un clic, connexion abandonnée, connexion faite, message répondu"
+        },
+        {
+          "suite": "first-launch-node",
+          "what": "node : Node.js et l'adaptateur téléchargés au premier message, mesure affichée, message répondu une fois"
+        },
+        {
+          "suite": "first-launch-liste",
+          "what": "liste : aucun modèle connu puis liste reçue ; deuxième lancement"
+        },
+        {
+          "suite": "first-launch-page",
+          "what": "absent, non-connecte, node, liste — panneau et bulle"
+        }
+      ]
     },
     "O9": {
-      "gap": {
-        "lot": 5,
-        "why": "un essai réel Claude Code et un essai réel Codex (décision 4) ; le pont est déjà couvert par la suite annotations"
-      }
+      "tests": [
+        {
+          "suite": "real-trial-records",
+          "what": "tests/chat/real_trial_record_test.py — un compte rendu par agent (tests/chat/real-trials/claude.json, codex.json) d'un essai RÉEL : toutes les étapes passées, seules cartes acceptées = la modification de checkout.css et des lectures, aucune configuration réelle modifiée"
+        }
+      ]
     },
     "O10": {
-      "gap": {
-        "lot": 2,
-        "why": "parcours clavier de la carte d'autorisation à écrire (SEC-23)"
-      }
+      "tests": [
+        {
+          "suite": "permission-keys-page",
+          "what": "focus, delai, maintenue, tab, boutons, a-la-place, deux, arrivee, annulee, echap, saisie — panneau et bulle"
+        },
+        {
+          "suite": "permission-keys-bulle",
+          "what": "bulle : le clavier arrive à la carte, 600 ms, touche maintenue, Tab, Autoriser, Refuser, Échap"
+        },
+        {
+          "suite": "permission-keys-panneau",
+          "what": "panneau : idem, deux cartes de suite, Échap maintenu"
+        }
+      ]
     },
     "O11": {
-      "gap": {
-        "lot": 5,
-        "why": "le fil de surveillance seulement en mode test, puis contrat"
-      }
+      "tests": [
+        {
+          "suite": "o11-idle-bubble",
+          "what": "tests/chat/chat_qa_idle_bubble.py — la bulle reste ouverte, le fil de diagnostic ne démarre pas dans le navigateur publié (et démarre en mode diagnostic) ; les deux mesures du processeur sont écrites au rapport, sans seuil"
+        }
+      ]
     },
     "O12": {
       "tests": [
@@ -1087,7 +1155,19 @@
         },
         {
           "suite": "annotation-units",
-          "what": "annotation_private_test — les notes d'une fenêtre privée sont effacées à sa fermeture"
+          "what": "annotation_private_test — fenêtre privée : éléments effacés à la fermeture ; lot R : le dossier du chat (conversations, instantanés) effacé à la fermeture et au démarrage suivant après un arrêt brutal, lien jamais suivi"
+        },
+        {
+          "suite": "chat-units",
+          "what": "chat_units_test.cpp — « file site » (le site d'un fichier local est son dossier), « SiteOf »"
+        },
+        {
+          "suite": "chat-units",
+          "what": "host_contract_test.py — « decision A » : chat disponible sur fichier local et en fenêtre privée, dossier privé, registre avant écriture, pas de pont pour un fichier, dossier du fichier jamais au-dessus"
+        },
+        {
+          "suite": "lot-r",
+          "what": "vraie fenêtre : fichier local (mode + chat, dossier = celui du fichier, un tour) ; fenêtre privée fermée puis tuée (conversation et élément effacés)"
         }
       ]
     },
@@ -1126,10 +1206,20 @@
       }
     },
     "#125-parcours-local-en-ligne": {
-      "gap": {
-        "lot": 3,
-        "why": "parcours en vraie fenêtre local_en_ligne à écrire (localhost, *.localhost, 127.x, [::1], file:// local allumés ; site en ligne, adresse du réseau local éteints ; fenêtre privée même règle) ; les points 6 (pointeur après la saisie dans la note) et 5 (cadre de la note au défilement) de chat_qa_v12.py passaient par la note d'un site non local : à rejouer sur une page file:// ; chat_qa_run.py et chat_qa_v12.py vérifient déjà qu'un site non local ne démarre ni le mode ni le panneau (fait le 24/11)"
-      }
+      "tests": [
+        {
+          "suite": "lot-r",
+          "what": "local_en_ligne : 127.0.0.1, localhost, *.localhost, [::1], fichier local = allumé avec le chat ; site en ligne, faux localhost (localhost.example.com), adresse du réseau local = éteint, carte d'explication, ni chat ni note"
+        },
+        {
+          "suite": "chat-units",
+          "what": "chat_units_test.cpp — « SiteOf: … an online site, a LAN address and a fake localhost stay off »"
+        },
+        {
+          "suite": "chat-v1",
+          "what": "« #125 · not a local site: the chat shortcut starts neither the mode nor the panel »"
+        }
+      ]
     },
     "focus-annotation": {
       "tests": [
@@ -1138,6 +1228,260 @@
           "what": "tests/focus/annotation_focus_journey.py — Mode Focus et mode Annotation ensemble : bandeau et chat gardés, rien ne saute (propriétaire : Mode Focus)"
         }
       ]
+    },
+    "lot1c-cadre-dans-iframe": {
+      "tests": [
+        {
+          "suite": "page-frames",
+          "what": "tests/chat/final/page_frames.py — iframe de même origine (bordure, marge intérieure), iframe imbriqué, page défilée, iframe défilé (élément coupé / sorti), iframe retiré, autre origine et canvas = une seule boîte ; 100 % et 125 %"
+        },
+        {
+          "suite": "journeys",
+          "what": "e1b_cadre_dans_iframe — vrai navigateur : le cadre de la bulle est autour de l'élément cliqué dans l'iframe, encore après un défilement de la page"
+        }
+      ]
+    },
+    "lot5-narrateur-vraie-fenetre": {
+      "tests": [
+        {
+          "suite": "narrator-window",
+          "what": "tests/chat/chat_qa_narrator.py — boutons du bandeau nommés, focus dans la saisie de la bulle, bulle dans l'arbre d'une fenêtre du navigateur, Tab / Maj+Tab, carte d'autorisation annoncée et répondue au clavier, Échap"
+        }
+      ]
+    },
+    "lot1d-bulle-collee-au-bord-iframe": {
+      "tests": [
+        {
+          "suite": "page-frames",
+          "what": "tests/chat/final/page_frames.py « case 1 » — élément sorti de son iframe par le haut, par le bas, iframe imbriqué, page défilée pendant ce temps, retour ; dans la page elle-même rien ne change"
+        },
+        {
+          "suite": "chat-units",
+          "what": "tests/chat/host_contract_test.py « lot 1d, case 1 = A »"
+        },
+        {
+          "suite": "journeys",
+          "what": "e1b_cadre_dans_iframe — vrai navigateur : la bulle reste collée au bord haut de l'iframe, sans cadre, puis revient"
+        }
+      ]
+    },
+    "lot1d-iframe-recharge": {
+      "tests": [
+        {
+          "suite": "page-frames",
+          "what": "tests/chat/final/page_frames.py « case 3 » — iframe rechargé : cadre de la bulle et marque « En attente » retrouvés ; élément absent : rien de dessiné, « gone » une fois ; après rechargement de la page : retrouvé par sa clé"
+        },
+        {
+          "suite": "chat-units",
+          "what": "chat_units_test.cpp (FrameKey) et host_contract_test.py « lot 1d, case 3 » (3 contrats)"
+        },
+        {
+          "suite": "journeys",
+          "what": "e1b_cadre_dans_iframe — vrai navigateur : l'iframe se recharge, la bulle reste ouverte et son cadre revient"
+        }
+      ]
+    },
+    "lot1e-inspecteur-marge-enfant": {
+      "tests": [
+        {
+          "suite": "page-frames",
+          "what": "tests/chat/final/page_frames.py « margins » — planche Paper 5.3 au pixel (aplat de marge, gap hachuré, deux pastilles), formulaire (20 / 6 / 10 / 18), rangée, grille, sans marge, message de sélection"
+        }
+      ]
+    },
+    "lot1b-ouverture-un-seul-accuse": {
+      "tests": [
+        {
+          "suite": "replay-opening",
+          "what": "tests/chat/final/replay_opening.py — l'ouverture seule reçoit une taille, la sienne ; affichée une fois, rien de corrigé ; pied dans la surface (fil long)"
+        },
+        {
+          "suite": "chat-units",
+          "what": "tests/chat/host_contract_test.py « lot 1b » (3 contrats) : aucun layout {open: false} avant le layout d'ouverture ; conversation « à part » envoyée une fois, avec l'ouverture"
+        },
+        {
+          "suite": "monkey-1",
+          "what": "monkey.py — après « shown at its place », plus de « bubble frame … (carried) » qui rétrécit puis regrandit (à relire dans le journal, vraie fenêtre)"
+        }
+      ]
+    },
+    "R-retrait-ancien-système": {
+      "tests": [
+        {
+          "suite": "chat-units",
+          "what": "host_contract_test.py — « lot R » : ni lot, ni « garder en annotation », ni note, ni lanceur, ni carte, ni historique dans l'hôte et la page ; fichiers supprimés ; Ctrl+Maj+H n'est plus un raccourci ; une sélection va au chat ou nulle part"
+        },
+        {
+          "suite": "chat-panel",
+          "what": "« lot R: Ctrl+Entrée keeps no annotation », « an old annotation.kept line … is ignored », infobulle d'envoi sur une ligne"
+        },
+        {
+          "suite": "annotations-ui",
+          "what": "bandeau, « Connecter un agent », cadre natif : rien d'autre n'est créé (zéro coût avant usage)"
+        },
+        {
+          "suite": "lot-r",
+          "what": "vraie fenêtre : Ctrl+Maj+H ne fait rien ; ni lanceur, ni note, ni historique parmi les fenêtres"
+        }
+      ]
+    },
+    "R-réglages-annotations": {
+      "tests": [
+        {
+          "suite": "annotation-settings",
+          "what": "« lot R: no retention row, no folder row », « nothing names Ctrl+Maj+H », « Effacer toutes les annotations… » gardé (dernière ligne de « Mode Annotation »)"
+        },
+        {
+          "suite": "smoke",
+          "what": "settings_test : la durée de conservation reste lue et écrite (30 jours par défaut), sans ligne de réglage"
+        }
+      ]
+    },
+    "R-chat-au-lancement": {
+      "tests": [
+        {
+          "suite": "chat-units",
+          "what": "host_contract_test.py — « lot R: in « Panneau » the panel opens with the mode », « takes no keyboard focus », « launch rules still see no chat asked », « Ctrl+Maj+D … gives it the keyboard »"
+        },
+        {
+          "suite": "lot-r",
+          "what": "vraie fenêtre : chat ouvert dès le lancement en Panneau, sans prendre le clavier ; taille, défilement et contenu de la page identiques entre le lancement et le premier élément choisi"
+        }
+      ]
+    },
+    "R-10-éléments": {
+      "tests": [
+        {
+          "suite": "chat-units",
+          "what": "host_contract_test.py — « lot R: an 11th element in « Panneau » is refused with the neutral strip, for 4 s », texte FR / EN validé, ni cadre ni capture"
+        },
+        {
+          "suite": "lot-r",
+          "what": "vraie fenêtre : 11ᵉ et 12ᵉ clics, bandeau « 10 éléments au maximum… », disparition seule, rien d'ajouté"
+        }
+      ]
+    },
+    "R-file-attente-bulle": {
+      "tests": [
+        {
+          "suite": "chat-panel",
+          "what": "« bubble (queue, lot R) » : 2 messages en attente au plus, 2 lignes chacun sous un fondu, « +N en attente » (13 px, #A6A6A6), liste dépliée de 160 px au plus, saisie toujours entière (cause de O5 #110)"
+        },
+        {
+          "suite": "chat-units",
+          "what": "host_contract_test.py — « lot R (O5): the queue message carries the « +N en attente » line »"
+        },
+        {
+          "suite": "lot-r",
+          "what": "vraie fenêtre : 4 messages en attente dans une bulle, 2 montrés, « +2 en attente », liste dépliée, saisie entière"
+        }
+      ]
+    },
+    "perm-une-demande-une-reponse": {
+      "tests": [
+        {
+          "suite": "chat-panel",
+          "what": "« permission (panel, point 1): ONE real click on « Autoriser » / « Refuser » … », « permission (panel): the same request received twice is one card, one answer », « bubble (point 1): one real click on « Autoriser » answers »"
+        },
+        {
+          "suite": "chat-units",
+          "what": "host_contract_test.py — « permission: one answer per request… », « permission: the agent's request is sent to the page once… »"
+        },
+        {
+          "suite": "permission-circuit-bulle",
+          "what": "« point 1 · ONE request: the host asked once, one card », « point 1 · ONE real click on « Autoriser » answers… », « two messages in a row… never a duplicate »"
+        },
+        {
+          "suite": "permission-circuit-panneau",
+          "what": "idem, panneau"
+        }
+      ]
+    },
+    "perm-carte-garde-sa-forme": {
+      "tests": [
+        {
+          "suite": "chat-panel",
+          "what": "« permission (panel, point 2) », « permission (panel, point 4) », « permission (panel): « Détails » opens under the diff… », « bubble (points 2 and 4) »"
+        },
+        {
+          "suite": "permission-circuit-bulle",
+          "what": "« point 2 · a click on the card outside its buttons… », « point 4 · the switch… »"
+        },
+        {
+          "suite": "permission-circuit-panneau",
+          "what": "idem, panneau"
+        }
+      ]
+    },
+    "perm-veut-modifier-avant-accord": {
+      "tests": [
+        {
+          "suite": "chat-panel",
+          "what": "« thread (point 3) … » (en attente, autorisé, fait, refusé, rejoué), « thread: a step the host marks as refused… », « thread: a request withdrawn unanswered… », « bubble (point 3, Paper « Mode Commentaire 4 ») »"
+        },
+        {
+          "suite": "chat-units",
+          "what": "host_contract_test.py — « permission: a refusal … marks the step it was for », « permission: a refused step is kept as refused in the conversation… », « permission: the agent's later updates of a refused step keep it refused… », « permission: a request withdrawn unanswered… »"
+        },
+        {
+          "suite": "permission-circuit-panneau",
+          "what": "« point 3 · before the answer the thread reads « Veut modifier landing.css » », « once done … « A modifié landing.css » », « refused: nothing is said of the edit », « the host keeps the refused step as refused in the stored conversation »"
+        },
+        {
+          "suite": "permission-circuit-bulle",
+          "what": "« point 3 · … « Attend votre accord… » », « refused: nothing is said… », « the host keeps the refused step as refused… »"
+        }
+      ]
+    },
+    "perm-carte-bulle-vraie-carte": {
+      "tests": [
+        {
+          "suite": "chat-panel",
+          "what": "fidélité c-2-autorisation et c-2-autorisation-diff (planches 1ANU-0 / 19RN-0 redessinées le 24 nov.), « bubble (card, 100 % / 125 % / 150 %) », « bubble (row under the card) … », « bubble (diff of a request, Paper 19RN-0) … », « bubble (diff of a finished turn, 1B19-0): untouched »"
+        },
+        {
+          "suite": "permission-circuit-bulle",
+          "what": "« the mode and « Arrêter » are under the card (12 px below), whole in the bubble », « « Arrêter » under the card stops the agent: the request is withdrawn… »"
+        }
+      ]
+    },
+    "perm-peu-de-place": {
+      "tests": [
+        {
+          "suite": "chat-panel",
+          "what": "« bubble (little room, R47) … », « bubble (little room, plan rule 8): whatever height the host offers (120 px at least) the card and « Refuser » / « Autoriser » are whole »"
+        }
+      ]
+    },
+    "perm-plusieurs-demandes": {
+      "tests": [
+        {
+          "suite": "chat-panel",
+          "what": "« permission (several in a row, SEC-23): a double click on « Autoriser » answers the first request only… », « permission (several in a row): 600 ms later one click answers the second… »"
+        }
+      ]
+    },
+    "perm-bulle-clic-de-retour": {
+      "tests": [
+        {
+          "suite": "journeys",
+          "what": "perm_clic_de_retour (vraie fenêtre : une demande attend, une autre application devant, le clic de retour sur « Autoriser » répond — une demande, une réponse)"
+        },
+        {
+          "suite": "journeys",
+          "what": "e4_autre_application (« the bubble stays where it is, not closed »)"
+        },
+        {
+          "suite": "chat-units",
+          "what": "host_contract_test.py — les quatre contrats « A: … » (la bulle garde sa région, ne prend ni premier plan ni clavier tant qu'une autre application est devant)"
+        }
+      ]
+    },
+    "perm-essai-reel-par-agent": {
+      "gap": {
+        "lot": 5,
+        "why": "une modification acceptée, refusée, « toujours » — Claude Code et Codex réels (dont « Additional sandbox permissions » de Codex, titre encore en anglais)"
+      }
     }
   }
 }

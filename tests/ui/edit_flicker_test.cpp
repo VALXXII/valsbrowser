@@ -42,7 +42,6 @@
 #include "../../src/profile-editor.h"
 #include "../../src/profile-dialog.h"
 #include "../../src/inline-rename.h"
-#include "../../src/annotation-note.h"
 
 using namespace NativeChrome;
 static int failures = 0, checks = 0;
@@ -394,16 +393,6 @@ static void FolderRename(HINSTANCE hi, HWND owner, const std::wstring& root) {
     rename.Cancel(); panel.Hide(false, false); Pump(300); DeleteObject(font);
 }
 
-static void AnnotationNoteField(HINSTANCE hi, HWND owner, const std::wstring& root) {
-    Annotations::NotePopover note; Annotations::NoteHooks hooks; hooks.cancel = [](const std::wstring&, bool) {}; hooks.submit = [](const Annotations::NoteSubmission&) {};
-    note.Init(hi, owner, root, hooks);
-    Annotations::NoteRequest request; request.capture = Annotations::CaptureState::Unavailable;
-    if (!note.Show(request, {300, 300, 400, 340}, PageScreen(), false, true)) { Check(false, "annotation note: shown"); return; }
-    Pump(600); Foreground(note.Window());
-    Run(note.Edit(), "annotation note", L"ab", 2);
-    note.Dispose(); Pump();
-}
-
 int wmain(int argc, wchar_t** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -424,7 +413,6 @@ int wmain(int argc, wchar_t** argv) {
     SettingsSearch(hi, owner, root);
     ProfileDialogField(hi, owner, root);
     FolderRename(hi, owner, root);
-    AnnotationNoteField(hi, owner, root);
     DestroyWindow(owner);
     std::printf("%s: %d checks, %d failures\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;

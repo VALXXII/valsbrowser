@@ -94,6 +94,24 @@ inline ChoiceInfo Info(TabPosition p) {
     };
     const int i = static_cast<int>(p); return Resolve(positions[i >= 0 && i < TabPositionCount ? i : 0]);
 }
+// « Position des onglets » (#127, Réglages › Onglets › Disposition; Paper « Proposition — Option · Réglages › Onglets »):
+// the tab bar at the top (default, existing profiles and new installs), or the side panel, complete or compact. One
+// source of truth: the panel's fold button and Ctrl+Maj+, switch Side <-> Compact by changing this value.
+enum class TabsPosition { Top, Side, Compact };
+constexpr int TabsPositionCount = 3;
+inline ChoiceInfo Info(TabsPosition p) {
+    using I = I18n::Id;
+    static const ChoiceIds positions[TabsPositionCount] = {
+        {I::tabs_position_top, I::settings_tabs_position_note, "top"},
+        {I::tabs_position_side, I::settings_tabs_position_note, "side"},
+        {I::tabs_position_compact, I::settings_tabs_position_note, "compact"},
+    };
+    const int i = static_cast<int>(p); return Resolve(positions[i >= 0 && i < TabsPositionCount ? i : 0]);
+}
+inline bool SidePanel(TabsPosition p) { return p != TabsPosition::Top; }
+// Side panel width (#127 « Redimensionner »; src/sidebar.h Resize): 248 by default, held between 220 and 360.
+inline constexpr int SideWidthDefault = 248, SideWidthMin = 220, SideWidthMax = 360;
+inline int SideWidth(int w) { return w < SideWidthMin ? SideWidthMin : w > SideWidthMax ? SideWidthMax : w; }
 // Media autoplay (engine policy: applied when the browser starts).
 enum class Autoplay { Muted, Allowed };
 constexpr int AutoplayCount = 2;
@@ -181,6 +199,12 @@ struct State {
     int sleepMinutes = 120;        // one of SleepChoices
     int zoomPercent = 100;         // one of ZoomChoices
     BookmarksBar bookmarksBar = BookmarksBar::Auto;
+    // Window layout (#127, Val 2026-11-24): « Position des onglets ». Applied live, no restart; a narrow window shows
+    // the panel compact without touching it.
+    TabsPosition tabsPosition = TabsPosition::Top;
+    // The side panel's width (#127 « Redimensionner »): dragged on its edge, 220 .. 360 DIP, 248 by default; per profile
+    // (this file is the profile's). Read back clamped; anything else keeps 248.
+    int sideWidth = SideWidthDefault;
     std::uint32_t accent = DefaultAccent; // #RRGGBB
     std::wstring customSearch;     // Engine::Custom: http(s) template with %s (SearchTemplate)
     NewTabPage newTabPage = NewTabPage::Blank;
@@ -198,7 +222,7 @@ struct State {
     // Annotations (dev/preview builds with the annotation mode; read by src/annotation-mode.h).
     bool annotationConnectPrompt = true; // « Connecter un agent » opens at the mode's launch while no agent is connected
     int annotationConnectDeclines = 0;   // « Plus tard » answers, 0..MaxConnectDeclines (at the max the modal stops opening)
-    int annotationRetentionDays = 30;    // done annotations kept that long: one of RetentionChoices
+    int annotationRetentionDays = 30;    // done annotations kept that long: one of RetentionChoices (no settings row since lot R: the saved value, 30 by default)
     bool annotationOnboarded = false;    // the mode's onboarding (#125, src/annotation-onboarding.h) was finished or skipped: never shown again
     // « Plus tard » on the Réglages card « Voulez-vous avoir Browser comme navigateur par défaut ? »: when (UTC seconds,
     // 0 = never). The card stays away DefaultBrowserLaterDays from then (DefaultBrowserCardDue).
@@ -212,7 +236,7 @@ struct State {
                confirmCloseTabs == o.confirmCloseTabs && closeWithLastTab == o.closeWithLastTab && adBlock == o.adBlock &&
                httpsOnly == o.httpsOnly && blockThirdPartyCookies == o.blockThirdPartyCookies && memorySaver == o.memorySaver &&
                muteBackground == o.muteBackground && autoplay == o.autoplay && grayscaleText == o.grayscaleText &&
-               bookmarksBar == o.bookmarksBar && accent == o.accent &&
+               bookmarksBar == o.bookmarksBar && tabsPosition == o.tabsPosition && sideWidth == o.sideWidth && accent == o.accent &&
                annotationConnectPrompt == o.annotationConnectPrompt && annotationConnectDeclines == o.annotationConnectDeclines &&
                annotationRetentionDays == o.annotationRetentionDays && annotationOnboarded == o.annotationOnboarded && defaultBrowserLaterAt == o.defaultBrowserLaterAt;
     }
@@ -222,12 +246,10 @@ enum class Change { Engine, RestoreTabs, DownloadFolder, AskWhereToSave, ReduceM
                     SearchSuggestions, Tracking, Passwords, Autofill, ClearOnExit, Sleep, Zoom,
                     CustomSearch, NewTabPage, Homepage, TabPosition, ConfirmCloseTabs, CloseWithLastTab,
                     AdBlock, HttpsOnly, ThirdPartyCookies, MemorySaver, MuteBackground, Autoplay, BookmarksBar, GrayscaleText,
-                    AnnotationConnectPrompt, AnnotationRetention, DefaultBrowserLater, FocusMode };
+                    AnnotationConnectPrompt, DefaultBrowserLater, TabsPosition, FocusMode };
 // Annotations: the connect modal stops opening by itself after this many « Plus tard » (src/annotation-mode.h).
 inline constexpr int MaxConnectDeclines = 3;
 inline constexpr int RetentionChoices[] = {7, 30, 90};
-inline constexpr int RetentionCount = 3;
-inline std::wstring RetentionLabel(int days) { return TRP(retention_days, days); }
 // « Proposer de connecter un agent au lancement du mode » as the switch shows it: on while the modal would
 // still open by itself (not turned off, and fewer than MaxConnectDeclines « Plus tard »).
 inline bool ConnectPromptActive(const State& s) { return s.annotationConnectPrompt && s.annotationConnectDeclines < MaxConnectDeclines; }
@@ -270,6 +292,8 @@ inline void Write(std::ostream& out, const State& s) {
         << "autoplay=" << Info(s.autoplay).key << '\n'
         << "grayscale-text=" << (s.grayscaleText ? 1 : 0) << '\n'
         << "bookmarks-bar=" << Info(s.bookmarksBar).key << '\n'
+        << "tabs-position=" << Info(s.tabsPosition).key << '\n'
+        << "side-width=" << s.sideWidth << '\n'
         << "accent=" << AccentText(s.accent) << '\n'
         << "annotation-connect-prompt=" << (s.annotationConnectPrompt ? 1 : 0) << '\n'
         << "annotation-connect-declines=" << s.annotationConnectDeclines << '\n'
@@ -279,6 +303,9 @@ inline void Write(std::ostream& out, const State& s) {
 }
 inline State Read(std::istream& in) {
     State s; std::string line;
+    // #127 trial builds wrote the layout as two keys (« layout=top-bar|side-panel », « sidebar=complete|compact »): read
+    // when « tabs-position » is absent, never written back.
+    bool position = false, legacySide = false, legacyCompact = false;
     if (!std::getline(in, line)) return s;
     if (!line.empty() && line.back() == '\r') line.pop_back();
     if (line != "browser-settings 1") return s;
@@ -319,17 +346,23 @@ inline State Read(std::istream& in) {
         else if (key == "custom-search") { std::wstring v; if (value.size() < 4096 && NativeChrome::Downloads::FromUtf8(value, v)) s.customSearch = SearchTemplate(v); }
         else if (key == "homepage") { std::wstring v; if (value.size() < 4096 && NativeChrome::Downloads::FromUtf8(value, v)) s.homepage = HomepageUrl(v); }
         else if (key == "bookmarks-bar") { for (int i = 0; i < BookmarksBarCount; ++i) if (value == Info(static_cast<BookmarksBar>(i)).key) s.bookmarksBar = static_cast<BookmarksBar>(i); }
+        else if (key == "tabs-position") { for (int i = 0; i < TabsPositionCount; ++i) if (value == Info(static_cast<TabsPosition>(i)).key) { s.tabsPosition = static_cast<TabsPosition>(i); position = true; } }
+        else if (key == "side-width") { char* end = nullptr; const long w = value.empty() || value.size() > 4 ? 0 : std::strtol(value.c_str(), &end, 10); if (end && !*end && w > 0) s.sideWidth = SideWidth(static_cast<int>(w)); }
+        else if (key == "layout") { if (value == "side-panel") legacySide = true; else if (value == "top-bar") legacySide = false; }
+        else if (key == "sidebar") { if (value == "compact") legacyCompact = true; else if (value == "complete") legacyCompact = false; }
         else if (key == "accent") { std::uint32_t rgb = 0; if (ParseAccent(value, rgb)) s.accent = rgb; }
         else if (key == "download-folder") { std::wstring folder; if (value.size() < 32768 && NativeChrome::Downloads::FromUtf8(value, folder)) s.downloadFolder = folder; }
     }
+    if (!position && legacySide) s.tabsPosition = legacyCompact ? TabsPosition::Compact : TabsPosition::Side;
     // A custom choice without its address falls back to the default.
     if (s.engine == Engine::Custom && s.customSearch.empty()) s.engine = Engine::DuckDuckGo;
     if (s.newTabPage == NewTabPage::Custom && s.homepage.empty()) s.newTabPage = NewTabPage::Blank;
     return s;
 }
 // ---- Site permissions (settings › Autorisations) ----------------------------
-// What a site may use. The host maps these to COREWEBVIEW2_PERMISSION_KIND.
-enum class Permission { Camera, Microphone, Location, Notifications, Clipboard, Other };
+// What a site may use. The host maps these to COREWEBVIEW2_PERMISSION_KIND, except ScreenShare (#121 « Toujours bloquer
+// ce site »): WebView2 has no kind for screen capture, so Browser keeps it (Block only, never Allow) in its own file.
+enum class Permission { Camera, Microphone, Location, Notifications, Clipboard, Other, ScreenShare };
 enum class PermissionState { Ask, Allow, Block };
 struct SitePermission { Permission kind = Permission::Other; PermissionState state = PermissionState::Ask; };
 struct Site { std::wstring origin; std::vector<SitePermission> permissions; };
@@ -340,6 +373,7 @@ inline const wchar_t* PermissionName(Permission p) {
     case Permission::Location: return TR(permission_location);
     case Permission::Notifications: return TR(permission_notifications);
     case Permission::Clipboard: return TR(permission_clipboard);
+    case Permission::ScreenShare: return TR(permission_screen_share);
     default: return TR(permission_kind_misc);
     }
 }

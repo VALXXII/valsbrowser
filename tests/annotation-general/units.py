@@ -42,7 +42,8 @@ def main() -> int:
         ('annotation_sites_test', [*R.STRICT, 'tests/annotations/annotation_sites_test.cpp'], []),
         ('annotation_private_test', [*R.STRICT, '-O2', 'tests/annotations/annotation_private_test.cpp', 'src/annotations.cpp', '-lbcrypt'], []),
         ('annotation_onboarding_test', [*R.LOOSE, '-Werror', '-municode', *R.TVG, R.WV2, 'tests/onboarding/annotation_onboarding_test.cpp',
-                                        'src/native-lottie.cpp', R.THORVG, *R.UI_LIBS, '-loleaut32', '-lshell32'], [ROOT, evidence]),
+                                        'src/native-lottie.cpp', 'src/agent-install.cpp', 'src/agent-runtime.cpp', 'src/acp-client.cpp', R.THORVG,
+                                        *R.UI_LIBS, '-loleaut32', '-lshell32', '-luserenv', '-lwinhttp', '-lbcrypt'], [ROOT, evidence]),
     ]
     failed = []
     for name, compile_args, run_args in fixtures:

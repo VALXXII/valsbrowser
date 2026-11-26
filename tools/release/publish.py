@@ -52,7 +52,7 @@ def decide(ours: tuple, published: list[tuple], ours_exists: bool) -> str:
 
 
 def gh(*args: str, check=True, capture=True) -> subprocess.CompletedProcess:
-    return subprocess.run(['gh', *args], check=check, capture_output=capture, text=True)
+    return subprocess.run(['gh', *args], check=check, capture_output=capture, text=True, encoding='utf-8')
 
 
 def releases(repo: str) -> list[dict]:

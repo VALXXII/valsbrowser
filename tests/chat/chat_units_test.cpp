@@ -14,9 +14,9 @@
 #include "../../src/chat-store.h"
 #include "../../src/chat-folder.h"
 #include "../../src/chat-tools.h"
-#include "../../src/chat-batch.h"
 #include "../../src/chat-options.h"
 #include "../../src/chat-bubble.h"
+#include "../../src/annotation-settings.h"
 
 static int checks = 0, failures = 0;
 static void Check(bool ok, const char* what) { ++checks; if (!ok) { ++failures; std::printf("FAIL %s\n", what); } }
@@ -41,8 +41,67 @@ static void TestLocal() {
     Check(Classify("http://[::1]:3000/").origin == "http://[::1]:3000", "IPv6 loopback keeps its brackets");
     Check(Classify("file:///C:/x.html").file && Classify("file:///C:/x.html").origin == "file://", "file: has no origin of its own");
     Check(!Classify("https://example.com:8443/").local && Classify("https://example.com:8443/").origin == "https://example.com:8443", "a public site is classified, not local");
+    // Lot R (decision A, O12): the chat works on a local file; its site is the folder that holds the file
+    {   using ChatLocal::FolderOfFile; using ChatLocal::SiteOf;
+        const auto f = FolderOfFile("file:///C:/Users/val/Mon%20site/pages/index.html?x=1#top");
+        Check(f.ok && f.folder == "C:\\Users\\val\\Mon site\\pages" && f.label == "pages" && f.origin == "file:///c:/users/val/mon site/pages", "file site: the folder of the file, decoded; its key in lower case, without the file, the query or the fragment");
+        Check(FolderOfFile("file:///c:/Users/VAL/mon%20site/pages/autre.html").origin == f.origin, "file site: another file of the same folder, another case: the same site");
+        Check(FolderOfFile("file:///C:/Users/val/Mon%20site/index.html").origin != f.origin, "file site: the folder above is another site");
+        Check(FolderOfFile("file://localhost/C:/Users/val/Mon%20site/pages/index.html").origin == f.origin, "file site: file://localhost/ is the same file");
+        const auto root = FolderOfFile("file:///D:/index.html"); Check(root.ok && root.folder == "D:\\" && root.label == "D:" && root.origin == "file:///d:", "file site: a file at a drive root (the folder rules then refuse the root)");
+        const auto utf = FolderOfFile("file:///C:/sites/caf%C3%A9/a.html"); Check(utf.ok && utf.folder == "C:\\sites\\caf\xC3\xA9" && utf.label == "caf\xC3\xA9", "file site: UTF-8 names are decoded");
+        for (const char* bad : {"file://server/share/index.html", "file:///C:/a/../b/index.html", "file:///C:/a/./index.html", "file:///C:/a%5Cb/index.html", "file:///C:/a%00/index.html", "file:///C:/a%2/index.html",
+                                "file:///index.html", "file:///C:", "file:///1:/a/index.html", "file:///C:/a%3A/index.html", "file:///C:/a%20/index.html", "file:///C:/a./index.html", "http://localhost/C:/a/index.html"})
+            Check(!FolderOfFile(bad).ok, (std::string("file site refused: ") + bad).c_str());
+        std::string deep = "file:///C:"; for (int i = 0; i < 40; ++i) deep += "/dossier-tres-long-" + std::to_string(i); deep += "/index.html";
+        const auto d = FolderOfFile(deep); Check(d.ok && d.origin.size() < 60 && d.origin.rfind("file:///~", 0) == 0 && FolderOfFile(deep).origin == d.origin, "file site: a very deep folder gets a short stable key (an origin is stored in 300 bytes at most)");
+        const auto s = SiteOf("file:///C:/Users/val/Mon%20site/pages/index.html");
+        Check(s.local && s.file && s.origin == f.origin && s.label == "pages", "SiteOf: a local file is a site of the chat, named after its folder");
+        Check(!SiteOf("file:///C:/a/../b/index.html").local && !SiteOf("file://server/share/index.html").local, "SiteOf: a file whose folder cannot be read, or a network share, is not a site of the chat");
+        Check(SiteOf("http://localhost:5173/a").origin == "http://localhost:5173" && !SiteOf("https://example.com/").local && !SiteOf("http://192.168.1.20:5173/").local && !SiteOf("http://localhost.example.com/").local,
+              "SiteOf: a local project is unchanged; an online site, a LAN address and a fake localhost stay off");
+    }
 }
 
+// Réglages › Annotations (lot R, texts validated 2026-11-24): « Connecté · actif {quand} » — the moment is worded in the
+// interface language, never a French format inside an English sentence.
+// Lot 5's real trial with Codex (24 Nov 2026): in « Demander » Codex refused instead of asking, changed nothing, and the
+// annotation was still closed as « resolved ».
+static void TestTurnOutcome() {
+    using ChatOptions::AnnotationEnd; using ChatOptions::AnnotationOutcome;
+    Check(AnnotationOutcome("end_turn", true, false) == AnnotationEnd::Resolved, "annotation: the turn ended and changed a file - resolved");
+    Check(AnnotationOutcome("end_turn", false, false) == AnnotationEnd::Unchanged, "annotation: the turn ended and changed NOTHING (an answer, a refusal: the Codex trial) - given back, never resolved");
+    Check(AnnotationOutcome("end_turn", false, true) == AnnotationEnd::Planned && AnnotationOutcome("end_turn", true, true) == AnnotationEnd::Resolved, "annotation: a plan with nothing changed is given back as a plan; a change resolves it, whatever the mode");
+    Check(AnnotationOutcome("cancelled", true, false) == AnnotationEnd::Stopped && AnnotationOutcome("cancelled", false, false) == AnnotationEnd::Stopped, "annotation: a stopped turn is given back, with or without a change");
+    Check(AnnotationOutcome("refusal", false, false) == AnnotationEnd::Failed && AnnotationOutcome("error", true, false) == AnnotationEnd::Failed && AnnotationOutcome("max_tokens", true, false) == AnnotationEnd::Failed,
+          "annotation: a refusal, an error, a cut answer are given back as failed");
+    I18n::SetForProcess(I18n::Locale::Fr);
+    Check(std::wstring(TR(chat_release_unchanged)) == L"L'agent a r\u00E9pondu sans rien modifier", "annotation: the reason kept with it, FR");
+    I18n::SetForProcess(I18n::Locale::En);
+    Check(std::wstring(TR(chat_release_unchanged)) == L"The agent answered without changing anything", "annotation: the reason kept with it, EN");
+    I18n::SetForProcess(I18n::Locale::Fr);
+    // what the agent is told: an edit that needs the user's approval is asked for, never refused
+    const std::string rule = ChatPrompt::ApprovalRule(), inst = ChatPrompt::Instructions();
+    ChatPrompt::PreambleInput pi; pi.site = "http://127.0.0.1:5173"; pi.folder = "C:\\proj";
+    const std::string pre = ChatPrompt::Preamble(pi);
+    Check(rule.find("do not refuse") != std::string::npos && rule.find("read-only") != std::string::npos && rule.find("permission card") != std::string::npos && rule.find('\n') == std::string::npos,
+          "approval rule: read-only or approval needed - do not refuse, request the edit, the user decides on the card (one line)");
+    Check(inst.find(rule) != std::string::npos && inst.rfind("You are working from inside a web browser", 0) == 0, "instructions appended to the agent's own: the context and the approval rule");
+    Check(pre.find("\n- " + rule + "\n") != std::string::npos && ChatPrompt::Version == 4, "preamble: the approval rule is one of its rules (version 4: resumed sessions get it again)");
+}
+static void TestAgentStatusText() {
+    // « Ton agent » (#145, worker C) removed the MCP agents' « Connecté · actif … » line (AnnotationSettings::Agent,
+    // StatusText): what is left to check here is the connect window's texts.
+    I18n::SetForProcess(I18n::Locale::En);
+    Check(std::wstring(TR(connect_local_text)).rfind(L"Everything stays on this computer, never on servers.", 0) == 0 && std::wstring(TR(connect_local_text)).find(L"its provider (Anthropic or OpenAI)") != std::wstring::npos,
+          "connect window (EN): Everything stays on this computer..., with the provider notice");
+    I18n::SetForProcess(I18n::Locale::Fr);
+    Check(std::wstring(TR(connect_local_text)).rfind(L"Tout reste sur cet ordinateur, jamais sur des serveurs.", 0) == 0 && std::wstring(TR(connect_local_text)).find(L"son fournisseur (Anthropic ou OpenAI)") != std::wstring::npos,
+          "connect window (FR): Tout reste sur cet ordinateur..., with the provider notice");
+    const std::wstring tutorial = TR(annotation_onboarding_connect_body);
+    Check(tutorial.find(L"Tout reste sur cet ordinateur. Quand votre agent lit vos demandes,") != std::wstring::npos && tutorial.find(L"son fournisseur (Anthropic ou OpenAI)") != std::wstring::npos,
+          "tutorial (FR): Tout reste sur cet ordinateur never stands alone - the provider notice follows it");
+}
 static void TestPrompt() {
     using namespace ChatPrompt;
     Check(OneLine("a\nb\r\n\tc  d", 100) == "a b c d", "line breaks and tabs become single spaces");
@@ -57,7 +116,7 @@ static void TestPrompt() {
     PreambleInput pi; pi.site = "http://localhost:5173"; pi.folder = "C:\\sites\\boutique"; pi.browser = "the browser";
     const std::string pre = Preamble(pi);
     Check(pre.find("http://localhost:5173") != std::string::npos && pre.find("C:\\sites\\boutique") != std::string::npos, "preamble: site and folder");
-    Check(pre.find("first write one short sentence (a few words)") != std::string::npos && Version == 3, "R8: the agent first says in one short sentence what it is about to do (preamble v3)");
+    Check(pre.find("first write one short sentence (a few words)") != std::string::npos && Version >= 3, "R8: the agent first says in one short sentence what it is about to do (preamble v3 and after)");
     Check(pre.find("language of the user's LAST message") != std::string::npos && pre.find("If the user writes in French, write in French") != std::string::npos &&
           pre.find("J'\xC3\xA9largis le bouton") != std::string::npos && pre.find("I'm widening") == std::string::npos,
           "R43: announcements and answer in the language of the user's last message (French example, no English one)");
@@ -310,6 +369,11 @@ static void TestServed(const std::wstring& root) {
 static void TestTools() {
     using namespace ChatTools;
     const std::string ours = "browser-annotations-preview";
+    // Codex's request to leave its sandbox is recognised by its title alone (its card then says it in the browser's language)
+    Check(SameTitle("Additional sandbox permissions", "Additional sandbox permissions") && SameTitle("  additional Sandbox permissions \n", "Additional sandbox permissions"),
+          "Codex's « Additional sandbox permissions », whatever its case and the spaces around it");
+    Check(!SameTitle("Additional sandbox permissions for npm", "Additional sandbox permissions") && !SameTitle("sandbox permissions", "Additional sandbox permissions") && !SameTitle("", "Additional sandbox permissions"),
+          "…and nothing that only looks like it");
     {   const McpName c = ParseMcpName("mcp__browser-annotations-preview__browser_annotations_list");
         Check(c.mcp && c.server == ours && c.tool == "browser_annotations_list", "Claude Code's form mcp__server__tool is read");
         const McpName x = ParseMcpName("mcp.browser-annotations-preview.browser_annotation_get");
@@ -394,43 +458,6 @@ static void TestAgentPaths() {
     Check(ProjectRelative("./web/app.js", dir) == "web/app.js" && ProjectRelative("web\\app.js", dir) == "web/app.js", "a path relative to the folder");
     Check(ProjectRelative("C:\\Users\\moi\\wt\\vault-activation\\a.js", dir).empty() && ProjectRelative("C:\\Users\\moi\\wt\\landing-page-2\\a.js", dir).empty(), "another worktree is outside");
     Check(ProjectRelative("../vault-activation/a.js", dir).empty() && ProjectRelative("", dir).empty(), "« .. » out of the folder, or nothing");
-}
-static void TestBatch() {
-    using namespace ChatBatch; using ChatTools::Ours;
-    Check(ChatTools::TextArg(R"({"id":"ann_a1","summary":"Bouton aligné à droite."})", "summary", 2000) == "Bouton aligné à droite.", "a text argument of a call");
-    Check(ChatTools::TextArg(R"({"summary":42})", "summary", 100).empty() && ChatTools::TextArg("", "summary", 100).empty() && ChatTools::TextArg("[]", "summary", 100).empty() &&
-          ChatTools::TextArg(R"({"summary":"trop long"})", "summary", 4).empty() && ChatTools::TextArg(R"({"other":"x"})", "summary", 100).empty(), "absent, not a string or too long: empty");
-    // our tools -> the line
-    {   const Change c = FromTool(Ours::Claim, R"({"id":"ann_a1"})"); Check(c.status == "working" && c.text.empty(), "claim: the agent takes care of it"); }
-    {   const Change c = FromTool(Ours::Resolve, R"({"id":"ann_a1","claim_token":"t","outcome":"resolved","summary":"Couleur passée au gris secondaire."})");
-        Check(c.status == "done" && c.text == "Couleur passée au gris secondaire.", "resolve: done, with the agent's sentence"); }
-    {   const Change c = FromTool(Ours::Resolve, R"({"id":"ann_a1","summary":"Fait."})"); Check(c.status == "done" && c.text == "Fait.", "resolve without an outcome: done"); }
-    {   const Change c = FromTool(Ours::Resolve, R"({"id":"ann_a1","outcome":"needs_info","summary":"Quelle couleur ?"})"); Check(c.status == "skipped" && c.text == "Quelle couleur ?", "resolve with another outcome: not handled, with its reason"); }
-    {   const Change c = FromTool(Ours::Release, R"({"id":"ann_a1","claim_token":"t","reason":"Fichier introuvable."})"); Check(c.status == "skipped" && c.text == "Fichier introuvable.", "release: not handled, with its reason"); }
-    Check(!FromTool(Ours::List, "{}").Any() && !FromTool(Ours::Get, R"({"id":"ann_a1"})").Any() && !FromTool(Ours::None, "{}").Any(), "reading changes nothing");
-    Check(FromTool(Ours::Release, "not json").status == "skipped" && FromTool(Ours::Release, "not json").text.empty(), "unreadable arguments: the status without a text");
-    // a line only moves forward
-    Check(Advances("pending", "working") && Advances("pending", "done") && Advances("working", "done") && Advances("working", "skipped"), "forward");
-    Check(!Advances("working", "pending") && !Advances("done", "working") && !Advances("done", "skipped") && !Advances("skipped", "done") && !Advances("working", "working") && !Advances("done", "done"), "never back, never twice");
-    // the store, by another road
-    {   StoreFacts f; f.updatedAt = 100; f.status = "claimed"; Check(FromStore(f, 100).status == "working" && !FromStore(f, 101).Any(), "claimed since the batch left: working; an older fact says nothing");
-        f.status = "resolved"; f.summary = "Badge replacé."; Check(FromStore(f, 50).status == "done" && FromStore(f, 50).text == "Badge replacé.", "resolved: done with the summary");
-        f.status = "needs_info"; Check(FromStore(f, 50).status == "skipped", "needs_info: not handled"); f.status = "dismissed"; Check(FromStore(f, 50).status == "skipped", "dismissed: not handled");
-        StoreFacts g; g.status = "open"; g.updatedAt = 120; g.lastAt = 120; g.lastTo = "open"; g.lastSummary = "Pas d'accès au code.";
-        Check(FromStore(g, 100).status == "skipped" && FromStore(g, 100).text == "Pas d'accès au code.", "given back with a reason: not handled");
-        g.lastSummary.clear(); Check(!FromStore(g, 100).Any(), "open again without a reason: still waiting");
-        g.lastSummary = "x"; g.lastAt = 90; Check(!FromStore(g, 100).Any(), "a release from before the batch says nothing");
-        StoreFacts o; o.status = "open"; o.updatedAt = 200; Check(!FromStore(o, 100).Any(), "open and untouched: still waiting"); }
-    // the instruction
-    {   std::vector<Line> two, one, wide;   // built line by line (a braced list of lines trips a GCC 16 false positive at -O2)
-        Line a; a.id = "ann_a1"; a.note = "Le texte sous le titre\nest trop pâle, on le \"lit\" mal."; two.push_back(a); Line b; b.id = "ann_b2"; two.push_back(b);
-        Line c; c.id = "ann_a1"; c.note = "note"; one.push_back(c); Line d; d.id = "ann_a1"; d.note = std::string(1000, 'x'); wide.push_back(d);
-        const std::string text = Instruction("Traite ces annotations.", two, "Précision :", "Garde la police.");
-        Check(text == "Traite ces annotations.\n- ann_a1 : \"Le texte sous le titre est trop pâle, on le 'lit' mal.\"\n- ann_b2\n\nPrécision :\nGarde la police.", "lead, one quoted line per annotation, then what the user added");
-        Check(Instruction("Lead.", one, "Précision :", "  \n ") == "Lead.\n- ann_a1 : \"note\"", "no precision: no label");
-        const std::string big = Instruction("L.", wide, "P", "");
-        Check(big.size() < 340 && big.find("\xE2\x80\xA6\"") != std::string::npos, "a long note is cut, with an ellipsis");
-        Check(OneLine("  a\r\n\tb  c ", 100) == "a b c" && OneLine("\xC3\xA9\xC3\xA9\xC3\xA9", 3) == "\xC3\xA9\xE2\x80\xA6", "one line; never cut inside a character"); }
 }
 
 // V1.2: the model and effort lists as the chat shows them (src/chat-options.h), on the real adapters' own lists
@@ -789,7 +816,10 @@ static void TestBubble() {
         Check(UnsafeAnchorKey("same-origin", "button.cta", {}) == UnsafeAnchorKey("same-origin", "button.cta", {}) &&
               UnsafeAnchorKey("same-origin", "button.cta", {}) != UnsafeAnchorKey("main", "button.cta", shadow) && !UnsafeAnchorKey("main", "button.cta", shadow).empty(),
               "Q 6: the same element gives the same key; a frame or a shadow root tells it apart");
-        Check(UnsafeAnchorKey("cross-origin", "a", {}).empty() && UnsafeAnchorKey("main", "", {}).empty(), "Q 6: nothing to key (cross-origin, no selector): no key"); }
+        Check(UnsafeAnchorKey("cross-origin", "a", {}).empty() && UnsafeAnchorKey("main", "", {}).empty(), "Q 6: nothing to key (cross-origin, no selector): no key");
+        // lot 1d, case 3: only an element of a same-origin iframe, outside any shadow root, can be found again in the page's frames
+        Check(FrameKey(UnsafeAnchorKey("same-origin", "#o1", {})) && !FrameKey(UnsafeAnchorKey("same-origin", "#o1", shadow)) && !FrameKey(UnsafeAnchorKey("main", "button.cta", shadow))
+              && !FrameKey("") && !FrameKey("same-origin||") && !FrameKey("cross-origin||#o1"), "lot 1d, case 3: the key of an iframe's element (no shadow path) is the only one given back to the page script"); }
     // #130 C rules 9 and 10 (Paper « #130 Bulle sans place dessous · C règles (validées) »): an element with no free side
     {   const Rect area{0, 100, 1200, 900}; const int W = 320, gap = 12, m = 8, lead = 4, minH = 120;
         const Rect title{40, 300, 1160, 360};   // as wide as the page, room below and above
@@ -1014,7 +1044,7 @@ static void TestBubble() {
     // R2: the frame + icon only once something left the bubble
     Check(!Sent(std::vector<std::string>{}, false), "R2: a click on an element, nothing sent: no frame + icon");
     Check(!Sent(std::vector<std::string>{"turn.end", "plan"}, false), "R2: items that are not the user's do not count");
-    Check(Sent(std::vector<std::string>{"message.user"}, false) && Sent(std::vector<std::string>{"annotation.kept"}, false), "R2: a message sent, or an annotation kept (Ctrl+Entrée): the frame + icon");
+    Check(Sent(std::vector<std::string>{"message.user"}, false) && !Sent(std::vector<std::string>{"annotation.kept"}, false), "R2: a message sent marks it; lot R: the old « annotation kept » line (Ctrl+Entrée, removed) no longer does: the frame + icon");
     Check(Sent(std::vector<std::string>{}, true), "R2: a message waiting in the queue counts (its frame says « En attente »)");
     // R6: a click on an element with a conversation always opens a bubble
     Check(ReopenOf(true, false) == Reopen::Shown && ReopenOf(false, true) == Reopen::FromHistory && ReopenOf(false, false) == Reopen::Fresh, "R6: in memory / from the history / unreadable -> a new conversation, never nothing");
@@ -1050,7 +1080,7 @@ static void TestAnchorStore(const std::wstring& root) {
 }
 
 int wmain() {
-    TestLocal(); TestPrompt(); TestTools(); TestMarks(); TestAgentPaths(); TestBatch(); TestOptions(); TestBubble();
+    TestLocal(); TestAgentStatusText(); TestTurnOutcome(); TestPrompt(); TestTools(); TestMarks(); TestAgentPaths(); TestOptions(); TestBubble();
     const std::wstring root = TempDir();
     TestStore(root); TestFolder(root); TestServed(root); TestAnchorStore(root);
     RemoveTree(root);

@@ -107,6 +107,10 @@ inline constexpr float toolbarBottom=76, hairline=80, top=81;
 inline constexpr float bandGap=Space::sm, bandRow=34, bandTop=toolbarBottom+bandGap+(bandRow-32), bandBottom=bandTop+32; // 84..116
 inline constexpr float bandExtra=bandGap+bandRow; // 40
 inline constexpr float ContentTop(bool band){return top+(band?bandExtra:0);}
+// Where the docked drawers start (client DIP): under the toolbar (81), or under the column's window bar (40, #127 A finale
+// 07 « Tiroir » top 40). Set by the host with the layout; the drawers read it when they place themselves.
+inline float& DrawerTopValue(){static float value=top;return value;}
+inline float DrawerTop(){return DrawerTopValue();}
 }
 static_assert(Vertical::ContentTop(false)==81&&Vertical::ContentTop(true)==121,"Paper chrome heights: 81 without the bookmarks band, 121 with it");
 // Address bar (issue #20). The indicator lives in a 24 DIP slot 4 DIP inside the

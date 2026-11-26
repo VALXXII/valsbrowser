@@ -13,6 +13,9 @@ real update. Nothing outside the fixture is written: no real install root, no pe
 (the taskbar identity only stamps shortcuts that target the fixture's launcher; none does).
 
 Scenarios:
+  owner-0.3.840   the owner's case (design/release-notes-fix-report.md, design/release-notes-cumul-report.md): previous
+                  installed 0.3.837, the read state still holding the fixed id of builds up to 0.3.840 (notes seen at
+                  0.3.646) -> the Mini with every version's notes since then, no toast; « seen » = this version.
   update-fr       previous installed 0.3.379 -> Mini FR shown once, seen recorded after display; UIA name, items,
                   Voir tout, Fermer; Tab (posted WM_KEYDOWN) moves focus; Voir tout (UIA Invoke) -> Full in place;
                   Échap (posted) closes; logo frames change between two captures.
@@ -28,7 +31,10 @@ Scenarios:
 Isolation as tests/e2e/language_e2e.py: only processes whose image lives in the fixture are touched; windows are
 never brought to the foreground, no SendInput; captures are PrintWindow of OUR windows only and are gated: an
 all-black capture is reported UNAVAILABLE, never used as visual proof.
-Usage: python tests/e2e/release_notes_e2e.py <build dir> [notes id]
+The expected card (its last line FR / EN) is computed by tools/release/release_notes.py from release-notes/notes.json and
+its history, as the build compiled them (build the app with tools/release/build.py from the same checkout); the read
+state records the version the user has seen the notes up to (the app's own version).
+Usage: python tests/e2e/release_notes_e2e.py <build dir>
 """
 import ctypes, ctypes.wintypes as wt, json, os, shutil, struct, subprocess, sys, time, zlib
 sys.stdout.reconfigure(encoding='utf-8')
@@ -43,16 +49,19 @@ failures = 0
 unavailable = []
 
 
-def notes_id():
-    if len(sys.argv) > 2:
-        return sys.argv[2]
-    for line in open(os.path.join(ROOT, 'src', 'release-notes.h'), encoding='utf-8'):
-        if 'inline constexpr const char* NotesId' in line:
-            return line.split('"')[1]
-    raise SystemExit('NotesId not found')
-
-
-NOTES = notes_id()
+sys.path.insert(0, os.path.join(ROOT, 'tools', 'release'))
+import release_notes as RELEASE_NOTES  # noqa: E402
+BUILD_VERSION = json.load(open(os.path.join(SRC, 'version.json'), encoding='utf-8'))['version'] if os.path.isfile(os.path.join(SRC, 'version.json')) else '0.0.0'
+BUILD_NUMBER = int(BUILD_VERSION.split('.')[2])
+# Every update scenario starts from a version older than every notes entry (0.3.379, 0.3.837 with the 0.3.646 id, portable):
+# the card shows every version's notes up to this build, newest first, at most 4 lines per section.
+CARD = RELEASE_NOTES.select(RELEASE_NOTES.history(build=BUILD_NUMBER), None, BUILD_NUMBER)
+LINES = CARD['ajouts'] + CARD['corrections']
+if not LINES:
+    raise SystemExit('no release notes up to this build: nothing to show after an update')
+LAST = CARD['corrections'][-1] if CARD['corrections'] else CARD['ajouts'][-1]   # (fr, en) of the card's last line
+NOTES = BUILD_VERSION
+OLD_FIXED_ID = '2026-11-comment-tooltips-download-selectall-typing'   # the constant every build carried up to 0.3.840
 SEEN = f'browser-release-notes 1\nseen={NOTES}\n'
 
 
@@ -333,7 +342,9 @@ def scenario_update(name, lang, previous, expect, data=None):
         ix, iy = corner_inset(d, hwnd)
         check(abs(ix - 14) <= 1 and abs(iy - 14) <= 1, f'{name}: the Full view stays in the bottom-right corner ({ix:.1f} / {iy:.1f} DIP)')
         u = ps(PS_DIALOG.format(hwnd=int(d)))
-        check('showall' not in u and u.get('offscreen') == '0', f'{name}: Full view: no Voir tout, every item on screen')
+        # Designer's catch-up card (Paper 26KK-0 / 26MU-0, 25 Nov): the Full view is 480 DIP at most and scrolls with a fade,
+        # so with many notes some items are below the fold (reachable by scrolling, read by UIA): no Voir tout, height capped.
+        check('showall' not in u and h2 <= 481, f'{name}: Full view: no Voir tout, at most 480 DIP (it scrolls; {u.get("offscreen")} item(s) below the fold)')
         shoot(f'{name}-full-{dpi}', d, dpi)
         u32.PostMessageW(d, 0x0100, 0x1B, 0)   # WM_KEYDOWN Échap
         time.sleep(0.8)
@@ -444,8 +455,10 @@ def run():
         print('a fixture browser is already running: close it first'); return 2
     os.makedirs(SHOTS, exist_ok=True)
     print(f'build {SRC} version {version()} notes {NOTES}', flush=True)
-    fr = {'title': 'Nouveautés', 'showall': 'Voir tout', 'close': 'Fermer', 'last': 'Saisie sans scintillement dans les champs de texte.'}
-    en = {'title': 'What’s new', 'showall': 'Show all', 'close': 'Close', 'last': 'Typing without flicker in text fields.'}
+    n = len(LINES)   # the Mini's button counts the card's lines (Paper 26MU-0)
+    fr = {'title': 'Nouveautés', 'showall': f'Voir les {n} nouveautés' if n > 1 else 'Voir la nouveauté', 'close': 'Fermer', 'last': LAST[0]}
+    en = {'title': 'What’s new', 'showall': f'See all {n} updates' if n != 1 else 'See the update', 'close': 'Close', 'last': LAST[1]}
+    scenario_update('owner-0.3.840', 'fr', 'installed 0.3.837\n', fr, data={'release-notes': f'browser-release-notes 1\nseen={OLD_FIXED_ID}\n'})
     first = scenario_update('update-fr', 'fr', 'installed 0.3.379\n', fr)
     scenario_quiet('restart', fix_root=first)
     scenario_quiet('first-install', previous=None, expect_state=SEEN, expect_log='RELEASE NOTES baseline recorded (first install)')

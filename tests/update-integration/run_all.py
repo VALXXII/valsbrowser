@@ -64,6 +64,11 @@ def existing_fixtures() -> None:
     fixture('focus_motion_test', [*STRICT, 'tests/focus_motion_test.cpp'])
     # Its drawers' antialiased top corners (src/drawer-corners.h): coverage, region cut, layered corner windows.
     fixture('drawer_corners_test', [*STRICT, '-municode', 'tests/drawer_corners_test.cpp', '-lgdi32', '-luser32'])
+    # The window's resize border over the chat panel, the drawers and the layers (src/resize-border.h; trial 0.3.952):
+    # hidden windows only, never shown. The browser's manifest is linked in (layered child windows need Windows 8+ declared).
+    resize_manifest = OUT / 'resize_border_manifest.o'
+    run('windres resize_border_test.rc', [BIN / 'windres.exe', 'tests/resize_border_test.rc', '-O', 'coff', '-o', resize_manifest])
+    fixture('resize_border_test', [*STRICT, '-municode', 'tests/resize_border_test.cpp', resize_manifest, '-lgdi32', '-luser32'])
     # Address field model: display, suggestions, and what a typed text opens (links, local paths and file: URLs, searches).
     fixture('address_test', [*STRICT, 'tests/address_test.cpp'])
     fixture('history_index_test', ['-O2', *STRICT, 'tests/history_index_test.cpp'])
@@ -143,6 +148,9 @@ def existing_fixtures() -> None:
             *UI_LIBS, '-lshell32', '-loleaut32', '-lmsimg32', '-lshcore'], [ROOT, flicker_evidence])
     fixture('shortcuts_test', ['-O0', *TVG, WV2, 'tests/shortcuts_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
     fixture('navigation_errors_test', [*LOOSE, *TVG, WV2, 'tests/navigation_errors_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
+    # #121 crashed-tab page and screen-share confirmation (src/crash-page.h, src/origin-prompt.h ScreenCapture). The engine
+    # facts behind them are measured by tests/crash-screenshare/engine_probe.py (real engine, window never shown).
+    fixture('crash_screenshare_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/crash_screenshare_test.cpp', *UI_LIBS], [ROOT])
     # A navigation the engine turned into a download is never an error page (src/download-navigation.h; real engine:
     # tests/downloads/download_navigation_e2e.py)
     fixture('download_navigation_test', [*STRICT, 'tests/download_navigation_test.cpp'])
@@ -206,8 +214,8 @@ def existing_fixtures() -> None:
     # the four boards drawn off screen by the production window, Paper geometry, buttons, keys, A3's connected state.
     annotation_onboarding_evidence = ROOT / 'build/annotation-onboarding-render'
     annotation_onboarding_evidence.mkdir(parents=True, exist_ok=True)
-    fixture('annotation_onboarding_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/onboarding/annotation_onboarding_test.cpp', 'src/native-lottie.cpp', THORVG,
-            *UI_LIBS, '-loleaut32', '-lshell32'], [ROOT, annotation_onboarding_evidence])
+    fixture('annotation_onboarding_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/onboarding/annotation_onboarding_test.cpp', 'src/native-lottie.cpp', 'src/agent-install.cpp', 'src/agent-runtime.cpp', 'src/acp-client.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32', '-luserenv', '-lwinhttp', '-lbcrypt'], [ROOT, annotation_onboarding_evidence])
 
 
 def peer_suites() -> None:

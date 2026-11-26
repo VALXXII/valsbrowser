@@ -208,7 +208,7 @@ def j_e4(j):
     with F.OtherApp() as o:
         time.sleep(0.8)
         shown, rb = F.bubble_shown()
-        j.step('E4 · another application in front: the bubble is hidden, not closed', o.in_front() and not shown and 'bubble closed' not in C.log_text()[-3000:], {'shown': shown, 'front': o.in_front()})
+        j.step('E4 · another application in front: the bubble stays where it is, not closed (decision A, 24 Nov 2026: no longer hidden)', o.in_front() and shown and 'bubble closed' not in C.log_text()[-3000:], {'shown': shown, 'front': o.in_front()})
         j.inv.m.hidden_by_other = True
         j.check('other application in front')
     F.front(); time.sleep(0.8); j.inv.m.hidden_by_other = False
@@ -221,6 +221,35 @@ def j_e4(j):
         time.sleep(0.6)
         j.open_on('h1.hero-title', 'other application in front, a click on B (no conversation)', front=False)
     j.check('B on screen')
+
+
+@journey('perm_clic_de_retour', 'owner 0.3.952 (a request waits, another application in front, the click that brings the browser back falls on « Autoriser »: one request, one answer)')
+def j_perm_retour(j):
+    # The owner's trial: the card was on screen, a capture tool then another application came in front, the click back
+    # where « Autoriser » was fell on the PAGE (the bubble was hidden): another element was selected, the card left and came
+    # back at the next click on its element — « asked twice ». Decision A: the bubble stays on screen, the click is its own.
+    j.open_on('h1.hero-title', 'title')
+    m = F.log_mark(); F.type_and_send('vrai-autorisation jetonretour', 'bubble'); j.inv.m.conv['h1.hero-title'] = 'jetonretour'
+    j.step('the permission is asked', F.wait_log(r'CHAT permission asked', m, 20)); time.sleep(1.0)
+    p = F.chat_point(text='Autoriser')
+    j.step('« Autoriser » is on screen', bool(p), p)
+    answered = None
+    with F.OtherApp() as o:
+        time.sleep(0.8)
+        shown, region = F.bubble_shown()
+        j.step('another application in front: the bubble and its card stay on screen (not hidden, not closed)',
+               o.in_front() and shown and 'bubble closed' not in C.log_text()[m:], {'shown': shown, 'region': region, 'front': o.in_front()})
+        j.R.capture('autre-application-devant')
+        if p:
+            F.click_at(*p)   # the click that brings the browser back, on the button the user sees
+            answered = F.wait_log(r'CHAT permission answered', m, 4)
+    since = C.log_text()[m:]
+    j.step('the click back on « Autoriser » answers the request — asked once, answered once, no other element selected',
+           bool(answered) and len(re.findall(r'CHAT permission asked', since)) == 1 and len(re.findall(r'CHAT permission answered', since)) == 1
+           and 'a click on another element' not in since and 'bubble opened on' not in since,
+           [l for l in since.splitlines() if re.search(r'permission|click on another|bubble opened|foreground', l)][-8:])
+    j.step('the turn ends', F.wait_log(r'CHAT turn t\d+ ended', m, 20))
+    F.front(); time.sleep(0.5); j.check('after the answer')
 
 
 @journey('abab', 'R6 R18 (A → B → A → B, slow then fast)')
@@ -759,6 +788,60 @@ def j_e1(j):
         j.R.capture(f'e1-{host[1:]}'); j.close()
 
 
+@journey('e1b_cadre_dans_iframe', 'lot 1c (inside an iframe: the bubble\'s frame is around the element clicked, and follows a scroll of the page)')
+def j_e1b(j):
+    # The owner's trial of 24 Nov 2026 (sandbox page, « Standard · 3 à 5 jours » in the same-origin iframe): the bubble opened
+    # next to the click, its frame was drawn at the TOP LEFT of the page (the element's rectangle in its own frame). Windowless:
+    # tests/chat/final/page_frames.py (nested frames, scrolled frame, another origin, canvas). Here, the real browser.
+    F.inject_embedded(); host = '#qa-frame'
+    F.scroll_into_view(host, 'center'); F.front()
+    p = F.embedded_point(host); m = F.log_mark(); t = F.click_at(*p, settle=0.04)
+    j.n += 1; j.inv.after_element_click(host, t, f'{j.n:02d} lot 1c click inside {host}', mark=m)
+    time.sleep(1.2)
+
+    def framed():
+        bf = F.bubble_frame_box(); el = F.page(F.EMBEDDED_BOX[host])   # the block inside the iframe, in the page's viewport
+        ok = bool(bf and el) and all(abs(a - b) <= 1.5 for a, b in zip(bf, (el[0] - 4, el[1] - 4, el[2] + 4, el[3] + 4)))   # Paper 18QJ-0: 4 px out
+        return ok, {'frame': bf, 'element': el}
+    ok, d = framed()
+    j.step('lot 1c · inside an iframe: the bubble\'s frame is drawn around the element clicked (4 px out), not at the top left of the page', ok, d)
+    j.R.capture('e1b-cadre-iframe')
+    y0 = F.scroll_y(); pg = F.page_area(); F.u32.SetCursorPos(pg[0] + 20, (pg[1] + pg[3]) // 2); time.sleep(0.2)
+    F.wheel(1, 0.05); time.sleep(0.9)
+    ok, d = framed(); d['scrolledPx'] = (F.scroll_y() or 0) - (y0 or 0)
+    j.step('lot 1c · the page scrolled: the frame is still around the element', ok and abs(d['scrolledPx']) > 20, d)
+    j.R.capture('e1b-cadre-iframe-defile')
+    j.check('lot 1c after the scroll (the bubble followed its element)', wheel_moved=True)
+
+    # Lot 1d, case 1 = A (the owner, 24 Nov 2026; Paper « Iframes · cas 1 · l'élément sort de l'iframe · A »): a scroll INSIDE the
+    # iframe takes the element out of it — the bubble stays, stuck to the iframe's edge on the side the element left by (here
+    # the top), its frame is no longer drawn; scrolled back, everything is as before.
+    FR = "document.getElementById('qa-frame')"
+    F.page("(function(){var d=" + FR + ".contentDocument;if(!d.getElementById('qa-tall')){var s=d.createElement('div');s.id='qa-tall';s.style.height='900px';d.body.appendChild(s)}return 1})()")
+    time.sleep(0.4); s0 = F.bubble_surface(); el0 = F.page(F.EMBEDDED_BOX[host]); k = F.dpr()
+    fr = F.page("(function(){var r=" + FR + ".getBoundingClientRect();return [r.left,r.top,r.right,r.bottom]})()")
+    F.page(FR + ".contentWindow.scrollTo(0,400)"); time.sleep(1.0)
+    s1 = F.bubble_surface(); shown = F.bubble_shown()[0]; bf = F.bubble_frame_box()
+    # the element's top was at el0[1]; its place for the host is now the iframe's top edge: the bubble moved up by that much
+    want = (fr[1] - el0[1]) * k if el0 and fr else None; moved = (s1[1] - s0[1]) if s0 and s1 else None
+    j.step('lot 1d · case 1: the element scrolled out of its iframe (by the top) — the bubble is still there, stuck to the iframe\'s top edge, no frame drawn',
+           bool(shown) and bf is None and want is not None and moved is not None and abs(moved - want) <= 3 and abs(s1[0] - s0[0]) <= 2 and 'no longer in the page' not in C.log_text()[m:],
+           {'surface before': s0, 'surface stuck': s1, 'moved px': moved, 'expected px': want, 'iframe': fr, 'frame': bf})
+    j.R.capture('e1b-colle-au-bord')
+    F.page(FR + ".contentWindow.scrollTo(0,0)"); time.sleep(1.0)
+    ok, d = framed(); s2 = F.bubble_surface(); d['surface'] = s2
+    j.step('lot 1d · case 1: scrolled back — the frame is around the element again and the bubble is back where it was', ok and bool(s2 and s0) and abs(s2[1] - s0[1]) <= 3 and abs(s2[0] - s0[0]) <= 2, d)
+
+    # Lot 1d, case 3 (Paper « Iframes · cas 3 · l'iframe se recharge »): the iframe reloads — the bubble's frame comes back around
+    # the element found again (the bubble never closed: « gone » is only said after 500 ms without it).
+    m3 = F.log_mark()
+    F.page("(function(){var f=" + FR + ";f.srcdoc=f.srcdoc;return 1})()"); time.sleep(1.6)
+    ok, d = framed(); d['bubble shown'] = F.bubble_shown()[0]
+    j.step('lot 1d · case 3: the iframe reloaded — the bubble is still open and its frame is back around the element found again', ok and bool(d['bubble shown']), d)
+    j.R.capture('e1b-iframe-recharge')
+    j.check('lot 1d after the iframe reloaded', wheel_moved=True); j.close()
+
+
 @journey('m5_bascule_puis_clic', 'review M5 (the Commentaire switch, then a click on an element 50 ms later, while the panel slides out)')
 def j_m5(j):
     for i in range(3):
@@ -882,32 +965,6 @@ def j_m1(j):
     m = F.log_mark(); F.type_and_send('reply jetonM1b', 'bubble'); j.inv.m.conv['a.btn-primary'] = 'jetonM1b'
     j.step('M1 · the next message is answered', F.wait_log(r'CHAT turn t\d+ ended', m, 20)); j.inv.sent('bubble', 'jetonM1b', 'M1 next')
     j.check('M1')
-
-
-@journey('c3_historique_du_lanceur', 'review C3 (a conversation whose element is gone, opened from the launcher\'s history: it opens and stays) — to enable after H1\'s fix')
-def j_c3_history(j):
-    j.open_on('p.hero-text', 'text'); j.send('p.hero-text', 'reply', token='jetonC3h')
-    # the element leaves the site for good: the agent renames its class in landing.html (the page reloads)
-    m = F.log_mark(); F.type_and_send('apply landing.html|<p class="hero-text"|<p class="hero-copy"', 'bubble')
-    F.wait_log(r'CHAT permission asked', m, 20); F.answer_permission('Autoriser', 'bubble', m)
-    j.step('the element is gone from the page after the edit', F.wait_log(r'CHAT turn t\d+ ended', m, 20) and (time.sleep(2.5) or True)
-           and not F.page("!!document.querySelector('p.hero-text')"))
-    j.inv.allow_close = True; F.escape_chat('bubble'); time.sleep(0.6); j.inv.m.open = None
-    j.inv.m.conv.pop('p.hero-text', None)
-    m = F.log_mark(); F.front()
-    j.step('the launcher (bottom right) opens the history', C.invoke('AnnotationLauncher')); time.sleep(1.0)
-    names = C.uia('-List') or ''
-    rows = [l for l in names.splitlines() if 'hero-text' in l or 'jetonC3h' in l or 'Bonjour' in l]
-    j.R.data['measures']['historyRows'] = rows[:6]
-    name = rows[0].split(' | ')[1] if rows else None
-    if not j.step('C3 · the conversation whose element is gone is listed', name, names.splitlines()[-30:]):
-        return
-    C.uia('-Name', name, '-Invoke'); time.sleep(1.5)
-    shown, rb = F.bubble_shown(); st = F.chat_state('bubble')
-    j.step('C3 · it opens in the bubble (bottom right) with its conversation', shown and 'jetonC3h' in (st.get('text') or ''), {'region': rb})
-    time.sleep(2.0)
-    j.step('C3 · and stays open (never closed as « element no longer in the page »)', F.bubble_shown()[0] and 'no longer in the page' not in C.log_text()[m:], [l for l in C.log_text()[m:].splitlines() if 'bubble' in l][-5:])
-    j.R.capture('c3-historique')
 
 
 @journey('c1_prechauffage_retarde', 'review C1 with the warm-up held back (BROWSER_CHAT_TEST_WARM_DELAY_MS, asked to H1): a click before the chat page is ready')

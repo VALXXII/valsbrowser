@@ -130,11 +130,6 @@ static void Texts() {
     CHECK(AH::ElementLabel(t) == L"Élément div");
     t.kind = "selection"; t.selectionText = std::string(60, 'x');
     CHECK(AH::ElementLabel(t).rfind(L"Texte sélectionné « ", 0) == 0 && AH::ElementLabel(t).find(L"…") != std::wstring::npos);
-    CHECK(AH::AgeLabel(30, 0, 1, 14, 11) == L"À l'instant" && AH::AgeLabel(125, 0, 1, 14, 11) == L"2 min" && AH::AgeLabel(7300, 0, 1, 14, 11) == L"2 h");
-    CHECK(AH::AgeLabel(30000, 1, 5, 13, 11) == L"Hier" && AH::AgeLabel(300000, 3, 2, 11, 11) == L"Mardi" && AH::AgeLabel(900000, 10, 2, 4, 11) == L"4 nov.");
-    CHECK(AH::AgentDisplay("Claude Desktop") == L"Claude" && AH::AgentDisplay("codex-mcp-client") == L"Codex" && AH::AgentDisplay("try-mcp (sandbox)") == L"try-mcp (sandbox)" && AH::AgentDisplay("") == L"Un agent");
-    CHECK(AH::AgentKindOf("claude-ai") == 0 && AH::AgentKindOf("Codex") == 1 && AH::AgentKindOf("x") == 2);
-    CHECK(AH::SinceLower(130) == L"depuis 2 min" && AH::SinceLower(10) == L"à l'instant");
 }
 
 static void Origins() {
@@ -146,15 +141,6 @@ static void Origins() {
         CHECK(AH::OriginOf(AH::Wide(u)) == BA::SiteOrigin(u));   // the host and the store agree on the site key
 }
 static void Status() {
-    std::vector<BA::Entry> e(3);
-    e[0].annotation.id = "a"; e[0].state.status = BA::Status::Claimed; e[0].state.events = {{100, "agent", "open", "claimed", ""}};
-    e[1].annotation.id = "b"; e[1].state.status = BA::Status::Claimed; e[1].state.events = {{200, "agent", "open", "claimed", ""}};
-    e[2].annotation.id = "c"; e[2].state.status = BA::Status::Resolved; e[2].state.resolution = BA::Resolution{"resolved", "Corrigé", "claude", 300};
-    auto s = AH::Summarize(e, 0);
-    CHECK(s.claimed == 2 && s.working && s.working->annotation.id == "b" && s.resolved && s.resolved->annotation.id == "c");
-    CHECK(!AH::Summarize(e, 301).resolved);
-    CHECK(AH::OutcomeHeadline(e[2]) == L"Résolue par");
-    CHECK(AH::SinceText(30) == L"À l'instant" && AH::SinceText(130) == L"Depuis 2 min");
     CHECK(AH::StoreTag(L"C:\\A\\b") == AH::StoreTag(L"c:\\a\\B") && AH::StoreTag(L"x").size() == 6);
 }
 

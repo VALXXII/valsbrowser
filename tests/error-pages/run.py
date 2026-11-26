@@ -104,7 +104,12 @@ def main() -> int:
     (pages / 'measure.js').write_text(cases.MEASURE_JS, encoding='utf-8')
     for name, js in cases.PREPARE.items():
         (pages / f'{name}.prepare.js').write_text(js, encoding='utf-8')
-    names = list(cases.CASES)
+    # The copy button's states, each on its own copy of the time-out page; keyboard focus needs a focused window
+    # (a page that never had focus shows no :focus-visible): window_qa.py checks it at night.
+    windowless = [n for n, s in cases.COPY_STATES.items() if not s.get('night')]
+    for name in windowless:
+        shutil.copy2(pages / f'{cases.COPY_PAGE}.html', pages / f'{name}.html')
+    names = list(cases.CASES) + windowless
     profile = Path(tempfile.mkdtemp(prefix='error-pages-'))
     try:
         text = run_in_job([str(host), '--pages', str(pages), '--names', ','.join(names), '--udf', str(profile), '--out', str(shots)], OUT, 180)
@@ -132,6 +137,14 @@ def main() -> int:
         m = measures.get(name)
         if not m:
             failures.append(f'{name}: not measured (see the host output)'); rows.append({'name': name, 'layout': ['not measured'], 'pixels': {}}); continue
+        if name in cases.COPY_STATES:
+            layout = cases.check_copy(name, m)
+            rows.append({'name': name, 'layout': layout, 'pixels': {}})
+            print(f'  {name:16} {"OK" if not layout else "DIFF"}  {m.get("copyState")}')
+            for d in layout:
+                print(f'      {d}')
+            failures += [f'{name}: {d}' for d in layout]
+            continue
         layout = cases.check(name, m)
         pixels = {}
         if Image and (shots / f'{name}.png').exists() and m.get('main'):
