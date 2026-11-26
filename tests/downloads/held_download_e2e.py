@@ -196,7 +196,7 @@ class Desk:
             u32.SetThreadDesktop(self.h); out['r'] = fn()
         t = threading.Thread(target=body); t.start(); t.join(); return out.get('r')
 
-    def start(self, exe, cmdline, cwd, env=None, job=None, flags=0):
+    def start(self, exe, cmdline, cwd, env=None, job=None, flags=0, resume=True):
         si = SI(); si.cb = ctypes.sizeof(si)
         if self.name:
             si.lpDesktop = 'WinSta0\\' + self.name
@@ -207,7 +207,9 @@ class Desk:
             raise OSError(f'CreateProcessW failed {ctypes.get_last_error()}')
         if job and not k32.AssignProcessToJobObject(job.h, pi.hProcess):
             k32.TerminateProcess(pi.hProcess, 1); raise OSError('AssignProcessToJobObject failed')
-        k32.ResumeThread(pi.hThread); return pi
+        if resume:
+            k32.ResumeThread(pi.hThread)
+        return pi
 
 
 class FolderWatch:
@@ -267,7 +269,8 @@ def sealed_env(app: Path, extra_args: str, cdp_port: int, extra_env=None) -> dic
                LOCALAPPDATA=str(home / 'AppData' / 'Local'), PATH=r'C:\Windows\System32;C:\Windows;C:\Windows\System32\WindowsPowerShell\v1.0')
     env['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = f'--remote-debugging-port={cdp_port} --remote-debugging-address=127.0.0.1 {extra_args}'.strip()
     env.update(extra_env or {})   # the browser's non-release test hooks (BROWSER_TEST_KEEP_*), never an agent's
-    for n in ('claude', 'codex', 'node', 'npx', 'npm'):   # SAFETY before any launch: no agent CLI reachable
+    env = dn.guarded_env(env, app)   # SAFETY before any launch: the browser's test switch on, no agent (agent_guard)
+    for n in ('claude', 'codex', 'node', 'npx', 'npm'):   # and no agent CLI reachable
         assert shutil.which(n, path=env['PATH']) is None, f'{n} reachable from the sealed PATH: refused'
     assert str(home).startswith(str(app)) and env['USERPROFILE'] == str(home), 'sealed home: refused'
     return env
@@ -280,14 +283,19 @@ class Browser:
         (app / 'session').write_text(f'browser-session-2\n0\n1\n"{base}/page"\n0\n', encoding='utf-8', newline='\n')
         (app / 'settings').write_text('browser-settings 1\nrestore-tabs=1\nconfirm-close-tabs=0\n'
                                       f'download-folder={downloads}\nask-where-to-save=0\n', encoding='utf-8', newline='\n')
-        self.job = Job(); self.sockets = []; self.env = sealed_env(app, extra_args, self.port, extra_env)
-        self.pi = desk.start(str(app / 'browser.exe'), None, str(app), self.env, self.job)
+        self.job = Job(); self.sockets = []
+        self.env = sealed_env(app, extra_args, self.port, extra_env)
+        self.pi = desk.start(str(app / 'browser.exe'), None, str(app), dn.launch_guard(self.env), self.job, resume=False)
         self.pid = self.pi.dwProcessId
+        self.guards = [dn.AgentQuietWatch(self.pid, log=app / 'prototype.log', work=app).start()]   # before it runs
+        k32.ResumeThread(self.pi.hThread)
 
     def open_window(self):
         """A second window of the same profile (browser.exe started again beside the first, same environment, same job):
         a window process of its own on the same engine."""
-        return self.desk.start(str(self.app / 'browser.exe'), None, str(self.app), self.env, self.job)
+        pi = self.desk.start(str(self.app / 'browser.exe'), None, str(self.app), dn.launch_guard(self.env), self.job, resume=False)
+        self.guards.append(dn.AgentQuietWatch(pi.dwProcessId, log=self.app / 'prototype.log', work=self.app).start())   # before it runs
+        k32.ResumeThread(pi.hThread); return pi
 
     def close_window(self, pi=None):
         """WM_CLOSE to one window process (the first by default); waits for that process only. Seconds it took."""
