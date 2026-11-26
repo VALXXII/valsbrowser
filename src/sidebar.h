@@ -339,17 +339,17 @@ inline int Columns(float width) { return std::max(1, static_cast<int>(std::floor
 // The complete column's grid: Columns(w) per row, or `n` when fewer (a single row of them spans the width).
 inline int GridColumns(float w, int n) { return std::max(1, std::min(Columns(w), n)); }
 // Tile `k` of `n` in rows of `columns` inside [left, left + w] from `top`, `scroll` up: every row shares the whole width
-// with the tiles it holds, the last one too (Val 26 nov.); `shareLast` false: a short last row keeps the rows' width, on
-// the left (the compact « » » popover, Paper 1WSC-0). The one place for a tile's box: MakeGrid, and any preview of the
-// grid with one more tile (a tab dragged onto the favorites: GridCell(view, n + 1, GridColumns(w, n + 1), k)).
-inline Box GridCell(float left, float top, float w, int n, int columns, int k, float scroll = 0, bool shareLast = true) {
+// with the tiles it holds, the last one too (Val 26 nov.; the compact « » » popover too, Designer 26 nov.: the same grid
+// as the unfolded panel). The one place for a tile's box: MakeGrid, and any preview of the grid with one more tile (a tab
+// dragged onto the favorites: GridCell(view, n + 1, GridColumns(w, n + 1), k)).
+inline Box GridCell(float left, float top, float w, int n, int columns, int k, float scroll = 0) {
     namespace C = Complete; const int cols = std::max(1, columns), r = k / cols, c = k % cols;
-    const int inRow = shareLast ? std::clamp(n - r * cols, 1, cols) : cols;
+    const int inRow = std::clamp(n - r * cols, 1, cols);
     const float tw = (w - C::tileGap * (inRow - 1)) / inRow, x = left + c * (tw + C::tileGap), y = top + r * (C::tile + C::tileGap) - scroll;
     return {x, y, x + tw, y + C::tile};
 }
-// `columns` > 0: that many per row and a short last row on the left (the popover's five in 230, Paper 1WSC-0 / 1YX2-0),
-// else GridColumns(w, n), every row sharing the width (GridCell).
+// `columns` > 0: that many per row (the popover's five in 230, Paper 1WSC-0 / 1YX2-0), else GridColumns(w, n); every row
+// shares the width, a short last one too (GridCell).
 inline Grid MakeGrid(float left, float top, float w, int n, int visibleRows, float scroll, float maxHeight = 1e9f, int columns = 0) {
     namespace C = Complete; Grid g; g.columns = columns > 0 ? columns : GridColumns(w, n);
     g.rows = n <= 0 ? 0 : (n + g.columns - 1) / g.columns;
@@ -357,7 +357,7 @@ inline Grid MakeGrid(float left, float top, float w, int n, int visibleRows, flo
     const float viewH = std::min(height(std::min(g.rows, visibleRows)), std::max(C::tile, maxHeight));
     g.view = {left, top, left + w, top + viewH};
     g.content = height(g.rows); g.maxScroll = std::max(0.f, g.content - viewH); g.scroll = std::clamp(scroll, 0.f, g.maxScroll);
-    for (int i = 0; i < n; ++i) g.tiles.push_back(GridCell(left, top, w, n, g.columns, i, g.scroll, columns <= 0));
+    for (int i = 0; i < n; ++i) g.tiles.push_back(GridCell(left, top, w, n, g.columns, i, g.scroll));
     if (g.Scrolls()) {
         const float track = viewH - 2 * C::barInset, h = std::max(16.f, track * viewH / g.content), y = g.view.top + C::barInset + (track - h) * (g.scroll / g.maxScroll);
         g.bar = {g.view.right - C::barWidth, y, g.view.right, y + h};
