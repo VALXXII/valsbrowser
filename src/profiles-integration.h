@@ -78,10 +78,11 @@ NativeChrome::Design::Rgb Mix(NativeChrome::Design::Rgb a,NativeChrome::Design::
 void AnnotationAccentChanged();
 // The address field's selection run (Accent::Selection) repaints with the accent, same steps, no clock of its own.
 void AddressSelectionChanged();
+void UpdateToastAccentChanged(); // the update card's background follows the ink (src/main.cpp)
 void SetAccents(unsigned long fill,unsigned long ink,unsigned long selection,bool animate){
     namespace A=NativeChrome::Design::Accent;
     A::SettledCurrent()=RgbOf(fill);
-    if(!animate||ReducedMotionPreferred()){A::Current()=RgbOf(fill);A::InkCurrent()=RgbOf(ink);A::SelectionCurrent()=RgbOf(selection);accentTween.active=false;AnnotationAccentChanged();AddressSelectionChanged();return;}
+    if(!animate||ReducedMotionPreferred()){A::Current()=RgbOf(fill);A::InkCurrent()=RgbOf(ink);A::SelectionCurrent()=RgbOf(selection);accentTween.active=false;AnnotationAccentChanged();AddressSelectionChanged();UpdateToastAccentChanged();return;}
     accentTween.fromFill=A::Get();accentTween.fromInk=A::Ink();accentTween.toFill=RgbOf(fill);accentTween.toInk=RgbOf(ink);
     accentTween.fromSelection=A::SelectionCurrent();accentTween.toSelection=RgbOf(selection);
     accentTween.start=GetTickCount64();accentTween.active=true;if(window)SetTimer(window,ProfileAnimTimerId,15,nullptr);
@@ -94,7 +95,7 @@ void ProfileAnimTick(){
         A::Current()=Mix(accentTween.fromFill,accentTween.toFill,t);A::InkCurrent()=Mix(accentTween.fromInk,accentTween.toInk,t);
         A::SelectionCurrent()=Mix(accentTween.fromSelection,accentTween.toSelection,t);
         if(u>=1)accentTween.active=false;
-        AnnotationAccentChanged();AddressSelectionChanged();
+        AnnotationAccentChanged();AddressSelectionChanged();UpdateToastAccentChanged();
     }
     const bool button=chrome.ProfileButtonAnimating(NativeChrome::Motion::Now());
     InvalidateChrome();

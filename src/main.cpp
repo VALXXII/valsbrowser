@@ -310,6 +310,9 @@ void ElementsFrame(NativeChrome::Motion::Time now); NativeChrome::Motion::Wake E
 void ElementsReducedMotion(bool reduced); void RepositionElementSurfaces(); void ChromeTipHover(int x,int y); void ChromeTipHide(); void ChromeTipFocus(int id); bool sandboxNextTab=false,debugSandboxAtStart=false;
 // Our print window (#121, src/print-integration.h, included after SavePageAsPdf).
 void PrintFrame(NativeChrome::Motion::Time now); NativeChrome::Motion::Wake PrintNextWake(NativeChrome::Motion::Time now); void PrintReposition(); bool PrintSurfaceFocus(HWND f); void PrintTabChanged(); void PrintTabClosed(const std::shared_ptr<Tab>& t); void CreatePrintSurfaces(); void DisposePrintSurfaces(); bool PrintPageMessage(const std::shared_ptr<Tab>& t,const std::wstring& message); void RegisterPrintScript(const std::shared_ptr<Tab>& t,const PopupHost::RequestPtr& popup);
+#if defined(BROWSER_PREVIEW) && defined(BROWSER_UPDATES)
+constexpr int CardDemoProfileCommand=3098; bool CardDemoActive(); void CardDemoNextProfile();
+#endif
 constexpr int FindNextCommand=3050,FindPreviousCommand=3051,FullscreenCommand=3052,SandboxCommandId=3053,ShortcutsCommand=3054,ExitFullscreenCommand=3055; bool PageFullscreenActive(); void ExitPageFullscreen(); void OpenShortcutsPanel();
 // Bookmarks (section "Bookmarks" below).
 constexpr int BookmarkBarCommand=3030,BookmarksDrawerCommand=3031,BookmarkUndoCommand=3032;
@@ -1330,6 +1333,9 @@ int Key(UINT key){
     // Modal, prompt and find bar fields keep their keys (Ctrl+W must not close the tab under a dialog).
     {int cmd=0;if(ElementSurfaceKey(key,ctrl,alt,shift,cmd))return cmd;}
     if(motionLabMode&&ctrl&&alt&&shift&&key=='M')return MotionLabCommand;
+#if defined(BROWSER_PREVIEW) && defined(BROWSER_UPDATES)
+    if(CardDemoActive()&&!ctrl&&!alt&&!shift&&key==VK_F9)return CardDemoProfileCommand; // update card trial: next profile colour
+#endif
     if(ctrl&&!alt){
         if(!shift&&key=='D')return 'K';
         if(shift&&key=='B')return BookmarkBarCommand;
@@ -4770,6 +4776,9 @@ case FindNextCommand:case FindPreviousCommand:FindStep(cmd==FindNextCommand);bre
 case FullscreenCommand:if(PageFullscreenActive())ExitPageFullscreen();else ToggleBrowserFullscreen();break;
 case ExitFullscreenCommand:ExitPageFullscreen();break;
 case SandboxCommandId:OpenSandbox();break;
+#if defined(BROWSER_PREVIEW) && defined(BROWSER_UPDATES)
+case CardDemoProfileCommand:CardDemoNextProfile();break;
+#endif
 case ShortcutsCommand:OpenShortcutsPanel();break;
 }}
 #ifndef BROWSER_UPDATES
@@ -4777,7 +4786,7 @@ void SyncUpdateToastReserve(){SyncDrawerReserve();} void CheckForUpdates(){} voi
 NativeChrome::SettingsUI::Drawer::Version SettingsVersion(){return {AboutTitle(),false,false};}
 NativeChrome::Modal::Status AboutStatusNow(){namespace MD=NativeChrome::Modal;auto st=MD::AboutStatus(MD::AboutUpToDate);st.icon=MD::StatusIcon::None;st.title=TR(updates_unavailable);st.detail=TR(updates_unavailable_build);st.hasButton=false;return st;}
 void AboutUpdateAction(int){}
-void SyncUpdateToastMotion(){}
+void SyncUpdateToastMotion(){} void UpdateToastAccentChanged(){}
 #else
 // ---- Self-update host -------------------------------------------------------
 // The engine works on its own threads and only posts UpdateMessage (coalesced and
@@ -4797,6 +4806,12 @@ std::wstring updateLaterVersion;
 // Design-preview copies only: `--carte-maj` plays a fake update source through the real card (src/update-card-demo.h).
 extern std::wstring launchArgs;BrowserUpdate::CardDemo cardDemo;bool cardDemoOn=false;constexpr UINT_PTR CardDemoTimerId=75;
 void CardDemoTick(){updateToast.SetView(cardDemo.Step(GetTickCount64()));}
+// `--carte-maj-profil=<gris|vert|cyan|violet|rose|ambre>` and F9 (next profile): the background for each profile ink
+// (Paper's --color-profile-* tokens). Without them, the window's own profile ink, as in the product.
+struct CardDemoProfile{const wchar_t* name;unsigned long ink;};
+constexpr CardDemoProfile CardDemoProfiles[]={{L"gris",0xB3B3B3},{L"vert",0x6FD087},{L"cyan",0x4FC3D9},{L"violet",0xB49BFF},{L"rose",0xF08BC4},{L"ambre",0xE6AC3D}};
+int cardDemoProfile=-1;bool CardDemoActive(){return cardDemoOn;}
+void CardDemoNextProfile(){if(!cardDemoOn)return;cardDemoProfile=(cardDemoProfile+1)%6;updateToast.SetDemoInk(CardDemoProfiles[cardDemoProfile].ink);Log(std::wstring(L"UPDATE card trial: profile ")+CardDemoProfiles[cardDemoProfile].name);}
 #else
 constexpr bool cardDemoOn=false;
 #endif
@@ -4840,6 +4855,7 @@ void StartUpdates(UpdateCore::Config config=UpdateConfig()){
     if(!updateToast.Init(window,base+L"\\assets",UpdateAction))Log(L"UPDATE toast unavailable");
     updateToast.SetFocusReleaseHandler([]{FocusPage();});
 #ifdef BROWSER_PREVIEW
+    if(const size_t at=launchArgs.find(L"--carte-maj-profil=");at!=std::wstring::npos&&!smoke)for(int i=0;i<6;++i)if(launchArgs.compare(at+19,wcslen(CardDemoProfiles[i].name),CardDemoProfiles[i].name)==0){cardDemoProfile=i;updateToast.SetDemoInk(CardDemoProfiles[i].ink);}
     if(launchArgs.find(L"--carte-maj")!=std::wstring::npos&&!smoke){cardDemoOn=true;cardDemo.Start(GetTickCount64(),launchArgs.find(L"--carte-maj=erreur")!=std::wstring::npos);SetTimer(window,CardDemoTimerId,50,nullptr);Log(L"UPDATE card trial (preview copy): fake update source");}
 #endif
     updatesStarted=updates.Start(config);
@@ -4937,6 +4953,7 @@ void SyncUpdateToastReserve(){SyncDrawerReserve();const bool open=(downloadDrawe
 bool FocusUpdateToast(){return updateToast.Shown()&&updateToast.Focus();}
 bool UpdateToastHasFocus(){HWND toast=updateToast.Window();HWND focus=GetFocus();return toast&&focus&&(focus==toast||IsChild(toast,focus));}
 void SyncUpdateToastMotion(){updateToast.SyncReducedMotion();} // no-op before Init/after Close
+void UpdateToastAccentChanged(){updateToast.AccentChanged();} // the card's background follows the profile ink
 void SetUpdateToastTop(float dip){updateToast.SetTopReserve(dip);}
 float UpdateToastHeight(){if(!updateToast.Shown()||!updateToast.Window())return 0;RECT r{};GetWindowRect(updateToast.Window(),&r);return (r.bottom-r.top)*96.f/GetDpiForWindow(window)+8;}
 #endif

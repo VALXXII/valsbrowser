@@ -590,6 +590,14 @@ struct Toast::Impl {
     Onboarding::Shaders::Renderer gpu; Onboarding::Shaders::Layer grain; bool gpuTried = false;
     double grainSeconds = 0; Motion::Time grainTick{};
     IWICImagingFactory* wic = nullptr;
+    // The background's colours: from the window's profile ink (or the trial's), re-rendered when they change.
+    std::array<ProfileColor::Rgb8, 3> grainColors{}; bool grainColored = false; unsigned long demoInk = 0xFFFFFFFFul;
+    ProfileColor::Rgb8 Ink() const {
+        if (demoInk <= 0xFFFFFFul) return {static_cast<std::uint8_t>(demoInk >> 16), static_cast<std::uint8_t>(demoInk >> 8), static_cast<std::uint8_t>(demoInk)};
+        const auto ink = NativeChrome::Design::Accent::Ink();
+        auto byte = [](float v) { return static_cast<std::uint8_t>(std::lround(std::clamp(v, 0.f, 1.f) * 255)); };
+        return {byte(ink.r), byte(ink.g), byte(ink.b)};
+    }
 
     ~Impl() { Destroy(); }
     bool Reduced() const { return options.forceReducedMotion >= 0 ? options.forceReducedMotion != 0 : Motion::PreferredReducedMotion(); }
@@ -723,7 +731,9 @@ struct Toast::Impl {
         if (!gpu.Ready() || !gpu.HasInput(Onboarding::Shaders::Kind::GrainGradient)) return;
         const float cssW = width - Paper::border, cssH = Paper::grainHeight;
         const unsigned ow = static_cast<unsigned>(std::lround(cssW * scale)), oh = static_cast<unsigned>(std::lround(cssH * scale));
-        const bool current = grain.bitmap && grain.owner == surface && grain.frame.width == ow && grain.frame.height == oh;
+        const auto colors = Grain::Colors(Ink());
+        const bool recolor = !grainColored || colors != grainColors;
+        const bool current = grain.bitmap && grain.owner == surface && grain.frame.width == ow && grain.frame.height == oh && !recolor;
         const bool loops = GrainLoops();
         if (loops) {
             if (grainTick != Motion::Time{}) grainSeconds += std::min(.25, std::chrono::duration<double>(now - grainTick).count());
@@ -731,8 +741,10 @@ struct Toast::Impl {
         } else grainTick = {};   // paused (hidden, minimised, reduced motion): the wave stays where it is
         const bool due = !current || (loops && (grain.shaded == Motion::Time{} || std::chrono::duration<float, std::milli>(now - grain.shaded).count() >= GrainIntervalMs - 3));
         if (!due) return;
-        if (gpu.Render(Onboarding::Shaders::Kind::GrainGradient, Onboarding::Shaders::UpdateCardGrain(grainSeconds), cssW, cssH, ow, oh, grain.frame)) {
-            grain.Upload(surface); grain.shaded = now; ++grainRenders;
+        auto hex = [](ProfileColor::Rgb8 c) { return (static_cast<unsigned long>(c.r) << 16) | (static_cast<unsigned long>(c.g) << 8) | c.b; };
+        const unsigned long rgb[3] = {hex(colors[0]), hex(colors[1]), hex(colors[2])};
+        if (gpu.Render(Onboarding::Shaders::Kind::GrainGradient, Onboarding::Shaders::UpdateCardGrain(grainSeconds, rgb), cssW, cssH, ow, oh, grain.frame)) {
+            grain.Upload(surface); grain.shaded = now; ++grainRenders; grainColors = colors; grainColored = true;
         }
     }
     ButtonVisual Visual(int i, Motion::Time now) const {
@@ -964,6 +976,10 @@ bool Toast::Focus() {
     return GetFocus() == impl_->hwnd;
 }
 void Toast::SetFocusReleaseHandler(std::function<void()> handler) { if (impl_) impl_->onRelease = std::move(handler); }
+void Toast::AccentChanged() { if (impl_ && impl_->windowShown) impl_->Request(); }
+#ifdef BROWSER_PREVIEW
+void Toast::SetDemoInk(unsigned long rgb) { if (impl_) { impl_->demoInk = rgb; AccentChanged(); } }
+#endif
 void Toast::Close() { impl_.reset(); }
 HWND Toast::Window() const { return impl_ ? impl_->hwnd : nullptr; }
 bool Toast::Shown() const { return impl_ && impl_->windowShown; }

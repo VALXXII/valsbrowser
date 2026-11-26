@@ -114,9 +114,10 @@ inline Uniforms GrainGradient(float seconds) {
 // over the card's #171717, 268 × 202. Time origin: Paper's `frame` 6 409 645.9 ms (the preview design/update-card-preview
 // starts there too), then it runs at speed 1.
 inline const float UpdateCardGrainStart = static_cast<float>(std::fmod(6409.645900000468, 31.41592653589793));
-inline Uniforms UpdateCardGrain(double seconds) {
+// `colors`: the three gradient colours, 0xRRGGBB (they follow the profile, src/update-toast-motion.h Grain::Colors).
+inline Uniforms UpdateCardGrain(double seconds, const unsigned long (&colors)[3] = {0x8A66FF, 0xECAEFF, 0xF4F4FF}) {
     Uniforms u; u.fit = 1; u.scale = .39f; u.time = static_cast<float>(std::fmod(UpdateCardGrainStart + seconds, static_cast<double>(GrainPeriod)));
-    SetColor(u.colors[0], 0x8A66FF); SetColor(u.colors[1], 0xECAEFF); SetColor(u.colors[2], 0xF4F4FF); SetColor(u.colorBack, 0, 0);
+    SetColor(u.colors[0], colors[0]); SetColor(u.colors[1], colors[1]); SetColor(u.colors[2], colors[2]); SetColor(u.colorBack, 0, 0);
     u.p0[0] = .75f; u.p0[1] = .34f; u.p0[2] = 0; u.p0[3] = 1;            // softness, intensity, noise, shape (wave)
     u.p1[0] = 3;                                                         // colorsCount
     return u;

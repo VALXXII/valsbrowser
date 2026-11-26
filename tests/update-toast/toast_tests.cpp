@@ -23,6 +23,10 @@ static View V(Phase p, std::uint64_t received = 0, std::uint64_t total = 0, doub
     View v; v.phase = p; v.received = received; v.total = total; v.secondsRemaining = eta; v.error = std::move(error); v.version = std::move(version); return v;
 }
 static const std::uint64_t PaperTotal = 209715200, PaperReceived = 52848230;   // 200,0 Mo / 50,4 Mo
+struct ProfileInk { const char* name; ProfileColor::Rgb8 ink; };
+static const ProfileInk Profiles6[6] = {{"gris", {0xB3, 0xB3, 0xB3}}, {"vert", {0x6F, 0xD0, 0x87}}, {"cyan", {0x4F, 0xC3, 0xD9}},
+                                        {"violet", {0xB4, 0x9B, 0xFF}}, {"rose", {0xF0, 0x8B, 0xC4}}, {"ambre", {0xE6, 0xAC, 0x3D}}};
+static unsigned long RgbOf(ProfileColor::Rgb8 c) { return (static_cast<unsigned long>(c.r) << 16) | (static_cast<unsigned long>(c.g) << 8) | c.b; }
 
 // French interface (the default): Val's texts (with Chief's two corrections) and the French number format.
 static void FrenchModelTests() {
@@ -86,6 +90,36 @@ static void LaterTests() {
     CHECK(CardView(V(Phase::Available, 0, 0, -1, L"", L"0.3.2"), L"").phase == Phase::Available);      // forgotten (manual check, new start)
     CHECK(CardView(V(Phase::Downloading, 1, 2, -1, L"", L"0.3.2"), L"0.3.2").phase == Phase::Downloading);
     CHECK(CardView(V(Phase::Ready, 0, 0, -1, L"", L"0.3.2"), L"0.3.2").phase == Phase::Ready);
+}
+
+// The background follows the profile (Val, 2026-11-26): violet exactly Val's, grey neutral, the rest kept in sRGB
+// with the board's lightness and hue offsets (chroma only reduced).
+static void ProfileColorTests() {
+    const auto violet = Grain::Colors(Grain::VioletInk);
+    CHECK(RgbOf(violet[0]) == 0x8A66FF && RgbOf(violet[1]) == 0xECAEFF && RgbOf(violet[2]) == 0xF4F4FF);
+    // The formula itself (not the shortcut) also gives Val's colours from the violet ink: one unit off at most.
+    {
+        const Grain::Lch v = Grain::ToLch(Grain::VioletInk);
+        for (int i = 0; i < 3; ++i) {
+            const Grain::Lch b = Grain::ToLch(Grain::Board[i]);
+            const auto o = ProfileColor::Detail::Pack(ProfileColor::Detail::FromOklch(b.L, ProfileColor::Detail::FitChroma(b.L, b.C * (v.C / v.C), b.h), b.h));
+            CHECK(std::abs(o.r - Grain::Board[i].r) <= 1 && std::abs(o.g - Grain::Board[i].g) <= 1 && std::abs(o.b - Grain::Board[i].b) <= 1);
+        }
+    }
+    const Grain::Lch v = Grain::ToLch(Grain::VioletInk);
+    for (const auto& p : Profiles6) {
+        const auto c = Grain::Colors(p.ink);
+        std::printf("  profile %-6s ink #%06lX -> #%06lX #%06lX #%06lX\n", p.name, RgbOf(p.ink), RgbOf(c[0]), RgbOf(c[1]), RgbOf(c[2]));
+        const Grain::Lch q = Grain::ToLch(p.ink);
+        for (int i = 0; i < 3; ++i) {
+            const Grain::Lch b = Grain::ToLch(Grain::Board[i]), o = Grain::ToLch(c[i]);
+            CHECK(std::fabs(o.L - b.L) < .01);                                     // the board's lightness
+            if (q.C < Grain::GreyChroma) { CHECK(c[i].r == c[i].g && c[i].g == c[i].b); continue; }   // grey profile: neutral greys
+            CHECK(o.C <= b.C * q.C / v.C + .004);                                  // chroma only ever reduced (into sRGB)
+            if (o.C > .03) { double d = std::fabs(std::fmod(o.h - (b.h + q.h - v.h) + 720, 360)); if (d > 180) d = 360 - d; CHECK(d < 2.5); }   // the hue offset kept
+        }
+    }
+    CHECK(RgbOf(Grain::Colors({0xB3, 0xB3, 0xB3})[0]) == 0x888888 && RgbOf(Grain::Colors({0xB3, 0xB3, 0xB3})[2]) == 0xF5F5F5);
 }
 
 static Presenter Fresh(bool reduced = false) { Presenter p; p.SetReduced(reduced, T0()); return p; }
@@ -339,10 +373,11 @@ struct Canvas {
 };
 
 // The card's real background for a canvas: the GrainGradient at `seconds` from Paper's frame, as the popup draws it.
-static ID2D1Bitmap* Grain(Canvas& k, Onboarding::Shaders::Layer& layer, float width, double seconds = 0) {
+static ID2D1Bitmap* GrainBitmap(Canvas& k, Onboarding::Shaders::Layer& layer, float width, double seconds = 0, ProfileColor::Rgb8 ink = Grain::VioletInk) {
     if (!gpu.Ready()) return nullptr;
     const unsigned ow = (unsigned)std::lround((width - 1) * k.dpi / 96), oh = (unsigned)std::lround(Paper::grainHeight * k.dpi / 96);
-    if (!gpu.Render(Onboarding::Shaders::Kind::GrainGradient, Onboarding::Shaders::UpdateCardGrain(seconds), width - 1, Paper::grainHeight, ow, oh, layer.frame)) return nullptr;
+    const auto c = Grain::Colors(ink); const unsigned long rgb[3] = {RgbOf(c[0]), RgbOf(c[1]), RgbOf(c[2])};
+    if (!gpu.Render(Onboarding::Shaders::Kind::GrainGradient, Onboarding::Shaders::UpdateCardGrain(seconds, rgb), width - 1, Paper::grainHeight, ow, oh, layer.frame)) return nullptr;
     layer.Drop();
     return layer.Upload(k.rt) ? layer.bitmap : nullptr;
 }
@@ -410,7 +445,7 @@ static void SnapshotTests(Painter& painter) {
         // As the popup: its height is whole device pixels and the card fills it (src/update-toast.cpp Present).
         const float k = dpi / 96, h = std::lround(f.height * k) / k;
         Canvas t; CHECK(t.Create(painter, 269, h, dpi));
-        Onboarding::Shaders::Layer layer; ID2D1Bitmap* grain = Grain(t, layer, 269);
+        Onboarding::Shaders::Layer layer; ID2D1Bitmap* grain = GrainBitmap(t, layer, 269);
         t.rt->BeginDraw(); t.rt->Clear(D2D1::ColorF(0, 0, 0, 0)); painter.Paint(f, 269, h, rest, false, grain); CHECK(SUCCEEDED(t.rt->EndDraw()));
         auto px = t.Pixels();
         CHECK(px[3] == 0 && px[(t.w - 1) * 4 + 3] == 0 && px[((t.h - 1) * t.w) * 4 + 3] == 0);   // rounded corners: click-through
@@ -430,7 +465,7 @@ static void SnapshotTests(Painter& painter) {
         const Frame f = Settled(painter, s.view, 269);
         Canvas k; const float W = 297, H = f.height + 28;
         if (!k.Create(painter, W, H, dpi)) { CHECK(false); continue; }
-        Onboarding::Shaders::Layer layer; ID2D1Bitmap* grain = Grain(k, layer, 269);
+        Onboarding::Shaders::Layer layer; ID2D1Bitmap* grain = GrainBitmap(k, layer, 269);
         k.rt->BeginDraw(); k.rt->Clear(D2D1::ColorF(Paper::surface, Paper::surface, Paper::surface, 1));
         PaintAt(painter, f, 14, H - 14, 269, rest, false, grain);
         CHECK(SUCCEEDED(k.rt->EndDraw()));
@@ -445,7 +480,7 @@ static void SnapshotTests(Painter& painter) {
     auto strip = [&](const wchar_t* name, bool reduced, const View& from, const View& to, const double* times, double settleFrom, const View* after = nullptr, double afterAt = 0) {
         Canvas k; const float W = 14 + 8 * 283.f, H = 209.6f + 44;
         if (!k.Create(painter, W, H, 144)) { CHECK(false); return; }
-        Onboarding::Shaders::Layer layer; ID2D1Bitmap* grain = Grain(k, layer, 269);
+        Onboarding::Shaders::Layer layer; ID2D1Bitmap* grain = GrainBitmap(k, layer, 269);
         k.rt->BeginDraw(); k.rt->Clear(D2D1::ColorF(Paper::surface, Paper::surface, Paper::surface, 1));
         Presenter pr = Fresh(reduced);
         auto c0 = Describe(from); pr.Set(c0, painter.Measure(c0, 269), T0()); pr.Settle(At(settleFrom));
@@ -475,18 +510,31 @@ static void SnapshotTests(Painter& painter) {
     {
         Canvas k; const float W = 14 + 8 * 283.f, H = 209.6f + 44;
         CHECK(k.Create(painter, W, H, 144));
-        Onboarding::Shaders::Layer layer; ID2D1Bitmap* grain = Grain(k, layer, 269);
+        Onboarding::Shaders::Layer layer; ID2D1Bitmap* grain = GrainBitmap(k, layer, 269);
         k.rt->BeginDraw(); k.rt->Clear(D2D1::ColorF(Paper::surface, Paper::surface, Paper::surface, 1));
         Presenter pr = Fresh(); auto a = Describe(V(Phase::Available)); pr.Set(a, painter.Measure(a, 269), T0());
         for (int i = 0; i < 8; ++i) { Frame f = pr.Sample(At(en[i])); PaintAt(painter, f, 14 + i * 283.f, H - 14, 269, rest, false, grain); }
         CHECK(SUCCEEDED(k.rt->EndDraw())); CHECK(k.Save(L"apparition-144.png"));
         layer.Drop(); painter.Unbind();
     }
+    // The six profiles side by side (state A), 144 DPI: the background follows each profile ink.
+    {
+        Canvas k; const float W = 14 + 6 * 283.f, H = 209.6f + 28;
+        CHECK(k.Create(painter, W, H, 144));
+        k.rt->BeginDraw(); k.rt->Clear(D2D1::ColorF(Paper::surface, Paper::surface, Paper::surface, 1));
+        for (int i = 0; i < 6; ++i) {
+            Onboarding::Shaders::Layer layer; ID2D1Bitmap* grain = GrainBitmap(k, layer, 269, 0, Profiles6[i].ink);
+            Frame f = Settled(painter, V(Phase::Available), 269); PaintAt(painter, f, 14 + i * 283.f, H - 14, 269, rest, false, grain);
+            layer.Drop();
+        }
+        CHECK(SUCCEEDED(k.rt->EndDraw())); CHECK(k.Save(L"profils-144.png"));
+        painter.Unbind();
+    }
     // Button states on the primary: hover, pressed (0.96), keyboard focus; and « Plus tard » hovered.
     {
         Canvas k; const float W = 14 + 4 * 283.f, H = 209.6f + 28;
         CHECK(k.Create(painter, W, H, 192));
-        Onboarding::Shaders::Layer layer; ID2D1Bitmap* grain = Grain(k, layer, 269);
+        Onboarding::Shaders::Layer layer; ID2D1Bitmap* grain = GrainBitmap(k, layer, 269);
         k.rt->BeginDraw(); k.rt->Clear(D2D1::ColorF(Paper::surface, Paper::surface, Paper::surface, 1));
         ButtonVisual states[4][2] = {{{1, 0, false, false}, {}}, {{1, 1, false, false}, {}}, {{0, 0, true, true}, {}}, {{}, {1, 0, false, false}}};
         for (int i = 0; i < 4; ++i) { Frame f = Settled(painter, V(Phase::Available), 269); PaintAt(painter, f, 14 + i * 283.f, H - 14, 269, states[i], false, grain); }
@@ -637,6 +685,15 @@ static void WindowTests() {
     impl->options.forceReducedMotion = 1; toast.SyncReducedMotion(); Pump(300);
     const auto frozen = impl->grainRenders; Pump(500);
     CHECK(!impl->grainTimer && impl->grainRenders == frozen);
+    // The profile changes while the card is up (still frozen by reduced motion): the background follows at once.
+    {
+        auto& ink = NativeChrome::Design::Accent::InkCurrent(); const auto saved = ink;
+        ink = {0x6F / 255.f, 0xD0 / 255.f, 0x87 / 255.f};   // « vert »
+        const auto before = impl->grainRenders; toast.AccentChanged(); Pump(300);
+        CHECK(impl->grainRenders == before + 1 && impl->grainColors == Grain::Colors({0x6F, 0xD0, 0x87}));
+        ink = saved; toast.AccentChanged(); Pump(300);
+        CHECK(impl->grainColors == Grain::Colors(impl->Ink()));
+    }
     impl->options.forceReducedMotion = 0; toast.SyncReducedMotion(); Pump(200);
     // Installed: only by the real event; finite dwell then a single Dismiss and exit.
     toast.SetView(V(Phase::Installed));
@@ -670,6 +727,7 @@ int wmain(int argc, wchar_t** argv) {
     CreateDirectoryW(snapshots.c_str(), nullptr);
     FrenchModelTests();
     LaterTests();
+    ProfileColorTests();
     if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)))) { std::fprintf(stderr, "WIC unavailable\n"); return 2; }
     {
         Onboarding::Shaders::Image noise;

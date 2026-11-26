@@ -42,6 +42,12 @@ public:
     void SetTopReserve(float dip);
     bool Focus();
     void SetFocusReleaseHandler(std::function<void()> handler);
+    // The window's profile ink changed (NativeChrome::Design::Accent::Ink): the background follows on the next frame.
+    void AccentChanged();
+#ifdef BROWSER_PREVIEW
+    // Design-preview trial only (`--carte-maj-profil=…`, F9): the background drawn for this profile ink (0xRRGGBB).
+    void SetDemoInk(unsigned long rgb);
+#endif
     void Close();
     HWND Window() const;
     bool Shown() const;

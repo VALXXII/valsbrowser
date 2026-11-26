@@ -10,6 +10,7 @@
 // States without a board (Installing, Installed, Error) keep their texts, buttons and rules, drawn in the same layout.
 #include "update-types.h"
 #include "download-icon.h"
+#include "profile-color.h"
 #include "motion.h"
 #include <algorithm>
 #include <array>
@@ -167,6 +168,42 @@ inline float FitWidth(float clientWidth, float edgeLeft, float reservedRight) {
 inline bool FitsHeight(float clientHeight, float topReserve, float cardHeight) {
     return clientHeight - topReserve - EdgeBottom - Paper::actionsGap >= cardHeight;
 }
+
+// ---- The background's colours follow the profile (Val, 2026-11-26) ----------------
+// Val drew the GrainGradient's three colours for the violet profile (ink #B49BFF, Paper --color-profile-violet).
+// For another profile ink, each colour keeps, in OKLCH: its own lightness, its hue offset from the violet ink and its
+// chroma RATIO to the violet ink's (#8A66FF: −4.75°, ×1.52; #ECAEFF: +23.9°, ×0.90; #F4F4FF: −8.1°, ×0.10). A colour
+// out of sRGB loses chroma only (lightness and hue kept). The violet ink gives exactly Val's three colours; a grey ink
+// (chroma under 0.02, the « Personnel » profile) gives neutral greys at the same lightnesses.
+namespace Grain {
+struct Lch { double L, C, h; };
+inline Lch ToLch(ProfileColor::Rgb8 c) {
+    using namespace ProfileColor::Detail;
+    const double r = ToLinear(c.r / 255.0), g = ToLinear(c.g / 255.0), b = ToLinear(c.b / 255.0);
+    const double l = std::cbrt(.4122214708 * r + .5363325363 * g + .0514459929 * b), m = std::cbrt(.2119034982 * r + .6806995451 * g + .1073969566 * b);
+    const double s = std::cbrt(.0883024619 * r + .2817188376 * g + .6299787005 * b);
+    const double L = .2104542553 * l + .7936177850 * m - .0040720468 * s, A = 1.9779984951 * l - 2.4285922050 * m + .4505937099 * s;
+    const double B = .0259040371 * l + .7827717662 * m - .8086757660 * s;
+    double h = std::atan2(B, A) * 180 / Pi; if (h < 0) h += 360;
+    return {L, std::sqrt(A * A + B * B), h};
+}
+inline constexpr ProfileColor::Rgb8 VioletInk{0xB4, 0x9B, 0xFF};
+inline constexpr ProfileColor::Rgb8 Board[3] = {{0x8A, 0x66, 0xFF}, {0xEC, 0xAE, 0xFF}, {0xF4, 0xF4, 0xFF}};
+inline constexpr double GreyChroma = .02;   // as ProfileColor::FromHex: below it, a grey
+inline std::array<ProfileColor::Rgb8, 3> Colors(ProfileColor::Rgb8 ink) {
+    std::array<ProfileColor::Rgb8, 3> out{};
+    const Lch v = ToLch(VioletInk), p = ToLch(ink);
+    const double ratio = p.C < GreyChroma ? 0 : p.C / v.C, turn = p.h - v.h;
+    for (int i = 0; i < 3; ++i) {
+        if (ink == VioletInk) { out[i] = Board[i]; continue; }   // exactly Val's (the formula gives them too)
+        const Lch b = ToLch(Board[i]);
+        const double h = std::fmod(b.h + turn + 720, 360);
+        const double C = ProfileColor::Detail::FitChroma(b.L, b.C * ratio, h);
+        out[i] = ProfileColor::Detail::Pack(ProfileColor::Detail::FromOklch(b.L, C, h));
+    }
+    return out;
+}
+} // namespace Grain
 
 // ---- Motion ---------------------------------------------------------------------
 // cubic-bezier(x1, y1, x2, y2) by bisection on x (the Lottie curves of design/lottie/download-progress.py).
