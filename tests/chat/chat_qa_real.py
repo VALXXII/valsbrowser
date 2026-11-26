@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Chat intégré — THE one short real trial with Claude Code (design/chat-v1-validation.md).
 
-    python tests/chat/chat_qa_real.py            # asks nothing: run it only when a real trial is wanted
+    set BROWSER_TEST_REAL_AGENT=yes-use-my-account   (by hand, in your own shell, for this one run)
+    python tests/chat/chat_qa_real.py
+
+Without that variable set by a person, the agent guard (tests/agent-guard/agent_guard.py) refuses before anything starts:
+no script, suite or night run can reach the real agent through this file.
 
 !! This uses the user's real Claude Code and account: ONE small request (one turn) in the sandbox copy. !!
 It is never part of an automatic suite. Same browser copy and guards as chat_qa.py (BROWSER_ANNOTATIONS_TEST=1,
@@ -39,6 +43,7 @@ def main() -> int:
             stream.reconfigure(encoding='utf-8')
         except Exception:
             pass
+    C.G.real_env({})   # the agent guard: only with the person's own BROWSER_TEST_REAL_AGENT — refused here, before anything
     report['fingerprintsBefore'] = C.fingerprints()
     css = C.SITE / 'styles' / 'checkout.css'
     p = C.launch(real=True, extra_env={'BROWSER_CHAT_PANEL_IDLE_MS': '2500'})

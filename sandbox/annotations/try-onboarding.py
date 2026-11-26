@@ -271,6 +271,11 @@ def main() -> int:
             env.update(agents_environment(home / 'agents-profile', a.agents, fresh, a.install_mode, a.install_delay_ms, app))
             print(f'Agents        : profil « {a.agents} »' + (' — DÉTECTION ET INSTALLATEURS RÉELS (votre compte Windows)' if a.agents == 'real'
                   else f' (factice : dossiers sous {home / "agents-profile"}, faux installateur « {a.install_mode} »)'))
+        if not a.agents or a.agents == 'real':
+            # Essai à la main : le chat garde les agents de cet ordinateur. Sans ce réglage, le mode test du navigateur les
+            # refuse tous (garde-fou des tests, src/agent-runtime.cpp) — un test, lui, n'utilise que le faux agent.
+            env.pop('BROWSER_CHAT_FAKE_AGENT', None)
+            env['BROWSER_CHAT_REAL_AGENT'] = '1'
         print(f'Navigateur     : {run}\\browser.exe' + (' (fenêtre privée)' if a.private else ''))
         print(f'Page locale    : {URL}   (Annoter allumé)')
         print(f'Fichier local  : {file_url}   (Annoter allumé)')

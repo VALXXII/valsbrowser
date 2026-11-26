@@ -365,6 +365,14 @@ def main() -> int:
     p.add_argument('--ci', action='store_true')
     p.add_argument('--only', choices=('existing', 'peers', 'integration', 'app'))
     a = p.parse_args()
+    # agent guard (tests/agent-guard/agent_guard.py): every program this run starts (installers, browsers, peers) inherits
+    # no API key or agent credential, and no switch to this computer's agents or to a fake agent
+    sys.path.insert(0, str(ROOT / 'tests' / 'agent-guard'))
+    import agent_guard as G
+    import os
+    clean, _stripped = G.scrub(dict(os.environ), keep_locations=True)
+    for k in [k for k in os.environ if k not in clean] + [G.REAL_AGENT_SWITCH, G.REAL_OPT_IN[0], 'BROWSER_CHAT_FAKE_AGENT']:
+        os.environ.pop(k, None)
     OUT.mkdir(parents=True, exist_ok=True)
     steps = {'existing': existing_fixtures, 'peers': peer_suites, 'integration': integration}
     for key, step in steps.items():
