@@ -34,6 +34,11 @@ Expected (« Conserver », src/main.cpp KeepHeldDownload / WaitEnginePass / Watc
                      « Conserver », the engine's held file deleted, the folder left alone, nothing else left;
   - discard:         UIA Invoke on « Supprimer » → the file is gone and the row with it;
   - control:         a plain .bin completes as before and is never held.
+  - card-slow-check: an .exe while the reputation service never answers (SmartScreen hosts on a silent local socket in this
+                     test's engine): no « À confirmer » card, the engine completes it by itself;
+  - card-plain-big:  a 300 MB .bin: no card, completes;
+  - card-real-hold:  a fresh unsigned .exe (a real SmartScreen hold): the card, promptly (seconds after the start recorded);
+  - card-never-marked: no zone mark can come (test hook): the card after the fallback, « Conserver » keeps the file.
   Every keep case records the download folder's events (ReadDirectoryChangesW, timed). Engine facts behind the design:
   tests/downloads/download_engine_probe.py --observe (the engine removes a cancelled held file by name when its own pass on
   the file, the one that writes the zone mark, ends: at once when it was over, seconds later when it still ran).
@@ -326,6 +331,21 @@ def main() -> int:
         FILES[tag + '.exe'] = (fresh_exe(work, tag.replace('-', '_')), f'held-{tag}.exe')
     FILES['keep-early-cancel.exe'] = (FILES['keep-early-cancel.exe'][0] + os.urandom(150 << 20), 'held-keep-early-cancel.exe')   # a long scan
     FILES['plain.bin'] = (os.urandom(150000), 'plain-control.bin')
+    for tag in ('card-slow-check', 'card-real-hold', 'card-never-marked'):
+        FILES[tag + '.exe'] = (fresh_exe(work, tag.replace('-', '_')), f'{tag}.exe')
+    FILES['card-plain-big.bin'] = (os.urandom(300 << 20), 'card-plain-big.bin')
+    # A reputation service that never answers (SmartScreen behind a VPN / proxy that swallows it): this test's engine maps
+    # the SmartScreen hosts to a local socket that accepts and never replies. Nothing outside the test's engine changes.
+    import socket
+    blackhole = socket.socket(); blackhole.bind(('127.0.0.1', 0)); blackhole.listen(64); swallowed = []
+    def swallow():
+        while True:
+            try:
+                swallowed.append(blackhole.accept()[0])
+            except OSError:
+                return
+    threading.Thread(target=swallow, daemon=True).start()
+    slow_reputation = f'--host-resolver-rules="MAP *smartscreen* 127.0.0.1:{blackhole.getsockname()[1]}"'
     srv = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Fixture); port = srv.server_port; base = f'http://127.0.0.1:{port}'
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     secure = None   # the fixture page over https (throwaway self-signed certificate made by Git's openssl, nothing installed)
@@ -474,6 +494,46 @@ def main() -> int:
               engine_processes_left_after_25s=left, ours_left=ours(), folder=sorted(p.name for p in downloads.iterdir()))
 
     try:
+        def card_case(name, file_key, expect_card, expect_complete, wait_s, extra_args='', extra_env=None, keep=False):
+            """Whether, and how long after the download's start, the « À confirmer » card comes (log « DOWNLOAD held by the
+            engine »), and whether the engine completes the download by itself. keep: « Conserver » on the card, then the
+            file must be a finished download, whole, surviving the exit."""
+            b, op, downloads = launch(name, base, extra_args, extra_env); fname = FILES[file_key][1]; target = downloads / fname; size = len(FILES[file_key][0])
+            try:
+                mark = len(b.log()); t0 = time.monotonic(); dn.ev(op, f"location.href='{base}/{file_key}'")
+                card_at = done_at = None; end = t0 + wait_s
+                while time.monotonic() < end and not (done_at and (card_at or not expect_card)):
+                    text = b.log()[mark:]
+                    if card_at is None and 'DOWNLOAD held by the engine' in text:
+                        card_at = round(time.monotonic() - t0, 1)
+                    if done_at is None and f'DOWNLOAD state=2 {fname}' in text:
+                        done_at = round(time.monotonic() - t0, 1)
+                    if card_at is not None and expect_card and not expect_complete:
+                        break
+                    time.sleep(.1)
+                kept = None
+                if keep and card_at is not None:
+                    r = b.uia(uia, 'DownloadKeep'); kept = dn.wait(lambda: row_of(b, fname).startswith('C\t'), 30)
+                    kept = bool(kept) and r.startswith('invoked')
+                ok = (card_at is not None) == expect_card and (done_at is not None) == expect_complete and (kept is not False)
+                check(f'{name}: card {"shown" if expect_card else "not shown"}{", completes by itself" if expect_complete else ""}', ok,
+                      card_after_s=card_at, completed_after_s=done_at, kept=kept, log=lines(b, mark))
+            finally:
+                b.close()
+            if keep:
+                check(f'{name}: kept file survives exit', target.exists() and target.stat().st_size == size, folder=sorted(x.name for x in downloads.iterdir()))
+        if not only or 'card-slow-check' in only:
+            # The reputation service never answers: the engine completes the .exe by itself ~16 s after the last byte
+            # (measured). No card: a slow check is not a risk verdict.
+            card_case('card-slow-check', 'card-slow-check.exe', False, True, 60, extra_args=slow_reputation)
+        if not only or 'card-plain-big' in only:
+            card_case('card-plain-big', 'card-plain-big.bin', False, True, 60)
+        if not only or 'card-real-hold' in only:
+            card_case('card-real-hold', 'card-real-hold.exe', True, False, 40)
+        if not only or 'card-never-marked' in only:
+            # Where no zone mark can come (a volume without streams, zone information off by policy; test hook
+            # BROWSER_TEST_HELD_UNMARKABLE=1): the card after the fallback, and « Conserver » still keeps the file.
+            card_case('card-never-marked', 'card-never-marked.exe', True, False, 60, extra_env={'BROWSER_TEST_HELD_UNMARKABLE': '1'}, keep=True)
         if not only or 'keep' in only:
             for name in keeps:
                 keep_case(name)

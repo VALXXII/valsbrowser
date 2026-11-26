@@ -21,10 +21,17 @@ static void HeldChecks() {
     Expect(MapEngineState(Interrupted, ReasonUserPaused, false) == State::Paused && MapEngineState(Interrupted, ReasonUserCanceled, false) == State::Cancelled, "engine interrupts: paused, cancelled");
     Expect(MapEngineState(Interrupted, 10, false) == State::Failed && MapEngineState(Interrupted, 1, false) == State::Failed, "engine interrupts: anything else fails (blocked reasons keep the B07 path)");
     const std::int64_t mb = 57430695;
-    Expect(!HeldForDecision(InProgress, mb, mb, false, -1) && !HeldForDecision(InProgress, mb, mb, false, HoldGraceMs - 1), "every byte in: not held before the grace");
-    Expect(HeldForDecision(InProgress, mb, mb, false, HoldGraceMs) && HeldForDecision(InProgress, mb, mb, false, 240000), "every byte in, still in progress past the grace: held (measured: no event ever follows)");
-    Expect(!HeldForDecision(Completed, mb, mb, false, 240000) && !HeldForDecision(Interrupted, mb, mb, false, 240000), "a completed or interrupted download is never held");
-    Expect(!HeldForDecision(InProgress, mb - 1, mb, false, 240000) && !HeldForDecision(InProgress, 5, 0, false, 240000) && !HeldForDecision(InProgress, mb, mb, true, 240000), "missing bytes, unknown size or a user pause: never held");
+    // The card only on a real hold (the false « À confirmer » for every download on a slow machine was the bug).
+    // H(full since, marked since, insecure, markable): every byte in, in progress, not paused.
+    auto H = [&](std::int64_t full, std::int64_t marked, bool insecure, bool markable) { return HeldReason(InProgress, mb, mb, false, full, marked, insecure, markable); };
+    Expect(H(-1, -1, false, true) == HeldBy::None && H(MarkedFallbackMs - 1, -1, false, true) == HeldBy::None, "no zone mark yet, the engine's pass still runs: no card, however long below the fallback (measured: a slow reputation completes by itself at 16 s)");
+    Expect(H(2500, MarkGraceMs - 1, false, true) == HeldBy::None && H(2500, MarkGraceMs, false, true) == HeldBy::Mark && H(240000, 200000, false, true) == HeldBy::Mark, "the zone mark there (its pass over) and still in progress past the grace: a real hold (measured: a finished download completes within 15 ms of its mark)");
+    Expect(H(HoldGraceMs - 1, -1, true, true) == HeldBy::None && H(HoldGraceMs, -1, true, true) == HeldBy::Insecure, "an insecure source in progress past the grace: a real hold at once (measured: never a mark)");
+    Expect(H(UnmarkedFallbackMs - 1, -1, false, false) == HeldBy::None && H(UnmarkedFallbackMs, -1, false, false) == HeldBy::Fallback, "no mark can ever come (no streams, policy): the card after the fallback");
+    Expect(H(MarkedFallbackMs, -1, false, true) == HeldBy::Fallback && UnmarkedFallbackMs > 16000 && MarkedFallbackMs > UnmarkedFallbackMs, "a mark could come but never did: the card after the long fallback (never a row stuck at 100 %); both past the 16 s reputation timeout");
+    Expect(HeldReason(Completed, mb, mb, false, 240000, 200000, true, true) == HeldBy::None && HeldReason(Interrupted, mb, mb, false, 240000, 200000, true, true) == HeldBy::None, "a completed or interrupted download is never held");
+    Expect(HeldReason(InProgress, mb - 1, mb, false, 240000, 200000, true, true) == HeldBy::None && HeldReason(InProgress, 5, 0, false, 240000, 200000, true, true) == HeldBy::None && HeldReason(InProgress, mb, mb, true, 240000, 200000, true, true) == HeldBy::None, "missing bytes, unknown size or a user pause: never held");
+    Expect(HeldForDecision(InProgress, mb, mb, false, 2500, 1500, false, true) && !HeldForDecision(InProgress, mb, mb, false, 2500, -1, false, true), "HeldForDecision is HeldReason != None");
     Item held; held.state = State::InProgress; held.held = true;
     Expect(ActionsFor(held).first == Action::Discard && ActionsFor(held).second == Action::Keep, "held actions: Supprimer, Conserver");
     Expect(std::wcscmp(IconFor(Action::Discard), L"trash") == 0 && std::wcscmp(IconFor(Action::Keep), L"check") == 0, "held actions' drawer glyphs");

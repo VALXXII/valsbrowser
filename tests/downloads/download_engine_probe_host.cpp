@@ -242,6 +242,11 @@ void Check() {   // the hold: every byte in, still in progress past --hold-ms (n
     Files(L"poll");
     if (s == COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS && total > 0 && got >= total) {
         if (!fullAt) { fullAt = GetTickCount64(); Say(L"FACT every byte in: " + StateText()); }
+        if (then == L"timeline") {   // nothing done: when does the zone mark come, when does the engine complete?
+            static bool markSeen = false;
+            if (!markSeen && Exists(ResultPath() + L":Zone.Identifier")) { markSeen = true; Say(L"FACT TIMELINE zone mark at " + std::to_wstring((long long)(GetTickCount64() - fullAt)) + L" ms after the last byte"); }
+            After(100, Check); return;
+        }
         if (!held && GetTickCount64() - fullAt >= (ULONGLONG)holdMs) { held = true; Say(L"FACT held: " + StateText()); if (actOn != L"zone") { Act(); return; } }
         if (held && actOn == L"zone") {
             const bool marked = Exists(ResultPath() + L":Zone.Identifier"), capped = GetTickCount64() - fullAt >= (ULONGLONG)capMs;
@@ -255,6 +260,8 @@ void TrackOperation(ICoreWebView2DownloadOperation* o) {
     auto state = Callback<ICoreWebView2StateChangedEventHandler, ICoreWebView2DownloadOperation*, IUnknown*>([](ICoreWebView2DownloadOperation*, IUnknown*) -> HRESULT {
         if (!op) return S_OK;
         Say(L"FACT StateChanged " + StateText()); Files(L"state");
+        if (then == L"timeline") { COREWEBVIEW2_DOWNLOAD_STATE s0 = COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS; op->get_State(&s0);
+            if (s0 != COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS) Say(L"FACT TIMELINE state " + std::to_wstring((int)s0) + L" at " + (fullAt ? std::to_wstring((long long)(GetTickCount64() - fullAt)) : std::wstring(L"?")) + L" ms after the last byte, zone mark " + (Exists(ResultPath() + L":Zone.Identifier") ? L"there" : L"absent")); }
         COREWEBVIEW2_DOWNLOAD_STATE s = COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS; op->get_State(&s);
         if (s != COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS && then == L"link-cancel-restore" && acted) {
             if (restoreDelay <= 0) Restore(); else After((UINT)restoreDelay, Restore);
@@ -267,7 +274,7 @@ void TrackOperation(ICoreWebView2DownloadOperation* o) {
     auto bytes = Callback<ICoreWebView2BytesReceivedChangedEventHandler, ICoreWebView2DownloadOperation*, IUnknown*>([](ICoreWebView2DownloadOperation*, IUnknown*) -> HRESULT {
         if (!op) return S_OK;
         INT64 got = 0, total = 0; op->get_BytesReceived(&got); op->get_TotalBytesToReceive(&total);
-        if (got >= total && total > 0) Say(L"FACT BytesReceivedChanged (all in) " + StateText());
+        if (got >= total && total > 0) { if (!fullAt) fullAt = GetTickCount64(); Say(L"FACT BytesReceivedChanged (all in) " + StateText()); }
         return S_OK; });
     op->add_BytesReceivedChanged(bytes, &token); bytes->Release();
     Check();

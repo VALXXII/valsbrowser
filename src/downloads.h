@@ -82,10 +82,17 @@ inline const wchar_t* TipFor(Action action) {
 namespace Engine {
 inline constexpr int InProgress = 0, Interrupted = 1, Completed = 2;
 inline constexpr int ReasonUserCanceled = 26, ReasonUserShutdown = 27, ReasonUserPaused = 28;
-// A download whose bytes are all in and that the engine still reports in progress for this long is held for the
-// user's decision (measured: a finished download completes within a few hundred ms of its last byte; a held one
-// never does). A late completion after the grace still lands as Completed.
-inline constexpr std::int64_t HoldGraceMs = 2000;
+// When every byte is in, the engine runs its own pass on the file (attachment services, antivirus, SmartScreen's
+// reputation) and writes the zone mark at its end; a download it then keeps in progress is held for the user's decision.
+// Measured (WebView2 158, tests/downloads/download_engine_probe.py --timeline, loaded machine): a finished download
+// completes within 15 ms of its mark; a SmartScreen hold gets its mark 1.5 s (small .exe) to 9.9 s (300 MB) after the
+// last byte and stays in progress; with SmartScreen's service never answering an .exe gets NO mark and completes by itself
+// 16 s after the last byte, ~24 s on a loaded machine (the old 2 s rule showed the card there: the bug); an insecure-download hold (an http file
+// from an https page) never gets a mark and stays in progress.
+inline constexpr std::int64_t HoldGraceMs = 2000;            // an insecure-source download still in progress this long
+inline constexpr std::int64_t MarkGraceMs = 1000;            // the zone mark there and still in progress this long
+inline constexpr std::int64_t UnmarkedFallbackMs = 30000;    // no mark can come there (no streams, policy): past the reputation timeout (16 s, ~24 s loaded)
+inline constexpr std::int64_t MarkedFallbackMs = 60000;      // a mark can come but none came: the engine's pass never ended
 }
 inline State MapEngineState(int state, int reason, bool userPaused) {
     if (state == Engine::Completed) return State::Completed;
@@ -94,9 +101,21 @@ inline State MapEngineState(int state, int reason, bool userPaused) {
     if (reason == Engine::ReasonUserCanceled) return State::Cancelled;
     return State::Failed;
 }
-// fullSinceMs: how long every byte has been in (negative: not all in, or the size is unknown).
-inline bool HeldForDecision(int state, std::int64_t received, std::int64_t total, bool userPaused, std::int64_t fullSinceMs) {
-    return state == Engine::InProgress && !userPaused && total > 0 && received >= total && fullSinceMs >= Engine::HoldGraceMs;
+// Why a download is held for the user's decision, or None: the « À confirmer » card only on a real hold; until then (the
+// engine's own pass still runs) the ordinary in-progress row. fullSinceMs: how long every byte has been in (negative:
+// not all in, or the size is unknown); markedSinceMs: how long the file has carried its zone mark (negative: no mark);
+// insecure: an insecure source (Keep::InsecureSource); markable: a zone mark can exist where the file is (a volume with
+// named streams, zone information kept by policy).
+enum class HeldBy { None, Mark, Insecure, Fallback };
+inline HeldBy HeldReason(int state, std::int64_t received, std::int64_t total, bool userPaused, std::int64_t fullSinceMs, std::int64_t markedSinceMs, bool insecure, bool markable) {
+    if (state != Engine::InProgress || userPaused || total <= 0 || received < total || fullSinceMs < 0) return HeldBy::None;
+    if (markedSinceMs >= Engine::MarkGraceMs) return HeldBy::Mark;
+    if (insecure && fullSinceMs >= Engine::HoldGraceMs) return HeldBy::Insecure;
+    if (markedSinceMs < 0 && fullSinceMs >= (markable ? Engine::MarkedFallbackMs : Engine::UnmarkedFallbackMs)) return HeldBy::Fallback;
+    return HeldBy::None;
+}
+inline bool HeldForDecision(int state, std::int64_t received, std::int64_t total, bool userPaused, std::int64_t fullSinceMs, std::int64_t markedSinceMs, bool insecure, bool markable) {
+    return HeldReason(state, received, total, userPaused, fullSinceMs, markedSinceMs, insecure, markable) != HeldBy::None;
 }
 // « Conserver » on a held download (src/main.cpp KeepHeldDownload, WaitEnginePass, WatchKept): the decisions. Measured
 // on WebView2 158 (tests/downloads/download_engine_probe.py --observe): after a cancel the engine removes its file by

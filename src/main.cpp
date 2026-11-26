@@ -1589,9 +1589,11 @@ DL::Item* FindDownload(int id);
 // tab: the serial of the tab that started it. view: that tab's WebView once the tab closed while the download runs
 // (a tab opened only for its download closes at once): the engine stops raising the operation's events when its
 // WebView closes, so the closed tab's hidden controller lives until its last download ends (released with the entry).
-// fullAt: when every byte was in (GetTickCount64, 0 = not yet): past DL::Engine::HoldGraceMs still in progress, the
+// fullAt: when every byte was in (GetTickCount64, 0 = not yet); markedAt: when its zone mark was first seen then (the engine's
+// own pass over); insecure: an insecure source; markable: a zone mark can exist where the file is; watching: a re-check is
+// due (DL::HeldReason decides the card from these). Past that,
 // engine holds the file for the user's decision (« Conserver »: keepJobs).
-struct DownloadOperation { Com<ICoreWebView2DownloadOperation> op; bool userPaused=false; Workspace* owner=nullptr; unsigned tab=0; std::shared_ptr<Com<ICoreWebView2Controller>> view; ULONGLONG fullAt=0; };
+struct DownloadOperation { Com<ICoreWebView2DownloadOperation> op; bool userPaused=false; Workspace* owner=nullptr; unsigned tab=0; std::shared_ptr<Com<ICoreWebView2Controller>> view; ULONGLONG fullAt=0,markedAt=0; bool insecure=false,markable=true,watching=false; };
 static_assert(DL::Engine::InProgress==COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS&&DL::Engine::Interrupted==COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED&&DL::Engine::Completed==COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED,"engine download states");
 static_assert(DL::Engine::ReasonUserCanceled==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED&&DL::Engine::ReasonUserShutdown==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_SHUTDOWN&&DL::Engine::ReasonUserPaused==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_PAUSED,"engine interrupt reasons");
 std::map<int,std::shared_ptr<DownloadOperation>> downloadOps;
@@ -1712,6 +1714,18 @@ std::wstring MotionLabReplay(NativeChrome::Tuning::Group group){
 }
 // i18n-exempt-end
 void DownloadsChanged(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */downloadPanel.Changed();downloadDrawer.Changed();}
+bool HasZoneMark(const std::wstring& path);
+// Can a zone mark exist where the file is? A volume with named streams (not FAT32 / exFAT) and zone information kept by
+// policy (Attachments\SaveZoneInformation is not 1). Test hook BROWSER_TEST_HELD_UNMARKABLE=1 (never in a release build).
+bool ZoneMarksPossible(const std::wstring& path){
+#ifndef BROWSER_CHANNEL_RELEASE
+    {wchar_t v[8]{};if(GetEnvironmentVariableW(L"BROWSER_TEST_HELD_UNMARKABLE",v,8)&&std::wstring(v)==L"1")return false;}
+#endif
+    wchar_t root[MAX_PATH]{};DWORD flags=0;
+    if(GetVolumePathNameW(path.c_str(),root,MAX_PATH)&&GetVolumeInformationW(root,nullptr,0,nullptr,nullptr,&flags,nullptr,0)&&!(flags&FILE_NAMED_STREAMS))return false;
+    for(HKEY hive:{HKEY_LOCAL_MACHINE,HKEY_CURRENT_USER}){DWORD v=0,n=sizeof v;if(RegGetValueW(hive,L"Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Attachments",L"SaveZoneInformation",RRF_RT_REG_DWORD,nullptr,&v,&n)==ERROR_SUCCESS&&v==1)return false;}
+    return true;
+}
 // Pull the operation's current state into its history row (UI thread, engine events).
 void SyncDownload(int id){
     auto found=downloadOps.find(id);auto* item=FindDownload(id);if(found==downloadOps.end()||!item)return;
@@ -1729,10 +1743,18 @@ void SyncDownload(int id){
     // Every byte in but still in progress: past the grace, the engine holds it for the user's decision (no event says
     // so). One re-check is scheduled for the end of the grace.
     const ULONGLONG tick=GetTickCount64();
-    if(state==COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS&&total>0&&received>=total){if(!entry->fullAt){entry->fullAt=tick;DeferAfter((UINT)DL::Engine::HoldGraceMs+50,[id]{if(!halted)SyncDownload(id);});}}
-    else entry->fullAt=0;
-    item->held=DL::HeldForDecision(state,received,total,entry->userPaused,entry->fullAt?(std::int64_t)(tick-entry->fullAt):-1);
-    if(item->held&&!heldBefore)Log(L"DOWNLOAD held by the engine for the user's decision (all bytes in, still in progress): "+DL::FileName(item->path));
+    // Every byte in, still in progress: the engine's own pass on the file runs (no card), or it holds the file for the user's
+    // decision (DL::HeldReason: its zone mark there, an insecure source, or no mark ever possible past the fallback). No event
+    // says which: looked at again every 250 ms until it is decided.
+    const bool full=state==COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS&&total>0&&received>=total;
+    if(full){
+        if(!entry->fullAt){entry->fullAt=tick;entry->markable=ZoneMarksPossible(item->path);}
+        if(!entry->markedAt&&entry->markable&&HasZoneMark(item->path))entry->markedAt=tick;
+    }else{entry->fullAt=0;entry->markedAt=0;}
+    const auto heldBy=DL::HeldReason(state,received,total,entry->userPaused,entry->fullAt?(std::int64_t)(tick-entry->fullAt):-1,entry->markedAt?(std::int64_t)(tick-entry->markedAt):-1,entry->insecure,entry->markable);
+    item->held=heldBy!=DL::HeldBy::None;
+    if(full&&!item->held&&!entry->watching&&!entry->userPaused){entry->watching=true;DeferAfter(250,[id]{auto f=downloadOps.find(id);if(f!=downloadOps.end())f->second->watching=false;if(!halted)SyncDownload(id);});}
+    if(item->held&&!heldBefore)Log(L"DOWNLOAD held by the engine for the user's decision (all bytes in, still in progress, "+std::wstring(heldBy==DL::HeldBy::Mark?L"its pass over: the zone mark":heldBy==DL::HeldBy::Insecure?L"an insecure source":L"no zone mark possible, after the fallback")+L"): "+DL::FileName(item->path));
     if(!item->held&&heldBefore)Log(L"DOWNLOAD no longer held: state="+std::to_wstring((int)state)+L" reason="+std::to_wstring((int)reason));
     if(item->state==DL::State::Failed){item->reason=InterruptText(reason);
         if(before!=DL::State::Failed&&(reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS||reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED||reason==COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY))
@@ -2099,6 +2121,7 @@ void TrackDownload(ICoreWebView2DownloadStartingEventArgs* args,unsigned tab,std
     text=nullptr;if(SUCCEEDED(raw->get_Uri(&text))&&text){item.uri=text;CoTaskMemFree(text);}
     text=nullptr;if(SUCCEEDED(raw->get_MimeType(&text))&&text){item.mime=DL::CleanMime(text);CoTaskMemFree(text);}   // the row's icon (DL::KindOf)
     if(item.path.empty())item.path=L"download";
+    entry->insecure=DL::Keep::InsecureSource(item.uri);
     downloads.insert(downloads.begin(),item);downloadOps[id]=entry;
     EventRegistrationToken token{};
     auto bytes=Callback<ICoreWebView2BytesReceivedChangedEventHandler,ICoreWebView2DownloadOperation*,IUnknown*>([id](ICoreWebView2DownloadOperation*,IUnknown*)->HRESULT{if(!halted)SyncDownload(id);return S_OK;});
