@@ -425,6 +425,25 @@ public:
     bool RenderForTest(const std::wstring& root, const wchar_t* png, UINT dpi = 96) { return PopupKit::RenderPng(root, width_, height_, dpi, png, surface_, [this] { Paint(); }); }
 };
 
+// A button's own tooltip never shows over the menu it opened (owner's capture 2026-11-25: « Téléchargements » over the
+// open downloads popover). Muted while that menu (popover, drawer, menu) is open, and after it closes until the pointer
+// has left the button: coming back shows it again with the usual delay. Other buttons' tips are untouched. Pure.
+struct MenuMute {
+    int id = 0;          // the button whose menu is (or was) open; 0 none
+    bool away = false;   // the pointer left that button since
+    // A menu of `button` is open (called whenever one may have opened). True when it is a new one: the tip goes at once.
+    bool Opened(int button) { if (!button || button == id) return false; id = button; away = false; return true; }
+    // The pointer is over `under` (0: no button); `open`: whether `id`'s menu is still open. True: `under`'s tip stays hidden.
+    bool Muted(int under, bool open) {
+        if (!id) return false;
+        if (under != id) { away = true; if (!open) id = 0; return false; }
+        if (open) { away = false; return true; }
+        if (away) { id = 0; return false; }   // back on the button after its menu closed: its tip again
+        return true;                          // still on it since its menu closed
+    }
+    void Reset() { id = 0; away = false; }
+};
+
 // Hover tips for a window's icon buttons (history, downloads, settings, address suggestions).
 // They used comctl TOOLTIPS_CLASS tools, which never showed: without common-controls v6 in the
 // manifest, TTM_ADDTOOL rejects the v6 TOOLINFO size (0 tools registered, measured 2026-11-20).

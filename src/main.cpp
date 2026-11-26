@@ -329,7 +329,8 @@ void SetUpdateToastTop(float dip); float UpdateToastHeight(); // the bookmarks b
 void SyncUpdateToastMotion();
 constexpr int CheckUpdatesCommand=3020;
 bool SideFocusWanted();void SideFocusReset();void SideFocusEvaluate();void SideRevealChanged();void SideSlideFrame();void SidePictureHide();void SideFocusForAddress();void SideFocusCommand(int cmd);bool SideFocusEscape();
-void InvalidateChrome(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */if(chrome.floating){InvalidateFocusPanel();return;}RECT r;GetClientRect(window,&r);if(!chrome.sidebar)r.bottom=std::min(r.bottom,(LONG)S(chrome.ContentTop()));InvalidateRect(window,&r,FALSE);}
+void ChromeTipMenuSync();   // #143 (src/elements-integration.h): a button's tooltip never over the menu it opened
+void InvalidateChrome(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */ChromeTipMenuSync();if(chrome.floating){InvalidateFocusPanel();return;}RECT r;GetClientRect(window,&r);if(!chrome.sidebar)r.bottom=std::min(r.bottom,(LONG)S(chrome.ContentTop()));InvalidateRect(window,&r,FALSE);}
 // Frame wakes are display-paced by FrameClock (one outstanding notification, worker
 // dormant when idle). Deadline-only dwells keep a single one-shot SetTimer. If the
 // clock is unavailable the legacy SetTimer path remains (not display synchronised).
@@ -438,7 +439,8 @@ void SyncAddressDisplay(){auto t=Active();chrome.address=t&&!t->home?AddressBar:
 // without index reuse transferring one tab's visual state to its neighbour.
 void SyncTabKeys(){chrome.tabKeys.clear();for(auto& t:pages)chrome.tabKeys.push_back(t->serial);}
 void SyncVaultKey(); void FormsSync(); void FormsHideAll();
-void BuildChrome(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */FormsSync(); /* #121: the list and the bubble belong to one tab, document and place (P8) */chrome.privateChip=false; /* user polish: the incognito control in the profile slot replaces the « Privée » chip (privacy stays in its name, tooltip and title) */SyncVaultKey(); /* decision 7: the chip is the private indication; P stays a normal command */SyncAddressDisplay();SyncBookmarkChrome();SyncTabKeys();auto titles=Titles();auto now=NativeChrome::Motion::Now();chrome.contentOnly=InFullscreen(); /* fullscreen: the page alone */SidebarPrepare();chrome.Build((int)pages.size(),current,&titles,now);SyncSplitDecor();if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(now);}}
+void SyncDrawerSide();void DrawerOpening();void CloseDockedDrawers();   // #143: the drawers on the tab panel's side (below, after the side Focus)
+void BuildChrome(){if(WorkspaceParked())return; /* a hidden profile's event: the window shows another profile */FormsSync(); /* #121: the list and the bubble belong to one tab, document and place (P8) */chrome.privateChip=false; /* user polish: the incognito control in the profile slot replaces the « Privée » chip (privacy stays in its name, tooltip and title) */SyncVaultKey(); /* decision 7: the chip is the private indication; P stays a normal command */SyncAddressDisplay();SyncBookmarkChrome();SyncTabKeys();auto titles=Titles();auto now=NativeChrome::Motion::Now();chrome.contentOnly=InFullscreen(); /* fullscreen: the page alone */SidebarPrepare();chrome.Build((int)pages.size(),current,&titles,now);SyncSplitDecor();SyncDrawerSide();if(chrome.TakeTabMotionStarted()){InvalidateChrome();ScheduleMotion(now);}}
 // After a pointer close the strip keeps its tab width until the pointer leaves
 // it, so repeated clicks keep landing on close buttons.
 void LockTabWidth(){chrome.lockedTab=chrome.strip.tab;}
@@ -577,7 +579,7 @@ SV::Box ContentBox(){namespace View=NativeChrome::Design::Viewport;
     // page keeps its size and only moves (no relayout per frame), as in the normal chrome.
     if(chrome.floating&&!InFullscreen()){auto f=FM::Content(chrome.ClientWidth(),chrome.height,FM::ChatReserve(ChatInsetDip()),chrome.annotationBand);if(AnnotationBandSliding())f.bottom+=f.top-FM::pageInset;return {f.left,f.top,f.right,f.bottom};}
     auto c=SV::Content(chrome.width,chrome.height);c.top=chrome.ContentTop();const float inset=NativeChrome::Sidebar::Zone::inset; /* #127 (Val): 4 DIP around the page in both layouts */c.left=chrome.sidebar?chrome.SidebarZoneLeft():inset;c.right=std::max(c.left,chrome.width-inset-ChatInsetDip());   /* #127 panel layouts: ChatInsetDip includes the 4 DIP gap to the chat card */
-    if(const float drawer=DrawerReserveDip();drawer>0)c.right=std::max(c.left,std::min(c.right,chrome.width-drawer-inset)); /* #127 (Val, B): an open drawer: the page stops 4 DIP before it, its right corners rounded */ /* the chat panel sits at the right of the page area: the page shrinks, it is never covered */c.bottom=chrome.height-inset;if(AnnotationBandSliding())c.bottom+=chrome.annotationBand; /* R25: while the annotation band slides, the page keeps its size and only moves (its bottom goes past the window, unseen): no relayout per frame */if(InFullscreen()){c={0,0,chrome.width,chrome.height};}c.bottom=std::max(c.top,c.bottom);return c;}
+    if(const float drawer=DrawerReserveDip();drawer>0){if(chrome.sidebar)c.left=std::min(c.right,std::max(c.left,chrome.side.drawerDock+drawer+inset));else c.right=std::max(c.left,std::min(c.right,chrome.width-drawer-inset));} /* #127 (Val, B): an open drawer: the page stops 4 DIP before it, its right corners rounded; #143: in the side panel's layouts it docks against the panel, the page starts 4 DIP after it */ /* the chat panel sits at the right of the page area: the page shrinks, it is never covered */c.bottom=chrome.height-inset;if(AnnotationBandSliding())c.bottom+=chrome.annotationBand; /* R25: while the annotation band slides, the page keeps its size and only moves (its bottom goes past the window, unseen): no relayout per frame */if(InFullscreen()){c={0,0,chrome.width,chrome.height};}c.bottom=std::max(c.top,c.bottom);return c;}
 struct SplitView{int group=0,active=-1;float min=SV::minWidthCss;std::vector<std::shared_ptr<Tab>> members;std::vector<float> weights;SV::Arrangement a;};
 SplitView CurrentSplit(){
     // A page element in fullscreen (video, game…) is presented alone at the whole ContentBox: the other panels,
@@ -1827,6 +1829,7 @@ void ShowDownloads(){if(WorkspaceParked())return; /* a hidden profile's event: t
 // "View all": the popover gives way to the drawer docked on the right.
 void ShowDownloadDrawer(){
     if(!downloadDrawer.Window())return;
+    DrawerOpening();   // #143: the side panel ready (side Focus: the column at rest)
     CloseAudioDrawer();RefreshMissing();settingsDrawer.Hide(false,true);bookmarksDrawer.Hide(false,true);chrome.latched='D';InvalidateChrome();
     // From the popover: its rectangle morphs into the drawer.
     RECT from{};const bool morph=downloadPanel.Visible()&&GetWindowRect(downloadPanel.Window(),&from);
@@ -2661,6 +2664,7 @@ void SyncLatch(){chrome.latched=audioPanel.Visible()?'V':settingsDrawer.Open()?'
 void ShowSettings(){
     if(!settingsDrawer.Window())return;
     FocusAnchor(L"settings"); // Mode Focus: the panel at rest above the drawer
+    DrawerOpening();   // #143: the side panel ready (side Focus: the column at rest)
     CloseAudioDrawer();CloseDownloadSurfaces();historyDrawer.Hide(false,true);bookmarksDrawer.Hide(false,true);chrome.latched='S';InvalidateChrome();
     settingsDrawer.Show();SyncUpdateToastReserve();
 }
@@ -2668,6 +2672,7 @@ void ToggleSettings(){if(settingsDrawer.Open()){settingsDrawer.Hide(true,true);r
 // #121: « Gérer la saisie automatique » opens Réglages on its section.
 void ShowSettingsAt(NativeChrome::SettingsUI::View v){
     if(!settingsDrawer.Window())return;
+    DrawerOpening();   // #143: the side panel ready (side Focus: the column at rest)
     CloseAudioDrawer();CloseDownloadSurfaces();historyDrawer.Hide(false,true);bookmarksDrawer.Hide(false,true);chrome.latched='S';InvalidateChrome();
     settingsDrawer.Show(v);SyncUpdateToastReserve();
 }
@@ -2751,6 +2756,7 @@ void AnnounceHistory(const std::wstring& text);
 void ShowHistory(bool keyboard){
     if(!historyDrawer.Window())return;
     FocusAnchor(L"history"); // Mode Focus: the panel at rest above the drawer
+    DrawerOpening();   // #143: the side panel ready (side Focus: the column at rest)
     CloseAudioDrawer();HideSuggestions();CloseDownloadSurfaces();settingsDrawer.Hide(false,true);bookmarksDrawer.Hide(false,true);
     chrome.latched='Y';InvalidateChrome();historyDrawer.Show(keyboard);SyncUpdateToastReserve();
 }
@@ -4330,6 +4336,7 @@ void BandActivate(int index,bool ctrl,bool shift,bool keyboard){
 void ShowBookmarksDrawer(bool keyboard){
     if(!bookmarksDrawer.Window())return;
     FocusAnchor(L"bookmarks"); // Mode Focus: the panel at rest above the drawer
+    DrawerOpening();   // #143: the side panel ready (side Focus: the column at rest)
     CloseAudioDrawer();HideSuggestions();CloseDownloadSurfaces();settingsDrawer.Hide(false,true);historyDrawer.Hide(false,true);
     bookmarksDrawer.Show(keyboard);SyncUpdateToastReserve();
 }
@@ -4726,7 +4733,7 @@ bool ForwardToInstalled(const std::wstring& installRoot=L""){
 }
 void LayoutUpdateToast(){if(updateToast.Window())updateToast.Layout();}
 // The bottom-left card keeps clear of the download drawer docked on the right.
-void SyncUpdateToastReserve(){SyncDrawerReserve();const bool open=(downloadDrawer.Visible()&&!downloadDrawer.Closing())||settingsDrawer.Open()||historyDrawer.Open()||bookmarksDrawer.Open();updateToast.SetReservedRight(open?(settingsDrawer.Open()?NativeChrome::SettingsUI::Layout::width:NativeChrome::Downloads::DrawerLayout::width)+NativeChrome::Downloads::DrawerLayout::margin:0.f);}
+void SyncUpdateToastReserve(){SyncDrawerReserve();const bool open=(downloadDrawer.Visible()&&!downloadDrawer.Closing())||settingsDrawer.Open()||historyDrawer.Open()||bookmarksDrawer.Open();updateToast.SetReservedRight(open&&!NativeChrome::Downloads::DrawerLayout::liveLeft /* #143: a drawer on the left leaves the toast's corner */?(settingsDrawer.Open()?NativeChrome::SettingsUI::Layout::width:NativeChrome::Downloads::DrawerLayout::width)+NativeChrome::Downloads::DrawerLayout::margin:0.f);}
 bool FocusUpdateToast(){return updateToast.Shown()&&updateToast.Focus();}
 bool UpdateToastHasFocus(){HWND toast=updateToast.Window();HWND focus=GetFocus();return toast&&focus&&(focus==toast||IsChild(toast,focus));}
 void SyncUpdateToastMotion(){updateToast.SyncReducedMotion();} // no-op before Init/after Close
@@ -5052,7 +5059,7 @@ void SidebarPrepare(){
     // Drawers start under the window bar: 40 in the complete layout, 25 in the compact one (Paper 07 / 11); in Focus at the
     // page's top (4, under the annotation banner when it is there).
     V::DrawerTopValue()=!chrome.sidebar?V::top:chrome.sideHidden?std::max(chrome.annotationBand,SBar::Zone::inset):(SidebarEffective()==SBar::Mode::Compact?SBar::Zone::compactDrawerTop:SBar::Zone::drawerTop);
-    if(window){bookmarkToast.pageLeftPx=chrome.sidebar?S(chrome.SidebarZoneLeft()):0;bookmarkToast.pageBottomPx=chrome.sidebar?S(SBar::Zone::inset):0;}
+    if(window){bookmarkToast.pageLeftPx=chrome.sidebar?S(DrawerReserveDip()>0?std::max(chrome.SidebarZoneLeft(),chrome.side.drawerDock+DrawerReserveDip()+SBar::Zone::inset):chrome.SidebarZoneLeft()):0; /* #143: after a drawer docked against the panel */bookmarkToast.pageBottomPx=chrome.sidebar?S(SBar::Zone::inset):0;}
     if(!chrome.sidebar){chrome.sidebarResizable=false;chrome.sidebarEdge=0;LogLayout();return;}const double now=SidebarNowMs();const auto mode=SidebarEffective();
     // The complete width: the profile's « side-width », or the edge being dragged.
     if(!SidebarEdgeDragging()){const auto mnow=NativeChrome::Motion::Now();const float saved=SBar::Resize::Clamp((float)settings.sideWidth);
@@ -5070,8 +5077,10 @@ void SidebarPrepare(){
     if(chrome.sideHidden){sidebarHover.Close();chrome.sidebarOverlay=false;if(sideReveal.wide){chrome.sidebarMode=SBar::Mode::Complete;chrome.sidebarTitles=1;}}   // Focus: its own way back (SideFocusEvaluate); the address in compact: the complete column
     chrome.sideMorphing=moving||chrome.MorphMoving(NativeChrome::Motion::Now());   // §2: the pieces glide while the column folds
     chrome.annotateDimmed=chrome.annotateShown&&AnnotationButtonDimmed();
+    {namespace DS=NativeChrome::Downloads::DrawerLayout::Side;   // #143: Q2 (b) the window's edge while the Focus column is away; Q4 (b) the overlay's edge
+     chrome.sidebarDockAt=chrome.sideHidden&&!DS::focusBringsColumn&&!chrome.sideShown?0.f:!chrome.sideHidden&&!DS::overlayOneAtATime&&sidebarHover.open?chrome.sideOver.column+SBar::Overlay::border:-1.f;}
     // The edge handle: docked, settled, and the window wide enough for the chosen layout (not compact by itself).
-    chrome.sidebarResizable=!sidebarHover.open&&!moving&&chrome.width>=SBar::autoCompactBelow&&!InFullscreen()&&!chrome.sideHidden;if(!chrome.sidebarResizable&&!SidebarEdgeDragging())chrome.sidebarEdge=0;
+    chrome.sidebarResizable=!sidebarHover.open&&!moving&&chrome.width>=SBar::autoCompactBelow&&!InFullscreen()&&!chrome.sideHidden&&DrawerReserveDip()<=0; /* #143: a drawer docked against the column takes its edge */if(!chrome.sidebarResizable&&!SidebarEdgeDragging())chrome.sidebarEdge=0;
     LogLayout();
     chrome.sideHome.clear();chrome.sideDetails.clear();for(auto& t:pages){chrome.sideHome.push_back(t->home);chrome.sideDetails.push_back(t->home?std::wstring():BareDomain(t->uri));}
     // The selected tab's row is brought into the list's view (a new tab, Ctrl+Tab, Ctrl+1…9).
@@ -5081,8 +5090,8 @@ void SidebarPrepare(){
 // the choice is kept and the complete column opens over the page instead (Designer, answer 11).
 void ToggleSidebar(){
     if(!chrome.sidebar)return;
-    if(chrome.sideHidden){sideReveal.Toggle();SideRevealChanged();if(sideReveal.open){SetFocus(window);keyboardModality=true;keyboardFocus=NativeChrome::TabBase+std::max(0,current);InvalidateChrome();}return;}   // Mode Focus: in, then out
-    if(chrome.width<SBar::autoCompactBelow){if(sidebarHover.open)sidebarHover.Close();else sidebarHover.Open();Layout();return;}
+    if(chrome.sideHidden){if(sideReveal.open&&DrawerReserveDip()>0)CloseDockedDrawers(); /* #143: the drawer docked against it goes with it */sideReveal.Toggle();SideRevealChanged();if(sideReveal.open){SetFocus(window);keyboardModality=true;keyboardFocus=NativeChrome::TabBase+std::max(0,current);InvalidateChrome();}return;}   // Mode Focus: in, then out
+    if(chrome.width<SBar::autoCompactBelow){if(sidebarHover.open)sidebarHover.Close();else{if(NativeChrome::Downloads::DrawerLayout::Side::overlayOneAtATime&&DrawerReserveDip()>0)CloseDockedDrawers(); /* #143 Q4: one at a time */sidebarHover.Open();}Layout();return;}
     sidebarHover.Close();
     // The fold button and Ctrl+Maj+, switch Panneau latéral <-> Panneau compact in the setting (a trial run forced with
     // --side-panel while the setting says « En haut » folds for this run only).
@@ -5254,6 +5263,44 @@ void SideRevealChanged(){
     SetTimer(window,SideSlideTimerId,15,nullptr);SideSlideFrame();
     Log(open?(sideReveal.pinned?L"FOCUS column in (shortcut)":L"FOCUS column in (left edge)"):L"FOCUS column out");
 }
+// ---- #143 (owner 2026-11-25): the drawers open on the tab panel's side ----------------------------------------------
+// The top bar keeps them on the right. The side panel's layouts (complete, compact and their Mode Focus) dock them on the
+// LEFT against the panel (src/sidebar.h Layout::drawerDock: the docked column's right edge, following a fold or the edge
+// being dragged; in Focus the column shown over the page, just after its border); the page starts 4 DIP after an open
+// one. The drawers mirror themselves (src/native-ui.h DockedDrawerRect / DrawerRegion: the slide enters from the left, the
+// hairline on the page's side, square corners against the panel). Designer's answers to the four open points (Q1 to Q4,
+// 2026-11-25): src/downloads.h DrawerLayout::Side.
+constexpr UINT_PTR SideDrawerTimerId=0x5167;
+// Every drawer closes (animated), with the Downloads popover: the column they docked against goes, or the overlay opens.
+void CloseDockedDrawers(){CloseDownloadSurfaces();settingsDrawer.Hide(false,true);historyDrawer.Hide(false,true);bookmarksDrawer.Hide(false,true);CloseAudioDrawer();SyncLatch();SyncUpdateToastReserve();}
+// Q2 (Designer): in side Focus a drawer docks against the column: the column comes at rest at once and stays while the
+// drawer is open (sideDrawerHold, board 15's rule); when the drawer closes it leaves again unless the pointer is on it.
+void SideFocusForDrawer(){
+    namespace DS=NativeChrome::Downloads::DrawerLayout::Side;if(!chrome.sideHidden||!window||!DS::focusBringsColumn)return;
+    sideDrawerHold=true;const bool rest=sideReveal.open&&sideLive&&!sidePic.shown;if(!sideReveal.open){sideReveal.ForAddress(false);sideReveal.pinned=false;}if(rest)return;   /* in like for the field, but not pinned: held by the drawer only */
+    KillTimer(window,SideSlideTimerId);SidePictureHide();sideSlide.Snap(1);sideFade.Snap(1);
+    if(!sideLive)SideRevealLive(true);else BuildChrome();
+    Layout();Log(L"FOCUS column in (drawer)");
+}
+// A drawer is about to open (before it places itself): its side of the window ready. Side Focus: the column at rest (Q2);
+// a narrow window's column over the page closes (Q4, one at a time).
+void DrawerOpening(){
+    if(!chrome.sidebar||!window)return;
+    if(chrome.sideHidden){SideFocusForDrawer();return;}
+    if(sidebarHover.open&&NativeChrome::Downloads::DrawerLayout::Side::overlayOneAtATime){sidebarHover.Close();Layout();}
+}
+// After every Build: the side and the dock as laid out; the open drawers follow when they change (a fold, the edge, the
+// Focus column's width). A drawer open in side Focus while the column is away (Focus switched on with it open) brings the
+// column on the next turn of the loop (never from inside a Build).
+void SyncDrawerSide(){
+    namespace DL=NativeChrome::Downloads::DrawerLayout;
+    const bool left=chrome.sidebar;const float dock=left?chrome.side.drawerDock:0.f;
+    if(!DL::Side::overlayOneAtATime&&chrome.sidebar&&!chrome.sideHidden)sidebarHover.holds=DrawerReserveDip()>0?1:0;   // Q4 (b): the overlay stays while a drawer docks against it
+    if(window&&chrome.sideHidden&&DL::Side::focusBringsColumn&&!sideReveal.open&&DrawerReserveDip()>0)SetTimer(window,SideDrawerTimerId,0,nullptr);
+    if(left==DL::liveLeft&&dock==DL::liveDock)return;
+    DL::liveLeft=left;DL::liveDock=dock;
+    downloadDrawer.Reposition();settingsDrawer.Reposition();historyDrawer.Reposition();bookmarksDrawer.Reposition();audioPanel.OwnerChanged();
+}
 // Focus on / off or the layout changed: nothing shown, nothing moving.
 void SideFocusReset(){
     sideReveal.Close();sideDrawerHold=false;sideSlide.Snap(0);sideFade.Snap(1);
@@ -5304,12 +5351,23 @@ void SideFocusCommand(int cmd){
     if(!chrome.sideHidden||!sideReveal.open)return;
     if(cmd=='Y'||cmd=='S'||cmd=='D'||cmd=='V'||cmd==BookmarksDrawerCommand||cmd==NativeChrome::Chrome::SidebarManageId)sideDrawerHold=true;
 }
-bool SideFocusEscape(){if(!chrome.sideHidden||!sideReveal.open)return false;sideReveal.Close();sideDrawerHold=false;SideRevealChanged();return true;}
+bool SideFocusEscape(){if(!chrome.sideHidden||!sideReveal.open)return false;if(DrawerReserveDip()>0){CloseDockedDrawers();return true;} /* #143: the drawer docked against the column first; the column then goes as usual */sideReveal.Close();sideDrawerHold=false;SideRevealChanged();return true;}
 // Window dragging: the bar right of the column, and the column's top above the field (complete) / the fold button (compact).
 bool SidebarCaption(float x,float y){if(!chrome.sidebar)return false;const auto& L=chrome.SideColumn();const float col=chrome.sidebarOverlay?L.column:chrome.side.column;
     if(x>=col)return y<chrome.side.bar;return y<(L.mode==SBar::Mode::Complete?L.address.top:L.toggle.bottom);}
 // Wheel over the tab list scrolls it (answer 4).
-void SidebarWheel(POINT client,int delta){const float d=GetDpiForWindow(window)/96.f,x=client.x/d,y=client.y/d;const auto& L=chrome.SideColumn();
+// #143 · Infobulle B (src/side-tip.h): what a tab row or a favourite tile says. A tab: its title (« Nouvel onglet » for the
+// new-tab page), its site's icon and bare address. A bookmark: its title (its address when it has none), its icon and
+// address; a folder: its name alone.
+NativeChrome::SideTip::Content SideTipContent(int id){
+    NativeChrome::SideTip::Content c;
+    if(NativeChrome::IsTab(id)){const int i=NativeChrome::TabIndex(id);if(i<0||i>=(int)pages.size()||!pages[i])return c;const auto& t=pages[i];
+        c.title=t->home?std::wstring(TR(tab_new)):t->title.empty()?std::wstring(TR(chrome_tab_untitled_tip)):t->title;if(!t->home)c.address=BareDomain(t->uri);c.icon=t->favicon.image;return c;}
+    const int i=NativeChrome::BookmarkIndex(id);if(i<0||i>=(int)chrome.bandItems.size())return c;const auto& b=chrome.bandItems[i];
+    c.title=b.title;if(b.folder)return c;
+    if(const auto* n=bookmarks.Find(b.id)){c.address=BareDomain(n->url);if(c.title.empty())c.title=c.address;}c.icon=b.image;c.local=b.local;return c;
+}
+void SidebarWheel(POINT client,int delta){sideTip.Leave(); /* #143: the list moves under the pointer: Infobulle B goes */const float d=GetDpiForWindow(window)/96.f,x=client.x/d,y=client.y/d;const auto& L=chrome.SideColumn();
     if(chrome.sidebarPopover&&chrome.sidePop.box.Contains(x,y)){chrome.sidebarPopoverScroll=std::clamp(chrome.sidePop.grid.scroll-delta/120.f*48.f,0.f,chrome.sidePop.grid.maxScroll);BuildChrome();InvalidateChrome();return;}
     if(L.gridOpen&&L.grid.view.Contains(x,y)){chrome.sidebarGridScroll=std::clamp(L.grid.scroll-delta/120.f*48.f,0.f,L.grid.maxScroll);BuildChrome();InvalidateChrome();return;}
     if(!L.tabsView.Contains(x,y))return;
@@ -5460,7 +5518,7 @@ case WM_MOUSEMOVE:{if(chrome.floating)FocusEvaluate(true); /* Mode Focus: the po
     if(!tabDrag.tab){auto v=CurrentSplit();float px=x,py=y;const int hot=v.group&&!(chrome.floating&&chrome.Local(px,py))?SeparatorAt(x,y,v):-1;if(hot!=chrome.split.hotHandle&&!sepDrag.active){chrome.split.hotHandle=hot;SyncGripLooks();InvalidateRect(h,nullptr,FALSE);}}}
     if(tabDrag.tab){DragTab({GET_X_LPARAM(l),GET_Y_LPARAM(l)});if(tabDrag.active)return 0;}if(bandDrag.index>=0){BandDragMove({GET_X_LPARAM(l),GET_Y_LPARAM(l)});if(bandDrag.active)return 0;}int id=chrome.Hit(GET_X_LPARAM(l)*96.f/GetDpiForWindow(h),GET_Y_LPARAM(l)*96.f/GetDpiForWindow(h));SidebarEdgeLook(id==NativeChrome::Chrome::SidebarEdgeId?1:0);if(NativeChrome::TabIndex(id)<0)UnlockTabWidth();if(id!=hover)UpdateInteraction(id,pressed);TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,h,0};TrackMouseEvent(&track);return 0;}
 case WM_COMMAND:if((HWND)l==address&&HIWORD(w)==EN_CHANGE){AddressEdited();return 0;}break;
-case WM_MOUSELEAVE:ChromeTipHide();UnlockTabWidth();SidebarPointerLeft();if(!SidebarEdgeDragging())SidebarEdgeLook(0);if(chrome.split.hotHandle>=0&&!sepDrag.active&&!PointerOnGrip()){chrome.split.hotHandle=-1;SyncGripLooks();InvalidateRect(h,nullptr,FALSE);}UpdateInteraction(0,pressed);return 0;
+case WM_MOUSELEAVE:ChromeTipLeft(); /* #143: a muted button's tip may come back once the pointer returns */UnlockTabWidth();SidebarPointerLeft();if(!SidebarEdgeDragging())SidebarEdgeLook(0);if(chrome.split.hotHandle>=0&&!sepDrag.active&&!PointerOnGrip()){chrome.split.hotHandle=-1;SyncGripLooks();InvalidateRect(h,nullptr,FALSE);}UpdateInteraction(0,pressed);return 0;
 case WM_LBUTTONDOWN:{if(folderRename.Active()&&folderRename.Host()==h)SetFocus(h);ChromeTipHide();
     // Mode Focus: a press on the panel while it moves first lands it at rest (live): every hit test of this press and of
     // its release then reads the same panel under the pointer (code review: a lost click / stray drag otherwise).
@@ -5545,6 +5603,7 @@ case WM_TIMER:
     if(w==SideFocusPollTimerId){SideFocusEvaluate();return 0;}
     if(w==SideSlideTimerId){SideSlideFrame();return 0;}
     if(w==SideSlideLiveTimerId){KillTimer(h,SideSlideLiveTimerId);if(chrome.sideShown)SidePictureHide();return 0;}
+    if(w==SideDrawerTimerId){KillTimer(h,SideDrawerTimerId);SideFocusForDrawer();return 0;}   // #143: a drawer open in side Focus brings the column
     if(w==FocusPollTimerId){FocusEvaluate();return 0;}
     if(w==FocusSlideTimerId){KillTimer(h,FocusSlideTimerId);if(focusLive)FocusSlideHide();return 0;}   // Mode Focus: the live panel is on screen, its picture goes
     if(w==AudioTimerId){KillTimer(h,AudioTimerId);RefreshAudio();return 0;}
