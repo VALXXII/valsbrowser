@@ -4,6 +4,7 @@ param([switch]$Native,[string]$Out='build/split-dev')
 # local files only (no network), evidence in build\split-dev\split-qa.
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
+. "$PSScriptRoot\tests\agent-guard\agent-guard.ps1"   # no key in this run, no agent for its browser (tests/agent-guard)
 New-Item -ItemType Directory -Force build/split-tests | Out-Null
 & tools/w64devkit/bin/g++.exe -std=c++17 -static -Wall -Wextra -Werror -Wno-missing-field-initializers tests/split-view/split_view_test.cpp -o build/split-tests/split_view_test.exe
 if ($LASTEXITCODE -ne 0) { throw 'Split model compilation failed.' }
@@ -22,7 +23,7 @@ if ($Native) {
     & python tools/release/build.py --out $Out
     if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
     Set-Content (Join-Path $dir 'prototype.log') ''
-    $p = Start-Process -FilePath (Join-Path $dir 'browser.exe') -ArgumentList '--split-test' -WorkingDirectory $dir -WindowStyle Hidden -PassThru
+    $p = Use-AgentGuardBrowser { Start-Process -FilePath (Join-Path $dir 'browser.exe') -ArgumentList '--split-test' -WorkingDirectory $dir -WindowStyle Hidden -PassThru }
     if (!$p.WaitForExit(150000)) { throw 'Native split test timed out; inspect prototype.log (process left running).' }
     $log = Get-Content (Join-Path $dir 'prototype.log') -Encoding UTF8 -Raw
     ($log -split "`n") | Where-Object { $_ -match '^SPLIT' }

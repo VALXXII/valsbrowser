@@ -14,7 +14,10 @@ PrintWindow. No SendInput, no other application touched. The agent is the FAKE A
     python -I tests/chat/chat_qa.py run                 # the whole validation (design/chat-v1-validation.md)
 
 Guards (same as tests/annotations): BROWSER_ANNOTATIONS_TEST=1, agent configurations redirected under build/, the real
-Claude / Codex configuration files fingerprinted before and after.
+Claude / Codex configuration files fingerprinted before and after. The agent guard (tests/agent-guard/agent_guard.py):
+the fake agent checked before anything is copied or started, keys stripped and the browser's « user » folders and PATH
+redirected under build/chat-qa-work, then a watch of the browser's processes and log — any agent that is not the fake
+one stops the run. --real (one real trial, tests/chat/chat_qa_real.py) only with BROWSER_TEST_REAL_AGENT set by hand.
 """
 from __future__ import annotations
 import ctypes
@@ -36,6 +39,8 @@ HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path.insert(0, str(ROOT / 'tests' / 'annotations'))
 import sandbox_qa as Q   # noqa: E402  (CDP WebSocket, window helpers, PrintWindow)
+sys.path.insert(0, str(ROOT / 'tests' / 'agent-guard'))
+import agent_guard as G   # noqa: E402  (the fake agent or nothing: never the computer's own Claude Code / Codex)
 
 # CHAT_QA_BUILD=<folder under build/> runs the QA on another build than build/chat-preview (the user may be testing that one)
 import os as _os
@@ -291,7 +296,37 @@ def prepare_site(reset=True):
         shutil.copytree(ROOT / 'sandbox' / 'chat' / 'site', SITE)
 
 
+_guard = None        # the agent guard's watch of the browser this process started (G.Watch)
+_guard_env = None    # the environment it was started with
+_guard_log_start = 0  # where that launch's lines begin in LOG
+
+
+def browser_env(real=False, extra_env=None):
+    """The test browser's environment, checked by the agent guard (tests/agent-guard/agent_guard.py) — before anything
+    is copied or started: AgentGuardError when the fake agent is missing, relative or foreign, or (real) when the
+    person did not allow the real agent by hand."""
+    env = dict(os.environ)
+    env['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = f'--remote-debugging-port={Q.PORT} --remote-allow-origins=http://127.0.0.1:{Q.PORT}'
+    env['BROWSER_ANNOTATIONS_CONNECT_ROOT'] = str(AGENTS)
+    env['BROWSER_ANNOTATIONS_TEST'] = '1'
+    env.pop('BROWSER_ANNOTATIONS_CONNECT_PATH', None)
+    env.pop('BROWSER_CHAT_FAKE_AGENT', None)
+    env.pop(G.REAL_AGENT_SWITCH, None)
+    if not real:
+        fake = TOOLS / 'fake-acp-agent.exe'
+        env['BROWSER_CHAT_FAKE_AGENT'] = f'"{fake}" --resume --log "{WORK / "fake-agent.log"}" --edit "{FAKE_EDIT}"'
+    env.update(extra_env or {})
+    env = G.real_env(env) if real else G.secure_env(env, work=WORK, exe=APP / 'browser.exe')
+    assert env.get('BROWSER_ANNOTATIONS_TEST') == '1' and pathlib.Path(env['BROWSER_ANNOTATIONS_CONNECT_ROOT']).resolve().is_relative_to(ROOT / 'build'), 'unsafe environment'
+    return env
+
+
 def launch(real=False, fresh=True, extra_env=None, reset_site=True):
+    global _guard, _guard_env
+    env = browser_env(real, extra_env)   # the agent guard first: when it refuses, nothing is copied or started
+    if _guard:
+        _guard.stop(); _guard = None
+    G.clear_marker(WORK)
     APP.mkdir(parents=True, exist_ok=True); WORK.mkdir(parents=True, exist_ok=True)
     keep = ('profile', 'session', 'sessions', 'annotations', 'prototype.log', 'downloads', 'bookmarks', 'settings', 'history',
             'annotations-connect', 'annotations-chat', 'chat-snapshots', 'agents',
@@ -322,20 +357,20 @@ def launch(real=False, fresh=True, extra_env=None, reset_site=True):
     server = subprocess.Popen([sys.executable, str(ROOT / 'sandbox' / 'chat' / 'serve.py'), '--root', str(SITE), '--port', str(PORT_PAGE)],
                               cwd=str(SITE), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     (WORK / 'server.pid').write_text(str(server.pid))
-    env = dict(os.environ)
-    env['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = f'--remote-debugging-port={Q.PORT} --remote-allow-origins=http://127.0.0.1:{Q.PORT}'
-    env['BROWSER_ANNOTATIONS_CONNECT_ROOT'] = str(AGENTS)
-    env['BROWSER_ANNOTATIONS_TEST'] = '1'
-    env.pop('BROWSER_ANNOTATIONS_CONNECT_PATH', None)
-    env.pop('BROWSER_CHAT_FAKE_AGENT', None)
-    if not real:
-        fake = TOOLS / 'fake-acp-agent.exe'
-        assert fake.is_file(), f'missing {fake}: build first'
-        env['BROWSER_CHAT_FAKE_AGENT'] = f'"{fake}" --resume --log "{WORK / "fake-agent.log"}" --edit "{FAKE_EDIT}"'
-    env.update(extra_env or {})
-    assert env.get('BROWSER_ANNOTATIONS_TEST') == '1' and pathlib.Path(env['BROWSER_ANNOTATIONS_CONNECT_ROOT']).resolve().is_relative_to(ROOT / 'build'), 'unsafe environment'
-    p = subprocess.Popen([str(APP / 'browser.exe')], cwd=str(APP), env=env)
+    global _guard_log_start
+    try:
+        _guard_log_start = LOG.stat().st_size   # this launch's lines only (a launch with --keep goes on with the same log)
+    except OSError:
+        _guard_log_start = 0
+    # CHAT_QA_TAB_LAYOUT=top|side|compact (the general test's three layouts, design/annotation-plan-2026-11-24.md §9):
+    # this run's layout, never saved in the profile (src/main.cpp TabLayoutArg); the browser logs « layout: … (this run) ».
+    layout = os.environ.get('CHAT_QA_TAB_LAYOUT', '')
+    assert layout in ('', 'top', 'side', 'compact'), f'CHAT_QA_TAB_LAYOUT: {layout!r}'
+    p = subprocess.Popen([str(APP / 'browser.exe')] + ([f'--tab-layout={layout}'] if layout else []), cwd=str(APP), env=env)
     (APP / 'qa.pid').write_text(str(p.pid))
+    # the agent guard's watch: an agent that is not the fake one (process or log line) ends THIS browser and the run
+    _guard_env = env
+    _guard = None if real else G.watch(p.pid, env, log=LOG, work=WORK)
     ok = wait_for(lambda: ws_for(URL) is not None, timeout=60, every=0.3)
     if not ok:   # a fresh profile may abort its first navigation while the content blocker installs: navigate again
         for t in targets():
@@ -344,6 +379,13 @@ def launch(real=False, fresh=True, extra_env=None, reset_site=True):
         wait_for(lambda: ws_for(URL) is not None, timeout=30, every=0.3)
     time.sleep(1.2)
     return p
+
+
+def guard_check():
+    """Raises AgentGuardError when the agent guard stopped this run (here or in a detached watch of `launch`)."""
+    if _guard:
+        _guard.check()
+    G.check_marker(WORK)
 
 
 def pid_alive(pid):
@@ -369,6 +411,15 @@ def quit_all():
         subprocess.run(['taskkill', '/PID', str(spid), '/T', '/F'], capture_output=True)
     except (OSError, ValueError):
         pass
+    global _guard
+    if _guard:   # the run ends: what the watch caught, and the whole log of this launch read once more
+        _guard.stop()
+        caught, fake = _guard.caught, _guard.fake
+        _guard = None
+        if caught:
+            raise G.AgentGuardError('; '.join(c['why'] for c in caught))
+        if fake:
+            G.check_log(LOG, fake, since=_guard_log_start)
 
 
 def descendants(pid):
@@ -393,8 +444,13 @@ def main():
         except Exception:
             pass
     cmd, args = sys.argv[1], sys.argv[2:]
+    if cmd not in ('launch', 'quit'):
+        G.check_marker(WORK)   # a detached watch stopped the browser of `launch`: every later step stops too
     if cmd == 'launch':
         p = launch(real='--real' in args, fresh='--keep' not in args, reset_site='--keep' not in args)
+        if _guard:   # this process ends now, the browser runs on: the same watch in a windowless process of its own
+            _guard.stop(); _guard.check()
+            G.spawn_detached_watch(p.pid, _guard_env, work=WORK, log=LOG)
         print('launched', p.pid)
     elif cmd == 'page':
         print(json.dumps(page(args[0]), ensure_ascii=False))

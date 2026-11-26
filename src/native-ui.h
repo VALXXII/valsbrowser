@@ -422,12 +422,37 @@ inline void KeyedDrawer(HWND window){
     SetWindowLongPtrW(window,GWL_EXSTYLE,GetWindowLongPtrW(window,GWL_EXSTYLE)|WS_EX_LAYERED);
     SetLayeredWindowAttributes(window,drawerKey,0,LWA_COLORKEY);
 }
-inline HRGN DrawerRegion(bool entered,int right,int height,int radius,bool square){
+// A region mirrored in a `width` px wide window (pixel x <-> width - 1 - x), exactly: GDI's own round rectangles are not
+// symmetric pixel for pixel, so a mirrored corner is the other one reflected, never drawn again.
+inline HRGN MirroredRegion(HRGN source,int width){
+    HRGN out=CreateRectRgn(0,0,0,0);const DWORD size=source?GetRegionData(source,0,nullptr):0;if(size<sizeof(RGNDATAHEADER))return out;
+    std::vector<BYTE> data(size);auto* rd=reinterpret_cast<RGNDATA*>(data.data());if(GetRegionData(source,size,rd)!=size)return out;
+    const RECT* r=reinterpret_cast<const RECT*>(rd->Buffer);
+    for(DWORD i=0;i<rd->rdh.nCount;++i){HRGN one=CreateRectRgn(width-r[i].right,r[i].top,width-r[i].left,r[i].bottom);CombineRgn(out,out,one,RGN_OR);DeleteObject(one);}
+    return out;
+}
+// `left` (#143): docked on the left (the side panel's layouts), mirrored: the bottom-LEFT corner is the one rounded.
+inline HRGN DrawerRegion(bool entered,int right,int height,int radius,bool square,bool left=false){
     if(!entered)return CreateRectRgn(0,0,0,0);
     if(square)return CreateRectRgn(0,0,right,height);
     HRGN region=CreateRoundRectRgn(-radius*2,-radius*2,right+1,height+1,radius,radius),clip=CreateRectRgn(0,0,right+1,height+1);
-    CombineRgn(region,region,clip,RGN_AND);DeleteObject(clip);return region;
+    CombineRgn(region,region,clip,RGN_AND);DeleteObject(clip);
+    if(left){HRGN mirrored=MirroredRegion(region,right);DeleteObject(region);return mirrored;}
+    return region;
 }
+// #143 (owner 2026-11-25): the drawers dock on the tab panel's side. Their window rectangle (screen px), `width` wide from
+// `top`, `height` high, in the owner's client `owner` (screen px): on the right `right` px in from its right edge (the top
+// bar; Mode Focus's floating panel edge), or on the LEFT `dock` px in from its left edge (the side panel's right edge).
+inline RECT DockedDrawerRect(const RECT& owner,int width,int top,int height,bool left,int dock,int right){
+    return left?RECT{owner.left+dock,top,owner.left+dock+width,top+height}:RECT{owner.right-right-width,top,owner.right-right,top+height};}
+// Where a sliding drawer's content is drawn (px, signed): `lead` px toward the edge it enters from (right: +, left: -).
+inline int DrawerSlideOffset(int lead,bool left){return left?-lead:lead;}
+// The column of the window its content covers while it slides ([left, right) window px): the strip it has not entered
+// yet, `lead` px on its entering side, is keyed out.
+inline void DrawerContentColumn(int lead,int width,bool left,int& from,int& to){from=left?0:lead;to=left?width-lead:width;}
+// Whether a drawer docked there sits in the window's rounded bottom corner (its region rounds that corner): on the right
+// against the window's edge, on the left against it too (dock 0); against the panel only when Side::roundAgainstPanel.
+inline bool DrawerOnWindowCorner(bool left,int dock,int right,bool roundAgainstPanel){return left?(dock<=0||roundAgainstPanel):right<=0;}
 // The main window (WS_CAPTION for Windows' minimize / maximize animations, its client covering the whole window):
 // DefWindowProc paints a classic caption over the client when the title or icon changes (WM_SETTEXT / WM_SETICON).
 // Windows draws that caption only for a full WS_CAPTION (WS_BORDER | WS_DLGFRAME), so the title and icon are stored

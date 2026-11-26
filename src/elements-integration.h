@@ -21,6 +21,8 @@
 #include "crash-page.h"
 #include "context-toast.h"
 #include "tooltip.h"
+#include "side-tip-window.h"   // #143 · Infobulle B of the side column's tabs and favourites
+NativeChrome::SideTip::Window sideTip;   // #143 · Infobulle B (wired with the chrome's tooltip, below)
 #include "fullscreen-hint.h"
 #include "debug-sandbox.h"
 #include "shortcuts-panel.h"
@@ -757,20 +759,45 @@ bool ErrorPageMessage(const std::shared_ptr<Tab>& t,const std::wstring& source,c
 // Fullscreen (C6/C7): a page element (ContainsFullScreenElementChanged) or the whole
 // browser (F11). The window covers its monitor and the chrome is hidden; the hint says how
 // to leave (Échap for a page, F11 for the browser).
-struct FullscreenState { bool page=false,browser=false; WINDOWPLACEMENT placement{sizeof(WINDOWPLACEMENT)}; bool saved=false; } fullscreen;
+// One step in, one step out (user report 25/11: the window « jumps » several times entering and leaving a video's
+// fullscreen). The window keeps its show state, as Chromium's FullscreenHandler does: a maximized window stays
+// maximized (only its caption style goes), and it changes size ONCE, to its monitor, then ONCE back to the exact
+// rectangle it had. Before, a maximized window was first restored (Windows' restore animation, every page laid out at
+// the restored size) and then grown to the monitor; leaving went monitor → restored rectangle (SetWindowPlacement moves
+// a normal window there first) → maximized (animated): two to three visible sizes each way. The window procedure gives
+// a maximized window in fullscreen its whole monitor (WM_NCCALCSIZE, WM_GETMINMAXINFO) and keeps it there (Agrandir /
+// Restaurer, a DPI change). FullscreenStep (main.cpp) logs every window and page size change after a switch.
+struct FullscreenState { bool page=false,browser=false; RECT rect{}; WINDOWPLACEMENT placement{sizeof(WINDOWPLACEMENT)}; bool saved=false,zoomed=false; } fullscreen;
 bool InFullscreen(){return fullscreen.page||fullscreen.browser;}
 RECT MonitorScreenRect(){MONITORINFO mi{sizeof(mi)};GetMonitorInfoW(MonitorFromWindow(window,MONITOR_DEFAULTTONEAREST),&mi);return mi.rcMonitor;}
+// DWM rounds the window (RoundNatively) unless it is maximized: square while it covers its monitor.
+void FullscreenCorners(bool square){if(!window)return;const int corner=square?1/*DWMWCP_DONOTROUND*/:2/*DWMWCP_ROUND*/;DwmSetWindowAttribute(window,33/*DWMWA_WINDOW_CORNER_PREFERENCE*/,&corner,sizeof(corner));}
+// The taskbar steps below the window while it is fullscreen, said to the shell rather than left to its guess (a
+// maximized window now stays maximized in fullscreen); Chromium's FullscreenHandler does the same. Kept for the
+// process's life (never released: no COM call after CoUninitialize).
+void MarkTaskbarFullscreen(bool on){
+    static ITaskbarList2* bar=nullptr;static bool tried=false;
+    if(!tried){tried=true;if(FAILED(CoCreateInstance(CLSID_TaskbarList,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&bar)))||!bar||FAILED(bar->HrInit())){if(bar)bar->Release();bar=nullptr;Log(L"FULLSCREEN taskbar list unavailable");}}
+    if(bar&&window)bar->MarkFullscreenWindow(window,on?TRUE:FALSE);}
 void ApplyFullscreen(bool wasFull){
     const bool full=InFullscreen();
-    if(full&&!wasFull){fullscreen.saved=GetWindowPlacement(window,&fullscreen.placement)!=FALSE;HideSuggestions();
+    if(full!=wasFull)FullscreenTraceBegin(full);
+    if(full&&!wasFull){HideSuggestions();
         // The chrome leaves with its focus, hover and tooltip: keyboard focus on a toolbar control or in the address
         // field goes to the page (a page that asked for fullscreen already has it).
         hover=pressed=0;if(tooltip)SendMessageW(tooltip,TTM_POP,0,0);if(editing||keyboardFocus||GetFocus()==address)FocusPage();
-        if(IsZoomed(window))ShowWindow(window,SW_RESTORE);
+        if(IsIconic(window))ShowWindow(window,SW_RESTORE);   // F11 / a page's click need the window on screen: not reached in practice
+        fullscreen.zoomed=IsZoomed(window)!=FALSE;fullscreen.saved=GetWindowRect(window,&fullscreen.rect)&&GetWindowPlacement(window,&fullscreen.placement);
         // Without its caption style while it covers the monitor, so Windows treats it as fullscreen (taskbar below).
-        SetWindowLongPtrW(window,GWL_STYLE,GetWindowLongPtrW(window,GWL_STYLE)&~static_cast<LONG_PTR>(WS_CAPTION));
-        const RECT m=MonitorScreenRect();SetWindowPos(window,HWND_TOP,m.left,m.top,m.right-m.left,m.bottom-m.top,SWP_FRAMECHANGED|SWP_NOOWNERZORDER);}
-    else if(!full&&wasFull){SetWindowLongPtrW(window,GWL_STYLE,GetWindowLongPtrW(window,GWL_STYLE)|WS_CAPTION);if(fullscreen.saved)SetWindowPlacement(window,&fullscreen.placement);SetWindowPos(window,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_FRAMECHANGED);}
+        SetWindowLongPtrW(window,GWL_STYLE,GetWindowLongPtrW(window,GWL_STYLE)&~static_cast<LONG_PTR>(WS_CAPTION));FullscreenCorners(true);
+        const RECT m=MonitorScreenRect();SetWindowPos(window,HWND_TOP,m.left,m.top,m.right-m.left,m.bottom-m.top,SWP_FRAMECHANGED|SWP_NOOWNERZORDER|SWP_NOCOPYBITS);MarkTaskbarFullscreen(true);}
+    else if(!full&&wasFull){SetWindowLongPtrW(window,GWL_STYLE,GetWindowLongPtrW(window,GWL_STYLE)|WS_CAPTION);
+        const RECT r=fullscreen.rect;
+        if(fullscreen.saved&&!IsIconic(window))SetWindowPos(window,nullptr,r.left,r.top,r.right-r.left,r.bottom-r.top,SWP_NOZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED|SWP_NOCOPYBITS);
+        else{   // minimized meanwhile: it stays so; restoring it later brings back the window it was (maximized, or its rectangle)
+            WINDOWPLACEMENT p{sizeof(p)};if(fullscreen.saved&&GetWindowPlacement(window,&p)){if(!fullscreen.zoomed)p.rcNormalPosition=fullscreen.placement.rcNormalPosition;p.showCmd=SW_SHOWMINNOACTIVE;SetWindowPlacement(window,&p);}
+            SetWindowPos(window,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED);}
+        FullscreenCorners(false);MarkTaskbarFullscreen(false);}
     Layout();
     // C7: the pill names the real origin of the page that took the screen (« Cette page » only
     // without one). No keyboard-lock variant here: WebView2 exposes no keyboard-lock signal.
@@ -1849,7 +1876,10 @@ void RegisterElementEvents(const std::shared_ptr<Tab>& t,ICoreWebView2Settings* 
         if(FAILED(need(v18->add_LaunchingExternalUriScheme(h,&token))))Log(L"EXTERNAL add_LaunchingExternalUriScheme failed");h->Release();}else Log(L"EXTERNAL ICoreWebView2_18 unavailable: engine dialog kept");}
     {auto h=Callback<ICoreWebView2ContainsFullScreenElementChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2* v,IUnknown*)->HRESULT{
         auto tab=weak.lock();if(!tab||tab->closed||halted||!v)return S_OK;BOOL full=FALSE;v->get_ContainsFullScreenElement(&full);tab->pageFullscreen=full!=FALSE;
-        Defer([weak,full]{auto t2=weak.lock();if(t2&&!t2->closed)SetPageFullscreen(t2,full!=FALSE);});return S_OK;});
+        // At once, as Microsoft's WebView2 sample does (the window resized inside this handler): the engine already
+        // shows the element at the page's present size, and a Defer (a 0 ms timer, served after every paint and
+        // input) left that intermediate frame on screen longer before the window followed.
+        SetPageFullscreen(tab,full!=FALSE);return S_OK;});
      if(FAILED(t->view->add_ContainsFullScreenElementChanged(h,&token)))Log(L"FULLSCREEN add_ContainsFullScreenElementChanged failed");h->Release();}
     if(!popup)RegisterSandboxResources(t);   // a window.open target: after its assignment (Microsoft's contract)
 }
@@ -1894,7 +1924,7 @@ void RepositionElementSurfaces(){
     originPrompt.SetPageArea(PageScreenRect());
     PrintReposition();
 }
-void ElementsReducedMotion(bool reduced){modal.SetReducedMotion(reduced);notesCard.SetReducedMotion(reduced);originPrompt.SetReducedMotion(reduced);passwordDemo.SetReducedMotion(reduced);findBar.SetReducedMotion(reduced);contextToast.SetReducedMotion(reduced);fullscreenHint.SetReducedMotion(reduced);shortcutsPanel.SetReducedMotion(reduced);sandboxTip.SetReducedMotion(reduced);chromeTip.SetReducedMotion(reduced);}
+void ElementsReducedMotion(bool reduced){sideTip.SetReducedMotion(reduced);modal.SetReducedMotion(reduced);notesCard.SetReducedMotion(reduced);originPrompt.SetReducedMotion(reduced);passwordDemo.SetReducedMotion(reduced);findBar.SetReducedMotion(reduced);contextToast.SetReducedMotion(reduced);fullscreenHint.SetReducedMotion(reduced);shortcutsPanel.SetReducedMotion(reduced);sandboxTip.SetReducedMotion(reduced);chromeTip.SetReducedMotion(reduced);}
 NativeChrome::Motion::Wake ElementsNextWake(NativeChrome::Motion::Time now){
     using NativeChrome::Motion::Earlier;
     return Earlier(ChipNextWake(now),Earlier(Earlier(Earlier(Earlier(Earlier(modal.NextWake(now),notesCard.NextWake(now)),originPrompt.NextWake(now)),Earlier(findBar.NextWake(now),contextToast.NextWake(now))),fullscreenHint.NextWake(now)),Earlier(Earlier(shortcutsPanel.NextWake(now),Earlier(sandboxTip.NextWake(now),chromeTip.NextWake(now))),passwordDemo.NextWake(now))));
@@ -1982,10 +2012,12 @@ void CreateElementSurfaces(){
     // C5: the toolbar's tooltips use the Paper tooltip; the comctl one stays only as a fallback.
     {NativeChrome::Tooltip::Hooks th;th.wake=[]{RequestElementFrame();};
      if(chromeTip.Create(instance,window,root,std::move(th))&&tooltip){DestroyWindow(tooltip);tooltip=nullptr;}}
+    if(!sideTip.Create(instance,window,root))Log(L"SIDE tip unavailable");   // #143 · Infobulle B
     CreatePrintSurfaces();   // our print window (#121)
     ElementsReducedMotion(motion.ReducedMotion());
 }
 void DisposeElementSurfaces(){
+    sideTip.Dispose();
     while(!modalQueue.empty()){auto job=std::move(modalQueue.front());modalQueue.pop_front();if(job.done)job.done(MD::Result{});}
     if(modalOpen)modal.Abort();
     while(!promptQueue.empty()){auto job=std::move(promptQueue.front());promptQueue.pop_front();OP::Result none;for(auto& a:job.answers)a(none);}
@@ -2167,23 +2199,62 @@ NativeChrome::Tooltip::Content TipContent(const wchar_t* tip){
             if(key.rfind(L"Ctrl",0)==0||key.rfind(L"Alt",0)==0||key.rfind(L"Maj",0)==0||key.rfind(L"Shift",0)==0||(key.size()>=2&&key[0]==L'F'&&iswdigit(key[1]))){c.label=s.substr(0,open);c.shortcut=key;}}}
     return c;
 }
+// #143 (owner's capture 2026-11-25: « Téléchargements » over its open popover): a button whose menu, popover or drawer is
+// open keeps its tooltip hidden, and after it closes until the pointer has left the button (Tooltip::MenuMute). Every
+// toolbar / column button with a menu: Téléchargements, Son, Réglages, Historique (chrome.latched), a band folder and « » »
+// (bandOpen), the profile menu, the compact column's « » » popover, « Gérer les favoris » (the Favoris drawer), the star /
+// « add this page » (the bookmark popover). « Annoter »'s card blocks every tip already (ChromeTipBlock).
+NativeChrome::Tooltip::MenuMute chromeTipMute;
+// #143 · Infobulle B (owner's go 2026-11-26; src/side-tip.h): the side column's tab rows and favourite tiles show it instead
+// of the C5 tip (not the compact « » » popover's tiles, beside the column). The panel is on the left: the tip on its right.
+constexpr bool SideTipPanelLeft=true;   // a panel on the right: false (the tip on the item's left, its slide mirrored)
+NativeChrome::SideTip::Content SideTipContent(int id);   // src/main.cpp (the tabs, the bookmarks store)
+float SideColumnRight(){return chrome.SideColumn().column;}
+bool SideTipItem(const NativeChrome::Region& r){return chrome.sidebar&&(NativeChrome::IsTab(r.id)||NativeChrome::IsBookmark(r.id))&&r.rect.right<=SideColumnRight()+.5f;}
+// `atOnce`: the keyboard (no delay, as in the compact column).
+void SideTipHover(const NativeChrome::Region& r,bool atOnce=false){
+    const bool compact=atOnce||chrome.SideColumn().mode==NativeChrome::Sidebar::Mode::Compact;
+    sideTip.Hover(r.id,{r.rect.left,r.rect.top,r.rect.right,r.rect.bottom},SideTipContent(r.id),compact,SideTipPanelLeft);}
+bool ChromeTipMenuOpen(int id){
+    if(!id)return false;
+    if(id==chrome.latched||id==chrome.bandOpen)return true;
+    if(id==900&&chrome.profileButton.open)return true;   // the profile button (Chrome region 900)
+    if(id==NativeChrome::Chrome::SidebarMoreId&&chrome.sidebarPopover)return true;
+    if(id==NativeChrome::Chrome::SidebarManageId&&bookmarksDrawer.Open())return true;
+    if((id=='K'||id=='E')&&bookmarkPopover.Visible())return true;
+    return false;
+}
+// A menu may have opened (every InvalidateChrome): a new one mutes its button and the tip showing (or due) goes at once.
+void ChromeTipMenuSync(){if(chrome.bandOpen)sideTip.Dismiss(chrome.bandOpen);else if(contextMenu.Open()||chrome.profileButton.open)sideTip.Dismiss();   /* #143: Infobulle B never over a menu */if(!chromeTip.Window())return;int open=0;for(auto& r:chrome.regions)if(r.tip&&*r.tip&&ChromeTipMenuOpen(r.id)){open=r.id;break;}if(chromeTipMute.Opened(open))chromeTip.HideNow();}
 void ChromeTipHover(int x,int y){
     if(!chromeTip.Window())return;
     const float d=GetDpiForWindow(window)/96.f;float fx=x/d,fy=y/d;
-    if(!chrome.Local(fx,fy)){chromeTip.Hide();return;}   // Mode Focus: only over the floating panel's visible part
-    if(chrome.Hit(fx,fy)==NativeChrome::Chrome::SidebarEdgeId){chromeTip.Hide();return;}   // #127: the column edge shows the ↔ cursor, no tooltip (Paper)
+    if(!chrome.Local(fx,fy)){chromeTipMute.Muted(0,ChromeTipMenuOpen(chromeTipMute.id));chromeTip.Hide();sideTip.Leave();return;}   // Mode Focus: only over the floating panel's visible part
+    if(chrome.Hit(fx,fy)==NativeChrome::Chrome::SidebarEdgeId){chromeTipMute.Muted(NativeChrome::Chrome::SidebarEdgeId,ChromeTipMenuOpen(chromeTipMute.id));chromeTip.Hide();sideTip.Leave();return;}   // #127: the column edge shows the ↔ cursor, no tooltip (Paper)
+    ChromeTipMenuSync();
     for(auto& r:chrome.regions){
         if(!r.tip||!*r.tip||fx<r.rect.left||fx>=r.rect.right||fy<r.rect.top||fy>=r.rect.bottom)continue;
+        if(SideTipItem(r)){chromeTip.Hide();if(ChromeTipMenuOpen(r.id))sideTip.Dismiss(r.id);else SideTipHover(r);return;}   // #143 · Infobulle B (never over its own open menu)
+        sideTip.Leave();   // a control with its own tooltip
+        if(chromeTipMute.Muted(r.id,ChromeTipMenuOpen(chromeTipMute.id))){chromeTip.Hide();return;}   // #143: over its own open menu
         RECT target=ChromePx(r.rect);MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&target),2);
         RECT bounds=NativeChrome::TooltipPlacement::VisibleRect(window);chromeTip.Hover(TipContent(r.tip),target,&bounds);return;
     }
+    chromeTipMute.Muted(0,ChromeTipMenuOpen(chromeTipMute.id));   // off every button: a closed menu's mute ends
+    if(!(chrome.sidebar&&fx<SideColumnRight()))sideTip.Leave();   // Infobulle B: stays in the column's gaps, goes outside it
     chromeTip.Hide();
 }
-void ChromeTipHide(){if(chromeTip.Window())chromeTip.Hide();}
+void ChromeTipHide(){if(chromeTip.Window())chromeTip.Hide();sideTip.Dismiss();   /* #143: a click, a menu: Infobulle B goes until another item */}
+// The pointer left the window (into a popover, a drawer, another window): it has left the muted button too (#143).
+void ChromeTipLeft(){chromeTipMute.Muted(0,ChromeTipMenuOpen(chromeTipMute.id));if(chromeTip.Window())chromeTip.Hide();sideTip.Leave();}
 // #127 compact column (Val, 24 nov.): the icons carry their names as tooltips, so the keyboard focus shows the focused
 // control's tooltip too (a tab's title, a bookmark's, a tool's); anywhere else it just hides the pointer's.
 void ChromeTipFocus(int id){
     if(!chromeTip.Window())return;
+    ChromeTipMenuSync();if(chromeTipMute.Muted(id,ChromeTipMenuOpen(chromeTipMute.id))){chromeTip.HideNow();return;}   // #143: never over the menu it opened (until the focus leaves it)
+    if(id&&chrome.sidebar&&!chrome.sidebarOverlay&&chrome.side.mode==NativeChrome::Sidebar::Mode::Compact)   // #143: a tab / favourite: Infobulle B at once
+        for(auto& r:chrome.regions)if(r.id==id&&r.tip&&*r.tip&&SideTipItem(r)){chromeTip.Hide();SideTipHover(r,true);return;}
+    sideTip.Leave();
     if(id&&chrome.sidebar&&!chrome.sidebarOverlay&&chrome.side.mode==NativeChrome::Sidebar::Mode::Compact)
         for(auto& r:chrome.regions){if(r.id!=id||!r.tip||!*r.tip)continue;
             RECT target{S(r.rect.left),S(r.rect.top),S(r.rect.right),S(r.rect.bottom)};MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&target),2);

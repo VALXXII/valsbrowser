@@ -105,6 +105,10 @@ def main() -> int:
         env['BROWSER_ANNOTATIONS_CONNECT_ROOT'] = str(AGENT_ROOT)
         env['BROWSER_ANNOTATIONS_TEST'] = '1'   # guard: refuses any write in the real folders even if the redirection failed
         env.pop('BROWSER_ANNOTATIONS_CONNECT_PATH', None)
+        # a sandbox run by hand: the chat keeps this computer's agents (the test mode alone refuses every agent, the tests'
+        # guard in src/agent-runtime.cpp — a test only ever uses the fake agent)
+        env.pop('BROWSER_CHAT_FAKE_AGENT', None)
+        env['BROWSER_CHAT_REAL_AGENT'] = '1'
     else:
         env.pop('BROWSER_ANNOTATIONS_CONNECT_ROOT', None)
         env.pop('BROWSER_ANNOTATIONS_TEST', None)

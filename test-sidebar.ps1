@@ -1,6 +1,7 @@
 param([string]$DependencyRoot = $PSScriptRoot)
 # Panneau latéral (#127, variante A finale), headless only (no window, no WebView2, no profile):
-#  1. tests/sidebar_test.cpp: Paper geometry of both modes, the column over the page, the fold and hover timers;
+#  1. tests/sidebar_test.cpp: Paper geometry of both modes, the column over the page, the fold and hover timers, the Mode
+#     Focus edge zone (hit test, timers, scrollbar side, DPI, left / right, compact);
 #  2. tests/settings_test.cpp: the « sidebar=complete|compact » key;
 #  3. tests/ui/sidebar_render_test.cpp: the production painter in its column layout, PNGs + pixel checks
 #     (build/sidebar-qa/renders), then tools/sidebar/compose.py: side-by-side with the Paper boards

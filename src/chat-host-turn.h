@@ -124,7 +124,7 @@ void MaybeReadModels() {
         if (action == ChatModelProbe::Action::None) continue;
         modelRead.agent = def.id; modelRead.prepare = action == ChatModelProbe::Action::PrepareThenRead;
         const auto env = RtEnv(); const auto rt = def.rt;
-        Acp::StartOptions o; o.resolve = AgentRuntime::MakeResolver(env, rt); o.clientName = "browser";
+        Acp::StartOptions o; o.resolve = AgentResolver(env, rt); o.clientName = "browser";
 #ifdef BROWSER_VERSION_TEXT
         o.clientVersion = BROWSER_VERSION_TEXT;
 #endif
@@ -436,7 +436,7 @@ void StartSession() {
     const auto* def = AgentOf(agentId); if (!def) return;
     session = std::make_unique<Acp::Session>();
     const HWND target = post; session->SetWake([target] { if (target) PostMessageW(target, AcpWake, 0, 0); });
-    Acp::StartOptions o; o.resolve = AgentRuntime::MakeResolver(RtEnv(), def->rt); o.cwd = U8(folder);
+    Acp::StartOptions o; o.resolve = AgentResolver(RtEnv(), def->rt); o.cwd = U8(folder);
     o.instructions = ChatPrompt::Instructions();   // lot 5 (Codex in « Demander »): an edit that needs the user's approval is asked for, never refused — sent only to an agent that takes instructions
     o.resumeSessionId = convo.data.head.agentId == agentId ? convo.data.head.sessionId : std::string();
     o.clientName = "browser";
