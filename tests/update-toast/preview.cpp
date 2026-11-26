@@ -21,7 +21,7 @@ static float Scale() { return GetDpiForWindow(window) / 96.f; }
 static int Px(float dip) { return (int)(dip * Scale() + .5f); }
 static const wchar_t* Name(Action a) {
     switch (a) { case Action::Download: return L"Download"; case Action::Cancel: return L"Cancel";
-    case Action::RestartInstall: return L"RestartInstall"; case Action::Retry: return L"Retry"; case Action::Dismiss: return L"Dismiss"; }
+    case Action::RestartInstall: return L"RestartInstall"; case Action::Retry: return L"Retry"; case Action::Dismiss: return L"Dismiss"; case Action::Later: return L"Later"; }
     return L"?";
 }
 static void Status() {
@@ -46,7 +46,7 @@ static void OnAction(Action a) {
     case Action::Download: case Action::Retry: StartMockDownload(false); break;
     case Action::Cancel: { View v; v.phase = Phase::Available; Show(v); break; }
     case Action::RestartInstall: { View v; v.phase = Phase::Installing; Show(v); SetTimer(window, InstallTimer, 1500, nullptr); break; }
-    case Action::Dismiss: { View v; Show(v); break; }
+    case Action::Dismiss: case Action::Later: { View v; Show(v); break; }
     }
 }
 static void LayoutChildren() {

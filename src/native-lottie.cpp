@@ -13,6 +13,7 @@ struct Asset::Impl {
     unsigned side=0, count=0;
     double duration=0;
     bool cacheFrames=true;
+    unsigned maxSide=64;
     Frame live;                    // cacheFrames == false: the last rendered frame
     int liveIndex=-1;
     std::vector<Frame> cache;
@@ -32,7 +33,7 @@ bool Asset::Load(const std::wstring& path,const Limits& limits){
     if(p->animation->picture()->load(json.data(),static_cast<uint32_t>(json.size()),"lottie",nullptr,true)!=tvg::Result::Success)return false;
     p->duration=p->animation->duration();const auto frames=p->animation->totalFrame();
     if(!std::isfinite(p->duration)||p->duration<=0||p->duration>limits.maxSeconds||!std::isfinite(frames)||frames<2||frames>limits.maxFrames)return false;
-    p->count=static_cast<unsigned>(std::ceil(frames));p->cacheFrames=limits.cacheFrames;
+    p->count=static_cast<unsigned>(std::ceil(frames));p->cacheFrames=limits.cacheFrames;p->maxSide=std::clamp(limits.maxSide,1u,256u);
     if(p->cacheFrames)p->cache.resize(p->count);
     impl_=std::move(p);return true;
 }
@@ -40,7 +41,7 @@ double Asset::Duration()const{return impl_?impl_->duration:0;}
 unsigned Asset::FrameCount()const{return impl_?impl_->count:0;}
 size_t Asset::CacheBytes()const{size_t bytes=0;if(impl_){bytes=impl_->scratch.size()*4+impl_->live.bgra.size()*4;for(auto& f:impl_->cache)bytes+=f.bgra.size()*4;}return bytes;}
 const Frame* Asset::Sample(double progress,unsigned side){
-    if(!impl_||!std::isfinite(progress)||side==0||side>64)return nullptr;
+    if(!impl_||!std::isfinite(progress)||side==0||side>impl_->maxSide)return nullptr;
     auto& p=*impl_;
     if(p.side!=side){
         for(auto& f:p.cache)f={};

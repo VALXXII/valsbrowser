@@ -157,6 +157,12 @@ public:
         return pose;
     }
     bool Active() const { return running_; }
+    // Read-only timeline points for a host that follows the icon (the update card, src/update-toast-motion.h):
+    // when the arrow is back at rest and the end starts, and when a completed batch's check is fully drawn.
+    bool Ending() const { return running_ && finishing_; }
+    bool Succeeded() const { return completed_; }
+    Motion::Time EndStart() const { return DoneStart(); }
+    Motion::Time CheckDrawn() const { return HoldStart(); }
     Motion::Wake NextWake(Motion::Time now) const {
         if (Rippling(now)) return Motion::Frame();
         if (running_ && reduced_ && finishing_ && completed_) {             // reduced: the static check, then idle

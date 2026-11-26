@@ -5146,7 +5146,7 @@ void SyncUpdateToastReserve(){SyncDrawerReserve();} void CheckForUpdates(){} voi
 NativeChrome::SettingsUI::Drawer::Version SettingsVersion(){return {AboutTitle(),false,false};}
 NativeChrome::Modal::Status AboutStatusNow(){namespace MD=NativeChrome::Modal;auto st=MD::AboutStatus(MD::AboutUpToDate);st.icon=MD::StatusIcon::None;st.title=TR(updates_unavailable);st.detail=TR(updates_unavailable_build);st.hasButton=false;return st;}
 void AboutUpdateAction(int){}
-void SyncUpdateToastMotion(){}
+void SyncUpdateToastMotion(){} void UpdateToastAccentChanged(){}
 #else
 // ---- Self-update host -------------------------------------------------------
 // The engine works on its own threads and only posts UpdateMessage (coalesced and
@@ -5159,7 +5159,10 @@ DWORD updateTimerDelayMs=0; // armed one-shot delay (0 = none); read by fixtures
 void RefreshAboutStatus();
 // « Nouveautés » replaces the « Mise à jour installée » toast when it opens after this update (user request 2026-11-16).
 bool installedToastReplaced=false;
-void ShowUpdateView(){if(updatesStarted){auto v=updates.View();if(installedToastReplaced&&v.phase==BrowserUpdate::Phase::Installed)v=BrowserUpdate::View{};updateToast.SetView(v);}settingsDrawer.Changed();RefreshAboutStatus();}
+// « Plus tard » (Val, 2026-11-26, choice B): the card hides for this session only. The engine keeps its offer and saves
+// nothing (src/update-core.cpp), so it comes back at the next start; a newer version or the manual check shows it at once.
+std::wstring updateLaterVersion;
+void ShowUpdateView(){if(updatesStarted){auto v=updates.View();if(installedToastReplaced&&v.phase==BrowserUpdate::Phase::Installed)v=BrowserUpdate::View{};updateToast.SetView(BrowserUpdate::CardView(v,updateLaterVersion));}settingsDrawer.Changed();RefreshAboutStatus();}
 // Periodic checks for a long-running browser: ONE one-shot timer, due-aware and re-armed after every
 // engine notification and every firing. Delay = time to the persisted next-check (6 h TTL / back-off),
 // never below 15 min nor above 6 h, so an idle browser wakes at most a few times per hour and usually
@@ -5172,6 +5175,7 @@ void ArmUpdateTimer(){
 void UpdateTimerFired(){KillTimer(window,UpdateTimerId);updateTimerDelayMs=0;if(updatesStarted&&!closingForInstall)updates.AutoCheck();ArmUpdateTimer();}
 void UpdateAction(BrowserUpdate::Action action){
     if(!updatesStarted||closingForInstall)return;
+    if(action==BrowserUpdate::Action::Later){const auto v=updates.View();if(v.phase==BrowserUpdate::Phase::Available)updateLaterVersion=v.version;Log(L"UPDATE later: card hidden for this session");ShowUpdateView();return;}
     // The session is saved before the helper exists and again by WM_CLOSE.
     if(action==BrowserUpdate::Action::RestartInstall)SaveSession();
     const auto result=updates.Perform(action);
@@ -5245,7 +5249,7 @@ void AboutUpdateAction(int button){
     if(button==MD::AboutDownloadButton){UpdateAction(BrowserUpdate::Action::Download);return;}
     if(button==MD::AboutRestartButton)UpdateAction(BrowserUpdate::Action::RestartInstall); // #60 handoff: closeWithoutPrompt, normal close
 }
-void CheckForUpdates(){if(UpdateCheckAvailable()){updates.CheckNow();ShowUpdateView();}}
+void CheckForUpdates(){if(UpdateCheckAvailable()){updateLaterVersion.clear();updates.CheckNow();ShowUpdateView();}}
 // Settings footer: "browser <v> · <statut>", kept within ~200 DIP at 14 px (hence the terse wording).
 // A manual check from the drawer goes through the engine like the menu command, so the toast
 // surfaces Available/Ready/Error by itself; "À jour" only lives here (the toast stays hidden).
@@ -5289,6 +5293,7 @@ void SyncUpdateToastReserve(){SyncDrawerReserve();const bool open=(downloadDrawe
 bool FocusUpdateToast(){return updateToast.Shown()&&updateToast.Focus();}
 bool UpdateToastHasFocus(){HWND toast=updateToast.Window();HWND focus=GetFocus();return toast&&focus&&(focus==toast||IsChild(toast,focus));}
 void SyncUpdateToastMotion(){updateToast.SyncReducedMotion();} // no-op before Init/after Close
+void UpdateToastAccentChanged(){updateToast.AccentChanged();} // the card's background follows the profile ink
 void SetUpdateToastTop(float dip){updateToast.SetTopReserve(dip);}
 float UpdateToastHeight(){if(!updateToast.Shown()||!updateToast.Window())return 0;RECT r{};GetWindowRect(updateToast.Window(),&r);return (r.bottom-r.top)*96.f/GetDpiForWindow(window)+8;}
 #endif

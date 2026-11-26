@@ -13,9 +13,12 @@ struct Limits {
     size_t maxBytes = 256 * 1024;
     double maxFrames = 120, maxSeconds = 10;
     bool cacheFrames = true;
+    // Largest frame side in pixels. The toolbar's icons stay at the historical 64; the update card's 53 DIP icon
+    // (the Downloads drawer's frames, src/update-toast.cpp) asks for up to 256 (200 % and beyond) with cacheFrames off.
+    unsigned maxSide = 64;
 };
 // UI-thread owned, synchronous ThorVG software renderer. No WebView or JS.
-// At most Limits::maxFrames frames, one DPI resolution per asset, at most 64x64 pixels.
+// At most Limits::maxFrames frames, one DPI resolution per asset, at most Limits::maxSide pixels a side (64 by default).
 class Asset {
     struct Impl;
     std::unique_ptr<Impl> impl_;
