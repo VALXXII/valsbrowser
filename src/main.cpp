@@ -37,6 +37,7 @@
 #include "accessibility.h"
 #include "bookmarks.h"
 #include "bookmark-popover.h"
+#include "folder-picker.h"
 #include "bookmark-toast.h"
 #include "bookmarks-panel.h"
 #include "bookmark-drag.h"
@@ -316,6 +317,7 @@ constexpr long long AccessibleBandKey=0x10003;
 constexpr long long AccessibleToolbarKey=0x10001; // = AccessibleToolbar (declared with the UIA tree below)
 extern Accessibility::Bridge accessibility;
 NativeChrome::BookmarkPopover::Popover bookmarkPopover; NativeChrome::BookmarkToast::Toast bookmarkToast; NativeChrome::BookmarksUI::Drawer bookmarksDrawer;
+NativeChrome::FolderPicker::Popover folderPicker;   // #138 « Personnaliser… » outside the drawer
 // Panneau latéral (#127): section « Panneau latéral » below (src/sidebar.h, Chrome::BuildSidebar / PaintSidebar).
 constexpr int SidebarToggleCommand=NativeChrome::Chrome::SidebarToggleId;int forcedLayout=-1;BrowserSettings::TabsPosition LayoutInEffect();void LogLayout();std::wstring LayoutLine();int TabLayoutArg(const wchar_t* args);bool SidebarEdgeDown(float x);void SidebarEdgeMove(float x);void SidebarEdgeUp(bool commit);void SidebarEdgeLook(int state);bool SidebarEdgeKey(WPARAM key);void SidebarEdgeReset();bool SidebarEdgeDragging();void ApplyLayout();float DrawerReserveDip();void SyncDrawerReserve();void SetTabsPosition(BrowserSettings::TabsPosition p);void SidebarPopover(bool open);bool AnnotationButtonDimmed();RECT RegionScreen(int id);bool ColumnPopoverAt(int id,float gap,POINT& bottomLeft);void UpdateFont();void SidebarPrepare();void ToggleSidebar();void SidebarHoles();bool SidebarDragMove(POINT point);void SidebarDragEnd(bool commit);
 bool SyncBookmarkChrome();void BookmarksChanged();void ToggleBookmarksDrawer(bool keyboard);bool BookmarkedSite(const std::wstring& site);long long AccessibleBandItemKey(int region);
@@ -3879,7 +3881,7 @@ bool qaDefaultCard=false;   // dev builds only, --qa-default-card: the Réglages
 struct OuterDrag { BM::Id id=0; Workspace* owner=nullptr; bool active=false; BookmarkDrag::Drop drop; int source=0; } outerDrag;   // source: 1 menu, 2 drawer
 void StartOuterDrag(BM::Id id,int source);
 // Undo: each entry replays its steps backwards (16 entries, this session only).
-struct BookmarkStep { enum Kind { Created, Removed, Moved, Renamed, Readdressed } kind; BM::Id id=0,parent=0; size_t index=0; std::wstring text; BM::Removed removed; };
+struct BookmarkStep { enum Kind { Created, Removed, Moved, Renamed, Readdressed, Restyled } kind; BM::Id id=0,parent=0; size_t index=0; std::wstring text; BM::Removed removed; std::string icon,color; };   // Restyled: the look before (#138)
 struct BookmarkUndo { std::vector<BookmarkStep> steps; std::wstring done; };
 std::vector<BookmarkUndo> bookmarkUndo;
 std::wstring BookmarksFile(){return dataDir+L"\\bookmarks";}
@@ -3944,7 +3946,8 @@ bool SyncBookmarkChrome(){
     chrome.bandItems.clear();
     for(BM::Id id:bookmarks.Root(BM::BarRoot).children){const auto* n=bookmarks.Find(id);if(!n)continue;
         NativeChrome::Chrome::BandItem item;item.id=id;item.folder=n->kind==BM::Kind::Folder;item.title=BM::DisplayTitle(*n);
-        if(item.folder)item.tip=item.title+L"\n"+FolderSummary(id);
+        if(item.folder){item.tip=item.title+L"\n"+FolderSummary(id);item.look=FolderStyle::Resolve(n->icon,n->color);   // #138
+            item.sideTip=TRF(bookmarks_folder_tip_line,item.title.empty()?std::wstring(TR(bookmarks_unnamed_folder)):item.title,TRP(bookmarks_count,bookmarks.CountLinks(id)));}   // board 242W-0
         else{AddressBar::Parts p;item.local=AddressBar::Split(n->url,p)&&p.scheme==L"file";item.image=SiteIcon(AddressBar::SiteOf(n->url));item.tip=(item.title.empty()?ReadableUrl(n->url):item.title+L"\n"+ReadableUrl(n->url));}
         chrome.bandItems.push_back(std::move(item));}
     chrome.bandButtonForced=!bookmarks.Root(BM::OtherRoot).children.empty();
@@ -3959,6 +3962,7 @@ void BookmarksChanged(){
     bookmarksDrawer.Changed();
     if(accessibility.Listening())accessibility.ChildrenChanged(AccessibleBandKey);
     SyncFolderRename();
+    if(const unsigned f=folderPicker.Folder()){const auto* n=bookmarks.Find(f);if(n&&n->kind==BM::Kind::Folder)folderPicker.Sync(BM::DisplayTitle(*n),n->icon,n->color);else folderPicker.Close(false);}   // #138
 }
 void PushUndo(std::vector<BookmarkStep> steps,std::wstring done){if(steps.empty())return;if(bookmarkUndo.size()==16)bookmarkUndo.erase(bookmarkUndo.begin());bookmarkUndo.push_back({std::move(steps),std::move(done)});}
 std::wstring UniqueFolderName(BM::Id parent){
@@ -3997,6 +4001,7 @@ void UndoBookmark(){
         case BookmarkStep::Moved:bookmarks.Move(s.id,s.parent,s.index);break;
         case BookmarkStep::Renamed:bookmarks.Rename(s.id,s.text);break;
         case BookmarkStep::Readdressed:bookmarks.SetUrl(s.id,s.text);break;
+        case BookmarkStep::Restyled:bookmarks.SetStyle(s.id,s.icon,s.color);break;
         }}
     SaveBookmarks();BookmarksChanged();bookmarkToast.Dismiss();AnnounceBookmark(note);
 }
@@ -4168,7 +4173,7 @@ std::vector<CM::Item> BookmarkFolderItems(BM::Id folder,int depth=0){
     const size_t links=bookmarks.CountLinks(folder);
     if(links){auto all=CM::Command(MenuId(MenuOpenAll,folder),TRP(bookmark_open_all,links));all.icon=L"open-out";items.push_back(all);items.push_back(CM::Separator());}
     for(BM::Id id:f->children){const auto* n=bookmarks.Find(id);if(!n)continue;
-        if(n->kind==BM::Kind::Folder){CM::Item sub;sub.id=MenuId(MenuOpen,id);sub.label=NativeUI::EscapeMenuText(n->title.empty()?std::wstring(TR(bookmarks_unnamed_folder)):n->title);sub.icon=L"folder-closed";sub.help=FolderSummary(id);
+        if(n->kind==BM::Kind::Folder){CM::Item sub;sub.id=MenuId(MenuOpen,id);sub.label=NativeUI::EscapeMenuText(n->title.empty()?std::wstring(TR(bookmarks_unnamed_folder)):n->title);sub.icon=L"folder-closed";sub.look=FolderStyle::Resolve(n->icon,n->color);sub.folderName=true;sub.help=FolderSummary(id);
             if(depth<(int)BM::Store::MaxDepth)sub.children=BookmarkFolderItems(id,depth+1);if(sub.children.empty())sub.children.push_back(CM::Command(0,TR(bookmarks_menu_empty),L"",false));items.push_back(sub);}
         else{auto item=CM::Command(MenuId(MenuOpen,id),NativeUI::EscapeMenuText(BM::DisplayTitle(*n)));item.image=SiteIcon(AddressBar::SiteOf(n->url));item.icon=L"favicon";item.help=ReadableUrl(n->url);items.push_back(item);}}
     if(f->children.empty()){items.push_back(CM::Command(0,TR(bookmarks_menu_empty),L"",false));}
@@ -4200,7 +4205,7 @@ void RunBookmarkMenu(const std::vector<CM::Item>& items,int region,bool keyboard
 void OverflowMenu(bool keyboard){
     std::vector<CM::Item> items;const auto& bar=bookmarks.Root(BM::BarRoot).children;
     for(size_t i=(size_t)chrome.band.visible;i<bar.size();++i){const auto* n=bookmarks.Find(bar[i]);if(!n)continue;
-        if(n->kind==BM::Kind::Folder){CM::Item sub;sub.id=MenuId(MenuOpen,n->id);sub.label=NativeUI::EscapeMenuText(n->title.empty()?std::wstring(TR(bookmarks_unnamed_folder)):n->title);sub.icon=L"folder-closed";sub.help=FolderSummary(n->id);sub.children=BookmarkFolderItems(n->id,1);items.push_back(sub);}
+        if(n->kind==BM::Kind::Folder){CM::Item sub;sub.id=MenuId(MenuOpen,n->id);sub.label=NativeUI::EscapeMenuText(n->title.empty()?std::wstring(TR(bookmarks_unnamed_folder)):n->title);sub.icon=L"folder-closed";sub.look=FolderStyle::Resolve(n->icon,n->color);sub.folderName=true;sub.help=FolderSummary(n->id);sub.children=BookmarkFolderItems(n->id,1);items.push_back(sub);}
         else{auto item=CM::Command(MenuId(MenuOpen,n->id),NativeUI::EscapeMenuText(BM::DisplayTitle(*n)));item.image=SiteIcon(AddressBar::SiteOf(n->url));item.icon=L"favicon";item.help=ReadableUrl(n->url);items.push_back(item);}}
     if(!bookmarks.Root(BM::OtherRoot).children.empty()){if(!items.empty())items.push_back(CM::Separator());CM::Item other;other.id=MenuId(MenuOpen,BM::OtherRoot);other.label=TR(bookmarks_other_root);other.icon=L"folder-closed";other.children=BookmarkFolderItems(BM::OtherRoot,1);items.push_back(other);}
     if(!items.empty())items.push_back(CM::Separator());
@@ -4244,8 +4249,32 @@ void ShiftBookmark(BM::Id id,int delta){
 }
 std::vector<CM::Item> MoveToItems(BM::Id id){
     std::vector<CM::Item> items;const auto* n=bookmarks.Find(id);
-    for(auto& [folder,depth,name]:FolderChoices(n&&n->kind==BM::Kind::Folder?id:0)){auto item=CM::Command(MenuId(MenuMoveTo,folder),std::wstring((size_t)depth*2,L' ')+NativeUI::EscapeMenuText(name),L"",n&&folder!=n->parent,n&&folder==n->parent);item.icon=L"folder-closed";items.push_back(item);}
+    for(auto& [folder,depth,name]:FolderChoices(n&&n->kind==BM::Kind::Folder?id:0)){auto item=CM::Command(MenuId(MenuMoveTo,folder),std::wstring((size_t)depth*2,L' ')+NativeUI::EscapeMenuText(name),L"",n&&folder!=n->parent,n&&folder==n->parent);item.icon=L"folder-closed";
+        if(const auto* f=bookmarks.Find(folder))item.look=FolderStyle::Resolve(f->icon,f->color);item.folderName=true;items.push_back(item);}   // #138 board 2469-0
     return items;
+}
+// #138 A folder's look from a picker (the drawer's or the popover): applied and saved at once, undone by Ctrl+Z like a
+// rename (no toast: a rename has none). One undo step per visit of a picker: the look the folder had when it opened.
+BM::Id restyleVisit=0;size_t restyleVisitDepth=0;
+void CustomizeVisit(BM::Id id){restyleVisit=id;restyleVisitDepth=0;}
+bool RestyleFolder(BM::Id id,const std::string& icon,const std::string& color){
+    const auto* n=bookmarks.Find(id);if(!n||n->kind!=BM::Kind::Folder||BM::Store::IsRoot(id))return false;
+    if(n->icon==icon&&n->color==color)return true;
+    const std::string oldIcon=n->icon,oldColor=n->color;
+    if(!bookmarks.SetStyle(id,icon,color))return false;
+    const bool same=restyleVisit==id&&restyleVisitDepth&&bookmarkUndo.size()==restyleVisitDepth&&bookmarkUndo.back().steps.size()==1&&bookmarkUndo.back().steps[0].kind==BookmarkStep::Restyled&&bookmarkUndo.back().steps[0].id==id;
+    if(!same){BookmarkStep s;s.kind=BookmarkStep::Restyled;s.id=id;s.icon=oldIcon;s.color=oldColor;PushUndo({std::move(s)},TR(bookmark_undo_customize));if(restyleVisit==id)restyleVisitDepth=bookmarkUndo.size();}
+    Log(L"BOOKMARKS folder look: "+std::wstring(icon.begin(),icon.end())+L" / "+std::wstring(color.begin(),color.end()));
+    SaveBookmarks();BookmarksChanged();return true;
+}
+// « Personnaliser… » (board 3): a drawer row unfolds the drawer's picker; elsewhere (the bar, the side grid, the compact
+// column, a folder menu) the same picker opens as a popover under the folder (or the menu's point).
+void CustomizeFolder(BM::Id id,int surface,int region,RECT anchor,bool keyboard){
+    const auto* n=bookmarks.Find(id);if(!n||n->kind!=BM::Kind::Folder||BM::Store::IsRoot(id))return;
+    if(surface==RenameDrawer&&bookmarksDrawer.CustomizeFolder(id,keyboard)){SetForegroundWindow(bookmarksDrawer.Window());SetFocus(bookmarksDrawer.Window());return;}
+    popoverReturn=keyboard?region:0;bookmarksDrawer.holding_=bookmarksDrawer.Visible();CustomizeVisit(id);
+    if(region){chrome.bandOpen=region;InvalidateChrome();}   // the folder keeps its open look while its picker shows
+    folderPicker.Show(id,BM::DisplayTitle(*n).empty()?std::wstring(TR(bookmarks_unnamed_folder)):BM::DisplayTitle(*n),n->icon,n->color,anchor,ClientScreen(),keyboard,motion.ReducedMotion());
 }
 // A band item's (or menu row's, or drawer row's) own menu, in the order fixed in Paper (c-s207a4).
 // « Placer le contenu dans la barre de favoris » (folder menu): the folder's entries go, same ids and order, to the end
@@ -4269,12 +4298,13 @@ void PromoteToBar(BM::Id id){
 }
 void BookmarkContextMenu(BM::Id id,POINT at,const RECT* anchor,bool keyboard){
     const auto* n=bookmarks.Find(id);if(!n||BM::Store::IsRoot(id))return;const bool folder=n->kind==BM::Kind::Folder;
-    enum{OpenTab=1,OpenAll,Edit,Duplicate,Copy,Delete,NewFolderItem,AddHere,ToggleBar,Promote};
+    enum{OpenTab=1,OpenAll,Edit,Duplicate,Copy,Delete,NewFolderItem,AddHere,ToggleBar,Promote,Customize};
     std::vector<CM::Item> items;
     if(folder){const size_t links=bookmarks.CountLinks(id);auto all=CM::Command(OpenAll,TRP(bookmark_open_all,links),L"",links>0);items.push_back(all);}
     else items.push_back(CM::Command(OpenTab,TR(history_open_new_tab)));
     items.push_back(CM::Separator());
     items.push_back(CM::Command(Edit,folder?TR(cmd_rename):TR(cmd_edit),L"F2"));
+    if(folder)items.push_back(CM::Command(Customize,TR(cmd_customize_folder)));   // #138 board 23S8-0: under « Renommer »
     items.push_back(CM::Command(Duplicate,TR(cmd_duplicate)));
     if(!folder)items.push_back(CM::Command(Copy,TR(chrome_tip_copy_link)));
     items.push_back(CM::Separator());
@@ -4305,6 +4335,7 @@ void BookmarkContextMenu(BM::Id id,POINT at,const RECT* anchor,bool keyboard){
     case AddHere:lastFolder=id;BookmarkStar(keyboard);break;
     case ToggleBar:ToggleBookmarkBar();break;
     case Promote:PromoteToBar(id);break;
+    case Customize:CustomizeFolder(id,surface,region,edit,keyboard);break;
     default:break;
     }
 }
@@ -4340,8 +4371,14 @@ void CreateBookmarkSurfaces(){
     p.folders=[](unsigned id){const auto* n=bookmarks.Find(id);return FolderChoices(n&&n->kind==BM::Kind::Folder?id:0);};
     p.choose=[](const std::vector<CM::Item>& items,RECT anchor,bool keyboard){return contextMenu.Track(items,{anchor.left,anchor.bottom},&anchor,keyboard,motion.ReducedMotion());};
     p.closed=PopoverClosed;p.announce=AnnounceBookmark;
+    p.look=[](unsigned id){const auto* n=bookmarks.Find(id);return n&&n->kind==BM::Kind::Folder?FolderStyle::Resolve(n->icon,n->color):FolderStyle::Look{};};   // #138
     if(!bookmarkPopover.Create(instance,window,base,std::move(p)))Log(L"BOOKMARKS popover unavailable");
     if(!bookmarkToast.Create(instance,window,base))Log(L"BOOKMARKS toast unavailable");
+    NativeChrome::FolderPicker::Hooks fp;   // #138 the picker as a popover
+    fp.restyle=[](unsigned id,const std::string& icon,const std::string& color){return RestyleFolder(id,icon,color);};
+    fp.closed=[](bool keyboard){CustomizeVisit(0);chrome.bandOpen=0;InvalidateChrome();PopoverClosed(keyboard);};
+    fp.announce=AnnounceBookmark;
+    if(!folderPicker.Create(instance,window,base,std::move(fp)))Log(L"BOOKMARKS folder picker unavailable");
     bookmarkToast.returnFocus_=[]{FocusPage();};
     NativeChrome::BookmarksUI::Drawer::Hooks d;
     d.schedule=[](NativeChrome::Motion::Time now){ScheduleMotion(now);};
@@ -4356,6 +4393,8 @@ void CreateBookmarkSurfaces(){
     d.icon=[](const std::wstring& site){return SiteIcon(site);};
     d.announce=AnnounceBookmark;
     d.dragStart=[](BM::Id id,POINT){StartOuterDrag(id,2);};
+    d.restyle=[](BM::Id id,const std::string& icon,const std::string& color){RestyleFolder(id,icon,color);};   // #138
+    d.customizing=[](BM::Id id){CustomizeVisit(id);};
     if(!bookmarksDrawer.Create(instance,window,base,&bookmarks,std::move(d)))Log(L"BOOKMARKS drawer unavailable");
     bookmarksDrawer.stayForTest=qaDrawerStays;
 }

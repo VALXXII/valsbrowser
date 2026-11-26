@@ -64,6 +64,7 @@ inline int ColorIndex(const std::string& key) { for (int i = 0; i < colorCount; 
 inline int IconIndex(const std::string& key) { for (int i = 1; i < iconCount; ++i) if (key == icons[i].key) return i; return 0; }      // 0: the plain folder
 inline const char* ColorKey(int index) { return index >= 0 && index < colorCount ? colors[index].key : ""; }
 inline const char* IconKey(int index) { return index > 0 && index < iconCount ? icons[index].key : ""; }
+inline std::wstring WideKey(const char* key) { std::wstring w; for (const char* c = key; c && *c; ++c) w += static_cast<wchar_t>(*c); return w; }   // ASCII keys (UIA ids)
 inline const char* PalettePath() { return icons[IconIndex("palette")].emblem; }   // the drawer's « Personnaliser » button (board 23DE-0)
 
 // What a stored look draws. `styled` false: the surface keeps its own grey folder (no colour, no icon).
