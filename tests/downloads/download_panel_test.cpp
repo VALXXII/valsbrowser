@@ -39,6 +39,35 @@ static void HeldChecks() {
     Expect(HeldCard::Button(0, card, 0).right + HeldCard::buttonGap == HeldCard::Button(0, card, 1).left && HeldCard::Button(0, card, 1).right == HeldCard::right - HeldCard::inset && HeldCard::Button(0, card, 0).bottom == card - HeldCard::inset, "card buttons: two equal halves, 12 inside");
 }
 
+// « Conserver » (the bug: the kept file vanished. Measured on WebView2 158: after a cancel the engine removes its file by
+// name when its own pass on the file ends, seconds late when that pass still ran, sometimes after the file was given back).
+static void KeepChecks() {
+    using namespace Keep;
+    const int InP = Engine::InProgress, Int = Engine::Interrupted, Done = Engine::Completed;
+    Expect(PathState(false, 2, false) == At::Gone && PathState(false, 3, false) == At::Gone, "keep: the engine's file is gone only when its name is not found");
+    Expect(PathState(false, 5, false) == At::Pending && PathState(false, 32, false) == At::Pending && PathState(true, 0, false) == At::Pending, "keep: a name still listed that cannot be opened (removal pending) is not gone");
+    Expect(PathState(true, 0, true) == At::Left, "keep: a file that opens at the path");
+    // Before the cancel: the engine is let go only once its own pass on the file is over (its zone mark), or at the cap.
+    Expect(BeforeCancel(InP, 0, false, 0) == Before::Wait && BeforeCancel(InP, 0, false, PassCapMs - 1) == Before::Wait, "keep: no cancel while the engine's own pass still runs (no zone mark yet)");
+    Expect(BeforeCancel(InP, 0, true, 0) == Before::Cancel && BeforeCancel(InP, 0, false, PassCapMs) == Before::Cancel, "keep: the cancel once the zone mark is there, or at the cap");
+    Expect(PassCapMs >= 10000, "keep: the cap is past the late removals measured (up to 9.3 s)");
+    Expect(BeforeCancel(Done, 0, false, 10) == Before::Ended, "keep: the engine finished it by itself: an ordinary finished download");
+    Expect(BeforeCancel(Int, 6, true, 10) == Before::Ended && BeforeCancel(Int, 8, false, 10) == Before::Ended && BeforeCancel(Int, 9, false, 10) == Before::Ended, "keep: the engine blocked it (malicious, policy, check failed): its verdict stands, nothing is kept");
+    Expect(BeforeCancel(Int, Engine::ReasonUserCanceled, false, 10) == Before::LetGo && BeforeCancel(Int, Engine::ReasonUserShutdown, false, 10) == Before::LetGo, "keep: the engine let go without a verdict (closed tab, shutdown): the path is watched as after our cancel");
+    // After the cancel: no short limit before the first removal, each removal undone, our name kept for the guard.
+    Expect(Look(false, At::Left, 0, GuardMarkedMs) == Next::Wait && Look(false, At::Pending, 0, GuardMarkedMs) == Next::Wait, "keep: the engine's file still there: wait (no limit), our name holds the bytes");
+    Expect(Look(false, At::Gone, 0, GuardMarkedMs) == Next::GiveBack && Look(true, At::Gone, 30000, GuardMarkedMs) == Next::GiveBack, "keep: every removal of the path is undone at once, the first and any later one");
+    Expect(Look(true, At::Left, 0, GuardMarkedMs) == Next::Guard && Look(true, At::Left, GuardMarkedMs - 1, GuardMarkedMs) == Next::Guard && Look(true, At::Left, GuardMarkedMs, GuardMarkedMs) == Next::Settle, "keep: our name goes only after the guard since the last give-back");
+    Expect(Look(true, At::Pending, GuardMarkedMs - 1, GuardMarkedMs) == Next::Guard, "keep: a pending removal during the guard is waited for");
+    Expect(GuardMs(true) == GuardMarkedMs && GuardMs(false) == GuardForcedMs && GuardMarkedMs >= 60000 && GuardForcedMs > GuardMarkedMs, "keep: 60 s of guard, longer when the cap forced the cancel");
+    Expect(LookAfterMs(1) == StepMs && LookAfterMs(600) == 1000, "keep: looked at every 100 ms, then once a second after a minute");
+    Expect(EngineStub(0, 49667) && !EngineStub(0, 0) && !EngineStub(10, 49667) && !EngineStub(-1, 49667), "keep: only an empty file where our bytes are not empty is the engine's leftover (never a file with content)");
+    Expect(InsecureSource(L"http://insecure.test:8080/a.exe") && InsecureSource(L"HTTP://Example.org/x") && InsecureSource(L"http://user@files.example/x.bin"), "keep: a plain http file from another host is an insecure-download hold");
+    Expect(!InsecureSource(L"https://example.org/a.exe") && !InsecureSource(L"http://127.0.0.1:5000/a.exe") && !InsecureSource(L"http://localhost/a.exe") && !InsecureSource(L"http://[::1]:80/a") && !InsecureSource(L"blob:https://x/1") && !InsecureSource(L"http://"), "keep: https, this computer, other schemes: not insecure");
+    Item held; held.state = State::InProgress; held.held = true;
+    Expect(ActionsFor(held).first == Action::Discard && ActionsFor(held).second == Action::Keep, "held: « Supprimer », « Conserver »");
+}
+
 static void ModelChecks() {
     Expect(Bytes(52848230, 209715200) == L"50.4/200MB", "bytes in total's unit");
     Expect(Bytes(512, 2048) == L"0.5/2KB", "sub-unit received");
@@ -132,6 +161,7 @@ static void ModelChecks() {
     Expect(end[1].top == 48 && end[0].opacity == 1 && end.back().opacity == 0 && end[5].opacity == 1, "morph lands on the drawer");
     Expect(half[1].kind == DownloadsUI::SlotKind::Row && half[1].clipBottom == 12 + 24 + .5f * (12 + 4 * 48) && half[1].opacity == .5f, "folding rows are clipped and faded");
     HeldChecks();
+    KeepChecks();
 }
 
 struct Fixture {
