@@ -445,6 +445,7 @@ def main() -> int:
             settled = dn.wait(lambda: any(s in b.log()[mark:] for s in ('DOWNLOAD kept file handed to attachment services', 'attachment services refused',
                                                                        "marked and checked by the engine's own pass")), 150) if not reader_ms else False
             if reader_ms:   # the engine's removal failed: never seen, the file stays at its path and our name holds the bytes until exit
+                dn.wait(lambda: 'DOWNLOAD keep: the engine is let go' in b.log()[mark:], 40)   # no zone mark while the reader holds it: the cap
                 time.sleep(8)
             row = row_of(b, target.name); size_ok = target.exists() and target.stat().st_size == size
             leftovers = sorted(p.name for p in downloads.iterdir() if p.name != target.name)
@@ -454,7 +455,8 @@ def main() -> int:
                 ok = ok and (r.endswith(';then missing') or 'DOWNLOAD held file discarded' not in b.log()[mark:])
             # No loss is the gate. Settled (our name gone after the guard) is the usual end; « never seen » (the engine's removal
             # did not come: our name holds the bytes until exit, which gives the kept file a name the engine never knew) is safe too.
-            outcome = 'settled' if settled else ('removal never seen: our name holds the bytes' if "our name holds the bytes until it goes" in b.log()[mark:] and ours() else 'neither')
+            outcome = 'settled' if settled else ('removal never seen: our name holds the bytes' if "our name holds the bytes until it goes" in b.log()[mark:] and ours() else
+                       'waiting for the engine\'s pass: our name holds the bytes' if 'DOWNLOAD keep: the engine is let go' not in b.log()[mark:] and ours() else 'neither')
             if must_settle:
                 ok = ok and bool(settled) and not ours()
             else:

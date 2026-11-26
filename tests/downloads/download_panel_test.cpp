@@ -61,6 +61,7 @@ static void KeepChecks() {
     Expect(Look(true, At::Pending, GuardMarkedMs - 1, GuardMarkedMs) == Next::Guard, "keep: a pending removal during the guard is waited for");
     Expect(GuardMs(true) == GuardMarkedMs && GuardMs(false) == GuardForcedMs && GuardMarkedMs >= 60000 && GuardForcedMs > GuardMarkedMs, "keep: 60 s of guard, longer when the cap forced the cancel");
     Expect(LookAfterMs(1) == StepMs && LookAfterMs(600) == 1000, "keep: looked at every 100 ms, then once a second after a minute");
+    Expect(EngineStub(0, 49667) && !EngineStub(0, 0) && !EngineStub(10, 49667) && !EngineStub(-1, 49667), "keep: only an empty file where our bytes are not empty is the engine's leftover (never a file with content)");
     Expect(InsecureSource(L"http://insecure.test:8080/a.exe") && InsecureSource(L"HTTP://Example.org/x") && InsecureSource(L"http://user@files.example/x.bin"), "keep: a plain http file from another host is an insecure-download hold");
     Expect(!InsecureSource(L"https://example.org/a.exe") && !InsecureSource(L"http://127.0.0.1:5000/a.exe") && !InsecureSource(L"http://localhost/a.exe") && !InsecureSource(L"http://[::1]:80/a") && !InsecureSource(L"blob:https://x/1") && !InsecureSource(L"http://"), "keep: https, this computer, other schemes: not insecure");
     Item held; held.state = State::InProgress; held.held = true;

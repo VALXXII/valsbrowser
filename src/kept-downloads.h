@@ -49,6 +49,7 @@ inline bool Info(const std::wstring& p, BY_HANDLE_FILE_INFORMATION& i) {
     if (h == INVALID_HANDLE_VALUE) return false;
     const bool ok = GetFileInformationByHandle(h, &i) != FALSE; CloseHandle(h); return ok;
 }
+inline long long SizeOf(const std::wstring& p) { WIN32_FILE_ATTRIBUTE_DATA d{}; return GetFileAttributesExW(p.c_str(), GetFileExInfoStandard, &d) ? ((long long)d.nFileSizeHigh << 32 | d.nFileSizeLow) : -1; }
 inline bool SameFileId(const std::wstring& a, const std::wstring& b) {
     BY_HANDLE_FILE_INFORMATION x{}, y{}; if (!Info(a, x) || !Info(b, y)) return false;
     return x.dwVolumeSerialNumber == y.dwVolumeSerialNumber && x.nFileIndexHigh == y.nFileIndexHigh && x.nFileIndexLow == y.nFileIndexLow;
@@ -87,6 +88,7 @@ inline std::vector<Result> Sweep(const std::wstring& folder, const std::wstring&
         std::wstring finalPath, to; Outcome outcome;
         if (!ReadSidecar(leftover, finalPath)) { to = NextFreeName(downloadFolder, file); outcome = Outcome::ToDownloads; }
         else if (Exists(finalPath) && HoldsOurBytes(finalPath, leftover)) { Drop(leftover); out.push_back({leftover, finalPath, Outcome::Cleaned}); Log(L"DOWNLOAD kept leftover: the file is at its place, our name goes: " + NameOf(finalPath)); continue; }
+        else if (Exists(finalPath) && SizeOf(finalPath) == 0 && SizeOf(leftover) > 0 && DeleteFileW(finalPath.c_str())) { to = finalPath; outcome = Outcome::Restored; }   // the engine's empty leftover of a cancel during its pass
         else if (!Exists(finalPath)) { to = finalPath; outcome = Outcome::Restored; }
         else { to = NextFreeName(FolderOf(finalPath), NameOf(finalPath)); outcome = Outcome::RestoredElsewhere; }
         if (!MoveFileExW(leftover.c_str(), to.c_str(), MOVEFILE_COPY_ALLOWED)) {

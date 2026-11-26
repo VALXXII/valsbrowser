@@ -134,6 +134,10 @@ inline Next Look(bool seen, At at, std::int64_t sinceGivenMs, std::int64_t guard
     return sinceGivenMs >= guardMs ? Next::Settle : Next::Guard;
 }
 inline int LookAfterMs(int looks) { return looks < 600 ? StepMs : 1000; }   // once a second after the first minute
+// An empty file at the path that is not ours while our bytes are not empty: what the engine leaves after a cancel during
+// its own pass (measured: removal, then a 0-byte file written at the path within 140 ms, left there). The kept file takes
+// its place; a non-empty file that is not ours is never replaced.
+inline bool EngineStub(std::int64_t pathSize, std::int64_t keptSize) { return pathSize == 0 && keptSize > 0; }
 // An insecure-download hold: a plain http:// file from a host that is not this computer (held by Chromium's insecure-
 // download warning when the page is https). Measured: the engine runs no pass on it (never a zone mark) and removes it
 // at once and once after the cancel: nothing to wait for, its pass counts as over.

@@ -54,6 +54,9 @@ int wmain(int argc, wchar_t** argv) {
     // 5. no readable sidecar -> the download folder, under the file's own name.
     const std::wstring b5 = kept + L"\\" + std::to_wstring(dead) + L"-5-lost note.exe";
     Put(b5, "no note bytes");
+    // 7. the engine left an empty file at the path (a cancel during its pass) -> replaced by the kept bytes.
+    const std::wstring stub = dl + L"\\stub.exe", b7 = kept + L"\\" + std::to_wstring(dead) + L"-7-stub.exe";
+    Put(stub, ""); Put(b7, "stub bytes"); KeptDownloads::WriteSidecar(b7, stub);
     // 6. a sidecar left alone (its file already went) of a dead process -> dropped.
     const std::wstring b6 = kept + L"\\" + std::to_wstring(dead) + L"-6-gone.exe"; KeptDownloads::WriteSidecar(b6, dl + L"\\gone.exe");
 
@@ -66,7 +69,8 @@ int wmain(int argc, wchar_t** argv) {
     Expect(Get(taken) == "someone else's, longer bytes" && Get(dl + L"\\taken (1).exe") == "taken bytes" && !KeptDownloads::Exists(b4), "path taken: the other file untouched, ours under the next free name");
     Expect(Get(dl + L"\\lost note.exe") == "no note bytes" && !KeptDownloads::Exists(b5), "no note: the download folder under the file's own name");
     Expect(!KeptDownloads::Exists(KeptDownloads::SidecarOf(b6)), "a note alone of a dead process is dropped");
-    Expect(results.size() == 5 && lines == 4, "one result per leftover (the live one untouched, unlogged), one log line per change");
+    Expect(Get(stub) == "stub bytes" && !KeptDownloads::Exists(b7) && !KeptDownloads::Exists(dl + L"\\stub (1).exe"), "an empty leftover of the engine at the path: replaced by the kept bytes");
+    Expect(results.size() == 6 && lines == 5, "one result per leftover (the live one untouched, unlogged), one log line per change");
     // Run again: nothing more to do, nothing touched.
     int again = 0; KeptDownloads::Sweep(kept, dl, [&](unsigned long p) { return p == alive; }, [&](const std::wstring&) { ++again; });
     Expect(again == 0 && Get(b3) == "live bytes", "a second start: nothing more to do");

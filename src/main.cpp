@@ -1861,7 +1861,10 @@ void SettleKept(int id,KeepJob& k,const std::wstring& at){
 void WatchKept(int id){
     auto job=keepJobs.find(id);if(halted||job==keepJobs.end()||job->second.settling)return;
     auto& k=job->second;const ULONGLONG now=GetTickCount64();
-    switch(DL::Keep::Look(k.seen,KeepPathState(k.path),k.seen?(std::int64_t)(now-k.givenAt):0,KeepTestMs(L"BROWSER_TEST_KEEP_GUARD_MS",DL::Keep::GuardMs(k.marked)))){
+    auto at=KeepPathState(k.path);
+    if(at==DL::Keep::At::Left&&DL::Keep::EngineStub(KeptDownloads::SizeOf(k.path),KeptDownloads::SizeOf(k.backup))&&!KeptDownloads::SameFileId(k.path,k.backup)&&DeleteFileW(k.path.c_str())){
+        Log(L"DOWNLOAD keep: the engine left an empty file at the path (a cancel during its pass), the kept file takes its place");at=DL::Keep::At::Gone;}
+    switch(DL::Keep::Look(k.seen,at,k.seen?(std::int64_t)(now-k.givenAt):0,KeepTestMs(L"BROWSER_TEST_KEEP_GUARD_MS",DL::Keep::GuardMs(k.marked)))){
     case DL::Keep::Next::Wait:if(!k.looks)Log(L"DOWNLOAD keep: the engine's own file is still there, our name holds the bytes until it goes");break;
     case DL::Keep::Next::GiveBack:
         Log(std::wstring(PutKeptFileBack(k.backup,k.path)?L"DOWNLOAD kept file given back at its path":L"DOWNLOAD kept file not given back yet")+L": the engine removed it "+std::to_wstring((long long)(now-k.cancelAt))+L" ms after the cancel"+(k.seen?L" (once more)":L""));
