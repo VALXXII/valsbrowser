@@ -3,14 +3,15 @@
 // does) and the chrome painted off screen (Chrome::InitOffscreen). Demo data only, never a profile (smoke: nothing read
 // or written). Checks the drag state machine and writes the drag-state renders (chrome + the drag overlay's preview).
 //   1. Over the bar: the tab becomes the preview (not cut: drawn in the overlay, below the strip), its strip place hollow,
-//      the bar lit, its place opened where the release would add it; back up: the strip reorder resumes.
+//      no zone highlight (no blue around the favorites: Val, 26 nov.), the grey place (board 08) opened where the release
+//      would add it; back up: the strip reorder resumes.
 //   2. Insertion index left / between / right, a folder's middle (into it), the 2 DIP gap.
 //   3. Release: added at that index, one undo step, the edit panel NOT opened; into a folder: at its end.
 //   4. Duplicate (the page already on the bar / in that folder): no place, the release adds nothing.
 //   5. Échap: nothing added, the strip order restored, the bar at rest; lost capture too.
 //   6. From the page (split lift) back up to the bar, and down again into the lift.
 //   7. Full bar: the new one goes behind « » » (the button takes the folder drop look).
-//   8. Reduced motion: no lift growth, the bar's springs jump; the highlight still fades.
+//   8. Reduced motion: no lift growth, the bar's springs jump; the place still fades.
 //   9. 150 % (pointer in device pixels): the same targets.
 // Test-unit shims (production code unchanged): nothing here reaches the real desktop — the mouse capture, the cursor
 // shape and the foreground are recorded, never applied; GetDpiForWindow answers fixtureDpi (no display setting touched).
@@ -58,6 +59,10 @@ static void Shot(const wchar_t* name,double ms){
     const std::wstring path=out+L"\\"+name+L".png";Expect(SUCCEEDED(chrome.SavePng(path.c_str())),"render saved");std::wprintf(L"     png %ls\n",path.c_str());
 }
 static void Settle(){for(int i=0;i<40;++i){splitAnim.last=At(i*50.0);SplitFrame(At(i*50.0+50));}}   // the overlay's springs (display-paced in the app)
+// The offscreen chrome's pixel (DIP; 32bpp PBGRA read as 0xAARRGGBB) and its channels; « neutral » = a grey (no tint).
+static UINT32 Px(float x,float y){return chrome.SurfacePixel(x,y);}
+static int Ch(UINT32 p,int shift){return (int)((p>>shift)&255);}
+static bool Neutral(UINT32 p){return std::abs(Ch(p,16)-Ch(p,0))<=1&&std::abs(Ch(p,8)-Ch(p,0))<=1;}
 static std::shared_ptr<Tab> MakeTab(const wchar_t* title,const wchar_t* uri){auto t=std::make_shared<Tab>();t->title=title;t->uri=uri;t->home=false;return t;}
 static BM::Id bmVeille,bmPaper,bmMobbin,bmProjet,bmMdn;
 static void Seed(bool full=false){
@@ -87,13 +92,14 @@ int wmain(int argc,wchar_t** argv){setvbuf(stdout,nullptr,_IONBF,0);
     pages={a,b,c};current=0;Seed();
     Expect(chrome.bandShown&&chrome.band.visible==5,"bar shown with its 5 items");
     const float bandY=100;   // the bar's row (84..116)
+    Paint(0);const UINT32 restL=Px(3,bandY),restR=Px(chrome.width-3,bandY);   // the bar's margins at rest (canvas)
 
-    // ---- 1. Over the bar: the preview, the hollow strip place, the lit bar, the opened place -------------------------
+    // ---- 1. Over the bar: the preview, the hollow strip place, the opened place (no zone highlight) -------------------
     {auto s=chrome.strip.Surface(1);Down(s.left+24,20);}
     Move(chrome.strip.Surface(1).left+60,20);
     Expect(tabDrag.active&&!tabDrag.favorite&&chrome.dragIndex>=0,"in the strip: reorder as before");
     Move(BandMid(2)+20,bandY);   // right half of Mobbin
-    Expect(tabDrag.favorite&&chrome.bandTab.on,"over the bar: favorites mode, the bar lit");
+    Expect(tabDrag.favorite&&chrome.bandTab.on,"over the bar: favorites mode");
     Expect(chrome.liftedIndex==TabIndexOf(b)&&chrome.dragIndex==-1,"its strip place stays hollow, no strip reorder");
     Expect(pages[1]==b,"the strip order is untouched");
     {const auto& box=splitAnim.frame.card.box;Expect(splitAnim.frame.card.shown&&splitAnim.frame.card.tab,"the preview is the overlay's tab card");
@@ -106,7 +112,10 @@ int wmain(int argc,wchar_t** argv){setvbuf(stdout,nullptr,_IONBF,0);
     Expect(splitAnim.cardScale.target==102,"lifted: grows to x1.02 around the grab point");
     Paint(0);Paint(60);Shot(L"top-01-entree-60ms",60);
     Settle();Shot(L"top-02-entre-deux-favoris",1000);
-    Expect(chrome.bandTabGlow.Value(At(1000))>.99f,"the highlight is fully on once settled");
+    Expect(chrome.bandTabGlow.Value(At(1000))>.99f,"the place is fully shown once settled");
+    Paint(1000);   // the chrome alone (the preview lives in the overlay): the bar around its items, and the place
+    Expect(Px(3,bandY)==restL&&Px(chrome.width-3,bandY)==restR&&Neutral(Px(3,bandY)),"no zone highlight: the bar's margins stay the canvas (no blue, Val 26 nov.)");
+    {const UINT32 p=Px(chrome.bandTab.slotLeft+chrome.bandTab.slotWidth/2,BookmarksBar::Layout::top+4);Expect(Neutral(p)&&Ch(p,16)>Ch(restL,16)+4,"the place is drawn: board 08's grey hollow slot");}
     // Left of the first, the 2 DIP gap, past the last.
     Move(2,bandY);Expect(tabDrag.fav.slot==0,"left of the first: index 0");
     {const auto r=chrome.BandRect(1);Move(r.right+1,bandY);Expect(tabDrag.fav.slot==2,"in the gap after Paper: index 2");}
@@ -119,7 +128,7 @@ int wmain(int argc,wchar_t** argv){setvbuf(stdout,nullptr,_IONBF,0);
     Move(200,20);
     Expect(!tabDrag.favorite&&!chrome.bandTab.on&&chrome.liftedIndex==-1&&chrome.dragIndex>=0&&chrome.bandDropInto==-1,"back up: the bar rests, the strip reorder resumes");
     Expect(!splitAnim.frame.card.shown,"the preview is gone");
-    Paint(1500);Paint(3000);Expect(chrome.bandTabGlow.Value(At(3000))<.01f,"the highlight has faded");
+    Paint(1500);Paint(3000);Expect(chrome.bandTabGlow.Value(At(3000))<.01f,"the place has faded");
 
     // ---- 3. Release on the bar: added there, no edit panel, one undo step ---------------------------------------------
     Move(BandMid(2)+20,bandY);Expect(tabDrag.favorite&&tabDrag.fav.slot==3,"over the bar again");
@@ -180,12 +189,12 @@ int wmain(int argc,wchar_t** argv){setvbuf(stdout,nullptr,_IONBF,0);
     {const int n=Count(BM::BarRoot);Up(chrome.BandRect(0).left+2,bandY);Expect(Count(BM::BarRoot)==n+1&&bookmarks.Root(BM::BarRoot).children[0]!=bmVeille,"added first");}
 
     // ---- 8. Reduced motion --------------------------------------------------------------------------------------------
-    Paint(3000);Paint(4000);Seed();motion.SetReducedMotion(true);   // the highlight at rest first
+    Paint(3000);Paint(4000);Seed();motion.SetReducedMotion(true);   // the place at rest first
     {auto s=chrome.strip.Surface(1);Down(s.left+24,20);}Move(BandMid(2)+20,bandY);
     Expect(tabDrag.favorite&&splitAnim.cardScale.target==100,"reduced motion: no lift growth");
     Paint(5000);
     {const auto it=chrome.bandStep.find(bookmarks.Root(BM::BarRoot).children[3]);Expect(it!=chrome.bandStep.end()&&it->second.l.Value(At(5000))==chrome.bandTab.left[3],"reduced motion: the items are at once where they go");}
-    Expect(chrome.bandTabGlow.Value(At(5000))<.99f&&chrome.bandTabGlow.Value(At(5200))>.99f,"reduced motion: the highlight still fades in (short)");
+    Expect(chrome.bandTabGlow.Value(At(5000))<.99f&&chrome.bandTabGlow.Value(At(5200))>.99f,"reduced motion: the place still fades in (short)");
     WndProc(window,WM_KEYDOWN,VK_ESCAPE,0);motion.SetReducedMotion(false);
 
     // ---- 9. 150 %: the pointer in device pixels, the same targets ------------------------------------------------------
@@ -217,13 +226,17 @@ int wmain(int argc,wchar_t** argv){setvbuf(stdout,nullptr,_IONBF,0);
         auto tile=[&](int i){return chrome.SideBookmarkTile(chrome.SideColumn(),i);};
         auto press=[&](int i){const auto r=rowAt(i);Down(r.left+std::min(40.f,r.Width()/2),(r.top+r.bottom)/2);};
         const auto list=Lp->tabsView;
+        // Where a zone highlight would show (left of the grid in the side panel; on the first tile's edge in the compact
+        // column, whose tiles reach its edges): its pixel at rest.
+        const auto gb=Lp->gridBlock;const float zx=compact?gb.left+1:gb.left-3,zy=compact?(tile(0).top+tile(0).bottom)/2:(gb.top+gb.bottom)/2;
+        Paint(0);const UINT32 restZone=Px(zx,zy);
         // Up through the list: the reorder as before, the lifted row drawn over the list's edge (not cut by it).
         press(1);{const auto r=rowAt(1);Move(r.left+std::min(40.f,r.Width()/2),list.top+6);}
         Expect(tabDrag.active&&!tabDrag.favorite&&chrome.sidebarDrag==1,"in the list: the reorder as before");
         {const auto r=rowAt(1);Move(r.left+std::min(40.f,r.Width()/2),list.top+2);}
         Paint(0);Paint(400);shot(L"00-rangee-au-bord-de-la-liste",400);
         Expect(chrome.sidebarDragY<list.top,"the row rises above the list's top (it is drawn outside the list's clip)");
-        // Over the grid: the preview, the hollow row, the lit grid, the place.
+        // Over the grid: the preview, the hollow row, the place (no zone highlight).
         const auto t2=tile(2);const float tx=compact?(t2.left+t2.right)/2:t2.right-3,ty=compact?t2.bottom-3:(t2.top+t2.bottom)/2;
         Move(tx,ty);
         Expect(tabDrag.favorite&&chrome.gridTab.on&&chrome.liftedIndex==1&&chrome.sidebarDrag==-1,"over the grid: favorites mode, the row's place hollow");
@@ -232,6 +245,9 @@ int wmain(int argc,wchar_t** argv){setvbuf(stdout,nullptr,_IONBF,0);
          Expect(std::fabs((box.right-box.left)-tabDrag.cardW)<.5f&&tabDrag.cardW<=240,"the preview fits its title (as the column's split card)");}
         Expect(compact?chrome.gridTab.tiles[3].top>tile(3).top:(chrome.gridTab.tiles[3].left>tile(3).left||chrome.gridTab.tiles[3].top>tile(3).top),"the tiles after it step aside");
         Paint(0);Paint(60);shot(L"01-entree-60ms",60);Paint(1000);Settle();shot(L"02-entre-deux-favoris",1000);
+        Paint(1000);   // the chrome alone (the preview lives in the overlay)
+        Expect(Px(zx,zy)==restZone&&Neutral(Px(zx,zy)),"no zone highlight around the grid (no blue, Val 26 nov.)");
+        {const auto& pl=chrome.gridTab.place;const UINT32 p=Px((pl.left+pl.right)/2,(pl.top+pl.bottom)/2);Expect(chrome.gridTab.slot&&Neutral(p)&&Ch(p,16)>Ch(Px(zx,list.bottom-2),16),"the place is drawn: board 08's grey hollow tile");}
         // Before the first, a folder's middle, a duplicate.
         {const auto t0=tile(1);Move(compact?(t0.left+t0.right)/2:t0.left+2,compact?t0.top+2:(t0.top+t0.bottom)/2);Expect(tabDrag.fav.valid&&tabDrag.fav.slot==1,"before the second tile: index 1");}
         {const auto f=tile(0);Move((f.left+f.right)/2,(f.top+f.bottom)/2);Expect(tabDrag.fav.valid&&tabDrag.fav.into==0&&chrome.bandDropInto==0&&!chrome.gridTab.slot,"a folder's middle: into it (folder look)");}
