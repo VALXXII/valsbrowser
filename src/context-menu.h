@@ -46,6 +46,8 @@ struct Item {
     bool danger = false;              // destructive command (Paper: #FF7B6E label); its label always says what it does
     std::wstring icon;                // optional 16 DIP glyph (assets/icons name) in a leading column, white 70%
     std::shared_ptr<const FaviconImage> image; // optional site icon in the same column (wins over `icon`)
+    FolderStyle::Look look;           // #138: a favorites folder's icon and colour, in the same column (wins over `icon`; 18 DIP, plain 16)
+    bool folderName = false;          // #138 board 242F-0: a folder's name too long for the row fades over 24 DIP, never « … »
     std::wstring help;                // UI Automation help text (e.g. a bookmark's address)
     std::vector<Item> children;       // non-empty: a submenu
     std::vector<Segment> segments; SegmentPainter paintSegment;   // Kind::Segmented
@@ -283,7 +285,7 @@ class Menu {
     // A menu with described choices takes the fixed Paper width and wraps descriptions.
     void Measure(Level& l) {
         bool described = false; l.icons = false;
-        for (const auto& item : *l.items) if (!item.separator) l.icons = l.icons || !item.icon.empty() || item.image != nullptr;
+        for (const auto& item : *l.items) if (!item.separator) l.icons = l.icons || !item.icon.empty() || item.image != nullptr || item.look.styled;
         float need = 0;
         for (const auto& item : *l.items) {
             if (item.separator || item.kind == Kind::Segmented) continue;
@@ -520,7 +522,8 @@ class Menu {
             float textLeft = left + Layout::padLeft; const float cy = titleTop + Layout::line / 2;
             if (l.icons) {
                 const D2D1_RECT_F box{textLeft, titleTop + (Layout::line - Layout::icon) / 2, textLeft + Layout::icon, titleTop + (Layout::line + Layout::icon) / 2};
-                if (!(item.image && l.chrome.DrawSiteImage(item.image, box, dim)) && !item.icon.empty()) {
+                if (item.look.styled) l.chrome.FolderLook(item.look, box, FolderStyle::Size::For(FolderStyle::Size::menu, FolderStyle::Size::menuPlain, item.look), dim);   // #138 board 246B-0
+                else if (!(item.image && l.chrome.DrawSiteImage(item.image, box, dim)) && !item.icon.empty()) {
                     // Glyphs ship at 50%: a second pass at 80% lands on Paper's 70% (.5 + .8 x .5 x .5).
                     l.chrome.Icon(item.icon.c_str(), box, Layout::icon, dim); l.chrome.Icon(item.icon.c_str(), box, Layout::icon, .8f * dim);
                 }
@@ -532,7 +535,8 @@ class Menu {
             const bool danger = item.danger && item.enabled;
             if (danger) l.chrome.ink = D2D1::ColorF(Design::Danger::r, Design::Danger::g, Design::Danger::b, 1);
             const std::wstring plain = Plain(item.label);
-            l.chrome.Text(plain, {textLeft, titleTop, labelRight, titleTop + Layout::line}, Layout::text, danger ? 1.f : (.9f + .1f * h) * dim);
+            if (item.folderName) l.chrome.FadedText(plain, {textLeft, titleTop, labelRight, titleTop + Layout::line}, Layout::text, (.9f + .1f * h) * dim, false, false, 0, FolderStyle::nameFade);
+            else l.chrome.Text(plain, {textLeft, titleTop, labelRight, titleTop + Layout::line}, Layout::text, danger ? 1.f : (.9f + .1f * h) * dim);
             l.chrome.ink = D2D1::ColorF(1, 1, 1, 1);
             if (!item.second.empty()) { const float x = textLeft + l.chrome.TextWidth(plain + L"  ", Layout::text); if (x < labelRight) l.chrome.Text(item.second, {x, titleTop, labelRight, titleTop + Layout::line}, Layout::small, (.5f + .1f * h) * dim); }  // 50 % (5.26:1), quieter than the 90-100 % name
             // Description: 50% at rest, a touch brighter on the hovered choice.
@@ -717,6 +721,20 @@ public:
     }
     // Test and host hooks: the UIA snapshot of an open level, its window, the open depth.
     static std::vector<std::wstring> KeysForTest(const std::wstring& shortcut) { return Keys(shortcut); }
+    // `items` as one menu level, offscreen at `dpi`, to `png` (`hover`: that row lit, -1 none). Its width and height out.
+    bool RenderForTest(const std::vector<Item>& items, const std::wstring& root, UINT dpi, const wchar_t* png, int hover = -1, float* width = nullptr, float* height = nullptr) {
+        Level measure; measure.items = &items; measure.dpi = dpi;
+        if (FAILED(measure.chrome.InitOffscreen(root, dpi, Layout::maxWidth, 400))) return false;
+        Measure(measure); measure.chrome.Dispose();
+        Level l; l.items = &items; l.dpi = dpi;
+        if (FAILED(l.chrome.InitOffscreen(root, dpi, measure.width, measure.height))) return false;
+        Measure(l); l.motion.EnablePolish(); l.chrome.SetMotion(&l.motion);
+        if (hover >= 0) { l.hover = hover; l.motion.SetInteraction(hover + 1, 0, Motion::Now() - std::chrono::seconds(1)); }
+        auto* t = l.chrome.RenderTarget(); if (!t) return false;
+        t->BeginDraw(); PaintContent(l, Motion::Now() + std::chrono::seconds(1)); t->EndDraw();
+        if (width) *width = l.width; if (height) *height = l.height;
+        const bool ok = SUCCEEDED(l.chrome.SavePng(png)); l.chrome.Dispose(); return ok;
+    }
     std::vector<Accessibility::Node> AccessibleNodes(int index) const { return Nodes(index); }
     // fromChecked: a keyboard-opened list (a select's options) starts on its checked row, not the first.
     int Track(const std::vector<Item>& items, POINT at, const RECT* exclude = nullptr, bool keyboard = false, bool reduced = false, bool alignRight = false, bool fromChecked = false) {

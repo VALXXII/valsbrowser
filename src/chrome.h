@@ -21,6 +21,7 @@
 #include "address.h"
 #include "local-pill.h"
 #include "bookmarks-bar.h"
+#include "bookmark-folder-style.h"
 #include "svg-path.h"
 #include "site-request.h"
 #include "sidebar.h"
@@ -73,8 +74,8 @@ class Chrome {
     std::map<std::shared_ptr<const FaviconImage>,ID2D1Bitmap*,std::owner_less<std::shared_ptr<const FaviconImage>>> faviconBitmaps;
     // Device-independent DirectWrite layouts reused across frames: animation frames
     // must not rebuild text formats/typography for unchanged labels. Bounded.
-    struct TextKey{std::wstring value;float width,height,size,tracking;bool tabular,medium,keycap;
-        bool operator<(const TextKey& o)const{return std::tie(value,width,height,size,tracking,tabular,medium,keycap)<std::tie(o.value,o.width,o.height,o.size,o.tracking,o.tabular,o.medium,o.keycap);}};
+    struct TextKey{std::wstring value;float width,height,size,tracking;bool tabular,medium,keycap,semibold;
+        bool operator<(const TextKey& o)const{return std::tie(value,width,height,size,tracking,tabular,medium,keycap,semibold)<std::tie(o.value,o.width,o.height,o.size,o.tracking,o.tabular,o.medium,o.keycap,o.semibold);}};
     struct TextEntry{IDWriteTextLayout* layout=nullptr;TextMeasure measure;unsigned long long used=0;};
     std::map<TextKey,TextEntry> textCache;
     // Paint() counts its passes: when the cache is full, only layouts the current pass has not used
@@ -654,7 +655,7 @@ public:
     HRESULT MakeTextLayout(const std::wstring& value,D2D1_RECT_F slot,float size,bool tabular,bool medium,float tracking,IDWriteTextLayout** output,TextMeasure& placement){
         if(!write||!fonts||!output)return E_UNEXPECTED;
         IDWriteTextFormat* format=nullptr;IDWriteTextLayout* layout=nullptr;
-        HRESULT hr=write->CreateTextFormat(L"Inter Display",fonts,medium?DWRITE_FONT_WEIGHT_MEDIUM:DWRITE_FONT_WEIGHT_NORMAL,DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,size,L"fr-FR",&format);
+        HRESULT hr=write->CreateTextFormat(L"Inter Display",fonts,semibold?DWRITE_FONT_WEIGHT_SEMI_BOLD:medium?DWRITE_FONT_WEIGHT_MEDIUM:DWRITE_FONT_WEIGHT_NORMAL,DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,size,L"fr-FR",&format);
         if(FAILED(hr))return hr;
         format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
         format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -686,7 +687,7 @@ public:
     // Returns an AddRef'd layout; placement is translated to this slot.
     HRESULT CachedTextLayout(const std::wstring& value,D2D1_RECT_F slot,float size,bool tabular,bool medium,float tracking,IDWriteTextLayout** output,TextMeasure& placement){
         if(!cacheText)return MakeTextLayout(value,slot,size,tabular,medium,tracking,output,placement);
-        TextKey key{value,slot.right-slot.left,slot.bottom-slot.top,size,tracking,tabular,medium,keycap};
+        TextKey key{value,slot.right-slot.left,slot.bottom-slot.top,size,tracking,tabular,medium,keycap,semibold};
         auto it=textCache.find(key);
         if(it==textCache.end()){
             if(textCache.size()>=textCacheLimit){
@@ -707,6 +708,8 @@ public:
     D2D1_COLOR_F ink{1,1,1,1};
     // Keyboard key caps (menus) use their own variant set; set around the call like `ink`.
     bool keycap=false;
+    // Weight 600 (Inter Display SemiBold) instead of `medium`: set around the call like `ink` (#138 picker header 23SK-0).
+    bool semibold=false;
     void Text(const std::wstring& value,D2D1_RECT_F slot,float size,float opacity,bool tabular=false,bool medium=false,float tracking=0){if(value.empty())return;IDWriteTextLayout* layout=nullptr;TextMeasure m;if(FAILED(CachedTextLayout(value,slot,size,tabular,medium,tracking,&layout,m)))return;
         // Restrict horizontal overflow to its slot, but retain all measured
         // vertical glyph ink. All labels use the full 32 DIP control height.
@@ -818,7 +821,10 @@ public:
     }
     // ---- Bookmarks (star in the field, optional band under the toolbar) -------------
     // Set by the host before Build/Paint. `bandShown` false keeps the 81 DIP chrome.
-    struct BandItem { unsigned id=0; std::wstring title,tip; bool folder=false,local=false; std::shared_ptr<const FaviconImage> image; };
+    struct BandItem { unsigned id=0; std::wstring title,tip; bool folder=false,local=false; std::shared_ptr<const FaviconImage> image;
+        FolderStyle::Look look;   // #138: a folder's icon and colour (unstyled: the grey folder)
+        std::wstring sideTip;     // #138 board 242W-0: the side grid's folder tip on one line, « name · N favoris » (empty: `tip`)
+        const wchar_t* SideTip()const{return sideTip.empty()?tip.c_str():sideTip.c_str();} };
     std::vector<BandItem> bandItems; bool bandShown=false,bandButtonForced=false;
     bool starred=false;            // the active page is bookmarked: filled star
     int bandOpen=0;                // region whose menu is open: keeps its hover fill, chevron points up
@@ -918,7 +924,8 @@ public:
         if(dragged||v.hover>0||v.press>0)Round(box,Design::Radius::control,surface);
         if(focus==id)FocusRing(box,Design::Radius::control);
         const float cy=(box.top+box.bottom)/2;const D2D1_RECT_F icon{box.left+L::itemPad,cy-8,box.left+L::itemPad+16,cy+8};
-        if(item.folder)Icon(L"folder-closed",icon,16,1);
+        if(item.folder&&item.look.styled)FolderLook(item.look,icon,FolderStyle::Size::For(FolderStyle::Size::bar,FolderStyle::Size::barPlain,item.look));   // #138 board 243X-0
+        else if(item.folder)Icon(L"folder-closed",icon,16,1);
         else if(!DrawSiteImage(item.image,icon))Icon(item.local?L"file":L"favicon",icon,16,1);
         const float emphasis=std::max(v.hover,id==bandOpen?1.f:0.f);
         float right=box.right-L::itemPad;
@@ -938,7 +945,7 @@ public:
         target->PopAxisAlignedClip();
         // Truncated titles dissolve into the item's surface (never an ellipsis), like the address.
         if(left+textWidth>right+.5f){
-            const float c=surface,fade=std::min(16.f,right-left);ID2D1GradientStopCollection* stops=nullptr;ID2D1LinearGradientBrush* gradient=nullptr;
+            const float c=surface,fade=std::min(item.folder?FolderStyle::nameFade:16.f,right-left);ID2D1GradientStopCollection* stops=nullptr;ID2D1LinearGradientBrush* gradient=nullptr;   // #138 board 241K-0: a folder's name fades over 24
             D2D1_GRADIENT_STOP g[]={{0,D2D1::ColorF(c,c,c,0)},{1,D2D1::ColorF(c,c,c,1)}};
             if(SUCCEEDED(target->CreateGradientStopCollection(g,2,&stops))&&SUCCEEDED(target->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({right-fade,0},{right,0}),stops,&gradient)))target->FillRectangle(D2D1::RectF(right-fade,box.top+1,right,box.bottom-1),gradient);
             Drop(gradient);Drop(stops);
@@ -1044,6 +1051,52 @@ public:
         if(!g)return;
         D2D1_MATRIX_3X2_F old;target->GetTransform(&old);const float k=size/256,x=(box.left+box.right-size)/2,y=(box.top+box.bottom-size)/2;
         target->SetTransform(D2D1::Matrix3x2F::Scale(k,k)*D2D1::Matrix3x2F::Translation(x,y)*old);brush->SetColor(color);target->FillGeometry(g,brush);target->SetTransform(old);}
+    // #138 A favorites folder's look (src/bookmark-folder-style.h): the Phosphor folder filled with its colour, the emblem
+    // inside at translate(78,92) scale(0.39) of the 256 box in the darker shade; `size` DIP centred in `box`.
+    static D2D1_COLOR_F Rgb(std::uint32_t c,float a=1){return D2D1::ColorF(((c>>16)&0xFF)/255.f,((c>>8)&0xFF)/255.f,(c&0xFF)/255.f,a);}
+    void FolderLook(const FolderStyle::Look& look,D2D1_RECT_F box,float size,float alpha=1){
+        if(!target||!brush||!factory||!look.styled)return;
+        PathGlyph(FolderStyle::folderPath,box,size,Rgb(look.folder,alpha));
+        if(!look.emblemPath)return;
+        auto& g=pathGlyphs[look.emblemPath];if(!g)g=DialogKit::SvgGeometry(factory,look.emblemPath);if(!g)return;
+        D2D1_MATRIX_3X2_F old;target->GetTransform(&old);const float k=size/256,x=(box.left+box.right-size)/2,y=(box.top+box.bottom-size)/2;
+        target->SetTransform(D2D1::Matrix3x2F::Scale(FolderStyle::emblemScale,FolderStyle::emblemScale)*D2D1::Matrix3x2F::Translation(FolderStyle::emblemX,FolderStyle::emblemY)*D2D1::Matrix3x2F::Scale(k,k)*D2D1::Matrix3x2F::Translation(x,y)*old);
+        brush->SetColor(Rgb(look.emblem,alpha));target->FillGeometry(g,brush);target->SetTransform(old);}
+    // #138 The picker's swatches and grid (board 23F4-0 in the drawer, 23SD-0 in the popover), the swatches' row from
+    // (x, y), the grid `gap` under it, on its #1E1E1E surface. `hover(i)`: stop i's hover (0..1, the app's ghost hover
+    // #333333: the board draws none); `focus`: the keyboard stop with its 2 DIP #E6E6E6 ring (23OW-0), -1 none.
+    //  - Swatch 24 (« Sans couleur » first: #2A2A2A dot, 1 DIP inset #3A3A3A, the 1.5 #8C8C8C slash of a 20 box at 18);
+    //    the chosen one: a 1.5 DIP inset white ring round its 18 DIP dot (23FK-0).
+    //  - Cell 26, radius 6: the grey folder (#8C8C8C, emblem #3B3B3B; the plain folder at 16, the others 18); the chosen
+    //    one in the folder's colours on that colour at 20 % with a 1 DIP inset ring of it (23OC-0, none: 23XI-0).
+    void PaintFolderPicker(float x,float y,float gap,const FolderStyle::Picker::Model& m,const std::function<float(int)>& hover,int focus){
+        namespace P=FolderStyle::Picker;namespace FS=FolderStyle;if(!target||!brush||!factory)return;const float gridTop=y+P::swatch+gap;
+        for(int i=0;i<P::count;++i){const auto b=P::Stop(i,x,y,gridTop);const D2D1_RECT_F r{b.left,b.top,b.right,b.bottom};const float cx=(r.left+r.right)/2,cy=(r.top+r.bottom)/2;
+            const float hv=hover?std::clamp(hover(i),0.f,1.f):0.f;
+            if(i<P::swatches){const int color=i-1;const bool chosen=color==m.color;
+                if(hv>0&&!chosen){brush->SetColor(D2D1::ColorF(Design::Surface::hover,Design::Surface::hover,Design::Surface::hover,hv));target->FillEllipse(D2D1::Ellipse({cx,cy},P::swatch/2,P::swatch/2),brush);}
+                if(chosen){brush->SetColor(D2D1::ColorF(1,1,1,1));target->DrawEllipse(D2D1::Ellipse({cx,cy},P::swatch/2-P::selectedRing/2,P::swatch/2-P::selectedRing/2),brush,P::selectedRing);}
+                const float d=P::swatchDot/2;
+                if(color<0){brush->SetColor(Rgb(P::noneDot));target->FillEllipse(D2D1::Ellipse({cx,cy},d,d),brush);
+                    brush->SetColor(Rgb(P::noneRing));target->DrawEllipse(D2D1::Ellipse({cx,cy},d-.5f,d-.5f),brush,1);
+                    ID2D1StrokeStyle* round=nullptr;D2D1_STROKE_STYLE_PROPERTIES sp{};sp.startCap=sp.endCap=D2D1_CAP_STYLE_ROUND;factory->CreateStrokeStyle(sp,nullptr,0,&round);
+                    const float k=P::swatchDot/20,l=cx-d,t=cy-d;brush->SetColor(Rgb(P::noneSlash));target->DrawLine({l+5*k,t+15*k},{l+15*k,t+5*k},brush,1.5f*k,round);Drop(round);}
+                else{brush->SetColor(Rgb(FS::colors[color].folder));target->FillEllipse(D2D1::Ellipse({cx,cy},d,d),brush);}
+                if(focus==i){brush->SetColor(Rgb(P::focusColor));target->DrawEllipse(D2D1::Ellipse({cx,cy},P::swatch/2+P::focusRing/2,P::swatch/2+P::focusRing/2),brush,P::focusRing);}
+                continue;}
+            const int icon=i-P::swatches;const bool chosen=icon==m.icon;FS::Look look;look.styled=true;look.emblemPath=icon>0?FS::icons[icon].emblem:nullptr;
+            if(chosen){look.folder=m.color>=0?FS::colors[m.color].folder:FS::noneFolder;look.emblem=m.color>=0?FS::colors[m.color].emblem:FS::noneEmblem;
+                const auto c=Rgb(look.folder);FillBox(r,P::cellRadius,D2D1::ColorF(c.r,c.g,c.b,P::selectedFill));
+                brush->SetColor(c);target->DrawRoundedRectangle(D2D1::RoundedRect({r.left+P::cellRing/2,r.top+P::cellRing/2,r.right-P::cellRing/2,r.bottom-P::cellRing/2},P::cellRadius-P::cellRing/2,P::cellRadius-P::cellRing/2),brush,P::cellRing);}
+            else{look.folder=P::restGlyph;look.emblem=P::restEmblem;if(hv>0)FillBox(r,P::cellRadius,D2D1::ColorF(Design::Surface::hover,Design::Surface::hover,Design::Surface::hover,hv));}
+            FolderLook(look,r,icon>0?FS::Size::cell:FS::Size::cellPlain);
+            if(focus==i){brush->SetColor(Rgb(P::focusColor));target->DrawRoundedRectangle(D2D1::RoundedRect({r.left-P::focusRing/2,r.top-P::focusRing/2,r.right+P::focusRing/2,r.bottom+P::focusRing/2},P::cellRadius+P::focusRing/2,P::cellRadius+P::focusRing/2),brush,P::focusRing);}
+        }}
+    // Greedy word wrap of `text` at `size` into lines no wider than `width` (the picker's hint, 12/16).
+    std::vector<std::wstring> WrapWords(const std::wstring& text,float width,float size){std::vector<std::wstring> lines;std::wstring line,word;
+        auto push=[&]{if(word.empty())return;const std::wstring next=line.empty()?word:line+L" "+word;if(!line.empty()&&TextWidth(next,size)>width){lines.push_back(line);line=word;}else line=next;word.clear();};
+        for(size_t i=0;i<text.size();++i){const wchar_t c=text[i];const bool glued=c==L' '&&i+1<text.size()&&(text[i+1]==L':'||text[i+1]==L';'||text[i+1]==L'!'||text[i+1]==L'?');   // French « : » never starts a line
+            if(c==L' '&&!glued){push();}else word+=glued?L'\u00A0':c;}push();if(!line.empty())lines.push_back(line);return lines;}
     // One state of the chip at opacity `a`, left-aligned in `box` (its own width).
     void DrawChipState(SiteRequest::State st,D2D1_RECT_F box,float a){
         namespace L=SiteRequest::Layout;using SiteRequest::State;if(a<=0)return;
@@ -1282,7 +1335,7 @@ public:
         if(sidebarOverlay){sideOver=SB::Compute(SideInput(SB::Mode::Complete,count,side.column,true));sideOver.scroll=side.scroll;}
         // The compact « » » popover: all the bookmarks, its tiles first (it covers the column's right and the page).
         if(sidebarPopover&&!sidebarOverlay&&side.more&&side.mode==SB::Mode::Compact&&!side.tiles.empty()){sidePop=SB::ComputePopover(side.column,side.tiles.back(),(int)bandItems.size(),sidebarPopoverScroll,height);sidebarPopoverScroll=sidePop.grid.scroll;
-            for(int i=0;i<(int)sidePop.grid.tiles.size()&&i<(int)bandItems.size()&&i<BookmarkLimit;++i){auto t=sidePop.grid.tiles[i];if(t.bottom<=sidePop.grid.view.top||t.top>=sidePop.grid.view.bottom)continue;t.top=std::max(t.top,sidePop.grid.view.top);t.bottom=std::min(t.bottom,sidePop.grid.view.bottom);regions.push_back({BookmarkBase+i,R(t),bandItems[i].tip.c_str(),false});}
+            for(int i=0;i<(int)sidePop.grid.tiles.size()&&i<(int)bandItems.size()&&i<BookmarkLimit;++i){auto t=sidePop.grid.tiles[i];if(t.bottom<=sidePop.grid.view.top||t.top>=sidePop.grid.view.bottom)continue;t.top=std::max(t.top,sidePop.grid.view.top);t.bottom=std::min(t.bottom,sidePop.grid.view.bottom);regions.push_back({BookmarkBase+i,R(t),bandItems[i].SideTip(),false});}
             regions.push_back({SidebarManageId,R(sidePop.manage),nullptr});}
         else{sidebarPopover=false;sidePop={};}
         const auto& C=SideColumn();const bool full=C.mode==SB::Mode::Complete;
@@ -1310,7 +1363,7 @@ public:
         {band={};const int shown=SideBookmarkTiles(C);band.visible=std::min(shown,(int)bandItems.size());
             const Sidebar::Box clip=full?C.grid.view:C.gridBlock;
             for(int i=0;i<band.visible&&i<BookmarkLimit;++i){if(sidebarPopover&&!full)break;auto t=SideBookmarkTile(C,i);if(t.bottom<=clip.top||t.top>=clip.bottom)continue;t.top=std::max(t.top,clip.top);t.bottom=std::min(t.bottom,clip.bottom);
-                regions.push_back({BookmarkBase+i,R(t),bandItems[i].tip.c_str(),i==bandRover||(bandRover<0&&i==0)});}
+                regions.push_back({BookmarkBase+i,R(t),bandItems[i].SideTip(),i==bandRover||(bandRover<0&&i==0)});}
             if(!full&&C.more){band.overflow=true;band.overflowLeft=C.tiles.back().left;regions.push_back({SidebarMoreId,R(C.tiles.back()),TR(sidebar_all_bookmarks_tip),bandRover<0&&band.visible==0});}
             if(full&&!C.manage.Empty())regions.push_back({SidebarManageId,R(C.manage),nullptr});   // the row says what it does: no tooltip
             if(full&&!C.gridToggle.Empty()){gridToggleTip=C.gridOpen?std::wstring(TR(sidebar_collapse_grid)):TRF(sidebar_all_bookmarks,std::to_wstring(bandItems.size()));regions.push_back({SidebarGridToggleId,R(C.gridToggle),nullptr});}
@@ -1612,7 +1665,8 @@ public:
         float hv=Hovered(id,hover,now);if(id==bandOpen||(gridTab.on&&i==gridTab.duplicate))hv=1;White(t,Design::Radius::r8,rest+(K::tileHover-rest)*std::clamp(hv,0.f,1.f));if(focus==id)FocusRing(t,Design::Radius::r8);
         if(i<0||i>=(int)bandItems.size()){return;}const auto& item=bandItems[i];const float cx=(t.left+t.right)/2,cy=(t.top+t.bottom)/2;
         if(i==bandDropInto){const auto a=Design::Accent::Get();FillBox(t,Design::Radius::r8,D2D1::ColorF(a.r,a.g,a.b,.18f));}   // a drag would file it here (the bar's look)
-        if(item.folder)SideGlyph(Sidebar::Glyph::folder,t,Design::Size::icon,K::glyph);
+        if(item.folder&&item.look.styled)FolderLook(item.look,t,FolderStyle::Size::For(FolderStyle::Size::tile,FolderStyle::Size::tilePlain,item.look));   // #138 boards 2437-0 / 244U-0
+        else if(item.folder)SideGlyph(Sidebar::Glyph::folder,t,Design::Size::icon,K::glyph);
         else if(!DrawSiteImage(item.image,{cx-9,cy-9,cx+9,cy+9}))Icon(item.local?L"file":L"favicon",t,Design::Size::icon,1);
         if(i==bandDrag){const float c=Design::Surface::canvas;FillBox(t,Design::Radius::r8,D2D1::ColorF(c,c,c,1-K::origin));}}   // the dragged tile stays, dimmed (the tab drag's origin look)
     // A grid in its viewport: tiles clipped, the canvas fade at the bottom while more is below, the thin bar (1WRB-0, 1WRC-0).
@@ -1690,8 +1744,8 @@ public:
         Drop(g);Drop(stops);}
     // A column text cut by its slot (Sidebar::Complete::textFade): its glyphs fade over the slot's last 12 DIP (an opacity
     // layer, whatever the row's fill under it); a text that fits is drawn as is.
-    void FadedText(const std::wstring& value,D2D1_RECT_F slot,float size,float opacity,bool tabular=false,bool medium=false,float tracking=0){
-        const float fade=Sidebar::Complete::textFade;const float full=value.empty()?0.f:TextWidth(value,size,medium,tabular,tracking);
+    void FadedText(const std::wstring& value,D2D1_RECT_F slot,float size,float opacity,bool tabular=false,bool medium=false,float tracking=0,float fadeWidth=0){
+        const float fade=fadeWidth>0?fadeWidth:Sidebar::Complete::textFade;const float full=value.empty()?0.f:TextWidth(value,size,medium,tabular,tracking);
         if(value.empty()||slot.right-slot.left<=fade||full<=slot.right-slot.left+.5f){Text(value,slot,size,opacity,tabular,medium,tracking);return;}
         ID2D1GradientStopCollection* stops=nullptr;ID2D1LinearGradientBrush* g=nullptr;ID2D1Layer* layer=nullptr;
         D2D1_GRADIENT_STOP s[]={{0,D2D1::ColorF(0,0,0,1)},{1,D2D1::ColorF(0,0,0,0)}};

@@ -26,3 +26,12 @@ New-Item -ItemType Directory -Force "$out/emoji" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Bookmark emoji fixture compilation failed.' }
 & "$out/bookmark_emoji_ui_test.exe" $PSScriptRoot "$PSScriptRoot/build/bookmarks-ui-qa/emoji"
 if ($LASTEXITCODE -ne 0) { throw 'Bookmark emoji checks failed.' }
+# #138 A folder's icon and colour: the production painters off screen (no window shown), the drawer's picker driven by
+# keys and clicks, pixel checks; then the board states side by side with Paper (design/138-folders-evidence).
+New-Item -ItemType Directory -Force "$out/folder-style" | Out-Null
+& tools/w64devkit/bin/g++.exe -std=c++17 -O1 -Wall -Wextra -Werror -Wno-unknown-pragmas -Wno-cast-function-type -Wno-misleading-indentation -Wno-missing-field-initializers -static -municode -DTVG_STATIC '-Ideps/thorvg-1.1.3/inc' tests/bookmarks/folder_style_render_test.cpp src/native-lottie.cpp build/lottie-backend/src/libthorvg-1.a -o "$out/folder_style_render_test.exe" -ld2d1 -ldwrite -lwindowscodecs -lole32 -luuid -lcomctl32 -lgdi32 -ldwmapi -lshlwapi -loleaut32 -lshell32
+if ($LASTEXITCODE -ne 0) { throw 'Folder style render fixture compilation failed.' }
+& "$out/folder_style_render_test.exe" $PSScriptRoot "$PSScriptRoot/build/bookmarks-ui-qa/folder-style"
+if ($LASTEXITCODE -ne 0) { throw 'Folder style render checks failed.' }
+python tests/bookmarks/folder_style_compose.py "$out/folder-style" "$out/folder-style/sheets"
+if ($LASTEXITCODE -ne 0) { throw 'Folder style sheets failed.' }
