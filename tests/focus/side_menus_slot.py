@@ -6,7 +6,8 @@ For each layout (« side » complete, « compact »), Focus on, the column hidde
   1. Ctrl+J in the page: the column comes back at rest (log « FOCUS column in (downloads) ») and the Downloads menu
      (LisiereDownloads) hangs from it, on the panel's side (left half of the window), never top-right; capture;
   2. Échap: the menu closes, the pointer away: the column leaves (« FOCUS column out »);
-  3. Ctrl+H: the column back with the Historique drawer docked against it on the left; capture; Échap.
+  3. Ctrl+H: the column back with the Historique drawer docked against it on the left; capture; Échap;
+  4. Ctrl+D: the bookmark popover inside the window on the panel's side (compact: beside the column); capture; Échap.
 
     python tests/focus/side_menus_slot.py --build build/focus-side-menus [--fake <fake-acp-agent.exe>]
     -> build/focus-side-menus-slot/slot-report.json and its PNGs (plain `python`: ImageGrab is in the user's site-packages)
@@ -233,6 +234,12 @@ def run(layout):
     dr = [w for w in windows_of(pid) if w['class'].startswith('LisiereHistory')]
     step(f'{layout}: Ctrl+H: the column back, Historique docked on the left', line is not None and bool(dr) and dr[0]['rect'][0] < mid[0], {'drawer': dr[0]['rect'] if dr else None, 'log': line})
     step(f'{layout}: capture, Ctrl+H', True, capture(f'{layout}-ctrl-h', (r.left, r.top, r.right, r.bottom)))
+    keys(0x1B); time.sleep(0.8); u32.SetCursorPos(r.right - 300, mid[1]); time.sleep(0.8)
+    # 4. Ctrl+D: the bookmark popover on the panel's side (compact: beside the column, no star there; it went above the window)
+    keys(0x11, 0x44); time.sleep(0.8)
+    bp = [w for w in windows_of(pid) if w['class'] == 'LisiereBookmarkPopover']
+    step(f'{layout}: Ctrl+D: the bookmark popover inside the window, on the panel side', bool(bp) and bp[0]['rect'][1] >= r.top and bp[0]['rect'][2] < mid[0], {'popover': bp[0]['rect'] if bp else None})
+    step(f'{layout}: capture, Ctrl+D', True, capture(f'{layout}-ctrl-d', (r.left, r.top, r.right, r.bottom)))
     keys(0x1B); time.sleep(0.5)
     return proc
 
