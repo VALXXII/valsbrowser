@@ -86,7 +86,7 @@ int main() {
       o = GridOpened(three, 3); OK(o.slotShown && std::fabs((o.slot.right - o.slot.left) - (232 - 3 * 6) / 4.f) < .01f && o.tiles[0].right < three.tiles[0].right);
       // 7 tiles (a second row with room): the end place shows in it.
       const auto seven = Sidebar::MakeGrid(8, 100, 232, 7, 2, 0);
-      o = GridOpened(seven, 7); OK(o.slotShown && o.slot.top == seven.tiles[5].top && o.slot.left == seven.tiles[2].left);
+      o = GridOpened(seven, 7); OK(o.slotShown && o.slot.top == seven.tiles[5].top && o.slot.right == seven.view.right && std::fabs((o.slot.right - o.slot.left) - (232 - 2 * 6) / 3.f) < .01f);   // row 2: 3 tiles share it
       // Scrolled (unfolded grid): the same scroll.
       const auto scrolled = Sidebar::MakeGrid(8, 100, 232, 12, 1, 20);
       o = GridOpened(scrolled, 0); OK(o.slot.top == scrolled.tiles[0].top && o.tiles[0].left == scrolled.tiles[1].left); }

@@ -161,6 +161,7 @@ def existing_fixtures() -> None:
     # Atelier B: a tab dropped on the favorites (rules, then the real window procedure on a never-shown window +
     # offscreen renders, the 3 layouts; its throwaway data folder lives under the output).
     fixture('tab_favorite_drop_test', [*STRICT, 'tests/tab_favorite_drop_test.cpp'])
+    fixture('tab_favorite_lastrow_test', [*STRICT, 'tests/tab_favorite_lastrow_test.cpp'])   # the grey place = the grid with one more tile (last row too)
     favorites_drag = OUT / 'tab-favorite-drag'
     favorites_drag.mkdir(parents=True, exist_ok=True)
     fixture('tab_favorite_drag_test', [*LOOSE, '-municode', *TVG, WV2, 'tests/ui/tab_favorite_drag_test.cpp', 'src/native-lottie.cpp', THORVG,

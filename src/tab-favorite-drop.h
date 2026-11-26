@@ -134,11 +134,10 @@ inline Target GridTarget(const BM::Store& s, const std::wstring& uri, const std:
 // falls outside it is clipped (`slotShown` false: past the last tile of a full grid, or of the compact column).
 struct GridPreview { std::vector<Sidebar::Box> tiles; Sidebar::Box slot; bool slotShown = false; };
 inline GridPreview GridOpened(const Sidebar::Grid& g, int slot) {
-    namespace C = Sidebar::Complete; GridPreview p; const int m = static_cast<int>(g.tiles.size()), n = m + 1;
+    GridPreview p; const int m = static_cast<int>(g.tiles.size()), n = m + 1;
     slot = std::clamp(slot, 0, m);
-    const float w = g.view.Width(); const int cols = std::max(1, std::min(Sidebar::Columns(w), n));
-    const float tw = (w - C::tileGap * (cols - 1)) / cols;
-    auto cell = [&](int k) { const int c = k % cols, r = k / cols; const float x = g.view.left + c * (tw + C::tileGap), y = g.view.top + r * (C::tile + C::tileGap) - g.scroll; return Sidebar::Box{x, y, x + tw, y + C::tile}; };
+    const float w = g.view.Width(); const int cols = Sidebar::GridColumns(w, n);
+    auto cell = [&](int k) { return Sidebar::GridCell(g.view.left, g.view.top, w, n, cols, k, g.scroll); };   // the grid's own boxes (every row shares the width, the last one too)
     for (int i = 0; i < m; ++i) p.tiles.push_back(cell(i < slot ? i : i + 1));
     p.slot = cell(slot); p.slotShown = p.slot.top < g.view.bottom && p.slot.bottom > g.view.top;
     return p;
