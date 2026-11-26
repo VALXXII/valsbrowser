@@ -245,6 +245,31 @@ int main() {
         ShowWindow(chat, SW_HIDE); SetTabsPosition(BrowserSettings::TabsPosition::Side); pageOnTop(); Layout(); EXPECT(above(page, chat));   // the chat closed: nothing to lift
         chatWindowForTest = nullptr; DestroyWindow(chat); DestroyWindow(page); chrome.width = 1180; }
 
+    {   // #143 (Val 25 nov., the page over the panel's right edge): an edge drag, every DIP from 420 down to 100 and back to
+        // 300, started complete then compact, through the real SidebarEdgeDown / Move / Up and Layout: the page the WebView
+        // gets (ContentBox, in device pixels too) starts where the chrome lays the column out (side.page) and where it is
+        // drawn (sidebarColumn), and the column is laid out at that width (or at 194, faded at the edge, past 160 toward the
+        // window's edge). The window is never shown here, so the fold runs at once (its spring: tests/sidebar_test.cpp).
+        motion.SetReducedMotion(false); SetTabsPosition(BrowserSettings::TabsPosition::Side); chrome.width = 1180; Reset({yt, luma, paper}); Layout();
+        int bad = 0, steps = 0; const float k = GetDpiForWindow(window) / 96.f;
+        for (int compactStart = 0; compactStart < 2; ++compactStart) {
+            SetTabsPosition(compactStart ? BrowserSettings::TabsPosition::Compact : BrowserSettings::TabsPosition::Side); Layout();
+            const auto from = SidebarEffective(); edgeClickAt = 0;
+            EXPECT(chrome.sidebarResizable && SidebarEdgeDown(chrome.side.column - 2) && SidebarEdgeDragging());
+            auto check = [&](float x) {
+                SidebarEdgeMove(x); ++steps; const auto c = ContentBox(); const RECT px = PixelRect(c); const auto& L = chrome.side;
+                bool ok = Near(c.left, L.page.left) && Near(c.left, chrome.sidebarColumn) && px.left == std::lround(chrome.sidebarColumn * k);
+                ok = ok && (L.mode == SBar::Mode::Compact ? L.column <= c.left + .01f : (L.column <= c.left + .5f || Near(L.column, SBar::Complete::minimumLayout)));
+                if (L.mode == SBar::Mode::Complete && L.column <= c.left + .5f) ok = ok && L.address.right <= c.left - 7.5f && L.toggle.right <= c.left - 7.5f;
+                if (!ok && ++bad <= 5) std::printf("  edge drag (%s start) at %.0f: page %.2f, layout page %.2f, drawn %.2f, laid %.2f\n", compactStart ? "compact" : "complete", x, c.left, L.page.left, chrome.sidebarColumn, L.column);
+            };
+            for (float x = 420; x >= 100; x -= 1) check(x);
+            for (float x = 100; x <= 300; x += 1) check(x);
+            SidebarEdgeUp(false); Layout(); EXPECT(!SidebarEdgeDragging() && SidebarEffective() == from);   // Échap: undone
+        }
+        std::printf("edge drag: %d steps, page edge = column edge at each\n", steps); EXPECT(bad == 0);
+        SetTabsPosition(BrowserSettings::TabsPosition::Side); Layout();
+    }
     pages.clear(); splitOverlay.Dispose(); DestroyWindow(window); window = nullptr;
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
     std::printf("PASS sidebar_split_drag_test: %d checks (%.0f ms): column reorder vs lift at the edge (20 DIP back), 6 DIP threshold, split on drop (panel, compact, narrow column over the page), refusal, Escape home to the row, grid bookmark, tear-off branch, top bar unchanged, the chat above the page under 900 DIP (z-order), motion (x1.02 at the grab point, zone morph 0.2 s, 100 ms fade-out, reduced motion 80 ms fade); renders in build/sidebar-split-qa\n", checks, ms);

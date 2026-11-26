@@ -79,6 +79,11 @@ def sandbox_env(fake_agent: bool) -> dict:
     env['BROWSER_ANNOTATIONS_TEST'] = '1'   # garde-fou : aucune écriture dans les vraies configurations
     env.pop('BROWSER_ANNOTATIONS_CONNECT_PATH', None)
     env.pop('BROWSER_CHAT_FAKE_AGENT', None)
+    env.pop('BROWSER_CHAT_REAL_AGENT', None)
+    if not fake_agent:
+        # Essai à la main avec le vrai agent : dit au navigateur, par son nom. En mode test, sans ce réglage, il refuse tous
+        # les agents (garde-fou des tests, src/agent-runtime.cpp) ; un test, lui, n'utilise que le faux agent.
+        env['BROWSER_CHAT_REAL_AGENT'] = '1'
     if fake_agent:
         fake = TOOLS / 'fake-acp-agent.exe'
         if not fake.is_file():

@@ -137,7 +137,11 @@ def run_main():
         time.sleep(1.0)
         step('rest: no chat WebView before the first opening', not C.panel_exists())
         step('rest: no agent process before the first opening', not agent_processes())
-        step('rest: no chat activity in the log', 'CHAT ' not in C.log_text())
+        # The agent guard's own test-mode line (src/chat-host.h RtEnv: « CHAT agent runtime (test): fake agent … », written
+        # when the browser starts under BROWSER_ANNOTATIONS_TEST) is no chat activity: it says which agent this test
+        # browser may start, nothing more.
+        busy = [l for l in C.log_text().splitlines() if l.startswith('CHAT ') and not l.startswith('CHAT agent runtime (test): ')]
+        step('rest: no chat activity in the log', not busy, busy[:2])
         wide = page_width()
 
         # ---- 6.8 viser: the mode, the band's button
@@ -499,8 +503,14 @@ def run_main():
         time.sleep(0.5)
 
         # ---- contract B 1.4: an uncertain detection still asks (a server running from a folder that is no project)
-        import subprocess, tempfile, shutil
-        loose = tempfile.mkdtemp(prefix='chat-qa-vrac-')
+        import subprocess, tempfile, shutil, pathlib
+        # The server's loose folder sits in the TEMP folder of the browser's own (sealed) home: the agent guard points the
+        # browser's USERPROFILE / LOCALAPPDATA at build/…/agent-home, so a folder in this computer's real %TEMP% would be
+        # judged against a profile that is not its own (the walk up to a project could reach the real profile folder,
+        # which is then no longer « the user's profile itself »).
+        sealed_tmp = pathlib.Path((C._guard_env or {}).get('LOCALAPPDATA') or tempfile.gettempdir()) / 'Temp'
+        sealed_tmp.mkdir(parents=True, exist_ok=True)
+        loose = tempfile.mkdtemp(prefix='chat-qa-vrac-', dir=str(sealed_tmp))
         with open(loose + '/page.html', 'w', encoding='utf-8') as f:
             f.write('<!doctype html><meta charset="utf-8"><title>Vrac</title><h1 class="title">Un dossier sans projet</h1><p>Rien ici ne dit où est le code.</p>')
         other = subprocess.Popen([sys.executable, '-m', 'http.server', '5184', '--bind', '127.0.0.1'], cwd=loose, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

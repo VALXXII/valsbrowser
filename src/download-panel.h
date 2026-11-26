@@ -24,6 +24,7 @@
 #include "native-ui.h"
 #include "tooltip.h"
 #include "downloads.h"
+#include "download-thumbnails.h"   // image rows: the picture itself (src/download-file-kind.h)
 #include "accessibility.h"
 
 namespace NativeChrome {
@@ -134,7 +135,14 @@ class View {
     ID2D1BitmapRenderTarget* layer_ = nullptr; D2D1_SIZE_F layerSize_{};
     ID2D1GradientStopCollection* stops_ = nullptr; ID2D1LinearGradientBrush* fade_ = nullptr;
     std::map<std::wstring, ID2D1Bitmap*> icons_;
+    // Image rows: each decoded thumbnail as a bitmap brush of this target (rebuilt when the cache's entry changes).
+    struct ThumbBrush { std::shared_ptr<const Downloads::Thumbnails::Thumb> thumb; ID2D1Bitmap* bitmap = nullptr; ID2D1BitmapBrush* brush = nullptr; };
+    std::map<Downloads::Thumbnails::Key, ThumbBrush> thumbs_;
+    // Image / SVG rows: the file-type glyphs' geometries (factory resources).
+    struct GlyphGeometry { bool parsed = false; GlyphShape shape; std::vector<ID2D1PathGeometry*> paths; };
+    std::map<const char*, GlyphGeometry> glyphs_; ID2D1StrokeStyle* round_ = nullptr;
     template<class T> static void Drop(T*& p) { if (p) { p->Release(); p = nullptr; } }
+    void DropThumbs() { for (auto& t : thumbs_) { Drop(t.second.brush); Drop(t.second.bitmap); } thumbs_.clear(); }
     void PushOpacity(float opacity) { dc_->PushLayer(D2D1::LayerParameters1(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(), opacity), nullptr); }
 public:
     explicit View(Chrome& chrome) : chrome_(chrome) {}
@@ -144,8 +152,13 @@ public:
         Drop(bodyLayout_); bodyText_.clear(); bodyHeight_ = 0; Drop(warning_);
         Drop(layer_); layerSize_ = {}; Drop(fade_); Drop(stops_); Drop(blur_); Drop(dc_);
         for (auto& icon : icons_) Drop(icon.second);
-        icons_.clear();
+        icons_.clear(); DropThumbs();
+        for (auto& g : glyphs_) for (auto*& p : g.second.paths) Drop(p);
+        glyphs_.clear(); Drop(round_);
     }
+    // The surface that receives ThumbnailMessage when a thumbnail it asked for is ready (none offscreen).
+    HWND notify = nullptr;
+    static constexpr UINT ThumbnailMessage = WM_APP + 62;
     // Device context + blur effect are optional: without them reveals still slide and fade.
     void Prepare() {
         auto* target = chrome_.RenderTarget(); if (!target) return;
@@ -160,7 +173,8 @@ public:
                 FAILED(target->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({0, 0}, {1, 0}), stops_, &fade_))) { Drop(fade_); Drop(stops_); }
         }
     }
-    // Shell icon for the file: the real file for executables/shortcuts once
+    // Shell icon for the file (FileKind::Other only: an image or an SVG shows its picture or glyph, never the
+    // icon of the application associated with its type): the real file for executables/shortcuts once
     // complete (so an installer shows its own icon), otherwise its extension.
     ID2D1Bitmap* FileIcon(const Item& item) {
         auto* target = chrome_.RenderTarget(); auto* wic = chrome_.Imaging(); if (!target || !wic) return nullptr;
@@ -168,7 +182,7 @@ public:
         const auto dot = name.find_last_of(L'.');
         if (dot != std::wstring::npos) ext = name.substr(dot);
         for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
-        const bool own = item.state == State::Completed && !item.missing && (ext == L".exe" || ext == L".lnk" || ext == L".ico" || ext == L".msi");
+        const bool own = item.state == State::Completed && !item.missing && (ext == L".exe" || ext == L".lnk" || ext == L".msi");
         const std::wstring generic = ext.empty() ? L".file" : ext, key = own ? item.path : generic;
         auto found = icons_.find(key); if (found != icons_.end()) return found->second;
         ID2D1Bitmap* bitmap = nullptr;
@@ -176,7 +190,7 @@ public:
         if (SHGetFileInfoW(key.c_str(), FILE_ATTRIBUTE_NORMAL, &info, sizeof(info), SHGFI_SYSICONINDEX | (own ? 0 : SHGFI_USEFILEATTRIBUTES)) ||
             (own && SHGetFileInfoW(generic.c_str(), FILE_ATTRIBUTE_NORMAL, &info, sizeof(info), SHGFI_SYSICONINDEX | SHGFI_USEFILEATTRIBUTES))) {
             static const IID imageList = {0x46eb5926, 0x582e, 0x4017, {0x9f, 0xdf, 0xe8, 0x99, 0x8d, 0xaa, 0x09, 0x50}};
-            const float px = 24.f * target->GetPixelSize().width / std::max(1.f, target->GetSize().width);
+            const float px = Panel::fileIcon * target->GetPixelSize().width / std::max(1.f, target->GetSize().width);
             IImageList* list = nullptr; HICON icon = nullptr;
             if (SUCCEEDED(SHGetImageList(px > 48 ? SHIL_JUMBO : SHIL_EXTRALARGE, imageList, reinterpret_cast<void**>(&list))) && list) {
                 list->GetIcon(info.iIcon, ILD_TRANSPARENT, &icon); list->Release();
@@ -193,9 +207,75 @@ public:
         icons_[key] = bitmap;
         return bitmap;
     }
-    void ForgetIcons() { for (auto& icon : icons_) Drop(icon.second); icons_.clear(); }
-    // Shell icon lookups cost milliseconds: resolve them before a motion needs them.
-    void Preload(const std::vector<Item>& items) { if (!chrome_.RenderTarget()) return; for (auto& item : items) FileIcon(item); }
+    void ForgetIcons() { for (auto& icon : icons_) Drop(icon.second); icons_.clear(); DropThumbs(); }
+    // Shell icon lookups cost milliseconds: resolve them before a motion needs them. Image rows: the files
+    // already decoded are checked again (changed on disk: decoded again), the first rows' are asked for now.
+    void Preload(const std::vector<Item>& items) {
+        if (!chrome_.RenderTarget()) return;
+        int asked = 0;
+        for (auto& item : items) {
+            const auto kind = KindOf(item.path, item.mime);
+            if (kind == FileKind::Other) { FileIcon(item); continue; }
+            if (kind != FileKind::Image || !Openable(item)) continue;
+            Downloads::Thumbnails::Service::Get().Recheck(item.path, notify, ThumbnailMessage);
+            if (asked++ < 16) Thumbnail(item);
+        }
+    }
+    // Pixels of the 24 DIP file icon on this target.
+    int IconPixels() const {
+        auto* target = chrome_.RenderTarget(); if (!target) return 0;
+        return std::clamp(static_cast<int>(std::lround(Panel::fileIcon * target->GetPixelSize().width / std::max(1.f, target->GetSize().width))), 1, Downloads::Thumbnails::maxSide);
+    }
+    // A downloaded image's thumbnail (FileKind::Image, Openable); null while it is decoded or when it cannot be.
+    ID2D1BitmapBrush* Thumbnail(const Item& item) {
+        auto* target = chrome_.RenderTarget(); const int side = IconPixels(); if (!target || side <= 0) return nullptr;
+        auto thumb = Downloads::Thumbnails::Service::Get().Lookup(item.path, side, notify, ThumbnailMessage);
+        if (!thumb || !thumb->ok || thumb->pixels.side != side) return nullptr;
+        auto& cached = thumbs_[{item.path, side}];
+        if (cached.thumb != thumb) {
+            Drop(cached.brush); Drop(cached.bitmap); cached.thumb = thumb;
+            const auto props = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+            if (SUCCEEDED(target->CreateBitmap(D2D1::SizeU(side, side), thumb->pixels.bgra.data(), static_cast<UINT32>(side * 4), props, &cached.bitmap)) &&
+                FAILED(target->CreateBitmapBrush(cached.bitmap, &cached.brush))) cached.brush = nullptr;
+        }
+        return cached.brush;
+    }
+    // Designer (2026-11-26): glyphs in solid #949494; thumbnails ringed inside by 1 px #FFFFFF14, so a dark
+    // picture does not melt into the tile.
+    static constexpr float fileGlyph = 0x94 / 255.f, thumbnailRing = 0x14 / 255.f;
+    // The thumbnail in the file icon's box, its corners rounded like an inset element, its inner ring on the
+    // physical pixel grid.
+    void DrawThumbnail(ID2D1BitmapBrush* brush, D2D1_RECT_F box, float opacity) {
+        auto* target = chrome_.RenderTarget(); if (!target || !brush) return;
+        ID2D1Bitmap* bitmap = nullptr; brush->GetBitmap(&bitmap); if (!bitmap) return;
+        const float k = (box.right - box.left) / std::max(1.f, bitmap->GetSize().width); bitmap->Release();   // DIP size (96 DPI bitmap: its pixels)
+        brush->SetTransform(D2D1::Matrix3x2F::Scale(k, k) * D2D1::Matrix3x2F::Translation(box.left, box.top));
+        brush->SetOpacity(opacity); brush->SetInterpolationMode(D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        target->FillRoundedRectangle(D2D1::RoundedRect(box, Design::Radius::inset, Design::Radius::inset), brush);
+        auto* ring = chrome_.SolidBrush(); if (!ring) return;
+        const float px = target->GetSize().width / std::max(1.f, static_cast<float>(target->GetPixelSize().width)), r = Design::Radius::inset - px / 2;
+        ring->SetColor(D2D1::ColorF(1, 1, 1, thumbnailRing * opacity));
+        target->DrawRoundedRectangle(D2D1::RoundedRect({box.left + px / 2, box.top + px / 2, box.right - px / 2, box.bottom - px / 2}, r, r), ring, px);
+    }
+    // A file-type glyph (src/download-file-kind.h) in `color`, `size` DIP centred in `box`.
+    void Glyph(const char* svg, D2D1_RECT_F box, float size, D2D1_COLOR_F color) {
+        auto* target = chrome_.RenderTarget(); auto* factory = chrome_.Factory(); auto* brush = chrome_.SolidBrush();
+        if (!target || !factory || !brush || !svg || color.a <= 0) return;
+        auto& g = glyphs_[svg];
+        if (!g.parsed) { g.parsed = true; g.shape = ParseGlyph(svg); for (auto& p : g.shape.paths) g.paths.push_back(DialogKit::SvgGeometry(factory, p.d.c_str(), p.evenOdd)); }
+        if (g.shape.view <= 0) return;
+        if (!round_) factory->CreateStrokeStyle(D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_LINE_JOIN_ROUND), nullptr, 0, &round_);
+        D2D1_MATRIX_3X2_F base; target->GetTransform(&base);
+        const float k = size / g.shape.view, x = (box.left + box.right - size) / 2, y = (box.top + box.bottom - size) / 2;
+        target->SetTransform(D2D1::Matrix3x2F::Scale(k, k) * D2D1::Matrix3x2F::Translation(x, y) * base);
+        brush->SetColor(color);
+        for (size_t i = 0; i < g.paths.size(); ++i) {
+            if (!g.paths[i]) continue;
+            if (g.shape.paths[i].fill) target->FillGeometry(g.paths[i], brush);
+            if (g.shape.paths[i].stroke) target->DrawGeometry(g.paths[i], brush, g.shape.strokeWidth, round_);
+        }
+        target->SetTransform(base);
+    }
 
     // Draws `paint` (panel coordinates) shifted by visual.offset, faded and, when
     // the effect exists, Gaussian-blurred over `bounds` via an offscreen layer.
@@ -358,11 +438,18 @@ public:
         auto* target = chrome_.RenderTarget(); auto* brush = chrome_.SolidBrush();
         const auto tile = Panel::Tile(top);
         chrome_.Round({tile.left, tile.top, tile.right, tile.bottom}, Design::Radius::control, Design::Surface::raised);
-        if (auto* icon = FileIcon(item)) {
-            const float s = 24, x = (tile.left + tile.right - s) / 2, y = (tile.top + tile.bottom - s) / 2;
+        {
+            const float s = Panel::fileIcon, x = (tile.left + tile.right - s) / 2, y = (tile.top + tile.bottom - s) / 2;
+            const D2D1_RECT_F box = D2D1::RectF(x, y, x + s, y + s);
             const float fade = item.state == State::Completed && !item.missing ? 1.f : item.held ? .8f : .5f;
-            if (dc_) dc_->DrawBitmap(icon, D2D1::RectF(x, y, x + s, y + s), fade, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, nullptr, nullptr);
-            else target->DrawBitmap(icon, D2D1::RectF(x, y, x + s, y + s), fade);
+            const auto kind = KindOf(item.path, item.mime);
+            if (kind == FileKind::Other) {
+                if (auto* icon = FileIcon(item)) {
+                    if (dc_) dc_->DrawBitmap(icon, box, fade, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, nullptr, nullptr);
+                    else target->DrawBitmap(icon, box, fade);
+                }
+            } else if (auto* picture = kind == FileKind::Image && Openable(item) ? Thumbnail(item) : nullptr) DrawThumbnail(picture, box, fade);
+            else Glyph(GlyphFor(kind), box, s, D2D1::ColorF(fileGlyph, fileGlyph, fileGlyph, fade));   // solid #949494 (faded like the row)
         }
         const auto name = Panel::Name(top);
         // A held row keeps its name readable (#FFFFFFE6 at the rows' .9): it waits for a decision.
@@ -731,6 +818,7 @@ protected:
         const float scale = 96.f / Dpi();
         switch (msg) {
         case WM_ERASEBKGND: return 1;
+        case View::ThumbnailMessage: Invalidate(); return 0;   // an image row's thumbnail is ready
         case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); PaintNow(); EndPaint(h, &ps); return 0; }
         case WM_SIZE: chrome_.Resize(); Invalidate(); return 0;
         case WM_MOUSEACTIVATE: return MA_ACTIVATE;
@@ -780,6 +868,7 @@ protected:
         RegisterClassW(&wc);
         CreateWindowExW(WS_EX_TOOLWINDOW, wc.lpszClassName, TR(downloads_history_title), WS_POPUP, 0, 0, Px(width), Px(height), owner, nullptr, instance, this);
         if (!hwnd_) return false;
+        view_.notify = hwnd_;
         tip_.Create(instance, hwnd_, root);
         Configure();
         AttachAccessibility();

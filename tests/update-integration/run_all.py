@@ -201,6 +201,10 @@ def existing_fixtures() -> None:
     fixture('download_panel_test', [*STRICT, '-municode', *TVG, 'tests/downloads/download_panel_test.cpp', 'src/native-lottie.cpp', THORVG,
             '-ld2d1', '-ldwrite', '-lwindowscodecs', '-lole32', '-luuid', '-lcomctl32', '-lgdi32', '-ldwmapi', '-lshell32'],
             [ROOT, downloads_evidence])
+    # Its rows' file icons: type by extension + MIME, image thumbnails (fallbacks, cache), SVG never decoded. No window.
+    fixture('download_file_kinds_test', [*STRICT, '-municode', *TVG, 'tests/downloads/download_file_kinds_test.cpp', 'src/native-lottie.cpp', THORVG,
+            '-ld2d1', '-ldwrite', '-lwindowscodecs', '-lole32', '-luuid', '-lcomctl32', '-lgdi32', '-ldwmapi', '-lshell32'],
+            [ROOT, downloads_evidence])
     # Browsing history drawer opened by the toolbar button (same line as test-history.ps1)
     history_evidence = ROOT / 'build/history-qa'
     history_evidence.mkdir(parents=True, exist_ok=True)
@@ -387,6 +391,14 @@ def main() -> int:
     p.add_argument('--ci', action='store_true')
     p.add_argument('--only', choices=('existing', 'peers', 'integration', 'app'))
     a = p.parse_args()
+    # agent guard (tests/agent-guard/agent_guard.py): every program this run starts (installers, browsers, peers) inherits
+    # no API key or agent credential, and no switch to this computer's agents or to a fake agent
+    sys.path.insert(0, str(ROOT / 'tests' / 'agent-guard'))
+    import agent_guard as G
+    import os
+    clean, _stripped = G.scrub(dict(os.environ), keep_locations=True)
+    for k in [k for k in os.environ if k not in clean] + [G.REAL_AGENT_SWITCH, G.REAL_OPT_IN[0], 'BROWSER_CHAT_FAKE_AGENT']:
+        os.environ.pop(k, None)
     OUT.mkdir(parents=True, exist_ok=True)
     steps = {'existing': existing_fixtures, 'peers': peer_suites, 'integration': integration}
     for key, step in steps.items():

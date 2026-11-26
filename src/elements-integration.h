@@ -759,20 +759,45 @@ bool ErrorPageMessage(const std::shared_ptr<Tab>& t,const std::wstring& source,c
 // Fullscreen (C6/C7): a page element (ContainsFullScreenElementChanged) or the whole
 // browser (F11). The window covers its monitor and the chrome is hidden; the hint says how
 // to leave (Échap for a page, F11 for the browser).
-struct FullscreenState { bool page=false,browser=false; WINDOWPLACEMENT placement{sizeof(WINDOWPLACEMENT)}; bool saved=false; } fullscreen;
+// One step in, one step out (user report 25/11: the window « jumps » several times entering and leaving a video's
+// fullscreen). The window keeps its show state, as Chromium's FullscreenHandler does: a maximized window stays
+// maximized (only its caption style goes), and it changes size ONCE, to its monitor, then ONCE back to the exact
+// rectangle it had. Before, a maximized window was first restored (Windows' restore animation, every page laid out at
+// the restored size) and then grown to the monitor; leaving went monitor → restored rectangle (SetWindowPlacement moves
+// a normal window there first) → maximized (animated): two to three visible sizes each way. The window procedure gives
+// a maximized window in fullscreen its whole monitor (WM_NCCALCSIZE, WM_GETMINMAXINFO) and keeps it there (Agrandir /
+// Restaurer, a DPI change). FullscreenStep (main.cpp) logs every window and page size change after a switch.
+struct FullscreenState { bool page=false,browser=false; RECT rect{}; WINDOWPLACEMENT placement{sizeof(WINDOWPLACEMENT)}; bool saved=false,zoomed=false; } fullscreen;
 bool InFullscreen(){return fullscreen.page||fullscreen.browser;}
 RECT MonitorScreenRect(){MONITORINFO mi{sizeof(mi)};GetMonitorInfoW(MonitorFromWindow(window,MONITOR_DEFAULTTONEAREST),&mi);return mi.rcMonitor;}
+// DWM rounds the window (RoundNatively) unless it is maximized: square while it covers its monitor.
+void FullscreenCorners(bool square){if(!window)return;const int corner=square?1/*DWMWCP_DONOTROUND*/:2/*DWMWCP_ROUND*/;DwmSetWindowAttribute(window,33/*DWMWA_WINDOW_CORNER_PREFERENCE*/,&corner,sizeof(corner));}
+// The taskbar steps below the window while it is fullscreen, said to the shell rather than left to its guess (a
+// maximized window now stays maximized in fullscreen); Chromium's FullscreenHandler does the same. Kept for the
+// process's life (never released: no COM call after CoUninitialize).
+void MarkTaskbarFullscreen(bool on){
+    static ITaskbarList2* bar=nullptr;static bool tried=false;
+    if(!tried){tried=true;if(FAILED(CoCreateInstance(CLSID_TaskbarList,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&bar)))||!bar||FAILED(bar->HrInit())){if(bar)bar->Release();bar=nullptr;Log(L"FULLSCREEN taskbar list unavailable");}}
+    if(bar&&window)bar->MarkFullscreenWindow(window,on?TRUE:FALSE);}
 void ApplyFullscreen(bool wasFull){
     const bool full=InFullscreen();
-    if(full&&!wasFull){fullscreen.saved=GetWindowPlacement(window,&fullscreen.placement)!=FALSE;HideSuggestions();
+    if(full!=wasFull)FullscreenTraceBegin(full);
+    if(full&&!wasFull){HideSuggestions();
         // The chrome leaves with its focus, hover and tooltip: keyboard focus on a toolbar control or in the address
         // field goes to the page (a page that asked for fullscreen already has it).
         hover=pressed=0;if(tooltip)SendMessageW(tooltip,TTM_POP,0,0);if(editing||keyboardFocus||GetFocus()==address)FocusPage();
-        if(IsZoomed(window))ShowWindow(window,SW_RESTORE);
+        if(IsIconic(window))ShowWindow(window,SW_RESTORE);   // F11 / a page's click need the window on screen: not reached in practice
+        fullscreen.zoomed=IsZoomed(window)!=FALSE;fullscreen.saved=GetWindowRect(window,&fullscreen.rect)&&GetWindowPlacement(window,&fullscreen.placement);
         // Without its caption style while it covers the monitor, so Windows treats it as fullscreen (taskbar below).
-        SetWindowLongPtrW(window,GWL_STYLE,GetWindowLongPtrW(window,GWL_STYLE)&~static_cast<LONG_PTR>(WS_CAPTION));
-        const RECT m=MonitorScreenRect();SetWindowPos(window,HWND_TOP,m.left,m.top,m.right-m.left,m.bottom-m.top,SWP_FRAMECHANGED|SWP_NOOWNERZORDER);}
-    else if(!full&&wasFull){SetWindowLongPtrW(window,GWL_STYLE,GetWindowLongPtrW(window,GWL_STYLE)|WS_CAPTION);if(fullscreen.saved)SetWindowPlacement(window,&fullscreen.placement);SetWindowPos(window,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_FRAMECHANGED);}
+        SetWindowLongPtrW(window,GWL_STYLE,GetWindowLongPtrW(window,GWL_STYLE)&~static_cast<LONG_PTR>(WS_CAPTION));FullscreenCorners(true);
+        const RECT m=MonitorScreenRect();SetWindowPos(window,HWND_TOP,m.left,m.top,m.right-m.left,m.bottom-m.top,SWP_FRAMECHANGED|SWP_NOOWNERZORDER|SWP_NOCOPYBITS);MarkTaskbarFullscreen(true);}
+    else if(!full&&wasFull){SetWindowLongPtrW(window,GWL_STYLE,GetWindowLongPtrW(window,GWL_STYLE)|WS_CAPTION);
+        const RECT r=fullscreen.rect;
+        if(fullscreen.saved&&!IsIconic(window))SetWindowPos(window,nullptr,r.left,r.top,r.right-r.left,r.bottom-r.top,SWP_NOZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED|SWP_NOCOPYBITS);
+        else{   // minimized meanwhile: it stays so; restoring it later brings back the window it was (maximized, or its rectangle)
+            WINDOWPLACEMENT p{sizeof(p)};if(fullscreen.saved&&GetWindowPlacement(window,&p)){if(!fullscreen.zoomed)p.rcNormalPosition=fullscreen.placement.rcNormalPosition;p.showCmd=SW_SHOWMINNOACTIVE;SetWindowPlacement(window,&p);}
+            SetWindowPos(window,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED);}
+        FullscreenCorners(false);MarkTaskbarFullscreen(false);}
     Layout();
     // C7: the pill names the real origin of the page that took the screen (« Cette page » only
     // without one). No keyboard-lock variant here: WebView2 exposes no keyboard-lock signal.
@@ -1851,7 +1876,10 @@ void RegisterElementEvents(const std::shared_ptr<Tab>& t,ICoreWebView2Settings* 
         if(FAILED(need(v18->add_LaunchingExternalUriScheme(h,&token))))Log(L"EXTERNAL add_LaunchingExternalUriScheme failed");h->Release();}else Log(L"EXTERNAL ICoreWebView2_18 unavailable: engine dialog kept");}
     {auto h=Callback<ICoreWebView2ContainsFullScreenElementChangedEventHandler,ICoreWebView2*,IUnknown*>([weak](ICoreWebView2* v,IUnknown*)->HRESULT{
         auto tab=weak.lock();if(!tab||tab->closed||halted||!v)return S_OK;BOOL full=FALSE;v->get_ContainsFullScreenElement(&full);tab->pageFullscreen=full!=FALSE;
-        Defer([weak,full]{auto t2=weak.lock();if(t2&&!t2->closed)SetPageFullscreen(t2,full!=FALSE);});return S_OK;});
+        // At once, as Microsoft's WebView2 sample does (the window resized inside this handler): the engine already
+        // shows the element at the page's present size, and a Defer (a 0 ms timer, served after every paint and
+        // input) left that intermediate frame on screen longer before the window followed.
+        SetPageFullscreen(tab,full!=FALSE);return S_OK;});
      if(FAILED(t->view->add_ContainsFullScreenElementChanged(h,&token)))Log(L"FULLSCREEN add_ContainsFullScreenElementChanged failed");h->Release();}
     if(!popup)RegisterSandboxResources(t);   // a window.open target: after its assignment (Microsoft's contract)
 }

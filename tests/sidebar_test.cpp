@@ -4,6 +4,7 @@
 // is the artboard's inside (1180 x 740 with its 1 DIP border: 1178 x 738).
 #include "../src/sidebar.h"
 #include "../src/tab-motion.h"   // #127 parity 3: the strip's open / close model on the rows
+#include "../src/viewport-scrollbar.h"   // Mode Focus edge zone: the page's overlay scrollbar strip it leaves alone
 #include <cstdio>
 #include <cmath>
 
@@ -78,6 +79,109 @@ int main() {
     }
     {   // 300 and 360 wide columns: 6 then 7 per row (« panneau 300 / 360 »).
         Check(S::Columns(232) == 5 && S::Columns(284) == 6 && S::Columns(344) == 7, "about 42 DIP tiles: 5 / 6 / 7 per row (1W1T-0, 1W4Z-0)");
+        // The resize boards' notes: « Minimum 220 (4 favoris par rangée) », « 6 par rangée dès 296 », « 360 = 7 ».
+        Check(S::Columns(204) == 4 && S::Columns(279) == 5 && S::Columns(280) == 6 && S::Columns(344) == 7 && S::Columns(345) == 7, "4 at 220, 6 from 296, 7 at 360 (1Y82-0, 1XWT-0, 1Y0T-0)");
+    }
+    {   // Val 25 nov. (« like Dia »): the tiles fill the row edge to edge with the address field's margins; fewer bookmarks than a
+        // row holds share it (3 in 232: no empty slots on the right); a last row that is not full keeps the rows' tile width,
+        // left-aligned. Every panel width a drag can give at 100 / 125 / 150 / 175 / 200 % (a device pixel at a time, 220 ..
+        // 360 DIP), folded and unfolded (grid B), 1 to 21 bookmarks.
+        const auto L3 = S::Compute(Complete(3));
+        Check(L3.grid.columns == 3 && L3.grid.tiles.size() == 3 && Same(L3.grid.tiles[0], 8, 92, 8 + 220 / 3.f, 132) && Same(L3.grid.tiles[2], 240 - 220 / 3.f, 92, 240, 132), "3 bookmarks in 248: three tiles of 73.3 share the row (owner's capture)");
+        const auto L1 = S::Compute(Complete(1));
+        Check(L1.grid.columns == 1 && Same(L1.grid.tiles[0], 8, 92, 240, 132) && Same(L1.gridBlock, 8, 92, 240, 132), "1 bookmark: the whole row");
+        const auto L6 = S::Compute(Complete(6));
+        Check(L6.grid.columns == 5 && Same(L6.grid.tiles[5], 8, 138, 49.6f, 178) && Near(L6.grid.tiles[5].Width(), L6.grid.tiles[0].Width()), "6 in 248: 5 + 1, the last one keeps the width, on the left");
+        int cases = 0, bad = 0, lastColumns = 0; const float scales[] = {1, 1.25f, 1.5f, 1.75f, 2};
+        for (float s : scales) {
+            lastColumns = 0;
+            for (int px = static_cast<int>(std::ceil(220 * s - 1e-3f)); px <= static_cast<int>(std::floor(360 * s + 1e-3f)); ++px)
+                for (int n = 1; n <= 21; ++n) for (int open = 0; open < 2; ++open) {
+                    auto in = Complete(n); in.panel = px / s; in.gridOpen = open != 0; const auto L = S::Compute(in); ++cases;
+                    const float l = L.address.left, r = L.address.right, w = r - l;
+                    const int fit = std::max(1, static_cast<int>(std::floor((w + 6) / (41.6f + 6) + 1e-3f))), cols = std::min(fit, n);
+                    const bool folds = n > 2 * fit, shown = !folds || open;
+                    const int count = shown ? n : 2 * fit;
+                    bool ok = L.grid.columns == cols && static_cast<int>(L.grid.tiles.size()) == count && L.gridOpen == (folds && open) && L.gridToggle.Empty() == !folds && L.manage.Empty() == !(folds && open);
+                    ok = ok && Near(l, 8) && Near(r, px / s - 8) && Near(L.grid.view.left, l) && Near(L.grid.view.right, r);
+                    const float tw = (w - 6 * (cols - 1)) / cols;
+                    for (int i = 0; ok && i < count; ++i) {
+                        const S::Box& t = L.grid.tiles[i]; const int c = i % cols, row = i / cols;
+                        ok = Near(t.Width(), tw, 1e-3f) && Near(t.Height(), 40) && Near(t.left, l + c * (tw + 6), 1e-3f) && Near(t.top + L.grid.scroll, L.grid.view.top + row * 46, 1e-3f);
+                        if (c == cols - 1) ok = ok && Near(t.right, r, 1e-3f) && std::lround(t.right * s) == std::lround(r * s);   // edge to edge, in device pixels too
+                        if (c == 0) ok = ok && std::lround(t.left * s) == std::lround(l * s);
+                    }
+                    if (fit < lastColumns) ok = false;   // a wider panel never holds fewer per row
+                    if (n == 21 && !open) lastColumns = fit;
+                    if (!ok && ++bad <= 5) std::printf("  grid fill: scale %.2f, %d px (%.2f DIP), %d bookmarks, %s: columns %d (%d), tiles %d (%d)\n", s, px, px / s, n, open ? "unfolded" : "folded", L.grid.columns, cols, static_cast<int>(L.grid.tiles.size()), count);
+                }
+        }
+        std::printf("grid fill: %d layouts checked (220 .. 360 at 100 .. 200 %%, 1 .. 21 bookmarks, folded / unfolded)\n", cases);
+        Check(bad == 0, "the grid fills the row at every width and scale; a short last row keeps the tile width");
+        for (int n : {20, 9}) for (float panel : {220.f, 280.f, 360.f}) {   // expand / collapse (variant B) at the three widths
+            auto in = Complete(n); in.panel = panel; const auto F = S::Compute(in); in.gridOpen = true; const auto O = S::Compute(in);
+            const int cols = S::Columns(panel - 16), folds = n > 2 * cols;
+            bool ok = F.grid.columns == std::min(cols, n) && O.grid.columns == F.grid.columns && !F.gridOpen && F.gridToggle.Empty() == !folds;
+            if (folds) ok = ok && static_cast<int>(F.grid.tiles.size()) == 2 * cols && O.gridOpen && static_cast<int>(O.grid.tiles.size()) == n && !O.manage.Empty() && Near(O.grid.tiles.back().left, 8 + ((n - 1) % cols) * (O.grid.tiles[0].Width() + 6)) && Near(O.grid.tiles.back().Width(), F.grid.tiles[0].Width()) && O.gridBlock.bottom > F.gridBlock.bottom;
+            else ok = ok && static_cast<int>(O.grid.tiles.size()) == n && !O.gridOpen && Same(O.gridBlock, F.gridBlock.left, F.gridBlock.top, F.gridBlock.right, F.gridBlock.bottom);
+            char what[120]; std::snprintf(what, sizeof what, "%d bookmarks at %.0f: fold / unfold keeps %d per row", n, panel, std::min(cols, n));
+            Check(ok, what);
+        }
+        // The compact column does not change: icons only, 40 x 36 tiles, gap 4, whatever the count and the stored width; its
+        // « » » popover keeps five per row (a sixth bookmark starts a second row at the same width).
+        bool compactOk = true;
+        for (int n = 1; n <= 9; ++n) for (float panel : {220.f, 280.f, 360.f}) {
+            auto in = Compact(n); in.panel = panel; const auto K = S::Compute(in);
+            compactOk = compactOk && Near(K.column, 40) && static_cast<int>(K.tiles.size()) == std::min(n, 5) && K.more == (n > 5) && K.grid.tiles.empty();
+            for (int i = 0; compactOk && i < static_cast<int>(K.tiles.size()); ++i) compactOk = Same(K.tiles[i], 0, 76 + i * 40.f, 40, 112 + i * 40.f);
+        }
+        const auto P6 = S::ComputePopover(40, S::Box{0, 236, 40, 272}, 6, 0, 738);
+        Check(compactOk && P6.grid.columns == 5 && P6.grid.tiles.size() == 6 && Near(P6.grid.tiles[5].left, P6.grid.tiles[0].left) && Near(P6.grid.tiles[5].Width(), (230 - 4 * 6) / 5.f), "compact unchanged (1WDI-0) and its popover keeps five per row");
+    }
+    {   // #143 (Val 25 nov., capture: the page over the panel's right edge). The host's chain for an edge drag, every device
+        // pixel from 0 to 420 DIP at 100 / 125 / 150 %, started complete or compact: Resize::Dragging -> the presented width
+        // on whole device pixels (SidebarPrepare) -> Compute with it as the page's left (Chrome::BuildSidebar). Before, the
+        // column was laid out at the clamped 220 under a rubber-banded page at 195. Now the page starts on the column's edge
+        // (the same device pixel), and every piece lies left of it; under the « Haut » row's 194 (a complete drag past 160
+        // toward the window's edge) the layout stops at 194 and the painter fades its last 12 DIP at the edge.
+        const float scales[] = {1, 1.25f, 1.5f}; int cases = 0, bad = 0, fades = 0;
+        for (float s : scales) for (int startedCompact = 0; startedCompact < 2; ++startedCompact) for (int px = 0; px <= static_cast<int>(420 * s); ++px) {
+            const float raw = px / s; const auto st = S::Resize::Dragging(raw, startedCompact != 0); const bool full = st.mode == S::Mode::Complete;
+            const float shown = std::round((full ? st.width : S::Compact::width) * s) / s;
+            auto in = Complete(9, 6); in.mode = st.mode; in.panel = full ? st.width : 248; in.zoneLeft = shown; const auto L = S::Compute(in); ++cases;
+            const float edge = L.page.left; const bool fade = L.column > edge + .5f; fades += fade;
+            bool ok = Near(edge, shown) && Near(L.zone.left, shown) && std::lround(edge * s) == static_cast<long>(std::lround(shown * s));
+            ok = ok && fade == (full && shown < S::Complete::minimumLayout - .5f);   // the painter fades past half a DIP
+            if (!fade) {
+                const S::Box* boxes[] = {&L.profile, &L.toggle, &L.address, &L.lock, &L.text, &L.copy, &L.star, &L.gridBlock, &L.grid.view, &L.gridToggle, &L.manage, &L.line, &L.tabsView, &L.newTab, &L.footerLine};
+                for (const S::Box* b : boxes) ok = ok && (b->Empty() || b->right <= edge + .5f || (!full && L.addressInColumn == false && (b == &L.address || b == &L.lock || b == &L.text)));   // compact: the field is in the window bar
+                for (const auto* v : {&L.grid.tiles, &L.tiles, &L.tabs, &L.tools}) for (const auto& b : *v) ok = ok && b.right <= edge + .5f;
+                if (full) ok = ok && L.toggle.left >= L.reload.right + 3 - 1e-3f && Near(L.address.right, L.column - 8) && L.column <= edge + .5f && L.text.Width() > 0 && S::TitleIn(L.tabs[0], true).Width() > 0;   // the « Haut » row fits; texts have room (they fade when cut)
+            } else ok = ok && Near(L.column, S::Complete::minimumLayout) && edge >= 100 && raw < S::Resize::snap;   // only a complete drag past 160
+            if (!ok && ++bad <= 5) std::printf("  page edge: scale %.2f, %s drag, raw %.2f: shown %.2f, page %.2f, column %.2f\n", s, startedCompact ? "compact" : "complete", raw, shown, edge, L.column);
+        }
+        std::printf("page edge: %d drag positions (0 .. 420 DIP, 100 / 125 / 150 %%), %d past 160 towards the window's edge, faded at 194\n", cases, fades);
+        Check(bad == 0, "the page starts on the column's edge at every drag width and scale; the column fits left of it (or fades under 194)");
+        Check(Near(S::Compute([] { auto in = Complete(5); in.panel = S::Resize::Shown(160); in.zoneLeft = in.panel; return in; }()).column, S::Resize::Shown(160)), "the owner's capture: a rubber band at 194 is laid out at 194 (it was 220 under a page at 194)");
+        // The fold while dragging (crossing 160 from compact): it unfolds on its spring (1.0 / .35 s, Paper 254L-0) toward the
+        // pointer's width, which keeps moving; the page follows on the same frame; reversed mid-way it starts from what is on
+        // screen with its velocity (no jump); reduced motion: at once.
+        S::Fold f; f.Set(S::Mode::Compact, 0, false); f.panel = S::Resize::Shown(170);
+        f.Set(S::Mode::Complete, 1000, true);
+        float last = f.ColumnWidth(1000), maxStep = 0; bool layoutOk = true;
+        for (double t = 1000; t <= 1120; t += 8) {
+            f.panel = S::Resize::Shown(170 + static_cast<float>(t - 1000) * .3f); f.Update(t);   // the pointer keeps going right
+            const float w = f.ColumnWidth(t); maxStep = std::max(maxStep, std::fabs(w - last)); last = w;
+            auto in = Complete(9, 6); in.mode = f.CompleteLayout(t) ? S::Mode::Complete : S::Mode::Compact; in.panel = f.panel; in.zoneLeft = w; const auto L = S::Compute(in);
+            layoutOk = layoutOk && Near(L.page.left, w) && (L.column <= w + .5f || L.column >= S::Complete::minimumLayout - .01f);
+        }
+        const float before = f.ColumnWidth(1120), mid = f.Progress(1120);
+        Check(mid > .3f && mid < .97f && layoutOk && maxStep < 40, "dragging past 160: the column unfolds on the spring (no jump), the page on the same frame");
+        f.Set(S::Mode::Compact, 1120, true);   // back under 160 mid-way
+        Check(Near(f.ColumnWidth(1120), before, .01f) && f.ColumnWidth(1128) > before - 12 && f.Moving(1128), "reversed mid-way: from what is on screen, keeping its velocity");
+        Check(!f.Moving(1120 + 2000) && Near(f.ColumnWidth(1120 + 2000), 40), "then settles compact");
+        S::Fold r; r.Set(S::Mode::Compact, 0, false); r.panel = 230; r.Set(S::Mode::Complete, 10, false);
+        Check(!r.Moving(10) && Near(r.ColumnWidth(10), 230) && Near(r.Titles(10), 1), "reduced motion: at once");
     }
     {   // « Toujours » with no bookmark: one full row tile.
         const auto L = S::Compute(Complete(0));
@@ -339,16 +443,105 @@ int main() {
         in.reserve = 0; in.mode = S::Mode::Compact; L = S::Compute(in);
         { S::Input d = in; d.hidden = false; d.top = 0; d.band = 0; const auto D = S::Compute(d);
           Check(Near(L.column, 40) && Same(L.page, 4, 32, 1176, 736) && Near(L.profile.top, D.profile.top + 32) && Near(L.tabs[0].top, D.tabs[0].top + 32), "Focus compact: the 40 column under the banner (20EJ-0)"); }
+    }
+    // ---- Mode Focus: the edge that recalls the column (EdgeZone, owner 25 nov.: « too hard to hit »). Hit test.
+    namespace E = S::EdgeZone; using K = E::Kind;
+    static_assert(E::reach - E::gutter == NativeChrome::Scrollbar::hitBand, "the page's part of the edge is as wide as the overlay scrollbar's strip");
+    static_assert(E::restMs == 400 && E::edgeMs == 120 && E::pinnedMs == 60 && E::graceMs == 300 && E::beyond == 24 && E::holdMargin == 24, "the chosen values");
+    const auto at = [](float depth, bool restored = false, bool scrollbar = false, bool pinned = false) {
+        E::Sample s; s.pointer = s.front = true; s.depth = depth; s.y = 300; s.top = 0; s.bottom = 736; s.restored = restored; s.scrollbar = scrollbar; s.pinned = pinned; return s; };
+    {
+        Check(E::Classify(at(0)) == K::Edge && E::Classify(at(3.9f)) == K::Edge && E::Classify(at(4)) == K::Rest && E::Classify(at(15.9f)) == K::Rest && E::Classify(at(16)) == K::None, "maximized: the 4 DIP gutter is the edge, the page's first 12 DIP the rest part, 16 nothing");
+        Check(E::Classify(at(-.1f)) == K::Edge && E::Classify(at(-24)) == K::Edge && E::Classify(at(-24.1f)) == K::None, "the 24 DIP beyond the window's edge (the next monitor) are the edge");
+        Check(E::Classify(at(0, false, false, true)) == K::Pinned && E::Classify(at(0, true, false, true)) == K::Pinned, "held on the monitor's outer pixel: pinned (maximized or snapped)");
+        Check(E::Classify(at(0, true)) == K::Rest && E::Classify(at(3.9f, true)) == K::Rest && E::Classify(at(-10, true)) == K::Edge, "restored: the gutter is the resize border (rest), beyond the window's edge stays quick");
+        Check(E::Classify(at(0, false, true)) == K::Rest && E::Classify(at(3.9f, false, true)) == K::Rest && E::Classify(at(-10, false, true)) == K::Rest && E::Classify(at(0, false, true, true)) == K::Rest, "the scrollbar's side: the edge, the monitor's edge and beyond wait 400 ms");
+        Check(E::Classify(at(4, false, true)) == K::None && E::Classify(at(10, false, true)) == K::None && E::Classify(at(15.9f, false, true)) == K::None, "the scrollbar's side: its 12 DIP strip is never the edge's");
+        auto s = at(0); s.y = -1; Check(E::Classify(s) == K::None && !E::Holds(s, 249), "above the column's rows (the annotation banner): nothing");
+        s.y = 736; Check(E::Classify(s) == K::None && !E::Holds(s, 249), "under the window: nothing");
+        s = at(0); s.front = false; Check(E::Classify(s) == K::None && !E::Holds(s, 249), "another app in front: nothing, and nothing held");
+        s = at(0); s.pointer = false; Check(E::Classify(s) == K::None, "no pointer (secure desktop): nothing");
+        Check(E::Holds(at(0), 249) && E::Holds(at(272.9f), 249) && !E::Holds(at(273), 249) && E::Holds(at(-24), 249) && !E::Holds(at(-24.1f), 249), "complete (248 + border): held up to 24 DIP past it and 24 beyond the window's edge");
+        Check(E::Holds(at(64.9f), 41) && !E::Holds(at(65), 41), "compact (40 + border): held up to 24 DIP past it");
+        Check(E::Holds(at(39.9f), 0) && !E::Holds(at(40), 0), "a column not measured yet: the edge zone + 24");
+    }
+    // Device pixels -> DIP (per-monitor DPI), left and right, the monitor's edge.
+    {
+        E::Pixels p; p.right = 2400; p.bottom = 1500; p.monitorRight = 2400; p.dpi = 120; p.y = 400;   // maximized at 125 %
+        auto m = [&](int x, E::Side side = E::Side::Left) { p.x = x; return E::Measure(side, p, true, true, 0, false); };
+        Check(Near(m(4).depth, 3.2f) && E::Classify(m(4)) == K::Edge && E::Classify(m(5)) == K::Rest && E::Classify(m(19)) == K::Rest && E::Classify(m(20)) == K::None, "125 %: 5 pixels of edge, 20 of zone");
+        Check(m(0).pinned && E::Classify(m(0)) == K::Pinned && !m(1).pinned, "125 %: the monitor's outer pixel, nothing beyond: pinned");
+        Check(Near(m(400).y, 320) && Near(m(400).bottom, 1200), "rows in DIP");
+        p.monitorBeyond = true; Check(!m(0).pinned && E::Classify(m(0)) == K::Edge, "another monitor on the left: the edge pixel is not a wall");
+        p.monitorLeft = -1440; p.monitorRight = 0; p.monitorBeyond = false;   // the pointer crossed onto the left monitor
+        Check(Near(m(-30).depth, -24) && E::Classify(m(-30)) == K::Edge && E::Classify(m(-31)) == K::None && !m(-1440).pinned, "on the next monitor: 30 pixels (24 DIP of the window's) are the edge");
+        p.monitorLeft = 0; p.monitorRight = 2400;
+        Check(Near(m(2399, E::Side::Right).depth, 0) && Near(m(2396, E::Side::Right).depth, 2.4f) && m(2399, E::Side::Right).scrollbar && m(2399, E::Side::Right).pinned, "right: the last pixel is depth 0, the scrollbar's side");
+        Check(E::Classify(m(2399, E::Side::Right)) == K::Rest && E::Classify(m(2395, E::Side::Right)) == K::Rest && E::Classify(m(2394, E::Side::Right)) == K::None && E::Classify(m(2380, E::Side::Right)) == K::None, "right: 5 pixels of edge at 125 %, then the scrollbar's strip");
+        p.monitorBeyond = true; p.monitorRight = 2400; Check(!m(2399, E::Side::Right).pinned && E::Classify(m(2410, E::Side::Right)) == K::Rest && E::Classify(m(2429, E::Side::Right)) == K::Rest && E::Classify(m(2430, E::Side::Right)) == K::None, "right: beyond the window's edge, 24 DIP (30 px)");
+        p.monitorBeyond = true;   // a monitor on each side: the pointer can go past the window's edges
+        for (const unsigned dpi : {96u, 120u, 144u, 192u}) {
+            p.dpi = dpi; const int inside = static_cast<int>(std::lround(16 * dpi / 96.0)), past = static_cast<int>(std::lround(24 * dpi / 96.0)), gutter = static_cast<int>(std::lround(4 * dpi / 96.0));
+            Check(E::Classify(m(gutter - 1)) == K::Edge && E::Classify(m(gutter)) == K::Rest && E::Classify(m(inside - 1)) == K::Rest && E::Classify(m(inside)) == K::None && E::Classify(m(-past)) == K::Edge && E::Classify(m(-past - 1)) == K::None, "every DPI: 4 DIP of edge, 16 DIP in, 24 DIP beyond, in device pixels");
+            Check(E::Classify(m(2399 - gutter + 1, E::Side::Right)) == K::Rest && E::Classify(m(2399 - gutter, E::Side::Right)) == K::None && E::Classify(m(2399 - inside + 1, E::Side::Right)) == K::None, "every DPI, right: only the edge, never the scrollbar's strip");
+        }
+        // A restored window in the middle of the monitor: no wall, its gutter is the resize border, the desktop beside it the edge.
+        p.dpi = 96; p.left = 500; p.right = 1700; p.top = 100; p.bottom = 900;
+        Check(!m(500).pinned && E::Measure(E::Side::Left, p, true, true, 0, true).restored && E::Classify(E::Measure(E::Side::Left, p, true, true, 0, true)) == K::Rest, "restored: the window's edge pixel is the resize border");
+        p.x = 480; Check(E::Classify(E::Measure(E::Side::Left, p, true, true, 0, true)) == K::Edge, "restored: 20 DIP left of it, on the desktop, the edge");
+        p.y = 99; Check(E::Classify(E::Measure(E::Side::Left, p, true, true, 0, true)) == K::None, "restored: above its rows, nothing");
+        // A window pushed half off the monitor: the monitor's edge is deep inside its column, not its edge.
+        p.y = 400; p.left = -300; p.right = 900; p.monitorBeyond = false; Check(m(0).pinned && E::Classify(m(0)) == K::None, "half off screen: the monitor's edge is not the column's");
+    }
+    // Timers: how long each part waits, the sweep to the next monitor, presses, the grace.
+    {
         S::FocusReveal r;
-        Check(!r.Pointer(0, true, false, false) && !r.Pointer(399, true, false, false) && r.Pointer(400, true, false, false) && r.open && !r.pinned, "left band 400 ms: the column comes");
-        Check(!r.Pointer(410, false, true, false) && r.open, "over the column: it stays");
-        Check(!r.Pointer(420, false, false, true) && r.open, "held (a drawer opened from it, a menu): it stays");
-        Check(r.Pointer(430, false, false, false) && !r.open, "the pointer leaves it: it goes");
-        Check(!r.Pointer(500, true, false, false) && !r.Pointer(600, false, false, false) && !r.Pointer(1000, true, false, false) && r.Remaining(1200) > 0 && !r.open, "leaving the band restarts the 400 ms");
-        r.Toggle(); Check(r.open && r.pinned && !r.Pointer(1300, false, false, false) && r.open, "Ctrl+Maj+,: in, and the pointer leaving keeps it");
+        Check(!r.Pointer(0, K::Edge, true, false, false) && !r.Pointer(90, K::Edge, true, false, false) && r.Pointer(120, K::Edge, true, false, false) && r.open && !r.pinned && r.by == K::Edge, "the edge: 120 ms");
+        Check(!r.Pointer(200, K::None, true, false, false) && !r.Pointer(2000, K::Rest, true, false, false) && r.open, "over the column or its margin: it stays");
+        Check(!r.Pointer(2010, K::None, false, false, true) && !r.Pointer(3000, K::None, false, false, true) && r.open, "held (a drawer opened from it, a menu, a drag): it stays");
+        Check(!r.Pointer(3010, K::None, false, false, false) && !r.Pointer(3309, K::None, false, false, false) && r.open && r.Pointer(3310, K::None, false, false, false) && !r.open, "the pointer gone: it leaves after 300 ms");
+        Check(r.armed, "left by the grace: the edge stays armed");
+        r = S::FocusReveal{}; r.Pointer(0, K::Edge, true, false, false); r.Pointer(120, K::Edge, true, false, false);
+        Check(r.open && !r.Pointer(200, K::None, false, false, false) && !r.Pointer(450, K::None, true, false, false) && !r.Pointer(500, K::None, false, false, false) && !r.Pointer(750, K::None, false, false, false) && r.open && r.Pointer(800, K::None, false, false, false), "back within the grace: it stays, and the grace starts again");
+        r = S::FocusReveal{};
+        Check(!r.Pointer(0, K::Pinned, true, false, false) && !r.Pointer(30, K::Pinned, true, false, false) && r.Pointer(60, K::Pinned, true, false, false) && r.by == K::Pinned, "held on the monitor's edge: 60 ms (two samples)");
+        r = S::FocusReveal{};
+        Check(!r.Pointer(0, K::Rest, true, false, false) && !r.Pointer(399, K::Rest, true, false, false) && r.Pointer(400, K::Rest, true, false, false) && r.by == K::Rest, "the page's first 12 DIP: 400 ms");
+        r = S::FocusReveal{};
+        Check(!r.Pointer(0, K::Rest, true, false, false) && !r.Pointer(100, K::Rest, true, false, false) && !r.Pointer(130, K::Edge, true, false, false) && !r.Pointer(249, K::Edge, true, false, false) && r.Pointer(250, K::Edge, true, false, false), "the edge's 120 ms start on the edge, not on the page before it");
+        r = S::FocusReveal{};
+        Check(!r.Pointer(0, K::Rest, true, false, false) && !r.Pointer(300, K::Edge, true, false, false) && r.Pointer(400, K::Edge, true, false, false) && r.by == K::Edge, "400 ms in the zone, whatever part: it comes");
+        r = S::FocusReveal{};   // a sweep to the left monitor at 250 DIP/s: 16 DIP of zone, then 24 beyond, in 160 ms
+        Check(!r.Pointer(0, K::Rest, true, false, false) && !r.Pointer(30, K::Rest, true, false, false) && !r.Pointer(60, K::Edge, true, false, false) && !r.Pointer(90, K::Edge, true, false, false) && !r.Pointer(120, K::Edge, true, false, false) && !r.Pointer(150, K::Edge, true, false, false) && !r.Pointer(170, K::None, false, false, false) && !r.open, "crossing to the next monitor: it does not come");
+        r = S::FocusReveal{};
+        Check(!r.Pointer(0, K::Edge, true, false, false) && !r.Pointer(100, K::None, false, false, false) && !r.Pointer(130, K::Edge, true, false, false) && !r.Pointer(240, K::Edge, true, false, false) && r.Pointer(250, K::Edge, true, false, false), "leaving the zone starts the wait again");
+        // Presses: a scrollbar drag (or any press) never brings it; released on the edge, the pointer must leave it first.
+        r = S::FocusReveal{};
+        Check(!r.Pointer(0, K::Rest, true, true, false) && !r.Pointer(500, K::Edge, true, true, false) && !r.Pointer(600, K::Edge, true, false, false) && !r.Pointer(2000, K::Edge, true, false, false) && !r.open && !r.armed, "a drag released on the edge: nothing, however long it stays");
+        Check(!r.Pointer(2030, K::None, false, false, false) && r.armed && !r.Pointer(2060, K::Edge, true, false, false) && r.Pointer(2180, K::Edge, true, false, false), "off the edge, then back: it comes");
+        r = S::FocusReveal{};
+        Check(!r.Pointer(0, K::None, false, true, false) && !r.Pointer(30, K::Edge, true, true, false) && !r.Pointer(60, K::Edge, true, false, false) && !r.Pointer(400, K::Edge, true, false, false) && !r.open, "a press in the page carried to the edge (a scrollbar drag, a selection): nothing");
+        r = S::FocusReveal{}; r.Pointer(0, K::Edge, true, false, false); r.Pointer(120, K::Edge, true, false, false);
+        Check(!r.Pointer(150, K::None, true, true, false) && r.open, "a press on the column: it stays");
+        Check(r.Pointer(200, K::None, false, true, false) && !r.open && !r.armed, "a press outside it: it leaves at once");
+        Check(!r.Pointer(230, K::None, false, true, true) && !r.open, "still pressed: nothing");
+        r = S::FocusReveal{}; r.Pointer(0, K::Edge, true, false, false); r.Pointer(120, K::Edge, true, false, false);
+        Check(!r.Pointer(150, K::None, false, true, true) && r.open, "a press outside while something holds it (a menu): it stays");
+        // Échap / the shortcut with the pointer on the edge: it does not come straight back.
+        r.Close(); Check(!r.open && !r.Pointer(200, K::Edge, true, false, false) && !r.Pointer(1000, K::Edge, true, false, false) && !r.open, "Échap with the pointer on the edge: it stays away");
+        Check(!r.Pointer(1030, K::None, false, false, false) && !r.Pointer(1060, K::Edge, true, false, false) && r.Pointer(1180, K::Edge, true, false, false), "off the edge and back: it comes");
+        r = S::FocusReveal{};
+        r.Toggle(); Check(r.open && r.pinned && !r.Pointer(1300, K::None, false, false, false) && !r.Pointer(5000, K::None, false, true, false) && r.open, "Ctrl+Maj+,: in, and neither the pointer leaving nor a press sends it");
         r.Toggle(); Check(!r.open && !r.pinned, "Ctrl+Maj+, again: out");
         r.ForAddress(true); Check(r.open && r.pinned && r.wide, "the address in compact: the complete column, pinned");
-        r.Close(); Check(!r.open && !r.wide, "Échap: out");
+        r.Close(); Check(!r.open && !r.wide && !r.pinned, "Échap: out");
+        // The whole chain on samples: maximized at 125 % with a monitor on the left, the pointer through to it and back.
+        r = S::FocusReveal{}; E::Pixels p; p.right = 2400; p.bottom = 1500; p.monitorLeft = -1440; p.monitorRight = 0; p.dpi = 120; p.y = 600;
+        const auto step = [&](double t, int x, bool front = true) { p.x = x; const auto s = E::Measure(E::Side::Left, p, true, front, 0, false); return r.Pointer(t, E::Classify(s), E::Holds(s, 249), false, false); };
+        Check(!step(0, -12) && !step(30, -14) && !step(90, -16) && step(120, -16) && r.open, "slammed onto the left monitor, resting 120 ms 13 pixels past: the column comes");
+        Check(!step(150, 200) && !step(400, 330) && !step(700, 340) && r.open, "back over the column and its margin (272 DIP = 340 px): it stays");
+        Check(!step(730, 342) && !step(1029, 342) && step(1030, 342) && !r.open, "past the margin for 300 ms: it goes");
+        Check(!step(1100, -10, false) && !step(1500, -10, false) && !r.open, "another app in front: the edge does nothing");
     }
     if (failures) { std::printf("%d failure(s)\n", failures); return 1; }
     std::printf("sidebar_test: ok\n");

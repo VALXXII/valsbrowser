@@ -8,6 +8,7 @@ param([switch]$Live)
 # site's own volume never moves. Uses its own build/profile in build/audio-live.
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
+. "$PSScriptRoot\tests\agent-guard\agent-guard.ps1"   # no key in this run, no agent for its browser (tests/agent-guard)
 if (!(Test-Path 'build/lottie-backend/src/libthorvg-1.a')) { throw 'Run Python build-lottie.py before native UI fixtures.' }
 $qa = 'build/audio-qa'
 New-Item -ItemType Directory -Force $qa | Out-Null
@@ -58,7 +59,7 @@ function Find([string]$id, [int]$seconds = 10) {
 try {
     # Media autoplay needs a user gesture (as in Chrome): this run stands in for the click.
     $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--autoplay-policy=no-user-gesture-required'
-    $browser = Start-Process "$PSScriptRoot/$out/browser.exe" -WorkingDirectory "$PSScriptRoot/$out" -PassThru
+    $browser = Use-AgentGuardBrowser { Start-Process "$PSScriptRoot/$out/browser.exe" -WorkingDirectory "$PSScriptRoot/$out" -PassThru }
     Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
     WaitFor 'AUDIO audible 127\.0\.0\.1' 30
     WaitFor 'AUDIO toolbar button shown'

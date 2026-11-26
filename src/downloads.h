@@ -17,12 +17,14 @@
 #include <vector>
 #include "motion.h"
 #include "design-system.h"
+#include "download-file-kind.h"
 
 namespace NativeChrome { namespace Downloads {
 enum class State { InProgress, Paused, Completed, Failed, Cancelled };
 struct Item {
     int id = 0;
     std::wstring path, uri, reason;  // reason: short failure text (Failed only)
+    std::wstring mime;               // the server's MIME type, CleanMime'd ("" unknown): with the extension, the row's icon (KindOf)
     State state = State::InProgress;
     std::int64_t received = 0, total = 0; // total <= 0: unknown size, never simulated
     std::int64_t endTime = 0;             // estimated end, Unix ms; 0 = unknown
@@ -76,10 +78,10 @@ inline const wchar_t* TipFor(Action action) {
 
 // ---- Engine state → row state (WebView2 values, kept numeric: no SDK header here) ---------------------
 // COREWEBVIEW2_DOWNLOAD_STATE: 0 in progress, 1 interrupted, 2 completed. Interrupt reasons used here:
-// USER_CANCELED 26, USER_PAUSED 28 (static_assert in main.cpp).
+// USER_CANCELED 26, USER_SHUTDOWN 27, USER_PAUSED 28 (static_assert in main.cpp).
 namespace Engine {
 inline constexpr int InProgress = 0, Interrupted = 1, Completed = 2;
-inline constexpr int ReasonUserCanceled = 26, ReasonUserPaused = 28;
+inline constexpr int ReasonUserCanceled = 26, ReasonUserShutdown = 27, ReasonUserPaused = 28;
 // A download whose bytes are all in and that the engine still reports in progress for this long is held for the
 // user's decision (measured: a finished download completes within a few hundred ms of its last byte; a held one
 // never does). A late completion after the grace still lands as Completed.
@@ -95,6 +97,62 @@ inline State MapEngineState(int state, int reason, bool userPaused) {
 // fullSinceMs: how long every byte has been in (negative: not all in, or the size is unknown).
 inline bool HeldForDecision(int state, std::int64_t received, std::int64_t total, bool userPaused, std::int64_t fullSinceMs) {
     return state == Engine::InProgress && !userPaused && total > 0 && received >= total && fullSinceMs >= Engine::HoldGraceMs;
+}
+// « Conserver » on a held download (src/main.cpp KeepHeldDownload, WaitEnginePass, WatchKept): the decisions. Measured
+// on WebView2 158 (tests/downloads/download_engine_probe.py --observe): after a cancel the engine removes its file by
+// name when its own pass on the file ends (the pass that writes the zone mark): at once when it was over, seconds later
+// when it still ran, and a removal can come again. So the engine is let go only once that pass is over (the zone mark)
+// or after PassCapMs, and the path is then watched: every removal is undone from our own name for GuardMs after the
+// last one; our name goes only then, with the file at its path proven ours. A file the engine marked needs no second
+// attachment services pass; when one runs, our name stays alive across it (measured: its Save() removed the file once).
+namespace Keep {
+inline constexpr int StepMs = 100;
+inline constexpr std::int64_t PassCapMs = 20000;        // the engine's own pass on the held file, waited for at most
+inline constexpr std::int64_t GuardMarkedMs = 60000;    // watch after a file given back, its pass over at the cancel
+inline constexpr std::int64_t GuardForcedMs = 300000;   // the same when the cap forced the cancel
+enum class At { Gone, Pending, Left };
+// From GetFileAttributesW (attributesRead, error) and an attempt to open the path: gone only on « not found »
+// (2 ERROR_FILE_NOT_FOUND, 3 ERROR_PATH_NOT_FOUND); a name whose removal is pending cannot be opened.
+inline At PathState(bool attributesRead, unsigned long error, bool opens) {
+    if (!attributesRead && (error == 2 || error == 3)) return At::Gone;
+    return attributesRead && opens ? At::Left : At::Pending;
+}
+// Before the cancel. engineState / reason: the operation's (Engine values); marked: the held file carries its zone mark;
+// waitedMs: since « Conserver ». LetGo: the engine let go without a verdict (a closed tab, its shutdown); Ended: it
+// finished the download or blocked it by itself, its outcome stands.
+enum class Before { Wait, Cancel, LetGo, Ended };
+inline Before BeforeCancel(int engineState, int reason, bool marked, std::int64_t waitedMs, std::int64_t capMs = PassCapMs) {
+    if (engineState == Engine::InProgress) return marked || waitedMs >= capMs ? Before::Cancel : Before::Wait;
+    if (engineState == Engine::Interrupted && (reason == Engine::ReasonUserCanceled || reason == Engine::ReasonUserShutdown)) return Before::LetGo;
+    return Before::Ended;
+}
+inline std::int64_t GuardMs(bool markedAtCancel) { return markedAtCancel ? GuardMarkedMs : GuardForcedMs; }
+// After the cancel, at each look at the path. seen: a removal seen since the cancel; sinceGivenMs: since the file was
+// last given back. No short limit before the first removal: only a removal seen ends the wait (or the window's exit).
+enum class Next { Wait, GiveBack, Guard, Settle };
+inline Next Look(bool seen, At at, std::int64_t sinceGivenMs, std::int64_t guardMs) {
+    if (at == At::Gone) return Next::GiveBack;
+    if (!seen) return Next::Wait;
+    return sinceGivenMs >= guardMs ? Next::Settle : Next::Guard;
+}
+inline int LookAfterMs(int looks) { return looks < 600 ? StepMs : 1000; }   // once a second after the first minute
+// An empty file at the path that is not ours while our bytes are not empty: what the engine leaves after a cancel during
+// its own pass (measured: removal, then a 0-byte file written at the path within 140 ms, left there). The kept file takes
+// its place; a non-empty file that is not ours is never replaced.
+inline bool EngineStub(std::int64_t pathSize, std::int64_t keptSize) { return pathSize == 0 && keptSize > 0; }
+// An insecure-download hold: a plain http:// file from a host that is not this computer (held by Chromium's insecure-
+// download warning when the page is https). Measured: the engine runs no pass on it (never a zone mark) and removes it
+// at once and once after the cancel: nothing to wait for, its pass counts as over.
+inline bool InsecureSource(const std::wstring& uri) {
+    static const wchar_t scheme[] = L"http://";
+    if (uri.size() <= 7) return false;
+    for (size_t i = 0; i < 7; ++i) if (std::towlower(uri[i]) != scheme[i]) return false;
+    std::wstring host = uri.substr(7, uri.find_first_of(L"/?#", 7) == std::wstring::npos ? std::wstring::npos : uri.find_first_of(L"/?#", 7) - 7);
+    const auto at = host.rfind(L'@'); if (at != std::wstring::npos) host = host.substr(at + 1);
+    if (!host.empty() && host[0] == L'[') host = host.substr(0, host.find(L']') + 1); else host = host.substr(0, host.find(L':'));
+    for (auto& c : host) c = static_cast<wchar_t>(std::towlower(c));
+    return !host.empty() && host != L"localhost" && host.rfind(L"127.", 0) != 0 && host != L"[::1]";
+}
 }
 
 // ---- Text ---------------------------------------------------------------
@@ -276,7 +334,10 @@ inline void WriteHistory(std::ostream& out, const std::vector<Item>& items) {
     for (const auto& item : items) {
         if (!Persistent(item) || item.path.empty() || written >= HistoryLimit) continue;
         const char state = item.state == State::Completed ? 'C' : item.state == State::Failed ? 'F' : 'X';
-        out << state << '\t' << (item.total > 0 ? item.total : item.received) << '\t' << item.started << '\t' << ToUtf8(item.path) << '\t' << ToUtf8(item.uri) << '\t' << ToUtf8(item.reason) << '\n';
+        // The MIME type is a trailing field (2026-11-26): still version 2, older builds read the five before it.
+        out << state << '\t' << (item.total > 0 ? item.total : item.received) << '\t' << item.started << '\t' << ToUtf8(item.path) << '\t' << ToUtf8(item.uri) << '\t' << ToUtf8(item.reason);
+        if (!item.mime.empty()) out << '\t' << ToUtf8(CleanMime(item.mime));
+        out << '\n';
         ++written;
     }
 }
@@ -336,6 +397,7 @@ inline std::vector<Item> ReadHistory(std::istream& in, int& nextId) {
         if (fields[1].empty() || !end || *end || bytes < 0) continue;
         if (!FromUtf8(fields[2], item.path) || item.path.empty() || !FromUtf8(fields[3], item.uri)) continue;
         if (fields.size() > 4 && !FromUtf8(fields[4], item.reason)) continue;
+        if (version == 2 && fields.size() > 5) { std::wstring mime; if (FromUtf8(fields[5], mime)) item.mime = CleanMime(mime); }
         item.received = item.total = bytes; item.started = started; item.id = nextId++;
         items.push_back(std::move(item));
     }
@@ -353,6 +415,7 @@ namespace Panel {
 using Design::Box;
 inline constexpr float width = 268, padding = Design::Space::lg, headerHeight = Design::Size::compact;
 inline constexpr float tile = Design::Size::control, rowGap = Design::Space::lg, pitch = tile + rowGap;
+inline constexpr float fileIcon = 24;   // in the tile: the shell icon, or an image's thumbnail / glyph in its place
 inline constexpr float textLeft = padding + tile + Design::Space::md;           // 56
 inline constexpr float line = 16, detailText = 14, detailIcon = 14, iconGap = Design::Space::xs, groupGap = Design::Space::sm;
 inline constexpr float button = Design::Size::compact, buttonGap = Design::Space::sm;
