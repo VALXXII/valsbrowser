@@ -41,14 +41,18 @@ static void Down(float x,float y){WndProc(window,WM_LBUTTONDOWN,MK_LBUTTON,MAKEL
 static void Move(float x,float y){WndProc(window,WM_MOUSEMOVE,MK_LBUTTON,MAKELPARAM((int)std::lround(x*K()),(int)std::lround(y*K())));}
 static void Up(float x,float y){WndProc(window,WM_LBUTTONUP,0,MAKELPARAM((int)std::lround(x*K()),(int)std::lround(y*K())));}
 static NativeChrome::Motion::Time clock0=NativeChrome::Motion::Now();
-static NativeChrome::Motion::Time At(double ms){return clock0+std::chrono::duration_cast<NativeChrome::Motion::Clock::duration>(std::chrono::duration<double,std::milli>(ms));}
-static void Paint(double ms){chrome.Paint(Titles(),current,pages[current]->uri,false,0,0,nullptr,At(ms));}
+// The paint clock never goes back (springs read it): a step whose time is below the last one starts from there.
+static double epochMs=0,lastMs=0;
+static NativeChrome::Motion::Time At(double ms){if(ms+epochMs<lastMs)epochMs=lastMs-ms;lastMs=ms+epochMs;return clock0+std::chrono::duration_cast<NativeChrome::Motion::Clock::duration>(std::chrono::duration<double,std::milli>(ms+epochMs));}
+static void Paint(double ms){std::vector<std::shared_ptr<const NativeChrome::FaviconImage>> icons;for(auto& p:pages)icons.push_back(p->favicon.image);
+    chrome.SetFavicons(std::move(icons));chrome.sideHome.assign(pages.size(),false);chrome.sideDetails.assign(pages.size(),L"");
+    chrome.Paint(Titles(),current,pages[current]->uri,false,0,0,nullptr,At(ms));}
 // The window as it would look: the chrome (offscreen), a white page card where the page sits, and the drag overlay's
 // frame (the preview) over both, as the layered overlay window covers the client area.
 static void Shot(const wchar_t* name,double ms){
     Paint(ms);auto* t=chrome.RenderTarget();if(!t)return;
     t->BeginDraw();ID2D1SolidColorBrush* b=nullptr;t->CreateSolidColorBrush(D2D1::ColorF(1,1,1),&b);
-    const auto c=ContentBox();if(b){t->FillRoundedRectangle(D2D1::RoundedRect({c.left,c.top,c.right,c.bottom},6,6),b);b->Release();}
+    const auto c=ContentBox();const float rr=chrome.sidebar?8.f:6.f;if(b){t->FillRoundedRectangle(D2D1::RoundedRect({c.left,c.top,c.right,c.bottom},rr,rr),b);b->Release();}
     if(splitAnim.frame.card.shown){splitOverlay.painter.write=chrome.WriteFactory();splitOverlay.painter.fonts=chrome.FontCollection();splitOverlay.painter.Draw(t,splitAnim.frame);}
     t->EndDraw();
     const std::wstring path=out+L"\\"+name+L".png";Expect(SUCCEEDED(chrome.SavePng(path.c_str())),"render saved");std::wprintf(L"     png %ls\n",path.c_str());
@@ -58,6 +62,7 @@ static std::shared_ptr<Tab> MakeTab(const wchar_t* title,const wchar_t* uri){aut
 static BM::Id bmVeille,bmPaper,bmMobbin,bmProjet,bmMdn;
 static void Seed(bool full=false){
     bookmarks=BM::Store{};bookmarkUndo.clear();
+    if(!smoke){bookmarksBase=BM::Store{};bookmarksSeen={};DeleteFileW(BookmarksFile().c_str());}   // a fresh store each time: no merge with an earlier step's saved file
     bmVeille=bookmarks.AddFolder(BM::BarRoot,BM::End,L"Veille",1);
     bmPaper=bookmarks.Add(BM::BarRoot,BM::End,L"Paper",L"https://paper.design/",1);
     bmMobbin=bookmarks.Add(BM::BarRoot,BM::End,L"Mobbin",L"https://mobbin.com/",1);
@@ -119,21 +124,23 @@ int wmain(int argc,wchar_t** argv){setvbuf(stdout,nullptr,_IONBF,0);
     // ---- 3. Release on the bar: added there, no edit panel, one undo step ---------------------------------------------
     Move(BandMid(2)+20,bandY);Expect(tabDrag.favorite&&tabDrag.fav.slot==3,"over the bar again");
     const int before=Count(BM::BarRoot);popoverReturn=0x5A5A;const size_t undo=bookmarkUndo.size();
+    Paint(4000);Paint(5000);   // the hovered frames before the release (the app paints them continuously)
     Up(BandMid(2)+20,bandY);
+    Paint(5000);Paint(5060);Shot(L"top-05-depose-60ms",5060);
     Expect(Count(BM::BarRoot)==before+1,"release: one favorite added");
     {const auto* n=bookmarks.Find(bookmarks.Root(BM::BarRoot).children[3]);Expect(n&&n->kind==BM::Kind::Link&&n->url==b->uri&&n->title==b->title,"at index 3, with the tab's title and address");}
     Expect(popoverReturn==0x5A5A,"the edit panel is NOT opened (EditBookmark never ran)");
     Expect(bookmarkUndo.size()==undo+1&&bookmarkUndo.back().steps.size()==1&&bookmarkUndo.back().steps[0].kind==BookmarkStep::Created,"one undo step « Created »");
     Expect(!tabDrag.tab&&!chrome.bandTab.on&&chrome.liftedIndex==-1&&pages[1]==b,"drag over, the tab back in its place, the bar at rest");
     Expect(chrome.band.visible==6,"the bar shows the new favorite");
-    Shot(L"top-05-depose",1100);
+    Paint(6000);Shot(L"top-06-depose",6000);
 
     // ---- 4. Duplicates ---------------------------------------------------------------------------------------------
     Seed();
     {auto s=chrome.strip.Surface(2);Down(s.left+24,20);}Move(BandMid(2)+20,bandY);   // « Paper » tab: already on the bar
     Expect(tabDrag.favorite&&!tabDrag.fav.valid&&tabDrag.fav.duplicate==1&&chrome.bandTab.duplicate==1&&!chrome.bandTab.slot,"the page is already on the bar: no place, the existing item pointed at");
     Expect(fixtureCursor==LoadCursor(nullptr,IDC_NO),"the pointer says no (as the split refusal does)");
-    Paint(0);Paint(1000);Settle();Shot(L"top-06-doublon",1000);
+    Paint(0);Paint(1000);Settle();Shot(L"top-07-doublon",1000);
     {const int n=Count(BM::BarRoot);Up(BandMid(2)+20,bandY);Expect(Count(BM::BarRoot)==n,"a duplicate release adds nothing");}
     Expect(!tabDrag.tab&&!chrome.bandTab.on,"drag over after a duplicate");
     // Into a folder that already holds it.
@@ -167,9 +174,9 @@ int wmain(int argc,wchar_t** argv){setvbuf(stdout,nullptr,_IONBF,0);
     Seed(true);Expect(chrome.band.overflow,"a full bar (« » » shown)");
     {auto s=chrome.strip.Surface(1);Down(s.left+24,20);}Move(chrome.band.overflowLeft-4,bandY);
     Expect(tabDrag.fav.valid&&tabDrag.fav.slot==chrome.band.visible&&chrome.bandTab.toOverflow&&!chrome.bandTab.slot,"past the last shown item of a full bar: it goes behind « » »");
-    Paint(0);Paint(1000);Settle();Shot(L"top-07-barre-pleine",1000);
+    Paint(0);Paint(1000);Settle();Shot(L"top-08-barre-pleine",1000);
     Move(chrome.BandRect(0).left+2,bandY);Expect(chrome.bandTab.slot&&chrome.bandTab.shown[0]&&!chrome.bandTab.shown[chrome.band.visible-1],"at the start of a full bar: its place opens, the last shown item goes behind « » »");
-    Paint(1000);Paint(2000);Shot(L"top-08-barre-pleine-debut",2000);
+    Paint(1000);Paint(2000);Shot(L"top-09-barre-pleine-debut",2000);
     {const int n=Count(BM::BarRoot);Up(chrome.BandRect(0).left+2,bandY);Expect(Count(BM::BarRoot)==n+1&&bookmarks.Root(BM::BarRoot).children[0]!=bmVeille,"added first");}
 
     // ---- 8. Reduced motion --------------------------------------------------------------------------------------------
@@ -195,7 +202,69 @@ int wmain(int argc,wchar_t** argv){setvbuf(stdout,nullptr,_IONBF,0);
     WndProc(window,WM_KEYDOWN,VK_ESCAPE,0);pages[1]->home=false;
     Expect(foregroundRequests==0&&!fixtureCapture,"never asked for the foreground, no capture left");
 
-    std::printf(failures?"FAILED: %d of %d checks\n":"PASS: tab favorite drag, top layout (%d checks)\n",failures?failures:checks,checks);
+    // ---- 10. Side panel and compact: the column's grid ------------------------------------------------------------------
+    for(const auto position:{BrowserSettings::TabsPosition::Side,BrowserSettings::TabsPosition::Compact}){
+        const bool compact=position==BrowserSettings::TabsPosition::Compact;const std::wstring tag=compact?L"compact":L"panneau";
+        auto name=[&](const wchar_t* s){return tag+L"-"+s;};
+        auto shot=[&](const wchar_t* s,double ms){const auto n=name(s);Shot(n.c_str(),ms);};
+        // A smoke run keeps the top layout (SidePanelWanted): the column needs a data folder of its own, a throwaway one
+        // under the output (bookmarks saved there; never a profile), as tests/ui/sidebar_split_drag_test.cpp does.
+        smoke=false;dataDir=out+L"\\data";std::filesystem::create_directories(dataDir);DeleteFileW(BookmarksFile().c_str());
+        settings.tabsPosition=position;ApplyLayout();Seed();Layout();BuildChrome();
+        const auto* Lp=&chrome.SideColumn();
+        Expect(chrome.sidebar&&!Lp->gridBlock.Empty()&&chrome.SideBookmarkTiles(*Lp)==5&&(Lp->mode==NativeChrome::Sidebar::Mode::Compact)==compact,compact?"compact: the column's grid shows the 5 favorites":"side panel: the column's grid shows the 5 favorites");
+        auto rowAt=[&](int i){return chrome.SideColumn().tabs[i];};
+        auto tile=[&](int i){return chrome.SideBookmarkTile(chrome.SideColumn(),i);};
+        auto press=[&](int i){const auto r=rowAt(i);Down(r.left+std::min(40.f,r.Width()/2),(r.top+r.bottom)/2);};
+        const auto list=Lp->tabsView;
+        // Up through the list: the reorder as before, the lifted row drawn over the list's edge (not cut by it).
+        press(1);{const auto r=rowAt(1);Move(r.left+std::min(40.f,r.Width()/2),list.top+6);}
+        Expect(tabDrag.active&&!tabDrag.favorite&&chrome.sidebarDrag==1,"in the list: the reorder as before");
+        {const auto r=rowAt(1);Move(r.left+std::min(40.f,r.Width()/2),list.top+2);}
+        Paint(0);Paint(400);shot(L"00-rangee-au-bord-de-la-liste",400);
+        Expect(chrome.sidebarDragY<list.top,"the row rises above the list's top (it is drawn outside the list's clip)");
+        // Over the grid: the preview, the hollow row, the lit grid, the place.
+        const auto t2=tile(2);const float tx=compact?(t2.left+t2.right)/2:t2.right-3,ty=compact?t2.bottom-3:(t2.top+t2.bottom)/2;
+        Move(tx,ty);
+        Expect(tabDrag.favorite&&chrome.gridTab.on&&chrome.liftedIndex==1&&chrome.sidebarDrag==-1,"over the grid: favorites mode, the row's place hollow");
+        Expect(tabDrag.fav.valid&&tabDrag.fav.slot==3&&chrome.gridTab.slot,"insertion index 3 (after the third tile), its place opened");
+        {const auto& box=splitAnim.frame.card.box;Expect(splitAnim.frame.card.tab&&std::fabs(box.top-(ty-tabDrag.favGrabY))<.5f&&box.left<tx&&box.right>tx,"the preview at the pointer, in the overlay");
+         Expect(std::fabs((box.right-box.left)-tabDrag.cardW)<.5f&&tabDrag.cardW<=240,"the preview fits its title (as the column's split card)");}
+        Expect(compact?chrome.gridTab.tiles[3].top>tile(3).top:(chrome.gridTab.tiles[3].left>tile(3).left||chrome.gridTab.tiles[3].top>tile(3).top),"the tiles after it step aside");
+        Paint(0);Paint(60);shot(L"01-entree-60ms",60);Paint(1000);Settle();shot(L"02-entre-deux-favoris",1000);
+        // Before the first, a folder's middle, a duplicate.
+        {const auto t0=tile(1);Move(compact?(t0.left+t0.right)/2:t0.left+2,compact?t0.top+2:(t0.top+t0.bottom)/2);Expect(tabDrag.fav.valid&&tabDrag.fav.slot==1,"before the second tile: index 1");}
+        {const auto f=tile(0);Move((f.left+f.right)/2,(f.top+f.bottom)/2);Expect(tabDrag.fav.valid&&tabDrag.fav.into==0&&chrome.bandDropInto==0&&!chrome.gridTab.slot,"a folder's middle: into it (folder look)");}
+        Paint(1000);Paint(1500);shot(L"03-dans-un-dossier",1500);
+        // Back down into the list: the row again, the grid at rest.
+        {const auto r=rowAt(2);Move(r.left+20,(r.top+r.bottom)/2);}
+        Expect(!tabDrag.favorite&&!chrome.gridTab.on&&chrome.sidebarDrag==1&&chrome.liftedIndex==-1,"back into the list: the row follows again, the grid rests");
+        // Release on the grid: added at the place, no edit panel, one undo step.
+        Move(tx,ty);const int before=Count(BM::BarRoot);popoverReturn=0x5A5A;const size_t undo=bookmarkUndo.size();
+        Paint(20000);Paint(21000);   // the hovered frames before the release
+        Up(tx,ty);
+        Paint(21000);Paint(21060);shot(L"04-depose-60ms",21060);
+        Expect(Count(BM::BarRoot)==before+1&&bookmarks.Find(bookmarks.Root(BM::BarRoot).children[3])->url==pages[1]->uri,"release: added at index 3");
+        Expect(popoverReturn==0x5A5A&&bookmarkUndo.size()==undo+1,"no edit panel, one undo step");
+        Expect(!tabDrag.tab&&!chrome.gridTab.on&&chrome.liftedIndex==-1&&chrome.sidebarDrag==-1,"drag over, the row back in its place");
+        Paint(22000);shot(L"05-depose",22000);
+        // Duplicate: « Paper » is already a favorite.
+        Seed();Layout();BuildChrome();
+        press(2);Move(tx,ty);Expect(tabDrag.favorite&&!tabDrag.fav.valid&&chrome.gridTab.duplicate==1&&!chrome.gridTab.slot,"a page already in the favorites: no place, the tile that holds it pointed at");
+        Paint(0);Paint(1000);shot(L"06-doublon",1000);
+        {const int n=Count(BM::BarRoot);Up(tx,ty);Expect(Count(BM::BarRoot)==n,"a duplicate release adds nothing");}
+        // Échap.
+        press(1);Move(tx,ty);Expect(tabDrag.favorite,"over the grid again");
+        {const int n=Count(BM::BarRoot);WndProc(window,WM_KEYDOWN,VK_ESCAPE,0);Expect(Count(BM::BarRoot)==n&&!tabDrag.tab&&!chrome.gridTab.on&&chrome.bandDropInto==-1,"Échap: nothing added, the grid at rest");}
+        WndProc(window,WM_LBUTTONUP,0,MAKELPARAM((int)tx,(int)ty));Expect(Count(BM::BarRoot)==5,"the release after Échap adds nothing");
+        // Reduced motion: no growth, the tiles at once.
+        motion.SetReducedMotion(true);press(1);Move(tx,ty);Expect(tabDrag.favorite&&splitAnim.cardScale.target==100,"reduced motion: no lift growth");
+        Paint(5000);{const auto it=chrome.gridStep.find(bookmarks.Root(BM::BarRoot).children[3]);Expect(it!=chrome.gridStep.end()&&NativeChrome::Chrome::MorphAt(it->second,At(5000)).top==chrome.gridTab.tiles[3].top,"reduced motion: the tiles are at once where they go");}
+        WndProc(window,WM_KEYDOWN,VK_ESCAPE,0);motion.SetReducedMotion(false);Paint(6000);Paint(7000);
+    }
+    settings.tabsPosition=BrowserSettings::TabsPosition::Top;ApplyLayout();
+
+    std::printf(failures?"FAILED: %d of %d checks\n":"PASS: tab favorite drag, top bar + side panel + compact (%d checks)\n",failures?failures:checks,checks);
     pages.clear();DestroyWindow(window);window=nullptr;
     std::fflush(stdout);TerminateProcess(GetCurrentProcess(),failures?1:0);return failures?1:0;
 }

@@ -17,9 +17,11 @@
 #include "bookmark-drag.h"
 #include "bookmarks-bar.h"
 #include "bookmarks.h"
+#include "sidebar.h"
 
 namespace TabFavorite {
 namespace BM = Bookmarks;
+namespace Sidebar = NativeChrome::Sidebar;
 
 struct Target {
     bool valid = false;                 // a release here adds the favorite at parent/index
@@ -88,6 +90,65 @@ inline Preview Opened(float width, const std::vector<float>& naturals, int slot,
     }
     p.slotShown = place(slot, p.slotLeft, p.slotWidth);
     p.overflow = a.overflow; p.overflowLeft = a.overflowLeft;
+    return p;
+}
+
+// ---- The column's grid (side panel and compact layouts) -----------------------------------------------------------
+// `tiles`: the shown tiles at rest (the bar's first children, in order, at the current scroll), `view`: what of the grid
+// is visible (a tile outside it is no target). `vertical`: the compact column, one tile per row (before / after by the
+// upper / lower half; across for the side panel's rows). A folder's middle half takes it in. Off every tile but inside
+// the view: before / after the nearest tile (by its centre); under the view (« Tous les favoris », « Gérer »): after
+// the last shown one (before the hidden ones: it may itself be hidden).
+inline Target GridTarget(const BM::Store& s, const std::wstring& uri, const std::vector<Sidebar::Box>& tiles, const Sidebar::Box& view, bool vertical, float x, float y) {
+    Target r; const BM::Node* root = s.Find(BM::BarRoot); if (!root || !BM::Admissible(uri)) return r;
+    const auto& bar = root->children;
+    const int shown = static_cast<int>(std::min(tiles.size(), bar.size()));
+    auto seen = [&](const Sidebar::Box& t) { return t.bottom > view.top && t.top < view.bottom; };
+    int slot = -1, nearest = -1; float best = 1e30f;
+    for (int i = 0; i < shown; ++i) {
+        const auto& t = tiles[static_cast<std::size_t>(i)]; if (!seen(t)) continue;
+        const float cx = (t.left + t.right) / 2, cy = (t.top + t.bottom) / 2;
+        if (!t.Contains(x, y)) { const float d = (cx - x) * (cx - x) + (cy - y) * (cy - y); if (d < best) { best = d; nearest = i; } continue; }
+        const float a = vertical ? y : x, lo = vertical ? t.top : t.left, len = vertical ? t.Height() : t.Width();
+        const BM::Node* n = s.Find(bar[static_cast<std::size_t>(i)]);
+        if (n && n->kind == BM::Kind::Folder && a > lo + len * .25f && a < lo + len * .75f) {
+            r.into = i; r.parent = bar[static_cast<std::size_t>(i)]; r.index = BM::End;
+            if (Existing(s, r.parent, uri) != BM::NoId) { r.duplicate = i; r.into = -1; return r; }
+            r.valid = true; return r;
+        }
+        slot = a < lo + len / 2 ? i : i + 1; break;
+    }
+    if (slot < 0) {
+        if (shown == 0 || nearest < 0 || y >= view.bottom) slot = shown;
+        else { const auto& t = tiles[static_cast<std::size_t>(nearest)]; const bool after = vertical ? y >= (t.top + t.bottom) / 2 : (y >= t.bottom ? true : y < t.top ? false : x >= (t.left + t.right) / 2); slot = after ? nearest + 1 : nearest; }
+    }
+    if (const BM::Id same = Existing(s, BM::BarRoot, uri); same != BM::NoId) {
+        const std::size_t at = s.IndexOf(same); r.duplicate = at < static_cast<std::size_t>(shown) ? static_cast<int>(at) : -2; return r;
+    }
+    r.slot = slot; r.parent = BM::BarRoot; r.index = static_cast<std::size_t>(slot); r.valid = true;
+    return r;
+}
+// The grid with the new tile at `slot`, in the same viewport: the side panel's rows re-share as MakeGrid lays them out
+// for one more tile (a row of fewer tiles than it holds re-divides its width); the compact column moves the tiles from
+// `slot` down by one pitch. The block never grows during a drag (the column below stays put): a tile or the place that
+// falls outside it is clipped (`slotShown` false: past the last tile of a full grid, or of the compact column).
+struct GridPreview { std::vector<Sidebar::Box> tiles; Sidebar::Box slot; bool slotShown = false; };
+inline GridPreview GridOpened(const Sidebar::Grid& g, int slot) {
+    namespace C = Sidebar::Complete; GridPreview p; const int m = static_cast<int>(g.tiles.size()), n = m + 1;
+    slot = std::clamp(slot, 0, m);
+    const float w = g.view.Width(); const int cols = std::max(1, std::min(Sidebar::Columns(w), n));
+    const float tw = (w - C::tileGap * (cols - 1)) / cols;
+    auto cell = [&](int k) { const int c = k % cols, r = k / cols; const float x = g.view.left + c * (tw + C::tileGap), y = g.view.top + r * (C::tile + C::tileGap) - g.scroll; return Sidebar::Box{x, y, x + tw, y + C::tile}; };
+    for (int i = 0; i < m; ++i) p.tiles.push_back(cell(i < slot ? i : i + 1));
+    p.slot = cell(slot); p.slotShown = p.slot.top < g.view.bottom && p.slot.bottom > g.view.top;
+    return p;
+}
+inline GridPreview ColumnOpened(const std::vector<Sidebar::Box>& tiles, int shown, int slot) {
+    namespace K = Sidebar::Compact; GridPreview p; shown = std::clamp(shown, 0, static_cast<int>(tiles.size())); slot = std::clamp(slot, 0, shown);
+    const float pitch = K::tile + K::tileGap;
+    for (int i = 0; i < shown; ++i) { auto t = tiles[static_cast<std::size_t>(i)]; if (i >= slot) { t.top += pitch; t.bottom += pitch; } p.tiles.push_back(t); }
+    if (slot < shown) { p.slot = tiles[static_cast<std::size_t>(slot)]; p.slotShown = true; }
+    else if (shown > 0) { p.slot = tiles[static_cast<std::size_t>(shown - 1)]; p.slot.top += pitch; p.slot.bottom += pitch; }
     return p;
 }
 } // namespace TabFavorite

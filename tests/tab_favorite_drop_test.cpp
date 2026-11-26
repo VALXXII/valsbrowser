@@ -64,6 +64,42 @@ int main() {
       float sum = 0; for (std::size_t i = 0; i < many.size(); ++i) if (p.shown[i]) sum += p.width[i] + 2;
       OK(p.slotShown && sum + p.slotWidth <= 1180 - 12 + .5f); }
 
+    // ---- The column's grid (side panel: rows of tiles; compact: one column) ----------------------------------------
+    { // Side panel: 5 tiles in one row of 232 (A, folder, B, C, D), the view the row.
+      BM::Store g; g.Add(BM::BarRoot, BM::End, L"A", L"https://a.example/", 1); const BM::Id gf = g.AddFolder(BM::BarRoot, BM::End, L"F", 1);
+      for (const wchar_t* u : {L"https://b.example/", L"https://c.example/", L"https://d.example/"}) g.Add(BM::BarRoot, BM::End, L"x", u, 1);
+      const auto grid = Sidebar::MakeGrid(8, 100, 232, 5, 2, 0);
+      const auto& t = grid.tiles;
+      auto tt = GridTarget(g, page, t, grid.view, false, t[0].left + 2, 120);          OK(tt.valid && tt.slot == 0);
+      tt = GridTarget(g, page, t, grid.view, false, t[0].right - 2, 120);              OK(tt.valid && tt.slot == 1);
+      tt = GridTarget(g, page, t, grid.view, false, (t[1].left + t[1].right) / 2, 120); OK(tt.valid && tt.into == 1 && tt.parent == gf);   // a folder's middle
+      tt = GridTarget(g, page, t, grid.view, false, t[1].right + 1, 120);              OK(tt.valid && tt.slot == 2);                     // the gap: between them
+      tt = GridTarget(g, page, t, grid.view, false, t[4].right - 2, 120);              OK(tt.valid && tt.slot == 5);
+      tt = GridTarget(g, page, t, grid.view, false, 100, grid.view.bottom + 10);       OK(tt.valid && tt.slot == 5);                     // under the grid: after the last
+      tt = GridTarget(g, L"https://c.example/", t, grid.view, false, t[0].left + 2, 120); OK(!tt.valid && tt.duplicate == 3);
+      // Opened: one more tile in a full row of 5 -> a second row; the place at the end falls outside the view.
+      auto o = GridOpened(grid, 2);
+      OK(o.slotShown && o.tiles[0].left == t[0].left && o.tiles[2].left == t[3].left && o.tiles[4].top > grid.view.bottom - 1);      // the last one leaves the row
+      o = GridOpened(grid, 5);  OK(!o.slotShown && o.tiles[4].left == t[4].left);                                                       // end of a full row: no room
+      // 3 tiles share a row: the place opens and the row re-divides (4 tiles in 232).
+      const auto three = Sidebar::MakeGrid(8, 100, 232, 3, 2, 0);
+      o = GridOpened(three, 3); OK(o.slotShown && std::fabs((o.slot.right - o.slot.left) - (232 - 3 * 6) / 4.f) < .01f && o.tiles[0].right < three.tiles[0].right);
+      // 7 tiles (a second row with room): the end place shows in it.
+      const auto seven = Sidebar::MakeGrid(8, 100, 232, 7, 2, 0);
+      o = GridOpened(seven, 7); OK(o.slotShown && o.slot.top == seven.tiles[5].top && o.slot.left == seven.tiles[2].left);
+      // Scrolled (unfolded grid): the same scroll.
+      const auto scrolled = Sidebar::MakeGrid(8, 100, 232, 12, 1, 20);
+      o = GridOpened(scrolled, 0); OK(o.slot.top == scrolled.tiles[0].top && o.tiles[0].left == scrolled.tiles[1].left); }
+    { // Compact: 3 tiles 40 x 36, gap 4.
+      BM::Store g; for (const wchar_t* u : {L"https://a.example/", L"https://b.example/", L"https://c.example/"}) g.Add(BM::BarRoot, BM::End, L"x", u, 1);
+      const std::vector<Sidebar::Box> t{{0, 100, 40, 136}, {0, 140, 40, 176}, {0, 180, 40, 216}}; const Sidebar::Box view{0, 100, 40, 216};
+      auto tt = GridTarget(g, page, t, view, true, 20, 104);  OK(tt.valid && tt.slot == 0);      // upper half: before
+      tt = GridTarget(g, page, t, view, true, 20, 130);       OK(tt.valid && tt.slot == 1);      // lower half: after
+      tt = GridTarget(g, page, t, view, true, 20, 138);       OK(tt.valid && tt.slot == 1);      // the 4 DIP gap
+      tt = GridTarget(g, page, t, view, true, 20, 214);       OK(tt.valid && tt.slot == 3);
+      auto o = ColumnOpened(t, 3, 1); OK(o.slotShown && o.slot.top == 140 && o.tiles[0].top == 100 && o.tiles[1].top == 180 && o.tiles[2].top == 220);
+      o = ColumnOpened(t, 3, 3); OK(!o.slotShown && o.slot.top == 220); }
+
     std::printf("PASS: tab favorite drop rules (%d checks)\n", checks);
     return 0;
 }

@@ -1004,10 +1004,12 @@ void CommitSplitDrag(){
 // as the tab shows again there, as a cancelled split lift does; reduced motion: gone at once. The bar returns to rest
 // by itself (chrome's springs).
 void FavoriteFlyHome(){
-    tabDrag.favorite=false;tabDrag.fav={};chrome.bandTab={};chrome.bandDropInto=-1;
+    tabDrag.favorite=false;tabDrag.fav={};chrome.bandTab={};chrome.gridTab={};chrome.bandDropInto=-1;
     const int i=TabIndexOf(tabDrag.tab);
     if(i>=0&&!motion.ReducedMotion()&&splitOverlay.Visible()){const auto o=ChromeOrigin();auto s=chrome.strip.Surface(i);chrome.liftedIndex=i;
-        splitAnim.card.Set({s.left+o.x,s.top+o.y,s.right+o.x,s.bottom+o.y});splitAnim.cardScale.Set(100);splitAnim.fade=.30f;splitAnim.returning=true;
+        SV::Box home{s.left+o.x,s.top+o.y,s.right+o.x,s.bottom+o.y};
+        if(chrome.sidebar&&i<(int)chrome.SideColumn().tabs.size()){const auto& r=chrome.SideColumn().tabs[i];home={r.left,r.top,r.right,r.bottom};}   // its row in the column
+        splitAnim.card.Set(home);splitAnim.cardScale.Set(100);splitAnim.fade=.30f;splitAnim.returning=true;
         splitAnim.last=NativeChrome::Motion::Now();ScheduleMotion(splitAnim.last);}
     else FinishSplitAnimation();
     InvalidateChrome();ScheduleMotion(NativeChrome::Motion::Now());
@@ -4450,74 +4452,104 @@ void BandDragEnd(bool cancel,const POINT* at=nullptr){
     if(!bookmarks.Find(drag.id)){Log(L"BOOKMARKS drag cancelled: item gone");BookmarksChanged();return;}
     CommitBookmarkDrop(BookmarkMove::Capture(bookmarks,drag.id,drag.drop),drag.owner);
 }
-// ---- Atelier B: a tab dragged onto the favorites bar (top layout; rules in src/tab-favorite-drop.h) --------------------
-// Over the bar (from the toolbar's hairline down to the page) the tab becomes a preview that follows the pointer 1:1 from
-// where it was grabbed, drawn in the drag overlay (above the strip and the page: never cut by either); its place in the
-// strip stays hollow (the split lift's look). The bar lights up and opens the new favorite's place where the release
-// would add it (Chrome::bandTab). Release there: the favorite is ADDED (one undo step, no edit panel) and the preview
-// flies into it; the same page already there adds nothing and says so. Back above the bar the strip reorder resumes,
-// below it the split lift takes over; Escape / a lost capture: the preview flies home, nothing changes.
+// ---- Atelier B: a tab dragged onto the favorites (rules in src/tab-favorite-drop.h) ------------------------------------
+// Top layout: over the bar (from the toolbar's hairline down to the page). Side panel and compact: over the column's
+// grid (from just above it down to the tab list's top). There the tab becomes a preview that follows the pointer 1:1
+// from where it was grabbed, drawn in the drag overlay (above the strip, the column and the page: never cut by any);
+// its place in the strip / the list stays hollow (the split lift's look). The favorites light up and open the new
+// favorite's place where the release would add it (Chrome::bandTab / gridTab). Release there: the favorite is ADDED
+// (one undo step, no edit panel) and the preview flies into it; the same page already there adds nothing and says so.
+// Back out (the strip, the list) the reorder resumes; into the page the split lift takes over; Escape / a lost capture:
+// the preview flies home, nothing changes.
 std::wstring FavoriteTitle(const std::shared_ptr<Tab>& t){return !t||t->title==TR(tab_new)?L"":t->title;}
 std::wstring FavoriteFolderName(BM::Id id){const auto* p=bookmarks.Find(id);return p&&!p->title.empty()?p->title:std::wstring(TR(bookmarks_unnamed_folder));}
-void FavoriteLeave(){   // out of the bar, the button still down: the bar rests, the strip or the split lift takes over
-    tabDrag.favorite=false;tabDrag.fav={};chrome.bandTab={};chrome.bandDropInto=-1;chrome.liftedIndex=-1;
+void FavoriteLeave(){   // out of the favorites, the button still down: they rest, the strip / list or the split lift takes over
+    tabDrag.favorite=false;tabDrag.fav={};chrome.bandTab={};chrome.gridTab={};chrome.bandDropInto=-1;chrome.liftedIndex=-1;
     splitOverlay.Hide();splitAnim=SplitAnim{};SetCursor(LoadCursor(nullptr,IDC_ARROW));
     SyncSplitDecor();InvalidateRect(window,nullptr,FALSE);ScheduleMotion(NativeChrome::Motion::Now());
 }
+// Over the favorites? `ly`: chrome-local DIP (top layout: the bar spans the chrome's width), `x`, `y`: client DIP (the column).
+bool OverFavorites(float x,float y,float ly,bool onChrome){
+    namespace V=NativeChrome::Design::Vertical;if(!chrome.bandShown||InFullscreen())return false;
+    if(!chrome.sidebar)return onChrome&&ly>=V::hairline&&ly<V::ContentTop(true);
+    const auto& L=chrome.SideColumn();
+    return !L.gridBlock.Empty()&&x>=0&&x<SidebarDropEdge()&&y>=L.gridBlock.top-NativeChrome::Sidebar::Zone::inset&&y<L.tabsView.top;
+}
 bool FavoriteDragMove(POINT point){
     if(!tabDrag.tab||halted)return false;
-    const auto t=tabDrag.tab;const float k=96.f/GetDpiForWindow(window),x=point.x*k,y=point.y*k;float lx=x,ly=y;
-    namespace V=NativeChrome::Design::Vertical;
-    const bool over=!chrome.sidebar&&chrome.bandShown&&!InFullscreen()&&chrome.Local(lx,ly)&&ly>=V::hairline&&ly<V::ContentTop(true)&&!t->home&&BM::Admissible(t->uri);
+    const auto t=tabDrag.tab;const float k=96.f/GetDpiForWindow(window),x=point.x*k,y=point.y*k;float lx=x,ly=y;const bool onChrome=chrome.Local(lx,ly);
+    const bool over=!t->home&&BM::Admissible(t->uri)&&OverFavorites(x,y,ly,onChrome);
     if(!over){if(tabDrag.favorite)FavoriteLeave();return false;}
     if(!tabDrag.favorite){
-        if(tabDrag.lifted){tabDrag.lifted=false;tabDrag.target={};}   // back up from the page: the split preview gives way
+        if(tabDrag.lifted){tabDrag.lifted=false;tabDrag.target={};}   // back from the page: the split preview gives way
         if(splitAnim.returning||splitAnim.committing)FinishSplitAnimation();
         const int i=TabIndexOf(t);tabDrag.favorite=true;chrome.liftedIndex=i;chrome.dragIndex=-1;chrome.dragOffset=0;
-        tabDrag.favGrabY=i>=0?std::clamp(tabDrag.start.y*k-ChromeOrigin().y-chrome.strip.Surface(i).top,0.f,32.f):16.f;
+        if(chrome.sidebar){   // the row leaves the list (its place hollow, the others step back); the card fits its title, as when it lifts onto the page
+            chrome.sidebarDrag=-1;chrome.sidebarInsert=-1;
+            tabDrag.cardW=std::min(240.f,8+16+8+splitOverlay.painter.TextWidth(TabLabel(t),true)+10);tabDrag.grab=std::min(tabDrag.grab,tabDrag.cardW-16);
+            tabDrag.favGrabY=std::clamp(tabDrag.grabY,0.f,32.f);}
+        else tabDrag.favGrabY=i>=0?std::clamp(tabDrag.start.y*k-ChromeOrigin().y-chrome.strip.Surface(i).top,0.f,32.f):16.f;
         splitAnim=SplitAnim{};auto& f=splitAnim.frame;f.card.shown=true;f.card.tab=true;f.card.title=TabLabel(t);f.card.favicon=t->favicon.image;
         splitAnim.cardOpacity.Snap(1);splitAnim.plateOpacity.Snap(0);splitAnim.last=NativeChrome::Motion::Now();
-        const float w=chrome.strip.tab;splitAnim.anchorX=w>0?std::clamp(tabDrag.grab/w,0.f,1.f):.5f;splitAnim.anchorY=tabDrag.favGrabY/32;
+        const float w=chrome.sidebar?tabDrag.cardW:chrome.strip.tab;splitAnim.anchorX=w>0?std::clamp(tabDrag.grab/w,0.f,1.f):.5f;splitAnim.anchorY=tabDrag.favGrabY/32;
         splitAnim.cardScale.Snap(100);if(!motion.ReducedMotion())splitAnim.cardScale.Set(102);   // lifted: x1.02 around the grab point (#127 « soulevé »)
-        Log(L"BOOKMARKS tab over the bar");SyncSplitDecor();
+        Log(L"BOOKMARKS tab over the favorites");SyncSplitDecor();
     }
     // Where it lands: the rest boxes (never the stepped-aside ones, so the target holds while the items move).
-    std::vector<BookmarkDrag::Box> boxes;for(int i=0;i<chrome.band.visible;++i){const auto r=chrome.BandRect(i);boxes.push_back({r.left,r.right});}
-    const auto target=TabFavorite::BarTarget(bookmarks,t->uri,boxes,lx);
-    const bool changed=!target.Same(tabDrag.fav);tabDrag.fav=target;
-    auto& b=chrome.bandTab;b={};b.on=true;b.duplicate=target.duplicate;b.overflow=chrome.band.overflow;b.overflowLeft=chrome.band.overflowLeft;
-    chrome.bandDropInto=target.valid?target.into:-1;   // into a folder: the bar's own folder drop look
-    if(target.valid&&target.slot>=0){
-        std::vector<float> naturals;for(auto& item:chrome.bandItems)naturals.push_back(BookmarksBar::Layout::Natural(chrome.BandTitleWidth(item),item.folder));
-        NativeChrome::Chrome::BandItem fresh;fresh.title=FavoriteTitle(t);
-        const auto p=TabFavorite::Opened(chrome.width,naturals,target.slot,BookmarksBar::Layout::Natural(chrome.BandTitleWidth(fresh),false),chrome.bandButtonForced);
-        b.left=p.left;b.width=p.width;b.shown=p.shown;b.slot=p.slotShown;b.slotLeft=p.slotLeft;b.slotWidth=p.slotWidth;b.overflow=p.overflow;b.overflowLeft=p.overflowLeft;b.toOverflow=!p.slotShown;
+    TabFavorite::Target target;chrome.bandTab={};chrome.gridTab={};
+    if(!chrome.sidebar){
+        std::vector<BookmarkDrag::Box> boxes;for(int i=0;i<chrome.band.visible;++i){const auto r=chrome.BandRect(i);boxes.push_back({r.left,r.right});}
+        target=TabFavorite::BarTarget(bookmarks,t->uri,boxes,lx);
+        auto& b=chrome.bandTab;b.on=true;b.duplicate=target.duplicate;b.overflow=chrome.band.overflow;b.overflowLeft=chrome.band.overflowLeft;
+        if(target.valid&&target.slot>=0){
+            std::vector<float> naturals;for(auto& item:chrome.bandItems)naturals.push_back(BookmarksBar::Layout::Natural(chrome.BandTitleWidth(item),item.folder));
+            NativeChrome::Chrome::BandItem fresh;fresh.title=FavoriteTitle(t);
+            const auto p=TabFavorite::Opened(chrome.width,naturals,target.slot,BookmarksBar::Layout::Natural(chrome.BandTitleWidth(fresh),false),chrome.bandButtonForced);
+            b.left=p.left;b.width=p.width;b.shown=p.shown;b.slot=p.slotShown;b.slotLeft=p.slotLeft;b.slotWidth=p.slotWidth;b.overflow=p.overflow;b.overflowLeft=p.overflowLeft;b.toOverflow=!p.slotShown;
+        }
+    }else{
+        const auto& L=chrome.SideColumn();const bool compact=L.mode==NativeChrome::Sidebar::Mode::Compact;const int shown=chrome.SideBookmarkTiles(L);
+        std::vector<NativeChrome::Sidebar::Box> tiles;for(int i=0;i<shown;++i)tiles.push_back(chrome.SideBookmarkTile(L,i));
+        const NativeChrome::Sidebar::Box view=L.emptyGrid?L.gridBlock:compact?NativeChrome::Sidebar::Box{L.gridBlock.left,L.gridBlock.top,L.gridBlock.right,L.more?L.tiles.back().top-NativeChrome::Sidebar::Compact::tileGap:L.gridBlock.bottom}:L.grid.view;
+        target=TabFavorite::GridTarget(bookmarks,t->uri,tiles,view,compact,x,y);
+        auto& g=chrome.gridTab;g.on=true;g.duplicate=target.duplicate;
+        if(target.valid&&target.slot>=0){
+            if(L.emptyGrid){g.slot=true;g.place=L.tiles.front();}
+            else{const auto p=compact?TabFavorite::ColumnOpened(tiles,shown,target.slot):TabFavorite::GridOpened(L.grid,target.slot);g.tiles=p.tiles;g.place=p.slot;g.slot=p.slotShown;}
+            g.toOverflow=!g.slot&&(compact?L.more:!L.gridToggle.Empty());   // past the last shown tile of a folded grid / a full compact column
+        }
     }
+    const bool changed=!target.Same(tabDrag.fav);tabDrag.fav=target;
+    chrome.bandDropInto=target.valid?target.into:-1;   // into a folder: the favorites' own folder drop look
     // The tab follows 1:1 from where it was grabbed (client DIP: the overlay covers the client area), never animated.
-    const float w=chrome.strip.tab;splitAnim.card.Snap({x-tabDrag.grab,y-tabDrag.favGrabY,x-tabDrag.grab+w,y-tabDrag.favGrabY+32});
+    const float w=chrome.sidebar?tabDrag.cardW:chrome.strip.tab;splitAnim.card.Snap({x-tabDrag.grab,y-tabDrag.favGrabY,x-tabDrag.grab+w,y-tabDrag.favGrabY+32});
     SetCursor(LoadCursor(nullptr,target.valid?IDC_ARROW:IDC_NO));
     if(changed&&target.duplicate!=-1)AnnounceBookmark(TRF(bookmark_already_in,FavoriteFolderName(target.parent!=BM::NoId?target.parent:BM::BarRoot)));
     splitAnim.last=NativeChrome::Motion::Now();RenderSplitOverlay();ScheduleMotion(splitAnim.last);InvalidateChrome();
     return true;
 }
-// Release over the bar: add the favorite where its place was open (no edit panel), the preview flies into it and fades
-// (.35 s / .20 s; reduced motion: gone at once). A duplicate or a refused add: the preview flies home.
+// Release over the favorites: add the favorite where its place was open (no edit panel), the preview flies into it and
+// fades (.35 s / .20 s; reduced motion: gone at once). A duplicate or a refused add: the preview flies home.
 void CommitFavoriteDrag(){
     const auto t=tabDrag.tab;const auto target=tabDrag.fav;
     if(!t)return;
     if(!target.valid){if(target.duplicate!=-1)AnnounceBookmark(TRF(bookmark_already_in,FavoriteFolderName(target.parent!=BM::NoId?target.parent:BM::BarRoot)));FavoriteFlyHome();return;}
     const BM::Id id=bookmarks.Add(target.parent,target.index,FavoriteTitle(t),t->uri,NativeChrome::DownloadsUI::UnixNowMs());
     if(!id){AnnounceBookmark(TR(bookmark_add_failed));FavoriteFlyHome();return;}
-    tabDrag.favorite=false;tabDrag.fav={};chrome.bandTab={};chrome.bandDropInto=-1;chrome.liftedIndex=-1;   // the tab shows again in its place at once
+    tabDrag.favorite=false;tabDrag.fav={};chrome.bandTab={};chrome.gridTab={};chrome.bandDropInto=-1;chrome.liftedIndex=-1;   // the tab shows again in its place at once
     PushUndo({{BookmarkStep::Created,id}},TR(bookmark_undo_add));SaveBookmarks();BookmarksChanged();
-    AnnounceBookmark(TRF(bookmark_added_to,FavoriteFolderName(target.parent)));Log(L"BOOKMARKS tab dropped on the bar");
-    // Where it now is: its item, the folder it went into, or « » » when it went behind it.
+    AnnounceBookmark(TRF(bookmark_added_to,FavoriteFolderName(target.parent)));Log(L"BOOKMARKS tab dropped on the favorites");
+    // Where it now is: its item / tile, the folder it went into, or « » » / « Tous les favoris » when it went behind it.
     D2D1_RECT_F to{};const auto& bar=bookmarks.Root(BM::BarRoot).children;
-    if(target.parent==BM::BarRoot){const int at=(int)(std::find(bar.begin(),bar.end(),id)-bar.begin());if(at<chrome.band.visible)to=chrome.BandRect(at);}
-    else if(target.into>=0&&target.into<chrome.band.visible)to=chrome.BandRect(target.into);
-    if(to.right<=to.left&&chrome.band.overflow)to={chrome.band.overflowLeft,BookmarksBar::Layout::top,chrome.band.overflowLeft+NativeChrome::Design::Size::control,BookmarksBar::Layout::bottom};
+    const int shown=chrome.sidebar?chrome.SideBookmarkTiles(chrome.SideColumn()):chrome.band.visible;
+    if(target.parent==BM::BarRoot){const int at=(int)(std::find(bar.begin(),bar.end(),id)-bar.begin());if(at<shown)to=chrome.BandRect(at);}
+    else if(target.into>=0&&target.into<shown)to=chrome.BandRect(target.into);
+    if(to.right<=to.left){
+        if(!chrome.sidebar&&chrome.band.overflow)to={chrome.band.overflowLeft,BookmarksBar::Layout::top,chrome.band.overflowLeft+NativeChrome::Design::Size::control,BookmarksBar::Layout::bottom};
+        else if(chrome.sidebar){const auto& L=chrome.SideColumn();const NativeChrome::Sidebar::Box o=L.mode==NativeChrome::Sidebar::Mode::Complete?L.gridToggle:L.more?L.tiles.back():NativeChrome::Sidebar::Box{};if(!o.Empty())to={o.left,o.top,o.right,o.bottom};}
+    }
     if(motion.ReducedMotion()||!splitOverlay.Visible()||to.right<=to.left){FinishSplitAnimation();return;}
-    const auto o=ChromeOrigin();splitAnim.card.Set({to.left+o.x,to.top+o.y,to.right+o.x,to.bottom+o.y});splitAnim.cardScale.Set(100);splitAnim.cardOpacity.Set(0);splitAnim.committing=true;
+    const auto o=chrome.sidebar?D2D1_POINT_2F{0,0}:ChromeOrigin();splitAnim.card.Set({to.left+o.x,to.top+o.y,to.right+o.x,to.bottom+o.y});splitAnim.cardScale.Set(100);splitAnim.cardOpacity.Set(0);splitAnim.committing=true;
     splitAnim.last=NativeChrome::Motion::Now();RenderSplitOverlay();ScheduleMotion(splitAnim.last);
 }
 // ---- Drag from a menu or the drawer (src/bookmark-drag.h) --------------------------------------------------------------
@@ -5434,11 +5466,9 @@ void SidebarDragEnd(bool commit){
     if(!commit||from<0||!tabDrag.tab)return;
     const float d=GetDpiForWindow(window)/96.f,x=tabDrag.at.x/d,y=tabDrag.at.y/d;   // the last pointer of the drag (what the list showed)
     const auto& L=chrome.SideColumn();
-    if(!L.gridBlock.Empty()&&L.gridBlock.Contains(x,y)){   // onto the grid: a new bookmark (answer 9)
-        auto t=tabDrag.tab;if(t->home||!BM::Admissible(t->uri))return;
-        const BM::Id id=bookmarks.Add(BM::BarRoot,BM::End,t->title==TR(tab_new)?L"":t->title,t->uri,NativeChrome::DownloadsUI::UnixNowMs());
-        if(id){PushUndo({{BookmarkStep::Created,id}},TR(bookmark_undo_add));SaveBookmarks();BookmarksChanged();AnnounceBookmark(TRF(bookmark_added_to,bookmarks.Find(BM::BarRoot)->title));}
-        return;}
+    // Onto the grid (answer 9): a tab that can be a favorite is dropped there by the favorites drag (atelier B,
+    // CommitFavoriteDrag: at its place, never here); any other one (a new tab page) changes nothing.
+    if(!L.gridBlock.Empty()&&L.gridBlock.Contains(x,y))return;
     {const float v=rowTrail.size()>=2&&rowTrail.back().ms>rowTrail.front().ms?(float)((rowTrail.back().y-rowTrail.front().y)/((rowTrail.back().ms-rowTrail.front().ms)/1000)):0.f;rowTrail.clear();
         chrome.RowDropped(chrome.TabKey(from),chrome.sidebarDragTopAtDrop,v,NativeChrome::Motion::Now());}   // §1: to its place with the pointer's speed
     if(to>=0&&to!=from){const auto m=SBar::BlockMove(L.split,from,to);if(m.Moves())SidebarMoveBlock(m.first,m.count,m.dest);}
