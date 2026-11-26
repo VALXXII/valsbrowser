@@ -4226,11 +4226,12 @@ BM::Id DuplicateBookmark(BM::Id id){
     const auto now=NativeChrome::DownloadsUI::UnixNowMs();const size_t at=bookmarks.IndexOf(id)+1;
     BM::Id copy=n->kind==BM::Kind::Folder?bookmarks.AddFolder(n->parent,at,n->title,now):bookmarks.Add(n->parent,at,n->title,n->url,now);
     if(!copy)return 0;
+    if(n->kind==BM::Kind::Folder)bookmarks.SetStyle(copy,n->icon,n->color);   // #138: a copy keeps its look
     if(n->kind==BM::Kind::Folder){
         // Children copied in display order with an explicit stack (bounded by the store's depth).
         std::vector<std::pair<BM::Id,BM::Id>> stack{{id,copy}};
         while(!stack.empty()){auto [from,to]=stack.back();stack.pop_back();const auto* f=bookmarks.Find(from);if(!f)continue;const auto children=f->children;
-            for(BM::Id c:children){const auto* x=bookmarks.Find(c);if(!x)continue;BM::Id made=x->kind==BM::Kind::Folder?bookmarks.AddFolder(to,BM::End,x->title,now):bookmarks.Add(to,BM::End,x->title,x->url,now);if(made&&x->kind==BM::Kind::Folder)stack.push_back({c,made});}}
+            for(BM::Id c:children){const auto* x=bookmarks.Find(c);if(!x)continue;BM::Id made=x->kind==BM::Kind::Folder?bookmarks.AddFolder(to,BM::End,x->title,now):bookmarks.Add(to,BM::End,x->title,x->url,now);if(made&&x->kind==BM::Kind::Folder){bookmarks.SetStyle(made,x->icon,x->color);stack.push_back({c,made});}}}
     }
     PushUndo({{BookmarkStep::Created,copy}},TR(bookmark_undo_copy));SaveBookmarks();BookmarksChanged();AnnounceBookmark(TR(bookmark_copy_inserted));return copy;
 }
@@ -4394,7 +4395,7 @@ void CreateBookmarkSurfaces(){
     d.editColor=[](HDC dc,HWND edit)->LRESULT{return folderRename.Owns(edit)?folderRename.Color(dc):0;};
     d.relayout=[]{SyncFolderRename();};
     d.move=[](BM::Id id,int delta){ShiftBookmark(id,delta);bookmarksDrawer.FocusBookmark(id);};
-    d.context=[](BM::Id id,POINT at,bool keyboard){bookmarkMenuSurface=RenameDrawer;BookmarkContextMenu(id,at,nullptr,keyboard);bookmarkMenuSurface=RenameNone;if(bookmarksDrawer.Visible()&&!bookmarkPopover.Visible()&&!folderRename.Active()){SetForegroundWindow(bookmarksDrawer.Window());SetFocus(bookmarksDrawer.Window());}};
+    d.context=[](BM::Id id,POINT at,bool keyboard){bookmarkMenuSurface=RenameDrawer;BookmarkContextMenu(id,at,nullptr,keyboard);bookmarkMenuSurface=RenameNone;if(bookmarksDrawer.Visible()&&!bookmarkPopover.Visible()&&!folderPicker.Visible()&&!folderRename.Active()){SetForegroundWindow(bookmarksDrawer.Window());SetFocus(bookmarksDrawer.Window());}};
     d.closed=[](bool keyboard){SyncUpdateToastReserve();if(keyboard&&!halted)FocusPage();};
     d.icon=[](const std::wstring& site){return SiteIcon(site);};
     d.announce=AnnounceBookmark;

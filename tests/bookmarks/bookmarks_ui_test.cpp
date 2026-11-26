@@ -340,6 +340,8 @@ static void Customize(){
     Expect(moved,"« Déplacer vers »: Projet Lisière in violet, its name never cut with « … »");
     bool sub=false;for(const auto& it:BookmarkFolderItems(BM::BarRoot))if(it.id==MenuId(MenuOpen,projet))sub=it.look.styled&&it.folderName;
     Expect(sub,"folder menus: the subfolder row carries its look");
+    {const BM::Id copy=DuplicateBookmark(projet);const auto* c=copy?bookmarks.Find(copy):nullptr;
+        Expect(c&&c->icon=="palette"&&c->color=="violet","« Dupliquer » keeps the folder's look");if(copy)UndoBookmark();}
     // From the band's menu: the popover over the folder; a choice applies, Escape closes it and the band item's open look goes.
     int region=0;for(int i=0;i<chrome.band.visible&&i<(int)chrome.bandItems.size();++i)if(chrome.bandItems[i].id==veille)region=NativeChrome::BookmarkBase+i;
     CustomizeFolder(veille,RenameBand,region,RegionScreen(region),true);
