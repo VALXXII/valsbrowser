@@ -308,8 +308,10 @@ int wmain(int argc, wchar_t** argv) {
             const std::string name = layout == BrowserSettings::TabsPosition::Compact ? "Focus compact" : "Focus complete";
             const RECT c = ClientScreen(); const LONG middle = (c.left + c.right) / 2;
             Expect(chrome.sideHidden && !sideReveal.open && !sideLive, name + ": the column hidden");
-            // Téléchargements (Ctrl+J)
-            ShowDownloads(); Pump(300);
+            // Téléchargements: Ctrl+J, as the page's accelerator handler sends it (Key, then the Shortcut message)
+            { BYTE state[256]{}; state[VK_CONTROL] = 0x80; SetKeyboardState(state); const int cmd = Key('J'); state[VK_CONTROL] = 0; SetKeyboardState(state);
+              Expect(cmd == 'D', name + ", Ctrl+J: the browser's Downloads command (not left to the engine's flyout)"); keyboardModality = true; Command(cmd); }
+            Pump(300);
             Expect(downloadPanel.Visible() && sideReveal.open && sideLive, name + ", Ctrl+J: the column back at rest, the Downloads menu open");
             {   POINT at{}; const bool column = ColumnPopoverAt('D', NativeChrome::Downloads::Panel::anchorGap, at); const RECT p = Win(downloadPanel.Window());
                 Expect(column && p.left == at.x && p.bottom == at.y, name + ", Ctrl+J: the menu hangs from the column's Downloads button " + Text(p));
