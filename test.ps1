@@ -1,5 +1,6 @@
 ﻿$ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
+. "$PSScriptRoot\tests\agent-guard\agent-guard.ps1"   # no key in this run, no agent for its browser (tests/agent-guard)
 & "$PSScriptRoot\test-bookmarks.ps1"
 & "$PSScriptRoot\build.ps1" -OutputDirectory 'build\smoke-v2'
 & "$PSScriptRoot/tools/w64devkit/bin/g++.exe" -std=c++17 -Wall -Wextra -Werror -static tests/session_test.cpp -o build/smoke-v2/session_test.exe
@@ -16,7 +17,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Address test compilation failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Address tests failed.' }
 
 Set-Content 'build\smoke-v2\prototype.log' ''
-$process = Start-Process -FilePath "$PSScriptRoot\build\smoke-v2\browser.exe" -ArgumentList '--smoke-test' -WorkingDirectory "$PSScriptRoot\build\smoke-v2" -PassThru
+$process = Use-AgentGuardBrowser { Start-Process -FilePath "$PSScriptRoot\build\smoke-v2\browser.exe" -ArgumentList '--smoke-test' -WorkingDirectory "$PSScriptRoot\build\smoke-v2" -PassThru }
 if (!$process.WaitForExit(30000)) {
     throw 'Test interrompu : délai dépassé. Inspecter la fenêtre et prototype.log ; aucun processus arrêté automatiquement.'
 }

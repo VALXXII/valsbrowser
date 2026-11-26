@@ -19,7 +19,8 @@ Output layout (the application directory, exactly the release payload):
   + the chat panel's page (assets/chat-panel/: index.html, panel.css, panel.js, markdown.js, icons.js; its QA
     host dev.html / dev-host.js is never copied) — design/chat-integration.md.
 Test tools go to <out>-test (never in a package): the fake ACP agent fake-acp-agent.exe (tests/acp), built for
-non-release channels only; the browser uses it when BROWSER_ANNOTATIONS_TEST=1 and BROWSER_CHAT_FAKE_AGENT name it.
+non-release channels only; the browser uses it when BROWSER_ANNOTATIONS_TEST=1 and BROWSER_CHAT_FAKE_AGENT name it
+(named but missing: every agent refused, never a fall back — tests/agent-guard/agent_guard.py).
 Intermediates (resources object, generated headers) go to <out>-obj so they can
 never leak into a package. Among them, release-notes-data.h: the « Nouveautés » card's notes, checked and
 generated from release-notes/notes.json and its history on main (tools/release/release_notes.py, release-notes/README.md).

@@ -49,6 +49,40 @@ def log(text):
     print(text, flush=True); lines.append(text)
 
 
+# One step in, one step out (user report 25/11: the window « jumps » several times). The browser logs every window
+# size change and page bounds change for 2 s after a switch (« FULLSCREEN switch … » then « FULLSCREEN step … »,
+# src/main.cpp FullscreenStep). Every switch read since the last check must be ONE window size change at most, in the
+# show state it started from (no restore / maximize animation), and one bounds change at most per page on screen.
+trace_pos = 0
+
+
+def trace_check(what):
+    global trace_pos
+    p = APP / 'prototype.log'
+    if not p.exists():
+        return
+    data = p.read_bytes()
+    if len(data) < trace_pos:
+        trace_pos = 0   # rotated
+    text = data[trace_pos:].decode('utf-8', 'replace'); trace_pos = len(data)
+    groups, cur = [], None
+    for line in text.splitlines():
+        if 'FULLSCREEN switch ' in line:
+            cur = [line]; groups.append(cur)
+        elif 'FULLSCREEN step ' in line and cur is not None:
+            cur.append(line)
+    for g in groups:
+        start = g[0].rsplit(' ', 1)[-1]
+        windows = [l for l in g if ' ms window ' in l]
+        bounds: dict[str, int] = {}
+        for l in g:
+            if ' ms page ' in l and not l.endswith(('(hidden)', ' hidden', ' shown')):
+                serial = l.split(' ms page ', 1)[1].split(' ', 1)[0]; bounds[serial] = bounds.get(serial, 0) + 1
+        log('     trace ' + ' | '.join(x.split('FULLSCREEN ', 1)[-1] for x in g))
+        check(len(windows) <= 1 and all(l.rsplit(' ', 1)[-1] == start for l in windows) and all(n <= 1 for n in bounds.values()),
+              f'{what}: one step ({g[0].split("FULLSCREEN ", 1)[-1]}: {len(windows)} window size change(s), page bounds changes {bounds})')
+
+
 def check(ok, what):
     global failures
     log(('ok   ' if ok else 'FAIL ') + what)
@@ -225,6 +259,7 @@ CHROME_IDS = {'Toolbar', 'Tabs', 'Tab', 'CloseTab', 'NewTab', 'ProfileButton', '
 
 
 def check_full(h, pid, prefix, color, what):
+    trace_check(what)
     m = monitor(h)
     check(rect(h) == m, f'{what}: the window covers its monitor {rect(h)} == {m}')
     cs = client_screen(h)
@@ -244,6 +279,7 @@ def check_full(h, pid, prefix, color, what):
 
 
 def check_restored(h, pid, prefix, before, zoomed, what):
+    trace_check(what)
     check(rect(h) == before, f'{what}: window bounds restored {rect(h)} == {before}')
     check(bool(user32.IsZoomed(h)) == zoomed, f'{what}: maximized state restored ({zoomed})')
     cs = client_screen(h); hosts = page_hosts(h)
@@ -290,6 +326,7 @@ def click_fs_left(h):
 
 
 def split_alone(h, pid, blue, what):
+    trace_check(what)
     m = monitor(h); cs = client_screen(h)
     check(rect(h) == m, f'{what}: the window covers its monitor')
     hosts = page_hosts(h)
@@ -316,19 +353,34 @@ def split_steps(h, pid, blue, green):
     time.sleep(1.5)
     split_alone(h, pid, blue, 'split, page fullscreen')
     post(h, ExitFullscreenCommand); time.sleep(1.5)
+    trace_check('split, Échap')
     check(rect(h) == windowed and page_hosts(h) == split0 and grips(h) == g0 and not (metrics(blue) or {}).get('fs', True),
           f'split, Échap: the exact split comes back {page_hosts(h)} == {split0}, grips {grips(h)}, window {rect(h)}')
     # F11 keeps the split; page fullscreen inside it; leaving the page returns to the F11 split; F11 off: windowed split.
     post(h, FullscreenCommand); time.sleep(1.5)
+    trace_check('split, F11')
     f11 = page_hosts(h)
     check(rect(h) == monitor(h) and len(f11) == 2 and grips(h) >= 1, f'split, F11: the split stays, over the whole monitor {f11}')
     click_fs_left(h); wait(lambda: (metrics(blue) or {}).get('fs'), 5); time.sleep(1.5)
     split_alone(h, pid, blue, 'split, F11 + page fullscreen')
     post(h, ExitFullscreenCommand); time.sleep(1.5)
+    trace_check('split, F11 + page off')
     check(rect(h) == monitor(h) and page_hosts(h) == f11 and grips(h) >= 1, f'split, F11 + page off: back to the F11 split {page_hosts(h)} == {f11}')
     post(h, FullscreenCommand); time.sleep(1.5)
+    trace_check('split, F11 off')
     check(rect(h) == windowed and page_hosts(h) == split0 and grips(h) == g0 and {'Toolbar', 'Tabs', 'Settings'} <= set(uia_children(pid)),
           f'split, F11 off: the windowed split and the chrome come back {page_hosts(h)} == {split0}')
+    # Maximized (the usual window, and the case that jumped: restore, then grow; leaving: restored, then maximized).
+    post(h, MaximizeCommand); time.sleep(1.2); trace_check('split, maximize (setup)')
+    maxed = rect(h); split_max = page_hosts(h)
+    check(bool(user32.IsZoomed(h)) and len(split_max) == 2, f'split, maximized setup {maxed} {split_max}')
+    click_fs_left(h); wait(lambda: (metrics(blue) or {}).get('fs'), 5); time.sleep(1.5)
+    split_alone(h, pid, blue, 'split maximized, page fullscreen')
+    check(bool(user32.IsZoomed(h)), 'split maximized, page fullscreen: the window stays maximized')
+    post(h, ExitFullscreenCommand); time.sleep(1.5)
+    trace_check('split maximized, Échap')
+    check(rect(h) == maxed and bool(user32.IsZoomed(h)) and page_hosts(h) == split_max and grips(h) >= 1,
+          f'split maximized, Échap: maximized with the same split {page_hosts(h)} == {split_max}')
 
 
 def run(app_src, split=False):

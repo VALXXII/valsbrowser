@@ -625,6 +625,9 @@ public:
     bool followDpiGone=false;
     HRESULT InitOffscreen(const std::wstring& root,UINT dpiValue,float w,float h){dpi=dpiValue;width=w;height=h;HRESULT hr=InitResources(root);if(FAILED(hr))return hr;hr=wic->CreateBitmap((UINT)(w*dpi/96),(UINT)(h*dpi/96),GUID_WICPixelFormat32bppPBGRA,WICBitmapCacheOnLoad,&surface);if(FAILED(hr))return hr;hr=factory->CreateWicBitmapRenderTarget(surface,D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_SOFTWARE,D2D1::PixelFormat(),(float)dpi,(float)dpi),&target);if(FAILED(hr))return hr;target->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);return target->CreateSolidColorBrush(D2D1::ColorF(1,1,1),&brush);}
     HRESULT SavePng(const wchar_t* path){if(!surface)return E_FAIL;IWICStream* stream=nullptr;IWICBitmapEncoder* encoder=nullptr;IWICBitmapFrameEncode* frame=nullptr;HRESULT hr=wic->CreateStream(&stream);if(SUCCEEDED(hr))hr=stream->InitializeFromFilename(path,GENERIC_WRITE);if(SUCCEEDED(hr))hr=wic->CreateEncoder(GUID_ContainerFormatPng,nullptr,&encoder);if(SUCCEEDED(hr))hr=encoder->Initialize(stream,WICBitmapEncoderNoCache);if(SUCCEEDED(hr))hr=encoder->CreateNewFrame(&frame,nullptr);if(SUCCEEDED(hr))hr=frame->Initialize(nullptr);if(SUCCEEDED(hr))hr=frame->WriteSource(surface,nullptr);if(SUCCEEDED(hr))hr=frame->Commit();if(SUCCEEDED(hr))hr=encoder->Commit();Drop(frame);Drop(encoder);Drop(stream);return hr;}
+    // The offscreen surface's premultiplied BGRA pixels [x, x + w) x [y, y + h) into `out` (row-major, w x h): a layered
+    // window's frame (src/side-tip-window.h). False without an offscreen surface.
+    bool CopySurface(UINT x,UINT y,UINT w,UINT h,UINT32* out){if(!surface||!out||!w||!h)return false;WICRect r{(INT)x,(INT)y,(INT)w,(INT)h};return SUCCEEDED(surface->CopyPixels(&r,w*4,w*h*4,(BYTE*)out));}
     UINT32 SurfacePixel(float x,float y){UINT32 pixel=0;WICRect r{(INT)(x*dpi/96),(INT)(y*dpi/96),1,1};if(surface)surface->CopyPixels(&r,4,4,(BYTE*)&pixel);return pixel;}
     HRESULT Resize(){if(!factory||!hwnd)return S_OK;RECT r;GetClientRect(hwnd,&r);dpi=GetDpiForWindow(hwnd);width=(float)r.right*96/dpi;height=(float)r.bottom*96/dpi;
         if(floating){clientWidth=width;width=std::max(0.f,clientWidth-FocusMode::layoutInset-panelAbove.reserve);}
@@ -633,10 +636,11 @@ public:
     }
     void Color(float c,float alpha=1){brush->SetColor(D2D1::ColorF(c,c,c,alpha));}
     // Docked drawers (NativeUI::KeyedDrawer): the strip a sliding drawer has not entered yet, [0, lead) DIP, in the
-    // colour its layered window keys out. Aliased and pixel-exact (lead is a whole number of pixels).
-    void KeyOut(float lead){if(lead<=0||!target||!brush)return;D2D1_MATRIX_3X2_F m;target->GetTransform(&m);target->SetTransform(D2D1::Matrix3x2F::Identity());
+    // colour its layered window keys out. Aliased and pixel-exact (lead is a whole number of pixels). `fromRight` (#143,
+    // a drawer docked on the left, entering from its left edge): the strip [width - lead, width) instead.
+    void KeyOut(float lead,bool fromRight=false){if(lead<=0||!target||!brush)return;D2D1_MATRIX_3X2_F m;target->GetTransform(&m);target->SetTransform(D2D1::Matrix3x2F::Identity());
         const auto mode=target->GetAntialiasMode();target->SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED);brush->SetColor(D2D1::ColorF(1,0,1,1));
-        target->FillRectangle(D2D1::RectF(0,0,lead,target->GetSize().height+1),brush);target->SetAntialiasMode(mode);target->SetTransform(m);}
+        const float w=target->GetSize().width;target->FillRectangle(fromRight?D2D1::RectF(w-lead,0,w+1,target->GetSize().height+1):D2D1::RectF(0,0,lead,target->GetSize().height+1),brush);target->SetAntialiasMode(mode);target->SetTransform(m);}
     // The same key colour over a GDI region (target pixels), rectangle by rectangle, aliased: the keyed-out silhouette is
     // exactly the region's, pixel for pixel (the downloads drawer's morph: what its growing shape does not cover yet).
     void KeyOutRegion(HRGN region){if(!region||!target||!brush)return;const DWORD size=GetRegionData(region,0,nullptr);if(size<sizeof(RGNDATAHEADER))return;
@@ -1195,11 +1199,12 @@ public:
     // folds to two rows with « Tous les favoris (N) », unfolds to five rows then scrolls; the compact one keeps four and
     // « » », which opens every bookmark in a popover at its right. Host state: unfolded, both scrolls, the popover.
     bool sidebarGridOpen=false,sidebarPopover=false;float sidebarGridScroll=0,sidebarPopoverScroll=0;float sidebarReserve=0;
+    float sidebarDockAt=-1;   // #143: the host's drawer dock off the column's edge (Sidebar::Input::dockAt), -1 none
     Sidebar::PopoverLayout sidePop;
     static constexpr int SidebarGridToggleId=908,SidebarMoreId='O',SidebarManageId=910;   // 910: « Gérer les favoris » (grid or popover foot)   // « » » keeps the band overflow's id (its tile, its keyboard stop)
     Sidebar::Input SideInput(Sidebar::Mode m,int count,float zoneLeft=-1,bool compactZone=false)const{Sidebar::Input in;in.mode=m;in.zoneLeft=zoneLeft;in.width=width;in.height=height;
         if(compactZone){in.zoneSet=true;in.zoneMode=Sidebar::Mode::Compact;}
-        in.grid=bandShown;in.bookmarks=(int)bandItems.size();in.gridOpen=sidebarGridOpen;in.gridScroll=sidebarGridScroll;in.tabs=count;in.tools=(int)std::max<size_t>(1,sideTools.size());in.scroll=sidebarScroll;in.band=annotationBand;in.reserve=sidebarReserve;in.hidden=sideHidden;in.top=sideHidden?std::max(0.f,annotationBand):0.f;in.panel=sidebarWidth;in.groups=tabGroups;return in;}
+        in.grid=bandShown;in.bookmarks=(int)bandItems.size();in.gridOpen=sidebarGridOpen;in.gridScroll=sidebarGridScroll;in.tabs=count;in.tools=(int)std::max<size_t>(1,sideTools.size());in.scroll=sidebarScroll;in.band=annotationBand;in.reserve=sidebarReserve;in.dockAt=sidebarDockAt;in.hidden=sideHidden;in.top=sideHidden?std::max(0.f,annotationBand):0.f;in.panel=sidebarWidth;in.groups=tabGroups;return in;}
     // Visible bookmark tiles of the column (index i = bandItems[i]): complete, the grid's at its scroll; compact, the first
     // four (five when they all fit).
     int SideBookmarkTiles(const Sidebar::Layout& L)const{if(L.emptyGrid)return 0;if(L.mode==Sidebar::Mode::Complete)return (int)L.grid.tiles.size();return L.more?(int)L.tiles.size()-1:(int)L.tiles.size();}
@@ -1210,7 +1215,7 @@ public:
     void BuildSidebar(int count,int selected,const std::vector<std::wstring>* titles,Motion::Time now=Motion::Now()){
         namespace SB=Sidebar;
         sideTools.clear();if(annotateShown)sideTools.push_back('N');if(audioShown)sideTools.push_back('V');sideTools.push_back('Y');sideTools.push_back('D');sideTools.push_back('S');
-        side=SB::Compute(SideInput(sidebarMode,count,sidebarColumn!=SB::Width(sidebarMode,sidebarWidth)?sidebarColumn:-1));sidebarScroll=side.scroll;if(side.gridOpen||!side.grid.Scrolls())sidebarGridScroll=side.grid.scroll;SyncSideMotion(count,now);
+        side=SB::Compute(SideInput(sidebarMode,count,sidebarColumn));sidebarScroll=side.scroll;   /* the page's edge is always the presented width (the host's ContentBox): one value */if(side.gridOpen||!side.grid.Scrolls())sidebarGridScroll=side.grid.scroll;SyncSideMotion(count,now);
         if(sidebarOverlay){sideOver=SB::Compute(SideInput(SB::Mode::Complete,count,side.column,true));sideOver.scroll=side.scroll;}
         // The compact « » » popover: all the bookmarks, its tiles first (it covers the column's right and the page).
         if(sidebarPopover&&!sidebarOverlay&&side.more&&side.mode==SB::Mode::Compact&&!side.tiles.empty()){sidePop=SB::ComputePopover(side.column,side.tiles.back(),(int)bandItems.size(),sidebarPopoverScroll,height);sidebarPopoverScroll=sidePop.grid.scroll;
@@ -1352,7 +1357,7 @@ public:
         const auto t=Sidebar::TitleIn(rb,closeShown);
         const float rest=h>0?K::titleRest+(K::titleHover-K::titleRest)*h:asleep?.32f:K::titleRest;
         const float o=(rest+(K::titleActive-rest)*emphasis)*labels*alpha;
-        Text(title,R(t),Design::Type::label.size,o,false,active,0);
+        FadedText(title,R(t),Design::Type::label.size,o,false,active,0);
         if(closeShown){const auto cb=R(Sidebar::CloseIn(rb));const float press=motion?motion->Visual(CloseBase+i,now).press:0;
             SideGlyph(Sidebar::Glyph::close,cb,Sidebar::Complete::closeGlyph*Motion::PressScale(press,motion&&motion->ReducedMotion()),K::glyph*std::max(h,focus==CloseBase+i?1.f:0.f)*labels*alpha);
             if(focus==CloseBase+i)FocusRing(cb,Design::Radius::button);}
@@ -1567,7 +1572,7 @@ public:
             if(!L.gridToggle.Empty()){   // « Tous les favoris (N) » ⌄ / « Réduire » ⌃ (1WKW-0 / 1WRD-0)
                 const auto r=R(L.gridToggle);const float hv=Hovered(SidebarGridToggleId,hover,now);if(hv>0)White(r,Design::Radius::control,K::toolHover*hv);if(focus==SidebarGridToggleId)FocusRing(r,Design::Radius::control);
                 const D2D1_RECT_F caret{r.right-C::togglePad-C::toggleGlyph,r.top,r.right-C::togglePad,r.bottom};
-                Text(gridToggleTip,{r.left+C::togglePad,r.top,caret.left-C::togglePad,r.bottom},C::toggleFont,K::toggleText*labels,false,false,0);
+                FadedText(gridToggleTip,{r.left+C::togglePad,r.top,caret.left-C::togglePad,r.bottom},C::toggleFont,K::toggleText*labels,false,false,0);
                 SideGlyph(L.gridOpen?SB::Glyph::caretUp:SB::Glyph::caretDown,caret,C::toggleGlyph,K::toggleText*labels);}
             if(!L.manage.Empty())PaintManageRow(R(L.manage),false,hover,focus,now,labels);
             return;}
@@ -1591,7 +1596,25 @@ public:
         SideGlyph(Sidebar::Glyph::folder,{r.left+padL,cy-icon/2,r.left+padL+icon,cy+icon/2},icon,on(0xB3)*labels);
         const std::wstring key=TR(key_ctrl_shift_o);const float kw=TextWidth(key,C::manageKeyFont,false,false,0);
         Text(key,{r.right-padR-kw-1,r.top,r.right-padR+1,r.bottom},C::manageKeyFont,on(0x80)*labels);
-        Text(TR(bookmarks_manage),{r.left+padL+icon+gap,r.top,r.right-padR-kw-gap,r.bottom},C::manageFont,(popover?1.f:on(0xE6))*labels);}
+        FadedText(TR(bookmarks_manage),{r.left+padL+icon+gap,r.top,r.right-padR-kw-gap,r.bottom},C::manageFont,(popover?1.f:on(0xE6))*labels);}
+    // The docked column's soft edge at the page (x = `edge`): the canvas from 0 to 1 over its last edgeFade DIP.
+    void DrawEdgeFade(float edge){const float c=Design::Surface::canvas,from=edge-Sidebar::Complete::edgeFade;if(edge<=0)return;ID2D1GradientStopCollection* stops=nullptr;ID2D1LinearGradientBrush* g=nullptr;
+        D2D1_GRADIENT_STOP s[]={{0,D2D1::ColorF(c,c,c,0)},{1,D2D1::ColorF(c,c,c,1)}};
+        if(SUCCEEDED(target->CreateGradientStopCollection(s,2,&stops))&&SUCCEEDED(target->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({from,0},{edge,0}),stops,&g)))target->FillRectangle(D2D1::RectF(std::max(0.f,from),0,edge,height),g);
+        Drop(g);Drop(stops);}
+    // A column text cut by its slot (Sidebar::Complete::textFade): its glyphs fade over the slot's last 12 DIP (an opacity
+    // layer, whatever the row's fill under it); a text that fits is drawn as is.
+    void FadedText(const std::wstring& value,D2D1_RECT_F slot,float size,float opacity,bool tabular=false,bool medium=false,float tracking=0){
+        const float fade=Sidebar::Complete::textFade;const float full=value.empty()?0.f:TextWidth(value,size,medium,tabular,tracking);
+        if(value.empty()||slot.right-slot.left<=fade||full<=slot.right-slot.left+.5f){Text(value,slot,size,opacity,tabular,medium,tracking);return;}
+        ID2D1GradientStopCollection* stops=nullptr;ID2D1LinearGradientBrush* g=nullptr;ID2D1Layer* layer=nullptr;
+        D2D1_GRADIENT_STOP s[]={{0,D2D1::ColorF(0,0,0,1)},{1,D2D1::ColorF(0,0,0,0)}};
+        const D2D1_RECT_F whole{slot.left,slot.top,slot.left+full+2,slot.bottom};   // laid out whole (never an ellipsis), cut at the slot under the fade
+        if(SUCCEEDED(target->CreateGradientStopCollection(s,2,&stops))&&SUCCEEDED(target->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({slot.right-fade,0},{slot.right,0}),stops,&g))&&SUCCEEDED(target->CreateLayer(nullptr,&layer))){
+            target->PushLayer(D2D1::LayerParameters({slot.left,slot.top-size,slot.right,slot.bottom+size},nullptr,D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,D2D1::IdentityMatrix(),1.f,g,D2D1_LAYER_OPTIONS_NONE),layer);
+            Text(value,whole,size,opacity,tabular,medium,tracking);target->PopLayer();}
+        else Text(value,slot,size,opacity,tabular,medium,tracking);
+        Drop(layer);Drop(g);Drop(stops);}
     void DrawVerticalFade(float left,float from,float right,float to,bool overlay){(void)overlay;const float c=Design::Surface::canvas;ID2D1GradientStopCollection* stops=nullptr;ID2D1LinearGradientBrush* g=nullptr;
         D2D1_GRADIENT_STOP s[]={{0,D2D1::ColorF(c,c,c,1)},{1,D2D1::ColorF(c,c,c,0)}};
         if(SUCCEEDED(target->CreateGradientStopCollection(s,2,&stops))&&SUCCEEDED(target->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({0,from},{0,to}),stops,&g)))target->FillRectangle(D2D1::RectF(left,std::min(from,to),right,std::max(from,to)),g);
@@ -1672,8 +1695,13 @@ public:
         // Window bar: compact navigation + address (02 1Q3F-0), window buttons.
         if(!side.addressInColumn){for(int id:{'B','F','R'}){const auto& b=id=='B'?side.back:id=='F'?side.forward:side.reload;PaintSideButton(id,Morph(id,b,now),sidebarOverlay?0:hover,sidebarOverlay?0:focus,now,1,side.navPlates);}PaintSideAddress(side,editing&&!sidebarOverlay,hover,focus,now,1);}
         for(int id:{'m','M','X'})DrawWindowGlyph(id,id=='m'?R(side.minimize):id=='M'?R(side.maximize):R(side.close),hover,focus,now);
-        // Under the page windows: the canvas around the page's rounded corners is the window's own.
-        PaintSideColumn(side,titles,selected,editing&&!sidebarOverlay,sidebarOverlay?0:hover,sidebarOverlay?0:focus,now,false);
+        // Under the page windows: the canvas around the page's rounded corners is the window's own. The docked column's paint
+        // stops at the page's edge (Sidebar::Complete::minimumLayout): laid out wider than shown (it folds / unfolds) or its
+        // pieces gliding, its last 12 DIP fade into the canvas instead of being cut by the page (Val 25 nov., #143).
+        {const float edge=side.zone.left;target->PushAxisAlignedClip({0,0,std::max(0.f,edge),height},D2D1_ANTIALIAS_MODE_ALIASED);
+            PaintSideColumn(side,titles,selected,editing&&!sidebarOverlay,sidebarOverlay?0:hover,sidebarOverlay?0:focus,now,false);
+            target->PopAxisAlignedClip();
+            if(side.column>edge+.5f||sideMorphing)DrawEdgeFade(edge);}
         if(sidebarOverlay)PaintSideColumn(sideOver,titles,selected,editing,hover,focus,now,true);
         PaintSidePopover(hover,focus,now);
         PaintSideEdge(focus==SidebarEdgeId&&keyboardModality);   // keyboard focus: the dragging colour

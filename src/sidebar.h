@@ -48,9 +48,11 @@ inline constexpr float row = 32, rowGap = 6, toggle = 28;
 inline constexpr float address = 32, addressPad = 8, addressGap = 6, addressGlyph = 14, addressFont = 16;
 // Bookmarks grid, variant B (Paper « Favoris · 10 / 20 · B / 40 · B replié / déplié / panneau 300 / 360 »): tiles 40
 // high, radius 8, #FFFFFF0A (hover #FFFFFF14), gap 6, as many columns as keep a tile about 42 wide (5 in 232, 6 in 284,
-// 7 in 344); favicon 18, a folder's glyph 16 white 70 %. Folded: two rows, then the 24 DIP row « Tous les favoris (N) »
-// with a caret (1WKW-0: padding 6, gap 6, 13/16 white 50 %, caret 12 white 50 %) when there are more. Unfolded: up to 5
-// rows (224) in a viewport that scrolls (a 32 DIP canvas fade at its bottom, a 3 DIP #FFFFFF33 bar radius 2 at its
+// 7 in 344); favicon 18, a folder's glyph 16 white 70 %. The tiles share the row edge to edge (Paper: flex 1, basis 0)
+// within the address field's margins; fewer bookmarks than a row holds share it too (3 in 232: 73.3 each; Val 25 nov.,
+// « like Dia »); a last row that is not full keeps the rows' tile width, left-aligned. Folded: two rows, then the 24 DIP
+// row « Tous les favoris (N) » with a caret (1WKW-0: padding 6, gap 6, 13/16 white 50 %, caret 12 white 50 %) when
+// there are more. Unfolded: up to 5 rows (224) in a viewport that scrolls (a 32 DIP canvas fade at its bottom, a 3 DIP #FFFFFF33 bar radius 2 at its
 // right, 4 from its top: 1WRB-0 / 1WRC-0), then the row « Réduire » (caret up); the tabs keep at least half the height.
 inline constexpr float tile = 40, tileGap = 6, tileNominal = 41.6f, toggleRow = 24, togglePad = 6, toggleFont = 13, toggleGlyph = 12;
 inline constexpr int foldedRows = 2, openRows = 5;
@@ -99,6 +101,18 @@ inline constexpr float button = 32, pairGap = 3, hairline = 1, hairlineH = 10;
 inline constexpr float pair = button * 2 + pairGap * 2 + hairline;   // 71
 }
 static_assert(Nav::pair == 71, "Paper 1VCX-0: the pair is 71 wide");
+// The page's edge is the column's (Val 25 nov., #143: « the page covered the panel's right edge »): the docked complete
+// column is laid out at the width it is presented at (the fold's, the edge drag's rubber band, the width spring's), never
+// under the width its « Haut » row needs (profile, the pair, Reload 6 apart, then the fold button at least 3 from Reload:
+// 194, the rubber band's narrowest above the 160 snap, Resize::Shown(160) = 194.1). Narrower than its layout (it folds
+// or unfolds, a complete drag past 160 towards the window's edge) or while its pieces glide (§2), its paint stops at the
+// page's edge and its last `edgeFade` DIP fade into the canvas (Chrome::PaintSidebar): never cut by the page.
+namespace Complete {
+inline constexpr float minimumLayout = pad + row + rowGap + Nav::pair + rowGap + Nav::button + rowGap / 2 + toggle + pad, edgeFade = 12;
+// Truncated texts of the column (tab titles, « Tous les favoris (N) », « Gérer les favoris ») fade over their last 12 DIP.
+inline constexpr float textFade = 12;
+}
+static_assert(Complete::minimumLayout == 194, "the « Haut » row: 8 + 32 + 6 + 71 + 6 + 32 + 3 + 28 + 8");
 // The complete column over the page (03 « Panneau déplié par-dessus » 1QHV-0): + a 1 DIP right border white 12 %
 // (#FFFFFF1F), right corners 12, the window's whole height.
 namespace Overlay { inline constexpr float border = 1, borderAlpha = 0x1F / 255.f, radius = 12; }
@@ -302,6 +316,8 @@ struct Input {
     float scroll = 0;             // tab list scroll (clamped)
     float band = 0;               // annotation band at the top of the page zone (answer 6)
     float reserve = 0;            // an open drawer's column: the page stops `inset` before it
+    bool reserveLeft = true;      // #143 (owner 2026-11-25): the drawer docks on the panel's side, against the column: the page starts `inset` after it
+    float dockAt = -1;            // #143: the host's dock (DIP) when DrawerLayout::Side's other choices move it off the column's edge; -1 none
     float panel = Complete::width; // the complete column's width (Resize: 220 .. 360)
     std::vector<int> groups;      // per tab, its split view group (0 = none): the top bar's Chrome::tabGroups
     bool hidden = false;          // Mode Focus: the column hides, the page takes the window (FocusSide)
@@ -319,9 +335,10 @@ struct Grid {
 inline int Columns(float width) { return std::max(1, static_cast<int>(std::floor((width + Complete::tileGap) / (Complete::tileNominal + Complete::tileGap) + 1e-3f))); }
 // `n` tiles in rows of Columns(w) inside [left, left + w], from `top`, `visibleRows` rows tall at most (then scrolling),
 // `maxHeight` at most (the viewport may cut a row: the fade covers it).
-// `columns` > 0: that many per row (the popover's five in 230, Paper 1WSC-0 / 1YX2-0), else Columns(w).
+// `columns` > 0: that many per row (the popover's five in 230, Paper 1WSC-0 / 1YX2-0), else Columns(w), or `n` when
+// fewer: a single row of them spans the width (no empty slots on its right).
 inline Grid MakeGrid(float left, float top, float w, int n, int visibleRows, float scroll, float maxHeight = 1e9f, int columns = 0) {
-    namespace C = Complete; Grid g; g.columns = columns > 0 ? columns : Columns(w);
+    namespace C = Complete; Grid g; g.columns = columns > 0 ? columns : std::max(1, std::min(Columns(w), n));
     g.rows = n <= 0 ? 0 : (n + g.columns - 1) / g.columns;
     const auto height = [](int r) { return r <= 0 ? 0.f : r * C::tile + (r - 1) * C::tileGap; };
     const float viewH = std::min(height(std::min(g.rows, visibleRows)), std::max(C::tile, maxHeight));
@@ -364,7 +381,8 @@ struct Layout {
     std::vector<Box> tools;
     Box minimize, maximize, close;
     Box zone, band, page;
-    float drawerTop = Zone::drawerTop;   // the real drawers dock at the right from here
+    float drawerTop = Zone::drawerTop;   // the real drawers dock from here
+    float drawerDock = 0;                // #143: their left edge (DIP from the window's): the column's right edge (in Focus, after its border)
     bool hidden = false;          // Mode Focus: the column is not docked (it comes back over the page, FocusSide)
     float top = 0;                // the column's top (hidden: under the annotation banner, else 0)
 };
@@ -404,6 +422,10 @@ inline Layout Compute(const Input& in) {
     const float W = std::max(in.width, 1.f), H = std::max(in.height, 1.f);
     L.column = Width(in.mode, Resize::Clamp(in.panel));
     const float zoneLeft = in.zoneLeft >= 0 ? in.zoneLeft : L.column;
+    // Docked (not the column over the compact page), the page starts at `zoneLeft`, the presented width: the complete
+    // column is laid out there (a rubber band at 195 gave a layout at 220 under a page at 195), or at its own width while
+    // the fold animates it narrower, never under `minimumLayout` (Complete::minimumLayout).
+    if (full && !in.zoneSet && in.zoneLeft >= 0) L.column = std::max(Complete::minimumLayout, zoneLeft >= in.panel - 1 ? zoneLeft : in.panel);
     L.bar = zoneMode == Mode::Complete ? Zone::bar : Zone::compactBar;
     // Page zone: window buttons right-aligned in the bar, the page under it (and under the annotation band).
     {
@@ -413,11 +435,12 @@ inline Layout Compute(const Input& in) {
         L.maximize = Centered(L.close.left - Z::buttonGap - Z::buttonW / 2, cy, Z::buttonW, Z::buttonH);
         L.minimize = Centered(L.maximize.left - Z::buttonGap - Z::buttonW / 2, cy, Z::buttonW, Z::buttonH);
         L.zone = {zoneLeft, 0, W, H};
-        float pageRight = std::max(zoneLeft, W - Z::inset);
-        if (in.reserve > 0) pageRight = std::max(zoneLeft, std::min(pageRight, W - in.reserve - Z::inset));
+        float pageRight = std::max(zoneLeft, W - Z::inset), pageLeft = zoneLeft;
+        L.drawerDock = in.dockAt >= 0 ? in.dockAt : zoneLeft;   // #143: against the docked column
+        if (in.reserve > 0) { if (in.reserveLeft) pageLeft = std::min(pageRight, std::max(zoneLeft, L.drawerDock + in.reserve + Z::inset)); else pageRight = std::max(zoneLeft, std::min(pageRight, W - in.reserve - Z::inset)); }
         const float pageBottom = std::max(L.bar, H - Z::inset);
-        L.band = in.band > 0 ? Box{zoneLeft, L.bar, pageRight, L.bar + in.band} : Box{};
-        L.page = {zoneLeft, L.bar + in.band, pageRight, std::max(L.bar + in.band, pageBottom)};
+        L.band = in.band > 0 ? Box{pageLeft, L.bar, pageRight, L.bar + in.band} : Box{};
+        L.page = {pageLeft, L.bar + in.band, pageRight, std::max(L.bar + in.band, pageBottom)};
         L.drawerTop = zoneMode == Mode::Complete ? Z::drawerTop : Z::compactDrawerTop;
     }
     auto pairAt = [&](float x, float top) {
@@ -534,17 +557,18 @@ inline Layout Compute(const Input& in) {
 // ---- Mode Focus in the side layouts (Designer 24 nov.: Paper « Annotation + Focus · panneau (bord survolé) » 2091-0,
 // « … · compact » 20EJ-0; the older boards 13 / 14 / 15 follow this code) -------------------------------------------------
 // The column hides: the page takes the window minus 4 DIP on every side (radius 8), no window bar, no window buttons; with
-// the annotation mode its banner spans the top (x 4 .. W - 4, y 0 .. 32) and the page starts under it. An 8 DIP band on
-// the window's left edge recalls the column: after 400 ms (Timing::hoverMs) it slides over the page from the left, under
-// the banner, square, a 1 DIP #262626 right border (outside its 248 / 40); it leaves to the left as soon as the pointer
-// leaves it, unless something holds it (a drawer opened from it, a menu, a drag, the address being typed in). Ctrl+Maj+,
+// the annotation mode its banner spans the top (x 4 .. W - 4, y 0 .. 32) and the page starts under it. The window's left
+// edge recalls the column (EdgeZone below: how wide, how long): it slides over the page from the left, under the banner,
+// square, a 1 DIP #262626 right border (outside its 248 / 40); it leaves to the left 300 ms after the pointer left it and
+// its 24 DIP margin, unless something holds it (a drawer opened from it, a menu, a drag, the address being typed in). Ctrl+Maj+,
 // slides it in (it stays: the shortcut again or Échap). Drawers start at the page's top, anchored right, the page stops
 // 4 DIP before them. Motion (the drawers' spec): in on a critically damped 0.3 s spring, out 0.2 s, always from the
 // displayed position; reduced motion: a 120 ms fade.
 namespace FocusSide {
-inline constexpr float edge = 8;                              // the left band that recalls the column (board 13)
 inline constexpr float border = 1;                            // its right border, outside the column
 inline constexpr unsigned borderRgb = 0x262626;
+// #143 Q3 (Designer, 2026-11-25): a drawer docks just after that border, never over it (false: flush with the column).
+inline constexpr bool drawerAfterBorder = true;
 inline constexpr float enterResponse = .30f, exitResponse = .20f;
 inline constexpr double reducedFadeMs = 120;
 }
@@ -568,39 +592,122 @@ inline Layout ComputeHidden(const Input& in) {
     const float top = std::max(in.band, Z::inset);            // under the banner, else the 4 DIP inset
     L.bar = std::max(0.f, Z::inset - in.band);                // the chrome's ContentTop is bar + band (continuous while the banner slides)
     L.minimize = L.maximize = L.close = Box{};
-    float pageRight = std::max(Z::inset, W - Z::inset);
-    if (in.reserve > 0) pageRight = std::max(Z::inset, std::min(pageRight, W - in.reserve - Z::inset));
+    float pageRight = std::max(Z::inset, W - Z::inset), pageLeft = Z::inset;
+    // #143: a drawer docks against the column shown over the page, just after its border (FocusSide::drawerAfterBorder).
+    L.drawerDock = in.dockAt >= 0 ? in.dockAt : L.column + (FocusSide::drawerAfterBorder ? FocusSide::border : 0.f);
+    if (in.reserve > 0) { if (in.reserveLeft) pageLeft = std::min(pageRight, std::max(Z::inset, L.drawerDock + in.reserve + Z::inset)); else pageRight = std::max(Z::inset, std::min(pageRight, W - in.reserve - Z::inset)); }
     L.zone = {0, 0, W, H};
     L.band = in.band > 0 ? Box{Z::inset, 0, std::max(Z::inset, W - Z::inset), in.band} : Box{};
-    L.page = {Z::inset, top, pageRight, std::max(top, H - Z::inset)};
+    L.page = {pageLeft, top, pageRight, std::max(top, H - Z::inset)};
     L.drawerTop = top;
     return L;
 }
-// The column over the page in Focus: shown or not, and how. Pure (the host samples the pointer every ~30 ms).
+// ---- The edge that recalls the column (owner 25 nov.: the 8 DIP band and its 400 ms were too hard to hit) -------------
+// What the others do (studied 25 nov.; design/focus-edge-zone.md, with what is confirmed and what is inferred): Dia opens
+// its hidden sidebar about 0.1 s after the pointer reaches the window's left edge and closes it the same wait after the
+// pointer left; Arc opens it when the pointer overshoots the window's edge too, and keeps it out with the pointer about
+// 21 pt off it; Firefox waits 200 ms on its collapsed sidebar; Windows' hover time is 400 ms. Here, in DIP of the window's
+// monitor (per-monitor DPI), measured from the window's edge on the column's side ("depth", inward):
+//   * Pinned: the pointer held on the monitor's outer pixel (no monitor beyond, the window's edge on it): 60 ms, two
+//     samples (a pointer flung along the edge that touches it once does not count).
+//   * Edge: the 4 DIP gutter between the window's edge and the page (maximized; a restored window's gutter is its resize
+//     border) and the 24 DIP beyond the window's edge (the next monitor, or the desktop / the app beside a restored
+//     window; the window in front): 120 ms of it. Crossing it to the next monitor at an ordinary speed is quicker.
+//   * Rest: the page's first 12 DIP (16 from the edge: the overlay scrollbar's own strip, Scrollbar::hitBand) and a
+//     restored window's resize border: 400 ms.
+// On the side of the page's overlay scrollbar (the right, src/viewport-scrollbar.h) its 12 DIP strip stays the
+// scrollbar's: only the gutter, the monitor's edge and the 24 DIP beyond count, and they wait the whole 400 ms (a pointer
+// thrown past the scrollbar comes back onto it sooner).
+// A press disarms the edge until the pointer is seen off it, buttons up: a scrollbar drag released on the edge, a click
+// on the page's first pixels, Échap with the pointer on the edge never bring the column back by themselves.
+// Shown, the column stays while the pointer is over it or within 24 DIP of it (its rows; the 24 DIP beyond the window's
+// edge too) and leaves 300 ms after the pointer left that (the top bar's grace, FocusMode::graceMs); a press outside it
+// sends it at once (the click is the page's).
+namespace EdgeZone {
+enum class Side { Left, Right };
+enum class Kind { None, Rest, Edge, Pinned };
+inline constexpr float gutter = Zone::inset;   // 4: the window's edge to the page
+inline constexpr float reach = 16;             // the gutter + the page's first 12 DIP
+inline constexpr float beyond = 24;            // past the window's edge
+inline constexpr float holdMargin = 24;        // past the shown column's edge
+inline constexpr double pinnedMs = 60, edgeMs = 120, restMs = Timing::hoverMs, graceMs = 300;
+// One pointer sample, client DIP at the window's DPI.
+struct Sample {
+    bool pointer = false, front = false;   // the pointer known; the window (or a popup of its own) in front, not minimised
+    float depth = -1e9f;                   // from the window's edge on the column's side, inward (negative: beyond it)
+    float y = 0, top = 0, bottom = 0;      // the pointer's height; the column's rows [top, bottom)
+    bool pinned = false;                   // held on the monitor's outer pixel, no monitor beyond, the window's edge on it
+    bool restored = false;                 // the window has its resize border (neither maximized nor full screen)
+    bool scrollbar = false;                // the page's overlay scrollbar is on this side
+};
+inline bool Rows(const Sample& s) { return s.y >= s.top && s.y < s.bottom; }
+inline Kind Classify(const Sample& s) {
+    if (!s.pointer || !s.front || !Rows(s) || s.depth < -beyond || s.depth >= reach) return Kind::None;
+    if (s.scrollbar) return s.depth < gutter ? Kind::Rest : Kind::None;
+    if (s.pinned) return Kind::Pinned;
+    if (s.depth < 0 || (s.depth < gutter && !s.restored)) return Kind::Edge;
+    return Kind::Rest;
+}
+// The shown column keeps the pointer: over it (`column` wide, its border included), within holdMargin of it, or beyond
+// the window's edge (the edge zone's own width at least).
+inline bool Holds(const Sample& s, float column) {
+    return s.pointer && s.front && Rows(s) && s.depth >= -beyond && s.depth < std::max(column, reach) + holdMargin;
+}
+// The host's measures: device pixels in screen coordinates.
+struct Pixels {
+    int x = 0, y = 0;                               // the pointer
+    int left = 0, top = 0, right = 0, bottom = 0;   // the window's client area
+    int monitorLeft = 0, monitorRight = 0;          // the pointer's monitor
+    bool monitorBeyond = false;                     // the screen goes on one pixel past the pointer on the column's side (this monitor or the next)
+    unsigned dpi = 96;                              // the window's
+};
+inline Sample Measure(Side side, const Pixels& p, bool pointer, bool front, float topDip, bool restored) {
+    const float dpi = static_cast<float>(p.dpi ? p.dpi : 96);
+    const auto dip = [dpi](int px) { return static_cast<float>(px) * 96.f / dpi; };   // exact on whole DIP (30 px at 120 dpi: 24, not 24.0000004)
+    Sample s; s.pointer = pointer; s.front = front; s.restored = restored; s.scrollbar = side == Side::Right;
+    s.depth = dip(side == Side::Left ? p.x - p.left : p.right - 1 - p.x);   // the edge pixel is 0 on both sides
+    s.y = dip(p.y - p.top); s.top = topDip; s.bottom = dip(p.bottom - p.top);
+    s.pinned = !p.monitorBeyond && (side == Side::Left ? p.x <= p.monitorLeft && p.left <= p.monitorLeft
+                                                       : p.x >= p.monitorRight - 1 && p.right >= p.monitorRight);
+    return s;
+}
+}
+// The column over the page in Focus: shown or not, and why. Pure (the host samples the pointer every ~30 ms).
 struct FocusReveal {
     bool open = false;
     bool pinned = false;          // opened by Ctrl+Maj+, (or for the address): stays until the shortcut again or Échap
     bool wide = false;            // opened for the address in the compact layout: the complete column (it has the field)
-    double edgeSinceMs = -1;      // the pointer in the left band since (-1: not there)
-    // One pointer sample: `inBand` the left band (window in front, no button down), `overColumn` the shown column,
-    // `hold` something keeps it. True when `open` changed.
-    bool Pointer(double now, bool inBand, bool overColumn, bool hold) {
+    bool armed = true;            // false after a press, or the column sent away with the pointer on the edge, until it is seen off it
+    double zoneSinceMs = -1;      // the pointer on the edge zone (any kind) since (-1: not there)
+    double edgeSinceMs = -1;      // on its Edge / Pinned part since
+    double outSinceMs = -1;       // shown: the pointer out of its hold since
+    EdgeZone::Kind by = EdgeZone::Kind::None;   // what brought it last (log)
+    // One sample: `kind` the edge zone under the pointer (EdgeZone::Classify), `holds` the pointer keeps the shown column
+    // (EdgeZone::Holds), `buttons` a mouse button down, `hold` something else keeps it. True when `open` changed.
+    bool Pointer(double now, EdgeZone::Kind kind, bool holds, bool buttons, bool hold) {
+        namespace E = EdgeZone;
         if (!open) {
-            if (!inBand) { edgeSinceMs = -1; return false; }
-            if (edgeSinceMs < 0) edgeSinceMs = now;
-            if (now - edgeSinceMs < Timing::hoverMs) return false;
-            open = true; pinned = wide = false; edgeSinceMs = -1; return true;
+            if (buttons) armed = false;
+            else if (kind == E::Kind::None) armed = true;
+            if (!armed || kind == E::Kind::None) { zoneSinceMs = edgeSinceMs = -1; return false; }
+            if (zoneSinceMs < 0) zoneSinceMs = now;
+            if (kind == E::Kind::Rest) edgeSinceMs = -1; else if (edgeSinceMs < 0) edgeSinceMs = now;
+            const double wait = kind == E::Kind::Pinned ? E::pinnedMs : E::edgeMs;
+            if (now - zoneSinceMs < E::restMs && (edgeSinceMs < 0 || now - edgeSinceMs < wait)) return false;
+            open = true; pinned = wide = false; by = kind; zoneSinceMs = edgeSinceMs = outSinceMs = -1; return true;
         }
-        edgeSinceMs = -1;
-        if (pinned || overColumn || inBand || hold) return false;
-        open = wide = false; return true;
+        if (pinned || holds || hold) { outSinceMs = -1; return false; }
+        if (buttons) { Close(); return true; }   // a press outside it: at once
+        if (outSinceMs < 0) outSinceMs = now;
+        if (now - outSinceMs < E::graceMs) return false;
+        open = wide = false; outSinceMs = -1; return true;
     }
-    double Remaining(double now) const { return open || edgeSinceMs < 0 ? -1 : std::max(0.0, Timing::hoverMs - (now - edgeSinceMs)); }
     // The shortcut: in (pinned) / out.
-    void Toggle() { if (open) Close(); else { open = pinned = true; wide = false; edgeSinceMs = -1; } }
+    void Toggle() { if (open) Close(); else { open = pinned = true; wide = false; zoneSinceMs = edgeSinceMs = outSinceMs = -1; by = EdgeZone::Kind::None; } }
     // The address needs the field: in, pinned; `compact`: the complete column.
-    void ForAddress(bool compact) { if (!open) { open = pinned = true; edgeSinceMs = -1; } else pinned = true; wide = wide || compact; }
-    void Close() { open = pinned = wide = false; edgeSinceMs = -1; }
+    void ForAddress(bool compact) { if (!open) { open = pinned = true; zoneSinceMs = edgeSinceMs = outSinceMs = -1; by = EdgeZone::Kind::None; } else pinned = true; wide = wide || compact; }
+    // Away (Échap, the shortcut, a press outside, Focus or the layout changed): the edge waits for the pointer to leave it.
+    void Close() { open = pinned = wide = false; armed = false; zoneSinceMs = edgeSinceMs = outSinceMs = -1; }
 };
 // The compact « » » popover (« compact, 40 » 1WSC-0): all the bookmarks, 4 right of the column, top on the « » » tile
 // (moved up to stay in the window), the unfolded grid inside (5 rows, then scrolling).
@@ -669,7 +776,8 @@ inline Box ShownRow(const Layout& L, float slot, float presence, float scroll) {
 // frame (the host lays it out from ColumnWidth). Folding: the titles fade out over the first 80 ms, the column keeps the
 // complete layout for those 80 ms, then the compact one (its tiles and buttons glide to their places: Chrome's morph).
 // Unfolding: the complete layout at once, the titles fading in over 120 ms once the width passes 70 %. A gesture can
-// throw it (the edge released under 160: damping .85 with the pointer's velocity). Reduced motion: at once.
+// throw it (the edge released under 160: damping .85 with the pointer's velocity). An edge drag crossing 160 runs it too
+// (#143: it jumped), toward the pointer's width (`panel` follows it every frame). Reduced motion: at once.
 inline double EaseOut(double x) { x = std::clamp(x, 0.0, 1.0); const double u = 1 - x; return 1 - u * u * u; }
 struct Fold {
     Mode target = Mode::Complete; double startMs = -1; float from = 1, velocity = 0, damping = 1, titlesAtStart = 1;
