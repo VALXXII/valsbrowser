@@ -39,6 +39,27 @@ static void HeldChecks() {
     Expect(HeldCard::Button(0, card, 0).right + HeldCard::buttonGap == HeldCard::Button(0, card, 1).left && HeldCard::Button(0, card, 1).right == HeldCard::right - HeldCard::inset && HeldCard::Button(0, card, 0).bottom == card - HeldCard::inset, "card buttons: two equal halves, 12 inside");
 }
 
+// « Conserver » (the bug: the kept file vanished, measured on WebView2 158: the engine's removal of its own file came
+// late, after the old code had given up waiting at 3 s and dropped its own copy, or 16 ms after the file was given back).
+static void KeepChecks() {
+    using namespace Keep;
+    Expect(PathState(false, 2, false) == At::Gone && PathState(false, 3, false) == At::Gone, "keep: the engine's file is gone only when its name is not found");
+    Expect(PathState(false, 5, false) == At::Pending && PathState(false, 32, false) == At::Pending && PathState(true, 0, false) == At::Pending, "keep: a name still listed that cannot be opened (removal pending) is not gone");
+    Expect(PathState(true, 0, true) == At::Left, "keep: a file that opens at the path: the engine's, not removed (yet)");
+    Expect(AfterCancel(At::Gone, 0, 0) == Next::Restore && AfterCancel(At::Gone, WaitSteps + 5, 0) == Next::Restore, "keep: the path is given back as soon as the engine's file is gone");
+    Expect(AfterCancel(At::Pending, 0, 0) == Next::Wait && AfterCancel(At::Pending, 30, 0) == Next::Wait && AfterCancel(At::Pending, 40, 0) == Next::Wait, "keep: a pending removal is waited for at 3 s and 4 s (the old code gave up at 3 s and dropped the only copy)");
+    Expect(WaitSteps * StepMs >= 10000, "keep: the wait covers the engine's removal measured up to about 4 s with room to spare");
+    Expect(AfterCancel(At::Pending, WaitSteps - 1, 0) == Next::Wait && AfterCancel(At::Pending, WaitSteps, 0) == Next::Elsewhere, "keep: a path that never frees up: the next free name, never a dead row");
+    Expect(AfterCancel(At::Left, 0, 1) == Next::Wait && AfterCancel(At::Left, 15, LeftSteps - 1) == Next::Wait, "keep: the engine's file still readable for less than LeftSteps: its removal may still come");
+    Expect(AfterCancel(At::Left, 25, LeftSteps) == Next::Stays && AfterCancel(At::Left, WaitSteps + 1, LeftSteps) == Next::Stays, "keep: readable for LeftSteps in a row: the engine's removal did not take (measured: a reader not allowing deletion), the file stays where it is");
+    Expect(AfterCancel(At::Left, WaitSteps, 3) == Next::Elsewhere, "keep: the wait still ends");
+    Expect(Guarding(true, 0) == Guard::Hold && Guarding(true, GuardSteps - 1) == Guard::Hold && Guarding(true, GuardSteps) == Guard::Done, "keep: the path is watched for the guard, then settled");
+    Expect(Guarding(false, 0) == Guard::PutBack && Guarding(false, GuardSteps - 1) == Guard::PutBack, "keep: a removal during the guard is undone (measured: 16 ms after the file was given back)");
+    Expect(Guarding(false, GuardSteps) == Guard::Done && GuardSteps * StepMs >= 1000 && (LeftSteps + GuardSteps) * StepMs >= 4500, "keep: the guard ends; a removal up to 4.5 s after a readable file is still undone");
+    Item keeping; keeping.state = State::InProgress; keeping.held = true;
+    Expect(ActionsFor(keeping).first == Action::Discard && ActionsFor(keeping).second == Action::Keep, "keep under way: « Supprimer » stays live (it abandons the keep)");
+}
+
 static void ModelChecks() {
     Expect(Bytes(52848230, 209715200) == L"50.4/200MB", "bytes in total's unit");
     Expect(Bytes(512, 2048) == L"0.5/2KB", "sub-unit received");
@@ -132,6 +153,7 @@ static void ModelChecks() {
     Expect(end[1].top == 48 && end[0].opacity == 1 && end.back().opacity == 0 && end[5].opacity == 1, "morph lands on the drawer");
     Expect(half[1].kind == DownloadsUI::SlotKind::Row && half[1].clipBottom == 12 + 24 + .5f * (12 + 4 * 48) && half[1].opacity == .5f, "folding rows are clipped and faded");
     HeldChecks();
+    KeepChecks();
 }
 
 struct Fixture {

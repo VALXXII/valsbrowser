@@ -96,6 +96,40 @@ inline State MapEngineState(int state, int reason, bool userPaused) {
 inline bool HeldForDecision(int state, std::int64_t received, std::int64_t total, bool userPaused, std::int64_t fullSinceMs) {
     return state == Engine::InProgress && !userPaused && total > 0 && received >= total && fullSinceMs >= Engine::HoldGraceMs;
 }
+// « Conserver » on a held download (src/main.cpp KeepHeldDownload, FinishKeep, GuardKeptFile). The kept bytes get a
+// second name of their own (a hard link, or a copy), then Cancel() lets the engine go. Measured on WebView2 158
+// (tests/downloads/held_download_e2e.py folder events, download_engine_probe.py): the engine removes its own file
+// asynchronously, from at once to seconds later (a removal left pending while another program has the file open, about
+// 4 s), its removal can hit the name the kept file was just given back (16 ms after it), and when another program
+// reads the file without allowing its deletion the removal simply fails and the file stays where it is. So:
+//   - the path's state after the cancel (At): Gone (not found), Pending (listed but cannot be opened: its removal is
+//     pending), Left (a file that opens: the engine's, not removed yet, or not at all);
+//   - Gone: the kept file gets its path back as another name of ours; Left for LeftSteps in a row: the engine's removal
+//     did not take, the file is at its path already; Pending, or Left for less: wait, up to WaitSteps; a path that never
+//     frees up: the kept file takes the next free name;
+//   - then our own name stays for GuardSteps, during which a removal of the path is undone from it.
+namespace Keep {
+inline constexpr int StepMs = 100;
+inline constexpr int WaitSteps = 300;   // 30 s for the engine's own file to go (measured: up to about 4 s)
+inline constexpr int LeftSteps = 20;    // 2 s of a readable file at the path: the engine's removal did not take
+inline constexpr int GuardSteps = 30;   // 3 s during which a late removal of the path is undone (measured: 16 ms after)
+enum class At { Gone, Pending, Left };
+// From GetFileAttributesW (attributesRead, error) and an attempt to open the path: gone only on « not found »
+// (2 ERROR_FILE_NOT_FOUND, 3 ERROR_PATH_NOT_FOUND); a name whose removal is pending cannot be opened.
+inline At PathState(bool attributesRead, unsigned long error, bool opens) {
+    if (!attributesRead && (error == 2 || error == 3)) return At::Gone;
+    return attributesRead && opens ? At::Left : At::Pending;
+}
+enum class Next { Wait, Restore, Stays, Elsewhere };
+// attempt: steps already waited; leftFor: steps in a row the path was Left (this one included).
+inline Next AfterCancel(At at, int attempt, int leftFor) {
+    if (at == At::Gone) return Next::Restore;
+    if (at == At::Left && leftFor >= LeftSteps) return Next::Stays;
+    return attempt < WaitSteps ? Next::Wait : Next::Elsewhere;
+}
+enum class Guard { Hold, PutBack, Done };
+inline Guard Guarding(bool there, int step) { return step >= GuardSteps ? Guard::Done : there ? Guard::Hold : Guard::PutBack; }
+}
 
 // ---- Text ---------------------------------------------------------------
 inline std::wstring FileName(const std::wstring& path) {
