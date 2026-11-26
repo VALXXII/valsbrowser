@@ -1170,7 +1170,7 @@ int main(int argc, char** argv) {
         OK(bm2 == bmBytes && h2b == hBytes);
         // Destination save failure: bookmarks file of an unknown (future) format → nothing written, nothing
         // claimed; history still commits on its own (partial import, reported per category).
-        const std::string future = "browser-bookmarks 2\nwhatever\n"; CHECK(ProfileStore::WriteAtomic(bmFile, future));
+        const std::string future = "browser-bookmarks 3\nwhatever\n";   // 2 carries a folder's look (#138): 3 stands for a future version CHECK(ProfileStore::WriteAtomic(bmFile, future));
         const BM::Store bBefore = base, mBefore = mine;
         Item extra; extra.title = L"new"; extra.url = L"https://new.example/"; std::vector<Item> roots{extra};
         auto c3 = CommitBookmarks(data, bmFile, base, mine, L"Importés de Chrome", roots, now);

@@ -28,7 +28,7 @@ static Case Setup(const std::wstring& name, const BM::Store& seed, const BI::Fol
 static ProfileStore::Result UndoAndSave(Case& c, const BP::Result& r) {
     BP::Undo(c.mine, r);
     std::map<BM::Id, BM::Id> remap;
-    return ProfileStore::Commit<BM::Store>(c.data, c.file, c.base, c.mine, [&](const BM::Store& b, const BM::Store& m, const BM::Store& t) { return BM::Store::Merge(b, m, t, &remap); }, 5000, {"browser-bookmarks 1"});
+    return ProfileStore::Commit<BM::Store>(c.data, c.file, c.base, c.mine, [&](const BM::Store& b, const BM::Store& m, const BM::Store& t) { return BM::Store::Merge(b, m, t, &remap); }, 5000, Bookmarks::Headers());
 }
 
 int wmain(int argc, wchar_t** argv) {
@@ -47,7 +47,7 @@ int wmain(int argc, wchar_t** argv) {
         for (BM::Id k : std::vector<BM::Id>(c.mine.Find(work1)->children)) c.mine.Move(k, BM::BarRoot, BM::End);
         c.mine.Remove(work1);
         std::map<BM::Id, BM::Id> remap;
-        ProfileStore::Commit<BM::Store>(c.data, c.file, c.base, c.mine, [&](const BM::Store& b, const BM::Store& m, const BM::Store& t) { return BM::Store::Merge(b, m, t, &remap); }, 5000, {"browser-bookmarks 1"});
+        ProfileStore::Commit<BM::Store>(c.data, c.file, c.base, c.mine, [&](const BM::Store& b, const BM::Store& m, const BM::Store& t) { return BM::Store::Merge(b, m, t, &remap); }, 5000, Bookmarks::Headers());
         OK(!Load(c.file).Find(link));   // the defect the transactional promotion exists for (review 9ef33c5 P1)
     }
     {   // 1. The reviewer's case: map-proven folder, actual save, reload — the link survives, on the bar, same id.

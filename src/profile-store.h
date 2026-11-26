@@ -135,7 +135,7 @@ inline std::size_t RecordLines(const std::string& bytes) {
 }
 inline std::string FirstLine(const std::string& bytes) { std::string l = bytes.substr(0, bytes.find('\n')); if (!l.empty() && l.back() == '\r') l.pop_back(); return l; }
 
-// `known`: the header lines this build reads (e.g. {"browser-bookmarks 1"}). Empty = no check.
+// `known`: the header lines this build reads (e.g. Bookmarks::Headers()). Empty = no check.
 // A known format that is damaged (bad line, truncation) is copied aside BYTE FOR BYTE, the copy is
 // read back and compared BEFORE anything is written; if that fails, nothing is written. What could
 // be read is then also taken as the base, so nothing this window holds is mistaken for « deleted

@@ -51,7 +51,7 @@ inline Result Commit(const std::wstring& dataDir, const std::wstring& file, BM::
         const auto it = r.remap.find(folder);
         Apply(merged, it == r.remap.end() ? folder : it->second, owned, r, added);   // a retry runs this again: Apply resets `r`
         return merged;
-    }, timeoutMs, {"browser-bookmarks 1"});
+    }, timeoutMs, Bookmarks::Headers());
     if (!r.Saved()) { r.moved.clear(); r.removed.reset(); }
     return r;
 }

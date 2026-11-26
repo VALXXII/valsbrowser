@@ -3892,7 +3892,7 @@ void SaveBookmarks(){
     if(!bookmarksSaveFailed&&bookmarks==bookmarksBase&&ProfileStore::StampOf(BookmarksFile())==bookmarksSeen)return;
     ProfileStore::Lock lock(dataDir); /* held through the stamp below (the commit re-enters it: same thread) */
     std::map<BM::Id,BM::Id> remap;const BM::Store before=bookmarks;
-    const auto r=ProfileStore::Commit<BM::Store>(dataDir,BookmarksFile(),bookmarksBase,bookmarks,[&remap](const BM::Store& b,const BM::Store& m,const BM::Store& t){return BM::Store::Merge(b,m,t,&remap);},lock.Held()?5000:0,{"browser-bookmarks 1"});
+    const auto r=ProfileStore::Commit<BM::Store>(dataDir,BookmarksFile(),bookmarksBase,bookmarks,[&remap](const BM::Store& b,const BM::Store& m,const BM::Store& t){return BM::Store::Merge(b,m,t,&remap);},lock.Held()?5000:0,Bookmarks::Headers());
     bookmarksSeen=r==ProfileStore::Result::Unchanged?ProfileStore::StampOf(BookmarksFile()):ProfileStore::Stamp{};
     const bool ok=r==ProfileStore::Result::Written||r==ProfileStore::Result::Unchanged;
     if(!remap.empty()){bookmarkUndo.clear();Log(L"BOOKMARKS new ids remapped (another window used them)");}
