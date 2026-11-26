@@ -21,6 +21,9 @@
 
 namespace NativeChrome { namespace Downloads {
 enum class State { InProgress, Paused, Completed, Failed, Cancelled };
+// Why the engine holds a download for the user's decision (HeldReason): its pass over and the zone mark there (Microsoft
+// Defender SmartScreen), an insecure source, or no mark possible past the fallback; each has its own sentence on the card.
+enum class HeldBy { None, Mark, Insecure, Fallback };
 struct Item {
     int id = 0;
     std::wstring path, uri, reason;  // reason: short failure text (Failed only)
@@ -34,13 +37,17 @@ struct Item {
     // SmartScreen: a rarely downloaded file it could not confirm as safe). WebView2 reports nothing else (state
     // IN_PROGRESS, no interrupt reason) and keeps it so until Keep or Discard; it deletes the file when it exits.
     bool held = false;
+    HeldBy heldBy = HeldBy::None;   // held only: why (the card's sentence)
+    // InProgress only, not held: every byte is in and the engine's own check of the file still runs (« Vérification… »,
+    // no Pause): it completes by itself, or becomes held.
+    bool checking = false;
 };
 // Row actions, left to right. None marks an empty slot.
 enum class Action { None, Pause, Resume, Cancel, Retry, Remove, ShowInFolder, Open, Discard, Keep };
 struct Actions { Action first = Action::None, second = Action::None; };
 inline Actions ActionsFor(const Item& item) {
     switch (item.state) {
-    case State::InProgress: return item.held ? Actions{Action::Discard, Action::Keep} : Actions{Action::Pause, Action::Cancel};
+    case State::InProgress: return item.held ? Actions{Action::Discard, Action::Keep} : item.checking ? Actions{Action::None, Action::Cancel} : Actions{Action::Pause, Action::Cancel};
     case State::Paused: return {Action::Resume, Action::Cancel};
     case State::Completed: return item.missing ? Actions{Action::None, Action::Remove} : Actions{Action::ShowInFolder, Action::Open};
     case State::Failed: return item.canResume ? Actions{Action::Retry, Action::Remove} : Actions{Action::None, Action::Remove};
@@ -82,10 +89,17 @@ inline const wchar_t* TipFor(Action action) {
 namespace Engine {
 inline constexpr int InProgress = 0, Interrupted = 1, Completed = 2;
 inline constexpr int ReasonUserCanceled = 26, ReasonUserShutdown = 27, ReasonUserPaused = 28;
-// A download whose bytes are all in and that the engine still reports in progress for this long is held for the
-// user's decision (measured: a finished download completes within a few hundred ms of its last byte; a held one
-// never does). A late completion after the grace still lands as Completed.
-inline constexpr std::int64_t HoldGraceMs = 2000;
+// When every byte is in, the engine runs its own pass on the file (attachment services, antivirus, SmartScreen's
+// reputation) and writes the zone mark at its end; a download it then keeps in progress is held for the user's decision.
+// Measured (WebView2 158, tests/downloads/download_engine_probe.py --timeline, loaded machine): a finished download
+// completes within 15 ms of its mark; a SmartScreen hold gets its mark 1.5 s (small .exe) to 9.9 s (300 MB) after the
+// last byte and stays in progress; with SmartScreen's service never answering an .exe gets NO mark and completes by itself
+// 16 s after the last byte, ~24 s on a loaded machine (the old 2 s rule showed the card there: the bug); an insecure-download hold (an http file
+// from an https page) never gets a mark and stays in progress.
+inline constexpr std::int64_t HoldGraceMs = 2000;            // an insecure-source download still in progress this long
+inline constexpr std::int64_t MarkGraceMs = 1000;            // the zone mark there and still in progress this long
+inline constexpr std::int64_t UnmarkedFallbackMs = 30000;    // no mark can come there (no streams, policy): past the reputation timeout (16 s, ~24 s loaded)
+inline constexpr std::int64_t MarkedFallbackMs = 60000;      // a mark can come but none came: the engine's pass never ended
 }
 inline State MapEngineState(int state, int reason, bool userPaused) {
     if (state == Engine::Completed) return State::Completed;
@@ -94,10 +108,27 @@ inline State MapEngineState(int state, int reason, bool userPaused) {
     if (reason == Engine::ReasonUserCanceled) return State::Cancelled;
     return State::Failed;
 }
-// fullSinceMs: how long every byte has been in (negative: not all in, or the size is unknown).
-inline bool HeldForDecision(int state, std::int64_t received, std::int64_t total, bool userPaused, std::int64_t fullSinceMs) {
-    return state == Engine::InProgress && !userPaused && total > 0 && received >= total && fullSinceMs >= Engine::HoldGraceMs;
+// Why a download is held for the user's decision, or None: the « À confirmer » card only on a real hold; until then (the
+// engine's own pass still runs) the checking row (« Vérification… », Item::checking). fullSinceMs: how long every byte has been in (negative:
+// not all in, or the size is unknown); markedSinceMs: how long the file has carried its zone mark (negative: no mark);
+// insecure: an insecure source (Keep::InsecureSource); markable: a zone mark can exist where the file is (a volume with
+// named streams, zone information kept by policy).
+inline HeldBy HeldReason(int state, std::int64_t received, std::int64_t total, bool userPaused, std::int64_t fullSinceMs, std::int64_t markedSinceMs, bool insecure, bool markable) {
+    if (state != Engine::InProgress || userPaused || total <= 0 || received < total || fullSinceMs < 0) return HeldBy::None;
+    if (markedSinceMs >= Engine::MarkGraceMs) return HeldBy::Mark;
+    if (insecure && fullSinceMs >= Engine::HoldGraceMs) return HeldBy::Insecure;
+    if (markedSinceMs < 0 && fullSinceMs >= (markable ? Engine::MarkedFallbackMs : Engine::UnmarkedFallbackMs)) return HeldBy::Fallback;
+    return HeldBy::None;
 }
+inline bool HeldForDecision(int state, std::int64_t received, std::int64_t total, bool userPaused, std::int64_t fullSinceMs, std::int64_t markedSinceMs, bool insecure, bool markable) {
+    return HeldReason(state, received, total, userPaused, fullSinceMs, markedSinceMs, insecure, markable) != HeldBy::None;
+}
+// The card's sentence for a held download: SmartScreen's (the zone mark), the insecure connection's, or a neutral one
+// where Windows could not check the file (the fallback).
+inline I18n::Id HeldBodyId(HeldBy by) {
+    return by == HeldBy::Insecure ? I18n::Id::downloads_held_body_insecure : by == HeldBy::Fallback ? I18n::Id::downloads_held_body_unchecked : I18n::Id::downloads_held_body;
+}
+inline const wchar_t* HeldBody(const Item& item) { return I18n::T(HeldBodyId(item.heldBy)); }
 // « Conserver » on a held download (src/main.cpp KeepHeldDownload, WaitEnginePass, WatchKept): the decisions. Measured
 // on WebView2 158 (tests/downloads/download_engine_probe.py --observe): after a cancel the engine removes its file by
 // name when its own pass on the file ends (the pass that writes the zone mark): at once when it was over, seconds later
@@ -136,6 +167,19 @@ inline Next Look(bool seen, At at, std::int64_t sinceGivenMs, std::int64_t guard
     return sinceGivenMs >= guardMs ? Next::Settle : Next::Guard;
 }
 inline int LookAfterMs(int looks) { return looks < 600 ? StepMs : 1000; }   // once a second after the first minute
+// At exit (src/main.cpp KeepsAfterEngine), a keep whose removal by the engine may still come waits for the end of the
+// engine's browser process, ExitWaitMs at most and only then (an ordinary exit never waits). endedCleanly: it exited
+// with code 0, its shutdown cancelled what it still held (measured: it removes such a file at its end, and a cancelled
+// download is never cleaned by its next start). Then nothing removes the file any more: a file it removed (or an empty
+// file it left) is given back from our name, and the keep is settled. The engine still up (another window of this
+// profile uses it), ended otherwise (a crash: its next start cleans its unfinished downloads, measured ~1 s after its
+// start) or a path that cannot be read: our name stays for the next start's sweep, which gives the file back and watches.
+inline constexpr unsigned long ExitWaitMs = 5000;
+enum class Exit { Settle, GiveBackThenSettle, NextStart };
+inline Exit AtExit(bool endedCleanly, At at, bool engineStub) {
+    if (!endedCleanly || at == At::Pending) return Exit::NextStart;
+    return at == At::Gone || engineStub ? Exit::GiveBackThenSettle : Exit::Settle;
+}
 // An empty file at the path that is not ours while our bytes are not empty: what the engine leaves after a cancel during
 // its own pass (measured: removal, then a 0-byte file written at the path within 140 ms, left there). The kept file takes
 // its place; a non-empty file that is not ours is never replaced.

@@ -85,6 +85,11 @@ def existing_fixtures() -> None:
     fixture('adblock_folder_test', [*STRICT, 'tests/adblock_folder_test.cpp'])
     # browser.log: origins only in release builds, capped at 1 MiB, erased with the browsing data (src/log-privacy.h, SEC-05).
     fixture('log_privacy_test', [*STRICT, 'tests/log_privacy_test.cpp'])
+    # « Conserver »: what a browser stopped in the middle of a keep leaves in kept-downloads goes back to the user at the next
+    # start (src/kept-downloads.h). Windowless, temporary folders under the output folder.
+    kept_work = OUT / 'kept-downloads-work'
+    kept_work.mkdir(parents=True, exist_ok=True)
+    fixture('kept_downloads_test', [*STRICT, '-municode', 'tests/downloads/kept_downloads_test.cpp'], [kept_work])
     # Directory loops that never throw (src/fs-safe.h, SEC-27): an unlistable sub-folder ends the loop, not the process.
     fixture('fs_safe_test', [*STRICT, 'tests/fs_safe_test.cpp', '-ladvapi32'])
     # One taskbar identity for every installed version (src/taskbar-identity.h; e2e: tests/e2e/taskbar_identity_e2e.py).

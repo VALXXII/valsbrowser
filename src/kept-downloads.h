@@ -2,11 +2,13 @@
 // « Conserver » (src/main.cpp KeepHeldDownload): our own name for the kept bytes lives in <dataDir>\kept-downloads as
 // "<pid>-<download id>-<file name>", with a sidecar "<that name>.path" holding the download's final path (UTF-8). In a
 // normal run both go when the keep is settled. A browser killed in the middle leaves them, and our name may then be the
-// only copy of the user's file: at the next start, Sweep gives every leftover of a process that is gone back to the
-// user. Nothing is ever deleted before its bytes are at a user-visible place; a live window's keep is never touched.
+// only copy of the user's file: at the next start, Sweep claims every leftover of a process that is gone, gives the file
+// back where it is missing and hands it to the browser to watch (AdoptedLook). Nothing is ever deleted before its bytes
+// are at a user-visible place and safe from the engine's own clean-up; a live window's keep is never touched.
 // No HWND, no WebView2, no global of the browser: tests/downloads/kept_downloads_test.cpp runs it windowless.
 #include <windows.h>
 #include <cwchar>
+#include <cstdint>
 #include <cwctype>
 #include <functional>
 #include <string>
@@ -67,11 +69,29 @@ inline std::wstring NextFreeName(const std::wstring& folder, const std::wstring&
     for (int n = 1; n < 1000 && Exists(target); ++n) target = folder + L"\\" + stem + L" (" + std::to_wstring(n) + L")" + ext;
     return target;
 }
-enum class Outcome { Untouched, Cleaned, Restored, RestoredElsewhere, ToDownloads, Failed };
-struct Result { std::wstring leftover, to; Outcome outcome; };
-// live: is that pid a running browser of ours (its keep is under way: untouched). downloadFolder: where a leftover
-// without a readable sidecar goes. Log: one line per leftover.
-inline std::vector<Result> Sweep(const std::wstring& folder, const std::wstring& downloadFolder, const std::function<bool(unsigned long)>& live, const std::function<void(const std::wstring&)>& Log) {
+enum class Outcome { Untouched, Adopted, Restored, RestoredElsewhere, ToDownloads, TakenElsewhere, Failed };
+// leftover: the name found; claimed: our own name for it now (this process's pid); to: where the file is (Adopted,
+// Restored: its recorded path, watched from now on; RestoredElsewhere / ToDownloads: a name the engine never knew).
+struct Result { std::wstring leftover, claimed, to; Outcome outcome; };
+// A browser killed in the middle of a keep: when the next start finds the file at its place, that does not make it safe.
+// Measured (night run, held_download_e2e keep-then-kill): the restarted engine removed the file by name ~8 s after the
+// kill, after an earlier sweep had judged it in place and dropped our name. So a leftover is never dropped on the spot: it
+// is claimed (renamed to this process, atomically: two processes sweeping at once never both take it), given back where
+// the file is missing, and WATCHED like a keep (src/main.cpp WatchKept): every removal undone from our name until the
+// guard, counted from this profile's engine being up, is over; only then, with the file at its path proven ours, does
+// our name go. A window closing before that leaves it for the next start.
+inline constexpr std::int64_t AdoptedGuardMs = 60000;
+enum class Watch { Wait, GiveBack, Settle };
+// engineUp: this profile's engine has started (its own clean-up of an unfinished download comes after its start);
+// sinceMs: since the later of the engine's start and the last give-back; there: the file is at its recorded path.
+inline Watch AdoptedLook(bool engineUp, std::int64_t sinceMs, bool there, std::int64_t guardMs = AdoptedGuardMs) {
+    if (!there) return Watch::GiveBack;
+    return engineUp && sinceMs >= guardMs ? Watch::Settle : Watch::Wait;
+}
+// live: is that pid a running browser of ours (its keep is under way: untouched). ownPid / nextId: this process and the
+// ids its claimed names take. downloadFolder: where a leftover without a readable sidecar goes. Log: one line per leftover.
+inline std::vector<Result> Sweep(const std::wstring& folder, const std::wstring& downloadFolder, const std::function<bool(unsigned long)>& live, const std::function<void(const std::wstring&)>& Log,
+                                 unsigned long ownPid = GetCurrentProcessId(), unsigned long nextId = 900000000) {
     std::vector<Result> out; std::vector<std::wstring> names;
     WIN32_FIND_DATAW f{}; HANDLE h = FindFirstFileW((folder + L"\\*").c_str(), &f);
     if (h == INVALID_HANDLE_VALUE) return out;
@@ -81,21 +101,31 @@ inline std::vector<Result> Sweep(const std::wstring& folder, const std::wstring&
         unsigned long pid = 0; std::wstring file; const std::wstring leftover = folder + L"\\" + n;
         if (!ParseName(n, pid, file)) {   // a sidecar alone (its file already went): dropped once its process is gone
             unsigned long p2 = 0; std::wstring f2;
-            if (n.size() > 5 && n.compare(n.size() - 5, 5, L".path") == 0 && ParseName(n.substr(0, n.size() - 5), p2, f2) && !live(p2) && !Exists(leftover.substr(0, leftover.size() - 5))) DeleteFileW(leftover.c_str());
+            if (n.size() > 5 && n.compare(n.size() - 5, 5, L".path") == 0 && ParseName(n.substr(0, n.size() - 5), p2, f2) && p2 != ownPid && !live(p2) && !Exists(leftover.substr(0, leftover.size() - 5))) DeleteFileW(leftover.c_str());
             continue;
         }
-        if (live(pid)) { out.push_back({leftover, L"", Outcome::Untouched}); continue; }
+        if (pid == ownPid || live(pid)) { out.push_back({leftover, L"", L"", Outcome::Untouched}); continue; }
+        // Claimed by a rename: the one process whose rename succeeds owns it (another one sweeping at the same start).
+        const std::wstring claimed = folder + L"\\" + std::to_wstring(ownPid) + L"-" + std::to_wstring(nextId++) + L"-" + file;
+        if (!MoveFileExW(leftover.c_str(), claimed.c_str(), 0)) { out.push_back({leftover, L"", L"", Outcome::TakenElsewhere}); continue; }
+        MoveFileExW(SidecarOf(leftover).c_str(), SidecarOf(claimed).c_str(), 0);
         std::wstring finalPath, to; Outcome outcome;
-        if (!ReadSidecar(leftover, finalPath)) { to = NextFreeName(downloadFolder, file); outcome = Outcome::ToDownloads; }
-        else if (Exists(finalPath) && HoldsOurBytes(finalPath, leftover)) { Drop(leftover); out.push_back({leftover, finalPath, Outcome::Cleaned}); Log(L"DOWNLOAD kept leftover: the file is at its place, our name goes: " + NameOf(finalPath)); continue; }
-        else if (Exists(finalPath) && SizeOf(finalPath) == 0 && SizeOf(leftover) > 0 && DeleteFileW(finalPath.c_str())) { to = finalPath; outcome = Outcome::Restored; }   // the engine's empty leftover of a cancel during its pass
-        else if (!Exists(finalPath)) { to = finalPath; outcome = Outcome::Restored; }
-        else { to = NextFreeName(FolderOf(finalPath), NameOf(finalPath)); outcome = Outcome::RestoredElsewhere; }
-        if (!MoveFileExW(leftover.c_str(), to.c_str(), MOVEFILE_COPY_ALLOWED)) {
-            Log(L"DOWNLOAD kept leftover could not be given back (" + std::to_wstring(GetLastError()) + L"), it stays: " + leftover); out.push_back({leftover, to, Outcome::Failed}); continue;
+        if (!ReadSidecar(claimed, finalPath)) {   // no note of where it belongs: the download folder, under its own name
+            to = NextFreeName(downloadFolder, file); outcome = Outcome::ToDownloads;
+        } else if (Exists(finalPath) && HoldsOurBytes(finalPath, claimed)) {   // at its place: watched, never dropped on the spot
+            out.push_back({leftover, claimed, finalPath, Outcome::Adopted}); Log(L"DOWNLOAD kept leftover adopted: the file is at its place, watched before our name goes: " + NameOf(finalPath)); continue;
+        } else if (!Exists(finalPath) || (SizeOf(finalPath) == 0 && SizeOf(claimed) > 0 && DeleteFileW(finalPath.c_str()))) {   // missing (or the engine's empty leftover): given back, then watched
+            if (CreateHardLinkW(finalPath.c_str(), claimed.c_str(), nullptr) || CopyFileW(claimed.c_str(), finalPath.c_str(), TRUE)) {
+                out.push_back({leftover, claimed, finalPath, Outcome::Restored}); Log(L"DOWNLOAD kept leftover given back, watched before our name goes: " + finalPath); continue;
+            }
+            Log(L"DOWNLOAD kept leftover could not be given back (" + std::to_wstring(GetLastError()) + L"), it stays: " + claimed); out.push_back({leftover, claimed, finalPath, Outcome::Failed}); continue;
+        } else { to = NextFreeName(FolderOf(finalPath), NameOf(finalPath)); outcome = Outcome::RestoredElsewhere; }   // another file took the path
+        // A name the engine never knew: no clean-up of the engine can reach it, nothing to watch.
+        if (!MoveFileExW(claimed.c_str(), to.c_str(), MOVEFILE_COPY_ALLOWED)) {
+            Log(L"DOWNLOAD kept leftover could not be given back (" + std::to_wstring(GetLastError()) + L"), it stays: " + claimed); out.push_back({leftover, claimed, to, Outcome::Failed}); continue;
         }
-        DeleteFileW(SidecarOf(leftover).c_str());
-        Log(L"DOWNLOAD kept leftover given back: " + to); out.push_back({leftover, to, outcome});
+        DeleteFileW(SidecarOf(claimed).c_str());
+        Log(L"DOWNLOAD kept leftover given back under a name of its own: " + to); out.push_back({leftover, claimed, to, outcome});
     }
     return out;
 }
