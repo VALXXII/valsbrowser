@@ -887,21 +887,36 @@ Environment Environment::FromProcess(const std::wstring& dataRoot) {
     env.userProfile = Var(entries, L"USERPROFILE");
     env.appData = Var(entries, L"APPDATA");
     env.localAppData = Var(entries, L"LOCALAPPDATA");
-#ifndef BROWSER_CHANNEL_RELEASE
     if (test) {
+        // Test guard (see Environment::agentsRefused): the fake agent, or nothing — never this computer's agents unless
+        // BROWSER_CHAT_REAL_AGENT=1 asks for them by name.
+        const auto refuse = [&env](std::string why) {
+            env.agentsRefused = true;
+            env.refusedWhy = std::move(why);
+        };
         const std::wstring fake = Var(entries, L"BROWSER_CHAT_FAKE_AGENT");
-        int count = 0;
-        if (!fake.empty())
+        if (!fake.empty()) {
+#ifndef BROWSER_CHANNEL_RELEASE
+            int count = 0;
+            std::wstring named;
             if (wchar_t** argv = CommandLineToArgvW(fake.c_str(), &count)) {
-                if (count > 0 && FileExists(argv[0])) {
-                    env.fakeAgentExe = argv[0];
+                if (count > 0) named = argv[0];
+                if (count > 0 && IsAbsolute(named) && FileExists(named)) {
+                    env.fakeAgentExe = named;
                     for (int i = 1; i < count; ++i) env.fakeAgentArgs.emplace_back(argv[i]);
                 }
                 LocalFree(argv);
             }
-        env.fakeAgentLaunchOnly = !env.fakeAgentExe.empty() && Var(entries, L"BROWSER_CHAT_FAKE_AGENT_LAUNCH_ONLY") == L"1";
-    }
+            if (env.fakeAgentExe.empty())
+                refuse("BROWSER_CHAT_FAKE_AGENT names no program found at an absolute path: \"" + Narrow(named) + "\"");
+            env.fakeAgentLaunchOnly = !env.fakeAgentExe.empty() && Var(entries, L"BROWSER_CHAT_FAKE_AGENT_LAUNCH_ONLY") == L"1";
+#else
+            refuse("BROWSER_CHAT_FAKE_AGENT is set but a release build has no fake-agent hook");
 #endif
+        } else if (Var(entries, L"BROWSER_CHAT_REAL_AGENT") != L"1") {
+            refuse("BROWSER_ANNOTATIONS_TEST without BROWSER_CHAT_FAKE_AGENT (BROWSER_CHAT_REAL_AGENT=1 asks for this computer's agents)");
+        }
+    }
     return env;
 }
 
@@ -1002,6 +1017,10 @@ bool SignInArgsAllowed(Agent agent, const std::vector<std::wstring>& args) {
 Detection Detect(const Environment& env, Agent agent, const DetectOptions& options) {
     Detection d;
     d.agent = agent;
+    if (env.agentsRefused) {  // test guard: no CLI is looked for, none is run
+        d.cli.source = "refused";
+        return d;
+    }
     if (!env.fakeAgentExe.empty() && !env.fakeAgentLaunchOnly) {  // test hook: the fake agent stands for both agents
         d.cli.state = CliState::Found;
         d.cli.path = env.fakeAgentExe;
@@ -1060,11 +1079,13 @@ const char* PrepareErrorName(PrepareError error) {
     case PrepareError::Integrity: return "integrity";
     case PrepareError::Disk: return "disk";
     case PrepareError::Archive: return "archive";
+    case PrepareError::Refused: return "refused";
     }
     return "none";
 }
 
 PrepareResult Prepare(const Environment& env, Agent agent, const std::function<void(const Progress&)>& progress, const std::atomic<bool>* cancel) {
+    if (env.agentsRefused) return Fail(PrepareError::Refused, env.refusedWhy);  // test guard: nothing downloaded
     Throttle report{progress};
     Progress p;
     report.Report(p, true);
@@ -1103,6 +1124,11 @@ void RemoveStale(const Environment& env) {
 // ================================================================ launch
 Acp::Resolution ResolveLaunch(const Environment& env, Agent agent, const Acp::ResolveContext& context) {
     Acp::Resolution r;
+    if (env.agentsRefused) {  // test guard: no process is created
+        r.error.code = Acp::ErrorCode::NotInstalled;
+        r.error.detail = "refused (test guard): " + env.refusedWhy;
+        return r;
+    }
     if (!env.fakeAgentExe.empty() && !env.fakeAgentLaunchOnly) {
         r.launch.exe = env.fakeAgentExe;
         r.launch.args = env.fakeAgentArgs;
@@ -1213,6 +1239,7 @@ SignIn RunTerminalSignIn(const Environment& env, Agent agent, const Acp::AuthMet
         if (error) *error = std::move(why);
         return std::move(result);
     };
+    if (env.agentsRefused) return fail("refused");  // test guard: no console, no CLI
     if (!method.terminal) return fail("not_terminal");
     std::wstring exe;
     std::vector<std::wstring> args;
