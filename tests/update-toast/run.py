@@ -6,7 +6,8 @@
     python tests/update-toast/run.py --no-window  # skip the popup-window tests
 
 The popup-window tests run on a Windows desktop of their own that is never displayed (toast_tests.cpp creates it
-before any window): nothing reaches the screen, the mouse, the keyboard or the foreground.
+before any window): nothing reaches the screen, the mouse, the keyboard or the foreground. So does
+card_layouts_host_test.cpp (src/main.cpp itself: the card in the three tab layouts, next to the drawers).
 
 Outputs: build/update-toast/{toast-tests.exe,preview.exe,snapshots/*.png,compare/*}. Exit code != 0 on any failure.
 Tools: tools/w64devkit, deps/thorvg-1.1.3, build/lottie-backend of this checkout (or W64DEVKIT_BIN / THORVG_INCLUDE /
@@ -27,6 +28,24 @@ FLAGS = ['-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', '-Wno-unknown-pragm
 # (Direct3D 11 and its compiler are loaded at run time by src/onboarding-shaders.h: no import library).
 LIBS = ['src/native-lottie.cpp', THORVG, '-ld2d1', '-ldwrite', '-ldwmapi', '-lgdi32', '-luser32', '-lole32', '-luuid',
         '-lcomctl32', '-lwindowscodecs']
+
+# src/main.cpp itself (the card's placement in the browser's three tab layouts): tests/update-toast/card_layouts_host_test.cpp,
+# stamped like a dev build (BROWSER_HAS_BUILD_INFO: main.cpp compiles the update host, the annotation mode and its chat
+# in), exactly as tests/update-integration/e2e_install.py builds its host.
+def build_host(exe):
+    sys.path.insert(0, os.path.join(ROOT, 'tools', 'release'))
+    import build as B      # noqa: E402  (tools/release/build.py: sources, libraries, build-info.h)
+    import version as V    # noqa: E402
+    gen = os.path.join(OUT, 'host-gen')
+    from pathlib import Path
+    B.write_build_info(Path(gen), V.identity(1, 'f' * 40, 'dev'), 'VALXXII/browser-releases')
+    command = [GXX, '-std=c++17', '-O1', *B.WARNINGS, '-static', '-municode', '-Isrc', '-I' + gen, '-DBROWSER_HAS_BUILD_INFO',
+               '-DTVG_STATIC', '-I' + TVG_INCLUDE, f'-I{B.SDK / "include"}', 'tests/update-toast/card_layouts_host_test.cpp',
+               'src/native-lottie.cpp', 'src/update-core.cpp', 'src/update-package.cpp', 'src/update-toast.cpp', 'src/annotations.cpp',
+               'src/agent-connect.cpp', *B.CHAT_SOURCES, str(B.THORVG), '-o', exe, *B.BROWSER_LIBS, *B.CHAT_LIBS]
+    print(' '.join(str(c) for c in command), flush=True)
+    return subprocess.run([str(c) for c in command], cwd=ROOT).returncode
+
 
 TARGETS = {
     'toast-tests.exe': (['tests/update-toast/toast_tests.cpp'], ['-mconsole']),
@@ -57,6 +76,16 @@ def main(argv):
     result = subprocess.run(command, cwd=ROOT, timeout=600)
     if result.returncode:
         return result.returncode
+    if '--no-window' not in argv:
+        host = os.path.join(OUT, 'card-layouts-host-test.exe')
+        if build_host(host):
+            print('build failed: card-layouts-host-test.exe', file=sys.stderr)
+            return 1
+        layouts = os.path.join(OUT, 'layouts')
+        os.makedirs(layouts, exist_ok=True)
+        result = subprocess.run([host, ROOT, layouts], cwd=ROOT, timeout=600)
+        if result.returncode:
+            return result.returncode
     compare = [sys.executable, os.path.join(ROOT, 'tests', 'update-toast', 'compare.py'), snapshots]
     print(' '.join(compare), flush=True)
     return subprocess.run(compare, cwd=ROOT, timeout=300).returncode
