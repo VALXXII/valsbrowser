@@ -703,7 +703,7 @@ int wmain(int argc, wchar_t** argv) {
             std::vector<Item> checking(3, held[1]); checking[0] = held[0]; checking[0].held = false; checking[0].checking = true; checking[2] = held[2];
             for (auto lang : {I18n::Locale::Fr, I18n::Locale::En}) {
                 I18n::SetForProcess(lang);
-                Expect(f.Render(lang == I18n::Locale::En ? L"checking-row-en.png" : L"checking-row-fr.png", 96, {}, 1, 0, &checking), "render the checking row");
+                Expect(f.Render(lang == I18n::Locale::En ? L"checking-row-en.png" : L"checking-row-fr.png", 96, {{1, -1}}, 1, 0, &checking), "render the checking row (actions revealed)");
             }
         }
         // Real toolbar (Chrome::Paint) with the animated icon, cropped to the button.
