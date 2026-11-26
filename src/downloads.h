@@ -21,6 +21,9 @@
 
 namespace NativeChrome { namespace Downloads {
 enum class State { InProgress, Paused, Completed, Failed, Cancelled };
+// Why the engine holds a download for the user's decision (HeldReason): its pass over and the zone mark there (Microsoft
+// Defender SmartScreen), an insecure source, or no mark possible past the fallback; each has its own sentence on the card.
+enum class HeldBy { None, Mark, Insecure, Fallback };
 struct Item {
     int id = 0;
     std::wstring path, uri, reason;  // reason: short failure text (Failed only)
@@ -34,13 +37,17 @@ struct Item {
     // SmartScreen: a rarely downloaded file it could not confirm as safe). WebView2 reports nothing else (state
     // IN_PROGRESS, no interrupt reason) and keeps it so until Keep or Discard; it deletes the file when it exits.
     bool held = false;
+    HeldBy heldBy = HeldBy::None;   // held only: why (the card's sentence)
+    // InProgress only, not held: every byte is in and the engine's own check of the file still runs (« Vérification… »,
+    // no Pause): it completes by itself, or becomes held.
+    bool checking = false;
 };
 // Row actions, left to right. None marks an empty slot.
 enum class Action { None, Pause, Resume, Cancel, Retry, Remove, ShowInFolder, Open, Discard, Keep };
 struct Actions { Action first = Action::None, second = Action::None; };
 inline Actions ActionsFor(const Item& item) {
     switch (item.state) {
-    case State::InProgress: return item.held ? Actions{Action::Discard, Action::Keep} : Actions{Action::Pause, Action::Cancel};
+    case State::InProgress: return item.held ? Actions{Action::Discard, Action::Keep} : item.checking ? Actions{Action::None, Action::Cancel} : Actions{Action::Pause, Action::Cancel};
     case State::Paused: return {Action::Resume, Action::Cancel};
     case State::Completed: return item.missing ? Actions{Action::None, Action::Remove} : Actions{Action::ShowInFolder, Action::Open};
     case State::Failed: return item.canResume ? Actions{Action::Retry, Action::Remove} : Actions{Action::None, Action::Remove};
@@ -102,11 +109,10 @@ inline State MapEngineState(int state, int reason, bool userPaused) {
     return State::Failed;
 }
 // Why a download is held for the user's decision, or None: the « À confirmer » card only on a real hold; until then (the
-// engine's own pass still runs) the ordinary in-progress row. fullSinceMs: how long every byte has been in (negative:
+// engine's own pass still runs) the checking row (« Vérification… », Item::checking). fullSinceMs: how long every byte has been in (negative:
 // not all in, or the size is unknown); markedSinceMs: how long the file has carried its zone mark (negative: no mark);
 // insecure: an insecure source (Keep::InsecureSource); markable: a zone mark can exist where the file is (a volume with
 // named streams, zone information kept by policy).
-enum class HeldBy { None, Mark, Insecure, Fallback };
 inline HeldBy HeldReason(int state, std::int64_t received, std::int64_t total, bool userPaused, std::int64_t fullSinceMs, std::int64_t markedSinceMs, bool insecure, bool markable) {
     if (state != Engine::InProgress || userPaused || total <= 0 || received < total || fullSinceMs < 0) return HeldBy::None;
     if (markedSinceMs >= Engine::MarkGraceMs) return HeldBy::Mark;
@@ -117,6 +123,12 @@ inline HeldBy HeldReason(int state, std::int64_t received, std::int64_t total, b
 inline bool HeldForDecision(int state, std::int64_t received, std::int64_t total, bool userPaused, std::int64_t fullSinceMs, std::int64_t markedSinceMs, bool insecure, bool markable) {
     return HeldReason(state, received, total, userPaused, fullSinceMs, markedSinceMs, insecure, markable) != HeldBy::None;
 }
+// The card's sentence for a held download: SmartScreen's (the zone mark), the insecure connection's, or a neutral one
+// where Windows could not check the file (the fallback).
+inline I18n::Id HeldBodyId(HeldBy by) {
+    return by == HeldBy::Insecure ? I18n::Id::downloads_held_body_insecure : by == HeldBy::Fallback ? I18n::Id::downloads_held_body_unchecked : I18n::Id::downloads_held_body;
+}
+inline const wchar_t* HeldBody(const Item& item) { return I18n::T(HeldBodyId(item.heldBy)); }
 // « Conserver » on a held download (src/main.cpp KeepHeldDownload, WaitEnginePass, WatchKept): the decisions. Measured
 // on WebView2 158 (tests/downloads/download_engine_probe.py --observe): after a cancel the engine removes its file by
 // name when its own pass on the file ends (the pass that writes the zone mark): at once when it was over, seconds later

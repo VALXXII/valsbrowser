@@ -68,6 +68,10 @@ int dropLinkMs = 0, touchMs = 0, observeMs = 60000; std::wstring linkHidden = L"
 // --act-on zone: act only once the held file carries its zone mark (the engine's own pass is over), at most --cap-ms
 // after the last byte; --restore-on-gone on: each removal of the engine's name is counted and the file given back at once.
 std::wstring actOn = L"hold", restoreOnGone = L"off"; int capMs = 20000, removals = 0;
+// The engine stopped while holding / after cancelling a file, then started again on the same profile: --kill-after-ms N
+// prints « FACT KILL NOW » N ms after the file was given back (link-cancel-restore) or held (none), for the driver to stop
+// everything through the job; --then watch-file --watch <path>: the second run only loads the page and watches that file.
+int killAfterMs = -1; std::wstring watchPath; ULONGLONG engineAt = 0;
 ICoreWebView2Controller* controller = nullptr;
 ICoreWebView2* view = nullptr;
 ICoreWebView2DownloadOperation* op = nullptr;
@@ -144,6 +148,7 @@ void Restore() {
     Say(L"FACT link moved back to the final path: " + std::wstring(moved ? L"ok" : L"FAILED err=" + std::to_wstring(GetLastError())));
     SetFileAttributesW(final.c_str(), FILE_ATTRIBUTE_NORMAL);
     Survives(final, 800);
+    if (killAfterMs >= 0) After((UINT)killAfterMs, [] { Say(L"FACT KILL NOW"); });
     if (aes == L"on") {
         const std::wstring src = fileUrl;
         CreateThread(nullptr, 0, [](LPVOID p) -> DWORD {
@@ -183,7 +188,8 @@ void Act() {
             Say(L"FACT end of the watch after cancel: " + StateText());
             if (!linkPath.empty()) Say(L"FACT link " + std::wstring(Exists(linkPath) ? L"still there, size " + std::to_wstring(SizeOf(linkPath)) : L"GONE"));
             Files(L"final"); Finish(); });
-    } else After(3000, [] { Say(L"FACT still: " + StateText()); Files(L"final"); Finish(); });
+    } else if (killAfterMs >= 0) After((UINT)killAfterMs, [] { Say(L"FACT KILL NOW"); });
+    else After(3000, [] { Say(L"FACT still: " + StateText()); Files(L"final"); Finish(); });
 }
 // --then observe. Our hard link (hidden or not), Cancel(), the operation released at once or kept, then both names watched
 // every 10 ms: their state (gone / pending: listed but cannot be opened / readable). The engine's name normally goes in
@@ -328,6 +334,14 @@ void OnView() {
         [](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs* a) -> HRESULT {
             BOOL ok = FALSE; a->get_IsSuccess(&ok); COREWEBVIEW2_WEB_ERROR_STATUS e{}; a->get_WebErrorStatus(&e);
             Say(L"FACT NavigationCompleted ok=" + std::to_wstring((int)ok) + L" status=" + std::to_wstring((int)e));
+            if (then == L"watch-file") {   // the second run: the page only; when does the engine touch the file it once held?
+                static bool started = false; if (!started) { started = true;
+                    struct W { static void Look(std::wstring was) { if (finished) return; const std::wstring now = Exists(watchPath) ? L"there (" + std::to_wstring(SizeOf(watchPath)) + L" bytes)" : L"GONE";
+                        if (now != was) Say(L"FACT RESTART file " + now + L" at " + std::to_wstring((long long)(GetTickCount64() - engineAt)) + L" ms after the engine started");
+                        After(50, [now] { Look(now); }); } };
+                    W::Look(L"?"); After((UINT)observeMs, [] { Say(L"FACT RESTART end of the watch: " + std::wstring(Exists(watchPath) ? L"the file is there" : L"the file is GONE")); Finish(); }); }
+                return S_OK;
+            }
             if (!fileTriggered) After(700, TriggerFile);
             return S_OK; });
     view->add_NavigationCompleted(completed, &token); completed->Release();
@@ -347,6 +361,7 @@ int wmain(int argc, wchar_t** argv) {
         else if (k == L"--other-handle-ms") otherHandleMs = _wtoi(v.c_str()); else if (k == L"--other-share") otherShare = v;
         else if (k == L"--drop-link-ms") dropLinkMs = _wtoi(v.c_str()); else if (k == L"--touch-ms") touchMs = _wtoi(v.c_str());
         else if (k == L"--observe-ms") observeMs = _wtoi(v.c_str()); else if (k == L"--link-hidden") linkHidden = v; else if (k == L"--release-op") releaseOp = v;
+        else if (k == L"--kill-after-ms") killAfterMs = _wtoi(v.c_str()); else if (k == L"--watch") watchPath = v;
         else if (k == L"--act-on") actOn = v; else if (k == L"--restore-on-gone") restoreOnGone = v; else if (k == L"--cap-ms") capMs = _wtoi(v.c_str());
     }
     if (url.empty() || fileUrl.empty() || udf.empty() || dir.empty()) { Say(L"usage: --url U --file F --udf DIR --dir DOWNLOADS"); return 2; }
@@ -362,7 +377,7 @@ int wmain(int argc, wchar_t** argv) {
     if (!create) { Say(L"WebView2Loader.dll missing"); return 2; }
     auto created = Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler, HRESULT, ICoreWebView2Environment*>([hwnd](HRESULT hr, ICoreWebView2Environment* env) -> HRESULT {
         if (FAILED(hr) || !env) { Say(L"ENGINE FAILED"); Finish(); return S_OK; }
-        LPWSTR version = nullptr; env->get_BrowserVersionString(&version); Say(L"FACT runtime " + Str(version));
+        LPWSTR version = nullptr; env->get_BrowserVersionString(&version); Say(L"FACT runtime " + Str(version)); engineAt = GetTickCount64();
         auto made = Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler, HRESULT, ICoreWebView2Controller*>([](HRESULT hr2, ICoreWebView2Controller* c) -> HRESULT {
             if (FAILED(hr2) || !c) { Say(L"ENGINE FAILED (controller)"); Finish(); return S_OK; }
             controller = c; c->AddRef(); RECT r{0, 0, 800, 600}; c->put_Bounds(r); c->put_IsVisible(TRUE);

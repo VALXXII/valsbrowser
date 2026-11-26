@@ -153,6 +153,9 @@ def main() -> int:
                     'bin, bin-big, exe, exe-big, insecure-bin, insecure-exe, and the same with -ssoff (SmartScreen hosts unresolvable) or '
                     '-ssslow (SmartScreen hosts on a local server that never answers), in this probe\'s engine only')
     ap.add_argument('--big-mb', type=int, default=300)
+    ap.add_argument('--restart', default='', help='comma-separated: held-kill (held, engine killed), cancel-kill (cancel, file given back, killed '
+                    '0.5 s later), cancel-kill-10 (10 s later), cancel-close (closed normally 10 s later); then the same profile started '
+                    'again with the page only, the file watched 60 s: does the engine remove it, when?')
     a = ap.parse_args()
     out = Path(a.out).resolve(); shutil.rmtree(out, ignore_errors=True); out.mkdir(parents=True)
     work = out / 'work'; work.mkdir()
@@ -219,6 +222,36 @@ def main() -> int:
                 exe_case(f'observe-{a.observe}-{n + 1}', then='observe', more=more, trigger='gesture', origin=insecure, page=secure)
             else:
                 exe_case(f'observe-{a.observe}-{n + 1}', then='observe', more=more)
+    if a.restart:   # its own loop: two runs per case on one profile
+        k32.TerminateJobObject.argtypes = [W.HANDLE, W.UINT]
+        for n, name in enumerate(x for x in a.restart.split(',') if x):
+            key = f'rs{n}.exe'; FILES[key] = (fresh_exe(work, f'rs{n}'), f'probe-restart-{n}.exe')
+            case = out / name; udf = case / 'profile'; dl = case / 'downloads'; dl.mkdir(parents=True); udf.mkdir()
+            target = dl / FILES[key][1]
+            env = {k: v for k, v in os.environ.items() if not k.upper().startswith(('WEBVIEW2_', 'BROWSER_'))}
+            first = [str(host), '--url', f'{base}/page', '--file', f'{base}/{key}', '--udf', str(udf), '--dir', str(dl), '--trigger', 'navigate',
+                     '--hold-ms', '4000', '--seconds', '90']
+            first += {'held-kill': ['--then', 'none', '--kill-after-ms', '0'], 'cancel-kill': ['--then', 'link-cancel-restore', '--kill-after-ms', '500'],
+                      'cancel-kill-10': ['--then', 'link-cancel-restore', '--kill-after-ms', '10000'], 'cancel-close': ['--then', 'link-cancel-restore', '--seconds', '25']}[name]
+            print(f'===== {name}: first run', flush=True)
+            job = Job(); proc = subprocess.Popen(first, cwd=str(host.parent), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=0x4 | 0x08000000)
+            job.add(proc); ctypes.WinDLL('ntdll').NtResumeProcess(W.HANDLE(int(proc._handle)))
+            killed = False
+            for raw in proc.stdout:
+                line = raw.decode('utf-8', errors='replace').rstrip(); print(line, flush=True)
+                if 'FACT KILL NOW' in line:
+                    k32.TerminateJobObject(job.h, 1); killed = True; break
+            proc.wait(60); left = job.drain(20)
+            print(f'FACT first run {"KILLED" if killed else "closed"}; file {"there" if target.exists() else "GONE"}', flush=True)
+            if not target.exists():
+                continue
+            second = [str(host), '--url', f'{base}/page', '--file', f'{base}/{key}', '--udf', str(udf), '--dir', str(dl), '--then', 'watch-file',
+                      '--watch', str(target), '--observe-ms', '60000', '--seconds', '90']
+            print(f'===== {name}: second run, same profile', flush=True)
+            job = Job(); proc = subprocess.Popen(second, cwd=str(host.parent), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=0x4 | 0x08000000)
+            job.add(proc); ctypes.WinDLL('ntdll').NtResumeProcess(W.HANDLE(int(proc._handle)))
+            text, _ = proc.communicate(timeout=150); print(text.decode('utf-8', errors='replace').rstrip(), flush=True); job.drain(20)
+        srv.shutdown(); return 0
     blackhole = None
     if a.timeline:   # replaces the case list
         import socket
