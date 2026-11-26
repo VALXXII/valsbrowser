@@ -6361,6 +6361,11 @@ struct FocusMotionState{
     bool active=false,sliding=false,waiting=false,fading=false,reduced=false,built=false,broken=false,hasChat=false,hasBar=false;
     FX::Spring spring;FX::Fade fade;double opacity=1,lastMs=0,waitStartMs=0;
     FX::Layout normal,focus;RECT client{};float coverRight=0;
+    // The chat card (mode Panneau) as a picture: its WebView (another process's window) captured once at the press and moved
+    // on the spring with the page; the live card is placed once, under the pictures (moving it on every frame held each
+    // frame ~60 ms: 13 frames per motion on the screen). Its rounded clip goes from one layout's card radius to the other's.
+    IDCompositionVisual2 *chatFrame=nullptr,*chatV=nullptr;IDCompositionSurface* chatS=nullptr;IDCompositionRectangleClip* chatClip=nullptr;
+    bool hasChatPic=false;int chatW=0,chatH=0;FX::Rect chatInset;float chatRadiusN=0,chatRadiusF=0;
     IDCompositionVisual2 *bannerFrame=nullptr,*banner=nullptr;IDCompositionSurface* bannerS=nullptr;bool hasBanner=false;int bannerW=0,bannerH=0;FX::Rect bannerNormal,bannerFocus;   // the annotation banner's picture
     IDCompositionVisual2 *layer=nullptr,*root=nullptr,*coverPage=nullptr,*bandFrame=nullptr,*bandFill=nullptr,*pageFrame=nullptr,*page=nullptr,*bar=nullptr;
     IDCompositionSurface *canvasS=nullptr,*pageS=nullptr,*barS=nullptr;
@@ -6380,7 +6385,7 @@ struct FocusMotionState{
 template<class T> void FocusMotionRelease(T*& p){if(p){p->Release();p=nullptr;}}
 // The transition's visual tree off the layer and released (the layer, the device and the canvas surface stay).
 void FocusMotionTear(){auto& m=focusMotion;if(m.layer&&m.root)m.layer->RemoveVisual(m.root);
-    FocusMotionRelease(m.banner);FocusMotionRelease(m.bannerFrame);FocusMotionRelease(m.bar);FocusMotionRelease(m.columnV);FocusMotionRelease(m.page);FocusMotionRelease(m.pageFrame);FocusMotionRelease(m.bandFill);FocusMotionRelease(m.bandFrame);FocusMotionRelease(m.coverPage);FocusMotionRelease(m.root);
+    FocusMotionRelease(m.chatV);FocusMotionRelease(m.chatFrame);FocusMotionRelease(m.chatClip);FocusMotionRelease(m.banner);FocusMotionRelease(m.bannerFrame);FocusMotionRelease(m.bar);FocusMotionRelease(m.columnV);FocusMotionRelease(m.page);FocusMotionRelease(m.pageFrame);FocusMotionRelease(m.bandFill);FocusMotionRelease(m.bandFrame);FocusMotionRelease(m.coverPage);FocusMotionRelease(m.root);
     FocusMotionRelease(m.pageClip);FocusMotionRelease(m.bandClip);FocusMotionRelease(m.columnClip);FocusMotionRelease(m.barClip);FocusMotionRelease(m.barGroup);FocusMotionRelease(m.layerGroup);m.built=false;
     if(auto* dev=contentTransition.Device())dev->Commit();}
 bool FocusMotionSliding(){return focusMotion.active&&focusMotion.sliding;}
@@ -6445,15 +6450,15 @@ bool FocusMotionBuild(){
     // filled again was not composed any more (hidden-desktop QA: only the first switch of a session moved).
     auto* dev=contentTransition.Device();
     bool ok=dev&&SUCCEEDED(dev->CreateVisual(&m.root))&&SUCCEEDED(dev->CreateVisual(&m.coverPage))&&SUCCEEDED(dev->CreateVisual(&m.bandFrame))&&SUCCEEDED(dev->CreateVisual(&m.bandFill))&&
-        SUCCEEDED(dev->CreateVisual(&m.pageFrame))&&SUCCEEDED(dev->CreateVisual(&m.page))&&SUCCEEDED(dev->CreateVisual(&m.bar))&&SUCCEEDED(dev->CreateVisual(&m.columnV))&&SUCCEEDED(dev->CreateVisual(&m.bannerFrame))&&SUCCEEDED(dev->CreateVisual(&m.banner))&&
+        SUCCEEDED(dev->CreateVisual(&m.pageFrame))&&SUCCEEDED(dev->CreateVisual(&m.page))&&SUCCEEDED(dev->CreateVisual(&m.bar))&&SUCCEEDED(dev->CreateVisual(&m.columnV))&&SUCCEEDED(dev->CreateVisual(&m.chatFrame))&&SUCCEEDED(dev->CreateVisual(&m.chatV))&&SUCCEEDED(dev->CreateRectangleClip(&m.chatClip))&&SUCCEEDED(dev->CreateVisual(&m.bannerFrame))&&SUCCEEDED(dev->CreateVisual(&m.banner))&&
         SUCCEEDED(dev->CreateRectangleClip(&m.pageClip))&&SUCCEEDED(dev->CreateRectangleClip(&m.bandClip))&&SUCCEEDED(dev->CreateRectangleClip(&m.columnClip))&&SUCCEEDED(dev->CreateRectangleClip(&m.barClip))&&SUCCEEDED(dev->CreateEffectGroup(&m.barGroup))&&SUCCEEDED(dev->CreateEffectGroup(&m.layerGroup));
     // layer -> root (cross-fade) -> [ coverPage, bandFrame (clip) -> bandFill, pageFrame (offset, rounded clip) -> page (scale),
     // column (side layouts: offset, clip), bannerFrame -> banner, bar (offset, clip, opacity) ]
     ok=ok&&SUCCEEDED(m.root->AddVisual(m.coverPage,FALSE,nullptr))&&SUCCEEDED(m.root->AddVisual(m.bandFrame,TRUE,m.coverPage))&&SUCCEEDED(m.bandFrame->AddVisual(m.bandFill,FALSE,nullptr))&&
-        SUCCEEDED(m.root->AddVisual(m.pageFrame,TRUE,m.bandFrame))&&SUCCEEDED(m.pageFrame->AddVisual(m.page,FALSE,nullptr))&&SUCCEEDED(m.root->AddVisual(m.columnV,TRUE,m.pageFrame))&&SUCCEEDED(m.root->AddVisual(m.bannerFrame,TRUE,m.columnV))&&SUCCEEDED(m.bannerFrame->AddVisual(m.banner,FALSE,nullptr))&&SUCCEEDED(m.root->AddVisual(m.bar,TRUE,m.bannerFrame))&&
+        SUCCEEDED(m.root->AddVisual(m.pageFrame,TRUE,m.bandFrame))&&SUCCEEDED(m.pageFrame->AddVisual(m.page,FALSE,nullptr))&&SUCCEEDED(m.root->AddVisual(m.chatFrame,TRUE,m.pageFrame))&&SUCCEEDED(m.chatFrame->AddVisual(m.chatV,FALSE,nullptr))&&SUCCEEDED(m.chatFrame->SetClip(m.chatClip))&&SUCCEEDED(m.root->AddVisual(m.columnV,TRUE,m.chatFrame))&&SUCCEEDED(m.root->AddVisual(m.bannerFrame,TRUE,m.columnV))&&SUCCEEDED(m.bannerFrame->AddVisual(m.banner,FALSE,nullptr))&&SUCCEEDED(m.root->AddVisual(m.bar,TRUE,m.bannerFrame))&&
         SUCCEEDED(m.pageFrame->SetClip(m.pageClip))&&SUCCEEDED(m.bandFrame->SetClip(m.bandClip))&&SUCCEEDED(m.columnV->SetClip(m.columnClip))&&SUCCEEDED(m.bar->SetClip(m.barClip))&&SUCCEEDED(m.bar->SetEffect(m.barGroup))&&SUCCEEDED(m.root->SetEffect(m.layerGroup))&&
         SUCCEEDED(m.layer->AddVisual(m.root,FALSE,nullptr));
-    if(ok)for(auto* v:{m.coverPage,m.bandFill,m.page,m.bar,m.columnV,m.banner}){v->SetBorderMode(DCOMPOSITION_BORDER_MODE_HARD);v->SetBitmapInterpolationMode(DCOMPOSITION_BITMAP_INTERPOLATION_MODE_LINEAR);}
+    if(ok)for(auto* v:{m.coverPage,m.bandFill,m.page,m.bar,m.columnV,m.chatV,m.banner}){v->SetBorderMode(DCOMPOSITION_BORDER_MODE_HARD);v->SetBitmapInterpolationMode(DCOMPOSITION_BITMAP_INTERPOLATION_MODE_LINEAR);}
     if(!ok){FocusMotionTear();m.broken=true;Log(L"FOCUS motion unavailable (composition): the switch is instant");return false;}
     m.built=true;return true;
 }
@@ -6523,7 +6528,7 @@ void FocusMotionApply(){
     const double x=m.spring.x;const auto fr=FX::At(m.normal,m.focus,x,m.opacity);const float s=GetDpiForWindow(window)/96.f,W=chrome.ClientWidth()*s,H=chrome.height*s;
     // the cover hides the live page under the motion (canvas: only the inset shows it once the pictures are on top)
     m.coverPage->SetContent(m.canvasS);m.coverPage->SetTransform(D2D1::Matrix3x2F::Scale(m.coverRight*s/8.f,H/8.f));
-    if(m.hasChat){const float bx=m.coverRight*s;m.bandFrame->SetOffsetX(bx);m.bandFrame->SetOffsetY(0.f);m.bandFill->SetContent(m.canvasS);m.bandFill->SetTransform(D2D1::Matrix3x2F::Scale(std::max(0.f,W-bx)/8.f,H/8.f));
+    if(m.hasChat&&!m.hasChatPic){const float bx=m.coverRight*s;m.bandFrame->SetOffsetX(bx);m.bandFrame->SetOffsetY(0.f);m.bandFill->SetContent(m.canvasS);m.bandFill->SetTransform(D2D1::Matrix3x2F::Scale(std::max(0.f,W-bx)/8.f,H/8.f));
         m.bandClip->SetLeft(0.f);m.bandClip->SetTop(0.f);m.bandClip->SetRight(std::max(0.f,W-bx));m.bandClip->SetBottom(std::max(0.f,fr.chat.top*s));}
     else m.bandFill->SetContent(nullptr);
     const float pl=fr.page.left*s,pt=fr.page.top*s,pw=(fr.page.right-fr.page.left)*s,ph=(fr.page.bottom-fr.page.top)*s,tr=fr.topRadius*s,br=fr.bottomRadius*s;
@@ -6547,13 +6552,20 @@ void FocusMotionApply(){
     DL::liveTop=fr.drawerTop;DL::liveRight=m.side?0.f:focusRight*t;DL::liveRadius=m.side?0.f:FM::pageRadius*t;DL::liveBottom=m.side?0.f:FM::drawerBottom*t;   // side layouts: docked flush right in both (FocusPlace)
     if(downloadDrawer.Visible())downloadDrawer.Reposition();if(settingsDrawer.Visible())settingsDrawer.Reposition();if(historyDrawer.Visible())historyDrawer.Reposition();if(bookmarksDrawer.Visible())bookmarksDrawer.Reposition();
     // the chat card: on the frame's top and bottom (src/chat-host-ui.h PanelRect reads FocusChatCard while Focus is live)
-    if(m.hasChat){focusMotionChatOn=true;focusMotionChat={fr.chat.left,fr.chat.top,fr.chat.right,fr.chat.bottom};AnnotationLayout();}
+    if(m.hasChatPic){const auto& c=fr.chat;const float l=(c.left+m.chatInset.left)*s,tp=(c.top+m.chatInset.top)*s,cw=std::max(1.f,(c.right-m.chatInset.right)*s-l),ch=std::max(1.f,(c.bottom-m.chatInset.bottom)*s-tp);
+        const float r=std::max(0.f,FX::Lerp(m.chatRadiusN,m.chatRadiusF,t)-m.chatInset.left)*s;
+        m.chatFrame->SetOffsetX(l);m.chatFrame->SetOffsetY(tp);m.chatClip->SetLeft(0.f);m.chatClip->SetTop(0.f);m.chatClip->SetRight(cw);m.chatClip->SetBottom(ch);
+        m.chatClip->SetTopLeftRadiusX(r);m.chatClip->SetTopLeftRadiusY(r);m.chatClip->SetTopRightRadiusX(r);m.chatClip->SetTopRightRadiusY(r);
+        m.chatClip->SetBottomLeftRadiusX(r);m.chatClip->SetBottomLeftRadiusY(r);m.chatClip->SetBottomRightRadiusX(r);m.chatClip->SetBottomRightRadiusY(r);
+        m.chatV->SetContent(m.chatS);m.chatV->SetTransform(D2D1::Matrix3x2F::Scale(m.chatW?cw/m.chatW:1.f,m.chatH?ch/m.chatH:1.f));contentTransition.Device()->Commit();}
+    else m.chatV->SetContent(nullptr);
+    if(m.hasChat&&!m.hasChatPic){focusMotionChatOn=true;focusMotionChat={fr.chat.left,fr.chat.top,fr.chat.right,fr.chat.bottom};AnnotationLayout();}
     ++m.frames;
 }
 void FocusMotionClear(){
     auto& m=focusMotion;KillTimer(window,FocusMotionTimerId);
     FocusMotionTear();
-    FocusMotionRelease(m.pageS);FocusMotionRelease(m.barS);FocusMotionRelease(m.bannerS);FocusMotionRelease(m.revealS);m.hasBanner=false;m.revealFollow=false;
+    FocusMotionRelease(m.pageS);FocusMotionRelease(m.barS);FocusMotionRelease(m.bannerS);FocusMotionRelease(m.revealS);FocusMotionRelease(m.chatS);m.hasBanner=false;m.revealFollow=false;m.hasChatPic=false;
     const bool had=m.active;if(had)Log(L"FOCUS motion cleared");m.active=m.sliding=m.waiting=m.fading=m.holdBox=false;focusMotionChatOn=false;
     if(had&&window){FocusPlace();AnnotationLayout();FocusEvaluate();}
 }
@@ -6594,6 +6606,13 @@ void FocusMotionFrame(NativeChrome::Motion::Time now){
 }
 void FocusMotionTimer(){if(focusMotion.fading)FocusMotionClear();else FocusMotionCheckReady();}
 NativeChrome::Motion::Wake FocusMotionWake(NativeChrome::Motion::Time){return FocusMotionSliding()?NativeChrome::Motion::Frame():NativeChrome::Motion::Wake{};}
+// A window of ours as it is on screen now (PrintWindow, PW_RENDERFULLCONTENT: a WebView host's content included), opaque.
+bool FocusMotionPrint(HWND h,int w,int hh,std::vector<UINT32>& out){
+    HDC screen=GetDC(window);HDC mem=CreateCompatibleDC(screen);BITMAPINFO bi{};bi.bmiHeader.biSize=sizeof(bi.bmiHeader);bi.bmiHeader.biWidth=w;bi.bmiHeader.biHeight=-hh;bi.bmiHeader.biPlanes=1;bi.bmiHeader.biBitCount=32;bi.bmiHeader.biCompression=BI_RGB;
+    void* bits=nullptr;HBITMAP dib=CreateDIBSection(screen,&bi,DIB_RGB_COLORS,&bits,nullptr,0);bool ok=false;
+    if(dib&&bits){HGDIOBJ old=SelectObject(mem,dib);if(PrintWindow(h,mem,0x2)){out.assign(static_cast<const UINT32*>(bits),static_cast<const UINT32*>(bits)+(size_t)w*hh);for(auto& v:out)v|=0xFF000000u;ok=true;}SelectObject(mem,old);}
+    if(dib)DeleteObject(dib);DeleteDC(mem);ReleaseDC(window,screen);return ok;
+}
 // Ctrl+Maj+F (or the setting): before the live layout switches (SettingChanged then runs Layout()).
 void FocusMotionToggle(bool toFocus){
     auto& m=focusMotion;const double target=toFocus?1.0:0.0;
@@ -6639,7 +6658,12 @@ void FocusMotionToggle(bool toFocus){
         if(m.side){m.bannerNormal={m.normal.page.left,m.normal.page.top-band,W-NativeChrome::Sidebar::Zone::inset,m.normal.page.top};m.bannerFocus={m.focus.page.left,m.focus.page.top-band,W-NativeChrome::Sidebar::Zone::inset,m.focus.page.top};}   // src/annotation-mode.h BandRect: over the page's width
         else{m.bannerNormal={0,m.normal.barHeight,W,m.normal.barHeight+band};m.bannerFocus={fb.left,fb.top,fb.right,fb.bottom};}}
     m.hasChat=m.normal.chat.right>m.normal.chat.left&&m.focus.chat.right>m.focus.chat.left;
-    m.coverRight=m.hasChat?std::min(m.normal.chat.left,m.focus.chat.left):chrome.ClientWidth();
+    m.hasChatPic=false;
+    if(HWND ch=ChatHostWindow();m.hasChat&&ch&&IsWindowVisible(ch)){RECT hr{};GetWindowRect(ch,&hr);MapWindowPoints(nullptr,window,(POINT*)&hr,2);const int w=hr.right-hr.left,h=hr.bottom-hr.top;
+        std::vector<UINT32> b;if(w>0&&h>0&&FocusMotionPrint(ch,w,h,b)&&contentTransition.UploadSurface(b.data(),w,h,m.chatS)){
+            const auto& c=from.chat;m.chatW=w;m.chatH=h;m.chatInset={hr.left/s-c.left,hr.top/s-c.top,c.right-hr.right/s,c.bottom-hr.bottom/s};
+            m.chatRadiusN=m.side?8.f:0.f;m.chatRadiusF=m.side?8.f:FM::chatRadius;m.hasChatPic=true;}}   // #127 card 8 (src/chat-host.h CardRadius); top bar: square, Focus 6
+    m.coverRight=m.hasChat&&!m.hasChatPic?std::min(m.normal.chat.left,m.focus.chat.left):chrome.ClientWidth();
     GetClientRect(window,&m.client);
     m.spring.Snap(toFocus?0.0:1.0);m.opacity=toFocus?1.0:0.0;m.frames=0;m.trace.clear();m.traceLeft.clear();m.startedMs=m.lastMs=FocusMs(NativeChrome::Motion::Now());
     m.active=true;m.clockArmed=false;m.layerGroup->SetOpacity(1.f);

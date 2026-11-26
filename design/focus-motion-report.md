@@ -98,9 +98,12 @@ at 60 Hz is the spring itself).
 
 ## Not done yet
 
-- Side layouts: the chat card's top (mode Panneau) glides with the page's since the one-line change in `src/chat-host-ui.h`
-  (design/focus-motion-lotR-change.md § 2, applied 2026-11-26; not yet built: the machine is paused): to check off screen
-  with the chat open, then on the screen slot.
+- The chat card (mode Panneau), every layout (2026-11-26, screen slot): it was moved for real on every frame (another
+  process's window): 13 frames per motion on the screen, steps of 82 DIP. It is now a picture like the page (captured once
+  at the press, moved on the spring, its rounded clip from one layout's card radius to the other's), the live card placed
+  once under the pictures: 36 / 37 frames per motion in the side layout, 28 / 33 under the top bar (screen, 125 %). The
+  live per-frame path (FocusChatCard / FocusMotionChatTop, design/focus-motion-lotR-change.md) stays as the fallback when
+  the picture cannot be made. During the slide the card's 1 DIP ring is not drawn (the cross-fade brings it back).
 - Side layouts: the chat card over the page (under 900 DIP, `OverPage`) is under the motion's pictures during the slide
   (it shows again in the cross-fade).
 - Leaving Focus with the column revealed AND the annotation banner on: the motion's column is the docked one (from the
