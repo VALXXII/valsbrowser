@@ -141,6 +141,14 @@ def build_host(out: Path) -> Path:
 def main() -> int:
     ap = argparse.ArgumentParser(); ap.add_argument('--out', required=True); ap.add_argument('--only', default='')
     ap.add_argument('--night', action='store_true', help='also the EICAR case (Defender shows its own toast on screen)')
+    ap.add_argument('--observe', default='', help='a lingering engine file: leave (both names alone 60 s), drop (our link deleted at +6 s), '
+                    'drop-visible (the same, link not hidden), drop-released (the same, the operation released at once), touch '
+                    '(an unrelated file in the folder at +6 s, our link deleted at +12 s)')
+    ap.add_argument('--runs', type=int, default=10, help='--observe: runs at most (a fresh .exe and profile each)')
+    ap.add_argument('--lingering', type=int, default=2, help='--observe: stop after this many lingering runs')
+    ap.add_argument('--hold-ms', default='4000', help='the « held » point: this long after every byte is in (the probe acts then)')
+    ap.add_argument('--big', type=int, default=0, help='MB of random bytes appended to each fresh .exe (a longer antivirus scan)')
+    ap.add_argument('--observe-ms', default='', help='--observe: the watch after the cancel, in ms')
     a = ap.parse_args()
     out = Path(a.out).resolve(); shutil.rmtree(out, ignore_errors=True); out.mkdir(parents=True)
     work = out / 'work'; work.mkdir()
@@ -163,7 +171,7 @@ def main() -> int:
     cases = []   # name, file url, trigger, then, reputation, page, extra host arguments
 
     def exe_case(name, trigger='navigate', then='none', reputation='on', origin=base, page=base, more=()):
-        key = name + '.exe'; FILES[key] = (fresh_exe(work, name), f'probe-{name}.exe')
+        key = name + '.exe'; FILES[key] = (fresh_exe(work, name) + (os.urandom(a.big << 20) if a.big else b''), f'probe-{name}.exe')
         cases.append((name, f'{origin}/{key}', trigger, then, reputation, page, list(more)))
     exe_case('held-none'); exe_case('held-cancel', then='cancel'); exe_case('held-link-cancel', then='link-cancel')
     exe_case('held-reputation-off', reputation='off')
@@ -192,7 +200,18 @@ def main() -> int:
     if a.night:
         FILES['eicar.com'] = (eicar(), 'probe-eicar.com')
         cases.append(('eicar', f'{base}/eicar.com', 'navigate', 'none', 'on', base, []))
+    if a.observe:   # replaces the case list: one variant, run until enough lingering runs
+        more = {'leave': ['--observe-ms', '60000'], 'drop': ['--drop-link-ms', '6000', '--observe-ms', '20000'],
+                'drop-visible': ['--drop-link-ms', '6000', '--observe-ms', '20000', '--link-hidden', 'off'],
+                'drop-released': ['--drop-link-ms', '6000', '--observe-ms', '20000', '--release-op', 'now'],
+                'touch': ['--touch-ms', '6000', '--drop-link-ms', '12000', '--observe-ms', '25000'],
+                # cancel only once the zone mark is there (cap 20 s), give the file back at each removal, count them for 60 s
+                'zone': ['--act-on', 'zone', '--restore-on-gone', 'on', '--link-hidden', 'off', '--observe-ms', '60000']}[a.observe]
+        cases.clear()
+        for n in range(a.runs):
+            exe_case(f'observe-{a.observe}-{n + 1}', then='observe', more=more)
     only = {n for n in a.only.split(',') if n}
+    lingering = 0
     failures = 0
     try:
         for name, file_url, trigger, then, reputation, page, more in cases:
@@ -208,14 +227,14 @@ def main() -> int:
                 env.update(USERPROFILE=str(home), HOMEDRIVE=str(home)[:2], HOMEPATH=str(home)[2:], APPDATA=str(home / 'AppData' / 'Roaming'),
                            LOCALAPPDATA=str(home / 'AppData' / 'Local'), PATH=r'C:\Windows\System32;C:\Windows;C:\Windows\System32\WindowsPowerShell1.0')
             cmd = [str(host), '--url', f'{page}/page', '--file', file_url, '--udf', str(udf), '--dir', str(dl), '--trigger', trigger,
-                   '--then', then, '--reputation', reputation, '--hold-ms', '4000', '--seconds', '45'] + more
+                   '--then', then, '--reputation', reputation, '--hold-ms', a.hold_ms, '--seconds', '90' if a.observe else '45'] + more + (['--observe-ms', a.observe_ms] if a.observe and a.observe_ms else [])
             print(f'===== {name}: {file_url} trigger={trigger} then={then} reputation={reputation} {" ".join(more)}', flush=True)
             job = Job()
             proc = subprocess.Popen(cmd, cwd=str(host.parent), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                     creationflags=0x4 | 0x08000000)   # suspended (in the job before any child), no console window
             job.add(proc); ctypes.WinDLL('ntdll').NtResumeProcess(W.HANDLE(int(proc._handle)))
             try:
-                text, _ = proc.communicate(timeout=90)
+                text, _ = proc.communicate(timeout=150)
             except subprocess.TimeoutExpired:
                 text = '(host timed out)'; failures += 1
             text = text.decode('utf-8', errors='replace') if isinstance(text, bytes) else text
@@ -225,6 +244,10 @@ def main() -> int:
             print(f'FACT after the engine exited ({left} process(es) still running at 20 s, then stopped through the job): '
                   + (' '.join(after) or '(empty)'), flush=True)
             (case / 'facts.txt').write_text(text + '\nafter exit: ' + ' '.join(after) + '\n', encoding='utf-8')
+            if a.observe and ('FACT LINGERING' in text or 'REMOVAL #2' in text):
+                lingering += 1
+                if lingering >= a.lingering:
+                    break
     finally:
         srv.shutdown()
     return 1 if failures else 0

@@ -7,32 +7,29 @@ Engine facts (tests/downloads/download_engine_probe.py, measured 2026-11-23 on W
 an unsigned, never-seen .exe arrives whole at its final path, then stays IN_PROGRESS with no interrupt reason and no further
 event: Microsoft Defender SmartScreen waits for « keep / delete » in the engine's own flyout, which this browser replaces
 (with SmartScreen off the same file completes). An http:// download started from an https:// page is held the same way
-(Chromium's insecure-download warning), whatever its type. Cancel() deletes the held file at once; a second hard link to it
-survives. The engine deletes a held file when it exits.
-Expected:
+(Chromium's insecure-download warning), whatever its type. Cancel() deletes the held file at once when the engine's own pass
+on it (the zone mark) is over, seconds later otherwise; a second hard link to it survives. The engine deletes a held file
+when it exits.
+Expected (« Conserver », src/main.cpp KeepHeldDownload / WaitEnginePass / WatchKept):
   - held:            log « DOWNLOAD held by the engine », the popover's card exposes « Supprimer » / « Conserver » (UIA);
-  - keep:            UIA Invoke on « Conserver » → the row is a finished download, the file is whole at its path with its
-                     Mark of the Web, nothing else is left in the folder (no hidden « .keep- » link), and the file is still
-                     there after the browser and its engine have exited;
-  - keep-again:      « Conserver » invoked twice in a row (a double click, or a second click while the first one runs):
-                     the second one never strands the first, the file ends kept as above;
-  - keep-late-removal: the file given back is removed at once (the test does what the engine did 16 ms after « Conserver »
-                     on main): « Conserver » puts it back from its own name, the file ends kept as above;
-  - keep-read:       the same while another program reads the held file for 4 s without allowing its deletion (as some
-                     scanners do): the engine's removal of the file it let go of does not take;
-  - keep-then-discard: « Supprimer » 300 ms after « Conserver » while such a reader keeps the engine's file there (the keep
-                     still waits): nothing kept, nothing left, the row gone;
-  - keep-then-close: the window closed right after « Conserver »: the file is kept at its path, visible, nothing left;
-  - keep-insecure:   the same « Conserver » for an http:// file from an https:// page (a throwaway self-signed certificate,
-                     this test's engine ignores certificate errors);
-  - keep-blocked:    the kept copy cannot be made (a folder already sits at the copy's name): the row never stays a dead
-                     « Conserver »: it ends as a clear failure (« Échec · Erreur de fichier », « Retirer »), the folder is
-                     left alone and the held file is the engine's to delete, as « Supprimer » would;
-  Every keep case also records the download folder's events (ReadDirectoryChangesW, timed): on 0.3.1062 / WebView2 158
-  they showed the engine removing the file it had let go of 16 ms AFTER « Conserver » had put it back, or 4 s late,
-  after the browser had given up waiting and dropped its own copy (2 runs in 3 lost the file).
+  - keep (x --repeat), keep-again (two invokes), keep-insecure (an http:// file from an https:// page, throwaway certificate,
+                     this test's engine ignores certificate errors): the row is a finished download at once; after the guard
+                     our own name (<app>/kept-downloads) goes and the file is handed to attachment services: whole at its path,
+                     zone mark, visible, nothing else in the download folder or in kept-downloads; it survives the exit;
+  - keep-late-removal: the test removes the path right after the file was given back (as the engine can, once more):
+                     it is given back again, then the same as keep;
+  - keep-read:       another program reads the held file across the cancel without allowing its deletion: the engine's
+                     removal fails, the file stays at its path; at exit the row points at a whole file, nothing of ours left;
+  - keep-then-discard: « Supprimer » 300 ms after « Conserver » is no longer offered (the row is finished), the file is kept;
+  - keep-then-close: the window closed right after « Conserver »: the row points at a whole, visible file (a name the engine
+                     never knew when its removal was not seen yet), nothing of ours left;
+  - keep-blocked:    our name cannot be made (a folder sits at it): « Échec · Erreur de fichier » with « Retirer », no dead
+                     « Conserver », the engine's held file deleted, the folder left alone, nothing else left;
   - discard:         UIA Invoke on « Supprimer » → the file is gone and the row with it;
   - control:         a plain .bin completes as before and is never held.
+  Every keep case records the download folder's events (ReadDirectoryChangesW, timed). Engine facts behind the design:
+  tests/downloads/download_engine_probe.py --observe (the engine removes a cancelled held file by name when its own pass on
+  the file, the one that writes the zone mark, ends: at once when it was over, seconds later when it still ran).
 
 Isolation: one throwaway copy of the app per case (payload only, its own profile/settings/log beside the exe) and a sealed
 home (USERPROFILE / APPDATA / LOCALAPPDATA under the copy, PATH = Windows only: no agent CLI reachable; nothing here opens
@@ -366,15 +363,26 @@ def main() -> int:
     def hidden(path: Path):
         a = k32.GetFileAttributesW(str(path)); return a != 0xFFFFFFFF and bool(a & 0x2)
 
+    def row_file(b, name):
+        """The file the history row of `name` points at (after « Conserver » it may be « name (1).exe »)."""
+        row = row_of(b, Path(name).stem)
+        f = row.split('\t')
+        return Path(f[3]) if len(f) > 3 else None, row
+
     def keep_case(name, page=base, file_base=None, extra_args='', times=1, reader_ms=0, then=''):
-        """« Conserver » on a held download: a finished download, whole at its path, marked, visible, nothing else left, and
-        still there once the browser and its engine have exited. reader_ms: another program reads the file meanwhile without
-        allowing its deletion (as some scanners do: the engine's removal does not take). then: 'late-removal' (the path is
-        removed right after « Conserver » gave it back, as the engine did 16 ms after on main), 'discard' (« Supprimer »
-        while the keep waits for the engine), 'close' (the window closed while the keep is under way)."""
+        """« Conserver » on a held download: a finished download at once; once the engine has let go and its removal is
+        undone, our own name (in the app's kept-downloads folder) goes after the guard and the file is handed to attachment
+        services: whole at its path, marked, visible, nothing else left in the download folder or in kept-downloads, and
+        still there once the browser and its engine have exited. reader_ms: another program reads the file across the
+        cancel without allowing its deletion (the engine's removal fails); then: 'late-removal' (the path removed by the test
+        right after the file was given back: a removal by the engine once more), 'discard' (« Supprimer » 300 ms after
+        « Conserver »: no longer offered), 'close' (the window closed right after « Conserver »)."""
         file_base = file_base or base
         b, op, downloads = launch(name, page, extra_args); target = downloads / f'held-{name}.exe'; size = len(FILES[name + '.exe'][0])
+        kept_dir = b.app / 'kept-downloads'
         watch = FolderWatch(downloads); closed = False; left = None
+        events = lambda: [e for e in watch.events if 'Zone.Identifier' not in e]
+        ours = lambda: sorted(p.name for p in kept_dir.iterdir()) if kept_dir.exists() else []
         try:
             mark = len(b.log()); dn.ev(op, f"location.href='{file_base}/{name}.exe'")
             held = dn.wait(lambda: 'DOWNLOAD held by the engine' in b.log()[mark:], 40)
@@ -384,49 +392,48 @@ def main() -> int:
             reader = None
             if reader_ms:
                 reader = k32.CreateFileW(str(target), 0x80000000, 0x1 | 0x2, None, 3, 0, None)   # GENERIC_READ, share read + write only
-                if then != 'discard':
-                    threading.Timer(reader_ms / 1000, lambda: (k32.CloseHandle(reader), stamp(watch, 'the reader closed the file'))).start()
-                stamp(watch, 'a reader opened the file (no delete sharing)' + ('' if then == 'discard' else f' for {reader_ms} ms'))
+                threading.Timer(reader_ms / 1000, lambda: (k32.CloseHandle(reader), stamp(watch, 'the reader closed the file'))).start()
+                stamp(watch, f'a reader opened the file for {reader_ms} ms (no delete sharing)')
             stamp(watch, f'UIA Invoke « Conserver » x{times}' + (', then « Supprimer » 300 ms later' if then == 'discard' else ''))
             r = b.uia(uia, 'DownloadKeep', times=times, then_id='DownloadDiscard' if then == 'discard' else '', then_ms=300)
             stamp(watch, 'UIA Invoke returned: ' + r)
-            if reader and then == 'discard':
-                k32.CloseHandle(reader); stamp(watch, 'the reader closed the file')
-            events = lambda: [e for e in watch.events if 'Zone.Identifier' not in e]
-            if then == 'discard':
-                d = r.partition(';then ')[2]
-                gone = dn.wait(lambda: not target.exists(), 12); time.sleep(1.5)
-                leftovers = sorted(p.name for p in downloads.iterdir()); row_left = target.name in b.model()
-                check(f'{name}: « Supprimer » during the keep: nothing kept, nothing left', r.startswith('invoked') and d.startswith('invoked') and bool(gone) and not leftovers and not row_left,
-                      invoke=r, discard=d, file_gone=bool(gone), leftovers=leftovers, row_in_history=row_left, log=lines(b, mark), folder_events=events())
-                return
             if then == 'close':
                 left = b.close(); closed = True; stamp(watch, 'browser and engine exited')
-                leftovers = sorted(p.name for p in downloads.iterdir() if p.name != target.name); size_ok = target.exists() and target.stat().st_size == size
-                check(f'{name}: window closed during the keep: the file is kept, visible, nothing left', r.startswith('invoked') and size_ok and not hidden(target) and not leftovers,
-                      invoke=r, file_whole=size_ok, hidden=hidden(target), leftovers=leftovers, history_row=row_of(b, target.name)[:140], log=lines(b, mark), folder_events=events())
+                f, row = row_file(b, target.name); size_ok = bool(f) and f.exists() and f.stat().st_size == size
+                check(f'{name}: window closed during the keep: the row points at the whole file, visible, nothing left of ours',
+                      r.startswith('invoked') and row.startswith('C\t') and size_ok and not hidden(f) and not ours(),
+                      invoke=r, row_file=str(f.name) if f else None, file_whole=size_ok, hidden=bool(f) and hidden(f), ours_left=ours(),
+                      folder=sorted(p.name for p in downloads.iterdir()), log=lines(b, mark), folder_events=events())
                 return
-            if then == 'late-removal':   # the engine's second removal of the path, measured 16 ms after the file was given back
-                if dn.wait(lambda: 'DOWNLOAD kept by the user' in b.log()[mark:], 20, .01):
+            if then == 'late-removal':   # a removal by the engine once more, right after the file was given back
+                if dn.wait(lambda: 'DOWNLOAD kept file given back at its path' in b.log()[mark:], 40, .01):
                     try:
-                        os.remove(target); stamp(watch, 'the test removed the file given back (as the engine did)')
+                        os.remove(target); stamp(watch, 'the test removed the file given back (a removal once more)')
                     except OSError as e:
                         stamp(watch, f'the test could not remove the file: {e}')
-            kept = dn.wait(lambda: 'DOWNLOAD kept by the user' in b.log()[mark:], 40)
-            dn.wait(lambda: row_of(b, target.name).startswith('C\t'), 10)
-            dn.wait(lambda: 'DOWNLOAD kept file handed to attachment services' in b.log()[mark:] or 'attachment services refused' in b.log()[mark:], 40)
+            kept = dn.wait(lambda: 'DOWNLOAD kept by the user' in b.log()[mark:], 20)
+            row_now = row_of(b, target.name)
+            settled = dn.wait(lambda: 'DOWNLOAD kept file handed to attachment services' in b.log()[mark:] or 'attachment services refused' in b.log()[mark:], 150) if not reader_ms else False
+            if reader_ms:   # the engine's removal failed: never seen, the file stays at its path and our name holds the bytes until exit
+                time.sleep(8)
             row = row_of(b, target.name); size_ok = target.exists() and target.stat().st_size == size
             leftovers = sorted(p.name for p in downloads.iterdir() if p.name != target.name)
-            check(f'{name}: keep_finishes_the_download', r.startswith('invoked') and bool(kept) and size_ok and row.startswith('C\t') and 'ZoneId=3' in zone(target) and not hidden(target) and not leftovers,
-                  invoke=r, kept=bool(kept), file_whole=size_ok, history_row=row[:140], zone_mark='ZoneId=3' in zone(target), hidden=hidden(target), leftovers=leftovers,
-                  log=lines(b, mark), folder_events=events())
+            ok = r.startswith('invoked') and bool(kept) and row_now.startswith('C\t') and size_ok and row.startswith('C\t') and 'ZoneId=3' in zone(target) and not hidden(target) and not leftovers
+            if then == 'discard':
+                ok = ok and r.endswith(';then missing')   # « Supprimer » is no longer offered once « Conserver » was chosen
+            if not reader_ms:
+                ok = ok and bool(settled) and not ours()
+            check(f'{name}: keep_finishes_the_download', ok, invoke=r, kept=bool(kept), row_at_once=row_now[:2], settled=bool(settled), file_whole=size_ok, history_row=row[:140],
+                  zone_mark='ZoneId=3' in zone(target), hidden=hidden(target), leftovers=leftovers, ours_left=ours(), log=lines(b, mark), folder_events=events())
         finally:
             if not closed:
                 left = b.close()
             watch.close()
-        if then not in ('discard', 'close'):
-            check(f'{name}: kept_file_survives_exit', target.exists() and target.stat().st_size == size, exists=target.exists(),
-                  engine_processes_left_after_25s=left, folder=sorted(p.name for p in downloads.iterdir()))
+        if then == 'close':
+            return
+        f, row = row_file(b, target.name); size_ok = bool(f) and f.exists() and f.stat().st_size == size
+        check(f'{name}: kept_file_survives_exit', size_ok and row.startswith('C\t') and not ours(), row_file=str(f.name) if f else None, file_whole=size_ok,
+              engine_processes_left_after_25s=left, ours_left=ours(), folder=sorted(p.name for p in downloads.iterdir()))
 
     try:
         if not only or 'keep' in only:
@@ -455,11 +462,11 @@ def main() -> int:
             try:
                 mark = len(b.log()); dn.ev(op, f"location.href='{base}/keep-blocked.exe'")
                 held = dn.wait(lambda: 'DOWNLOAD held by the engine' in b.log()[mark:], 40)
-                # The browser's own name for the kept bytes (src/main.cpp KeepLinkPath: <file>.keep-<pid>-<download id>, the
-                # first download of a fresh profile is id 1) taken by a folder: no hard link, no copy can be made there.
-                blockers = [downloads / f'held-keep-blocked.exe.keep-{b.pid}-1']
+                # The browser's own name for the kept bytes (src/main.cpp KeepBackupPath: <app>/kept-downloads/<pid>-<download
+                # id>-<file>, the first download of a fresh profile is id 1) taken by a folder: no hard link, no copy there.
+                blockers = [b.app / 'kept-downloads' / f'{b.pid}-1-held-keep-blocked.exe']
                 for p in blockers:
-                    p.mkdir()
+                    p.mkdir(parents=True)
                 r = b.uia(uia, 'DownloadKeep') if held else 'not held'
                 settled = dn.wait(lambda: row_of(b, target.name).startswith('F\t'), 15)
                 time.sleep(1.5)
@@ -470,9 +477,10 @@ def main() -> int:
                       held_file_still_there=engine_file, folder=sorted(p.name for p in downloads.iterdir()), log=lines(b, mark))
             finally:
                 left = b.close()
-            check('keep-blocked: nothing hidden left once the browser exits', not target.exists() and all(p.is_dir() for p in blockers)
-                  and not any(p.name.startswith('held-keep-blocked.exe.keep') and not p.is_dir() for p in downloads.iterdir()),
-                  folder=sorted(p.name for p in downloads.iterdir()), engine_processes_left_after_25s=left)
+            ours = sorted(p.name for p in (b.app / 'kept-downloads').iterdir())
+            check('keep-blocked: nothing left once the browser exits', not target.exists() and all(p.is_dir() for p in blockers)
+                  and not list(downloads.iterdir()) and ours == [blockers[0].name],
+                  folder=sorted(p.name for p in downloads.iterdir()), kept_downloads=ours, engine_processes_left_after_25s=left)
         if not only or 'discard' in only:
             b, op, downloads = launch('discard'); target = downloads / 'held-discard.exe'
             try:

@@ -76,10 +76,10 @@ inline const wchar_t* TipFor(Action action) {
 
 // ---- Engine state → row state (WebView2 values, kept numeric: no SDK header here) ---------------------
 // COREWEBVIEW2_DOWNLOAD_STATE: 0 in progress, 1 interrupted, 2 completed. Interrupt reasons used here:
-// USER_CANCELED 26, USER_PAUSED 28 (static_assert in main.cpp).
+// USER_CANCELED 26, USER_SHUTDOWN 27, USER_PAUSED 28 (static_assert in main.cpp).
 namespace Engine {
 inline constexpr int InProgress = 0, Interrupted = 1, Completed = 2;
-inline constexpr int ReasonUserCanceled = 26, ReasonUserPaused = 28;
+inline constexpr int ReasonUserCanceled = 26, ReasonUserShutdown = 27, ReasonUserPaused = 28;
 // A download whose bytes are all in and that the engine still reports in progress for this long is held for the
 // user's decision (measured: a finished download completes within a few hundred ms of its last byte; a held one
 // never does). A late completion after the grace still lands as Completed.
@@ -96,26 +96,17 @@ inline State MapEngineState(int state, int reason, bool userPaused) {
 inline bool HeldForDecision(int state, std::int64_t received, std::int64_t total, bool userPaused, std::int64_t fullSinceMs) {
     return state == Engine::InProgress && !userPaused && total > 0 && received >= total && fullSinceMs >= Engine::HoldGraceMs;
 }
-// « Conserver » on a held download (src/main.cpp KeepHeldDownload, FinishKeep, GuardKeptFile). The kept bytes get a
-// second name of their own (a hard link, or a copy), then Cancel() lets the engine go. Measured on WebView2 158
-// (tests/downloads/held_download_e2e.py folder events, download_engine_probe.py): the engine removes its own file
-// asynchronously, from at once to seconds later (a removal left pending while another program has the file open, about
-// 4 s), its removal can hit the name the kept file was just given back (16 ms after it), and when another program
-// reads the file without allowing its deletion the removal simply fails and the file stays where it is. So:
-//   - the path's state after the cancel (At): Gone (not found), Pending (listed but cannot be opened: its removal is
-//     pending), Left (a file that opens: the engine's, not removed yet, or not at all);
-//   - Gone: the kept file gets its path back as another name of ours; Pending, or Left for less than LeftSteps: wait, up
-//     to WaitSteps; a path that never frees up: the kept file takes the next free name;
-//   - Left for LeftSteps in a row (Stays): either the engine's removal did not take, or it waits for our hard link to go
-//     (measured twice: the engine's file and our link vanished together when the link was removed). So our bytes first
-//     get a copy of their own and the link goes; after that, Gone gives the path back from the copy, and Stays means the
-//     engine's file is the kept file;
-//   - then our own name stays for GuardSteps, during which a removal of the path is undone from it.
+// « Conserver » on a held download (src/main.cpp KeepHeldDownload, WaitEnginePass, WatchKept): the decisions. Measured
+// on WebView2 158 (tests/downloads/download_engine_probe.py --observe): after a cancel the engine removes its file by
+// name when its own pass on the file ends (the pass that writes the zone mark): at once when it was over, seconds later
+// when it still ran, and a removal can come again. So the engine is let go only once that pass is over (the zone mark)
+// or after PassCapMs, and the path is then watched: every removal is undone from our own name for GuardMs after the
+// last one; our name goes only then.
 namespace Keep {
 inline constexpr int StepMs = 100;
-inline constexpr int WaitSteps = 300;   // 30 s for the engine's own file to go (measured: up to about 4 s)
-inline constexpr int LeftSteps = 20;    // 2 s of a readable file at the path: the engine's removal did not take
-inline constexpr int GuardSteps = 30;   // 3 s during which a late removal of the path is undone (measured: 16 ms after)
+inline constexpr std::int64_t PassCapMs = 20000;        // the engine's own pass on the held file, waited for at most
+inline constexpr std::int64_t GuardMarkedMs = 60000;    // watch after a file given back, its pass over at the cancel
+inline constexpr std::int64_t GuardForcedMs = 300000;   // the same when the cap forced the cancel
 enum class At { Gone, Pending, Left };
 // From GetFileAttributesW (attributesRead, error) and an attempt to open the path: gone only on « not found »
 // (2 ERROR_FILE_NOT_FOUND, 3 ERROR_PATH_NOT_FOUND); a name whose removal is pending cannot be opened.
@@ -123,15 +114,25 @@ inline At PathState(bool attributesRead, unsigned long error, bool opens) {
     if (!attributesRead && (error == 2 || error == 3)) return At::Gone;
     return attributesRead && opens ? At::Left : At::Pending;
 }
-enum class Next { Wait, Restore, Stays, Elsewhere };
-// attempt: steps already waited; leftFor: steps in a row the path was Left (this one included).
-inline Next AfterCancel(At at, int attempt, int leftFor) {
-    if (at == At::Gone) return Next::Restore;
-    if (at == At::Left && leftFor >= LeftSteps) return Next::Stays;
-    return attempt < WaitSteps ? Next::Wait : Next::Elsewhere;
+// Before the cancel. engineState / reason: the operation's (Engine values); marked: the held file carries its zone mark;
+// waitedMs: since « Conserver ». LetGo: the engine let go without a verdict (a closed tab, its shutdown); Ended: it
+// finished the download or blocked it by itself, its outcome stands.
+enum class Before { Wait, Cancel, LetGo, Ended };
+inline Before BeforeCancel(int engineState, int reason, bool marked, std::int64_t waitedMs) {
+    if (engineState == Engine::InProgress) return marked || waitedMs >= PassCapMs ? Before::Cancel : Before::Wait;
+    if (engineState == Engine::Interrupted && (reason == Engine::ReasonUserCanceled || reason == Engine::ReasonUserShutdown)) return Before::LetGo;
+    return Before::Ended;
 }
-enum class Guard { Hold, PutBack, Done };
-inline Guard Guarding(bool there, int step) { return step >= GuardSteps ? Guard::Done : there ? Guard::Hold : Guard::PutBack; }
+inline std::int64_t GuardMs(bool markedAtCancel) { return markedAtCancel ? GuardMarkedMs : GuardForcedMs; }
+// After the cancel, at each look at the path. seen: a removal seen since the cancel; sinceGivenMs: since the file was
+// last given back. No short limit before the first removal: only a removal seen ends the wait (or the window's exit).
+enum class Next { Wait, GiveBack, Guard, Settle };
+inline Next Look(bool seen, At at, std::int64_t sinceGivenMs, std::int64_t guardMs) {
+    if (at == At::Gone) return Next::GiveBack;
+    if (!seen) return Next::Wait;
+    return sinceGivenMs >= guardMs ? Next::Settle : Next::Guard;
+}
+inline int LookAfterMs(int looks) { return looks < 600 ? StepMs : 1000; }   // once a second after the first minute
 }
 
 // ---- Text ---------------------------------------------------------------

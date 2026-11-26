@@ -23,6 +23,7 @@
 #include <shobjidl.h>
 #include <cstdio>
 #include <functional>
+#include <algorithm>
 #include <map>
 #include <string>
 
@@ -62,6 +63,11 @@ const IID IID_Settings8 = Iid(L"{9e6b0e8f-86ad-4e81-8147-a9b5edb68650}"); // ICo
 std::wstring url, fileUrl, udf, dir, trigger = L"navigate", then = L"none", reputation = L"on", aes = L"off";
 int seconds = 60, holdMs = 4000, restoreDelay = 0, otherHandleMs = 0;
 std::wstring otherShare = L"all";   // all: read, write and delete allowed; read: a reader that does not allow deletion
+// --then observe: the mechanism of a « lingering » engine file (still there after its cancel), see Observe().
+int dropLinkMs = 0, touchMs = 0, observeMs = 60000; std::wstring linkHidden = L"on", releaseOp = L"keep";
+// --act-on zone: act only once the held file carries its zone mark (the engine's own pass is over), at most --cap-ms
+// after the last byte; --restore-on-gone on: each removal of the engine's name is counted and the file given back at once.
+std::wstring actOn = L"hold", restoreOnGone = L"off"; int capMs = 20000, removals = 0;
 ICoreWebView2Controller* controller = nullptr;
 ICoreWebView2* view = nullptr;
 ICoreWebView2DownloadOperation* op = nullptr;
@@ -151,9 +157,11 @@ void Restore() {
             CoUninitialize(); delete args; return 0; }, new std::pair<std::wstring, std::wstring>(final, src), 0, nullptr);
     }
 }
+void Observe(const std::wstring& final);
 void Act() {
     if (acted) return; acted = true;
     const std::wstring final = ResultPath(), bytes = BytesFile(final);
+    if (then == L"observe") { Observe(final); return; }
     Say(L"FACT bytes file: " + (bytes.empty() ? std::wstring(L"(not found)") : bytes) + (bytes == final ? L" (final path)" : L" (NOT the final path)"));
     const bool linking = then == L"link-cancel" || then == L"link-cancel-restore";
     if (linking) {
@@ -177,6 +185,56 @@ void Act() {
             Files(L"final"); Finish(); });
     } else After(3000, [] { Say(L"FACT still: " + StateText()); Files(L"final"); Finish(); });
 }
+// --then observe. Our hard link (hidden or not), Cancel(), the operation released at once or kept, then both names watched
+// every 10 ms: their state (gone / pending: listed but cannot be opened / readable). The engine's name normally goes in
+// the same tick as the cancel; when it is still readable 1 s later the run is LINGERING, and then: our link deleted at
+// --drop-link-ms (0: never), an unrelated file created and deleted in the folder at --touch-ms (0: never), until
+// --observe-ms. Each change is printed with its time since the cancel.
+ULONGLONG cancelAt = 0;
+std::wstring NameState(const std::wstring& p) {
+    if (GetFileAttributesW(p.c_str()) == INVALID_FILE_ATTRIBUTES) { const DWORD e = GetLastError(); return e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND ? L"gone" : L"pending(attr err " + std::to_wstring(e) + L")"; }
+    HANDLE h = CreateFileW(p.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return L"pending(open err " + std::to_wstring(GetLastError()) + L")";
+    CloseHandle(h); return L"readable";
+}
+std::wstring Since() { return std::to_wstring((long long)(GetTickCount64() - cancelAt)) + L" ms after the cancel"; }
+void WatchNames(std::wstring final, std::wstring a0, std::wstring l0) {
+    if (finished) return;
+    const std::wstring a = NameState(final), l = NameState(linkPath);
+    if (a != a0) Say(L"FACT engine's name " + a + L" at " + Since());
+    if (restoreOnGone == L"on" && a == L"gone" && a0 != L"gone") {
+        ++removals; const BOOL back = CreateHardLinkW(final.c_str(), linkPath.c_str(), nullptr);
+        Say(L"FACT REMOVAL #" + std::to_wstring(removals) + L" at " + Since() + L", given back: " + (back ? L"ok" : L"FAILED " + std::to_wstring(GetLastError())));
+        After(10, [final, l] { WatchNames(final, NameState(final), l); }); return;
+    }
+    if (l != l0) Say(L"FACT our link " + l + L" at " + Since());
+    After(10, [final, a, l] { WatchNames(final, a, l); });
+}
+void Observe(const std::wstring& final) {
+    linkPath = final + L".probe-link";
+    if (!CreateHardLinkW(linkPath.c_str(), final.c_str(), nullptr)) { Say(L"FACT hard link FAILED " + std::to_wstring(GetLastError())); Finish(); return; }
+    if (linkHidden == L"on") SetFileAttributesW(linkPath.c_str(), FILE_ATTRIBUTE_HIDDEN);
+    Say(L"FACT observe: link made (" + std::wstring(linkHidden == L"on" ? L"hidden" : L"not hidden") + L"), operation " + (releaseOp == L"now" ? L"released at once" : L"kept"));
+    cancelAt = GetTickCount64();
+    const HRESULT hr = op->Cancel();
+    Say(L"FACT Cancel() hr=" + std::to_wstring((long)hr) + L", engine's name then " + NameState(final));
+    if (releaseOp == L"now") { op->Release(); op = nullptr; }
+    WatchNames(final, L"readable", L"readable");
+    if (restoreOnGone == L"on") { After((UINT)observeMs, [] { Say(L"FACT end of the observation at " + Since() + L": " + std::to_wstring(removals) + L" removal(s)"); Files(L"final"); Finish(); }); return; }
+    After(1000, [final] {
+        if (NameState(final) == L"gone") { Say(L"FACT NORMAL: the engine's name went within 1 s"); After(500, [] { Files(L"final"); Finish(); }); return; }
+        Say(L"FACT LINGERING: the engine's name is " + NameState(final) + L" 1 s after the cancel");
+        if (dropLinkMs > 0) After((UINT)std::max(0, dropLinkMs - 1000), [] {
+            SetFileAttributesW(linkPath.c_str(), FILE_ATTRIBUTE_NORMAL);
+            const BOOL ok = DeleteFileW(linkPath.c_str()); const DWORD e = GetLastError();
+            Say(L"FACT our link deleted at " + Since() + (ok ? L": ok" : L": FAILED err " + std::to_wstring(e))); });
+        if (touchMs > 0) After((UINT)std::max(0, touchMs - 1000), [] {
+            const std::wstring other = dir + L"\\probe-touch.tmp";
+            HANDLE h = CreateFileW(other.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr); if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+            DeleteFileW(other.c_str()); Say(L"FACT an unrelated file created and deleted in the folder at " + Since()); });
+        After((UINT)std::max(0, observeMs - 1000), [] { Say(L"FACT end of the observation at " + Since()); Files(L"final"); Finish(); });
+    });
+}
 void Check() {   // the hold: every byte in, still in progress past --hold-ms (no event says so)
     if (finished || !op || terminal) return;
     COREWEBVIEW2_DOWNLOAD_STATE s = COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS; op->get_State(&s);
@@ -184,13 +242,18 @@ void Check() {   // the hold: every byte in, still in progress past --hold-ms (n
     Files(L"poll");
     if (s == COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS && total > 0 && got >= total) {
         if (!fullAt) { fullAt = GetTickCount64(); Say(L"FACT every byte in: " + StateText()); }
-        if (!held && GetTickCount64() - fullAt >= (ULONGLONG)holdMs) { held = true; Say(L"FACT held: " + StateText()); Act(); return; }
+        if (!held && GetTickCount64() - fullAt >= (ULONGLONG)holdMs) { held = true; Say(L"FACT held: " + StateText()); if (actOn != L"zone") { Act(); return; } }
+        if (held && actOn == L"zone") {
+            const bool marked = Exists(ResultPath() + L":Zone.Identifier"), capped = GetTickCount64() - fullAt >= (ULONGLONG)capMs;
+            if (marked || capped) { Say(std::wstring(marked ? L"FACT zone mark present " : L"FACT cap reached without the zone mark, ") + std::to_wstring((long long)(GetTickCount64() - fullAt)) + L" ms after the last byte"); Act(); return; }
+        }
     }
     After(100, Check);
 }
 void TrackOperation(ICoreWebView2DownloadOperation* o) {
     op = o; op->AddRef(); EventRegistrationToken token{};
     auto state = Callback<ICoreWebView2StateChangedEventHandler, ICoreWebView2DownloadOperation*, IUnknown*>([](ICoreWebView2DownloadOperation*, IUnknown*) -> HRESULT {
+        if (!op) return S_OK;
         Say(L"FACT StateChanged " + StateText()); Files(L"state");
         COREWEBVIEW2_DOWNLOAD_STATE s = COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS; op->get_State(&s);
         if (s != COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS && then == L"link-cancel-restore" && acted) {
@@ -202,6 +265,7 @@ void TrackOperation(ICoreWebView2DownloadOperation* o) {
         return S_OK; });
     op->add_StateChanged(state, &token); state->Release();
     auto bytes = Callback<ICoreWebView2BytesReceivedChangedEventHandler, ICoreWebView2DownloadOperation*, IUnknown*>([](ICoreWebView2DownloadOperation*, IUnknown*) -> HRESULT {
+        if (!op) return S_OK;
         INT64 got = 0, total = 0; op->get_BytesReceived(&got); op->get_TotalBytesToReceive(&total);
         if (got >= total && total > 0) Say(L"FACT BytesReceivedChanged (all in) " + StateText());
         return S_OK; });
@@ -274,6 +338,9 @@ int wmain(int argc, wchar_t** argv) {
         else if (k == L"--hold-ms") holdMs = _wtoi(v.c_str()); else if (k == L"--seconds") seconds = _wtoi(v.c_str());
         else if (k == L"--restore-delay") restoreDelay = _wtoi(v.c_str()); else if (k == L"--aes") aes = v;
         else if (k == L"--other-handle-ms") otherHandleMs = _wtoi(v.c_str()); else if (k == L"--other-share") otherShare = v;
+        else if (k == L"--drop-link-ms") dropLinkMs = _wtoi(v.c_str()); else if (k == L"--touch-ms") touchMs = _wtoi(v.c_str());
+        else if (k == L"--observe-ms") observeMs = _wtoi(v.c_str()); else if (k == L"--link-hidden") linkHidden = v; else if (k == L"--release-op") releaseOp = v;
+        else if (k == L"--act-on") actOn = v; else if (k == L"--restore-on-gone") restoreOnGone = v; else if (k == L"--cap-ms") capMs = _wtoi(v.c_str());
     }
     if (url.empty() || fileUrl.empty() || udf.empty() || dir.empty()) { Say(L"usage: --url U --file F --udf DIR --dir DOWNLOADS"); return 2; }
     t0 = GetTickCount64();
