@@ -102,7 +102,13 @@ private:
     void Invalidate() { if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE); }
     void RequestFrame() { if (!hwnd_ || offscreen_) return; if (clockOk_) clock_.Request(); else SetTimer(hwnd_, 1, 16, nullptr); }
     float Alpha(Motion::Time now) const { return fadeFrom_ + (fadeTo_ - fadeFrom_) * Motion::Clamp(Ms(fadeAt_, now) / fadeMs_); }
-    void Fade(float to, int ms) { const auto now = Motion::Now(); fadeFrom_ = Alpha(now); fadeTo_ = to; fadeAt_ = now; fadeMs_ = static_cast<float>(std::max(1, ms)); }
+    // The fade runs on the frame clock; its end is also settled by a plain timer (fade + 40 ms), so a stalled clock (a busy
+    // UI thread, a desktop not composed) can never leave the card half shown, or shown after it was asked to go.
+    static constexpr UINT_PTR SettleTimer = 2;
+    void Fade(float to, int ms) {
+        const auto now = Motion::Now(); fadeFrom_ = Alpha(now); fadeTo_ = to; fadeAt_ = now; fadeMs_ = static_cast<float>(std::max(1, ms));
+        if (hwnd_ && !offscreen_) SetTimer(hwnd_, SettleTimer, static_cast<UINT>(std::max(1, ms) + 40), nullptr);
+    }
     bool Animating() const {
         const auto now = Motion::Now();
         if (Ms(fadeAt_, now) < fadeMs_) return true;
@@ -148,7 +154,7 @@ private:
     void Finish() {
         if (!hwnd_) return;
         if (GetCapture() == hwnd_) ReleaseCapture();
-        PopupKit::SetAlpha(hwnd_, 0); ShowWindow(hwnd_, SW_HIDE);
+        KillTimer(hwnd_, SettleTimer); PopupKit::SetAlpha(hwnd_, 0); ShowWindow(hwnd_, SW_HIDE);
         open_ = closing_ = inside_ = false; hover_ = pressed_ = None; glow_.clear(); fadeFrom_ = fadeTo_ = 0;
         if (!clockOk_) KillTimer(hwnd_, 1);
     }
@@ -181,7 +187,10 @@ private:
         case WM_ERASEBKGND: return 1;
         case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); Paint(); EndPaint(h, &ps); return 0; }
         case FrameMessage: if (l == FrameClock::ClockLost) { clock_.Stop(); clockOk_ = false; SetTimer(h, 1, 16, nullptr); return 0; } clock_.Acknowledge(); Step(); return 0;
-        case WM_TIMER: if (w == 1) Step(); return 0;
+        case WM_TIMER:
+            if (w == 1) Step();
+            else if (w == SettleTimer) { KillTimer(h, SettleTimer); if (closing_) Finish(); else if (open_) PopupKit::SetAlpha(h, Alpha(Motion::Now())); }   // the fade's end, whatever the clock did
+            return 0;
         case WM_MOUSEACTIVATE: return MA_NOACTIVATE;   // the page keeps the keyboard
         case WM_MOUSEMOVE: {
             if (!inside_) { inside_ = true; TRACKMOUSEEVENT tr{sizeof(tr), TME_LEAVE, h, 0}; TrackMouseEvent(&tr); if (hooks_.entered) hooks_.entered(); }

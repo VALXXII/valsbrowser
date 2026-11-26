@@ -24,6 +24,8 @@ sys.path.insert(0, str(ROOT / 'tests' / 'annotations'))
 import sandbox_qa as Q   # noqa: E402  (CDP WebSocket)
 
 ap = argparse.ArgumentParser(); ap.add_argument('build'); ap.add_argument('--ports', default='5196,5197,9361')
+ap.add_argument('--layout', choices=('top', 'side', 'compact'), default='top',
+                help='tabs position: the drawers (and the help panel) dock on the right in « top », on the left against the side panel otherwise (#143)')
 args = ap.parse_args()
 BUILD = pathlib.Path(args.build).resolve(); SRC = BUILD if (BUILD / 'browser.exe').is_file() else BUILD / 'app'
 FAKE = (BUILD.parent / (BUILD.name + '-test') / 'fake-acp-agent.exe').resolve()
@@ -52,6 +54,7 @@ for f in SRC.iterdir():
 sys.path.insert(0, str(ROOT / 'tests' / 'chat'))
 import chat_qa as C   # noqa: E402  (the tutorial marked as seen: its veil never covers the page)
 C.mark_tutorial_seen(APP)
+with open(APP / 'settings', 'a', encoding='utf-8', newline='\n') as f: f.write(f'tabs-position={args.layout}\n')   # the layout under test
 cfg = APP / 'annotations-chat'; cfg.mkdir(parents=True, exist_ok=True)
 (cfg / 'projects.json').write_text(json.dumps({'v': 1, 'layout': 'comment', 'sites': {}}), encoding='utf-8')   # Mode Commentaire
 for sub in ('AppData/Roaming/Claude', 'AppData/Local', 'home/.codex'): (AGENTS / sub).mkdir(parents=True, exist_ok=True)
@@ -226,8 +229,8 @@ try:
     gone = wait_for(lambda: shown('BrowserAnnotationFrameCard') is None, 2); t3 = time.perf_counter()
     check(left and hid and gone, 'the pointer onto the page: the card goes (after its grace)',
           f'leave seen {"%.0f" % ((t1 - t0) * 1000)} ms, hidden {"%.0f" % ((t2 - t0) * 1000)} ms, window gone {"%.0f" % ((t3 - t0) * 1000)} ms after the move')
-    s = box('#ship'); move(s[0] + 40, s[1] + 40); time.sleep(0.2); move(s[0] + 60, s[1] + 70); time.sleep(0.6); pump_log()
-    check(shown('BrowserAnnotationFrameCard') is None and not any('frame card shown' in l for l in lines_out[-6:]), 'over the iframe of the same site: no card')
+    mark = len(lines_out); s = box('#ship'); move(s[0] + 40, s[1] + 40); time.sleep(0.2); move(s[0] + 60, s[1] + 70); time.sleep(0.6); pump_log()
+    check(shown('BrowserAnnotationFrameCard') is None and not any('frame card shown' in l for l in lines_out[mark:]), 'over the iframe of the same site: no card')
     move(p[0] + 100, p[1] + 60)
     card = wait_log(r'frame card shown under', 4) and wait_for(lambda: shown('BrowserAnnotationFrameCard'), 2)
     check(bool(card), 'back over the iframe of another site: the card again')
@@ -239,7 +242,11 @@ try:
             time.sleep(0.6)
             mr = rect(main_hwnd()); cr = RECT(); u32.GetClientRect(main_hwnd(), ctypes.byref(cr)); pt = W.POINT(cr.r, cr.b); u32.ClientToScreen(main_hwnd(), ctypes.byref(pt))
             hr = rect(help_[0])
-            check(abs(hr[2] - pt.x) <= 1 and abs((hr[2] - hr[0]) - round(332 * dpi)) <= 1 and abs(hr[3] - pt.y) <= 1,
+            if args.layout != 'top':   # #143: docked on the left, against the side panel (its right edge = the page's left edge)
+                check(abs(hr[0] - org[0]) <= 2 and abs((hr[2] - hr[0]) - round(332 * dpi)) <= 1 and abs(hr[3] - pt.y) <= 1,
+                      f'the panel at the drawers\' place in the « {args.layout} » layout: docked on the LEFT against the side panel (the page\'s left edge), 332 DIP wide, down to the bottom',
+                      {'panel': hr, 'page left': org[0], 'client bottom': pt.y})
+            else: check(abs(hr[2] - pt.x) <= 1 and abs((hr[2] - hr[0]) - round(332 * dpi)) <= 1 and abs(hr[3] - pt.y) <= 1,
                   'the panel at the drawers\' place: the window\'s right edge, 332 DIP wide, down to the bottom', {'panel': hr, 'client right/bottom': (pt.x, pt.y)})
             check(shown('BrowserAnnotationFrameCard') is None, 'the card goes when the panel opens')
             u32.PostMessageW(help_[0], 0x0100, 0x1B, 0); u32.PostMessageW(help_[0], 0x0101, 0x1B, 0)   # Échap
