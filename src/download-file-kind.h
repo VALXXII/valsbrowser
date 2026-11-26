@@ -10,7 +10,8 @@
 // sent decides only for a file without one, and an SVG MIME type keeps an image-named file from ever being
 // decoded. Neither ever turns another extension (an .exe served as image/png) into an image.
 // No Paper board draws file-type icons (the downloads boards show the extension in text): glyphs and
-// thumbnails take the shell icon's place and size, 24 DIP in the 32 DIP tile, glyphs in the panel's white 50 %.
+// thumbnails take the shell icon's place and size, 24 DIP in the 32 DIP tile (designer's OK, 2026-11-26): glyphs in
+// solid #949494, thumbnails with 3 DIP corners and a 1 px inner ring #FFFFFF14.
 #include <cstdlib>
 #include <cstring>
 #include <cwchar>

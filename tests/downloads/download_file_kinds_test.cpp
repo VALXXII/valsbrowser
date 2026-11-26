@@ -245,8 +245,45 @@ static void RenderChecks(const std::wstring& root, const std::wstring& dir) {
         Expect(isRed(pixel(b0.left + 4, (b0.top + b0.bottom) / 2)) && Near(pixel(b0.right - 4, (b0.top + b0.bottom) / 2), blue), (std::string("render: the png row shows the picture itself @") + std::to_string(dpi)).c_str());
         Expect(scan(1, bright(70)) > 10 && scan(1, isRed) == 0, (std::string("render: the jpg being downloaded shows the image glyph (faded) @") + std::to_string(dpi)).c_str());
         Expect(scan(2, bright(100)) > 10 && scan(2, isRed) == 0, (std::string("render: the svg row shows the vector glyph, never the file's red @") + std::to_string(dpi)).c_str());
+        // Designer: the glyph is solid #949494 (its fully covered pixels; nothing lighter, no tint).
+        int lightest = 0; bool grey = true;
+        scan(2, [&](const BYTE* p) { lightest = std::max<int>(lightest, std::max({p[0], p[1], p[2]})); grey = grey && std::abs(p[0] - p[2]) < 4 && std::abs(p[1] - p[2]) < 4; return false; });
+        Expect(lightest >= 0x94 - 3 && lightest <= 0x94 + 3 && grey, (std::string("render: the glyph is solid #949494 @") + std::to_string(dpi)).c_str());
     }
     Expect(Th::Service::Get().KnownForTest(png) && !Th::Service::Get().KnownForTest(svg), "SVG: the panel never asked for the svg to be decoded");
+    // Designer: a dark picture keeps its edge: a 1 px inner ring #FFFFFF14 over the thumbnail (black here).
+    const std::wstring dark = dir + L"\\nuit.png";
+    {
+        Th::Ref<IWICImagingFactory> wic; CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, __uuidof(IWICImagingFactory), reinterpret_cast<void**>(&wic));
+        Expect(wic && WriteImage(wic.p, dark, GUID_ContainerFormatPng, 48, 48, {0, 0, 0}, {0, 0, 0}), "render: a black png written");
+    }
+    // Second row: a finished .png that cannot be decoded shows the image glyph at full strength. Its strokes overlap
+    // where the hills meet the frame: a translucent white would get lighter there, the solid #949494 does not.
+    const std::wstring broken = dir + L"\\cassee.png"; WriteAll(broken, std::string("\x89PNG\r\n\x1a\n", 8) + std::string(64, '\x33'));
+    std::vector<Item> night(2); night[0].id = 1; night[0].path = dark; night[0].state = State::Completed; night[0].received = night[0].total = 900;
+    night[1].id = 2; night[1].path = broken; night[1].state = State::Completed; night[1].received = night[1].total = 72;
+    for (UINT dpi : {96u, 120u, 192u}) {
+        auto& service = Th::Service::Get(); const int side = static_cast<int>(std::lround(Panel::fileIcon * dpi / 96.f));
+        service.Lookup(dark, side, nullptr, 0); service.Lookup(broken, side, nullptr, 0); service.WaitIdleForTest(20000);
+        const auto slots = DownloadsUI::PopoverSlots(night); const float height = DownloadsUI::PopoverHeight(slots);
+        Chrome chrome; if (FAILED(chrome.InitOffscreen(root, dpi, Panel::width, height))) { Expect(false, "render: offscreen chrome"); return; }
+        DownloadsUI::View view(chrome); std::map<int, RowReveal> reveals;
+        DownloadsUI::Scene scene; scene.items = &night; scene.reveals = &reveals; scene.now = Motion::Time{} + std::chrono::seconds(100); scene.nowMs = 1000000; scene.viewBottom = height - Panel::padding / 2;
+        auto* target = chrome.RenderTarget(); target->BeginDraw(); view.Paint(scene, slots, height); const HRESULT hr = target->EndDraw(); view.Release();
+        const std::wstring name = dir + L"\\dark-thumbnail-" + std::to_wstring(dpi) + L".png";
+        const bool saved = SUCCEEDED(hr) && SUCCEEDED(chrome.SavePng(name.c_str())); chrome.Dispose();
+        UINT w = 0, h = 0; std::vector<BYTE> px; if (!saved || !ReadPng(name, w, h, px)) { Expect(false, "render: dark thumbnail"); continue; }
+        const float k = dpi / 96.f, top = slots[0].top + 4, left = Panel::padding + 4, mid = top + 12;
+        auto at = [&](int x, int y) { return &px[(static_cast<size_t>(y) * w + x) * 4]; };
+        const int edgeX = static_cast<int>(std::lround(left * k)), edgeY = static_cast<int>(std::lround(top * k)), midY = static_cast<int>(mid * k), midX = static_cast<int>((left + 12) * k);
+        const BYTE *edge = at(edgeX, midY), *topEdge = at(midX, edgeY), *inside = at(edgeX + 2, midY), *centre = at(midX, midY);
+        auto ring = [](const BYTE* p) { return p[0] >= 0x14 - 6 && p[0] <= 0x14 + 6 && p[0] == p[1] && p[1] == p[2]; };
+        Expect(ring(edge) && ring(topEdge) && inside[0] < 6 && centre[0] < 6, (std::string("render: a black thumbnail keeps a 1 px #FFFFFF14 inner ring, its inside black @") + std::to_string(dpi)).c_str());
+        int lightest = 0; const float glyphTop = slots[1].top + 4;
+        for (int y = static_cast<int>(glyphTop * k); y < static_cast<int>((glyphTop + 24) * k); ++y)
+            for (int x = static_cast<int>(left * k); x < static_cast<int>((left + 24) * k); ++x) lightest = std::max<int>(lightest, at(x, y)[1]);
+        Expect(lightest >= 0x94 - 3 && lightest <= 0x94 + 3, (std::string("render: the image glyph is solid #949494, overlaps included @") + std::to_string(dpi)).c_str());
+    }
 }
 
 int wmain(int argc, wchar_t** argv) {

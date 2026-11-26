@@ -239,7 +239,11 @@ public:
         }
         return cached.brush;
     }
-    // The thumbnail in the file icon's box, its corners rounded like an inset element.
+    // Designer (2026-11-26): glyphs in solid #949494; thumbnails ringed inside by 1 px #FFFFFF14, so a dark
+    // picture does not melt into the tile.
+    static constexpr float fileGlyph = 0x94 / 255.f, thumbnailRing = 0x14 / 255.f;
+    // The thumbnail in the file icon's box, its corners rounded like an inset element, its inner ring on the
+    // physical pixel grid.
     void DrawThumbnail(ID2D1BitmapBrush* brush, D2D1_RECT_F box, float opacity) {
         auto* target = chrome_.RenderTarget(); if (!target || !brush) return;
         ID2D1Bitmap* bitmap = nullptr; brush->GetBitmap(&bitmap); if (!bitmap) return;
@@ -247,11 +251,15 @@ public:
         brush->SetTransform(D2D1::Matrix3x2F::Scale(k, k) * D2D1::Matrix3x2F::Translation(box.left, box.top));
         brush->SetOpacity(opacity); brush->SetInterpolationMode(D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
         target->FillRoundedRectangle(D2D1::RoundedRect(box, Design::Radius::inset, Design::Radius::inset), brush);
+        auto* ring = chrome_.SolidBrush(); if (!ring) return;
+        const float px = target->GetSize().width / std::max(1.f, static_cast<float>(target->GetPixelSize().width)), r = Design::Radius::inset - px / 2;
+        ring->SetColor(D2D1::ColorF(1, 1, 1, thumbnailRing * opacity));
+        target->DrawRoundedRectangle(D2D1::RoundedRect({box.left + px / 2, box.top + px / 2, box.right - px / 2, box.bottom - px / 2}, r, r), ring, px);
     }
-    // A file-type glyph (src/download-file-kind.h) in white at `opacity`, `size` DIP centred in `box`.
-    void Glyph(const char* svg, D2D1_RECT_F box, float size, float opacity) {
+    // A file-type glyph (src/download-file-kind.h) in `color`, `size` DIP centred in `box`.
+    void Glyph(const char* svg, D2D1_RECT_F box, float size, D2D1_COLOR_F color) {
         auto* target = chrome_.RenderTarget(); auto* factory = chrome_.Factory(); auto* brush = chrome_.SolidBrush();
-        if (!target || !factory || !brush || !svg || opacity <= 0) return;
+        if (!target || !factory || !brush || !svg || color.a <= 0) return;
         auto& g = glyphs_[svg];
         if (!g.parsed) { g.parsed = true; g.shape = ParseGlyph(svg); for (auto& p : g.shape.paths) g.paths.push_back(DialogKit::SvgGeometry(factory, p.d.c_str(), p.evenOdd)); }
         if (g.shape.view <= 0) return;
@@ -259,7 +267,7 @@ public:
         D2D1_MATRIX_3X2_F base; target->GetTransform(&base);
         const float k = size / g.shape.view, x = (box.left + box.right - size) / 2, y = (box.top + box.bottom - size) / 2;
         target->SetTransform(D2D1::Matrix3x2F::Scale(k, k) * D2D1::Matrix3x2F::Translation(x, y) * base);
-        brush->SetColor(D2D1::ColorF(1, 1, 1, opacity));
+        brush->SetColor(color);
         for (size_t i = 0; i < g.paths.size(); ++i) {
             if (!g.paths[i]) continue;
             if (g.shape.paths[i].fill) target->FillGeometry(g.paths[i], brush);
@@ -440,7 +448,7 @@ public:
                     else target->DrawBitmap(icon, box, fade);
                 }
             } else if (auto* picture = kind == FileKind::Image && Openable(item) ? Thumbnail(item) : nullptr) DrawThumbnail(picture, box, fade);
-            else Glyph(GlyphFor(kind), box, s, Design::Text::secondary * fade);   // the panel's glyphs: white 50 %
+            else Glyph(GlyphFor(kind), box, s, D2D1::ColorF(fileGlyph, fileGlyph, fileGlyph, fade));   // solid #949494 (faded like the row)
         }
         const auto name = Panel::Name(top);
         // A held row keeps its name readable (#FFFFFFE6 at the rows' .9): it waits for a decision.
