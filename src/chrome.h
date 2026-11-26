@@ -834,14 +834,14 @@ public:
     // leaves, drops or is cancelled: where each shown item goes with the new favorite's place opened (TabFavorite::Opened:
     // `left` / `width` / `shown` per shown item), that place (`slot`), « » » in that layout, the item that already holds
     // the page (`duplicate`, hover look) and `toOverflow` (the new one goes behind « » »: the button takes the folder
-    // drop look). The bar lights up with the split view's drop-zone look; the place is board 08's hollow slot; the others
-    // step aside on the reorder spring (1.0 / .2 s), reduced motion: at once, the highlight still fades (80 ms).
+    // drop look). No zone highlight (Val, 26 nov.): the place is board 08's hollow slot, fading in / out (`bandTabGlow`);
+    // the others step aside on the reorder spring (1.0 / .2 s), reduced motion: at once, the place still fades (80 ms).
     struct BandTabDrop{bool on=false,slot=false,overflow=false,toOverflow=false;std::vector<float> left,width;std::vector<bool> shown;float slotLeft=0,slotWidth=0,overflowLeft=0;int duplicate=-1;} bandTab;
     struct BandStep{Motion::Spring l{.05f},w{.05f};};std::map<unsigned,BandStep> bandStep;Motion::Spring bandTabGlow{.002f},bandSlotLeft{.05f},bandSlotWidth{.05f};bool bandSlotKnown=false;
     // Atelier B, side layouts: the same for the column's grid (Sidebar::Layout's tiles). Host-set while the tab is over the
     // grid: per shown tile where it goes with the new one's place opened (TabFavorite::GridOpened / ColumnOpened), that
     // place (`place`, `slot`: shown), the tile already holding the page (`duplicate`), and `toOverflow` (« Tous les
-    // favoris » / « » » takes the folder look: the new one goes behind it). The grid lights up like the bar.
+    // favoris » / « » » takes the folder look: the new one goes behind it). No zone highlight, as on the bar.
     struct GridTabDrop{bool on=false,slot=false,toOverflow=false;std::vector<Sidebar::Box> tiles;Sidebar::Box place;int duplicate=-1;} gridTab;
     std::map<unsigned,MorphBox> gridStep;MorphBox gridSlot;bool gridSlotKnown=false;Motion::Spring gridTabGlow{.002f};
     static bool BoxMoving(const MorphBox& m,Motion::Time now){return m.l.Moving(now)||m.t.Moving(now)||m.r.Moving(now)||m.b.Moving(now);}
@@ -850,7 +850,7 @@ public:
     static Sidebar::Box MorphAt(const MorphBox& m,Motion::Time now){return {m.l.Value(now),m.t.Value(now),m.r.Value(now),m.b.Value(now)};}
     bool GridTabMoving(Motion::Time now)const{if(gridTabGlow.Moving(now)||(gridSlotKnown&&BoxMoving(gridSlot,now)))return true;for(auto& e:gridStep)if(BoxMoving(e.second,now))return true;return false;}
     // Presented boxes of the column's shown tiles while a tab is (or was just) over the grid; empty at rest. Returns the
-    // highlight (0..1). The tiles step aside on the reorder spring (1.0 / .2 s); reduced motion: at once.
+    // place's fade (0..1). The tiles step aside on the reorder spring (1.0 / .2 s); reduced motion: at once.
     float GridTabFrame(const Sidebar::Layout& L,Motion::Time now,std::vector<Sidebar::Box>& at){
         const bool reduced=!motion||motion->ReducedMotion();
         gridTabGlow.Set(gridTab.on?1.f:0.f,now,reduced?.08f:gridTab.on?.20f:.10f);
@@ -865,7 +865,7 @@ public:
         return std::clamp(gridTabGlow.Value(now),0.f,1.f);
     }
     bool BandTabMoving(Motion::Time now)const{if(bandTabGlow.Moving(now)||bandSlotLeft.Moving(now)||bandSlotWidth.Moving(now))return true;for(auto& e:bandStep)if(e.second.l.Moving(now)||e.second.w.Moving(now))return true;return false;}
-    // Presented boxes of the shown items while a tab is (or was just) over the bar; empty at rest. Returns the highlight.
+    // Presented boxes of the shown items while a tab is (or was just) over the bar; empty at rest. Returns the place's fade.
     float BandTabFrame(Motion::Time now,std::vector<D2D1_RECT_F>& at){
         namespace L=BookmarksBar::Layout;const bool reduced=!motion||motion->ReducedMotion();
         bandTabGlow.Set(bandTab.on?1.f:0.f,now,reduced?.08f:bandTab.on?.20f:.10f);   // split view: answers within ~200 ms, leaves in 100 ms; reduced: 80 ms
@@ -950,14 +950,10 @@ public:
     void DrawBand(int hover,int focus,Motion::Time now){
         if(!bandShown)return;
         namespace BL=BookmarksBar::Layout;const auto accent=Design::Accent::Get();
-        // Atelier B: a tab over the bar. The bar lights up as a split view drop zone does (Paper --color-browser-split-tint
-        // 16 % fill, a 2 DIP --color-browser-split-accent ring): on the page's 4 DIP side insets, 2 DIP around the items
-        // (the ring sits in that margin, radius 6 + 2 = 8, concentric with the items').
+        // Atelier B: a tab over the bar. No zone highlight (Val, 26 nov.: no blue): only the place it would take, which
+        // fades in and out with `glow`, and the items stepping aside.
         std::vector<D2D1_RECT_F> at;const float glow=sidebar?0.f:BandTabFrame(now,at);
         const float clipRight=bandTab.on&&bandTab.overflow?bandTab.overflowLeft-BL::gap:band.overflow?band.overflowLeft-BL::gap:width;
-        if(glow>.001f){const D2D1_RECT_F zone{Sidebar::Zone::inset,BL::top-BL::gap,width-Sidebar::Zone::inset,BL::bottom+BL::gap};
-            FillBox(zone,Design::Radius::r8,D2D1::ColorF(accent.r,accent.g,accent.b,.16f*glow));
-            brush->SetColor(D2D1::ColorF(accent.r,accent.g,accent.b,glow));target->DrawRoundedRectangle(D2D1::RoundedRect({zone.left+1,zone.top+1,zone.right-1,zone.bottom-1},Design::Radius::r8-1,Design::Radius::r8-1),brush,2);}
         if(!at.empty())target->PushAxisAlignedClip(D2D1::RectF(0,BL::top-BL::gap,std::max(0.f,clipRight),BL::bottom+BL::gap),D2D1_ANTIALIAS_MODE_ALIASED);   // pushed-off items slide under « » »
         auto shownAt=[&](int i)->const D2D1_RECT_F*{return i<(int)at.size()?&at[i]:nullptr;};
         for(int i=0;i<band.visible&&i<(int)bandItems.size();++i)if(i!=bandDrag)DrawBandItem(i,bandItems[i],hover,focus,now,shownAt(i));
@@ -1678,18 +1674,15 @@ public:
         target->PopAxisAlignedClip();
         if(!g.bar.Empty())FillBox(R(g.bar),2,D2D1::ColorF(1,1,1,C::barAlpha));}
     // Atelier B: the new favorite's place in the grid, board 08's hollow slot on a tile's shape (#FFFFFF0A, a 1 DIP inner
-    // #FFFFFF1F, the tile's radius 8), fading with the grid's highlight.
+    // #FFFFFF1F, the tile's radius 8), fading in and out with the tab over the grid.
     void DrawGridPlace(Motion::Time now){const float glow=std::clamp(gridTabGlow.Value(now),0.f,1.f);if(glow<=.001f)return;const auto r=R(MorphAt(gridSlot,now));if(r.right-r.left<1||r.bottom-r.top<1)return;
         FillBox(r,Design::Radius::r8,D2D1::ColorF(1,1,1,10/255.f*glow));brush->SetColor(D2D1::ColorF(1,1,1,31/255.f*glow));target->DrawRoundedRectangle(D2D1::RoundedRect({r.left+.5f,r.top+.5f,r.right-.5f,r.bottom-.5f},Design::Radius::r8-.5f,Design::Radius::r8-.5f),brush,1);}
-    // Atelier B: a tab over the column's grid. The grid lights up as the split view's drop zones do (16 % split tint, a
-    // 2 DIP split accent ring): the side panel's 4 DIP around the block (inside its 8 DIP padding; radius 8 + 4 = 12,
-    // concentric with the tiles'); the compact column's tiles reach its edges, so there the ring hugs the block (radius 8).
+    // Atelier B: a tab over the column's grid. No zone highlight (Val, 26 nov.: no blue): the tiles step aside around the
+    // place it would take (DrawGridPlace).
     void PaintSideGrid(const Sidebar::Layout& L,int hover,int focus,Motion::Time now,float labels){
         if(L.gridBlock.Empty())return;
-        std::vector<Sidebar::Box> at;const bool column=&L==&side||&L==&sideOver;const float glow=column?GridTabFrame(L,now,at):0.f;
+        std::vector<Sidebar::Box> at;const bool column=&L==&side||&L==&sideOver;if(column)GridTabFrame(L,now,at);
         const bool full=L.mode==Sidebar::Mode::Complete;const auto accent=Design::Accent::Get();
-        if(glow>.001f){const float out=full?Sidebar::Zone::inset:0.f,rr=full?Design::Radius::r12:Design::Radius::r8;const auto b=R(L.gridBlock);const D2D1_RECT_F z{b.left-out,b.top-out,b.right+out,b.bottom+out};
-            FillBox(z,rr,D2D1::ColorF(accent.r,accent.g,accent.b,.16f*glow));brush->SetColor(D2D1::ColorF(accent.r,accent.g,accent.b,glow));target->DrawRoundedRectangle(D2D1::RoundedRect({z.left+1,z.top+1,z.right-1,z.bottom-1},rr-1,rr-1),brush,2);}
         PaintSideGridTiles(L,hover,focus,now,labels,at.empty()?nullptr:&at);
         if(L.emptyGrid&&column&&gridSlotKnown)DrawGridPlace(now);   // « Toujours » with no bookmark: the place is the empty tile
         if(gridTab.on&&gridTab.toOverflow){const Sidebar::Box o=full?L.gridToggle:L.more?L.tiles.back():Sidebar::Box{};if(!o.Empty())FillBox(R(o),full?Design::Radius::control:Design::Radius::r8,D2D1::ColorF(accent.r,accent.g,accent.b,.18f));}   // it goes behind « Tous les favoris » / « » »
