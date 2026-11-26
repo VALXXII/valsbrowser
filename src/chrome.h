@@ -1892,6 +1892,33 @@ public:
         }
         panel=savedPanel;origin=savedOrigin;return ok;
     }
+    // Mode Focus entry / exit (src/main.cpp « Mode Focus transition », Designer's spec 2026-11-25): the NORMAL top bar
+    // (tab row, toolbar, bookmarks band, its lower hairline) drawn alone into opaque BGRA pixels, the client's width,
+    // 0 .. barHeight DIP: the picture that slides up and fades (entry) or comes down (exit). In the side layouts (#127) the
+    // whole normal chrome over the client (barHeight: the window's height): the docked column and the window bar right of
+    // it, the page's place left as canvas; the host clips it into the column (it slides left) and the window bar (up, fading).
+    // The chrome must be in its normal layout (not floating, the column docked); `out` row-major, w x h device pixels.
+    // False without Direct2D 1.1.
+    bool RenderBar(const std::vector<std::wstring>& titles,int selected,bool editing,int hover,int focus,Motion::Time now,float barHeight,std::vector<uint32_t>& out,UINT& w,UINT& h){
+        if(floating||(sidebar&&sideHidden)||!target||!brush||contentOnly||barHeight<=0)return false;
+        ++textPass;Build((int)titles.size(),selected,&titles,now);
+        const float s=dpi/96.f;w=(UINT)std::lround(width*s);h=(UINT)std::lround(barHeight*s);
+        bool ok=false;ID2D1BitmapRenderTarget* bt=nullptr;
+        if(w&&h&&SUCCEEDED(target->CreateCompatibleRenderTarget(D2D1::SizeF(w/s,h/s),D2D1::SizeU(w,h),D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED),D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_NONE,&bt))&&bt){
+            bt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+            const float c=Design::Surface::canvas;auto* main=SwapTarget(bt);bt->BeginDraw();bt->Clear(D2D1::ColorF(c,c,c,1));
+            if(sidebar)PaintSidebar(titles,selected,editing,hover,focus,now);else DrawChrome(titles,selected,editing,hover,focus,nullptr,now,true);
+            const HRESULT hr=bt->EndDraw();SwapTarget(main);
+            ID2D1Bitmap* bitmap=nullptr;ID2D1DeviceContext* dc=nullptr;ID2D1Bitmap1* cpu=nullptr;
+            if(SUCCEEDED(hr)&&SUCCEEDED(bt->GetBitmap(&bitmap))&&bitmap&&SUCCEEDED(bt->QueryInterface(__uuidof(ID2D1DeviceContext),reinterpret_cast<void**>(&dc)))&&dc){
+                const D2D1_BITMAP_PROPERTIES1 props=D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_CPU_READ|D2D1_BITMAP_OPTIONS_CANNOT_DRAW,D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED),(float)dpi,(float)dpi);
+                if(SUCCEEDED(dc->CreateBitmap(D2D1::SizeU(w,h),nullptr,0,&props,&cpu))&&cpu&&SUCCEEDED(cpu->CopyFromBitmap(nullptr,bitmap,nullptr))){
+                    D2D1_MAPPED_RECT m{};if(SUCCEEDED(cpu->Map(D2D1_MAP_OPTIONS_READ,&m))){out.resize((size_t)w*h);for(UINT y=0;y<h;++y)memcpy(&out[(size_t)y*w],m.bits+(size_t)y*m.pitch,(size_t)w*4);cpu->Unmap();ok=true;}}
+            }
+            Drop(cpu);Drop(dc);Drop(bitmap);Drop(bt);
+        }
+        return ok;
+    }
     // Mode Focus in the side layouts: the column at rest drawn alone into premultiplied BGRA pixels (its width + the 1 DIP
     // border, from its top to the window's bottom): the picture the host slides over the page (src/main.cpp « #127 ×
     // Mode Focus »; a moving hole in the page windows would lag a frame). False without Direct2D 1.1.

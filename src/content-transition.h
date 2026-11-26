@@ -192,6 +192,12 @@ public:
     int Surfaces() const { return (oldS_ ? 1 : 0) + (newS_ ? 1 : 0); }
     int Retargets() const { return retargets_; }
     bool Available() const { return ok_; }
+    // A second layer above this transition's, for the Mode Focus entry / exit (src/main.cpp « Mode Focus transition »):
+    // a window has ONE topmost composition target, so it shares this device and target. Null when unavailable.
+    IDCompositionVisual2* ExtraLayer(HWND window) { return Ensure(window) ? extra_ : nullptr; }
+    IDCompositionDesktopDevice* Device() const { return ok_ ? device_ : nullptr; }
+    // Premultiplied BGRA pixels into a new surface of this device (its previous one released).
+    bool UploadSurface(const UINT32* pixels, int w, int h, IDCompositionSurface*& surface) { return ok_ && Upload(pixels, w, h, surface); }
     bool Blurring() const { return active_ && !reduced_ && blurOk_; }
     bool IncomingBlurring() const { return active_ && phase_ == Phase::Incoming && newBlurOk_; }
     // The values on screen now (tests and logs).
@@ -200,7 +206,7 @@ public:
         Cancel();
         if (target_) target_->SetRoot(nullptr);
         if (device_) device_->Commit();
-        Release(blurOld_); Release(blurNew_); Release(oldGroup_); Release(outerGroup_); Release(clip_);
+        Release(blurOld_); Release(blurNew_); Release(oldGroup_); Release(outerGroup_); Release(clip_); Release(extra_); Release(root_);
         Release(newV_); Release(oldV_); Release(oldC_); Release(outer_); Release(factory_); Release(target_); Release(device3_); Release(device_); Release(d3d_); Release(context_);
         if (dcomp_) { FreeLibrary(dcomp_); dcomp_ = nullptr; } if (d3dModule_) { FreeLibrary(d3dModule_); d3dModule_ = nullptr; }
         window_ = nullptr; tried_ = ok_ = false;
@@ -262,7 +268,8 @@ private:
             FAILED(device_->CreateEffectGroup(&outerGroup_)) || FAILED(outer_->SetEffect(outerGroup_)) || FAILED(device_->CreateEffectGroup(&oldGroup_)) || FAILED(oldC_->SetEffect(oldGroup_)) ||
             FAILED(device_->CreateRectangleClip(&clip_)) || FAILED(outer_->SetClip(clip_)) ||
             FAILED(device3_->CreateGaussianBlurEffect(&blurOld_)) || FAILED(device3_->CreateGaussianBlurEffect(&blurNew_)) || FAILED(device_->CreateSurfaceFactory(d3d_, &factory_)) ||
-            FAILED(target_->SetRoot(outer_)) || FAILED(device_->Commit())) return false;
+            FAILED(device_->CreateVisual(&root_)) || FAILED(device_->CreateVisual(&extra_)) || FAILED(root_->AddVisual(outer_, FALSE, nullptr)) || FAILED(root_->AddVisual(extra_, TRUE, outer_)) ||
+            FAILED(target_->SetRoot(root_)) || FAILED(device_->Commit())) return false;   // root -> [ outer (this transition), extra (Mode Focus) above ]
         blurOld_->SetBorderMode(D2D1_BORDER_MODE_HARD); blurNew_->SetBorderMode(D2D1_BORDER_MODE_HARD);   // blurred edges never show the canvas through
         ok_ = true; return true;
     }
@@ -327,7 +334,7 @@ private:
     HWND window_ = nullptr; HMODULE dcomp_ = nullptr, d3dModule_ = nullptr; bool tried_ = false, ok_ = false;
     ID3D11Device* d3d_ = nullptr; ID3D11DeviceContext* context_ = nullptr;
     IDCompositionDesktopDevice* device_ = nullptr; IDCompositionDevice3* device3_ = nullptr; IDCompositionTarget* target_ = nullptr;
-    IDCompositionVisual2 *outer_ = nullptr, *newV_ = nullptr, *oldC_ = nullptr, *oldV_ = nullptr;
+    IDCompositionVisual2 *outer_ = nullptr, *newV_ = nullptr, *oldC_ = nullptr, *oldV_ = nullptr, *root_ = nullptr, *extra_ = nullptr;
     IDCompositionEffectGroup *outerGroup_ = nullptr, *oldGroup_ = nullptr; IDCompositionRectangleClip* clip_ = nullptr;
     IDCompositionGaussianBlurEffect *blurOld_ = nullptr, *blurNew_ = nullptr; IDCompositionSurfaceFactory* factory_ = nullptr;
     IDCompositionSurface *oldS_ = nullptr, *newS_ = nullptr; COLORREF canvas_ = RGB(0x17, 0x17, 0x17);
