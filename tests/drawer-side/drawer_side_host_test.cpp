@@ -299,6 +299,51 @@ int wmain(int argc, wchar_t** argv) {
         sideTip.SetReducedMotion(false); HoverNowhere(); Pump(300); sideTip.HideNow();
         pages.pop_back(); settings.tabsPosition = BrowserSettings::TabsPosition::Top; ApplyLayout(); Relayout();
     }
+    // ---- 8. Side Mode Focus: the toolbar menus opened by their shortcut come from the column (owner, 2026-11-26: Ctrl+J
+    //      opened the Downloads menu top-right) ----
+    {   CreateAudioPanel();
+        auto hideColumn = [] { CloseAll(); keyboardFocus = 0; editing = false; SideFocusReset(); Relayout(); };
+        for (auto layout : {BrowserSettings::TabsPosition::Compact, BrowserSettings::TabsPosition::Side}) {
+            settings.tabsPosition = layout; settings.focusMode = true; ApplyLayout(); Relayout(); hideColumn();
+            const std::string name = layout == BrowserSettings::TabsPosition::Compact ? "Focus compact" : "Focus complete";
+            const RECT c = ClientScreen(); const LONG middle = (c.left + c.right) / 2;
+            Expect(chrome.sideHidden && !sideReveal.open && !sideLive, name + ": the column hidden");
+            // Téléchargements (Ctrl+J)
+            ShowDownloads(); Pump(300);
+            Expect(downloadPanel.Visible() && sideReveal.open && sideLive, name + ", Ctrl+J: the column back at rest, the Downloads menu open");
+            {   POINT at{}; const bool column = ColumnPopoverAt('D', NativeChrome::Downloads::Panel::anchorGap, at); const RECT p = Win(downloadPanel.Window());
+                Expect(column && p.left == at.x && p.bottom == at.y, name + ", Ctrl+J: the menu hangs from the column's Downloads button " + Text(p));
+                Expect(p.right < middle && p.top > c.top + Px(60), name + ", Ctrl+J: on the panel's side, not top-right " + Text(p)); }
+            SideFocusEvaluate(); Pump(100);
+            Expect(sideReveal.open, name + ", Ctrl+J: the column stays while the menu is open");
+            downloadPanel.Hide(false); SyncLatch(); keyboardFocus = 0; Pump(100); SideFocusEvaluate(); Pump(500);
+            Expect(!sideReveal.open, name + ", Ctrl+J: the menu closed and the pointer away, the column leaves");
+            ShowDownloads(); Pump(300); ShowDownloadDrawer(); Pump(900);
+            CheckDocked(name + ", Ctrl+J then « Tout afficher »", downloadDrawer.Window(), NativeChrome::Downloads::DrawerLayout::width, true);
+            hideColumn();
+            // Son (its shortcut / F6 then Entrée on the button)
+            chrome.audioShown = true; Relayout(); hideColumn(); chrome.audioShown = true; Relayout();
+            ShowAudio(true); Pump(300);
+            {   const RECT a = Win(audioPanel.Window());
+                Expect(audioPanel.Visible() && sideReveal.open && chrome.latched == 'V', name + ", Son by the keyboard: the column back, the menu open (it did not open at all)");
+                Expect(a.right < middle, name + ", Son: on the panel's side " + Text(a)); }
+            SideFocusEvaluate(); Pump(100); Expect(sideReveal.open, name + ", Son: the column stays while the menu is open");
+            audioPanel.Close(false); Pump(300); chrome.audioShown = false; hideColumn();
+            // The profile menu (Ctrl+Maj+M): anchored at the column's profile button
+            {   const RECT pr = ProfileButtonScreen(); RECT reg{}; for (auto& r : chrome.regions) if (r.id == 900) { reg = ChromePx(r.rect); MapWindowPoints(window, nullptr, reinterpret_cast<POINT*>(&reg), 2); }
+                Expect(sideReveal.open && EqualRect(&pr, &reg) && pr.left < c.left + Px(chrome.side.column), name + ", profile menu: the column back, anchored at its profile button " + Text(pr)); }
+            hideColumn();
+            // Historique / Réglages by the keyboard (drawers, rule 2): the column back with them
+            ShowHistory(true); Pump(600); Expect(sideReveal.open && historyDrawer.Open(), name + ", Ctrl+H: the column back with the drawer"); hideColumn();
+            ShowSettings(); Pump(600); Expect(sideReveal.open && settingsDrawer.Open(), name + ", Réglages: the column back with the drawer"); hideColumn();
+        }
+        // The top bar's Focus is unchanged: its floating panel, the menu under it on the right.
+        settings.tabsPosition = BrowserSettings::TabsPosition::Top; ApplyLayout(); Relayout();
+        Expect(chrome.floating, "top bar Focus on");
+        ShowDownloads(); Pump(300);
+        {   const RECT p = Win(downloadPanel.Window()), c = ClientScreen(); Expect(downloadPanel.Visible() && p.right > (c.left + c.right) / 2, "top bar Focus, Ctrl+J: the menu on the right, as before " + Text(p)); }
+        CloseAll(); settings.focusMode = false; Relayout();
+    }
     // ---- 6. Morph rule of « Tout afficher » (pure) ----
     {   namespace DU = NativeChrome::DownloadsUI;
         Expect(DU::MorphFits({6, 0, 274, 300}, 274), "the top bar's popover over the drawer's window: it morphs");

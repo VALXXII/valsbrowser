@@ -5464,13 +5464,18 @@ constexpr UINT_PTR SideDrawerTimerId=0x5167;
 void CloseDockedDrawers(){CloseDownloadSurfaces();settingsDrawer.Hide(false,true);historyDrawer.Hide(false,true);bookmarksDrawer.Hide(false,true);CloseAudioDrawer();SyncLatch();SyncUpdateToastReserve();}
 // Q2 (Designer): in side Focus a drawer docks against the column: the column comes at rest at once and stays while the
 // drawer is open (sideDrawerHold, board 15's rule); when the drawer closes it leaves again unless the pointer is on it.
-void SideFocusForDrawer(){
-    namespace DS=NativeChrome::Downloads::DrawerLayout::Side;if(!chrome.sideHidden||!window||!DS::focusBringsColumn)return;
-    sideDrawerHold=true;const bool rest=sideReveal.open&&sideLive&&!sidePic.shown;if(!sideReveal.open){sideReveal.ForAddress(false);sideReveal.pinned=false;}if(rest)return;   /* in like for the field, but not pinned: held by the drawer only */
-    KillTimer(window,SideSlideTimerId);SidePictureHide();sideSlide.Snap(1);sideFade.Snap(1);
+// The column at rest at once, not pinned (in like for the field): a surface anchored to it, or docked against it, opens.
+// What keeps it then is that surface (SideFocusHolds: a drawer, a toolbar menu, a popover, a menu); when it closes the
+// column leaves again unless the pointer is on it. False when there is no hidden column.
+bool SideFocusBring(const wchar_t* why){
+    namespace DS=NativeChrome::Downloads::DrawerLayout::Side;if(!chrome.sideHidden||!window||!DS::focusBringsColumn)return false;
+    static bool busy=false;if(busy)return true;   // its own Layout never brings it again
+    const bool rest=sideReveal.open&&sideLive&&!sidePic.shown;if(!sideReveal.open){sideReveal.ForAddress(false);sideReveal.pinned=false;}if(rest)return true;
+    busy=true;KillTimer(window,SideSlideTimerId);SidePictureHide();sideSlide.Snap(1);sideFade.Snap(1);
     if(!sideLive)SideRevealLive(true);else BuildChrome();
-    Layout();Log(L"FOCUS column in (drawer)");
+    Layout();busy=false;Log(std::wstring(L"FOCUS column in (")+why+L")");return true;
 }
+void SideFocusForDrawer(){if(SideFocusBring(L"drawer"))sideDrawerHold=true;}   // held by the drawer (SideFocusHolds)
 // A drawer is about to open (before it places itself): its side of the window ready. Side Focus: the column at rest (Q2);
 // a narrow window's column over the page closes (Q4, one at a time).
 void DrawerOpening(){
@@ -6293,7 +6298,9 @@ void FocusReveal(){
 }
 // A surface anchored to the chrome opens (a menu at a region, the profile menu, a popover, a drawer, the permission
 // prompt): the panel at rest at once, so its anchor is on screen (code review, keyboard-opened surfaces).
-void FocusAnchor(const wchar_t* why){if(!chrome.floating)return;focusRevealWhy=why;FocusReveal();focusRevealWhy=L"keyboard";}
+// Side layouts' Focus (owner, 2026-11-26: Ctrl+J opened the Downloads menu top-right): the hidden column comes back at
+// rest the same way (SideFocusBring, Designer's rule 2 for the drawers) and stays while that surface is open.
+void FocusAnchor(const wchar_t* why){if(!chrome.floating){if(chrome.sidebar&&chrome.sideHidden)SideFocusBring(why);return;}focusRevealWhy=why;FocusReveal();focusRevealWhy=L"keyboard";}
 // On / off follows the setting, fullscreen and the annotation mode (Layout, before the chrome is measured). Returns
 // true when it changed. The bar starts hidden (the next evaluation reveals it if the pointer already asks for it).
 bool SyncFocusMode(){
