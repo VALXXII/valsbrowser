@@ -74,6 +74,12 @@ existing `FOCUS column in (left edge)`.
   1. pointer slammed left onto the other monitor and left there: the column comes within ~0.15 s (log « edge 120 ms »);
   2. same in the compact layout;
   3. back over the column, then 20 px right of it: it stays; 60 px right of it: it leaves after ~0.3 s.
+  Script: `python tests/focus/edge_zone_slot.py --build build/<a build of this branch>` (fresh portable copy, sealed home,
+  fake agent, job object; report in build/edge-zone/slot-report.json). Slot of 26 Nov, 02:13, build 0.3.1064 (42dff0e9):
+  **compact 3 / 3 passed** — thrown onto the left monitor, the column came by « edge 120 ms », logged 153 ms after the
+  pointer reached the edge (the 30 ms poll and the log read included); 20 px right of it stayed; 60 px right of it left,
+  logged 392 ms after. **Side (complete) not verified**: the harness could not take the foreground (another app,
+  Discord, kept it), so the edge rightly did nothing; then on-screen tests were paused. To redo first in the night run.
 - **Night run (3:00), long click series** (SetCursorPos / SendInput on our own window, throwaway profile, fake agent):
   1. sweeps from the page to the left monitor at 150, 250, 500, 1500 DIP/s: opens only at 150 (slow), never at ≥ 250;
   2. a restored window in the middle of the monitor: overshoot onto the desktop → opens; resting on the left resize
