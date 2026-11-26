@@ -148,7 +148,9 @@ def ours_at(x, y, pid):
 class MOUSEINPUT(ctypes.Structure):
     _fields_ = [('dx', W.LONG), ('dy', W.LONG), ('mouseData', W.DWORD), ('dwFlags', W.DWORD), ('time', W.DWORD), ('dwExtraInfo', ctypes.c_size_t)]
 class INPUT(ctypes.Structure):
-    _fields_ = [('type', W.DWORD), ('mi', MOUSEINPUT), ('pad', ctypes.c_byte * 8)]
+    # Exactly the size of Windows' INPUT (40 bytes on x64): SendInput refuses any other cbSize (ERROR_INVALID_PARAMETER),
+    # and the click that brings our window in front never happened (the side run of the 02:13 slot).
+    _fields_ = [('type', W.DWORD), ('mi', MOUSEINPUT)]
 
 
 def click():
