@@ -4454,7 +4454,7 @@ void BandDragEnd(bool cancel,const POINT* at=nullptr){
 }
 // ---- Atelier B: a tab dragged onto the favorites (rules in src/tab-favorite-drop.h) ------------------------------------
 // Top layout: over the bar (from the toolbar's hairline down to the page). Side panel and compact: over the column's
-// grid (from just above it down to the tab list's top). There the tab becomes a preview that follows the pointer 1:1
+// grid (4 DIP around it). There the tab becomes a preview that follows the pointer 1:1
 // from where it was grabbed, drawn in the drag overlay (above the strip, the column and the page: never cut by any);
 // its place in the strip / the list stays hollow (the split lift's look). The favorites light up and open the new
 // favorite's place where the release would add it (Chrome::bandTab / gridTab). Release there: the favorite is ADDED
@@ -4473,7 +4473,10 @@ bool OverFavorites(float x,float y,float ly,bool onChrome){
     namespace V=NativeChrome::Design::Vertical;if(!chrome.bandShown||InFullscreen())return false;
     if(!chrome.sidebar)return onChrome&&ly>=V::hairline&&ly<V::ContentTop(true);
     const auto& L=chrome.SideColumn();
-    return !L.gridBlock.Empty()&&x>=0&&x<SidebarDropEdge()&&y>=L.gridBlock.top-NativeChrome::Sidebar::Zone::inset&&y<L.tabsView.top;
+    // The grid itself, 4 DIP around it (the lit box): the band between it and the tab list stays the list's (a reorder
+    // that overshoots the first row never turns into a favorite).
+    const float m=NativeChrome::Sidebar::Zone::inset;
+    return !L.gridBlock.Empty()&&x>=0&&x<SidebarDropEdge()&&y>=L.gridBlock.top-m&&y<std::min(L.gridBlock.bottom+m,L.tabsView.top);
 }
 bool FavoriteDragMove(POINT point){
     if(!tabDrag.tab||halted)return false;

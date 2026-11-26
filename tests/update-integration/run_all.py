@@ -153,6 +153,13 @@ def existing_fixtures() -> None:
     # tests/downloads/download_navigation_e2e.py)
     fixture('download_navigation_test', [*STRICT, 'tests/download_navigation_test.cpp'])
     fixture('tab_drag_test', [*LOOSE, *TVG, WV2, 'tests/ui/tab_drag_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
+    # Atelier B: a tab dropped on the favorites (rules, then the real window procedure on a never-shown window +
+    # offscreen renders, the 3 layouts; its throwaway data folder lives under the output).
+    fixture('tab_favorite_drop_test', [*STRICT, 'tests/tab_favorite_drop_test.cpp'])
+    favorites_drag = OUT / 'tab-favorite-drag'
+    favorites_drag.mkdir(parents=True, exist_ok=True)
+    fixture('tab_favorite_drag_test', [*LOOSE, '-municode', *TVG, WV2, 'tests/ui/tab_favorite_drag_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32'], [ROOT, favorites_drag])
     # Split view: pure model (zones, capacity, rails, springs) and host behaviour through WndProc
     fixture('split_view_test', [*STRICT, 'tests/split-view/split_view_test.cpp'])
     fixture('site_name_test', [*STRICT, 'tests/split-view/site_name_test.cpp'])
