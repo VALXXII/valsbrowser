@@ -1,102 +1,85 @@
-# Update toast — native design spec
+# Update card — native design spec
 
-Source of truth: Paper file *Browser Design*, page **Design system — main 0.3.113**, board
-**04 - Updates / native states and motion** (Available, Downloading, Ready, Installed and the extension states;
-the original Page 1 cards were removed as duplicates on 2026-11-09), and the placement board
-*Lisière V2 — Tiroir téléchargements + toast MAJ* on the page *Chrome — prototype, adresse, menus, téléchargements*. Implementation: `src/update-toast.h`, `src/update-toast.cpp`,
-`src/update-toast-motion.h` (C++17, Direct2D/DirectWrite, Win32; no web UI, no new UI engine).
-Integration API: `build/coordination/update-toast-contract.md`.
+Source of truth: Val's « Mise à jour » card, Paper file *Browser Design*, page **Atelier de Val** (read only), boards
+*New update download* (277H-0), *New update downloading* (2784-0), *New update completed* (278R-0); validated by Val on
+2026-11-26 on the live preview (branch `VALXXII/atelier-carte-maj`, `design/update-card-preview/`, not part of the
+product). Placement unchanged: bottom-left of the window, 14 DIP from the edges (board 26R6-0).
+Implementation: `src/update-toast.h`, `src/update-toast.cpp`, `src/update-toast-motion.h` (C++17, Direct2D/DirectWrite,
+Direct3D 11 for the background, Win32; no web UI). Integration API unchanged: `build/coordination/update-toast-contract.md`.
 
 ## Exact Paper values (DIP)
 
-| Element | Paper value | Native |
+| Element | Paper value |
+| --- | --- |
+| Card | width 269; heights 209.59375 (Disponible, Prête) / 187.59375 (En cours) — Paper's boards cut their content by 0.40625 at the bottom (bottom padding 15.59375); `#171717`; border 1 `#FFFFFF0D`; radius 8; overflow clip; padding 86 / 16 / 16; centred column |
+| Background | Paper Shaders GrainGradient 268 × 202 at (0, 0): wave, speed 1, scale .39, softness .75, intensity .34, noise 0, colours `#8A66FF` `#ECAEFF` `#F4F4FF`, back transparent over `#171717`; time origin Paper's frame 6 409 645.9 ms |
+| Fade | `linear-gradient(in oklab 180deg, #17171700 0%, #171717 79.64%)`, 269 × 347, at (−1, −73) (Disponible, Prête) / (−2, −100) (En cours) |
+| Icon | 53 × 53, centred, top 20, white at 85 %; download-simple (viewBox 1.6 3.2 424 424), check-circle (top 19.8, viewBox 0 0 424 424) |
+| Title | Inter Display Medium 16 / line 14, −0.01 em, `#FFFFFFE6`, features `cpsp cv12 tnum` |
+| Text | Inter Display Regular 14 / line 18, +0.01 em, `#FFFFFFBF`, centred, `text-wrap: balance` (Paper's breaks reproduced, near ties go to the earlier break) |
+| Progress line | ↓ 14 + « 50,4/200,0 Mo », gap 4, timer 14 + « 00:14 »; Regular 14 / 14, −0.01 em, `#FFFFFFBF`; centred |
+| Buttons | row gap 8, height 32, `#292929`, radius 6; Medium 14 / 14, −0.01 em, white; primary flex 1, padding 8, label 80 %; secondary (« Plus tard ») its own width, padding 16, label 50 % |
+
+Texts (French, Val's, with Chief's two corrections): « Mise à jour disponible » / « Une nouvelle mise à jour est prête
+à être téléchargée. » / Télécharger · Plus tard; « Téléchargement en cours… » / size · time / Annuler; « Prête à
+installer » / « La mise à jour est prête à être installée. » / « Redémarrer et installer ».
+
+## The icon while downloading
+
+The Downloads drawer's own icon (`src/download-icon.h`, `assets/lottie/download-*.json`): same model, frames and
+timings (start 233 ms, 1.3 s loop, 40 fill steps, success morph 400 ms, ripple 600 ms), drawn at 53 DIP in white:
+grey parts at the 85 % ink, the fill white at the ink (coordinator, 2026-11-26), the track dimmed to half the ink while
+the fill means progress (following the ring's own frames). The ring = real progress (`received / total`).
+
+## Motion (Designer's values where Paper has none)
+
+| Change | Normal | Reduced motion (Windows or the app's setting) |
 | --- | --- | --- |
-| Card | width 269, border-box, padding 16/16, gap 16, radius 10, border 1 `#FFFFFF0D`, bg `#171717` @ 50 % + `backdrop-filter: blur(8px)` | same geometry; material see *Deviations* |
-| Heights | Available 153.59375, Downloading 139.59375, Ready 153.59375, Installed 105.59375 | reproduced exactly by `Layout()` (tested); Paper text frames are 0.40625 shorter than their line box, kept as `textTrim` |
-| Title row | 16 px Phosphor Bold icon @ 50 %, gap 6, Inter Display Medium 16 / line 14, tracking −0.01 em, `#FFFFFF80` × 0.9, features `cpsp cv12 tnum` | same (DirectWrite typography features, character spacing, uniform CSS line box) |
-| Body | Inter Display Regular 16 / line 20, tracking +0.01 em, `#FFFFFF80` × 0.9, `text-wrap: balance` | same; balance = narrowest width that keeps the greedy line count (reproduces Paper's breaks) |
-| Button row | gap 8, buttons `flex:1`, height 32, radius 6, `#292929`, padding-inline 8, Inter Display Medium 14 / 14, −0.01 em, white × 0.5, centred, 1-line clamp | same; ellipsis trimming; hover/press from design-system `Raised` (`#333333`, `#3E3E3E`) |
-| Download stats | 14 px arrow-down + size, 14 px timer + ETA, Inter Display Regular 14 / 14, gaps 4; track 4 high, white 10 %, pill; fill white 50 % | `50.4/200.0MB`: one decimal always; tabular digits; compact, left-aligned groups. The size slot reserves the measured width of `000.0/000.0MB`, with only 4 DIP before the timer, independent of counter values. ETA starts 4 DIP after its icon. Unknown ETA uses `--:--`. Narrow cards trim the size to preserve the ETA. Values remain real. |
-| Placement | card `left: 14`, `bottom: 14.447` of the 1180 × 815 window | owner client left + 14, bottom − 14 (snapped to whole DIP / device px) |
+| Appear | rises 8 DIP + fade, no-bounce spring 1.0 / 0.3 s | 120 ms fade |
+| Disappear | 160 ms fade, no movement | same |
+| Disponible → En cours | the drawer's start morph (tray curls into the ring), texts cross-fade 120 ms, « Plus tard » folds (width, its 8 DIP gap and opacity → 0), height 209.6 → 187.6 and fade (−1, −73) → (−2, −100), spring 1.0 / 0.3 s, bottom edge anchored | 120 ms cross-fades, sizes snap, ring static with the progress |
+| En cours → Prête | the drawer's ripple at 100 %; the card waits for the arrow to come back to rest (≤ 1.3 s), then texts, button and height change while the arrow morphs into the check (400 ms); the ring then grows from the drawer's radius 88 to Val's 96 and the fill returns to the ink (450 ms, `cubic-bezier(.45, 0, .15, 1)`); the card keeps its check | 120 ms cross-fade to the check-circle, no ripple |
+| En cours → Disponible (Annuler) | texts and buttons at once; the icon finishes its loop, then the ring unrolls into the tray (the drawer's cancel) | 120 ms cross-fades |
+| Any other change | cross-fades (texts 120 ms, icon 120 ms) and the same spring for sizes | 120 ms cross-fades |
+| Button | hover 120 ms, press `#3E3E3E` + scale 0.96 over 150 ms ease-out | no scale |
 
-Texts are verbatim: *New update available / A new update is ready to be downloaded. / Download*;
-*Downloading... / <size> + <ETA> / Cancel*; *Ready for install / The update is ready to be installed. / Restart and install*;
-*Update installed / The new update has been successfully installed.*
+Texts never compete: each side of a cross-fade is drawn at the square of its opacity. Every change starts from what is
+displayed (springs keep their velocity; the icon follows the drawer's own interruption rules).
 
-Icons are the Phosphor Bold path data copied from the Paper JSX (info, download-simple, check-circle, arrow-down,
-timer) and compiled as Direct2D path geometries (bounded cache of five). Phosphor's MIT license already ships in
-`assets/icons/phosphor-bold/LICENSE`; no new asset files were added.
+## Cost
 
-## Functional extensions (no Paper board — same visual language)
+The background is drawn by the existing Paper-shader renderer (`src/onboarding-shaders.h`, Direct3D 11 read back as a
+Direct2D bitmap — the onboarding's and the Réglages card's way): 30 frames a second only while the card can be seen
+(owner visible, not minimised, not cloaked) and motion is allowed, on a hardware device; one still frame otherwise;
+created when the card first shows and released when it has left. Hidden card: no frame, no timer, no GPU memory.
+While idle on screen the vsync clock stops; only the 30 Hz background timer runs.
+
+## States without a board (current behaviour kept, same layout)
 
 | Phase | Card |
 | --- | --- |
-| `Hidden`, `Checking` | no card. A background check never interrupts. |
-| `Installing` | download icon, *Installing...* / *The update is being installed.*, no button (Installed layout). |
-| `Error` | info icon, *Update failed* / backend message (short French string, verbatim, ≤ 140 chars) or *The update could not be completed.*; **Dismiss** + **Retry** in the Paper two-column button row. |
-| Unknown total | stats row shows the received size only (`3.3MB`), empty track, no ETA. No indeterminate animation loop (keeps zero idle frames; the changing number is the liveness cue). |
-| Unknown ETA | timer group omitted. Narrow cards drop the ETA rather than overflow. |
+| `Hidden`, `Checking` | no card |
+| `Installing` | tray icon, « Installation… » / its text, no button |
+| `Installed` | check-circle, « Mise à jour installée » / its text, no button; 6 s dwell (paused while hovered or focused, +2 s), then Dismiss once |
+| `Error` | info icon, « Échec de la mise à jour » / the backend's message; Réessayer (primary) + Ignorer (secondary) |
+| Unknown total / time | size only (« 3,3 Mo »), ring empty; the timer group appears once the time is known |
 
-`Installed` is shown only when the host sends `Phase::Installed` (the real post-restart success acknowledgement).
-It dwells 6 s (paused while hovered or keyboard-focused, +2 s after leaving), then exits and reports `Dismiss` once.
-No state that needs an action is ever dismissed on a timer.
+## « Plus tard » (Val, choice B)
 
-## Overlay
-
-Owned layered popup (`WS_POPUP`, `WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`, owner = main window) presented
-with `UpdateLayeredWindow` from a premultiplied DIB rendered by an `ID2D1DCRenderTarget` (grayscale text AA). It sits
-above the WebView2 child windows of its owner, below unrelated applications, never takes activation on click
-(`MA_NOACTIVATE`), and is click-through outside the rounded card (alpha 0 pixels + `HTTRANSPARENT`). The window rect
-is the card only, so it cannot block other browser areas or the right-hand downloads drawer (`SetReservedRight`).
-It hides with the owner on minimise, follows owner move/resize/DPI via `Layout()`, and keeps the card on the
-monitor work area when a custom-frame window is maximised.
-
-## Motion
-
-Driven by `ToastModel::Presenter` (pure, deterministic, tested). Every change retargets from the **presentation
-value and velocity**; springs are critically damped (Apple damping 1.0), so nothing bounces; a retarget that would
-cross its target is clamped. Frames come from a dedicated instance of the existing display-paced
-`NativeChrome::FrameClock::Clock` (compositor clock → DWM vblank fallback): requested only while something moves,
-worker blocked on an event when idle (**zero idle wakes**, verified by the window test). The only `WM_TIMER` is the
-one-shot Installed dwell; a 16 ms timer is used solely if the frame clock cannot start at all.
-
-| Transition | Normal | Reduced motion (Windows "Show animations" off) |
-| --- | --- | --- |
-| Enter | opacity 0→1 and translateY +12→0 DIP, spring response 0.25 s (≥ 99 % at 300 ms, settled < 370 ms) | opacity only, 200 ms |
-| State swap | same card (identity kept); height springs with the **bottom edge anchored**; content is laid out from the bottom so the action button stays in place (Download → Cancel → Restart and install); outgoing content fades in 100 ms ease-out, incoming opacity = spring² so two texts are never legible together; incoming title icon scales 0.25→1 | height snaps; 200 ms cross-fade; no scale |
-| Exit | opacity →0 and translateY →+12 DIP (leaves by its entrance path), 150 ms ease-out; input ignored | opacity only, 150 ms |
-| Button | hover 120 ms, press `#3E3E3E` + scale 0.96 over 150 ms ease-out (design-system `PressScale`) | no scale |
-| Progress | spring toward the real fraction, never past it; a restart snaps back | snaps |
-
-Static cues always carry the state (title, icon, label, track); motion is never the only signal. No sound.
+Hides the card for this session only (`Action::Later`, kept by the host, `BrowserUpdate::CardView`); the engine keeps its
+offer and saves nothing, so the card comes back at the next start — shown from the last check's saved result, without
+a network request (`src/update-core.cpp`, 6 h rule unchanged). A newer version or the manual « Rechercher une mise à
+jour » shows it at once. « Ignorer » (error card) is the only real refusal (`dismissed` in the state file); old
+`notified available:<v>` values written by released builds meant « shown once » and no longer hide anything.
 
 ## Input and keyboard
 
-* An action is bound at pointer-down and fires on pointer-up only if the same content generation and button are
-  still under the pointer: a phase change during a press can never turn *Download* into *Cancel*. The same action
-  fires at most once per state.
-* Input is never locked during enter or state transitions; it is ignored only during the 150 ms exit.
-* Keyboard: the host calls `Focus()` (e.g. F6 cycle). Tab / Shift+Tab / arrows move between buttons, Enter
-  activates, Space activates on release, Esc returns focus through the host's release handler (and dismisses
-  *Installed*). Focus ring 1 DIP white at 50 % (keyboard) / 10 % (pointer), per design-system `Focus`.
-* The popup's window text is "title. body" for screen readers that read window names. Full UI Automation is not
-  provided (limitation).
+Unchanged: actions bound at pointer-down and fired on pointer-up for the same content generation; one activation per
+action per state; F6 focus, Tab / arrows between buttons (primary first), Enter / Space, Esc returns focus.
 
-## Deviations from Paper (justified)
+## Deviations
 
-1. **Material (user override)**: solid `#171717` at **100 %**. Acrylic and blur are removed.
-   A single non-layered owned popup draws with an opaque Direct2D HWND render target; the system backdrop
-   is explicitly disabled and the DWM frame is not extended into the client area. The 10-DIP window region
-   clips the whole card after sizing. The background stays solid during content fades, and the card keeps
-   its existing movement, layout, border, keyboard handling and minimize behavior.
-2. **Bottom inset** 14 instead of 14.447 DIP (Paper canvas artefact), so the card's bottom edge lands on whole
-   device pixels; heights keep Paper's fractional values and are rounded to device pixels at present time.
-3. **Minimum width** 224 DIP (narrowest card keeping *New update available* on one line). Narrower clients (or a
-   client too short for the card below the 84 DIP chrome) hide the card and keep its state until it fits again.
-4. **Exit direction**: better-ui's default exit is −12 px (up); the toast exits +12 DIP (down), the path it entered
-   by (Apple spatial consistency), since it is anchored to the bottom edge.
-5. **Text scale**: Windows "Text size" accessibility scaling is not applied (the chrome does not apply it either);
-   DPI scaling 100–250 % is covered by tests and snapshots.
-
-No Paper edits were made; specimens for the extension states (Installing, Error, unknown total) are pending root
-consolidation on the design-system page.
+1. Solid card (no acrylic), region-rounded corners at 8 DIP (no DWM shadow), bottom inset 14 (Paper's 14.447 is a
+   canvas artefact).
+2. Minimum width 226 DIP (« Téléchargement en cours… » is 190.1 DIP); narrower windows hide the card and keep its state.
+3. The drawer's frames are bitmaps: placed on whole device pixels nearest to Paper's 0.2 / 0.4 DIP offset.

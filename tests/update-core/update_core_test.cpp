@@ -435,18 +435,19 @@ void TestEngineAvailableAndNotified() {
         e.Shutdown();
     }
     f.now += 7 * 3600;
-    {  // same version is not toasted again automatically
+    {  // an offer that was only shown (closed on, or put off with « Plus tard ») comes back at the next start
         UpdateCore::Engine e;
         g_engine = &e;
         e.Start(f.Config());
-        CHECK(PumpUntil([&] { return e.LastCheckResult() == UpdateCore::Engine::LastCheck::Available; }, 3000));
-        Pump(100);
-        CHECK(PhaseOf(e) == Phase::Hidden);
-        e.CheckNow();  // manual still shows it
         CHECK(PumpUntil([&] { return PhaseOf(e) == Phase::Available; }, 3000));
+        CHECK(e.View().version == L"0.3.2");
+        // « Plus tard » is the host's session-only hide: the engine keeps its offer and saves nothing.
+        CHECK(e.Perform(Action::Later) == UpdateCore::ActionResult::Ignored && PhaseOf(e) == Phase::Available);
         CHECK(e.Perform(Action::Dismiss) == UpdateCore::ActionResult::Handled && PhaseOf(e) == Phase::Hidden);
         CHECK(e.Perform(Action::Dismiss) == UpdateCore::ActionResult::Ignored);
         CHECK(e.Perform(Action::RestartInstall) == UpdateCore::ActionResult::Ignored);
+        e.CheckNow();  // manual still shows a dismissed version
+        CHECK(PumpUntil([&] { return PhaseOf(e) == Phase::Available; }, 3000));
         e.Shutdown();
     }
     {  // equal and older releases are "up to date" (no downgrade)
@@ -480,6 +481,117 @@ void TestEngineAvailableAndNotified() {
         e.CheckNow();
         CHECK(PumpUntil([&] { return PhaseOf(e) == Phase::Error; }, 3000));
         e.Shutdown();
+    }
+}
+
+// « Plus tard » (Val, 2026-11-26, choice B), « Ignorer », an installed version and the old 'notified' values.
+void TestLaterIgnoreInstalled() {
+    auto start = [](UpdateCore::Engine& e, Fixture& f, const std::wstring& version = L"0.3.1") { g_engine = &e; e.Start(f.Config(version)); };
+    {   // Plus tard: the offer comes back at the next start, from the saved result, without any request (6 h rule kept).
+        Fixture f;
+        f.root = TempDir(L"engine-later");
+        f.Publish("0.3.2", 2 * 1024 * 1024, 5);
+        const std::uint64_t size = [&] { UpdateCore::Engine e; start(e, f); bool ok = PumpUntil([&] { return PhaseOf(e) == Phase::Available; }, 3000); CHECK(ok); auto t = e.View().total; e.Shutdown(); return t; }();
+        CHECK(size > 0 && f.transport->Requests() == 1);
+        f.now += 60;
+        UpdateCore::Engine e;
+        start(e, f);
+        CHECK(PumpUntil([&] { return PhaseOf(e) == Phase::Available; }, 3000));
+        CHECK(e.View().version == L"0.3.2" && e.View().total == size);
+        CHECK(f.transport->Requests() == 1);  // inside the 6 h window: no request
+        CHECK(!e.AutoCheck());                // the offer stands: no periodic check while it is up (« not before »)
+        // Télécharger on the saved offer: straight to En cours (no Checking, no second offer), then Ready.
+        g_views.clear();
+        CHECK(e.Perform(Action::Download) == UpdateCore::ActionResult::Handled);
+        CHECK(PhaseOf(e) == Phase::Downloading);
+        CHECK(PumpUntil([&] { return PhaseOf(e) == Phase::Ready; }, 15000));
+        bool clean = true;
+        for (const auto& v : g_views) if (v.phase == Phase::Checking || v.phase == Phase::Available || v.phase == Phase::Hidden) clean = false;
+        CHECK(clean);
+        CHECK(f.transport->Requests() == 3);  // manifest + package, only once the person asked for it
+        e.Shutdown();
+    }
+    {   // Ignorer: never again for that version (inside or after the 6 h window); a newer version shows at once.
+        Fixture f;
+        f.root = TempDir(L"engine-ignore");
+        f.Publish("0.3.2", 0);
+        {
+            UpdateCore::Engine e;
+            start(e, f);
+            CHECK(PumpUntil([&] { return PhaseOf(e) == Phase::Available; }, 3000));
+            CHECK(e.Perform(Action::Dismiss) == UpdateCore::ActionResult::Handled && PhaseOf(e) == Phase::Hidden);
+            e.Shutdown();
+        }
+        f.now += 60;
+        {
+            UpdateCore::Engine e;
+            start(e, f);
+            Pump(300);
+            CHECK(PhaseOf(e) == Phase::Hidden && f.transport->Requests() == 1);
+            e.Shutdown();
+        }
+        f.now += 7 * 3600;
+        {
+            UpdateCore::Engine e;
+            start(e, f);
+            CHECK(PumpUntil([&] { return e.LastCheckResult() == UpdateCore::Engine::LastCheck::Available; }, 3000));
+            Pump(100);
+            CHECK(PhaseOf(e) == Phase::Hidden && f.transport->Requests() == 2);
+            e.Shutdown();
+        }
+        f.Publish("0.3.3", 0);
+        f.now += 7 * 3600;
+        {
+            UpdateCore::Engine e;
+            start(e, f);
+            CHECK(PumpUntil([&] { return PhaseOf(e) == Phase::Available; }, 3000));
+            CHECK(e.View().version == L"0.3.3");
+            e.Shutdown();
+        }
+    }
+    {   // A saved offer for a version that is now installed (or older) shows nothing.
+        Fixture f;
+        f.root = TempDir(L"engine-installed");
+        f.Publish("0.3.2", 0);
+        {
+            UpdateCore::Engine e;
+            start(e, f);
+            CHECK(PumpUntil([&] { return PhaseOf(e) == Phase::Available; }, 3000));
+            e.Shutdown();
+        }
+        f.now += 60;
+        for (const wchar_t* installed : {L"0.3.2", L"0.4.0"}) {
+            UpdateCore::Engine e;
+            start(e, f, installed);
+            Pump(300);
+            CHECK(PhaseOf(e) == Phase::Hidden && f.transport->Requests() == 1);
+            e.Shutdown();
+        }
+    }
+    {   // Migration: released builds wrote « notified available:<v> » when a card was merely SHOWN. It is never read
+        // as a refusal: no saved offer inside the 6 h window (nothing shown, no request), then the next network check
+        // offers the version again.
+        Fixture f;
+        f.root = TempDir(L"engine-migration");
+        f.Publish("0.3.2", 0);
+        CreateDirectoryW((f.root + L"\\updates").c_str(), nullptr);
+        CHECK(UP::AtomicWriteFile(f.root + L"\\updates\\state", "browser-update-state 1\nnext-check " + std::to_string(f.now + 3 * 3600) +
+                                                                 "\nfailures 0\nnotified available:0.3.2\n"));
+        {
+            UpdateCore::Engine e;
+            start(e, f);
+            Pump(300);
+            CHECK(PhaseOf(e) == Phase::Hidden && f.transport->Requests() == 0);
+            e.Shutdown();
+        }
+        f.now += 4 * 3600;
+        {
+            UpdateCore::Engine e;
+            start(e, f);
+            CHECK(PumpUntil([&] { return PhaseOf(e) == Phase::Available; }, 3000));
+            CHECK(e.View().version == L"0.3.2" && f.transport->Requests() == 1);
+            e.Shutdown();
+        }
     }
 }
 
@@ -883,6 +995,7 @@ int wmain() {
     TestNoteStartup();
     TestEngineStartupQuiet();
     TestEngineAvailableAndNotified();
+    TestLaterIgnoreInstalled();
     TestEngineDownload();
     TestEngineCancelAndFailures();
     TestAutoCheck();

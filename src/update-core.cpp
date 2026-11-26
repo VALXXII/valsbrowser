@@ -472,6 +472,17 @@ Engine::State Engine::LoadState() const {
     s.failures = std::uint32_t(std::min(30ll, std::max(0ll, std::atoll(Field(lines, "failures").c_str()))));
     s.notified = Field(lines, "notified");
     if (s.notified.size() > 64) s.notified.clear();
+    // "available <version> <size>": absent in files written by released builds (read as none).
+    const std::string available = Field(lines, "available");
+    const std::size_t space = available.find(' ');
+    UP::Version parsed;
+    if (space != std::string::npos && space <= 32 && UP::ParseVersion(available.substr(0, space), parsed) &&
+        available.find_first_not_of("0123456789", space + 1) == std::string::npos && available.size() - space - 1 <= 19) {
+        s.available = available.substr(0, space);
+        s.availableSize = std::strtoull(available.c_str() + space + 1, nullptr, 10);
+    }
+    s.dismissed = Field(lines, "dismissed");
+    if (s.dismissed.size() > 64 || s.dismissed == "-") s.dismissed.clear();
     return s;
 }
 void Engine::SaveState(const State& s) const {
@@ -480,7 +491,9 @@ void Engine::SaveState(const State& s) const {
     if (!EnsureDir(Updates())) return;
     UP::AtomicWriteFile(Updates() + L"\\state", "browser-update-state 1\nnext-check " + std::to_string(s.nextCheck) +
                                                     "\nfailures " + std::to_string(s.failures) + "\nnotified " +
-                                                    (s.notified.empty() ? "-" : s.notified) + "\n");
+                                                    (s.notified.empty() ? "-" : s.notified) + "\navailable " +
+                                                    (s.available.empty() ? "-" : s.available + " " + std::to_string(s.availableSize)) +
+                                                    "\ndismissed " + (s.dismissed.empty() ? "-" : s.dismissed) + "\n");
 }
 
 bool Engine::Start(const Config& config) {
@@ -566,8 +579,9 @@ void Engine::StopWorker() {
     cancel_ = false;
 }
 
-void Engine::Launch(Op op, bool manual, bool startup) {
+void Engine::Launch(Op op, bool manual, bool startup, bool thenDownload) {
     if (shutdown_) return;
+    BrowserUpdate::View offered = View();
     StopWorker();
     std::uint64_t gen;
     UP::Manifest manifest;
@@ -576,13 +590,21 @@ void Engine::Launch(Op op, bool manual, bool startup) {
         gen = ++generation_;
         manifest = manifest_;
         // A manual check reads as Checking at once (menu, drawer, Retry), not after the worker's first publish;
-        // set under the generation bump so no stale worker can overwrite it.
-        if (op == Op::Check && manual) view_ = Make(Phase::Checking, "");
+        // set under the generation bump so no stale worker can overwrite it. Télécharger on an offer shown from the
+        // saved result (no manifest in memory yet) reads as the download at once: the check runs first, then it.
+        if (op == Op::Check && manual) {
+            if (thenDownload) {
+                view_ = Make(Phase::Downloading, UP::Narrow(offered.version));
+                view_.total = offered.total;
+            } else {
+                view_ = Make(Phase::Checking, "");
+            }
+        }
     }
     if (op == Op::Check && manual) Post();
     busy_ = true;
     if (op == Op::Check)
-        worker_ = std::thread([this, gen, manual, startup] { RunCheck(gen, manual, startup); Finished(); });
+        worker_ = std::thread([this, gen, manual, startup, thenDownload] { RunCheck(gen, manual, startup, thenDownload); Finished(); });
     else
         worker_ = std::thread([this, gen, manifest] { RunDownload(gen, manifest); Finished(); });
 }
@@ -657,7 +679,18 @@ bool Engine::FindStaged(UP::Manifest*, std::string& version) {
     return true;
 }
 
-void Engine::RunCheck(std::uint64_t gen, bool manual, bool startup) {
+// Browser start inside the 6 h window: the last check's newer version is offered again from the saved state,
+// without any request (the person chose « Plus tard » in an earlier session, or closed the browser on the card).
+bool Engine::ShowSaved(std::uint64_t gen, const State& state) {
+    UP::Version v;
+    if (state.available.empty() || !UP::ParseVersion(state.available, v) || UP::CompareVersion(v, currentVersion_) <= 0) return false;
+    if (state.dismissed == "available:" + state.available) return false;  // refused (Ignorer)
+    BrowserUpdate::View view = Make(Phase::Available, state.available);
+    view.total = state.availableSize;
+    return Publish(gen, view);
+}
+
+void Engine::RunCheck(std::uint64_t gen, bool manual, bool startup, bool thenDownload) {
     if (startup && config_.startupDelayMs && !Wait(config_.startupDelayMs)) return;
     if (cancel_) return;
     State state = LoadState();
@@ -677,8 +710,11 @@ void Engine::RunCheck(std::uint64_t gen, bool manual, bool startup) {
         }
         return;
     }
-    if (!manual && Now() < state.nextCheck && state.nextCheck - Now() <= FailureMax) return;  // TTL / backoff, quiet
-    if (manual) Publish(gen, Make(Phase::Checking, ""));
+    if (!manual && Now() < state.nextCheck && state.nextCheck - Now() <= FailureMax) {  // TTL / backoff, quiet
+        if (startup) ShowSaved(gen, state);
+        return;
+    }
+    if (manual && !thenDownload) Publish(gen, Make(Phase::Checking, ""));
     std::string body;
     HttpResult r = transport_->Get(
         ManifestUrl(repository_), UP::MaxManifestBytes, nullptr,
@@ -718,6 +754,8 @@ void Engine::RunCheck(std::uint64_t gen, bool manual, bool startup) {
     state.failures = 0;
     state.nextCheck = Now() + SuccessTtl;
     if (upToDate) {
+        state.available.clear();
+        state.availableSize = 0;
         SaveState(state);
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -734,12 +772,15 @@ void Engine::RunCheck(std::uint64_t gen, bool manual, bool startup) {
         haveManifest_ = true;
         lastCheck_ = LastCheck::Available;
     }
+    // Kept for the next browser start (no request then). Showing the offer saves nothing else: only a refusal
+    // (Dismiss) keeps a version quiet, so a closed or « Plus tard » card comes back at the next start.
+    state.available = m.version;
+    state.availableSize = m.size;
+    SaveState(state);
+    if (thenDownload) return RunDownload(gen, m);  // Télécharger on a saved offer: straight on to the package
     BrowserUpdate::View view = Make(Phase::Available, m.version);
     view.total = m.size;
-    if (manual || state.notified != "available:" + m.version) {
-        if (Publish(gen, view) && !manual) state.notified = "available:" + m.version;
-    }
-    SaveState(state);
+    if (manual || state.dismissed != "available:" + m.version) Publish(gen, view);
 }
 
 void Engine::RunDownload(std::uint64_t gen, UP::Manifest m) {
@@ -859,8 +900,8 @@ ActionResult Engine::Perform(Action action) {
             std::lock_guard<std::mutex> lock(mutex_);
             have = haveManifest_;
         }
-        if (!have) {
-            Launch(Op::Check, true, false);
+        if (!have) {  // offer shown from the saved result: fetch the manifest, then the package, as one download
+            Launch(Op::Check, true, false, true);
             return ActionResult::Handled;
         }
         Launch(Op::Download, true, false);
@@ -903,12 +944,15 @@ ActionResult Engine::Perform(Action action) {
             return ActionResult::Ignored;
         if (view.phase == Phase::Available || view.phase == Phase::Ready) {
             State s = LoadState();
-            s.notified = std::string(view.phase == Phase::Ready ? "ready:" : "available:") + UP::Narrow(view.version);
+            if (view.phase == Phase::Ready) s.notified = "ready:" + UP::Narrow(view.version);
+            else s.dismissed = "available:" + UP::Narrow(view.version);  // a real refusal, never the old "notified"
             SaveState(s);
         }
         SetView(BrowserUpdate::View{});
         return ActionResult::Handled;
     }
+    case Action::Later:  // « Plus tard »: the host hides the card for this session; nothing changes or is saved here
+        return ActionResult::Ignored;
     case Action::RestartInstall:
         break;
     }

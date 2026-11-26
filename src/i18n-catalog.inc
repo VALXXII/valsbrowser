@@ -1007,7 +1007,7 @@ I18N(update_toast_available_body, L"Une nouvelle mise à jour est prête à êtr
 I18N(update_toast_ready, L"Prête à installer", L"Ready for install")
 I18N(update_toast_ready_body, L"La mise à jour est prête à être installée.", L"The update is ready to be installed.")
 I18N(update_toast_restart_install, L"Redémarrer et installer", L"Restart and install")
-I18N(update_toast_downloading, L"Téléchargement…", L"Downloading...")
+I18N(update_toast_downloading, L"Téléchargement en cours…", L"Downloading…")
 I18N(update_toast_installing, L"Installation…", L"Installing...")
 I18N(update_toast_installing_body, L"La mise à jour est en cours d’installation.", L"The update is being installed.")
 I18N(update_toast_installed, L"Mise à jour installée", L"Update installed")
