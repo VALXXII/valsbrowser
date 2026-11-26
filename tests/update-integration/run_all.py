@@ -65,6 +65,8 @@ def existing_fixtures() -> None:
     # #143: the drawers on the tab panel's side (pure geometry at 4 DPI, then src/main.cpp's real drawers, side Focus and the
     # toolbar tooltip muted over its open menu, on a desktop of its own that is never displayed).
     run('drawer side (#143): pure + host on a hidden desktop', [sys.executable, '-I', ROOT / 'tests/drawer-side/run.py'])
+    # #143 · Infobulle B of the side column's tabs and favourites (src/side-tip.h): box, place, delay / chaining, motion (pure).
+    fixture('side_tip_test', [*STRICT, 'tests/side_tip_test.cpp', '-luser32'])
     # The window's resize border over the chat panel, the drawers and the layers (src/resize-border.h; trial 0.3.952):
     # hidden windows only, never shown. The browser's manifest is linked in (layered child windows need Windows 8+ declared).
     resize_manifest = OUT / 'resize_border_manifest.o'

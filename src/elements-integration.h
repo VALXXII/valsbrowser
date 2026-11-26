@@ -21,6 +21,8 @@
 #include "crash-page.h"
 #include "context-toast.h"
 #include "tooltip.h"
+#include "side-tip-window.h"   // #143 · Infobulle B of the side column's tabs and favourites
+NativeChrome::SideTip::Window sideTip;   // #143 · Infobulle B (wired with the chrome's tooltip, below)
 #include "fullscreen-hint.h"
 #include "debug-sandbox.h"
 #include "shortcuts-panel.h"
@@ -1894,7 +1896,7 @@ void RepositionElementSurfaces(){
     originPrompt.SetPageArea(PageScreenRect());
     PrintReposition();
 }
-void ElementsReducedMotion(bool reduced){modal.SetReducedMotion(reduced);notesCard.SetReducedMotion(reduced);originPrompt.SetReducedMotion(reduced);passwordDemo.SetReducedMotion(reduced);findBar.SetReducedMotion(reduced);contextToast.SetReducedMotion(reduced);fullscreenHint.SetReducedMotion(reduced);shortcutsPanel.SetReducedMotion(reduced);sandboxTip.SetReducedMotion(reduced);chromeTip.SetReducedMotion(reduced);}
+void ElementsReducedMotion(bool reduced){sideTip.SetReducedMotion(reduced);modal.SetReducedMotion(reduced);notesCard.SetReducedMotion(reduced);originPrompt.SetReducedMotion(reduced);passwordDemo.SetReducedMotion(reduced);findBar.SetReducedMotion(reduced);contextToast.SetReducedMotion(reduced);fullscreenHint.SetReducedMotion(reduced);shortcutsPanel.SetReducedMotion(reduced);sandboxTip.SetReducedMotion(reduced);chromeTip.SetReducedMotion(reduced);}
 NativeChrome::Motion::Wake ElementsNextWake(NativeChrome::Motion::Time now){
     using NativeChrome::Motion::Earlier;
     return Earlier(ChipNextWake(now),Earlier(Earlier(Earlier(Earlier(Earlier(modal.NextWake(now),notesCard.NextWake(now)),originPrompt.NextWake(now)),Earlier(findBar.NextWake(now),contextToast.NextWake(now))),fullscreenHint.NextWake(now)),Earlier(Earlier(shortcutsPanel.NextWake(now),Earlier(sandboxTip.NextWake(now),chromeTip.NextWake(now))),passwordDemo.NextWake(now))));
@@ -1982,10 +1984,12 @@ void CreateElementSurfaces(){
     // C5: the toolbar's tooltips use the Paper tooltip; the comctl one stays only as a fallback.
     {NativeChrome::Tooltip::Hooks th;th.wake=[]{RequestElementFrame();};
      if(chromeTip.Create(instance,window,root,std::move(th))&&tooltip){DestroyWindow(tooltip);tooltip=nullptr;}}
+    if(!sideTip.Create(instance,window,root))Log(L"SIDE tip unavailable");   // #143 · Infobulle B
     CreatePrintSurfaces();   // our print window (#121)
     ElementsReducedMotion(motion.ReducedMotion());
 }
 void DisposeElementSurfaces(){
+    sideTip.Dispose();
     while(!modalQueue.empty()){auto job=std::move(modalQueue.front());modalQueue.pop_front();if(job.done)job.done(MD::Result{});}
     if(modalOpen)modal.Abort();
     while(!promptQueue.empty()){auto job=std::move(promptQueue.front());promptQueue.pop_front();OP::Result none;for(auto& a:job.answers)a(none);}
@@ -2173,6 +2177,16 @@ NativeChrome::Tooltip::Content TipContent(const wchar_t* tip){
 // (bandOpen), the profile menu, the compact column's « » » popover, « Gérer les favoris » (the Favoris drawer), the star /
 // « add this page » (the bookmark popover). « Annoter »'s card blocks every tip already (ChromeTipBlock).
 NativeChrome::Tooltip::MenuMute chromeTipMute;
+// #143 · Infobulle B (owner's go 2026-11-26; src/side-tip.h): the side column's tab rows and favourite tiles show it instead
+// of the C5 tip (not the compact « » » popover's tiles, beside the column). The panel is on the left: the tip on its right.
+constexpr bool SideTipPanelLeft=true;   // a panel on the right: false (the tip on the item's left, its slide mirrored)
+NativeChrome::SideTip::Content SideTipContent(int id);   // src/main.cpp (the tabs, the bookmarks store)
+float SideColumnRight(){return chrome.SideColumn().column;}
+bool SideTipItem(const NativeChrome::Region& r){return chrome.sidebar&&(NativeChrome::IsTab(r.id)||NativeChrome::IsBookmark(r.id))&&r.rect.right<=SideColumnRight()+.5f;}
+// `atOnce`: the keyboard (no delay, as in the compact column).
+void SideTipHover(const NativeChrome::Region& r,bool atOnce=false){
+    const bool compact=atOnce||chrome.SideColumn().mode==NativeChrome::Sidebar::Mode::Compact;
+    sideTip.Hover(r.id,{r.rect.left,r.rect.top,r.rect.right,r.rect.bottom},SideTipContent(r.id),compact,SideTipPanelLeft);}
 bool ChromeTipMenuOpen(int id){
     if(!id)return false;
     if(id==chrome.latched||id==chrome.bandOpen)return true;
@@ -2183,30 +2197,36 @@ bool ChromeTipMenuOpen(int id){
     return false;
 }
 // A menu may have opened (every InvalidateChrome): a new one mutes its button and the tip showing (or due) goes at once.
-void ChromeTipMenuSync(){if(!chromeTip.Window())return;int open=0;for(auto& r:chrome.regions)if(r.tip&&*r.tip&&ChromeTipMenuOpen(r.id)){open=r.id;break;}if(chromeTipMute.Opened(open))chromeTip.HideNow();}
+void ChromeTipMenuSync(){if(chrome.bandOpen)sideTip.Dismiss(chrome.bandOpen);else if(contextMenu.Open()||chrome.profileButton.open)sideTip.Dismiss();   /* #143: Infobulle B never over a menu */if(!chromeTip.Window())return;int open=0;for(auto& r:chrome.regions)if(r.tip&&*r.tip&&ChromeTipMenuOpen(r.id)){open=r.id;break;}if(chromeTipMute.Opened(open))chromeTip.HideNow();}
 void ChromeTipHover(int x,int y){
     if(!chromeTip.Window())return;
     const float d=GetDpiForWindow(window)/96.f;float fx=x/d,fy=y/d;
-    if(!chrome.Local(fx,fy)){chromeTipMute.Muted(0,ChromeTipMenuOpen(chromeTipMute.id));chromeTip.Hide();return;}   // Mode Focus: only over the floating panel's visible part
-    if(chrome.Hit(fx,fy)==NativeChrome::Chrome::SidebarEdgeId){chromeTipMute.Muted(NativeChrome::Chrome::SidebarEdgeId,ChromeTipMenuOpen(chromeTipMute.id));chromeTip.Hide();return;}   // #127: the column edge shows the ↔ cursor, no tooltip (Paper)
+    if(!chrome.Local(fx,fy)){chromeTipMute.Muted(0,ChromeTipMenuOpen(chromeTipMute.id));chromeTip.Hide();sideTip.Leave();return;}   // Mode Focus: only over the floating panel's visible part
+    if(chrome.Hit(fx,fy)==NativeChrome::Chrome::SidebarEdgeId){chromeTipMute.Muted(NativeChrome::Chrome::SidebarEdgeId,ChromeTipMenuOpen(chromeTipMute.id));chromeTip.Hide();sideTip.Leave();return;}   // #127: the column edge shows the ↔ cursor, no tooltip (Paper)
     ChromeTipMenuSync();
     for(auto& r:chrome.regions){
         if(!r.tip||!*r.tip||fx<r.rect.left||fx>=r.rect.right||fy<r.rect.top||fy>=r.rect.bottom)continue;
+        if(SideTipItem(r)){chromeTip.Hide();if(ChromeTipMenuOpen(r.id))sideTip.Dismiss(r.id);else SideTipHover(r);return;}   // #143 · Infobulle B (never over its own open menu)
+        sideTip.Leave();   // a control with its own tooltip
         if(chromeTipMute.Muted(r.id,ChromeTipMenuOpen(chromeTipMute.id))){chromeTip.Hide();return;}   // #143: over its own open menu
         RECT target=ChromePx(r.rect);MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&target),2);
         RECT bounds=NativeChrome::TooltipPlacement::VisibleRect(window);chromeTip.Hover(TipContent(r.tip),target,&bounds);return;
     }
     chromeTipMute.Muted(0,ChromeTipMenuOpen(chromeTipMute.id));   // off every button: a closed menu's mute ends
+    if(!(chrome.sidebar&&fx<SideColumnRight()))sideTip.Leave();   // Infobulle B: stays in the column's gaps, goes outside it
     chromeTip.Hide();
 }
-void ChromeTipHide(){if(chromeTip.Window())chromeTip.Hide();}
+void ChromeTipHide(){if(chromeTip.Window())chromeTip.Hide();sideTip.Dismiss();   /* #143: a click, a menu: Infobulle B goes until another item */}
 // The pointer left the window (into a popover, a drawer, another window): it has left the muted button too (#143).
-void ChromeTipLeft(){chromeTipMute.Muted(0,ChromeTipMenuOpen(chromeTipMute.id));ChromeTipHide();}
+void ChromeTipLeft(){chromeTipMute.Muted(0,ChromeTipMenuOpen(chromeTipMute.id));if(chromeTip.Window())chromeTip.Hide();sideTip.Leave();}
 // #127 compact column (Val, 24 nov.): the icons carry their names as tooltips, so the keyboard focus shows the focused
 // control's tooltip too (a tab's title, a bookmark's, a tool's); anywhere else it just hides the pointer's.
 void ChromeTipFocus(int id){
     if(!chromeTip.Window())return;
     ChromeTipMenuSync();if(chromeTipMute.Muted(id,ChromeTipMenuOpen(chromeTipMute.id))){chromeTip.HideNow();return;}   // #143: never over the menu it opened (until the focus leaves it)
+    if(id&&chrome.sidebar&&!chrome.sidebarOverlay&&chrome.side.mode==NativeChrome::Sidebar::Mode::Compact)   // #143: a tab / favourite: Infobulle B at once
+        for(auto& r:chrome.regions)if(r.id==id&&r.tip&&*r.tip&&SideTipItem(r)){chromeTip.Hide();SideTipHover(r,true);return;}
+    sideTip.Leave();
     if(id&&chrome.sidebar&&!chrome.sidebarOverlay&&chrome.side.mode==NativeChrome::Sidebar::Mode::Compact)
         for(auto& r:chrome.regions){if(r.id!=id||!r.tip||!*r.tip)continue;
             RECT target{S(r.rect.left),S(r.rect.top),S(r.rect.right),S(r.rect.bottom)};MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&target),2);

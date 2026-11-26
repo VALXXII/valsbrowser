@@ -141,7 +141,7 @@ int wmain(int argc, wchar_t** argv) {
     // ---- 1. Top bar: on the right, unchanged ----
     ShowHistory(false); Pump(700); CheckDocked("top bar, Historique", historyDrawer.Window(), NativeChrome::Downloads::DrawerLayout::width, false); CloseAll();
     ShowSettings(); Pump(700); CheckDocked("top bar, Réglages", settingsDrawer.Window(), NativeChrome::SettingsUI::Layout::width, false);
-    { int l = 0, r = 0; const bool drawn = EdgeGreys(out + L"\settings-top-bar.png", l, r);
+    { int l = 0, r = 0; const bool drawn = EdgeGreys(out + L"\\settings-top-bar.png", l, r);
       Expect(drawn && l > r && r == 0x17, "top bar, Réglages: its hairline on the LEFT edge, toward the page (" + std::to_string(l) + " | " + std::to_string(r) + ")"); }
     CloseAll();
 
@@ -152,7 +152,7 @@ int wmain(int argc, wchar_t** argv) {
         Expect(chrome.sidebar && Near(chrome.side.drawerDock, layout == BrowserSettings::TabsPosition::Side ? 248.f : 40.f, .01f), name + ": the dock on the column's edge (" + std::to_string(chrome.side.drawerDock) + ")");
         ShowHistory(false); Pump(700); CheckDocked(name + ", Historique", historyDrawer.Window(), NativeChrome::Downloads::DrawerLayout::width, false); CloseAll();
         ShowSettings(); Pump(700); CheckDocked(name + ", Réglages", settingsDrawer.Window(), NativeChrome::SettingsUI::Layout::width, false);
-        { int l = 0, r = 0; const bool drawn = EdgeGreys(out + L"\settings-" + std::wstring(name.begin(), name.end()) + L".png", l, r);
+        { int l = 0, r = 0; const bool drawn = EdgeGreys(out + L"\\settings-" + std::wstring(name.begin(), name.end()) + L".png", l, r);
           Expect(drawn && r > l && l == 0x17, name + ", Réglages: its hairline mirrored to the RIGHT edge, toward the page (" + std::to_string(l) + " | " + std::to_string(r) + ")"); }
         CloseAll();
         ShowBookmarksDrawer(false); Pump(700); CheckDocked(name + ", Favoris", bookmarksDrawer.Window(), NativeChrome::Downloads::DrawerLayout::width, false); CloseAll();
@@ -245,6 +245,59 @@ int wmain(int argc, wchar_t** argv) {
         chrome.sidebarPopover = true; Expect(ChromeTipMenuOpen(NativeChrome::Chrome::SidebarMoreId), "compact « » »: muted while its popover is open"); chrome.sidebarPopover = false;
         ShowBookmarksDrawer(false); Pump(300); Expect(ChromeTipMenuOpen(NativeChrome::Chrome::SidebarManageId), "« Gérer les favoris »: muted while the Favoris drawer is open"); CloseAll();
         Expect(!ChromeTipMenuOpen('D') && !ChromeTipMenuOpen(900) && !ChromeTipMenuOpen('B'), "nothing open: nothing muted");
+    }
+    // ---- 7. Infobulle B (#143): the side column's tabs and favourites ----
+    {   namespace ST = NativeChrome::SideTip;
+        sideTip.Create(instance, window, base); sideTip.SetReducedMotion(false);
+        bookmarks.Add(BM::BarRoot, 0, L"Le Monde", L"https://www.lemonde.fr/planete/", 0); auto b2 = MakeTab(L"Notes"); pages.push_back(b2); b2->uri = L"https://notes.example.org/x";
+        const float s = GetDpiForWindow(window) / 96.f; POINT origin{0, 0}; ClientToScreen(window, &origin);
+        auto regionOf = [](int id) { for (auto& r : chrome.regions) if (r.id == id) return r; return NativeChrome::Region{0, {}, nullptr}; };
+        for (auto layout : {BrowserSettings::TabsPosition::Compact, BrowserSettings::TabsPosition::Side}) {
+            settings.tabsPosition = layout; ApplyLayout(); BookmarksChanged(); Relayout(); sideTip.HideNow(); chromeTip.HideNow(); chromeTipMute.Reset();
+            const bool compact = layout == BrowserSettings::TabsPosition::Compact; const std::string name = compact ? "Infobulle B, compact" : "Infobulle B, complete";
+            const int tab0 = NativeChrome::TabBase, tab1 = NativeChrome::TabBase + 1, tile = NativeChrome::BookmarkBase;
+            const auto r0 = regionOf(tab0);
+            HoverOver(tab0);
+            if (compact) Expect(sideTip.Shown() && sideTip.Item() == tab0, name + ": a tab's tip at once (owner, 2026-11-26)");
+            else { Expect(!sideTip.Shown() && sideTip.Waiting(), name + ": nothing before 500 ms of rest"); Pump(350); Expect(!sideTip.Shown(), name + ": still nothing at 350 ms"); Pump(300); Expect(sideTip.Shown() && sideTip.Item() == tab0, name + ": the tip after 500 ms"); }
+            Expect(!TipComing(), name + ": not the toolbar's tooltip");
+            const auto box = sideTip.Target();
+            Expect(Near(box.left, r0.rect.right + 8, .01f) && Near((box.top + box.bottom) / 2, (r0.rect.top + r0.rect.bottom) / 2, .51f), name + ": 8 DIP right of the hovered " + (compact ? "plate" : "row") + ", centred on it (" + std::to_string(box.left) + ")");
+            Expect(Near(box.Height(), 56, .01f) && sideTip.Current().title == L"Planete" && sideTip.Current().address == L"planete.test", name + ": title, then icon + address (56 high)");
+            Pump(500);
+            {   const RECT pl = sideTip.Placed(); const float m = ST::Window::Margin();
+                Expect(sideTip.WindowShown() && sideTip.Presents() > 0 && pl.left == origin.x + (LONG)std::lround((box.left - m) * s) && pl.top == origin.y + (LONG)std::lround((box.top - m) * s),
+                       name + ": on screen at the box's place in pixels (" + std::to_string(GetDpiForWindow(window)) + " dpi) " + Text(pl)); }
+            sideTip.SaveForTest((out + (compact ? L"\\side-tip-compact.png" : L"\\side-tip-complete.png")).c_str());
+            HoverOver(tab1);
+            Expect(sideTip.Shown() && sideTip.Item() == tab1 && sideTip.Current().title == L"Notes", name + ": the next tab at once, the box gliding there");
+            Expect(sideTip.MotionForTest().At(NativeChrome::Motion::Now()).opacity > .99f, name + ": no frame without the tip between two tabs");
+            Pump(400);
+            const auto rt = regionOf(tile);
+            if (rt.id) { HoverOver(tile); Expect(sideTip.Shown() && sideTip.Item() == tile && sideTip.Current().title == L"Le Monde" && sideTip.Current().address == L"lemonde.fr", name + ": a favourite's tip (title, then its address)");
+                         Expect(Near(sideTip.Target().left, rt.rect.right + 8, .01f), name + ": 8 DIP right of the favourite's tile"); }
+            else Expect(false, name + ": the favourite's tile is laid out");
+            ChromeTipHide();   // a click
+            Expect(!sideTip.Shown(), name + ": a click: it goes");
+            HoverOver(tile); Expect(!sideTip.Shown(), name + ": not again on the clicked item");
+            HoverOver(tab0); Expect(compact ? sideTip.Shown() : sideTip.Waiting() || sideTip.Shown(), name + ": another item brings it back");
+            Pump(600); chrome.bandOpen = tile; InvalidateChrome();
+            Expect(!sideTip.Shown(), name + ": a menu opening: it goes");
+            HoverOver(tile); Pump(600); Expect(!sideTip.Shown(), name + ": not over the item whose menu is open"); chrome.bandOpen = 0; InvalidateChrome();
+            HoverOver(tab0); Pump(600); HoverNowhere(); Expect(!sideTip.Shown(), name + ": the pointer leaves the column: it fades");
+            Pump(250); Expect(!sideTip.WindowShown(), name + ": gone after its 100 ms fade");
+            HoverOver(NativeChrome::Chrome::SidebarToggleId); Expect(!sideTip.Shown(), name + ": another control keeps its own tooltip");
+            HoverNowhere(); chromeTip.HideNow();
+        }
+        // The keyboard in the compact column: at once.
+        settings.tabsPosition = BrowserSettings::TabsPosition::Compact; ApplyLayout(); Relayout(); sideTip.HideNow(); chromeTip.HideNow();
+        ChromeTipFocus(NativeChrome::TabBase + 1); Expect(sideTip.Shown() && sideTip.Item() == NativeChrome::TabBase + 1 && !chromeTip.Visible(), "Infobulle B, compact, keyboard focus on a tab: its tip at once");
+        ChromeTipFocus(0); Expect(!sideTip.Shown(), "Infobulle B, keyboard focus gone: it goes");
+        // Reduced motion: a fade only (no slide, no scale).
+        sideTip.HideNow(); sideTip.SetReducedMotion(true); HoverOver(NativeChrome::TabBase);
+        { const auto f = sideTip.MotionForTest().At(NativeChrome::Motion::Now()); Expect(sideTip.Shown() && Near(f.dx, 0) && Near(f.scale, 1), "Infobulle B, reduced motion: no slide, no scale"); }
+        sideTip.SetReducedMotion(false); HoverNowhere(); Pump(300); sideTip.HideNow();
+        pages.pop_back(); settings.tabsPosition = BrowserSettings::TabsPosition::Top; ApplyLayout(); Relayout();
     }
     // ---- 6. Morph rule of « Tout afficher » (pure) ----
     {   namespace DU = NativeChrome::DownloadsUI;

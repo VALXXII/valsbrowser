@@ -5330,7 +5330,18 @@ bool SideFocusEscape(){if(!chrome.sideHidden||!sideReveal.open)return false;if(D
 bool SidebarCaption(float x,float y){if(!chrome.sidebar)return false;const auto& L=chrome.SideColumn();const float col=chrome.sidebarOverlay?L.column:chrome.side.column;
     if(x>=col)return y<chrome.side.bar;return y<(L.mode==SBar::Mode::Complete?L.address.top:L.toggle.bottom);}
 // Wheel over the tab list scrolls it (answer 4).
-void SidebarWheel(POINT client,int delta){const float d=GetDpiForWindow(window)/96.f,x=client.x/d,y=client.y/d;const auto& L=chrome.SideColumn();
+// #143 · Infobulle B (src/side-tip.h): what a tab row or a favourite tile says. A tab: its title (« Nouvel onglet » for the
+// new-tab page), its site's icon and bare address. A bookmark: its title (its address when it has none), its icon and
+// address; a folder: its name alone.
+NativeChrome::SideTip::Content SideTipContent(int id){
+    NativeChrome::SideTip::Content c;
+    if(NativeChrome::IsTab(id)){const int i=NativeChrome::TabIndex(id);if(i<0||i>=(int)pages.size()||!pages[i])return c;const auto& t=pages[i];
+        c.title=t->home?std::wstring(TR(tab_new)):t->title.empty()?std::wstring(TR(chrome_tab_untitled_tip)):t->title;if(!t->home)c.address=BareDomain(t->uri);c.icon=t->favicon.image;return c;}
+    const int i=NativeChrome::BookmarkIndex(id);if(i<0||i>=(int)chrome.bandItems.size())return c;const auto& b=chrome.bandItems[i];
+    c.title=b.title;if(b.folder)return c;
+    if(const auto* n=bookmarks.Find(b.id)){c.address=BareDomain(n->url);if(c.title.empty())c.title=c.address;}c.icon=b.image;c.local=b.local;return c;
+}
+void SidebarWheel(POINT client,int delta){sideTip.Leave(); /* #143: the list moves under the pointer: Infobulle B goes */const float d=GetDpiForWindow(window)/96.f,x=client.x/d,y=client.y/d;const auto& L=chrome.SideColumn();
     if(chrome.sidebarPopover&&chrome.sidePop.box.Contains(x,y)){chrome.sidebarPopoverScroll=std::clamp(chrome.sidePop.grid.scroll-delta/120.f*48.f,0.f,chrome.sidePop.grid.maxScroll);BuildChrome();InvalidateChrome();return;}
     if(L.gridOpen&&L.grid.view.Contains(x,y)){chrome.sidebarGridScroll=std::clamp(L.grid.scroll-delta/120.f*48.f,0.f,L.grid.maxScroll);BuildChrome();InvalidateChrome();return;}
     if(!L.tabsView.Contains(x,y))return;
