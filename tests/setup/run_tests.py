@@ -14,6 +14,12 @@ update-core fake browser (acks its start like the real one) and whose update-hel
   TEMP/TMP=<T>\\Temp, BROWSER_SETUP_TEST_WEBVIEW2=1, BROWSER_SETUP_TEST_LANG=en
 The real %LOCALAPPDATA%\\browser, Start Menu, Desktop, uninstall entry and default-browser registration are never
 read or written.
+
+Signed releases (case signed_release, design/installer-signing-options.md): the payload's executables, the stub alone
+(the uninstaller) and the whole setup are signed with a throwaway self-signed TEST certificate, made in memory and kept
+as a file under build/setup-tests only (never in a certificate store), without a timestamp (the suite is offline).
+Windows does not trust it: the checks accept « untrusted root » and nothing else. Needs the Windows SDK's signtool
+(SIGNTOOL or an installed SDK); without it the case says so and is skipped, unless BROWSER_REQUIRE_SIGN_TESTS=1.
 """
 from __future__ import annotations
 import argparse, ctypes, hashlib, json, os, shutil, struct, subprocess, sys, time, traceback, winreg
@@ -33,6 +39,7 @@ SETUP_LIBS = ['-lwinhttp', '-lbcrypt', '-lole32', '-luuid', '-lshell32', '-lshlw
 COMMIT = '5e' * 20
 sys.path.insert(0, str(ROOT / 'tools/release'))
 import package as K  # noqa: E402
+import sign as S  # noqa: E402
 
 # SetupCore::Error + 10 (src/setup-main.cpp exit codes); 3 = no payload (truncated download).
 E = {'ok': 0, 'nopayload': 3, 'damaged': 11, 'unsafe': 12, 'newer': 13, 'running': 14, 'disk': 15, 'cancelled': 16,
@@ -106,12 +113,65 @@ def pack(v: str, crash=False) -> Path:
     return out / f'browser-{v}-win-x64.lsrupd'
 
 
-def assemble(stub_version: str, package: Path, out: Path, version: str | None = None) -> Path:
+def assemble(stub_version: str, package: Path, out: Path, version: str | None = None, uninstaller: bytes = b'') -> Path:
     """Exactly package.write_setup's layout (the test stub is refused by write_setup on purpose)."""
     stub = (OUT / f'stub-{stub_version}.exe').read_bytes()
-    pkg = package.read_bytes()
-    out.write_bytes(stub + pkg + K.setup_trailer(version or stub_version, len(stub), pkg))
+    out.write_bytes(K.setup_bytes(stub, package.read_bytes(), version or stub_version, uninstaller))
     return out
+
+
+# ---------------------------------------------------------------- signed variants (test certificate)
+TEST_SUBJECT = 'Browser TEST signing (not trusted)'
+_PFX_SCRIPT = (
+    "$ErrorActionPreference='Stop';"
+    "$rsa=[System.Security.Cryptography.RSA]::Create(3072);"
+    "$req=New-Object System.Security.Cryptography.X509Certificates.CertificateRequest('CN=" + TEST_SUBJECT + "',$rsa,"
+    "[System.Security.Cryptography.HashAlgorithmName]::SHA256,[System.Security.Cryptography.RSASignaturePadding]::Pkcs1);"
+    "$eku=New-Object System.Security.Cryptography.OidCollection;[void]$eku.Add((New-Object System.Security.Cryptography.Oid('1.3.6.1.5.5.7.3.3')));"
+    "$req.CertificateExtensions.Add((New-Object System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension($eku,$true)));"
+    "$c=$req.CreateSelfSigned([DateTimeOffset]::UtcNow.AddDays(-1),[DateTimeOffset]::UtcNow.AddDays(7));"
+    "[System.IO.File]::WriteAllBytes($args[0],$c.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx))")
+
+
+def test_signer():
+    """A signer with a throwaway test certificate file (never a certificate store); None when signtool is absent."""
+    try:
+        S.find_signtool()
+    except SystemExit as e:
+        print(f'   signtool not available: {e}', flush=True)
+        return None
+    pfx = OUT / 'test-signing.pfx'
+    pfx.unlink(missing_ok=True)
+    r = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
+                        '& {' + _PFX_SCRIPT + "} '" + str(pfx) + "'"], capture_output=True, text=True)
+    if r.returncode or not pfx.is_file():
+        sys.exit('test certificate could not be made: ' + (r.stderr or r.stdout)[:400])
+    return S.Signer(pfx=pfx, expect=TEST_SUBJECT, timestamp_url=None)
+
+
+def pack_signed(v: str, signer) -> tuple[Path, Path]:
+    """The payload of `v` with its three executables signed (a real PE stands in for the bridge), packed like a release."""
+    d = OUT / f'payload-{v}-signed'
+    shutil.rmtree(d, ignore_errors=True)
+    shutil.copytree(OUT / f'payload-{v}', d)
+    shutil.copy(OUT / 'update-helper.exe', d / 'assets/bin/browser-annotations-mcp.exe')
+    for rel in ('browser.exe', 'update-helper.exe', 'assets/bin/browser-annotations-mcp.exe'):
+        signer.sign(d / rel)
+    out = OUT / f'dist-{v}-signed'
+    shutil.rmtree(out, ignore_errors=True)
+    r = subprocess.run([sys.executable, '-I', str(ROOT / 'tools/update-package/make_update_package.py'), '--input', str(d),
+                        '--version', v, '--out', str(out)], capture_output=True, text=True)
+    if r.returncode:
+        sys.exit(r.stderr)
+    return d, out / f'browser-{v}-win-x64.lsrupd'
+
+
+def signed_uninstaller(v: str, signer) -> bytes:
+    """The stub of `v` signed on its own: the uninstaller a signed setup carries."""
+    u = OUT / f'uninstall-{v}-signed.exe'
+    shutil.copyfile(OUT / f'stub-{v}.exe', u)
+    signer.sign(u)
+    return u.read_bytes()
 
 
 def lsrupd_entries(data: bytes) -> dict:
@@ -333,8 +393,9 @@ def junction(link: Path, target: Path):
     _winapi.CreateJunction(str(target), str(link))
 
 
-def installed_ok(c: Case, v: str, payload_dir: Path, package: Path):
-    """The installed version directory is byte-identical to the payload, to the .lsrupd entries (== ZIP contents)."""
+def installed_ok(c: Case, v: str, payload_dir: Path, package: Path, uninstaller: bytes = b''):
+    """The installed version directory is byte-identical to the payload, to the .lsrupd entries (== ZIP contents).
+    uninstaller: the signed uninstaller the setup carried (default: none, the bare stub is written)."""
     vdir = c.root / 'versions' / v
     got = {k: h for k, h in tree(vdir).items() if k != '.stage'}
     check(got == tree(payload_dir), f'versions/{v} != payload')
@@ -346,7 +407,10 @@ def installed_ok(c: Case, v: str, payload_dir: Path, package: Path):
     check((c.root / 'bin/browser-annotations-mcp.exe').read_bytes() == (vdir / 'assets/bin/browser-annotations-mcp.exe').read_bytes(),
           'stable bridge in bin == versioned bridge')
     check((c.root / 'browser.ico').read_bytes() == (vdir / 'assets/browser.ico').read_bytes(), 'stable icon')
-    check((c.root / 'uninstall.exe').read_bytes() == (OUT / f'stub-{v}.exe').read_bytes(), 'uninstall.exe == setup stub (no payload)')
+    if uninstaller:
+        check((c.root / 'uninstall.exe').read_bytes() == uninstaller, 'uninstall.exe == the signed uninstaller the setup carried')
+    else:
+        check((c.root / 'uninstall.exe').read_bytes() == (OUT / f'stub-{v}.exe').read_bytes(), 'uninstall.exe == setup stub (no payload)')
     start = c.programs / 'Browser.lnk'
     check(start.exists() and c.shortcut_target(start).lower() == str(launcher).lower(), 'Start Menu shortcut -> stable launcher')
     check(c.on_disk_name(start) == 'Browser.lnk', f'Start Menu shortcut named « Browser » ({c.on_disk_name(start)})')
@@ -468,6 +532,11 @@ def case_damaged_setups():
         b = bytearray(data)
         b[at] ^= 0x20
         return bytes(b)
+    pad = len(good) - 128 - stub_len - len(P['0.3.2'].read_bytes())
+    check(len(good) % 8 == 0 and 0 <= pad < 8, f'the setup file is a multiple of 8 bytes ({len(good)}, {pad} alignment bytes)')
+    # One byte less in the trailer's size: the last package byte then sits in the alignment zeros (refused as not a
+    # setup) unless it happens to be zero or the boundary moves; the package hash refuses those.
+    short = E['nopayload'] if (pad == 7 or good[stub_len + len(P['0.3.2'].read_bytes()) - 1]) else E['damaged']
     cases = {
         'truncated by 1 byte': (good[:-1], E['nopayload']),
         'truncated in the package': (good[:stub_len + 5000], E['nopayload']),
@@ -475,9 +544,26 @@ def case_damaged_setups():
         'byte flipped in the package': (flip(good, stub_len + 3000), E['damaged']),
         'trailer hash flipped': (flip(good, len(good) - 128 + 70), E['damaged']),
         'trailer version other': (good[:-128] + good[-128:-112] + b'0.3.3'.ljust(32, b'\0') + good[-80:], E['nopayload']),
-        'trailer size off by one': (good[:-72] + (int.from_bytes(good[-72:-64], 'little') - 1).to_bytes(8, 'little') + good[-64:], E['nopayload']),
+        'trailer size off by one': (good[:-72] + (int.from_bytes(good[-72:-64], 'little') - 1).to_bytes(8, 'little') + good[-64:], short),
         'appended bytes': (good + b'x', E['nopayload']),
+        'appended zeros up to the next boundary': (good + b'\0' * 8, E['nopayload']),
+        'uninstaller offset without a size': (good[:-32] + (8).to_bytes(8, 'little') + good[-24:], E['nopayload']),
+        'uninstaller size without the bytes': (good[:-24] + (4096).to_bytes(8, 'little') + good[-16:], E['nopayload']),
     }
+    # A package whose end is not on an 8-byte boundary: the alignment zeros exist and are checked.
+    odd, extra = None, 0
+    while odd is None or (stub_len + len(odd)) % 8 == 0:
+        extra += 1
+        odd = craft_lsrupd('0.3.2', [(k, v) for k, v in lsrupd_entries(P['0.3.2'].read_bytes()).items()] + [('assets/pad.bin', b'p' * extra)])
+    (c.t / 'odd.lsrupd').write_bytes(odd)
+    aligned = assemble('0.3.2', c.t / 'odd.lsrupd', c.t / 'odd-setup.exe').read_bytes()
+    gap = len(aligned) - 128 - stub_len - len(odd)
+    check(0 < gap < 8 and len(aligned) % 8 == 0, f'alignment zeros before the trailer ({gap})')
+    dirty = bytearray(aligned)
+    dirty[stub_len + len(odd)] = 1
+    cases['alignment byte not zero'] = (bytes(dirty), E['nopayload'])
+    cases['old layout: trailer right after the package, not aligned'] = (
+        aligned[:stub_len + len(odd)] + aligned[-128:], E['nopayload'])
     for label, (data, code) in cases.items():
         f = c.t / 'bad-setup.exe'
         f.write_bytes(data)
@@ -850,10 +936,106 @@ def case_serialization():
     return c
 
 
+def case_signed_release():
+    """A signed release (test certificate): the setup is read with its signature, installs, updates, and leaves only
+    signed executables behind, the uninstaller and its temp copy included."""
+    c = Case('signed_release')
+    signer = test_signer()
+    if not signer:
+        check(os.environ.get('BROWSER_REQUIRE_SIGN_TESTS') != '1', 'signtool is required here (BROWSER_REQUIRE_SIGN_TESTS=1) and was not found')
+        print('   SKIPPED: no signtool on this machine (set SIGNTOOL or install the Windows SDK signing tools)', flush=True)
+        return c
+
+    def build(v: str, name: str):
+        d, pkg = pack_signed(v, signer)
+        u = signed_uninstaller(v, signer)
+        setup = assemble(v, pkg, c.t / name, uninstaller=u)
+        signer.sign(setup)
+        return d, pkg, u, setup
+
+    def accepted(paths, label):
+        try:
+            facts = signer.check(paths)
+            check(all(f['signer'] == 'CN=' + TEST_SUBJECT for f in facts), f'{label}: signed by the test certificate')
+        except SystemExit as e:
+            check(False, f'{label}: {e}')
+
+    def installed_files(v: str):
+        vdir = c.root / 'versions' / v
+        return [c.root / 'browser.exe', c.root / 'uninstall.exe', c.root / 'bin/browser-annotations-mcp.exe',
+                vdir / 'browser.exe', vdir / 'update-helper.exe', vdir / 'assets/bin/browser-annotations-mcp.exe']
+
+    d2, p2, u2, s2 = build('0.3.2', 'browser-0.3.2-win-x64-setup.exe')
+    data = s2.read_bytes()
+    start, end, signed = K.pe_overlay(data)
+    check(signed and end % 8 == 0 and end < len(data), 'the setup carries a certificate table, on an 8-byte boundary')
+    check(data[end - 128:end - 112] == K.SETUP_MAGIC and data[end - 8:end] == K.SETUP_END, 'the trailer ends exactly where the signature starts')
+    check(start == len((OUT / 'stub-0.3.2.exe').read_bytes()), 'overlay starts after the stub')
+    accepted([s2], 'signed setup')
+    c.setup(s2, '--no-launch', label='signed setup 0.3.2 installs')
+    installed_ok(c, '0.3.2', d2, p2, uninstaller=u2)
+    accepted(installed_files('0.3.2'), 'installed 0.3.2')
+    # Windows sees a changed byte in a signed file (the check above is not a formality).
+    bad = bytearray(u2)
+    bad[len(bad) // 3] ^= 1
+    (c.t / 'tampered.exe').write_bytes(bytes(bad))
+    check(S.trust_code(c.t / 'tampered.exe') == S.BAD_DIGEST, 'a changed byte in a signed file: bad digest')
+    check(S.trust_code(OUT / 'stub-0.3.2.exe') == S.NO_SIGNATURE, 'the bare stub: no signature')
+    # Update by the BROWSER'S updater (engine + helper) from a feed holding the next signed package: the signed helper
+    # installs signed files; the uninstaller is the setup's business and stays the signed one of 0.3.2.
+    canaries = data_canaries(c.root)
+    d3, p3, u3, s3 = build('0.3.3', 'browser-0.3.3-win-x64-setup.exe')
+    feed = c.t / 'feed'
+    feed.mkdir()
+    shutil.copy(p3, feed / p3.name)
+    shutil.copy(p3.parent / 'update-manifest-win-x64.txt', feed / 'update-manifest-win-x64.txt')
+    r = subprocess.run([str(c.root / 'versions/0.3.2/browser.exe'), '--update', str(c.root), str(feed)], env=c.env, timeout=120)
+    check(r.returncode == 0, f'engine update of a signed install exit {r.returncode}')
+    for _ in range(100):
+        if (c.root / 'current').read_text().strip() == '0.3.3' and 'installed' in (c.root / 'updates/last-result').read_text():
+            break
+        time.sleep(0.2)
+    check((c.root / 'current').read_text().strip() == '0.3.3', 'engine update installed the signed 0.3.3')
+    time.sleep(1)
+    vdir = c.root / 'versions/0.3.3'
+    check({k: h for k, h in tree(vdir).items() if k != '.stage'} == tree(d3), 'versions/0.3.3 == the signed payload after the engine update')
+    check((c.root / 'browser.exe').read_bytes() == (vdir / 'update-helper.exe').read_bytes(), 'stable launcher == the signed helper of 0.3.3')
+    check((c.root / 'uninstall.exe').read_bytes() == u2, 'the engine update leaves the signed uninstaller in place')
+    accepted(installed_files('0.3.3'), 'after the engine update')
+    # (the updater starts the new version, which rewrites its own session file: every other file is untouched)
+    canaries.pop('session')
+    changed = sorted(k for k, h in canaries.items() if tree(c.root / 'data').get(k) != h)
+    check(not changed, f'data canaries unchanged by the engine update ({changed})')
+    # The next signed setup over it (same version: repair): its own signed uninstaller replaces the older one.
+    c.setup(s3, '--no-launch', label='signed setup 0.3.3 over the updated install')
+    installed_ok(c, '0.3.3', d3, p3, uninstaller=u3)
+    accepted(installed_files('0.3.3'), 'installed 0.3.3')
+    check(all(tree(c.root / 'data').get(k) == h for k, h in canaries.items()), 'data canaries unchanged by the signed update')
+    check((c.root / 'previous').read_text().strip() == 'installed 0.3.2', 'previous = installed 0.3.2')
+    # Uninstall: the temp copy that does the work is the same signed file.
+    c.uninstall(label='signed uninstall (keep data)')
+    copies = list((c.t / 'Temp').glob('browser-uninstall-*.exe'))
+    check(copies and all(f.read_bytes() == u3 for f in copies), 'the uninstaller ran from a temp copy of the signed file')
+    for rel in ('versions', 'current', 'browser.exe', 'uninstall.exe', 'bin'):
+        check(not (c.root / rel).exists(), f'{rel} removed')
+    check(not c.reg(), 'uninstall entry removed')
+    # A setup carrying anything but its own stub as the uninstaller is refused before anything is written.
+    wrong = {
+        'the signed stub of another version': u3,
+        'the stub without a signature': (OUT / 'stub-0.3.2.exe').read_bytes() + b'\0' * 8,
+        'one byte of the image changed': bytes(bytearray(u2[:0x500]) + bytes([u2[0x500] ^ 1]) + bytearray(u2[0x501:])),
+    }
+    for label, blob in wrong.items():
+        f = assemble('0.3.2', p2, c.t / 'wrong-uninstaller-setup.exe', uninstaller=blob)
+        c.setup(f, '--no-launch', expect=E['nopayload'], label=f'embedded uninstaller: {label}')
+        check(not (c.root / 'current').exists() and not (c.root / 'versions').exists(), f'{label}: nothing installed')
+    return c
+
+
 CASES = [case_fresh_no_launch, case_fresh_launch_ack, case_update_keeps_data_and_repair, case_foreign_shortcuts,
          case_running_browser, case_damaged_setups, case_reparse_roots, case_faults_rollback, case_first_install_rollback,
          case_uninstall, case_uninstall_data_junction, case_helper_refreshes_display_version, case_existing_install_gets_name_and_registration,
-         case_repair_rollback, case_ancestor_junction, case_serialization]
+         case_repair_rollback, case_ancestor_junction, case_serialization, case_signed_release]
 
 
 def main() -> int:

@@ -449,11 +449,11 @@ Result Integrate(const Env& env, const std::wstring& self, const SetupPayload::L
         return r.error = Error::Integration, r.detail = "stable launcher could not be written", r;
     const std::wstring icon = root + L"\\browser.ico", iconSource = root + L"\\versions\\" + W(current) + L"\\assets\\browser.ico";
     if (UP::PathExists(iconSource) && !SameFile(icon, iconSource)) ReplaceFile(iconSource, icon, nonce);
-    // Uninstaller = this setup without its payload.
+    // Uninstaller = this setup without its payload (a signed release carries it signed: SetupPayload::WriteUninstaller).
     const std::wstring uninstaller = root + L"\\uninstall.exe", fresh = uninstaller + L".new-" + W(nonce);
     std::string error;
     DeleteFileW(fresh.c_str());
-    if (Fault("uninstaller") || !SetupPayload::WriteStub(self, layout, fresh, error) ||
+    if (Fault("uninstaller") || !SetupPayload::WriteUninstaller(self, layout, fresh, error) ||
         !MoveFileExW(fresh.c_str(), uninstaller.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         DeleteFileW(fresh.c_str());
         return r.error = Error::Integration, r.detail = "uninstaller could not be written " + error, r;

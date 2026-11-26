@@ -169,6 +169,18 @@ def fake_setup_stub(identity: str = f'0.3.7 {SHA} release', subsystem: int = 2, 
     return bytes(data) + extra
 
 
+def fake_sign(data: bytes, table: bytes = b'CERTIFICATE-TABLE' + b'\0' * 7) -> bytes:
+    """What a signing tool does to a PE file, without any cryptography: zeros up to an 8-byte boundary, a certificate
+    table at the end, the header's certificate directory pointing at it, and a new CheckSum."""
+    pe = int.from_bytes(data[0x3C:0x40], 'little')
+    opt = pe + 24
+    body = bytearray(data + b'\0' * ((-len(data)) % 8))
+    body[opt + 144:opt + 148] = len(body).to_bytes(4, 'little')
+    body[opt + 148:opt + 152] = len(table).to_bytes(4, 'little')
+    body[opt + 64:opt + 68] = (0x5167).to_bytes(4, 'little')
+    return bytes(body) + table
+
+
 def make_app(root: Path) -> Path:
     app = root / 'app'
     (app / 'assets/fonts').mkdir(parents=True)
@@ -787,8 +799,13 @@ class SetupAsset(unittest.TestCase):
         stub = self.stub_path().read_bytes()
         self.assertEqual(setup[:len(stub)], stub)
         self.assertEqual(setup[len(stub):len(stub) + len(package)], package)
-        trailer = setup[len(stub) + len(package):]
-        self.assertEqual(len(trailer), 128)
+        tail = setup[len(stub) + len(package):]
+        zeros, trailer = tail[:-128], tail[-128:]
+        # The trailer starts on the first 8-byte boundary of the file after the package (zeros before it): a signature,
+        # which must start on such a boundary, then adds nothing between the trailer and its certificate table.
+        self.assertEqual(len(setup) % 8, 0)
+        self.assertEqual(zeros, b'\0' * ((-(len(stub) + len(package))) % 8))
+        self.assertEqual(trailer[96:120], b'\0' * 24, 'no embedded uninstaller in an unsigned release')
         self.assertEqual(trailer[:16], b'BROWSER-SETUP 1\0')
         self.assertEqual(trailer[16:48].rstrip(b'\0'), b'0.3.7')
         self.assertEqual(int.from_bytes(trailer[48:56], 'little'), len(stub))
@@ -805,6 +822,8 @@ class SetupAsset(unittest.TestCase):
                          (SETUP, len(setup), hashlib.sha256(setup).hexdigest()))
         sums = (dist / 'SHA256SUMS.txt').read_text(encoding='ascii').splitlines()
         self.assertEqual(sums[-1], f'{hashlib.sha256(setup).hexdigest()}  {SETUP}')
+        self.assertIs(info['signed'], False, 'signing is off unless asked for')
+        self.assertNotIn('sign', sys.modules, 'the default path never loads the signing module')
 
     def test_setup_is_reproducible(self):
         a = (package_dist(self.root, self.app) / SETUP).read_bytes()
@@ -856,7 +875,10 @@ class SetupAsset(unittest.TestCase):
             'trailer hash flipped': flip(good, len(good) - 128 + 70),
             'trailer version changed': good[:-128] + good[-128:-112] + b'0.3.8'.ljust(32, b'\0') + good[-80:],
             'trailer offset changed': good[:-80] + (n + 1).to_bytes(8, 'little') + good[-72:],
-            'padding not zero': flip(good, len(good) - 20),
+            'padding not zero': flip(good, len(good) - 10),
+            'uninstaller size without the bytes': flip(good, len(good) - 20),
+            'uninstaller offset without a size': flip(good, len(good) - 30),
+            'eight zeros appended': good + b'\0' * 8,
             'end magic changed': good[:-1] + b'?',
             'bytes appended': good + b'x',
         }
@@ -866,6 +888,102 @@ class SetupAsset(unittest.TestCase):
                 bad.write_bytes(data)
                 with self.assertRaises(SystemExit):
                     K.verify_setup(bad, package, info)
+
+    def test_trailer_is_aligned_for_every_package_size(self):
+        info = {'version': '0.3.7', 'commit': SHA, 'channel': 'release'}
+        stub = fake_setup_stub()
+        for extra in range(8):
+            with self.subTest(extra=extra):
+                pkg = self.root / f'p{extra}.lsrupd'
+                pkg.write_bytes(b'package' + b'x' * extra)
+                data = K.setup_bytes(stub, pkg.read_bytes(), '0.3.7')
+                (self.root / 's.exe').write_bytes(data)
+                K.verify_setup(self.root / 's.exe', pkg, info, signed=False)
+                lay = K.setup_layout(data)
+                self.assertEqual((len(data) % 8, lay['trailer'] % 8, lay['signed']), (0, 0, False))
+                gap = data[len(stub) + len(pkg.read_bytes()):lay['trailer']]
+                self.assertEqual(gap, b'\0' * ((-(len(stub) + 7 + extra)) % 8))
+                if gap:   # the zeros are part of the layout: anything else there is refused
+                    dirty = bytearray(data)
+                    dirty[len(stub) + 7 + extra] = 1
+                    (self.root / 's.exe').write_bytes(bytes(dirty))
+                    with self.assertRaises(SystemExit):
+                        K.verify_setup(self.root / 's.exe', pkg, info)
+
+    def test_a_signature_does_not_move_the_trailer(self):
+        """What a signing tool does to a file (pad to 8 bytes, append a certificate table, point the header at it) on
+        the new layout and on the old one (trailer right after the package): only the new one is still readable."""
+        info = {'version': '0.3.7', 'commit': SHA, 'channel': 'release'}
+        stub = fake_setup_stub()
+        for extra in range(8):
+            with self.subTest(extra=extra):
+                pkg = self.root / 'p.lsrupd'
+                pkg.write_bytes(b'package' + b'x' * extra)
+                new = fake_sign(K.setup_bytes(stub, pkg.read_bytes(), '0.3.7'))
+                (self.root / 'new.exe').write_bytes(new)
+                K.verify_setup(self.root / 'new.exe', pkg, info, signed=True)
+                self.assertEqual(K.setup_layout(new)['end'], K.setup_layout(new)['trailer'] + 128)
+                with self.assertRaises(SystemExit):
+                    K.verify_setup(self.root / 'new.exe', pkg, info, signed=False)
+                body = stub + pkg.read_bytes()
+                old = fake_sign(body + K.setup_trailer('0.3.7', len(stub), pkg.read_bytes()))
+                (self.root / 'old.exe').write_bytes(old)
+                if len(body) % 8:   # 7 sizes out of 8: zeros land between the old trailer and the certificate table
+                    with self.assertRaises(SystemExit):
+                        K.verify_setup(self.root / 'old.exe', pkg, info)
+                else:
+                    K.verify_setup(self.root / 'old.exe', pkg, info, signed=True)
+
+    def test_embedded_signed_uninstaller(self):
+        info = {'version': '0.3.7', 'commit': SHA, 'channel': 'release'}
+        stub = fake_setup_stub()
+        pkg = self.root / 'p.lsrupd'
+        pkg.write_bytes(b'package-bytes')
+        uninstaller = fake_sign(stub)
+        self.assertNotEqual(uninstaller[:len(stub)], stub, 'a signature rewrites the certificate directory')
+        self.assertEqual(K.unsigned_image(uninstaller[:len(stub)]), K.unsigned_image(stub))
+        for outer_signed in (False, True):
+            with self.subTest(outer_signed=outer_signed):
+                data = K.setup_bytes(stub, pkg.read_bytes(), '0.3.7', uninstaller)
+                data = fake_sign(data) if outer_signed else data
+                (self.root / 's.exe').write_bytes(data)
+                K.verify_setup(self.root / 's.exe', pkg, info, uninstaller, signed=outer_signed)
+                lay = K.setup_layout(data)
+                u_offset, u_size = lay['uninstaller']
+                self.assertEqual((u_offset, u_size), (len(stub) + len(pkg.read_bytes()), len(uninstaller)))
+                self.assertEqual(data[u_offset:u_offset + u_size], uninstaller)
+                with self.assertRaises(SystemExit):   # the caller expected none (or another one)
+                    K.verify_setup(self.root / 's.exe', pkg, info)
+        other = fake_sign(fake_setup_stub(identity=f'0.3.6 {SHA} release'))
+        changed = bytearray(uninstaller)
+        changed[0x210] ^= 1
+        for label, blob in {'the stub of another version': other, 'not signed': stub + b'\0' * 8, 'the bare stub': stub,
+                            'one byte of the image changed': bytes(changed), 'an overlay before the signature': fake_sign(stub + b'12345678')}.items():
+            with self.subTest(label), self.assertRaises(SystemExit):
+                K.check_signed_stub(stub, blob)
+        with self.assertRaises(SystemExit):   # write_setup refuses to embed anything but this stub, signed
+            (self.root / 'app-setup').mkdir(exist_ok=True)
+            self.stub_path().write_bytes(stub)
+            K.write_setup(self.stub_path(), pkg, info, self.root / 'refused.exe', other)
+        self.assertFalse((self.root / 'refused.exe').exists())
+
+    def test_signing_options_are_refused_when_they_make_no_sense(self):
+        for extra in (['--sign-expect', 'someone'], ['--timestamp-url', 'http://example.invalid'],
+                      ['--sign-name', 'a', '--sign-pfx', 'b.pfx']):
+            with self.subTest(extra=extra), self.assertRaises(SystemExit), contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()), \
+                    mock.patch.object(sys, 'argv', ['package.py', '--app', str(self.app), '--out', str(self.root / 'dist'), *extra]):
+                K.main()
+        info = json.loads((self.app / 'version.json').read_text())
+        self.assertEqual(info['channel'], 'release')
+        pfx = self.root / 'test.pfx'
+        pfx.write_bytes(b'not a certificate')
+        with self.assertRaises(SystemExit) as refused, contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(sys, 'argv', ['package.py', '--app', str(self.app), '--out', str(self.root / 'dist'),
+                                                '--sign-pfx', str(pfx), '--sign-expect', 'test']):
+            K.main()
+        self.assertIn('test certificate never signs a release', str(refused.exception))
+        self.assertFalse((self.root / 'dist').exists())
 
     def test_write_setup_never_overwrites(self):
         dist = package_dist(self.root, self.app)
@@ -1004,8 +1122,31 @@ class Workflow(unittest.TestCase):
         # and no job output is pasted into a shell script.
         publish = text[text.index('\n  publish:'):]
         self.assertIn('environment:\n      name: release', publish)
-        self.assertEqual(text.count('secrets.'), 1)
+        self.assertEqual(publish.count('secrets.'), 1)
         self.assertGreater(text.index('secrets.UPDATES_RELEASE_TOKEN'), text.rindex('- name:'))
+        # Code signing (design/installer-signing-options.md): OFF unless the repository variable asks for it; its two
+        # secrets exist only in the `sign` job (release environment, main only), each given once, to one step.
+        build, sign = text[text.index('\n  build:'):text.index('\n  sign:')], text[text.index('\n  sign:'):text.index('\n  publish:')]
+        self.assertNotIn('secrets.', build)
+        self.assertEqual(sorted(re.findall(r'secrets\.([A-Z_]+)', text)),
+                         ['CERTUM_SIMPLYSIGN_ID', 'CERTUM_SIMPLYSIGN_TOTP_SECRET', 'UPDATES_RELEASE_TOKEN'])
+        self.assertEqual(sorted(re.findall(r'secrets\.([A-Z_]+)', sign)), ['CERTUM_SIMPLYSIGN_ID', 'CERTUM_SIMPLYSIGN_TOTP_SECRET'])
+        self.assertIn('environment:\n      name: release', sign)
+        self.assertIn("if: github.ref == 'refs/heads/main' && github.repository == 'VALXXII/browser' && "
+                      "(vars.RELEASE_SIGNING == 'rehearsal' || vars.RELEASE_SIGNING == 'on')", sign)
+        self.assertIn('cancel-in-progress: false', sign)
+        self.assertEqual(sign.count('simplysign_session.ps1 -Open'), 1)
+        self.assertIn("if: always()\n        shell: pwsh\n        run: ./tools/release/simplysign_session.ps1 -Close", sign)
+        self.assertLess(sign.index('simplysign_session.ps1 -Open'), sign.index('--sign-name'))
+        self.assertNotIn('--sign-pfx', text, 'a test certificate never signs in the release workflow')
+        self.assertNotIn('--sign-name', build)
+        # Every signing step of the build job is behind the same variable; without it the build job is as before.
+        self.assertEqual(build.count('vars.RELEASE_SIGNING'), 2)
+        # Signing on: only the signed assets are published, and publish.py is told to refuse anything else.
+        self.assertIn("(needs.sign.result == 'success' || vars.RELEASE_SIGNING != 'on')", publish)
+        self.assertIn("win-x64${{ vars.RELEASE_SIGNING == 'on' && '-signed' || '' }}", publish)
+        self.assertIn('--require-signer "$RELEASE_SIGNER_NAME"', publish)
+        self.assertIn('needs: [build, sign]', publish)
         self.assertNotRegex(text, r'run:[^\n]*\$\{\{')
         self.assertNotIn('GITHUB_TOKEN }}', text)
         self.assertNotRegex(text, r'gh[pousr]_[A-Za-z0-9]{20,}')
@@ -1015,6 +1156,43 @@ class Workflow(unittest.TestCase):
         # publish runs only after build (which runs tests and packaging)
         self.assertIn('needs: build', text)
         self.assertLess(text.index('run_all.py'), text.index('package.py'))
+
+
+class SigningSession(unittest.TestCase):
+    """tools/release/simplysign_session.ps1: the parts that can be proven without an account."""
+    SCRIPT = ROOT / 'tools/release/simplysign_session.ps1'
+
+    def test_one_time_codes_match_rfc_6238(self):
+        if os.name != 'nt' or not shutil.which('powershell'):
+            self.skipTest('Windows PowerShell only')
+        s256 = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA===='   # RFC 6238 appendix B, the 32-byte seed
+        s1 = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'                               # the 20-byte seed
+        cases = [(f'otpauth://totp/x?secret={s1}&algorithm=SHA1&digits=8&period=30', 59, '94287082'),
+                 (f'otpauth://totp/x?secret={s256}&algorithm=SHA256&digits=8&period=30', 59, '46119246'),
+                 (f'otpauth://totp/x?secret={s256}&algorithm=SHA256&digits=8&period=30', 1111111109, '68084774'),
+                 (f'otpauth://totp/x?secret={s256}&algorithm=SHA256&digits=8&period=30', 20000000000, '77737706'),
+                 (f'otpauth://totp/x?secret={s256}&algorithm=SHA-256&digits=6', 59, '119246'),
+                 (s256, 59, '119246')]   # a bare secret: SHA-256, 6 digits, 30 s
+        program = ("$ErrorActionPreference='Stop';"
+                   "$ast=[System.Management.Automation.Language.Parser]::ParseFile($args[0],[ref]$null,[ref]$null);"
+                   "$fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-Totp'},$true);"
+                   "Invoke-Expression $fn.Extent.Text;"
+                   + ''.join(f"Get-Totp '{secret}' {at};" for secret, at, _ in cases))
+        r = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', '& {' + program + "} '" + str(self.SCRIPT) + "'"],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.split(), [want for _, _, want in cases])
+
+    def test_script_is_pinned_and_keeps_secrets_out(self):
+        text = self.SCRIPT.read_text(encoding='utf-8')
+        self.assertRegex(text, r"\$InstallerSha256 = '[0-9a-f]{64}'")
+        self.assertIn("$signature.Status -ne 'Valid'", text)
+        self.assertIn('GITHUB_ACTIONS', text, 'never on a developer machine')
+        for secret in ('CERTUM_SIMPLYSIGN_ID', 'CERTUM_SIMPLYSIGN_TOTP_SECRET'):
+            for line in text.splitlines():
+                if secret in line and not line.lstrip().startswith('#'):
+                    self.assertNotRegex(line, r'Write-(Host|Output)', f'{secret} must never be printed')
+        self.assertNotRegex(text, r'Write-(Host|Output)[^\n]*Get-Totp')
 
 
 class ReleaseNotesFile(unittest.TestCase):
