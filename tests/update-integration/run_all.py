@@ -14,10 +14,21 @@ Steps:
      main.cpp compiled WITH the update modules), mocked end-to-end temp install,
      Windows setup suite (tests/setup/run_tests.py, temp roots and test keys only);
   4. --app: static checks of the built application directory.
+
+Compiles and runs overlap, the runs keep their order. Everything the selected steps compile is planned first: the
+fixtures of step 1 and the compiles of the scripts that hand theirs over (compile_plan.py: test-lottie.py, the drawer
+side, the update-core, update-toast and webview2 suites, the mocked end-to-end install), each with its own command line
+(the same flags as before, one g++ per output). The compiles then start, up to --jobs at a time (default: one per core)
+within the free memory (a src/main.cpp compile needs about 3.5 GB: one at a time on an 8 GB runner), at below-normal
+priority; meanwhile every step runs in the order below, one at a time, as before, each once its own compiles are done:
+the fixtures' runs and the scripts (with --prebuilt). Each compile's output is printed whole just before its step; the
+first failure (a compile or a run) stops the compiles and the run with its output shown. --jobs 1 compiles one at a time.
 """
 from __future__ import annotations
-import argparse, json, shutil, struct, subprocess, sys, time
+import argparse, json, os, re, shutil, struct, subprocess, sys, threading, time
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import compile_plan  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
@@ -34,9 +45,25 @@ LOOSE = ['-O2', '-Wall', '-Wextra', '-Wno-unknown-pragmas', '-Wno-cast-function-
          '-Wno-misleading-indentation', '-Wno-missing-field-initializers']
 
 results: list[tuple[str, float]] = []
+# While steps are planned (planned()), fixture() records its compile for the pool and run() records the step for later;
+# run(..., now=True) runs at once (a resource object a later compile needs). A planned step: (label, command, kw, the
+# indices of the compiles it needs).
+PLAN: dict | None = None
+# Measured on 2026-11-27 (job accounting, peak commit): a compile of src/main.cpp (the test file that includes it, or a
+# script's host) peaks at 2.8-4.3 GB; every other compile of the suite at 1.3 GB or less. A hosted windows-2022 runner of a
+# private repository has 2 cores and 8 GB: one src/main.cpp compile at a time there, a light one beside it.
+HEAVY_GB, LIGHT_GB, RESERVE_GB = 3.5, 1.0, 0.5   # the tests running meanwhile use a few hundred MB
+BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
 
 
-def run(label: str, cmd: list, **kw) -> None:
+def run(label: str, cmd: list, now: bool = False, **kw) -> None:
+    if PLAN is not None and not now:
+        PLAN['steps'].append((label, cmd, kw, []))
+        return
+    execute(label, cmd, **kw)
+
+
+def execute(label: str, cmd: list, **kw) -> None:
     start = time.time()
     print(f'== {label}', flush=True)
     proc = subprocess.run([str(c) for c in cmd], cwd=kw.pop('cwd', ROOT), **kw)
@@ -48,15 +75,183 @@ def run(label: str, cmd: list, **kw) -> None:
 
 def fixture(name: str, compile_args: list, run_args: list | None = None) -> None:
     exe = OUT / f'{name}.exe'
-    run(f'compile {name}', [GXX, '-std=c++17', '-static', *compile_args, '-o', exe])
+    command = [GXX, '-std=c++17', '-static', *compile_args, '-o', exe]
+    if PLAN is not None:
+        PLAN['compiles'].append((name, command, ROOT))
+        PLAN['steps'].append((f'run {name}', [exe, *(run_args or [])], {}, [len(PLAN['compiles']) - 1]))
+        return
+    run(f'compile {name}', command)
     run(f'run {name}', [exe, *(run_args or [])])
+
+
+def free_memory_gb() -> float:
+    import ctypes
+    class Status(ctypes.Structure):
+        _fields_ = [('dwLength', ctypes.c_ulong), ('dwMemoryLoad', ctypes.c_ulong), ('ullTotalPhys', ctypes.c_ulonglong),
+                    ('ullAvailPhys', ctypes.c_ulonglong), ('ullTotalPageFile', ctypes.c_ulonglong), ('ullAvailPageFile', ctypes.c_ulonglong),
+                    ('ullTotalVirtual', ctypes.c_ulonglong), ('ullAvailVirtual', ctypes.c_ulonglong), ('ullAvailExtendedVirtual', ctypes.c_ulonglong)]
+    s = Status(); s.dwLength = ctypes.sizeof(s)
+    return s.ullAvailPhys / 2**30 if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(s)) else 0.0
+
+
+def compiles_main_cpp(command: list, cwd) -> bool:
+    """A compile of src/main.cpp: named on the command line, or included by the test file compiled."""
+    for arg in (str(a) for a in command):
+        if not arg.endswith('.cpp'):
+            continue
+        if arg.replace('\\', '/').endswith('src/main.cpp'):
+            return True
+        source = Path(arg) if Path(arg).is_absolute() else Path(cwd) / arg
+        try:
+            text = source.read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            continue
+        if re.search(r'#\s*include\s*"[^"]*\bmain\.cpp"', text):
+            return True
+    return False
+
+
+class Pool:
+    """The planned compiles, started at once in their order, `jobs` at a time and within the free memory (a src/main.cpp
+    compile first whenever one fits: they are the long ones), at below-normal priority so that a test running meanwhile
+    keeps the processor. Each compile's output is kept whole for its step."""
+
+    def __init__(self, compiles: list, jobs: int, memory_gb: float = 0.0):
+        self.items = [{'name': n, 'cmd': [str(c) for c in cmd], 'cwd': cwd, 'heavy': compiles_main_cpp(cmd, cwd), 'done': threading.Event(),
+                       'code': None, 'text': '', 'took': 0.0, 'shown': False} for n, cmd, cwd in compiles]
+        self.pending = list(self.items)
+        self.free = max(HEAVY_GB, memory_gb or free_memory_gb() - RESERVE_GB)
+        self.running, self.failed, self.stopped, self.procs = 0, [], False, set()
+        self.cv, self.start = threading.Condition(), time.time()
+        heavy = sum(1 for i in self.items if i['heavy'])
+        print(f'== {len(self.items)} compiles ({heavy} of src/main.cpp) started, up to {jobs} at a time within {self.free:.1f} GB '
+              f'({os.cpu_count()} cores, {free_memory_gb():.1f} GB free); the runs follow in their order as their compiles end', flush=True)
+        self.threads = [threading.Thread(target=self.worker, daemon=True) for _ in range(max(1, jobs))]
+        for t in self.threads:
+            t.start()
+
+    def cost(self, item) -> float:
+        return HEAVY_GB if item['heavy'] else LIGHT_GB
+
+    def take(self):
+        fits = [i for i in self.pending if self.cost(i) <= self.free]
+        item = next((i for i in fits if i['heavy']), None) or (fits[0] if fits else None)
+        if item is None and self.running == 0 and self.pending:
+            item = self.pending[0]   # never stuck: alone, a compile always starts
+        if item is not None:
+            self.pending.remove(item); self.free -= self.cost(item); self.running += 1
+        return item
+
+    def worker(self) -> None:
+        while True:
+            with self.cv:
+                item = None
+                while not self.stopped and self.pending and (item := self.take()) is None:
+                    self.cv.wait()
+                if item is None:
+                    return
+            begun = time.time()
+            proc = subprocess.Popen(item['cmd'], cwd=item['cwd'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    creationflags=BELOW_NORMAL_PRIORITY_CLASS)
+            with self.cv:
+                self.procs.add(proc)
+            out, _ = proc.communicate()
+            item['code'], item['text'], item['took'] = proc.returncode, out.decode('utf-8', errors='replace'), time.time() - begun
+            with self.cv:
+                self.procs.discard(proc); self.free += self.cost(item); self.running -= 1
+                if item['code'] != 0 and not self.stopped:
+                    self.failed.append(item); self.stopped = True
+                self.cv.notify_all()
+            item['done'].set()
+
+    def show(self, item) -> None:
+        if item['shown']:
+            return
+        item['shown'] = True
+        print(f"== compile {item['name']} ({item['took']:.1f} s{', src/main.cpp' if item['heavy'] else ''})", flush=True)
+        if item['text'].strip():
+            print(item['text'].rstrip(), flush=True)
+        if item['code'] == 0:
+            results.append((f"compile {item['name']}", item['took']))
+
+    def wait(self, needs: list) -> None:
+        """Until the compiles a step needs are done; shown, grouped, before it. The first failure stops the run."""
+        for index in needs:
+            item = self.items[index]
+            while not item['done'].wait(0.5):
+                if self.failed:
+                    break
+            if self.failed:
+                self.fail()
+            self.show(item)
+
+    def fail(self) -> None:
+        self.stop()
+        item = self.failed[0]
+        print(f"\n== compile {item['name']} ({item['took']:.1f} s)\n{item['text'].rstrip()}\nFAILED ({item['code']}): compile {item['name']}", flush=True)
+        sys.exit(item['code'] or 1)
+
+    def stop(self) -> None:
+        """No compile starts any more; those running (ours) are ended."""
+        with self.cv:
+            self.stopped = True
+            for proc in list(self.procs):
+                proc.kill()
+            self.cv.notify_all()
+
+    def finish(self) -> None:
+        for t in self.threads:
+            t.join()
+        if self.failed:
+            self.fail()
+        busy = sum(i['took'] for i in self.items)
+        results.append((f'compile pool: {len(self.items)} compiles, {busy / 60:.1f} min of compiling in {(time.time() - self.start) / 60:.1f} min', 0.0))
+
+
+def default_jobs() -> int:
+    return max(1, os.cpu_count() or 1)
+
+
+def script(label: str, path: Path, flags: list | None = None) -> None:
+    """A test script that compiles before it runs. In a planned step its compiles join the pool (--compile-plan: its own
+    preparation runs now, nothing is compiled) and it runs later in its place with --prebuilt; otherwise as it always did."""
+    command = [sys.executable, *(flags or []), path]
+    if PLAN is None:
+        run(label, command)
+        return
+    plan_file = OUT / 'compile-plans' / f'{path.parent.name}-{path.stem}.json'
+    execute(f'{label}: its preparation and compile commands', [*command, '--compile-plan', plan_file])
+    first = len(PLAN['compiles'])
+    PLAN['compiles'] += [(f'{label} / {name}', cmd, cwd) for name, cmd, cwd in compile_plan.read(plan_file)]
+    PLAN['steps'].append((label, [*command, '--prebuilt'], {}, list(range(first, len(PLAN['compiles'])))))
+
+
+def planned(step, jobs: int, memory_gb: float = 0.0) -> None:
+    """Steps planned first (their compiles collected, the scripts' preparations done), then the compiles started side by
+    side while the runs and scripts go in their order, one at a time, each once its own compiles are done."""
+    global PLAN
+    PLAN = {'compiles': [], 'steps': []}
+    try:
+        step()
+        plan = PLAN
+    finally:
+        PLAN = None
+    pool = Pool(plan['compiles'], jobs, memory_gb)
+    try:
+        for label, command, kw, needs in plan['steps']:
+            pool.wait(needs)
+            run(label, command, **kw)
+    except BaseException:
+        pool.stop()
+        raise
+    pool.finish()
 
 
 def existing_fixtures() -> None:
     ev = OUT / 'evidence'
     ev.mkdir(parents=True, exist_ok=True)
     # test-lottie.py: loading, frame clock, lottie, clipboard gate, design system, hover, ui
-    run('test-lottie.py (native lottie/ui fixtures)', [sys.executable, ROOT / 'test-lottie.py'])
+    script('test-lottie.py (native lottie/ui fixtures)', ROOT / 'test-lottie.py')
     fixture('session_test', [*STRICT, 'tests/session_test.cpp'])
     # Mode Focus (src/focus-mode.h, design/focus-mode-plan.md): panel geometry, hit box, slide timing, easing, hole spans.
     fixture('focus_mode_test', [*STRICT, 'tests/focus_mode_test.cpp'])
@@ -66,13 +261,13 @@ def existing_fixtures() -> None:
     fixture('drawer_corners_test', [*STRICT, '-municode', 'tests/drawer_corners_test.cpp', '-lgdi32', '-luser32'])
     # #143: the drawers on the tab panel's side (pure geometry at 4 DPI, then src/main.cpp's real drawers, side Focus and the
     # toolbar tooltip muted over its open menu, on a desktop of its own that is never displayed).
-    run('drawer side (#143): pure + host on a hidden desktop', [sys.executable, '-I', ROOT / 'tests/drawer-side/run.py'])
+    script('drawer side (#143): pure + host on a hidden desktop', ROOT / 'tests/drawer-side/run.py', ['-I'])
     # #143 · Infobulle B of the side column's tabs and favourites (src/side-tip.h): box, place, delay / chaining, motion (pure).
     fixture('side_tip_test', [*STRICT, 'tests/side_tip_test.cpp', '-luser32'])
     # The window's resize border over the chat panel, the drawers and the layers (src/resize-border.h; trial 0.3.952):
     # hidden windows only, never shown. The browser's manifest is linked in (layered child windows need Windows 8+ declared).
     resize_manifest = OUT / 'resize_border_manifest.o'
-    run('windres resize_border_test.rc', [BIN / 'windres.exe', 'tests/resize_border_test.rc', '-O', 'coff', '-o', resize_manifest])
+    run('windres resize_border_test.rc', [BIN / 'windres.exe', 'tests/resize_border_test.rc', '-O', 'coff', '-o', resize_manifest], now=True)
     fixture('resize_border_test', [*STRICT, '-municode', 'tests/resize_border_test.cpp', resize_manifest, '-lgdi32', '-luser32'])
     # Address field model: display, suggestions, and what a typed text opens (links, local paths and file: URLs, searches).
     fixture('address_test', [*STRICT, 'tests/address_test.cpp'])
@@ -201,7 +396,7 @@ def existing_fixtures() -> None:
     # (réduire / fermer through the real split view, the layered windows under a never-shown window, renders).
     fixture('split_frames_test', [*STRICT, 'tests/split-view/split_frames_test.cpp'])
     frames_manifest = OUT / 'split_frames_manifest.o'
-    run('windres split_frames_ui_test.rc', [BIN / 'windres.exe', 'tests/ui/split_frames_ui_test.rc', '-O', 'coff', '-o', frames_manifest])
+    run('windres split_frames_ui_test.rc', [BIN / 'windres.exe', 'tests/ui/split_frames_ui_test.rc', '-O', 'coff', '-o', frames_manifest], now=True)
     fixture('split_frames_ui_test', [*LOOSE, *TVG, WV2, 'tests/ui/split_frames_ui_test.cpp', frames_manifest, 'src/native-lottie.cpp', THORVG, *UI_LIBS])
     # Window title / icon changes never hide the page, even for an instant (the canvas flashed in place of the page on
     # clicks in a site); the same title is not sent again on each page event. Screen-free: a DWM-cloaked window.
@@ -270,18 +465,18 @@ def peer_suites() -> None:
     core = ROOT / 'tests/update-core/run_tests.py'
     toast = ROOT / 'tests/update-toast/run.py'
     webview2 = ROOT / 'tests/webview2-runtime/run_tests.py'   # startup recovery (fakes only, read-only loader probe)
-    for label, script in (('update-core tests', core), ('update-toast tests', toast), ('webview2 startup recovery tests', webview2)):
-        if not script.exists():
-            print(f'FAILED: {label}: runner {script.relative_to(ROOT)} missing')
+    for label, path in (('update-core tests', core), ('update-toast tests', toast), ('webview2 startup recovery tests', webview2)):
+        if not path.exists():
+            print(f'FAILED: {label}: runner {path.relative_to(ROOT)} missing')
             sys.exit(3)
-        run(label, [sys.executable, script])
+        script(label, path)
 
 
 def integration() -> None:
     run('release tooling tests', [sys.executable, '-I', HERE / 'test_release_tools.py'])
     # v0.3.239's own package validator (from git history) accepts the assets/bin bridge, refuses a root one
     run('old client validator accepts the release bridge payload', [sys.executable, HERE / 'old_validator.py'])
-    run('host integration + mocked end-to-end install', [sys.executable, HERE / 'e2e_install.py'])
+    script('host integration + mocked end-to-end install', HERE / 'e2e_install.py')
     # Windows setup (design/windows-setup-plan.md): real test-build stub + real fault-build helper around synthetic
     # payloads; LOCALAPPDATA, Start Menu, Desktop, Temp and the uninstall key redirected to build/setup-tests/tmp and
     # HKCU/Software/browser-setup-tests (deleted per case). Never the user's install, shortcuts or Apps entry.
@@ -414,7 +609,10 @@ def main() -> int:
     p.add_argument('--app', help='built application directory to check statically')
     p.add_argument('--ci', action='store_true')
     p.add_argument('--only', choices=('existing', 'peers', 'integration', 'app'))
+    p.add_argument('--jobs', type=int, default=0, help='compiles side by side (default: one per core, within the free memory; 1: one at a time)')
+    p.add_argument('--memory-gb', type=float, default=0.0, help="memory the compiles may use (default: the free memory less 0.5 GB), e.g. to try a smaller runner")
     a = p.parse_args()
+    jobs = a.jobs if a.jobs > 0 else default_jobs()
     # agent guard (tests/agent-guard/agent_guard.py): every program this run starts (installers, browsers, peers) inherits
     # no API key or agent credential, and no switch to this computer's agents or to a fake agent
     sys.path.insert(0, str(ROOT / 'tests' / 'agent-guard'))
@@ -425,9 +623,9 @@ def main() -> int:
         os.environ.pop(k, None)
     OUT.mkdir(parents=True, exist_ok=True)
     steps = {'existing': existing_fixtures, 'peers': peer_suites, 'integration': integration}
-    for key, step in steps.items():
-        if a.only in (None, key):
-            step()
+    selected = [step for key, step in steps.items() if a.only in (None, key)]
+    if selected:   # one pool for all their compiles, then their runs in this order
+        planned(lambda: [step() for step in selected], jobs, a.memory_gb)
     if a.app and a.only in (None, 'app'):
         check_app((ROOT / a.app).resolve())
     print('\nALL PASSED')

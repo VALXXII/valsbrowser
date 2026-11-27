@@ -54,19 +54,29 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--bootstrapper', help='real MicrosoftEdgeWebview2Setup.exe to VERIFY (never executed)')
     ap.add_argument('--loader', action='append', help='real WebView2Loader.dll for the read-only probe')
+    ap.add_argument('--compile-plan', help="write its compile commands for tests/update-integration/run_all.py's pool, compile nothing, run nothing")
+    ap.add_argument('--prebuilt', action='store_true', help='run without compiling (the pool compiled the same commands)')
     args = ap.parse_args()
     sys.stdout.reconfigure(errors="replace")
     OUT.mkdir(parents=True, exist_ok=True)
-    if not THORVG.exists():
+    if not THORVG.exists() and not args.prebuilt:
         run([sys.executable, ROOT / 'build-lottie.py'], 'build ThorVG')
-    run([GXX, *STRICT, 'tests/webview2-runtime/runtime_test.cpp', '-o', OUT / 'runtime_test.exe'], 'compile runtime_test')
-    run([GXX, *STRICT, '-municode', '-mwindows', 'tests/webview2-runtime/fake_setup.cpp', '-o', OUT / 'fake_setup.exe'], 'compile fake_setup')
-    run([GXX, *STRICT, '-municode', 'tests/webview2-runtime/install_test.cpp', '-o', OUT / 'install_test.exe'], 'compile install_test')
-    run([GXX, *STRICT, '-municode', WV2, '-Wno-unknown-pragmas', 'tests/webview2-runtime/loader_probe.cpp', '-o', OUT / 'loader_probe.exe', '-lole32'], 'compile loader_probe')
-    run([GXX, '-std=c++17', '-O1', '-Wno-unknown-pragmas', '-shared', '-static', WV2, 'tests/webview2-runtime/fake_loader.cpp',
-         '-o', OUT / 'fake-loader.dll', '-lole32', '-luuid'], 'compile fake WebView2Loader.dll')
-    run([GXX, *HOST, 'tests/webview2-runtime/host_test.cpp', 'src/native-lottie.cpp', THORVG, '-o', OUT / 'host_test.exe', *UI_LIBS],
-        'compile host_test (main.cpp, unstamped)')
+    compiles = [
+        ('compile runtime_test', [GXX, *STRICT, 'tests/webview2-runtime/runtime_test.cpp', '-o', OUT / 'runtime_test.exe']),
+        ('compile fake_setup', [GXX, *STRICT, '-municode', '-mwindows', 'tests/webview2-runtime/fake_setup.cpp', '-o', OUT / 'fake_setup.exe']),
+        ('compile install_test', [GXX, *STRICT, '-municode', 'tests/webview2-runtime/install_test.cpp', '-o', OUT / 'install_test.exe']),
+        ('compile loader_probe', [GXX, *STRICT, '-municode', WV2, '-Wno-unknown-pragmas', 'tests/webview2-runtime/loader_probe.cpp', '-o', OUT / 'loader_probe.exe', '-lole32']),
+        ('compile fake WebView2Loader.dll', [GXX, '-std=c++17', '-O1', '-Wno-unknown-pragmas', '-shared', '-static', WV2, 'tests/webview2-runtime/fake_loader.cpp',
+                                             '-o', OUT / 'fake-loader.dll', '-lole32', '-luuid']),
+        ('compile host_test (main.cpp, unstamped)', [GXX, *HOST, 'tests/webview2-runtime/host_test.cpp', 'src/native-lottie.cpp', THORVG, '-o', OUT / 'host_test.exe', *UI_LIBS]),
+    ]
+    if args.compile_plan:
+        sys.path.insert(0, str(ROOT / 'tests' / 'update-integration'))
+        import compile_plan as P
+        return P.write(pathlib.Path(args.compile_plan), [(label, command, ROOT) for label, command in compiles])
+    if not args.prebuilt:
+        for label, command in compiles:
+            run(command, label)
     if failures:
         return finish()
     run([OUT / 'runtime_test.exe'], 'runtime_test')
