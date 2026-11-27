@@ -24,6 +24,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tools/release'))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import package as K  # noqa: E402
+sys.path.insert(0, str(ROOT / 'tests' / 'agent-guard'))
+import agent_guard as G   # noqa: E402  (no agent of this computer: tests/agent-guard)
 
 user32, gdi32 = ctypes.WinDLL('user32', use_last_error=True), ctypes.WinDLL('gdi32')
 user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))  # per-monitor v2: real pixel rects for PrintWindow
@@ -201,6 +203,11 @@ def main() -> int:
     env = dict(os.environ, LOCALAPPDATA=str(run / 'LocalAppData'), BROWSER_SETUP_TEST_ROOT=str(run), TEMP=str(run / 'Temp'),
                TMP=str(run / 'Temp'), BROWSER_SETUP_TEST_WEBVIEW2='1', BROWSER_SETUP_TEST_LANG='fr')
     env.pop('WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS', None)
+    # A RELEASE build (no non-release opt-in protects it): the test switch, set here, reaches the installed browser
+    # (setup -> update helper -> browser all inherit their parent's environment: src/setup-core.cpp, src/update-helper.cpp),
+    # which then refuses every agent (src/agent-runtime.cpp: the switch is read in every channel). Checked after the run
+    # in its log, and its process watched once its pid is known.
+    env = G.secure_env(env, work=run, exe=root / 'versions' / v / 'browser.exe', agent=False)
     key = rf'Software\browser-setup-tests\run\Uninstall\VALXXII.browser'
     browser_pid = None
     try:
@@ -221,6 +228,7 @@ def main() -> int:
         helper_log = (root / 'updates/helper.log').read_text()
         browser_pid = int(helper_log.split('new version launched pid ')[-1].split()[0])
         log(f'  real browser pid {browser_pid} acknowledged its start')
+        G.Watch(browser_pid, log=root / 'data' / 'browser.log', work=run, expect_agent=False).start()
         for rel in ('browser.exe', 'browser.ico', 'uninstall.exe', 'current', f'versions/{v}/browser.exe', 'bin/browser-annotations-mcp.exe'):
             assert (root / rel).exists(), rel
         assert (root / 'bin/browser-annotations-mcp.exe').read_bytes() == entries['assets/bin/browser-annotations-mcp.exe']
@@ -260,6 +268,8 @@ def main() -> int:
         ctypes.windll.kernel32.WaitForSingleObject(ph, 30000)
         ctypes.windll.kernel32.CloseHandle(ph)
         log('  browser closed with WM_CLOSE')
+        G.check_agents_quiet(root / 'data' / 'browser.log')   # no « AGENTS … ready / prepare » in the release browser's log
+        log('  its log: no agent of this computer found or prepared')
         time.sleep(3)
 
         # 5a. Repair page (English) + WebView2 absent note.

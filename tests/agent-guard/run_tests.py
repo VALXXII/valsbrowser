@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Windowless tests of the agent guard (tests/agent-guard/agent_guard.py) and of its use by the chat harness.
 
-    python -I tests/agent-guard/run_tests.py
+    python -I tests/agent-guard/run_tests.py            (everything; real processes, no window)
+    python -I tests/agent-guard/run_tests.py --static   (the static launcher check only: no build, no process; CI step
+                                                         « existing » of tests/update-integration/run_all.py)
 
   - a missing / relative / wrongly named / oversized / foreign fake agent: AgentGuardError BEFORE any process starts
     (tests/chat/chat_qa.py launch() is called with subprocess.Popen replaced by a spy: never called, nothing copied);
@@ -11,12 +13,16 @@
   - the browser's log: a launch that is not the fake agent, a refused or « real agents » runtime: refused;
   - REAL processes, no window: a stand-in « browser » (python) starts a « claude.exe » (a copy of PING.EXE) — the watch
     kills that tree by process id and records why; the same stand-in starting the configured fake agent is left alone.
+  - STATIC (test_static_launches): no test script may start the built browser without agent_guard (see that section).
 Everything is written under build/agent-guard-test; nothing else is touched. Exit code 0 = all passed.
 """
 from __future__ import annotations
 
+import hashlib
+import importlib.util
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -206,6 +212,15 @@ def test_classify_and_log():
                        (f'CHAT agent runtime (test): fake agent "{real_claude}"', 'another fake agent')):
         check(G.scan_log(bad, fake)[1], f'log: {label} is caught')
     check(not G.scan_log('CHAT agent runtime (test): every agent refused: x', None, expect_agent=False)[1], 'log: refused is fine when the test needs no agent')
+    seen = 'AGENTS codex: ready 0.166.0\nAGENTS claude: ready 2.1.330\nAGENTS claude: needsSignIn\nAGENTS codex: installing\nAGENTS node: prepare runtime\nAGENTS claude: download 12 MB\n'
+    quiet = 'AGENTS claude: notInstalled\nAGENTS codex: notInstalled\nCHAT agent runtime (test): every agent refused: x\nDOWNLOAD ready to go\n'
+    check(len(G.agents_active(seen)) == 6 and not G.agents_active(quiet), 'log: « AGENTS … ready / installing / signing in / prepare / download » is an agent of this computer; « notInstalled » is quiet', G.agents_active(seen))
+    agents_log = OUT / 'agents.log'; agents_log.write_text(quiet, encoding='utf-8')
+    G.check_agents_quiet(agents_log)
+    agents_log.write_text(quiet + 'AGENTS claude: ready 2.1.330\n', encoding='utf-8')
+    check(raises(lambda: G.check_agents_quiet(agents_log), 'found or prepared'), 'check_agents_quiet: a « ready <version> » line -> refused')
+    check(raises(lambda: G.check_agents_quiet(agents_log, since=len(quiet.encode('utf-8')) - 1), 'found or prepared') and
+          (G.check_agents_quiet(agents_log, since=10**6) is None), 'check_agents_quiet reads from the given offset')
     log = OUT / 'prototype.log'
     log.write_text(ok_log, encoding='utf-8')
     check(G.check_log(log, fake, require_launch=True) == [fake], 'check_log: the fake agent by its full path')
@@ -316,6 +331,227 @@ def test_real_processes():
     G.clear_marker(work)
 
 
+# ---------------------------------------------------------------- static: no test script starts the browser unguarded
+# Why a sealed or redirected environment is not enough (2026-11-26: the download harnesses' browsers, each start, logged
+# « AGENTS claude: ready 2.1.330 » / « AGENTS codex: ready 0.166.0 »): without BROWSER_ANNOTATIONS_TEST the agent runtime
+# rebuilds the user's real environment from the process token (src/agent-runtime.cpp Environment::FromProcess ->
+# freshUserEnvironment; src/acp-client.cpp BuildEnvironmentBlock -> CreateEnvironmentBlock): USERPROFILE, APPDATA and PATH
+# come from the registry, so a sealed or redirected environment is ignored by design, and this computer's Claude Code /
+# Codex are found and version-probed. Only the browser's test switch closes that way: every launch goes through
+# agent_guard (secure_env / real_env, or a harness's guarded_env built on it; Use-AgentGuardBrowser in PowerShell).
+#
+# A script is a LAUNCHER when it names the built browser (browser.exe / Lisière.exe) and can start a process (Popen,
+# subprocess.run / call / check_*, CreateProcess, os.startfile / spawn / system, ShellExecute; Start-Process,
+# [Diagnostics.Process]::Start, the call operator &). A launcher must call the guard. Scanned: tests/**/*.py,
+# tests/**/*.ps1 and the test*.ps1 scripts at the root (tests/agent-guard/ itself apart). Bare WebView2 hosts and native
+# *_test.cpp never name the browser's exe: not concerned.
+#   NEVER_STARTS  names the browser but never starts it: listed with the written reason, never red.
+#   PENDING       unguarded on main on 2026-11-26, to be guarded by its owners (path -> content id, one line): printed at
+#                 every run. Red: a launcher that is not listed (a new one), a listed one whose content changed (guard it
+#                 in that change and remove its entry), a listed one now guarded or gone (remove its entry).
+LAUNCH_EXE = re.compile(r'(?i)\b(browser|lisi[eè]re)\.exe\b')
+PY_START = re.compile(r'\b(subprocess\.(Popen|run|call|check_call|check_output)|Popen\(|CreateProcess[AW]?\b|os\.startfile|os\.spawn\w*|ShellExecute\w*|os\.system)')
+PS_START = re.compile(r'(?im)(Start-Process|\[(System\.)?Diagnostics\.Process\]::Start|CreateProcess|^\s*&\s|[|;(]\s*&\s|Invoke-Expression)')
+PY_GUARD = re.compile(r'\b(secure_env|real_env|guarded_env)\s*\(')
+PS_GUARD = re.compile(r'\bUse-AgentGuardBrowser\b')
+NEVER_STARTS = {
+    'tests/annotation-general/run.py': 'runs the annotation suites (each guards its own browser) and watches them with agent_guard; never starts browser.exe itself',
+    'tests/e2e/language_concurrent_e2e.py': 'starts the browser only through tests/e2e/language_e2e.py start() (guarded there, or listed there)',
+    'tests/update-core/run_tests.py': 'the browser.exe there is a fake program (fake-0.3.2.exe) copied into an update payload',
+    'tests/update-integration/e2e_install.py': 'installs and checks files; the real browser.exe is never started (its docstring)',
+    'tests/update-integration/old_validator.py': 'validates packages; never runs browser.exe or the bridge (its docstring)',
+    'tests/update-integration/run_all.py': 'compiles and runs native fixtures; never launches browser.exe (its docstring)',
+    'tests/update-integration/test_release_tools.py': 'packaging tools on synthetic files; browser.exe is only a file name there',
+    'tests/setup/run_tests.py': 'the browser.exe it installs and starts is the update-core fake browser (tests/update-core/fake_browser.cpp, '
+                                'copied in as browser.exe), started through the real update helper; the real browser is never started',
+}
+PENDING = {
+    'test-e2e-pin.ps1': ('cba54796132c457c', 'starts the browser through e2e_pin_test.exe (call operator &), not through agent_guard'),
+    'tests/annotations/profile_color_e2e.py': ('1c17a1d714a249a7', 'starts the browser with subprocess.Popen, sets BROWSER_ANNOTATIONS_TEST itself, not through agent_guard'),
+    'tests/chat/chat_qa_lot_r.py': ('4261d17241cfd55d', 'starts the browser with subprocess.Popen / subprocess.run, sets BROWSER_ANNOTATIONS_TEST itself, not through agent_guard'),
+    'tests/chat/final/c1_hidden_desktop.py': ('bc3df4662c50a7b4', 'starts the browser with subprocess.Popen / subprocess.run, sets BROWSER_ANNOTATIONS_TEST itself, not through agent_guard'),
+    'tests/crash-screenshare/window_qa.py': ('273178548228b9a8', 'starts the browser with subprocess.run / CreateProcessW, not through agent_guard'),
+    'tests/downloads/morph_flash_qa.py': ('9df64c1160b5dd1d', 'starts the browser with subprocess.Popen, not through agent_guard'),
+    'tests/e2e/about_entry_e2e.py': ('4e5f29ba0e2b4872', 'starts the browser with subprocess.Popen / subprocess.run, not through agent_guard'),
+    'tests/e2e/adblock_update_e2e.py': ('ce521bedd896a858', 'starts the browser with subprocess.Popen, not through agent_guard'),
+    'tests/e2e/address_selection_e2e.ps1': ('5661f55f6eac4362', 'starts the browser with Start-Process, not through agent_guard'),
+    'tests/e2e/autofill_qa.ps1': ('b639fa55cbb4dac3', 'starts the browser with Start-Process / the call operator &, not through agent_guard'),
+    'tests/e2e/b07_download_e2e.ps1': ('58f06c8e1d097432', 'starts the browser with Start-Process, not through agent_guard'),
+    'tests/e2e/bookmark_dnd_e2e.ps1': ('eb6d7e80579ae834', 'starts the browser with Start-Process / the call operator &, not through agent_guard'),
+    'tests/e2e/bookmark_rename_e2e.ps1': ('51f1c7cefbc4afa0', 'starts the browser with Start-Process, not through agent_guard'),
+    'tests/e2e/browser_import_e2e.ps1': ('49c077ee77d9facc', 'starts the browser with Start-Process / the call operator &, not through agent_guard'),
+    'tests/e2e/dpi_follow_e2e.ps1': ('7beca493f8850005', 'starts the browser with Start-Process, not through agent_guard'),
+    'tests/e2e/fullscreen_e2e.py': ('44d14638525abdca', 'starts the browser with subprocess.Popen / subprocess.run, not through agent_guard'),
+    'tests/e2e/fullscreen_steps.py': ('f0d4936335d55a4c', 'starts the browser with CreateProcessW, not through agent_guard'),
+    'tests/e2e/http_status_e2e.ps1': ('8bea05995088f1df', 'starts the browser with Start-Process, not through agent_guard'),
+    'tests/e2e/language_e2e.py': ('5a2e25da33ecfbd1', 'starts the browser with subprocess.Popen / subprocess.run, not through agent_guard'),
+    'tests/e2e/mtls_e2e.ps1': ('5d333c429603a71f', 'starts the browser with Start-Process / the call operator &, not through agent_guard'),
+    'tests/e2e/open_links_e2e.py': ('8f276d781152f747', 'starts the browser with subprocess.run, not through agent_guard'),
+    'tests/e2e/permission_help_e2e.ps1': ('fccefa35498008c3', 'starts the browser with Start-Process, not through agent_guard'),
+    'tests/e2e/permission_repeat_e2e.ps1': ('064591650fc550c8', 'starts the browser with Start-Process, not through agent_guard'),
+    'tests/e2e/private_isolation_e2e.ps1': ('2f51166a82622126', 'starts the browser with Start-Process, not through agent_guard'),
+    'tests/e2e/product_markers.ps1': ('9a5a1dc9a3f97bb0', 'starts the browser with Start-Process, not through agent_guard'),
+    'tests/e2e/profiles_switch_e2e.ps1': ('a6517a1774922e68', 'starts the browser with Start-Process / the call operator &, not through agent_guard'),
+    'tests/e2e/select_all_e2e.ps1': ('bcdd37c598794a0d', 'starts the browser with Start-Process, not through agent_guard'),
+    'tests/e2e/taskbar_identity_e2e.py': ('f2c64a5c8f543b96', 'starts the browser with subprocess.Popen / subprocess.run, not through agent_guard'),
+    'tests/e2e/tls_page_e2e.ps1': ('7e7cb6ab5f8ba487', 'starts the browser with Start-Process / the call operator &, not through agent_guard'),
+    'tests/e2e/vault_coverage_e2e.ps1': ('828b6cb79eb6aa01', 'starts the browser with Start-Process / the call operator &, not through agent_guard'),
+    'tests/e2e/vault_e2e.ps1': ('746efc99b7344bf5', 'starts the browser with Start-Process / the call operator &, not through agent_guard'),
+    'tests/e2e/vault_product_e2e.ps1': ('d5d2a295f587a630', 'starts the browser with Start-Process / the call operator &, not through agent_guard'),
+    'tests/e2e/vault_review_e2e.ps1': ('2c35be75991ee62f', 'starts the browser with Start-Process / the call operator &, not through agent_guard'),
+    'tests/e2e/windows_e2e.py': ('ef30ba5d396ca2e8', 'starts the browser with subprocess.Popen, not through agent_guard'),
+    'tests/error-pages/window_qa.py': ('efdc32462b09b776', 'starts the browser with subprocess.Popen / subprocess.run, not through agent_guard'),
+    'tests/focus/annotation_focus_journey.py': ('4530830308c4a14e', 'starts the browser with subprocess.Popen, sets BROWSER_ANNOTATIONS_TEST itself, not through agent_guard'),
+    'tests/focus/banner_shortcut_qa.py': ('ce6c4067adf02439', 'starts the browser with CreateProcessW, sets BROWSER_ANNOTATIONS_TEST itself, not through agent_guard'),
+    'tests/focus/edge_zone_slot.py': ('e0caa8da649f01d6', 'starts the browser with subprocess.Popen, not through agent_guard'),
+    'tests/onboarding/offline_prepare.py': ('bee48f96810043c2', 'starts the browser with subprocess.run / CreateProcessW, not through agent_guard'),
+    'tests/popup/popup_lifecycle_e2e.py': ('451c61022a3e4842', 'starts the browser with subprocess.Popen, not through agent_guard'),
+    'tests/popup/popup_target_e2e.py': ('391a62ddeee75d76', 'starts the browser with subprocess.Popen / subprocess.run, not through agent_guard'),
+    'tests/print/print_qa.py': ('1beac2d0d47a90fe', 'starts the browser with subprocess.Popen / subprocess.run, not through agent_guard'),
+    'tests/restore-first-load/run.py': ('4a2cfea60b0579d3', 'starts the browser with CreateProcessW, not through agent_guard'),
+    'tests/tooltips/qa.ps1': ('b0372af026b874bd', 'starts the browser with Start-Process, not through agent_guard'),
+    'tests/ui/edit_flicker_qa.py': ('4bf4608f82137975', 'starts the browser with subprocess.Popen, not through agent_guard'),
+    'tests/ui/title_flash_qa.py': ('3d6c2474cb4c6196', 'starts the browser with subprocess.Popen, not through agent_guard'),
+    'tests/update-integration/release_candidate_no_bridge.py': ('fa1739347e11ff8f', 'starts the browser with subprocess.Popen, sets BROWSER_ANNOTATIONS_TEST itself, not through agent_guard'),
+}
+
+
+def content_id(data: bytes) -> str:
+    """A script's content, line endings aside (a checkout with CRLF and one with LF give the same id)."""
+    return hashlib.sha256(data.replace(b'\r\n', b'\n')).hexdigest()[:16]
+
+
+def launcher_verdict(rel: str, text: str) -> str | None:
+    """None: not a launcher; 'guarded' / 'unguarded'."""
+    if rel.startswith('tests/agent-guard/') or not LAUNCH_EXE.search(text):
+        return None
+    py = rel.endswith('.py')
+    if not (PY_START if py else PS_START).search(text):
+        return None
+    return 'guarded' if (PY_GUARD if py else PS_GUARD).search(text) else 'unguarded'
+
+
+def test_scripts(root: pathlib.Path) -> list:
+    """The scripts scanned, relative paths with forward slashes (git's list when there is one, else the tree)."""
+    r = subprocess.run(['git', '-C', str(root), 'ls-files'], capture_output=True, text=True, encoding='utf-8', errors='replace')
+    names = r.stdout.splitlines() if r.returncode == 0 and r.stdout.strip() else \
+        [p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file()]
+    return sorted(n for n in names if (n.startswith('tests/') and n.endswith(('.py', '.ps1'))) or re.fullmatch(r'test[^/]*\.ps1', n))
+
+
+def static_problems(root: pathlib.Path, never=None, pending=None) -> tuple:
+    """(problems, pending scripts still unguarded) for the tree at `root`."""
+    never = NEVER_STARTS if never is None else never
+    pending = PENDING if pending is None else pending
+    problems, waiting, seen = [], [], set()
+    for rel in test_scripts(root):
+        path = root / rel
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        verdict = launcher_verdict(rel, data.decode('utf-8', 'replace'))
+        if rel in pending:
+            seen.add(rel)
+        if verdict is None or rel in never:
+            continue
+        if verdict == 'guarded':
+            if rel in pending:
+                problems.append(f'{rel}: now goes through agent_guard: remove its PENDING entry')
+            continue
+        if rel not in pending:
+            problems.append(f'{rel}: starts the browser without agent_guard (secure_env / real_env, Use-AgentGuardBrowser): a new launcher must be guarded')
+        elif content_id(data) != pending[rel][0]:
+            problems.append(f'{rel}: changed while listed as unguarded: guard its browser launch in this change and remove its PENDING entry')
+        else:
+            waiting.append(rel)
+    for rel in sorted(set(pending) - seen):
+        problems.append(f'{rel}: listed in PENDING but no longer in the repository: remove its entry')
+    return problems, waiting
+
+
+def test_static_launches(root: pathlib.Path = ROOT):
+    # the rule on made-up scripts first (what it catches, what it lets through)
+    cases = {
+        ('tests/x/new_e2e.py', "subprocess.Popen([str(APP / 'browser.exe')], env=env)"): 'unguarded',
+        ('tests/x/ok_e2e.py', "env = G.secure_env(env, work=W, agent=False)\nsubprocess.Popen([str(APP / 'browser.exe')], env=env)"): 'guarded',
+        ('tests/x/harness.py', "env = dn.guarded_env(env, app)\nk32.CreateProcessW(str(app / 'browser.exe'), None)"): 'guarded',
+        ('tests/x/host_only.py', "subprocess.run([str(OUT / 'probe_host.exe')])"): None,
+        ('tests/x/names_only.py', "shutil.copy2(src / 'browser.exe', app)"): None,
+        ('tests/x/qa.ps1', "$p = Start-Process \"$app\\browser.exe\" -PassThru"): 'unguarded',
+        ('tests/x/qa2.ps1', '. "$PSScriptRoot\\..\\agent-guard\\agent-guard.ps1"\nUse-AgentGuardBrowser { Start-Process "$app\\Browser.exe" }'): 'guarded',
+        ('test-x.ps1', "& $exe -ArgumentList x   # $exe = Join-Path $fix 'browser.exe'"): 'unguarded',
+    }
+    for (rel, text), want in cases.items():
+        check(launcher_verdict(rel, text) == want, f'static rule: {rel} -> {want}', launcher_verdict(rel, text))
+    # the bookkeeping on a throwaway tree: a new launcher, a listed one changed, a listed one guarded, a listed one gone
+    tree = OUT / 'static-tree'
+    shutil.rmtree(tree, ignore_errors=True)
+    for rel, text in (('tests/a/listed.py', "subprocess.Popen(['browser.exe'])\n"), ('tests/a/changed.py', "subprocess.Popen(['browser.exe'])\n# edited\n"),
+                      ('tests/a/fixed.py', "env = secure_env(env, work=W, agent=False)\nsubprocess.Popen(['browser.exe'], env=env)\n"),
+                      ('tests/a/new.py', "subprocess.Popen(['browser.exe'])\n"), ('tests/a/never.py', "subprocess.run(['browser.exe'])\n")):
+        (tree / rel).parent.mkdir(parents=True, exist_ok=True); (tree / rel).write_text(text, encoding='utf-8')
+    listed_id = content_id(b"subprocess.Popen(['browser.exe'])\n")
+    pend = {'tests/a/listed.py': (listed_id, 'x'), 'tests/a/changed.py': (listed_id, 'x'), 'tests/a/fixed.py': ('0', 'x'), 'tests/a/gone.py': ('0', 'x')}
+    problems, waiting = static_problems(tree, never={'tests/a/never.py': 'never starts it'}, pending=pend)
+    said = '\n'.join(problems)
+    check(waiting == ['tests/a/listed.py'], 'static: a listed launcher left as it was stays pending (printed, not red)', waiting)
+    check('tests/a/new.py: starts the browser without agent_guard' in said, 'static: a NEW unguarded launcher is red', said)
+    check('tests/a/changed.py: changed while listed' in said, 'static: a listed launcher whose content changed is red', said)
+    check('tests/a/fixed.py: now goes through agent_guard' in said, 'static: a listed launcher now guarded is red until its entry goes', said)
+    check('tests/a/gone.py: listed in PENDING but no longer' in said, 'static: a listed launcher that is gone is red until its entry goes', said)
+    check('never.py' not in said, 'static: a script that never starts the browser, listed with its reason, is not red', said)
+    check(len(problems) == 4, 'static: nothing else is red on the throwaway tree', problems)
+    # the repository
+    problems, waiting = static_problems(root)
+    for p in problems:
+        check(False, 'static: ' + p)
+    print(f'     static: {len(waiting)} test script(s) still start the browser WITHOUT agent_guard (PENDING, to be guarded by their owners):', flush=True)
+    for rel in waiting:
+        print(f'       - {rel}: {PENDING[rel][1]}', flush=True)
+
+
+def test_download_harnesses_refuse_unguarded():
+    """The two download harnesses refuse a launch whose environment lacks the guard, before any process exists."""
+    def load(name):
+        spec_ = importlib.util.spec_from_file_location(name, ROOT / 'tests' / 'downloads' / f'{name}.py')
+        mod = importlib.util.module_from_spec(spec_); spec_.loader.exec_module(mod); return mod
+    try:
+        hd = load('held_download_e2e')
+    except Exception as e:   # noqa: BLE001
+        check(False, 'tests/downloads/held_download_e2e.py imports without a window', repr(e)); return
+    dn = hd.dn
+    check(raises(lambda: dn.launch_guard(dict(os.environ, BROWSER_ANNOTATIONS_TEST='')), 'without the agent guard'), 'download harness: an environment without the test switch is refused')
+    check(raises(lambda: dn.launch_guard({'BROWSER_ANNOTATIONS_TEST': '1', 'BROWSER_CHAT_REAL_AGENT': '1'})), 'download harness: an environment asking for real agents is refused')
+    app = OUT / 'downloads-app'; app.mkdir(parents=True, exist_ok=True)
+    env = dn.guarded_env({'PATH': os.environ.get('PATH', ''), 'SystemRoot': os.environ.get('SystemRoot', 'C:\\Windows')}, app)
+    check(env.get('BROWSER_ANNOTATIONS_TEST') == '1' and 'BROWSER_CHAT_FAKE_AGENT' not in env, 'download harness: guarded_env turns the switch on, names no agent')
+
+    class Spy:   # a desktop whose start() records instead of starting anything
+        def __init__(self): self.calls = []
+        def start(self, *a, **k): self.calls.append(a); raise AssertionError('a process start was reached')
+    spy = Spy(); real_sealed = hd.sealed_env
+    hd.sealed_env = lambda *a, **k: {'PATH': 'C:\\Windows'}   # as if a change dropped the guard from the environment
+    try:
+        check(raises(lambda: hd.Browser(app, 'http://127.0.0.1:9', app, spy), 'without the agent guard'), 'held_download_e2e: a browser environment without the guard -> refused')
+    finally:
+        hd.sealed_env = real_sealed
+    check(not spy.calls, 'held_download_e2e: no process was started', spy.calls)
+    started = []
+
+    def popen_spy(*a, **k):
+        started.append(a); raise AssertionError('Popen reached')
+    real_popen = dn.subprocess.Popen
+    real_guarded = dn.guarded_env
+    dn.subprocess.Popen = popen_spy
+    dn.guarded_env = lambda env_, app_: {k: v for k, v in env_.items() if k != 'BROWSER_ANNOTATIONS_TEST'}   # as if a change dropped the guard
+    try:
+        check(raises(lambda: dn.Browser(app, 'http://127.0.0.1:9', app, False, None), 'without the agent guard'), 'download_navigation_e2e: a browser environment without the guard -> refused')
+    finally:
+        dn.subprocess.Popen = real_popen; dn.guarded_env = real_guarded
+    check(not started, 'download_navigation_e2e: Popen never called', started)
+
+
 def main() -> int:
     for s in (sys.stdout, sys.stderr):
         try:
@@ -323,7 +559,16 @@ def main() -> int:
         except Exception:   # noqa: BLE001
             pass
     shutil.rmtree(OUT, ignore_errors=True); OUT.mkdir(parents=True)
-    for t in (test_fake_validation, test_secure_env, test_real_opt_in, test_chat_harness_refuses_before_popen, test_classify_and_log, test_real_processes):
+    static_only = '--static' in sys.argv[1:]
+    if '--root' in sys.argv[1:]:   # the check on another tree (for instance an export of origin/main)
+        root = pathlib.Path(sys.argv[sys.argv.index('--root') + 1]).resolve()
+        test_static_launches(root)
+        print(f'agent guard (static, {root}): {checks} checks, {len(failures)} failures')
+        return 1 if failures else 0
+    tests = (test_static_launches, test_download_harnesses_refuse_unguarded) if static_only else \
+        (test_fake_validation, test_secure_env, test_real_opt_in, test_chat_harness_refuses_before_popen, test_download_harnesses_refuse_unguarded,
+         test_classify_and_log, test_real_processes, test_static_launches)
+    for t in tests:
         before = len(failures); t0 = time.time()
         t()
         print(f'{"ok  " if len(failures) == before else "FAIL"} {t.__name__} ({time.time() - t0:.1f} s)', flush=True)

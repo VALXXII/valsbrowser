@@ -29,6 +29,8 @@ import sys
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'tests' / 'agent-guard'))
+import agent_guard as G   # noqa: E402  (no agent of this computer: tests/agent-guard)
 ap = argparse.ArgumentParser()
 ap.add_argument('--build', default='build/focus-side-menus')
 ap.add_argument('--fake', default='')
@@ -96,8 +98,12 @@ def launch(layout):
     assert FAKE.is_absolute() and FAKE.is_file(), f'fake agent missing: {FAKE}'
     real = pathlib.Path(os.environ.get('LOCALAPPDATA', 'C:/nowhere')) / 'browser'
     assert APP.resolve().is_relative_to((ROOT / 'build').resolve()) and not APP.resolve().is_relative_to(real.resolve()), 'profile folder: refused'
+    # the browser's test switch on (without it the fake agent is not used and this computer's CLIs are probed), the fake
+    # agent checked, keys stripped; then the watch on our browser (agent processes, launches, « AGENTS … ready »)
+    env = G.secure_env(env, work=OUT, exe=APP / 'browser.exe', fake=FAKE)
     proc = subprocess.Popen([str(APP / 'browser.exe')], cwd=str(APP), env=env)
     k32.AssignProcessToJobObject(W.HANDLE(JOB), W.HANDLE(int(proc._handle)))
+    G.watch(proc.pid, env, log=LOG, work=OUT)
     return proc
 
 

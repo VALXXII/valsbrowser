@@ -17,9 +17,59 @@ KILL_ON_JOB_CLOSE, and the copy's processes are also stopped by exact path at th
 no SendInput, no foreground change.
 """
 from __future__ import annotations
-import argparse, ast, base64, ctypes, ctypes.wintypes as W, http.server, json, os, shutil, socket, struct, subprocess, sys
-import threading, time, urllib.request
+import argparse, ast, base64, ctypes, ctypes.wintypes as W, http.server, json, os, re, shutil, socket, struct
+import subprocess, sys, threading, time, urllib.request
 from pathlib import Path
+
+# The agent guard (tests/agent-guard/agent_guard.py) for every browser.exe these download tests start: no agent at all.
+# Why a sealed environment is not enough: without BROWSER_ANNOTATIONS_TEST the browser's agent runtime ignores its own
+# process environment on purpose (src/agent-runtime.cpp Environment::FromProcess -> freshUserEnvironment; src/acp-client.cpp
+# BuildEnvironmentBlock -> CreateEnvironmentBlock on the process token): it rebuilds the user's REAL environment (USERPROFILE,
+# APPDATA, PATH from the registry), finds this computer's Claude Code / Codex and probes their version (« AGENTS claude:
+# ready <version> », 2026-11-26). Only the browser's test switch closes that way. So guarded_env() (secure_env, agent=False)
+# turns it on and refuses BROWSER_CHAT_REAL_AGENT / a fake agent before any process exists; launch_guard() refuses to start
+# a browser.exe whose environment block lacks it; AgentQuietWatch stops that browser (by its process id) at the first agent
+# process, agent launch, or « AGENTS <cli>: ready / installing / signing in / prepare / download » line.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'agent-guard'))
+import agent_guard as ag   # noqa: E402  (one module for every harness: one AgentGuardError)
+AGENT_ACTIVE = ag.AGENTS_ACTIVE   # the browser's « AGENTS <cli>: ready / installing / signing in / prepare / download » lines
+
+
+def guarded_env(env: dict, app: Path) -> dict:
+    """The environment of a test browser with no agent, checked before the launch (raises AgentGuardError)."""
+    return launch_guard(ag.secure_env(env, work=app, exe=app / 'browser.exe', agent=False))
+
+
+def launch_guard(env) -> dict:
+    """The last check before a browser.exe starts: its environment carries the test switch and names no agent."""
+    if not isinstance(env, dict) or env.get('BROWSER_ANNOTATIONS_TEST') != '1' or 'BROWSER_CHAT_REAL_AGENT' in env or 'BROWSER_CHAT_FAKE_AGENT' in env:
+        raise ag.AgentGuardError('a browser.exe launch without the agent guard (BROWSER_ANNOTATIONS_TEST=1, no agent named): refused before the launch')
+    return env
+
+
+class AgentQuietWatch(ag.Watch):
+    """agent_guard's Watch for a browser that must use no agent at all, plus the browser's own « AGENTS … » state lines."""
+
+    def __init__(self, pid: int, *, log: Path, work: Path):
+        super().__init__(pid, fake=None, log=log, work=work, expect_agent=False)
+        self._agents_at = self._log_at
+
+    def tick(self) -> bool:
+        try:
+            if os.path.getsize(self.log) < self._agents_at:   # the log rotated: from its start
+                self._agents_at = 0
+            with open(self.log, 'rb') as f:
+                f.seek(self._agents_at); data = f.read()
+        except OSError:
+            data = b''
+        cut = data.rfind(b'\n') + 1
+        if cut:
+            self._agents_at += cut
+            for line in data[:cut].decode('utf-8', 'replace').splitlines():
+                if AGENT_ACTIVE.search(line):
+                    self._trip('the browser found or prepared an agent of this computer: ' + line.strip()[:200], {'log': str(self.log)})
+                    return False
+        return super().tick()
 
 ROOT = Path(__file__).resolve().parents[2]
 tree = ast.parse((ROOT / 'tests/annotations/sandbox_qa.py').read_text(encoding='utf-8'))   # its stdlib CDP transport only
@@ -146,11 +196,12 @@ class Browser:
         (app / 'session').write_text(f'browser-session-2\n0\n1\n"{base}/page"\n0\n', encoding='utf-8', newline='\n')
         (app / 'settings').write_text('browser-settings 1\nrestore-tabs=1\nconfirm-close-tabs=0\n'
                                       f'download-folder={downloads}\nask-where-to-save={1 if ask else 0}\n', encoding='utf-8', newline='\n')
-        env = dict(os.environ, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f'--remote-debugging-port={self.port} --remote-debugging-address=127.0.0.1')
-        self.proc = subprocess.Popen([str(self.exe)], cwd=app, env=env, creationflags=0x4)   # CREATE_SUSPENDED: in the job before any child
+        env = guarded_env(dict(os.environ, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f'--remote-debugging-port={self.port} --remote-debugging-address=127.0.0.1'), app)
+        self.proc = subprocess.Popen([str(self.exe)], cwd=app, env=launch_guard(env), creationflags=0x4)   # CREATE_SUSPENDED: in the job before any child
         handle = W.HANDLE(int(self.proc._handle))
         if not k32.AssignProcessToJobObject(job, handle):
             self.proc.kill(); raise OSError('AssignProcessToJobObject failed')
+        self.guard = AgentQuietWatch(self.proc.pid, log=app / 'prototype.log', work=app).start()   # before it runs
         ntdll.NtResumeProcess(handle)
         self.sockets = []
 

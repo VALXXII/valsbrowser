@@ -80,6 +80,8 @@ def existing_fixtures() -> None:
     # Interface language (design/browser-languages-plan.md): catalog, formats, plurals, the browser-wide
     # preference (temporary folders only), then Reglages > Langue on the real drawer (FR and EN processes).
     run('i18n coverage gate (catalog parity, no untranslated interface text)', [sys.executable, ROOT / 'tools/i18n/check_strings.py'])
+    # No test script may start the built browser without tests/agent-guard (static: no build, no process started).
+    run('agent guard: no test script starts browser.exe unguarded (static)', [sys.executable, '-I', ROOT / 'tests/agent-guard/run_tests.py', '--static'])
     fixture('i18n_test', [*STRICT, 'tests/i18n_test.cpp'])
     # The ad blocker installs from a folder updates never move (src/adblock-folder.h; e2e: tests/e2e/adblock_update_e2e.py).
     fixture('adblock_folder_test', [*STRICT, 'tests/adblock_folder_test.cpp'])

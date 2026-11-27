@@ -49,7 +49,9 @@ jobs:
     # builds and publishes nothing.
     if: github.repository == 'VALXXII/browser'
     runs-on: windows-2022
-    timeout-minutes: 60
+    # 120 for now: the native suite alone takes about 46 minutes on this runner (ten of its tests each recompile
+    # src/main.cpp); back to 60-70 once the suite is shortened.
+    timeout-minutes: 120
     # A newer push to main supersedes an older build still in progress.
     concurrency:
       group: update-release-build-${{ github.ref }}
