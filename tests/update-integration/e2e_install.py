@@ -84,20 +84,29 @@ def check_history(path: Path, what: str):
           f'{what}: download history keeps the old row and the row saved on close')
 
 
-def build_fixtures(work: Path) -> dict:
+def fixture_compiles(work: Path) -> list:
+    """Its build-info.h written (gen), the three fixtures' compile commands: (label, command)."""
     gen = work / 'gen'
     B.write_build_info(gen, V.identity(int(OLD.split('.')[-1]), 'f' * 40, 'dev'), 'VALXXII/browser-releases')
-    host = work / 'host_e2e.exe'
-    sh([GXX, *FLAGS, '-mconsole', f'-I{gen}', '-DBROWSER_HAS_BUILD_INFO', '-DTVG_STATIC', '-Ideps/thorvg-1.1.3/inc',
-        f'-I{B.SDK / "include"}', 'tests/update-integration/host_e2e.cpp', 'src/native-lottie.cpp', *CORE,
-        'src/update-toast.cpp', 'src/annotations.cpp', 'src/agent-connect.cpp',   # stamped dev identity: main.cpp compiles the annotation mode in
-        *B.CHAT_SOURCES,   # … and the chat that lives inside it (src/chat-host.h)
-        B.THORVG, '-o', host, *B.BROWSER_LIBS, *B.CHAT_LIBS])
-    helper = work / 'update-helper.exe'
-    sh([GXX, *FLAGS, '-mwindows', *B.HELPER_SOURCES, '-o', helper, *B.HELPER_LIBS])
-    fake = work / 'fake-browser.exe'
-    sh([GXX, *FLAGS, '-mwindows', f'-DFAKE_VERSION=L"{NEW}"', '-Itests/update-core',
-        'tests/update-core/fake_browser.cpp', *CORE, '-o', fake, *NET_LIBS])
+    return [
+        ('host_e2e (src/main.cpp with the update modules)',
+         [GXX, *FLAGS, '-mconsole', f'-I{gen}', '-DBROWSER_HAS_BUILD_INFO', '-DTVG_STATIC', '-Ideps/thorvg-1.1.3/inc',
+          f'-I{B.SDK / "include"}', 'tests/update-integration/host_e2e.cpp', 'src/native-lottie.cpp', *CORE,
+          'src/update-toast.cpp', 'src/annotations.cpp', 'src/agent-connect.cpp',   # stamped dev identity: main.cpp compiles the annotation mode in
+          *B.CHAT_SOURCES,   # … and the chat that lives inside it (src/chat-host.h)
+          B.THORVG, '-o', work / 'host_e2e.exe', *B.BROWSER_LIBS, *B.CHAT_LIBS]),
+        ('update-helper', [GXX, *FLAGS, '-mwindows', *B.HELPER_SOURCES, '-o', work / 'update-helper.exe', *B.HELPER_LIBS]),
+        ('fake-browser', [GXX, *FLAGS, '-mwindows', f'-DFAKE_VERSION=L"{NEW}"', '-Itests/update-core',
+                          'tests/update-core/fake_browser.cpp', *CORE, '-o', work / 'fake-browser.exe', *NET_LIBS]),
+    ]
+
+
+def build_fixtures(work: Path, prebuilt: bool = False) -> dict:
+    """prebuilt: tests/update-integration/run_all.py's pool compiled them (--prebuilt), only the payload is made here."""
+    if not prebuilt:
+        for _label, command in fixture_compiles(work):
+            sh(command)
+    host, helper, fake = work / 'host_e2e.exe', work / 'update-helper.exe', work / 'fake-browser.exe'
     payload = work / 'payload'
     shutil.rmtree(payload, ignore_errors=True)
     (payload / 'assets').mkdir(parents=True)
@@ -320,11 +329,24 @@ def scenario_inprocess(base: Path, fx: dict, mode: str):
 
 
 def main() -> int:
+    # --compile-plan <file> / --prebuilt: its compiles join run_all.py's pool (compile_plan.py); the fixtures stay in e2e/fixtures
+    sys.path.insert(0, str(HERE))
+    import compile_plan as P
+    plan, prebuilt = P.requested(sys.argv), P.prebuilt(sys.argv)
     work = OUT / 'e2e'
-    if work.exists():
+    if plan:
+        if work.exists():
+            shutil.rmtree(work)
+        (work / 'fixtures').mkdir(parents=True)
+        return P.write(plan, [(label, command, ROOT) for label, command in fixture_compiles(work / 'fixtures')])
+    if prebuilt:   # everything of an earlier run goes but the fixtures the pool just compiled
+        for child in (work.iterdir() if work.exists() else []):
+            if child.name != 'fixtures':
+                shutil.rmtree(child) if child.is_dir() else child.unlink()
+    elif work.exists():
         shutil.rmtree(work)
-    work.mkdir(parents=True)
-    fx = build_fixtures(work / 'fixtures')
+    work.mkdir(parents=True, exist_ok=True)
+    fx = build_fixtures(work / 'fixtures', prebuilt)
     for name, fn in (('installed', scenario_installed), ('portable', scenario_portable),
                      ('cancel', lambda b, f: scenario_inprocess(b, f, 'cancel')),
                      ('offline', lambda b, f: scenario_inprocess(b, f, 'offline')),
