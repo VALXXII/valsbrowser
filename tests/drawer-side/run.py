@@ -76,20 +76,30 @@ def run_in_job(cmd: list[str], timeout: int) -> tuple[int, str]:
 
 
 def main() -> int:
+    # --compile-plan <file> / --prebuilt: its two compiles join tests/update-integration/run_all.py's pool (compile_plan.py)
+    sys.path.insert(0, str(ROOT / 'tests' / 'update-integration'))
+    import compile_plan as P
+    plan, prebuilt = P.requested(sys.argv), P.prebuilt(sys.argv)
     OUT.mkdir(parents=True, exist_ok=True)
     report: list[str] = []
     pure = OUT / 'drawer_side_test.exe'
-    print('== compile drawer_side_test', flush=True)
-    if subprocess.run([str(TOOLS / 'g++.exe'), *STRICT, 'tests/drawer_side_test.cpp', '-o', str(pure), '-lgdi32', '-luser32', '-ldwmapi'], cwd=ROOT).returncode:
-        print('FAILED: compile drawer_side_test'); return 1
+    host = OUT / 'drawer_side_host_test.exe'
+    pure_cmd = [str(TOOLS / 'g++.exe'), *STRICT, 'tests/drawer_side_test.cpp', '-o', str(pure), '-lgdi32', '-luser32', '-ldwmapi']
+    host_cmd = [str(TOOLS / 'g++.exe'), *HOST, 'tests/drawer-side/drawer_side_host_test.cpp', 'src/native-lottie.cpp', str(THORVG), '-o', str(host), *UI_LIBS]
+    if plan:
+        return P.write(plan, [('drawer_side_test', pure_cmd, ROOT), ('drawer_side_host_test (src/main.cpp)', host_cmd, ROOT)])
+    if not prebuilt:
+        print('== compile drawer_side_test', flush=True)
+        if subprocess.run(pure_cmd, cwd=ROOT).returncode:
+            print('FAILED: compile drawer_side_test'); return 1
     code, text = run_in_job([str(pure)], 120)
     print(text); report.append(text)
     if code:
         (OUT / 'report.txt').write_text('\n'.join(report), encoding='utf-8'); print(f'FAILED ({code}): drawer_side_test'); return code
-    host = OUT / 'drawer_side_host_test.exe'
-    print('== compile drawer_side_host_test (src/main.cpp)', flush=True)
-    if subprocess.run([str(TOOLS / 'g++.exe'), *HOST, 'tests/drawer-side/drawer_side_host_test.cpp', 'src/native-lottie.cpp', str(THORVG), '-o', str(host), *UI_LIBS], cwd=ROOT).returncode:
-        print('FAILED: compile drawer_side_host_test'); return 1
+    if not prebuilt:
+        print('== compile drawer_side_host_test (src/main.cpp)', flush=True)
+        if subprocess.run(host_cmd, cwd=ROOT).returncode:
+            print('FAILED: compile drawer_side_host_test'); return 1
     code, text = run_in_job([str(host), str(ROOT), str(OUT)], 240)
     print(text); report.append(text)
     (OUT / 'report.txt').write_text('\n'.join(report), encoding='utf-8')
