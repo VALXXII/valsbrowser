@@ -49,13 +49,27 @@ static void Pump(int ms = 150) {
     const ULONGLONG end = GetTickCount64() + ms; MSG m;
     do { while (GetTickCount64() < end && PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&m); DispatchMessageW(&m); } Sleep(5); } while (GetTickCount64() < end);   // bounded
 }
-static void Relayout() { Layout(); SyncUpdateToastReserve(); LayoutUpdateToast(); Pump(700); }
 static RECT Win(HWND h) { RECT r{}; GetWindowRect(h, &r); return r; }
+// The window's monitor's work area, and the part of the client that can be seen there: the card measures its corner from
+// that part (ToastModel::VisibleClient), so a window larger than its screen (GitHub's 1024 × 768 runners) keeps it visible.
+static RECT Work() { MONITORINFO mi{sizeof(mi)}; return GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &mi) ? mi.rcWork : ClientScreen(); }
+static RECT Seen() { const RECT c = ClientScreen(), w = Work(); RECT v{}; return IntersectRect(&v, &c, &w) ? v : c; }
+// The card at rest in its corner (its motion runs on the real clock: waited for, up to a generous bound, not assumed).
+static bool AtRest() {
+    const RECT v = Seen(), card = Win(updateToast.Window());
+    return updateToast.Shown() && IsWindowVisible(updateToast.Window()) && card.left == v.left + S(14) && card.bottom == v.bottom - S(14) &&
+           std::abs((card.bottom - card.top) - (int)std::lround(209.59375f * GetDpiForWindow(window) / 96.f)) <= 1;
+}
+template <class F> static bool PumpUntil(F done, int ms, int maxMs = 5000) { const ULONGLONG end = GetTickCount64() + maxMs; Pump(ms); while (!done() && GetTickCount64() < end) Pump(50); return done(); }
+static void Settle(int ms = 700) { const ULONGLONG end = GetTickCount64() + 5000; Pump(ms); while (!AtRest() && GetTickCount64() < end) Pump(50); }
+static void Relayout() { Layout(); SyncUpdateToastReserve(); LayoutUpdateToast(); Settle(); }
 
 static void CheckAtRest(const std::string& name) {
-    const RECT c = ClientScreen(), card = Win(updateToast.Window());
+    const RECT c = ClientScreen(), v = Seen(), work = Work(), card = Win(updateToast.Window());
     Expect(updateToast.Shown() && IsWindowVisible(updateToast.Window()), name + ": the card is shown");
-    Expect(card.left == c.left + S(14) && card.bottom == c.bottom - S(14), name + ": bottom-left, 14 DIP from the edges " + Text(card) + " in " + Text(c));
+    Expect(card.left == v.left + S(14) && card.bottom == v.bottom - S(14), name + ": bottom-left, 14 DIP from the visible edges " + Text(card) + " in " + Text(v) +
+           (EqualRect(&v, &c) ? std::string() : " (client " + Text(c) + ", work area " + Text(work) + ")"));
+    Expect(card.left >= work.left && card.top >= work.top && card.right <= work.right && card.bottom <= work.bottom, name + ": on the screen's work area " + Text(work));
     Expect(card.right - card.left == S(269) && std::abs((card.bottom - card.top) - (int)std::lround(209.59375f * GetDpiForWindow(window) / 96.f)) <= 1, name + ": Paper's 269 × 209.59");
     Expect(card.top >= c.top + S(ChromeBottomDip()), name + ": under the chrome (" + std::to_string(ChromeBottomDip()) + " DIP)");
 }
@@ -64,7 +78,9 @@ int wmain(int argc, wchar_t** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     if (argc < 3) { std::fputs("usage: card_layouts_host_test <repo root> <out folder>\n", stderr); return 2; }
     base = argv[1]; const std::wstring out = argv[2]; std::filesystem::create_directories(out);
-    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    // --dpi-unaware: every window at 96 dpi (GitHub's runners), whatever this screen's scale.
+    const bool unaware = argc > 3 && std::wstring(argv[3]) == L"--dpi-unaware";
+    SetProcessDpiAwarenessContext(unaware ? DPI_AWARENESS_CONTEXT_UNAWARE : DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     const std::wstring deskName = L"BrowserCardLayouts" + std::to_wstring(GetCurrentProcessId());
     HDESK desk = CreateDesktopW(deskName.c_str(), nullptr, nullptr, 0, GENERIC_ALL, nullptr);
     if (!desk || !SetThreadDesktop(desk)) { std::fprintf(stderr, "FAIL: own desktop (%lu)\n", GetLastError()); return 1; }
@@ -73,9 +89,18 @@ int wmain(int argc, wchar_t** argv) {
     for (auto name : NativeChrome::FontFiles) AddFontResourceExW((base + L"\\assets\\fonts\\" + name).c_str(), FR_PRIVATE, nullptr);
     paper = CreateSolidBrush(BG);
     WNDCLASSW wc{}; wc.lpfnWndProc = WndProc; wc.hInstance = instance; wc.lpszClassName = L"CardLayoutsTest"; wc.hCursor = LoadCursor(nullptr, IDC_ARROW); RegisterClassW(&wc);
+    // The window asked at 1180 × 815 DIP from (120, 120), inside its monitor's work area: on a smaller screen (GitHub's
+    // runners: 1024 × 768) it is made to fit, as a user's window would be. A window larger than its screen is checked
+    // on its own below.
     const UINT sys = GetDpiForSystem();
+    MONITORINFO primary{sizeof(primary)}; RECT work{0, 0, MulDiv(1024, sys, 96), MulDiv(728, sys, 96)};
+    if (GetMonitorInfoW(MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY), &primary)) work = primary.rcWork;
+    const int edge = MulDiv(8, sys, 96), workW = work.right - work.left, workH = work.bottom - work.top;
+    const int winW = std::min(MulDiv(1180, sys, 96), workW - 2 * edge), winH = std::min(MulDiv(815, sys, 96), workH - 2 * edge);
+    const int winX = work.left + std::max(edge, std::min(MulDiv(120, sys, 96), workW - winW - edge));
+    const int winY = work.top + std::max(edge, std::min(MulDiv(120, sys, 96), workH - winH - edge));
     CreateWindowW(wc.lpszClassName, L"browser", WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_CLIPCHILDREN,
-                  MulDiv(120, sys, 96), MulDiv(120, sys, 96), MulDiv(1180, sys, 96), MulDiv(815, sys, 96), nullptr, nullptr, instance, nullptr);
+                  winX, winY, winW, winH, nullptr, nullptr, instance, nullptr);
     if (!window) { std::fputs("FAIL: window\n", stderr); return 1; }
     NativeUI::ConfigureFullClientFrame(window); NativeUI::RoundNatively(window);
     if (FAILED(chrome.Init(window, base))) { std::fputs("FAIL: chrome\n", stderr); return 1; }
@@ -89,35 +114,60 @@ int wmain(int argc, wchar_t** argv) {
     BrowserUpdate::View offer; offer.phase = BrowserUpdate::Phase::Available; offer.version = L"0.3.999"; offer.total = 209715200;
     updateToast.SetView(offer);
     Relayout();
-    std::printf("     window %s, dpi %u (the desktop's)\n", Text(Win(window)).c_str(), GetDpiForWindow(window));
+    std::printf("     window %s, dpi %u (%s), work area %s\n", Text(Win(window)).c_str(), GetDpiForWindow(window), unaware ? "DPI-unaware run" : "the desktop's", Text(Work()).c_str());
     for (auto layout : {BrowserSettings::TabsPosition::Top, BrowserSettings::TabsPosition::Side, BrowserSettings::TabsPosition::Compact}) {
         const std::string name = layout == BrowserSettings::TabsPosition::Top ? "top bar" : layout == BrowserSettings::TabsPosition::Side ? "side complete" : "side compact";
         settings.tabsPosition = layout; ApplyLayout(); Relayout();
         Expect((layout == BrowserSettings::TabsPosition::Top) == !chrome.sidebar, name + ": layout in effect");
         CheckAtRest(name);
         // A drawer open (Historique, then Téléchargements).
-        ShowHistory(false); SyncUpdateToastReserve(); LayoutUpdateToast(); Pump(800);
-        RECT card = Win(updateToast.Window()), drawer = Win(historyDrawer.Window()), both{};
-        if (!chrome.sidebar) Expect(updateToast.Shown() && !IntersectRect(&both, &card, &drawer), name + ", Historique open on the right: the card keeps clear of it " + Text(card) + " / " + Text(drawer));
-        else Expect(updateToast.Shown() && card.left == ClientScreen().left + S(14), name + ", Historique open on the panel's side: the card keeps its corner " + Text(card));
-        CloseDockedDrawers(); Pump(600); SyncUpdateToastReserve(); LayoutUpdateToast(); Pump(300);
+        ShowHistory(false); SyncUpdateToastReserve(); LayoutUpdateToast();
+        RECT card{}, drawer{}, both{};
+        auto clearOf = [&](HWND d) { card = Win(updateToast.Window()); drawer = Win(d); return updateToast.Shown() && !IntersectRect(&both, &card, &drawer); };
+        if (!chrome.sidebar) {
+            const bool ok = PumpUntil([&] { return clearOf(historyDrawer.Window()); }, 800);
+            Expect(ok, name + ", Historique open on the right: the card keeps clear of it " + Text(card) + " / " + Text(drawer));
+        } else {
+            const bool ok = PumpUntil([&] { card = Win(updateToast.Window()); return updateToast.Shown() && card.left == Seen().left + S(14); }, 800);
+            Expect(ok, name + ", Historique open on the panel's side: the card keeps its corner " + Text(card));
+        }
+        CloseDockedDrawers(); Pump(600); SyncUpdateToastReserve(); LayoutUpdateToast(); Settle(300);
         ShowDownloads(); SyncUpdateToastReserve(); LayoutUpdateToast(); Pump(800);
         if (downloadDrawer.Window() && downloadDrawer.Visible() && !chrome.sidebar) {
-            const RECT c2 = Win(updateToast.Window()), d2 = Win(downloadDrawer.Window()); RECT overlap{};
-            Expect(updateToast.Shown() && !IntersectRect(&overlap, &c2, &d2), name + ", Téléchargements open: the card keeps clear of it " + Text(c2) + " / " + Text(d2));
+            const bool ok = PumpUntil([&] { return clearOf(downloadDrawer.Window()); }, 0);
+            Expect(ok, name + ", Téléchargements open: the card keeps clear of it " + Text(card) + " / " + Text(drawer));
         }
-        CloseDockedDrawers(); Pump(600); SyncUpdateToastReserve(); LayoutUpdateToast(); Pump(300);
+        CloseDockedDrawers(); Pump(600); SyncUpdateToastReserve(); LayoutUpdateToast(); Settle(300);
         CheckAtRest(name + ", drawers closed again");
     }
     // The bookmarks band adds 40 DIP of chrome; a short window hides the card (state kept) and shows it again.
     settings.tabsPosition = BrowserSettings::TabsPosition::Top; ApplyLayout(); Relayout();
-    SetUpdateToastTop(121); LayoutUpdateToast(); Pump(300);
-    Expect(updateToast.Shown(), "the bookmarks band (121 DIP of chrome): the card still fits in 815 DIP");
+    SetUpdateToastTop(121); LayoutUpdateToast(); Settle(300);
+    Expect(updateToast.Shown(), "the bookmarks band (121 DIP of chrome): the card still fits in " + std::to_string((Seen().bottom - Seen().top) * 96 / (int)GetDpiForWindow(window)) + " DIP");
     // The window's smallest height (300 DIP, WM_GETMINMAXINFO): 300 - 81 - 14 - 16 < 209.6, no room for the card.
-    SetWindowPos(window, nullptr, 0, 0, S(900), S(300), SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE); Relayout();
-    Expect(!updateToast.Fits() && !IsWindowVisible(updateToast.Window()), "a 300 DIP window: no room under the chrome, the card hides (state kept)");
-    SetWindowPos(window, nullptr, 0, 0, S(1180), S(815), SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE); Relayout();
-    CheckAtRest("back to 1180 × 815");
+    SetWindowPos(window, nullptr, 0, 0, std::min(S(900), winW), S(300), SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    Layout(); SyncUpdateToastReserve(); LayoutUpdateToast();
+    const bool hidden = PumpUntil([] { return !updateToast.Fits() && !IsWindowVisible(updateToast.Window()); }, 700);
+    Expect(hidden, "a 300 DIP window: no room under the chrome, the card hides (state kept)");
+    SetWindowPos(window, nullptr, 0, 0, winW, winH, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE); Relayout();
+    CheckAtRest("back to its first size");
+    // A window larger than its screen (the release run 45936128773: asked at 1180 × 815 from (120, 120) on GitHub's
+    // 1024 × 768 runner, shrunk to 1044 × 788, its bottom 180 px under the work area): the card stays on what can be seen,
+    // 14 DIP above the work area's bottom, never under the taskbar or off the screen.
+    {
+        const RECT was = Win(window), at = Work();
+        SetWindowPos(window, nullptr, was.left, at.bottom - (was.bottom - was.top) + S(180), 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE); Relayout();
+        const RECT c = ClientScreen(), card = Win(updateToast.Window());
+        Expect(c.bottom > at.bottom && card.bottom == at.bottom - S(14), "a window past the bottom of its screen (client " + Text(c) + ", work area " + Text(at) +
+               "): the card 14 DIP above the work area's bottom " + Text(card));
+        CheckAtRest("a window past the bottom of its screen");
+        for (auto layout : {BrowserSettings::TabsPosition::Side, BrowserSettings::TabsPosition::Compact, BrowserSettings::TabsPosition::Top}) {
+            settings.tabsPosition = layout; ApplyLayout(); Relayout();
+            CheckAtRest(std::string("past the bottom of its screen, ") + (layout == BrowserSettings::TabsPosition::Top ? "top bar" : layout == BrowserSettings::TabsPosition::Side ? "side complete" : "side compact"));
+        }
+        SetWindowPos(window, nullptr, was.left, was.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE); Relayout();
+        CheckAtRest("moved back onto its screen");
+    }
     updateToast.Close();
     std::printf("%d checks, %d failures\n", checks, failures);
     std::fflush(stdout);

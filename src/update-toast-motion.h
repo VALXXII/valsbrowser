@@ -168,6 +168,20 @@ inline float FitWidth(float clientWidth, float edgeLeft, float reservedRight) {
 inline bool FitsHeight(float clientHeight, float topReserve, float cardHeight) {
     return clientHeight - topReserve - EdgeBottom - Paper::actionsGap >= cardHeight;
 }
+// Where the card sits, in screen pixels (src/update-toast.cpp OwnerClient / Present): the owner's client clipped to its
+// monitor's work area — a maximised custom-frame window, or one larger than its screen (GitHub's 1024 × 768 runners),
+// keeps the card on what can be seen — then `edgeInset` DIP from that part's left edge and EdgeBottom DIP from its bottom.
+struct PxRect { long left = 0, top = 0, right = 0, bottom = 0; };
+inline PxRect VisibleClient(PxRect client, PxRect work) {
+    const PxRect r{std::max(client.left, work.left), std::max(client.top, work.top), std::min(client.right, work.right), std::min(client.bottom, work.bottom)};
+    return r.left < r.right && r.top < r.bottom ? r : client;   // off its monitor entirely: the client as it is
+}
+inline PxRect CardRect(PxRect visible, float scale, float edgeInset, float widthDip, float heightDip, float offsetDip = 0) {
+    const long left = visible.left + std::lround(edgeInset * scale);
+    const long bottom = visible.bottom - std::lround(EdgeBottom * scale) + std::lround(offsetDip * scale);
+    const long w = std::lround(widthDip * scale), h = std::max(1L, std::lround(heightDip * scale));
+    return {left, bottom - h, left + w, bottom};
+}
 
 // ---- The background's colours follow the profile (Val, 2026-11-26) ----------------
 // Val drew the GrainGradient's three colours for the violet profile (ink #B49BFF, Paper --color-profile-violet).

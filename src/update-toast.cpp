@@ -647,11 +647,12 @@ struct Toast::Impl {
         Client c; RECT r{};
         if (!owner || !GetClientRect(owner, &r)) return c;
         MapWindowPoints(owner, nullptr, reinterpret_cast<POINT*>(&r), 2);
-        // A maximised custom-frame window extends past the monitor: keep the card on the work area.
+        // A maximised custom-frame window, or one larger than its screen, extends past the monitor: keep the card on the
+        // work area (ToastModel::VisibleClient).
         MONITORINFO mi{sizeof(mi)};
         if (GetMonitorInfoW(MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST), &mi)) {
-            RECT clipped{};
-            if (IntersectRect(&clipped, &r, &mi.rcWork)) r = clipped;
+            const PxRect v = VisibleClient({r.left, r.top, r.right, r.bottom}, {mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcWork.bottom});
+            r = {v.left, v.top, v.right, v.bottom};
         }
         c.px = r; c.scale = dpi / 96.f;
         c.w = (r.right - r.left) / c.scale; c.h = (r.bottom - r.top) / c.scale;
@@ -771,10 +772,9 @@ struct Toast::Impl {
         }
         const Client c = OwnerClient();
         scale = c.scale;
-        const int left = c.px.left + (int)std::lround(options.edgeInset * scale);
-        const int bottom = c.px.bottom - (int)std::lround(EdgeBottom * scale) + (int)std::lround(f.offset * scale);
-        const int w = (int)std::lround(width * scale), h = std::max(1, (int)std::lround(f.height * scale));
-        card = {left, bottom - h, left + w, bottom}; cardHeight = h / scale;
+        const PxRect at = CardRect({c.px.left, c.px.top, c.px.right, c.px.bottom}, scale, options.edgeInset, width, f.height, f.offset);
+        const int w = (int)(at.right - at.left), h = (int)(at.bottom - at.top);
+        card = {at.left, at.top, at.right, at.bottom}; cardHeight = h / scale;
         if (!Place(w, h) || !EnsureSurface(w, h)) { Hide(); return; }
         surface->SetDpi((float)dpi, (float)dpi);
         if (FAILED(painter.Bind(surface))) return;

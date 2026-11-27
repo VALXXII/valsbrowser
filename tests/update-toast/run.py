@@ -4,6 +4,8 @@
                                                 # then compare the native card with Val's validated preview (compare.py)
     python tests/update-toast/run.py --build    # build only
     python tests/update-toast/run.py --no-window  # skip the popup-window tests
+    python tests/update-toast/run.py --like-runner  # as on GitHub's runners: no GPU (the background on WARP) and
+                                                    # every window at 96 dpi (DPI-unaware), whatever this machine has
 
 The popup-window tests run on a Windows desktop of their own that is never displayed (toast_tests.cpp creates it
 before any window): nothing reaches the screen, the mouse, the keyboard or the foreground. So does
@@ -71,7 +73,8 @@ def main(argv):
         return code
     snapshots = os.path.join(OUT, 'snapshots')
     os.makedirs(snapshots, exist_ok=True)
-    command = [os.path.join(OUT, 'toast-tests.exe'), ROOT, snapshots] + [a for a in argv if a == '--no-window']
+    runner = ['--cpu-raster', '--dpi-unaware'] if '--like-runner' in argv else []
+    command = [os.path.join(OUT, 'toast-tests.exe'), ROOT, snapshots] + [a for a in argv if a == '--no-window'] + runner
     print(' '.join(command), flush=True)
     result = subprocess.run(command, cwd=ROOT, timeout=600)
     if result.returncode:
@@ -83,7 +86,7 @@ def main(argv):
             return 1
         layouts = os.path.join(OUT, 'layouts')
         os.makedirs(layouts, exist_ok=True)
-        result = subprocess.run([host, ROOT, layouts], cwd=ROOT, timeout=600)
+        result = subprocess.run([host, ROOT, layouts] + (['--dpi-unaware'] if runner else []), cwd=ROOT, timeout=600)
         if result.returncode:
             return result.returncode
     compare = [sys.executable, os.path.join(ROOT, 'tests', 'update-toast', 'compare.py'), snapshots]

@@ -328,6 +328,42 @@ static void GrainCadenceTests() {
     CHECK(!GrainFrames::Due(true, true, At(0), At(20)) && GrainFrames::Due(true, true, At(0), At(30)));
 }
 
+// Where the card sits, exactly, on screens this machine does not have (ToastModel::VisibleClient / CardRect), at 96 and
+// 144 dpi: GitHub's runners have a 1024 × 768 screen (work area 1024 × 728 above the taskbar).
+static void PlacementTests() {
+    const float h = Paper::available;
+    for (float dpi : {96.f, 144.f}) {
+        const float s = dpi / 96;
+        auto px = [&](float dip) { return (long)std::lround(dip * s); };
+        const PxRect work{0, 0, px(1024), px(728)};
+        // The release run 45936128773: a window asked at 1180 × 815 from (120, 120), shrunk to 1044 × 788 by the screen, its
+        // bottom (908 at 96 dpi) under the work area (728). The card stays on what can be seen: 14 DIP above the work area.
+        const PxRect client{px(120), px(120), px(120) + px(1044), px(120) + px(788)};
+        const PxRect v = VisibleClient(client, work);
+        CHECK(v.left == client.left && v.top == client.top && v.right == work.right && v.bottom == work.bottom);
+        const PxRect card = CardRect(v, s, 14, 269, h);
+        CHECK(card.left == client.left + px(14) && card.bottom == work.bottom - px(14));
+        CHECK(card.right - card.left == px(269) && std::abs((card.bottom - card.top) - px(h)) <= 1);
+        if (dpi == 96) CHECK(card.left == 134 && card.top == 504 && card.right == 403 && card.bottom == 714);   // the run's numbers
+        // A window inside the work area: its own client's corner.
+        const PxRect inside{px(40), px(40), px(940), px(680)};
+        const PxRect c2 = CardRect(VisibleClient(inside, work), s, 14, 269, h);
+        CHECK(c2.left == inside.left + px(14) && c2.bottom == inside.bottom - px(14));
+        // Maximised custom frame (the client overhangs the monitor by its frame): the work area's corner.
+        const PxRect maxed{-px(8), -px(8), work.right + px(8), work.bottom + px(8)};
+        const PxRect c3 = CardRect(VisibleClient(maxed, work), s, 14, 269, h);
+        CHECK(c3.left == work.left + px(14) && c3.bottom == work.bottom - px(14));
+        // Past the left edge; on a monitor left of the primary (negative coordinates); off every monitor (left as it is).
+        CHECK(CardRect(VisibleClient({work.left - px(60), px(100), px(900), px(600)}, work), s, 14, 269, h).left == work.left + px(14));
+        const PxRect other{-px(1920), 0, -px(1920) + px(1180), px(815)}, otherWork{-px(1920), 0, 0, px(1040)};
+        CHECK(CardRect(VisibleClient(other, otherWork), s, 14, 269, h).bottom == other.bottom - px(14));
+        const PxRect away{px(2000), px(2000), px(3000), px(3000)};
+        CHECK(VisibleClient(away, work).left == away.left && VisibleClient(away, work).bottom == away.bottom);
+        // The entry / exit offset moves the card down by its DIP from the same corner.
+        CHECK(CardRect(v, s, 14, 269, h, 8).bottom == work.bottom - px(14) + px(8));
+    }
+}
+
 static void ClickAndDwellTests() {
     auto a = Describe(V(Phase::Available)); auto d = Describe(V(Phase::Downloading, 1, 2));
     Clicks c;
@@ -582,13 +618,43 @@ static void Pump(int ms) {
         MsgWaitForMultipleObjects(0, nullptr, FALSE, 5, QS_ALLINPUT);
     }
 }
+// Waits until the card gets there (its motion runs on the real clock), up to a generous bound: a shared runner may be
+// slow, a card that never gets there still fails.
+template <class F> static bool PumpUntil(F done, int maxMs = 5000) {
+    const DWORD start = GetTickCount();
+    while (!done()) { if ((int)(GetTickCount() - start) > maxMs) return false; Pump(20); }
+    return true;
+}
+// The part of a window's client that can be seen: clipped to its monitor's work area (Win32's own intersection; the card
+// computes the same with ToastModel::VisibleClient, checked exactly by PlacementTests).
+static RECT Seen(HWND h) {
+    RECT c{}; GetClientRect(h, &c); MapWindowPoints(h, nullptr, (POINT*)&c, 2);
+    MONITORINFO mi{sizeof(mi)}; RECT v{};
+    return GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi) && IntersectRect(&v, &c, &mi.rcWork) ? v : c;
+}
+// The owner window, asked at w × h DIP from (40, 40), inside its monitor's work area (a small screen: GitHub's runners).
+static HWND OwnerWindow(const wchar_t* cls, const wchar_t* title, int wDip, int hDip) {
+    const UINT sys = GetDpiForSystem();
+    MONITORINFO mi{sizeof(mi)}; RECT work{0, 0, MulDiv(1024, sys, 96), MulDiv(728, sys, 96)};
+    if (GetMonitorInfoW(MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY), &mi)) work = mi.rcWork;
+    const int edge = MulDiv(40, sys, 96);
+    const int w = std::min(MulDiv(wDip, sys, 96), (int)(work.right - work.left) - 2 * edge), h = std::min(MulDiv(hDip, sys, 96), (int)(work.bottom - work.top) - 2 * edge);
+    return CreateWindowExW(0, cls, title, WS_OVERLAPPEDWINDOW, work.left + edge, work.top + edge, w, h, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+}
+// --cpu-raster: the card's background on the CPU rasteriser (WARP), as on a GPU-less machine (GitHub's runners).
+static bool cpuRaster = false;
+static void ForceCpuRaster(Toast::Impl* impl) {
+    Onboarding::Shaders::Image noise;
+    impl->gpuTried = true;
+    CHECK(impl->gpu.Init(true) && Onboarding::Shaders::LoadPng(wic, repo + L"\\assets\\onboarding\\noise.png", noise) && impl->gpu.SetInput(Onboarding::Shaders::Kind::GrainGradient, noise));
+    CHECK(!impl->gpu.Animated());
+}
 
 static void WindowTests() {
     WNDCLASSW wc{}; wc.lpfnWndProc = OwnerProc; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"ToastTestOwner";
     wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH); RegisterClassW(&wc);
     const UINT sys = GetDpiForSystem();
-    HWND owner = CreateWindowExW(0, wc.lpszClassName, L"toast test owner (native, mock)", WS_OVERLAPPEDWINDOW,
-                                 40, 40, MulDiv(900, sys, 96), MulDiv(640, sys, 96), nullptr, nullptr, wc.hInstance, nullptr);
+    HWND owner = OwnerWindow(wc.lpszClassName, L"toast test owner (native, mock)", 900, 640);
     CHECK(owner != nullptr);
     struct OwnerGuard { HWND h; ~OwnerGuard() { if (h && IsWindow(h)) DestroyWindow(h); } } ownerGuard{owner};
     ShowWindow(owner, SW_SHOWNORMAL); UpdateWindow(owner); SetForegroundWindow(owner); SetFocus(owner);
@@ -608,19 +674,27 @@ static void WindowTests() {
     // Nothing exists for the background until the card shows.
     CHECK(!impl->gpu.Ready() && !impl->grainTimer && impl->grainRenders == 0);
     const auto statsBefore = impl->clock.Stats() ? impl->clock.Stats()->posted.load() : 0;
+    if (cpuRaster) ForceCpuRaster(impl);
     toast.SetView(V(Phase::Available));
-    Pump(700);
-    CHECK(toast.Shown() && IsWindowVisible(popup));
+    // Bottom-left anchoring against the part of the owner's client that can be seen (its monitor's work area), Paper's
+    // size: the card gets there once its entry has settled (real clock; waited for, not assumed after a fixed time).
+    const float s = GetDpiForWindow(owner) / 96.f;
+    auto px = [&](float dip) { return (LONG)std::lround(dip * s); };
+    RECT client = Seen(owner), pr{};
+    // `still`: nothing moves any more (false while downloading: the drawer's icon loops, the card's box has settled).
+    auto settledAt = [&](float height, bool still = true) {
+        client = Seen(owner); GetWindowRect(popup, &pr);
+        return IsWindowVisible(popup) && (!still || !impl->presenter.Moving(M::Now())) && pr.left == client.left + px(14) && pr.bottom == client.bottom - px(14) &&
+               std::abs((pr.bottom - pr.top) - px(height)) <= 1;
+    };
+    CHECK(PumpUntil([&] { return toast.Shown() && impl->grainRenders >= 1 && settledAt(Paper::available); }));
+    Pump(100);   // the frame clock's last frame
     CHECK(GetForegroundWindow() == foreground && GetFocus() == owner); // never steals focus
     CHECK(impl->grainRenders >= 1);   // the real GrainGradient (or its still frame without a GPU)
-    // Bottom-left anchoring against the owner client, Paper's size.
-    RECT client{}; GetClientRect(owner, &client); MapWindowPoints(owner, nullptr, (POINT*)&client, 2);
-    RECT pr{}; GetWindowRect(popup, &pr);
-    const float s = GetDpiForWindow(owner) / 96.f;
-    CHECK(pr.left == client.left + (LONG)std::lround(14 * s));
-    CHECK(pr.bottom == client.bottom - (LONG)std::lround(14 * s));
-    CHECK(pr.right - pr.left == (LONG)std::lround(269 * s));
-    CHECK(std::abs((pr.bottom - pr.top) - (LONG)std::lround(Paper::available * s)) <= 1);
+    CHECK(pr.left == client.left + px(14));
+    CHECK(pr.bottom == client.bottom - px(14));
+    CHECK(pr.right - pr.left == px(269));
+    CHECK(std::abs((pr.bottom - pr.top) - px(Paper::available)) <= 1);
     CHECK(NativeUI::IsShadowless(popup));
     // At rest: no vsync frame; the background alone moves at 30 a second on a timer (with a hardware device).
     const auto posted = impl->clock.Stats() ? impl->clock.Stats()->posted.load() : 0;
@@ -663,18 +737,17 @@ static void WindowTests() {
     SendMessageW(popup, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(at.first, at.second));
     toast.SetView(V(Phase::Downloading, PaperReceived, PaperTotal, 14));
     SendMessageW(popup, WM_LBUTTONUP, 0, MAKELPARAM(at.first, at.second));
-    Pump(700);
+    CHECK(PumpUntil([&] { return settledAt(Paper::downloading, false); }));   // bottom edge anchored, the downloading height
     CHECK(actions.size() == 2);
-    GetWindowRect(popup, &pr);
-    CHECK(pr.bottom == client.bottom - (LONG)std::lround(14 * s));   // bottom edge anchored
-    CHECK(std::abs((pr.bottom - pr.top) - (LONG)std::lround(Paper::downloading * s)) <= 1);
+    CHECK(pr.bottom == client.bottom - px(14));
+    CHECK(std::abs((pr.bottom - pr.top) - px(Paper::downloading)) <= 1);
     CHECK(impl->painter.composes > 0);   // the drawer's frames drew the icon
     // Keyboard: explicit Focus(), Enter activates the primary, Esc returns focus.
     CHECK(toast.Focus() && GetFocus() == popup);
     SendMessageW(popup, WM_KEYDOWN, VK_RETURN, 0); Pump(50);
     CHECK(actions.size() == 3 && actions[2] == Action::Cancel);
     toast.SetView(V(Phase::Error, 0, 0, -1, L"Réseau indisponible"));
-    Pump(400);
+    CHECK(PumpUntil([&] { return impl->presenter.Current().kind == Kind::Error && !impl->presenter.Moving(M::Now()); }));
     CHECK(impl->focus == 0);   // primary (Réessayer) focused after the swap
     SendMessageW(popup, WM_KEYDOWN, VK_TAB, 0);
     CHECK(impl->focus == 1);
@@ -682,59 +755,81 @@ static void WindowTests() {
     CHECK(actions.size() == 4 && actions[3] == Action::Dismiss);
     SendMessageW(popup, WM_KEYDOWN, VK_ESCAPE, 0); Pump(50);
     CHECK(releases == 1 && GetFocus() == owner);
-    toast.SetView(V(Phase::Available)); Pump(500);
+    toast.SetView(V(Phase::Available));
+    CHECK(PumpUntil([&] { return impl->presenter.Current().kind == Kind::Available && settledAt(Paper::available); }));
     // Layouts (as main.cpp drives them): a drawer open on the right, the bookmarks band, a narrow and a short window.
     toast.SetReservedRight(268 + 8);
-    toast.Layout(); Pump(300);
-    GetClientRect(owner, &client); MapWindowPoints(owner, nullptr, (POINT*)&client, 2); GetWindowRect(popup, &pr);
-    CHECK(IsWindowVisible(popup) && pr.left == client.left + (LONG)std::lround(14 * s) && pr.right <= client.right - (LONG)std::lround((268 + 8 + 14) * s));
+    toast.Layout();
+    CHECK(PumpUntil([&] { return settledAt(Paper::available) && pr.right <= client.right - px(268 + 8 + 14); }));
     toast.SetReservedRight(0);
     toast.SetTopReserve(121); toast.Layout(); Pump(200);
     CHECK(IsWindowVisible(popup));
     SetWindowPos(owner, nullptr, 0, 0, MulDiv(900, sys, 96), MulDiv(380, sys, 96), SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-    toast.Layout(); Pump(200);
-    CHECK(!toast.Fits() && !IsWindowVisible(popup));   // card taller than the room under the chrome: hidden, state kept
+    toast.Layout();
+    CHECK(PumpUntil([&] { return !toast.Fits() && !IsWindowVisible(popup); }));   // taller than the room under the chrome: hidden, state kept
     toast.SetTopReserve(81);
     SetWindowPos(owner, nullptr, 0, 0, MulDiv(240, sys, 96), MulDiv(640, sys, 96), SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-    toast.Layout(); Pump(200);
-    CHECK(!toast.Fits() && !IsWindowVisible(popup));
+    toast.Layout();
+    CHECK(PumpUntil([&] { return !toast.Fits() && !IsWindowVisible(popup); }));
     SetWindowPos(owner, nullptr, 0, 0, MulDiv(700, sys, 96), MulDiv(520, sys, 96), SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-    toast.Layout(); Pump(400);
-    GetClientRect(owner, &client); MapWindowPoints(owner, nullptr, (POINT*)&client, 2); GetWindowRect(popup, &pr);
-    CHECK(toast.Fits() && IsWindowVisible(popup) && pr.left == client.left + (LONG)std::lround(14 * s) && pr.bottom == client.bottom - (LONG)std::lround(14 * s));
+    toast.Layout();
+    CHECK(PumpUntil([&] { return toast.Fits() && settledAt(Paper::available); }));
+    // A window past the bottom of its screen (GitHub's runners: 1024 × 768): the card stays on the work area, 14 DIP above
+    // its bottom, not under the taskbar or off the screen.
+    {
+        MONITORINFO mi{sizeof(mi)};
+        CHECK(GetMonitorInfoW(MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST), &mi));
+        RECT was{}; GetWindowRect(owner, &was);
+        SetWindowPos(owner, nullptr, was.left, mi.rcWork.bottom - (was.bottom - was.top) + MulDiv(150, sys, 96), 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        toast.Layout();
+        CHECK(PumpUntil([&] { return toast.Fits() && settledAt(Paper::available); }));
+        RECT whole{}; GetClientRect(owner, &whole); MapWindowPoints(owner, nullptr, (POINT*)&whole, 2);
+        CHECK(whole.bottom > mi.rcWork.bottom && pr.bottom == mi.rcWork.bottom - px(14));
+        SetWindowPos(owner, nullptr, was.left, was.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        toast.Layout();
+        CHECK(PumpUntil([&] { return settledAt(Paper::available); }));
+    }
     // Minimised: hidden, no frame, no background timer, no background render.
-    ShowWindow(owner, SW_MINIMIZE); toast.SetOwnerVisible(false); Pump(100);
+    ShowWindow(owner, SW_MINIMIZE); toast.SetOwnerVisible(false);
+    CHECK(PumpUntil([&] { return !IsWindowVisible(popup) && !impl->grainTimer; }));
+    Pump(100);
     const auto hiddenPosted = impl->clock.Stats() ? impl->clock.Stats()->posted.load() : 0, hiddenRenders = impl->grainRenders, hiddenPresents = impl->presents;
     Pump(600);
     CHECK(!IsWindowVisible(popup) && !impl->grainTimer && impl->grainRenders == hiddenRenders && impl->presents == hiddenPresents);
     CHECK((impl->clock.Stats() ? impl->clock.Stats()->posted.load() : 0) == hiddenPosted);
-    ShowWindow(owner, SW_RESTORE); toast.SetOwnerVisible(true); Pump(400);
-    CHECK(IsWindowVisible(popup));
+    ShowWindow(owner, SW_RESTORE); toast.SetOwnerVisible(true);
+    CHECK(PumpUntil([&] { return IsWindowVisible(popup); }));
     // Reduced motion: the background freezes (no timer, no new frame).
-    impl->options.forceReducedMotion = 1; toast.SyncReducedMotion(); Pump(300);
+    impl->options.forceReducedMotion = 1; toast.SyncReducedMotion();
+    CHECK(PumpUntil([&] { return !impl->grainTimer; }));
+    Pump(100);
     const auto frozen = impl->grainRenders; Pump(500);
     CHECK(!impl->grainTimer && impl->grainRenders == frozen);
     // The profile changes while the card is up (still frozen by reduced motion): the background follows at once.
     {
         auto& ink = NativeChrome::Design::Accent::InkCurrent(); const auto saved = ink;
         ink = {0x6F / 255.f, 0xD0 / 255.f, 0x87 / 255.f};   // « vert »
-        const auto before = impl->grainRenders; toast.AccentChanged(); Pump(300);
+        const auto before = impl->grainRenders; toast.AccentChanged();
+        CHECK(PumpUntil([&] { return impl->grainRenders > before; }));
+        Pump(200);   // one frame for the new colours, no more
         CHECK(impl->grainRenders == before + 1 && impl->grainColors == Grain::Colors({0x6F, 0xD0, 0x87}));
-        ink = saved; toast.AccentChanged(); Pump(300);
-        CHECK(impl->grainColors == Grain::Colors(impl->Ink()));
+        ink = saved; toast.AccentChanged();
+        CHECK(PumpUntil([&] { return impl->grainColors == Grain::Colors(impl->Ink()); }));
     }
     impl->options.forceReducedMotion = 0; toast.SyncReducedMotion(); Pump(200);
     // Installed: only by the real event; finite dwell then a single Dismiss and exit.
     toast.SetView(V(Phase::Installed));
-    Pump(300);
-    CHECK(impl->presenter.Current().kind == Kind::Installed && impl->dwell.Active());
+    CHECK(PumpUntil([&] { return impl->presenter.Current().kind == Kind::Installed && impl->dwell.Active(); }));
     impl->dwell.Start(M::Now() - Timing::installedDwell + Ms(100)); impl->ArmDwell(M::Now());
-    Pump(600);
+    CHECK(PumpUntil([&] { return actions.size() >= 5 && !IsWindowVisible(popup); }));
+    Pump(100);
     CHECK(actions.size() == 5 && actions[4] == Action::Dismiss && !IsWindowVisible(popup));
     // Hidden card: no frame, no timer, and the background's GPU resources are released.
-    toast.SetView(V(Phase::Available)); Pump(500);
-    toast.SetView(V(Phase::Hidden)); Pump(500);
-    CHECK(!IsWindowVisible(popup) && !impl->presenter.Shown() && !impl->gpu.Ready() && !impl->grainTimer);
+    toast.SetView(V(Phase::Available));
+    CHECK(PumpUntil([&] { return toast.Shown() && IsWindowVisible(popup); }));
+    toast.SetView(V(Phase::Hidden));
+    CHECK(PumpUntil([&] { return !IsWindowVisible(popup) && !impl->presenter.Shown() && !impl->gpu.Ready() && !impl->grainTimer; }));
+    Pump(100);
     const auto idlePosted = impl->clock.Stats() ? impl->clock.Stats()->posted.load() : 0, idlePresents = impl->presents;
     Pump(600);
     CHECK((impl->clock.Stats() ? impl->clock.Stats()->posted.load() : 0) == idlePosted && impl->presents == idlePresents);
@@ -749,8 +844,7 @@ static void WindowTests() {
 static void SoftwareWindowTests() {
     WNDCLASSW wc{}; wc.lpfnWndProc = OwnerProc; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"ToastTestOwnerSoftware";
     RegisterClassW(&wc);
-    const UINT sys = GetDpiForSystem();
-    HWND owner = CreateWindowExW(0, wc.lpszClassName, L"toast test owner (CPU rasteriser)", WS_OVERLAPPEDWINDOW, 40, 40, MulDiv(900, sys, 96), MulDiv(640, sys, 96), nullptr, nullptr, wc.hInstance, nullptr);
+    HWND owner = OwnerWindow(wc.lpszClassName, L"toast test owner (CPU rasteriser)", 900, 640);
     CHECK(owner != nullptr);
     struct OwnerGuard { HWND h; ~OwnerGuard() { if (h && IsWindow(h)) DestroyWindow(h); } } ownerGuard{owner};
     ShowWindow(owner, SW_SHOWNORMAL); Pump(100);
@@ -758,19 +852,17 @@ static void SoftwareWindowTests() {
     CHECK(toast.Init(owner, repo + L"\\assets", [](Action) {}, opt));
     auto* impl = reinterpret_cast<Toast::Impl*>(GetWindowLongPtrW(toast.Window(), GWLP_USERDATA));
     // What the card's first frame would create on a GPU-less machine: the software rasteriser.
-    impl->gpuTried = true;
-    Onboarding::Shaders::Image noise;
-    CHECK(impl->gpu.Init(true) && Onboarding::Shaders::LoadPng(wic, repo + L"\\assets\\onboarding\\noise.png", noise) && impl->gpu.SetInput(Onboarding::Shaders::Kind::GrainGradient, noise));
-    CHECK(!impl->gpu.Animated());
+    ForceCpuRaster(impl);
     toast.SetView(V(Phase::Available));
-    const DWORD start = GetTickCount();
-    Pump(700);
-    CHECK(toast.Shown() && impl->grainRenders >= 1 && !impl->grainTimer);   // one still frame
+    CHECK(PumpUntil([&] { return toast.Shown() && impl->grainRenders >= 1 && !impl->presenter.Moving(M::Now()); }));
+    Pump(100);
+    CHECK(!impl->grainTimer);   // one still frame
     const auto before = impl->grainRenders;
+    const DWORD start = GetTickCount();
     Pump(1000);
     std::printf("CPU rasteriser: %llu background frame(s), %llu more in 1 s, timer %s\n", before, impl->grainRenders - before, impl->grainTimer ? "on" : "off");
     CHECK(impl->grainRenders == before && !impl->grainTimer);
-    CHECK(GetTickCount() - start < 3000);                                   // the pumps returned on time
+    CHECK(GetTickCount() - start < 2500);                                   // the pump returned on time (nothing kept it busy)
     toast.Close();
 }
 
@@ -782,7 +874,16 @@ int wmain(int argc, wchar_t** argv) {
     wchar_t deskName[64]; std::swprintf(deskName, 64, L"update-card-tests-%lu", GetCurrentProcessId());
     HDESK desk = CreateDesktopW(deskName, nullptr, nullptr, 0, GENERIC_ALL, nullptr);
     if (!desk || !SetThreadDesktop(desk)) { std::fprintf(stderr, "hidden desktop unavailable (%lu): refusing to show windows\n", GetLastError()); return 2; }
-    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    // Options that reproduce GitHub's runners on this machine: --cpu-raster (no GPU: the background on WARP) and
+    // --dpi-unaware (every window at 96 dpi, the runner's, whatever this screen's scale).
+    bool windows = true, unaware = false;
+    for (int i = 3; i < argc; ++i) {
+        const std::wstring a = argv[i];
+        if (a == L"--no-window") windows = false;
+        else if (a == L"--cpu-raster") cpuRaster = true;
+        else if (a == L"--dpi-unaware") unaware = true;
+    }
+    SetProcessDpiAwarenessContext(unaware ? DPI_AWARENESS_CONTEXT_UNAWARE : DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 2;
     repo = argc > 1 ? argv[1] : L".";
     snapshots = argc > 2 ? argv[2] : repo + L"\\build\\update-toast\\snapshots";
@@ -795,10 +896,11 @@ int wmain(int argc, wchar_t** argv) {
         if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)))) { std::fprintf(stderr, "WIC unavailable\n"); return 2; }
         {
             Onboarding::Shaders::Image noise;
-            if (gpu.Init() && Onboarding::Shaders::LoadPng(wic, repo + L"\\assets\\onboarding\\noise.png", noise)) gpu.SetInput(Onboarding::Shaders::Kind::GrainGradient, noise);
-            std::printf("background shader: %s\n", gpu.Animated() ? "hardware" : gpu.Ready() ? "software (still frame)" : "unavailable");
+            if (gpu.Init(cpuRaster) && Onboarding::Shaders::LoadPng(wic, repo + L"\\assets\\onboarding\\noise.png", noise)) gpu.SetInput(Onboarding::Shaders::Kind::GrainGradient, noise);
+            std::printf("background shader: %s, windows at %u dpi\n", gpu.Animated() ? "hardware" : gpu.Ready() ? "software (still frame)" : "unavailable", GetDpiForSystem());
             Painter painter;
             if (FAILED(painter.Init(repo + L"\\assets"))) { std::fprintf(stderr, "painter init failed\n"); return 2; }
+            I18n::SetForProcess(I18n::Locale::Fr);   // the default (FrenchModelTests), pinned: never the OS language
             SnapshotTests(painter);   // French renders (Val's texts), compared with the preview by compare.py
             // Model, motion and the remaining checks in English: pinned explicitly, never the OS language.
             I18n::SetForProcess(I18n::Locale::En);
@@ -806,12 +908,11 @@ int wmain(int argc, wchar_t** argv) {
             MotionTests();
             ClickAndDwellTests();
             GrainCadenceTests();
+            PlacementTests();
             painter.ClearCache();
             PainterTests(painter);
         }
         gpu.Dispose();
-        bool windows = true;
-        for (int i = 3; i < argc; ++i) if (std::wstring(argv[i]) == L"--no-window") windows = false;
         if (windows) { WindowTests(); SoftwareWindowTests(); }
         Drop(wic);
         CoUninitialize();
