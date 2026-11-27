@@ -49,12 +49,9 @@ jobs:
     # builds and publishes nothing.
     if: github.repository == 'VALXXII/browser'
     runs-on: windows-2022
-    # 70: the build takes about 7 minutes and the native suite now compiles side by side while its tests run (run_all.py:
-    # one pool, the src/main.cpp compiles one at a time within this runner's 8 GB, the others beside them). Measured on
-    # 2026-11-27, the whole suite as a simulated runner (2 logical processors, 4.5 GB for the compiles): 48.5 minutes,
-    # against 72.4 minutes one compile after the other; about 40-47 minutes expected here (this runner compiles
-    # src/main.cpp in 141-172 s). The cancelled run of PR #160 had reached 52 minutes before this change.
-    timeout-minutes: 70
+    # 120 for now: the native suite alone takes about 46 minutes on this runner (ten of its tests each recompile
+    # src/main.cpp); back to 60-70 once the suite is shortened.
+    timeout-minutes: 120
     # A newer push to main supersedes an older build still in progress.
     concurrency:
       group: update-release-build-${{ github.ref }}

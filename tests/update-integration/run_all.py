@@ -15,14 +15,15 @@ Steps:
      Windows setup suite (tests/setup/run_tests.py, temp roots and test keys only);
   4. --app: static checks of the built application directory.
 
-Compiles and runs overlap, the runs keep their order. Everything the selected steps compile is planned first: the
-fixtures of step 1 and the compiles of the scripts that hand theirs over (compile_plan.py: test-lottie.py, the drawer
-side, the update-core, update-toast and webview2 suites, the mocked end-to-end install), each with its own command line
-(the same flags as before, one g++ per output). The compiles then start, up to --jobs at a time (default: one per core)
-within the free memory (a src/main.cpp compile needs about 3.5 GB: one at a time on an 8 GB runner), at below-normal
-priority; meanwhile every step runs in the order below, one at a time, as before, each once its own compiles are done:
-the fixtures' runs and the scripts (with --prebuilt). Each compile's output is printed whole just before its step; the
-first failure (a compile or a run) stops the compiles and the run with its output shown. --jobs 1 compiles one at a time.
+Two phases, never together. Everything the selected steps compile is planned first: the fixtures of step 1 and the
+compiles of the scripts that hand theirs over (compile_plan.py: test-lottie.py, the drawer side, the update-core,
+update-toast and webview2 suites, the mocked end-to-end install), each with its own command line (the same flags as
+before, one g++ per output). Phase A compiles them all, up to --jobs at a time (default: one per core) within the free
+memory (a src/main.cpp compile needs about 3.5 GB: one at a time on an 8 GB runner, light ones beside it), nothing else
+running; each compile's output is printed whole when it ends; the first failure stops it and the run. Phase B then runs
+every step in the order below, one at a time, as before, with nothing compiling or running beside it (a timing test
+never shares the processor): the fixtures' runs and the scripts (with --prebuilt). --jobs 1 compiles one at a time;
+--runs-only runs phase B alone from an earlier run's outputs (local measurements only).
 """
 from __future__ import annotations
 import argparse, json, os, re, shutil, struct, subprocess, sys, threading, time
@@ -45,20 +46,19 @@ LOOSE = ['-O2', '-Wall', '-Wextra', '-Wno-unknown-pragmas', '-Wno-cast-function-
          '-Wno-misleading-indentation', '-Wno-missing-field-initializers']
 
 results: list[tuple[str, float]] = []
-# While steps are planned (planned()), fixture() records its compile for the pool and run() records the step for later;
-# run(..., now=True) runs at once (a resource object a later compile needs). A planned step: (label, command, kw, the
-# indices of the compiles it needs).
+# While steps are planned (planned()), fixture() records its compile for phase A and run() records the step for phase B;
+# run(..., now=True) runs at once (a resource object a later compile needs). A planned step: (label, command, kw).
 PLAN: dict | None = None
+RUNS_ONLY = False   # --runs-only: phase B alone, from an earlier full run's outputs (local measurements)
 # Measured on 2026-11-27 (job accounting, peak commit): a compile of src/main.cpp (the test file that includes it, or a
 # script's host) peaks at 2.8-4.3 GB; every other compile of the suite at 1.3 GB or less. A hosted windows-2022 runner of a
-# private repository has 2 cores and 8 GB: one src/main.cpp compile at a time there, a light one beside it.
-HEAVY_GB, LIGHT_GB, RESERVE_GB = 3.5, 1.0, 0.5   # the tests running meanwhile use a few hundred MB
-BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
+# private repository has 2 vCPUs and 8 GB: one src/main.cpp compile at a time there, a light one beside it.
+HEAVY_GB, LIGHT_GB, RESERVE_GB = 3.5, 1.0, 0.5
 
 
 def run(label: str, cmd: list, now: bool = False, **kw) -> None:
     if PLAN is not None and not now:
-        PLAN['steps'].append((label, cmd, kw, []))
+        PLAN['steps'].append((label, cmd, kw))
         return
     execute(label, cmd, **kw)
 
@@ -78,7 +78,7 @@ def fixture(name: str, compile_args: list, run_args: list | None = None) -> None
     command = [GXX, '-std=c++17', '-static', *compile_args, '-o', exe]
     if PLAN is not None:
         PLAN['compiles'].append((name, command, ROOT))
-        PLAN['steps'].append((f'run {name}', [exe, *(run_args or [])], {}, [len(PLAN['compiles']) - 1]))
+        PLAN['steps'].append((f'run {name}', [exe, *(run_args or [])], {}))
         return
     run(f'compile {name}', command)
     run(f'run {name}', [exe, *(run_args or [])])
@@ -111,101 +111,66 @@ def compiles_main_cpp(command: list, cwd) -> bool:
     return False
 
 
-class Pool:
-    """The planned compiles, started at once in their order, `jobs` at a time and within the free memory (a src/main.cpp
-    compile first whenever one fits: they are the long ones), at below-normal priority so that a test running meanwhile
-    keeps the processor. Each compile's output is kept whole for its step."""
+def compile_all(compiles: list, jobs: int, memory_gb: float = 0.0) -> None:
+    """Phase A: every planned compile, `jobs` at a time within the memory (a src/main.cpp compile first whenever one fits:
+    they are the long ones), nothing else running. Each compile's output is printed whole when it ends (never interleaved);
+    the first failure stops the queue and ends the compiles still running (ours), then the run fails with its output last."""
+    items = [{'name': n, 'cmd': [str(c) for c in cmd], 'cwd': cwd, 'heavy': compiles_main_cpp(cmd, cwd)} for n, cmd, cwd in compiles]
+    pending, procs, failed = list(items), set(), []
+    state = {'free': max(HEAVY_GB, memory_gb or free_memory_gb() - RESERVE_GB), 'running': 0}
+    cv, start = threading.Condition(), time.time()
+    cost = lambda item: HEAVY_GB if item['heavy'] else LIGHT_GB
+    print(f"== phase A: {len(items)} compiles ({sum(1 for i in items if i['heavy'])} of src/main.cpp), up to {jobs} at a time within "
+          f"{state['free']:.1f} GB ({os.cpu_count()} cores, {free_memory_gb():.1f} GB free); nothing else runs meanwhile", flush=True)
 
-    def __init__(self, compiles: list, jobs: int, memory_gb: float = 0.0):
-        self.items = [{'name': n, 'cmd': [str(c) for c in cmd], 'cwd': cwd, 'heavy': compiles_main_cpp(cmd, cwd), 'done': threading.Event(),
-                       'code': None, 'text': '', 'took': 0.0, 'shown': False} for n, cmd, cwd in compiles]
-        self.pending = list(self.items)
-        self.free = max(HEAVY_GB, memory_gb or free_memory_gb() - RESERVE_GB)
-        self.running, self.failed, self.stopped, self.procs = 0, [], False, set()
-        self.cv, self.start = threading.Condition(), time.time()
-        heavy = sum(1 for i in self.items if i['heavy'])
-        print(f'== {len(self.items)} compiles ({heavy} of src/main.cpp) started, up to {jobs} at a time within {self.free:.1f} GB '
-              f'({os.cpu_count()} cores, {free_memory_gb():.1f} GB free); the runs follow in their order as their compiles end', flush=True)
-        self.threads = [threading.Thread(target=self.worker, daemon=True) for _ in range(max(1, jobs))]
-        for t in self.threads:
-            t.start()
-
-    def cost(self, item) -> float:
-        return HEAVY_GB if item['heavy'] else LIGHT_GB
-
-    def take(self):
-        fits = [i for i in self.pending if self.cost(i) <= self.free]
+    def take():
+        fits = [i for i in pending if cost(i) <= state['free']]
         item = next((i for i in fits if i['heavy']), None) or (fits[0] if fits else None)
-        if item is None and self.running == 0 and self.pending:
-            item = self.pending[0]   # never stuck: alone, a compile always starts
+        if item is None and state['running'] == 0 and pending:
+            item = pending[0]   # never stuck: alone, a compile always starts
         if item is not None:
-            self.pending.remove(item); self.free -= self.cost(item); self.running += 1
+            pending.remove(item); state['free'] -= cost(item); state['running'] += 1
         return item
 
-    def worker(self) -> None:
+    def worker() -> None:
         while True:
-            with self.cv:
+            with cv:
                 item = None
-                while not self.stopped and self.pending and (item := self.take()) is None:
-                    self.cv.wait()
+                while not failed and pending and (item := take()) is None:
+                    cv.wait()
                 if item is None:
                     return
             begun = time.time()
-            proc = subprocess.Popen(item['cmd'], cwd=item['cwd'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                    creationflags=BELOW_NORMAL_PRIORITY_CLASS)
-            with self.cv:
-                self.procs.add(proc)
+            proc = subprocess.Popen(item['cmd'], cwd=item['cwd'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            with cv:
+                procs.add(proc)
             out, _ = proc.communicate()
-            item['code'], item['text'], item['took'] = proc.returncode, out.decode('utf-8', errors='replace'), time.time() - begun
-            with self.cv:
-                self.procs.discard(proc); self.free += self.cost(item); self.running -= 1
-                if item['code'] != 0 and not self.stopped:
-                    self.failed.append(item); self.stopped = True
-                self.cv.notify_all()
-            item['done'].set()
+            took, text = time.time() - begun, out.decode('utf-8', errors='replace')
+            with cv:
+                procs.discard(proc); state['free'] += cost(item); state['running'] -= 1
+                if not failed:
+                    print(f"== compile {item['name']} ({took:.1f} s{', src/main.cpp' if item['heavy'] else ''})", flush=True)
+                    if text.strip():
+                        print(text.rstrip(), flush=True)
+                if proc.returncode != 0 and not failed:
+                    failed.append((item['name'], proc.returncode, text))
+                    for other in list(procs):   # the first failure ends the run: the compiles still running are ours
+                        other.kill()
+                elif proc.returncode == 0:
+                    results.append((f"compile {item['name']}", took))
+                cv.notify_all()
 
-    def show(self, item) -> None:
-        if item['shown']:
-            return
-        item['shown'] = True
-        print(f"== compile {item['name']} ({item['took']:.1f} s{', src/main.cpp' if item['heavy'] else ''})", flush=True)
-        if item['text'].strip():
-            print(item['text'].rstrip(), flush=True)
-        if item['code'] == 0:
-            results.append((f"compile {item['name']}", item['took']))
-
-    def wait(self, needs: list) -> None:
-        """Until the compiles a step needs are done; shown, grouped, before it. The first failure stops the run."""
-        for index in needs:
-            item = self.items[index]
-            while not item['done'].wait(0.5):
-                if self.failed:
-                    break
-            if self.failed:
-                self.fail()
-            self.show(item)
-
-    def fail(self) -> None:
-        self.stop()
-        item = self.failed[0]
-        print(f"\n== compile {item['name']} ({item['took']:.1f} s)\n{item['text'].rstrip()}\nFAILED ({item['code']}): compile {item['name']}", flush=True)
-        sys.exit(item['code'] or 1)
-
-    def stop(self) -> None:
-        """No compile starts any more; those running (ours) are ended."""
-        with self.cv:
-            self.stopped = True
-            for proc in list(self.procs):
-                proc.kill()
-            self.cv.notify_all()
-
-    def finish(self) -> None:
-        for t in self.threads:
-            t.join()
-        if self.failed:
-            self.fail()
-        busy = sum(i['took'] for i in self.items)
-        results.append((f'compile pool: {len(self.items)} compiles, {busy / 60:.1f} min of compiling in {(time.time() - self.start) / 60:.1f} min', 0.0))
+    threads = [threading.Thread(target=worker, daemon=True) for _ in range(max(1, jobs))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    if failed:
+        name, code, text = failed[0]
+        print(f'\n== the first failure: compile {name}\n{text.rstrip()}\nFAILED ({code}): compile {name}', flush=True)
+        sys.exit(code or 1)
+    busy = sum(seconds for label, seconds in results if label.startswith('compile '))
+    results.append((f'phase A: {len(items)} compiles, {busy / 60:.1f} min of compiling in {(time.time() - start) / 60:.1f} min', 0.0))
 
 
 def default_jobs() -> int:
@@ -213,22 +178,22 @@ def default_jobs() -> int:
 
 
 def script(label: str, path: Path, flags: list | None = None) -> None:
-    """A test script that compiles before it runs. In a planned step its compiles join the pool (--compile-plan: its own
-    preparation runs now, nothing is compiled) and it runs later in its place with --prebuilt; otherwise as it always did."""
+    """A test script that compiles before it runs. In a planned step its compiles join phase A (--compile-plan: its own
+    preparation runs now, nothing is compiled) and it runs in phase B in its place with --prebuilt; otherwise as it always did."""
     command = [sys.executable, *(flags or []), path]
     if PLAN is None:
         run(label, command)
         return
-    plan_file = OUT / 'compile-plans' / f'{path.parent.name}-{path.stem}.json'
-    execute(f'{label}: its preparation and compile commands', [*command, '--compile-plan', plan_file])
-    first = len(PLAN['compiles'])
-    PLAN['compiles'] += [(f'{label} / {name}', cmd, cwd) for name, cmd, cwd in compile_plan.read(plan_file)]
-    PLAN['steps'].append((label, [*command, '--prebuilt'], {}, list(range(first, len(PLAN['compiles'])))))
+    if not RUNS_ONLY:
+        plan_file = OUT / 'compile-plans' / f'{path.parent.name}-{path.stem}.json'
+        execute(f'{label}: its preparation and compile commands', [*command, '--compile-plan', plan_file])
+        PLAN['compiles'] += [(f'{label} / {name}', cmd, cwd) for name, cmd, cwd in compile_plan.read(plan_file)]
+    PLAN['steps'].append((label, [*command, '--prebuilt'], {}))
 
 
 def planned(step, jobs: int, memory_gb: float = 0.0) -> None:
-    """Steps planned first (their compiles collected, the scripts' preparations done), then the compiles started side by
-    side while the runs and scripts go in their order, one at a time, each once its own compiles are done."""
+    """Steps planned first (their compiles collected, the scripts' preparations done); phase A compiles everything, nothing
+    else running; then phase B runs the runs and scripts in their order, one at a time, nothing compiling or running beside."""
     global PLAN
     PLAN = {'compiles': [], 'steps': []}
     try:
@@ -236,15 +201,13 @@ def planned(step, jobs: int, memory_gb: float = 0.0) -> None:
         plan = PLAN
     finally:
         PLAN = None
-    pool = Pool(plan['compiles'], jobs, memory_gb)
-    try:
-        for label, command, kw, needs in plan['steps']:
-            pool.wait(needs)
-            run(label, command, **kw)
-    except BaseException:
-        pool.stop()
-        raise
-    pool.finish()
+    if not RUNS_ONLY:
+        compile_all(plan['compiles'], jobs, memory_gb)
+    start = time.time()
+    print(f"== phase B: {len(plan['steps'])} runs and scripts, one at a time", flush=True)
+    for label, command, kw in plan['steps']:
+        run(label, command, **kw)
+    results.append((f"phase B: {len(plan['steps'])} runs and scripts in {(time.time() - start) / 60:.1f} min", 0.0))
 
 
 def existing_fixtures() -> None:
@@ -610,9 +573,12 @@ def main() -> int:
     p.add_argument('--ci', action='store_true')
     p.add_argument('--only', choices=('existing', 'peers', 'integration', 'app'))
     p.add_argument('--jobs', type=int, default=0, help='compiles side by side (default: one per core, within the free memory; 1: one at a time)')
+    p.add_argument('--runs-only', action='store_true', help="phase B alone, from an earlier full run's outputs (local measurements; never on CI)")
     p.add_argument('--memory-gb', type=float, default=0.0, help="memory the compiles may use (default: the free memory less 0.5 GB), e.g. to try a smaller runner")
     a = p.parse_args()
     jobs = a.jobs if a.jobs > 0 else default_jobs()
+    global RUNS_ONLY
+    RUNS_ONLY = a.runs_only
     # agent guard (tests/agent-guard/agent_guard.py): every program this run starts (installers, browsers, peers) inherits
     # no API key or agent credential, and no switch to this computer's agents or to a fake agent
     sys.path.insert(0, str(ROOT / 'tests' / 'agent-guard'))
