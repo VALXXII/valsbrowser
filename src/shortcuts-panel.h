@@ -52,7 +52,7 @@ inline std::vector<Section> BuildSections() {
             {TR(shortcut_print), {L"Ctrl", L"P"}}, {TR(fullscreen_title), {L"F11"}}, {TR(focus_mode_title), {L"Ctrl", shift, L"F"}}}},
         {TR(shortcut_section_bookmarks), {
             {TR(a11y_add_bookmark), {L"Ctrl", L"D"}}, {TR(bookmarks_bar_show), {L"Ctrl", shift, L"B"}}, {TR(shortcut_open_bookmarks), {L"Ctrl", shift, L"O"}},
-            {TR(shortcut_undo_bookmark), {L"Ctrl", L"Z"}}, {TR(history_title), {L"Ctrl", L"H"}}}},
+            {TR(shortcut_undo_bookmark), {L"Ctrl", L"Z"}}, {TR(history_title), {L"Ctrl", L"H"}}, {TR(downloads_title), {L"Ctrl", L"J"}}}},
         {TR(shortcut_section_help), {{TR(shortcuts_title), {L"Ctrl", L"/"}}, {TR(shortcut_sandbox), {L"Ctrl", shift, L"F12"}}}},
     };
 }

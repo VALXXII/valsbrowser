@@ -8,6 +8,9 @@ compiled them, and that runner is the installer's (real windows, kept out of the
                                live sites and LAN addresses off, a private window the same
   annotation_private_test      a private window's notes are erased when it closes, a crashed one's at the next start
   annotation_onboarding_test   the mode's tutorial (#125): flow, first-time rule, its steps drawn OFF SCREEN, keys, languages
+  frame_card_test              iframes case 2: the card of an iframe of another site and its « En savoir plus » panel drawn
+                               OFF SCREEN (100 / 125 / 150 %, FR / EN), their windows on a desktop of their own (never the
+                               user's): the card's buttons, the panel docked, opened and closed (×, Échap, reduced motion)
 
 Same compiler flags as tests/update-integration/run_all.py (read from it). Every fixture is compiled and run; one that
 cannot be compiled (deps/ or the thorvg library missing: setup.ps1, test-lottie.py) is a failure, never a skip.
@@ -38,12 +41,15 @@ def flags():
 def main() -> int:
     R = flags(); OUT.mkdir(parents=True, exist_ok=True)
     evidence = OUT / 'annotation-onboarding-render'; evidence.mkdir(parents=True, exist_ok=True)
+    cards = OUT / 'frame-card-render'; cards.mkdir(parents=True, exist_ok=True)
     fixtures = [
         ('annotation_sites_test', [*R.STRICT, 'tests/annotations/annotation_sites_test.cpp'], []),
         ('annotation_private_test', [*R.STRICT, '-O2', 'tests/annotations/annotation_private_test.cpp', 'src/annotations.cpp', '-lbcrypt'], []),
         ('annotation_onboarding_test', [*R.LOOSE, '-Werror', '-municode', *R.TVG, R.WV2, 'tests/onboarding/annotation_onboarding_test.cpp',
                                         'src/native-lottie.cpp', 'src/agent-install.cpp', 'src/agent-runtime.cpp', 'src/acp-client.cpp', R.THORVG,
                                         *R.UI_LIBS, '-loleaut32', '-lshell32', '-luserenv', '-lwinhttp', '-lbcrypt'], [ROOT, evidence]),
+        ('frame_card_test', [*R.LOOSE, '-Werror', '-municode', *R.TVG, R.WV2, 'tests/annotations/frame_card_test.cpp', 'src/native-lottie.cpp', R.THORVG,
+                             *R.UI_LIBS, '-loleaut32', '-lshell32'], [ROOT, cards]),
     ]
     failed = []
     for name, compile_args, run_args in fixtures:

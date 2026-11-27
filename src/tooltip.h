@@ -423,6 +423,9 @@ public:
     }
     void PaintForTest() { Paint(); }
     bool RenderForTest(const std::wstring& root, const wchar_t* png, UINT dpi = 96) { return PopupKit::RenderPng(root, width_, height_, dpi, png, surface_, [this] { Paint(); }); }
+    // A tip's look for `content` without showing it (fixtures): measured, then drawn offscreen.
+    bool RenderContentForTest(const std::wstring& root, const Content& content, const wchar_t* png, UINT dpi = 96) { content_ = content; Measure(); return RenderForTest(root, png, dpi); }
+    float WidthForTest() const { return width_; }
 };
 
 // A button's own tooltip never shows over the menu it opened (owner's capture 2026-11-25: « Téléchargements » over the

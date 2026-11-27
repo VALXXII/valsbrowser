@@ -21,6 +21,7 @@
 #include "address.h"
 #include "local-pill.h"
 #include "bookmarks-bar.h"
+#include "bookmark-folder-style.h"
 #include "svg-path.h"
 #include "site-request.h"
 #include "sidebar.h"
@@ -73,8 +74,8 @@ class Chrome {
     std::map<std::shared_ptr<const FaviconImage>,ID2D1Bitmap*,std::owner_less<std::shared_ptr<const FaviconImage>>> faviconBitmaps;
     // Device-independent DirectWrite layouts reused across frames: animation frames
     // must not rebuild text formats/typography for unchanged labels. Bounded.
-    struct TextKey{std::wstring value;float width,height,size,tracking;bool tabular,medium,keycap;
-        bool operator<(const TextKey& o)const{return std::tie(value,width,height,size,tracking,tabular,medium,keycap)<std::tie(o.value,o.width,o.height,o.size,o.tracking,o.tabular,o.medium,o.keycap);}};
+    struct TextKey{std::wstring value;float width,height,size,tracking;bool tabular,medium,keycap,semibold;
+        bool operator<(const TextKey& o)const{return std::tie(value,width,height,size,tracking,tabular,medium,keycap,semibold)<std::tie(o.value,o.width,o.height,o.size,o.tracking,o.tabular,o.medium,o.keycap,o.semibold);}};
     struct TextEntry{IDWriteTextLayout* layout=nullptr;TextMeasure measure;unsigned long long used=0;};
     std::map<TextKey,TextEntry> textCache;
     // Paint() counts its passes: when the cache is full, only layouts the current pass has not used
@@ -127,13 +128,8 @@ public:
             const float cx=(r.left+r.right)/2;const int tab=i<split.railTabs.size()?split.railTabs[i]:-1;
             const bool vertical=r.bottom-r.top>r.right-r.left;const float top=vertical?r.top+12:(r.top+r.bottom)/2-8;const float left=vertical?cx-8:r.left+12;
             if(tab>=0)DrawFavicon(tab,{left,top,left+16,top+16});}
-        // Active panel ring (Paper 08): neutral, 1 DIP off the page, 2 DIP. After a click it is
-        // discreet (white 10 %); reached by keyboard (F6, menu) it is the focus ring's 50 % (5.26:1).
-        // The accent is kept for drop previews and manipulation, never a permanent frame.
-        // At an outer bottom corner the page is round (6 DIP): the ring follows it (8 on its centre line). Mode Focus: the
-        // outer top corners too (the page's 6 DIP corners, 8 on the ring's centre line, 2 DIP off the page).
-        if(split.ring){auto a=split.active;Color(1,keyboardModality?Design::Focus::keyboardOpacity:Design::Focus::pointerOpacity);
-            if(auto g=CornerBox({a.left-2,a.top-2,a.right+2,a.bottom+2},split.activeTopLeft?8.f:2.f,split.activeTopRight?8.f:2.f,split.activeBottomRight?8.f:2.f,split.activeBottomLeft?8.f:2.f)){target->DrawGeometry(g,brush,2);g->Release();}}
+        // No frame around the active panel any more (Val 2026-11-26): the split view's hover frames name each page
+        // (src/split-frames.h); the address bar and the tab strip still follow the active one.
         // Separator (Paper 08): at rest only the 4 DIP canvas gap, a thin neutral line. The
         // handle, 8 x 36 #2F2F2F fully rounded, appears while hovered, dragged or keyboard-focused
         // and overlaps both page edges by 2 DIP. Pages are child windows that cover the canvas,
@@ -421,7 +417,7 @@ public:
     std::map<unsigned,Motion::Spring> rowShift;Motion::Spring liftGrow{.0005f};int liftedRow=-1;
     struct RowDropState{unsigned key=0;float top=0,velocity=0;bool pending=false;} rowDrop;
     float RowShift(unsigned key,Motion::Time now)const{auto it=rowShift.find(key);return it==rowShift.end()?0.f:it->second.Value(now);}
-    bool ReorderMoving(Motion::Time now)const{if(liftGrow.Moving(now))return true;for(auto& e:rowShift)if(e.second.Moving(now))return true;return false;}
+    bool ReorderMoving(Motion::Time now)const{if(liftGrow.Moving(now)||BandTabMoving(now)||GridTabMoving(now))return true;for(auto& e:rowShift)if(e.second.Moving(now))return true;return false;}
     // The host, at the drop (before the list is reordered): the dropped row's last top and the pointer's vertical speed.
     void RowDropped(unsigned key,float top,float velocity,Motion::Time now){rowDrop={key,top,velocity,true};
         // The rows that stepped aside are re-laid out by the move: their offsets keep only what was still on its way.
@@ -545,7 +541,7 @@ public:
     std::vector<int> tabGroups;int liftedIndex=-1,visibleTabGroup=0;
     std::vector<int> menuTargets;  // tabs a highlighted split-menu row designates (Paper V2: 1 DIP white 50 % outline)
     int menuSource=-1;             // #127: the right-clicked tab while a split-menu row designates a target (the column outlines both)
-    struct SplitDecor{bool shown=false,ring=true;D2D1_RECT_F active{};std::vector<D2D1_RECT_F> rails;std::vector<int> railTabs;std::vector<D2D1_RECT_F> handles;int hotHandle=-1,focusedHandle=-1;bool paintHandles=true,activeBottomLeft=false,activeBottomRight=false,activeTopLeft=false,activeTopRight=false;} split;
+    struct SplitDecor{bool shown=false;D2D1_RECT_F active{};std::vector<D2D1_RECT_F> rails;std::vector<int> railTabs;std::vector<D2D1_RECT_F> handles;int hotHandle=-1,focusedHandle=-1;bool paintHandles=true;} split;
     UINT dpi=96;float width=1180,height=815;D2D1_RECT_F bar{},edit{};std::vector<Region> regions;
     // Fullscreen (F11 or a page's element): the page takes the whole window. Nothing of the chrome is drawn, hit,
     // focused, given a tooltip or exposed to UI Automation (all of these read `regions`); Paint only clears the canvas.
@@ -654,7 +650,7 @@ public:
     HRESULT MakeTextLayout(const std::wstring& value,D2D1_RECT_F slot,float size,bool tabular,bool medium,float tracking,IDWriteTextLayout** output,TextMeasure& placement){
         if(!write||!fonts||!output)return E_UNEXPECTED;
         IDWriteTextFormat* format=nullptr;IDWriteTextLayout* layout=nullptr;
-        HRESULT hr=write->CreateTextFormat(L"Inter Display",fonts,medium?DWRITE_FONT_WEIGHT_MEDIUM:DWRITE_FONT_WEIGHT_NORMAL,DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,size,L"fr-FR",&format);
+        HRESULT hr=write->CreateTextFormat(L"Inter Display",fonts,semibold?DWRITE_FONT_WEIGHT_SEMI_BOLD:medium?DWRITE_FONT_WEIGHT_MEDIUM:DWRITE_FONT_WEIGHT_NORMAL,DWRITE_FONT_STYLE_NORMAL,DWRITE_FONT_STRETCH_NORMAL,size,L"fr-FR",&format);
         if(FAILED(hr))return hr;
         format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
         format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -686,7 +682,7 @@ public:
     // Returns an AddRef'd layout; placement is translated to this slot.
     HRESULT CachedTextLayout(const std::wstring& value,D2D1_RECT_F slot,float size,bool tabular,bool medium,float tracking,IDWriteTextLayout** output,TextMeasure& placement){
         if(!cacheText)return MakeTextLayout(value,slot,size,tabular,medium,tracking,output,placement);
-        TextKey key{value,slot.right-slot.left,slot.bottom-slot.top,size,tracking,tabular,medium,keycap};
+        TextKey key{value,slot.right-slot.left,slot.bottom-slot.top,size,tracking,tabular,medium,keycap,semibold};
         auto it=textCache.find(key);
         if(it==textCache.end()){
             if(textCache.size()>=textCacheLimit){
@@ -707,6 +703,8 @@ public:
     D2D1_COLOR_F ink{1,1,1,1};
     // Keyboard key caps (menus) use their own variant set; set around the call like `ink`.
     bool keycap=false;
+    // Weight 600 (Inter Display SemiBold) instead of `medium`: set around the call like `ink` (#138 picker header 23SK-0).
+    bool semibold=false;
     void Text(const std::wstring& value,D2D1_RECT_F slot,float size,float opacity,bool tabular=false,bool medium=false,float tracking=0){if(value.empty())return;IDWriteTextLayout* layout=nullptr;TextMeasure m;if(FAILED(CachedTextLayout(value,slot,size,tabular,medium,tracking,&layout,m)))return;
         // Restrict horizontal overflow to its slot, but retain all measured
         // vertical glyph ink. All labels use the full 32 DIP control height.
@@ -818,7 +816,10 @@ public:
     }
     // ---- Bookmarks (star in the field, optional band under the toolbar) -------------
     // Set by the host before Build/Paint. `bandShown` false keeps the 81 DIP chrome.
-    struct BandItem { unsigned id=0; std::wstring title,tip; bool folder=false,local=false; std::shared_ptr<const FaviconImage> image; };
+    struct BandItem { unsigned id=0; std::wstring title,tip; bool folder=false,local=false; std::shared_ptr<const FaviconImage> image;
+        FolderStyle::Look look;   // #138: a folder's icon and colour (unstyled: the grey folder)
+        std::wstring sideTip;     // #138 board 242W-0: the side grid's folder tip on one line, « name · N favoris » (empty: `tip`)
+        const wchar_t* SideTip()const{return sideTip.empty()?tip.c_str():sideTip.c_str();} };
     std::vector<BandItem> bandItems; bool bandShown=false,bandButtonForced=false;
     bool starred=false;            // the active page is bookmarked: filled star
     int bandOpen=0;                // region whose menu is open: keeps its hover fill, chevron points up
@@ -828,6 +829,56 @@ public:
     int bandDropInto=-1;           // folder item under the dragged one: drop moves it inside
     float bandInsertX=-1;          // a bookmark dragged from a menu or the drawer: x (DIP) of the insertion line, -1 none
     BookmarksBar::Result band;     // last layout (Build)
+    // Atelier B: a TAB dragged over the bar (top layout). Set by the host while the tab is over the band, cleared when it
+    // leaves, drops or is cancelled: where each shown item goes with the new favorite's place opened (TabFavorite::Opened:
+    // `left` / `width` / `shown` per shown item), that place (`slot`), « » » in that layout, the item that already holds
+    // the page (`duplicate`, hover look) and `toOverflow` (the new one goes behind « » »: the button takes the folder
+    // drop look). No zone highlight (Val, 26 nov.): the place is board 08's hollow slot, fading in / out (`bandTabGlow`);
+    // the others step aside on the reorder spring (1.0 / .2 s), reduced motion: at once, the place still fades (80 ms).
+    struct BandTabDrop{bool on=false,slot=false,overflow=false,toOverflow=false;std::vector<float> left,width;std::vector<bool> shown;float slotLeft=0,slotWidth=0,overflowLeft=0;int duplicate=-1;} bandTab;
+    struct BandStep{Motion::Spring l{.05f},w{.05f};};std::map<unsigned,BandStep> bandStep;Motion::Spring bandTabGlow{.002f},bandSlotLeft{.05f},bandSlotWidth{.05f};bool bandSlotKnown=false;
+    // Atelier B, side layouts: the same for the column's grid (Sidebar::Layout's tiles). Host-set while the tab is over the
+    // grid: per shown tile where it goes with the new one's place opened (TabFavorite::GridOpened / ColumnOpened), that
+    // place (`place`, `slot`: shown), the tile already holding the page (`duplicate`), and `toOverflow` (« Tous les
+    // favoris » / « » » takes the folder look: the new one goes behind it). No zone highlight, as on the bar.
+    struct GridTabDrop{bool on=false,slot=false,toOverflow=false;std::vector<Sidebar::Box> tiles;Sidebar::Box place;int duplicate=-1;} gridTab;
+    std::map<unsigned,MorphBox> gridStep;MorphBox gridSlot;bool gridSlotKnown=false;Motion::Spring gridTabGlow{.002f};
+    static bool BoxMoving(const MorphBox& m,Motion::Time now){return m.l.Moving(now)||m.t.Moving(now)||m.r.Moving(now)||m.b.Moving(now);}
+    static void MorphTo(MorphBox& m,const Sidebar::Box& to,Motion::Time now,float response,bool reduced){if(!m.known){m.l.Snap(to.left);m.t.Snap(to.top);m.r.Snap(to.right);m.b.Snap(to.bottom);m.known=true;}
+        m.l.Set(to.left,now,response,reduced);m.t.Set(to.top,now,response,reduced);m.r.Set(to.right,now,response,reduced);m.b.Set(to.bottom,now,response,reduced);}
+    static Sidebar::Box MorphAt(const MorphBox& m,Motion::Time now){return {m.l.Value(now),m.t.Value(now),m.r.Value(now),m.b.Value(now)};}
+    bool GridTabMoving(Motion::Time now)const{if(gridTabGlow.Moving(now)||(gridSlotKnown&&BoxMoving(gridSlot,now)))return true;for(auto& e:gridStep)if(BoxMoving(e.second,now))return true;return false;}
+    // Presented boxes of the column's shown tiles while a tab is (or was just) over the grid; empty at rest. Returns the
+    // place's fade (0..1). The tiles step aside on the reorder spring (1.0 / .2 s); reduced motion: at once.
+    float GridTabFrame(const Sidebar::Layout& L,Motion::Time now,std::vector<Sidebar::Box>& at){
+        const bool reduced=!motion||motion->ReducedMotion();
+        gridTabGlow.Set(gridTab.on?1.f:0.f,now,reduced?.08f:gridTab.on?.20f:.10f);
+        const int n=std::min(SideBookmarkTiles(L),(int)bandItems.size());const bool open=gridTab.on&&gridTab.slot;
+        for(int i=0;i<n;++i){const auto rest=SideBookmarkTile(L,i);const auto to=open&&i<(int)gridTab.tiles.size()?gridTab.tiles[i]:rest;
+            auto it=gridStep.find(bandItems[i].id);if(it==gridStep.end()){if(!gridTab.on)continue;it=gridStep.emplace(bandItems[i].id,MorphBox{}).first;MorphTo(it->second,rest,now,0,true);}
+            MorphTo(it->second,to,now,stepResponse,reduced);}
+        if(open){if(!gridSlotKnown){gridSlot=MorphBox{};MorphTo(gridSlot,gridTab.place,now,0,true);gridSlotKnown=true;}MorphTo(gridSlot,gridTab.place,now,stepResponse,reduced);}
+        else gridSlotKnown=false;   // the place goes with the target (the tiles close it on their spring)
+        if(!gridTab.on&&!GridTabMoving(now)){gridStep.clear();gridSlotKnown=false;return 0;}
+        at.clear();for(int i=0;i<n;++i){auto it=gridStep.find(bandItems[i].id);at.push_back(it==gridStep.end()?SideBookmarkTile(L,i):MorphAt(it->second,now));}
+        return std::clamp(gridTabGlow.Value(now),0.f,1.f);
+    }
+    bool BandTabMoving(Motion::Time now)const{if(bandTabGlow.Moving(now)||bandSlotLeft.Moving(now)||bandSlotWidth.Moving(now))return true;for(auto& e:bandStep)if(e.second.l.Moving(now)||e.second.w.Moving(now))return true;return false;}
+    // Presented boxes of the shown items while a tab is (or was just) over the bar; empty at rest. Returns the place's fade.
+    float BandTabFrame(Motion::Time now,std::vector<D2D1_RECT_F>& at){
+        namespace L=BookmarksBar::Layout;const bool reduced=!motion||motion->ReducedMotion();
+        bandTabGlow.Set(bandTab.on?1.f:0.f,now,reduced?.08f:bandTab.on?.20f:.10f);   // split view: answers within ~200 ms, leaves in 100 ms; reduced: 80 ms
+        const int n=std::min(band.visible,(int)bandItems.size());bool open=bandTab.on&&bandTab.slot;
+        for(int i=0;i<n;++i){const auto rest=BandRect(i);float l=rest.left,w=rest.right-rest.left;
+            if(open&&i<(int)bandTab.left.size()&&i<(int)bandTab.shown.size()){if(bandTab.shown[i]){l=bandTab.left[i];w=bandTab.width[i];}else l=std::max(l,bandTab.overflowLeft);}   // pushed off: slides under « » »
+            auto it=bandStep.find(bandItems[i].id);if(it==bandStep.end()){if(!bandTab.on)continue;it=bandStep.emplace(bandItems[i].id,BandStep{}).first;it->second.l.Snap(rest.left);it->second.w.Snap(rest.right-rest.left);}
+            it->second.l.Set(l,now,stepResponse,reduced);it->second.w.Set(w,now,stepResponse,reduced);}
+        if(open){if(!bandSlotKnown){bandSlotLeft.Snap(bandTab.slotLeft);bandSlotWidth.Snap(0);bandSlotKnown=true;}bandSlotLeft.Set(bandTab.slotLeft,now,stepResponse,reduced);bandSlotWidth.Set(bandTab.slotWidth,now,stepResponse,reduced);}
+        else if(bandSlotKnown){bandSlotWidth.Set(0,now,stepResponse,reduced);if(!bandSlotWidth.Moving(now))bandSlotKnown=false;}
+        if(!bandTab.on&&!BandTabMoving(now)){bandStep.clear();bandSlotKnown=false;return 0;}   // at rest again: the bar's own layout
+        at.clear();for(int i=0;i<n;++i){const auto rest=BandRect(i);auto it=bandStep.find(bandItems[i].id);if(it==bandStep.end()){at.push_back(rest);continue;}const float l=it->second.l.Value(now);at.push_back({l,L::top,l+std::max(0.f,it->second.w.Value(now)),L::bottom});}
+        return std::clamp(bandTabGlow.Value(now),0.f,1.f);
+    }
     // Annotation mode (T3, src/annotation-mode.h): the "Annoter" button ('N') left of the tool cluster, and
     // the 32 DIP "Mode Annotation" band under the toolbar while the mode is on (the page moves down).
     bool annotateShown=false,annotateActive=false; float annotationBand=0; std::wstring annotateTip;   // empty until Ann::SyncChrome: AnnotateTip() falls back to the catalog at use
@@ -858,17 +909,18 @@ public:
     float KeyCapsWidth(){return 2*12+TextWidth(L"Ctrl",14,false,true)+TextWidth(L"D",14,false,true)+2;}
     // Fill of a band item's own surface (for the title's fade mask).
     float BandSurface(float hover,float press){return Design::Resolve(Design::ButtonVariant::Ghost,{hover,press}).fill?Design::Resolve(Design::ButtonVariant::Ghost,{hover,press}).surface:Design::Surface::canvas;}
-    void DrawBandItem(int i,const BandItem& item,int hover,int focus,Motion::Time now){
+    void DrawBandItem(int i,const BandItem& item,int hover,int focus,Motion::Time now,const D2D1_RECT_F* at=nullptr){
         namespace L=BookmarksBar::Layout;const int id=BookmarkBase+i;
-        D2D1_RECT_F box=BandRect(i);const bool dragged=i==bandDrag;
+        D2D1_RECT_F box=at?*at:BandRect(i);const bool dragged=i==bandDrag;   // at: its presented place while a tab opens a slot (atelier B)
         if(dragged){box.left+=bandDragOffset;box.right+=bandDragOffset;}
         auto v=motion?motion->Visual(id,now):Motion::InteractionVisual{hover==id?1.f:0.f,0};
-        if(id==bandOpen||i==bandDropInto||i==bandRenaming)v.hover=1;
+        if(id==bandOpen||i==bandDropInto||i==bandRenaming||(bandTab.on&&i==bandTab.duplicate))v.hover=1;   // atelier B: the item that already holds the dragged tab's page
         const float surface=dragged?Design::Surface::raised:BandSurface(v.hover,v.press);
         if(dragged||v.hover>0||v.press>0)Round(box,Design::Radius::control,surface);
         if(focus==id)FocusRing(box,Design::Radius::control);
         const float cy=(box.top+box.bottom)/2;const D2D1_RECT_F icon{box.left+L::itemPad,cy-8,box.left+L::itemPad+16,cy+8};
-        if(item.folder)Icon(L"folder-closed",icon,16,1);
+        if(item.folder&&item.look.styled)FolderLook(item.look,icon,FolderStyle::Size::For(FolderStyle::Size::bar,FolderStyle::Size::barPlain,item.look));   // #138 board 243X-0
+        else if(item.folder)Icon(L"folder-closed",icon,16,1);
         else if(!DrawSiteImage(item.image,icon))Icon(item.local?L"file":L"favicon",icon,16,1);
         const float emphasis=std::max(v.hover,id==bandOpen?1.f:0.f);
         float right=box.right-L::itemPad;
@@ -888,7 +940,7 @@ public:
         target->PopAxisAlignedClip();
         // Truncated titles dissolve into the item's surface (never an ellipsis), like the address.
         if(left+textWidth>right+.5f){
-            const float c=surface,fade=std::min(16.f,right-left);ID2D1GradientStopCollection* stops=nullptr;ID2D1LinearGradientBrush* gradient=nullptr;
+            const float c=surface,fade=std::min(item.folder?FolderStyle::nameFade:16.f,right-left);ID2D1GradientStopCollection* stops=nullptr;ID2D1LinearGradientBrush* gradient=nullptr;   // #138 board 241K-0: a folder's name fades over 24
             D2D1_GRADIENT_STOP g[]={{0,D2D1::ColorF(c,c,c,0)},{1,D2D1::ColorF(c,c,c,1)}};
             if(SUCCEEDED(target->CreateGradientStopCollection(g,2,&stops))&&SUCCEEDED(target->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties({right-fade,0},{right,0}),stops,&gradient)))target->FillRectangle(D2D1::RectF(right-fade,box.top+1,right,box.bottom-1),gradient);
             Drop(gradient);Drop(stops);
@@ -896,17 +948,30 @@ public:
     }
     void DrawBand(int hover,int focus,Motion::Time now){
         if(!bandShown)return;
-        for(int i=0;i<band.visible&&i<(int)bandItems.size();++i)if(i!=bandDrag)DrawBandItem(i,bandItems[i],hover,focus,now);
+        namespace BL=BookmarksBar::Layout;const auto accent=Design::Accent::Get();
+        // Atelier B: a tab over the bar. No zone highlight (Val, 26 nov.: no blue): only the place it would take, which
+        // fades in and out with `glow`, and the items stepping aside.
+        std::vector<D2D1_RECT_F> at;const float glow=sidebar?0.f:BandTabFrame(now,at);
+        const float clipRight=bandTab.on&&bandTab.overflow?bandTab.overflowLeft-BL::gap:band.overflow?band.overflowLeft-BL::gap:width;
+        if(!at.empty())target->PushAxisAlignedClip(D2D1::RectF(0,BL::top-BL::gap,std::max(0.f,clipRight),BL::bottom+BL::gap),D2D1_ANTIALIAS_MODE_ALIASED);   // pushed-off items slide under « » »
+        auto shownAt=[&](int i)->const D2D1_RECT_F*{return i<(int)at.size()?&at[i]:nullptr;};
+        for(int i=0;i<band.visible&&i<(int)bandItems.size();++i)if(i!=bandDrag)DrawBandItem(i,bandItems[i],hover,focus,now,shownAt(i));
         if(bandDrag>=0&&bandDrag<band.visible&&bandDrag<(int)bandItems.size())DrawBandItem(bandDrag,bandItems[bandDrag],hover,focus,now);
+        // Atelier B: where the tab lands, board 08's hollow slot (« 08 · Réordonner »: #FFFFFF0A, a 1 DIP inner #FFFFFF1F, radius 6).
+        if(bandSlotKnown&&glow>.001f){const float l=bandSlotLeft.Value(now),w=bandSlotWidth.Value(now);
+            if(w>1){const D2D1_RECT_F r{l,BL::top,l+w,BL::bottom};const float rr=std::min(Design::Radius::control,w/2);
+                FillBox(r,rr,D2D1::ColorF(1,1,1,10/255.f*glow));brush->SetColor(D2D1::ColorF(1,1,1,31/255.f*glow));target->DrawRoundedRectangle(D2D1::RoundedRect({r.left+.5f,r.top+.5f,r.right-.5f,r.bottom-.5f},std::max(0.f,rr-.5f),std::max(0.f,rr-.5f)),brush,1);}}
+        if(!at.empty())target->PopAxisAlignedClip();
         {   // Drop feedback for a bookmark dragged in from a menu or the drawer: the folder it would enter is tinted with the
-            // accent; otherwise a 2 DIP accent line marks where it would land. Nothing animates at rest.
-            const auto accent=Design::Accent::Get();
-            if(bandDrag<0&&bandDropInto>=0&&bandDropInto<band.visible)FillBox(BandRect(bandDropInto),Design::Radius::control,D2D1::ColorF(accent.r,accent.g,accent.b,.18f));
+            // accent; otherwise a 2 DIP accent line marks where it would land. Nothing animates at rest. (Atelier B: a tab
+            // over a folder's middle takes the same folder look, at the folder's presented place.)
+            if(bandDrag<0&&bandDropInto>=0&&bandDropInto<band.visible)FillBox(shownAt(bandDropInto)?*shownAt(bandDropInto):BandRect(bandDropInto),Design::Radius::control,D2D1::ColorF(accent.r,accent.g,accent.b,.18f));
             if(bandInsertX>=0)FillBox({bandInsertX-1,BookmarksBar::Layout::top+4,bandInsertX+1,BookmarksBar::Layout::bottom-4},1,D2D1::ColorF(accent.r,accent.g,accent.b,1));
         }
-        if(band.overflow){const D2D1_RECT_F box{band.overflowLeft,BookmarksBar::Layout::top,band.overflowLeft+Design::Size::control,BookmarksBar::Layout::bottom};
+        if(band.overflow||(bandTab.on&&bandTab.overflow)){const float ol=bandTab.on&&bandTab.overflow?bandTab.overflowLeft:band.overflowLeft;const D2D1_RECT_F box{ol,BookmarksBar::Layout::top,ol+Design::Size::control,BookmarksBar::Layout::bottom};
             auto v=motion?motion->Visual('O',now):Motion::InteractionVisual{hover=='O'?1.f:0.f,0};if(bandOpen=='O')v.hover=1;
-            DrawButton(L"overflow",box,Design::ButtonVariant::Ghost,{v.hover,v.press,false,focus=='O'});}
+            DrawButton(L"overflow",box,Design::ButtonVariant::Ghost,{v.hover,v.press,false,focus=='O'});
+            if(bandTab.on&&bandTab.toOverflow)FillBox(box,Design::Radius::control,D2D1::ColorF(accent.r,accent.g,accent.b,.18f));}   // atelier B: it goes behind « » »
         if(bandItems.empty()&&!band.overflow){
             // "Toujours" with no bookmark yet: one quiet way in, never an empty strip.
             const D2D1_RECT_F box{BookmarksBar::Layout::padding,BookmarksBar::Layout::top,BookmarksBar::Layout::padding+EmptyBandWidth(),BookmarksBar::Layout::bottom};
@@ -981,6 +1046,52 @@ public:
         if(!g)return;
         D2D1_MATRIX_3X2_F old;target->GetTransform(&old);const float k=size/256,x=(box.left+box.right-size)/2,y=(box.top+box.bottom-size)/2;
         target->SetTransform(D2D1::Matrix3x2F::Scale(k,k)*D2D1::Matrix3x2F::Translation(x,y)*old);brush->SetColor(color);target->FillGeometry(g,brush);target->SetTransform(old);}
+    // #138 A favorites folder's look (src/bookmark-folder-style.h): the Phosphor folder filled with its colour, the emblem
+    // inside at translate(78,92) scale(0.39) of the 256 box in the darker shade; `size` DIP centred in `box`.
+    static D2D1_COLOR_F Rgb(std::uint32_t c,float a=1){return D2D1::ColorF(((c>>16)&0xFF)/255.f,((c>>8)&0xFF)/255.f,(c&0xFF)/255.f,a);}
+    void FolderLook(const FolderStyle::Look& look,D2D1_RECT_F box,float size,float alpha=1){
+        if(!target||!brush||!factory||!look.styled)return;
+        PathGlyph(FolderStyle::folderPath,box,size,Rgb(look.folder,alpha));
+        if(!look.emblemPath)return;
+        auto& g=pathGlyphs[look.emblemPath];if(!g)g=DialogKit::SvgGeometry(factory,look.emblemPath);if(!g)return;
+        D2D1_MATRIX_3X2_F old;target->GetTransform(&old);const float k=size/256,x=(box.left+box.right-size)/2,y=(box.top+box.bottom-size)/2;
+        target->SetTransform(D2D1::Matrix3x2F::Scale(FolderStyle::emblemScale,FolderStyle::emblemScale)*D2D1::Matrix3x2F::Translation(FolderStyle::emblemX,FolderStyle::emblemY)*D2D1::Matrix3x2F::Scale(k,k)*D2D1::Matrix3x2F::Translation(x,y)*old);
+        brush->SetColor(Rgb(look.emblem,alpha));target->FillGeometry(g,brush);target->SetTransform(old);}
+    // #138 The picker's swatches and grid (board 23F4-0 in the drawer, 23SD-0 in the popover), the swatches' row from
+    // (x, y), the grid `gap` under it, on its #1E1E1E surface. `hover(i)`: stop i's hover (0..1, the app's ghost hover
+    // #333333: the board draws none); `focus`: the keyboard stop with its 2 DIP #E6E6E6 ring (23OW-0), -1 none.
+    //  - Swatch 24 (« Sans couleur » first: #2A2A2A dot, 1 DIP inset #3A3A3A, the 1.5 #8C8C8C slash of a 20 box at 18);
+    //    the chosen one: a 1.5 DIP inset white ring round its 18 DIP dot (23FK-0).
+    //  - Cell 26, radius 6: the grey folder (#8C8C8C, emblem #3B3B3B; the plain folder at 16, the others 18); the chosen
+    //    one in the folder's colours on that colour at 20 % with a 1 DIP inset ring of it (23OC-0, none: 23XI-0).
+    void PaintFolderPicker(float x,float y,float gap,const FolderStyle::Picker::Model& m,const std::function<float(int)>& hover,int focus){
+        namespace P=FolderStyle::Picker;namespace FS=FolderStyle;if(!target||!brush||!factory)return;const float gridTop=y+P::swatch+gap;
+        for(int i=0;i<P::count;++i){const auto b=P::Stop(i,x,y,gridTop);const D2D1_RECT_F r{b.left,b.top,b.right,b.bottom};const float cx=(r.left+r.right)/2,cy=(r.top+r.bottom)/2;
+            const float hv=hover?std::clamp(hover(i),0.f,1.f):0.f;
+            if(i<P::swatches){const int color=i-1;const bool chosen=color==m.color;
+                if(hv>0&&!chosen){brush->SetColor(D2D1::ColorF(Design::Surface::hover,Design::Surface::hover,Design::Surface::hover,hv));target->FillEllipse(D2D1::Ellipse({cx,cy},P::swatch/2,P::swatch/2),brush);}
+                if(chosen){brush->SetColor(D2D1::ColorF(1,1,1,1));target->DrawEllipse(D2D1::Ellipse({cx,cy},P::swatch/2-P::selectedRing/2,P::swatch/2-P::selectedRing/2),brush,P::selectedRing);}
+                const float d=P::swatchDot/2;
+                if(color<0){brush->SetColor(Rgb(P::noneDot));target->FillEllipse(D2D1::Ellipse({cx,cy},d,d),brush);
+                    brush->SetColor(Rgb(P::noneRing));target->DrawEllipse(D2D1::Ellipse({cx,cy},d-.5f,d-.5f),brush,1);
+                    ID2D1StrokeStyle* round=nullptr;D2D1_STROKE_STYLE_PROPERTIES sp{};sp.startCap=sp.endCap=D2D1_CAP_STYLE_ROUND;factory->CreateStrokeStyle(sp,nullptr,0,&round);
+                    const float k=P::swatchDot/20,l=cx-d,t=cy-d;brush->SetColor(Rgb(P::noneSlash));target->DrawLine({l+5*k,t+15*k},{l+15*k,t+5*k},brush,1.5f*k,round);Drop(round);}
+                else{brush->SetColor(Rgb(FS::colors[color].folder));target->FillEllipse(D2D1::Ellipse({cx,cy},d,d),brush);}
+                if(focus==i){brush->SetColor(Rgb(P::focusColor));target->DrawEllipse(D2D1::Ellipse({cx,cy},P::swatch/2+P::focusRing/2,P::swatch/2+P::focusRing/2),brush,P::focusRing);}
+                continue;}
+            const int icon=i-P::swatches;const bool chosen=icon==m.icon;FS::Look look;look.styled=true;look.emblemPath=icon>0?FS::icons[icon].emblem:nullptr;
+            if(chosen){look.folder=m.color>=0?FS::colors[m.color].folder:FS::noneFolder;look.emblem=m.color>=0?FS::colors[m.color].emblem:FS::noneEmblem;
+                const auto c=Rgb(look.folder);FillBox(r,P::cellRadius,D2D1::ColorF(c.r,c.g,c.b,P::selectedFill));
+                brush->SetColor(c);target->DrawRoundedRectangle(D2D1::RoundedRect({r.left+P::cellRing/2,r.top+P::cellRing/2,r.right-P::cellRing/2,r.bottom-P::cellRing/2},P::cellRadius-P::cellRing/2,P::cellRadius-P::cellRing/2),brush,P::cellRing);}
+            else{look.folder=P::restGlyph;look.emblem=P::restEmblem;if(hv>0)FillBox(r,P::cellRadius,D2D1::ColorF(Design::Surface::hover,Design::Surface::hover,Design::Surface::hover,hv));}
+            FolderLook(look,r,icon>0?FS::Size::cell:FS::Size::cellPlain);
+            if(focus==i){brush->SetColor(Rgb(P::focusColor));target->DrawRoundedRectangle(D2D1::RoundedRect({r.left-P::focusRing/2,r.top-P::focusRing/2,r.right+P::focusRing/2,r.bottom+P::focusRing/2},P::cellRadius+P::focusRing/2,P::cellRadius+P::focusRing/2),brush,P::focusRing);}
+        }}
+    // Greedy word wrap of `text` at `size` into lines no wider than `width` (the picker's hint, 12/16).
+    std::vector<std::wstring> WrapWords(const std::wstring& text,float width,float size){std::vector<std::wstring> lines;std::wstring line,word;
+        auto push=[&]{if(word.empty())return;const std::wstring next=line.empty()?word:line+L" "+word;if(!line.empty()&&TextWidth(next,size)>width){lines.push_back(line);line=word;}else line=next;word.clear();};
+        for(size_t i=0;i<text.size();++i){const wchar_t c=text[i];const bool glued=c==L' '&&i+1<text.size()&&(text[i+1]==L':'||text[i+1]==L';'||text[i+1]==L'!'||text[i+1]==L'?');   // French « : » never starts a line
+            if(c==L' '&&!glued){push();}else word+=glued?L'\u00A0':c;}push();if(!line.empty())lines.push_back(line);return lines;}
     // One state of the chip at opacity `a`, left-aligned in `box` (its own width).
     void DrawChipState(SiteRequest::State st,D2D1_RECT_F box,float a){
         namespace L=SiteRequest::Layout;using SiteRequest::State;if(a<=0)return;
@@ -1219,7 +1330,7 @@ public:
         if(sidebarOverlay){sideOver=SB::Compute(SideInput(SB::Mode::Complete,count,side.column,true));sideOver.scroll=side.scroll;}
         // The compact « » » popover: all the bookmarks, its tiles first (it covers the column's right and the page).
         if(sidebarPopover&&!sidebarOverlay&&side.more&&side.mode==SB::Mode::Compact&&!side.tiles.empty()){sidePop=SB::ComputePopover(side.column,side.tiles.back(),(int)bandItems.size(),sidebarPopoverScroll,height);sidebarPopoverScroll=sidePop.grid.scroll;
-            for(int i=0;i<(int)sidePop.grid.tiles.size()&&i<(int)bandItems.size()&&i<BookmarkLimit;++i){auto t=sidePop.grid.tiles[i];if(t.bottom<=sidePop.grid.view.top||t.top>=sidePop.grid.view.bottom)continue;t.top=std::max(t.top,sidePop.grid.view.top);t.bottom=std::min(t.bottom,sidePop.grid.view.bottom);regions.push_back({BookmarkBase+i,R(t),bandItems[i].tip.c_str(),false});}
+            for(int i=0;i<(int)sidePop.grid.tiles.size()&&i<(int)bandItems.size()&&i<BookmarkLimit;++i){auto t=sidePop.grid.tiles[i];if(t.bottom<=sidePop.grid.view.top||t.top>=sidePop.grid.view.bottom)continue;t.top=std::max(t.top,sidePop.grid.view.top);t.bottom=std::min(t.bottom,sidePop.grid.view.bottom);regions.push_back({BookmarkBase+i,R(t),bandItems[i].SideTip(),false});}
             regions.push_back({SidebarManageId,R(sidePop.manage),nullptr});}
         else{sidebarPopover=false;sidePop={};}
         const auto& C=SideColumn();const bool full=C.mode==SB::Mode::Complete;
@@ -1247,7 +1358,7 @@ public:
         {band={};const int shown=SideBookmarkTiles(C);band.visible=std::min(shown,(int)bandItems.size());
             const Sidebar::Box clip=full?C.grid.view:C.gridBlock;
             for(int i=0;i<band.visible&&i<BookmarkLimit;++i){if(sidebarPopover&&!full)break;auto t=SideBookmarkTile(C,i);if(t.bottom<=clip.top||t.top>=clip.bottom)continue;t.top=std::max(t.top,clip.top);t.bottom=std::min(t.bottom,clip.bottom);
-                regions.push_back({BookmarkBase+i,R(t),bandItems[i].tip.c_str(),i==bandRover||(bandRover<0&&i==0)});}
+                regions.push_back({BookmarkBase+i,R(t),bandItems[i].SideTip(),i==bandRover||(bandRover<0&&i==0)});}
             if(!full&&C.more){band.overflow=true;band.overflowLeft=C.tiles.back().left;regions.push_back({SidebarMoreId,R(C.tiles.back()),TR(sidebar_all_bookmarks_tip),bandRover<0&&band.visible==0});}
             if(full&&!C.manage.Empty())regions.push_back({SidebarManageId,R(C.manage),nullptr});   // the row says what it does: no tooltip
             if(full&&!C.gridToggle.Empty()){gridToggleTip=C.gridOpen?std::wstring(TR(sidebar_collapse_grid)):TRF(sidebar_all_bookmarks,std::to_wstring(bandItems.size()));regions.push_back({SidebarGridToggleId,R(C.gridToggle),nullptr});}
@@ -1522,7 +1633,13 @@ public:
         {const auto r=R(newRow);const float hv=Hovered('T',hover,now);if(hv>0)White(r,Design::Radius::control,K::tabHover*hv);if(focus=='T')FocusRing(r,Design::Radius::control);
             const auto f=SB::FaviconIn(newRow,L.mode);SideGlyph(SB::Glyph::plus,R(f),14,K::newTab);
             if(full)Text(TR(tab_new),{f.right+SB::Complete::tabIconGap,r.top,r.right-SB::Complete::tabPad,r.bottom},Design::Type::label.size,K::newTab*labels,false,false,0);}
+        target->PopAxisAlignedClip();
+        // List fades (answer 4): 24 DIP of canvas over rows scrolled out at the top / bottom.
+        if(L.scroll>.5f)DrawVerticalFade(L.tabsView.left,L.tabsView.top,L.tabsView.right,L.tabsView.top+Design::TabStrip::fade,overlay);
+        if(L.scroll<L.maxScroll-.5f)DrawVerticalFade(L.tabsView.left,L.tabsView.bottom,L.tabsView.right,L.tabsView.bottom-Design::TabStrip::fade,overlay);
         // Drag (05): the place it leaves stays hollow (30 %), an accent line marks where it lands, the row follows the pointer.
+        // Atelier B: drawn after the list's clip and its fades (inside the column's): lifted, it is never cut by the list's
+        // edges nor veiled by its fades when it goes up towards the favorites (or down to the tools).
         if(sidebarDrag>=0&&sidebarDrag<n){
             if(liftedRow!=sidebarDrag){liftedRow=sidebarDrag;liftGrow.Snap(1);liftGrow.Set(liftScale,now,liftResponse,!motion||motion->ReducedMotion());}
             const auto& o=L.tabs[sidebarDrag];const float k=liftGrow.Value(now),cx=(o.left+o.right)/2,cy=sidebarDragY+o.Height()/2;
@@ -1533,10 +1650,6 @@ public:
             if(full)Text(titles[sidebarDrag].empty()?std::wstring(TR(tab_new)):titles[sidebarDrag],R(SB::TitleIn(db,false)),Design::Type::label.size,labels,false,false,0);
             target->SetTransform(keep);}
         else liftedRow=-1;
-        target->PopAxisAlignedClip();
-        // List fades (answer 4): 24 DIP of canvas over rows scrolled out at the top / bottom.
-        if(L.scroll>.5f)DrawVerticalFade(L.tabsView.left,L.tabsView.top,L.tabsView.right,L.tabsView.top+Design::TabStrip::fade,overlay);
-        if(L.scroll<L.maxScroll-.5f)DrawVerticalFade(L.tabsView.left,L.tabsView.bottom,L.tabsView.right,L.tabsView.bottom-Design::TabStrip::fade,overlay);
         // Tools.
         Color(1,K::line);target->FillRectangle(R(L.footerLine),brush);
         for(size_t i=0;i<sideTools.size()&&i<L.tools.size();++i)DrawSideTool(sideTools[i],overlay?R(L.tools[i]):Morph(sideTools[i],L.tools[i],now),hover,focus,now);
@@ -1544,22 +1657,38 @@ public:
     }
     // One bookmark tile (01 1Q23-0 / grid B 1WOO-0 / compact 1WDV-0): fill, hover, focus, favicon 18 or the folder glyph.
     void DrawBookmarkTile(int i,D2D1_RECT_F t,float rest,int hover,int focus,Motion::Time now){namespace K=Sidebar::Look;const int id=BookmarkBase+i;
-        float hv=Hovered(id,hover,now);if(id==bandOpen)hv=1;White(t,Design::Radius::r8,rest+(K::tileHover-rest)*std::clamp(hv,0.f,1.f));if(focus==id)FocusRing(t,Design::Radius::r8);
+        float hv=Hovered(id,hover,now);if(id==bandOpen||(gridTab.on&&i==gridTab.duplicate))hv=1;White(t,Design::Radius::r8,rest+(K::tileHover-rest)*std::clamp(hv,0.f,1.f));if(focus==id)FocusRing(t,Design::Radius::r8);
         if(i<0||i>=(int)bandItems.size()){return;}const auto& item=bandItems[i];const float cx=(t.left+t.right)/2,cy=(t.top+t.bottom)/2;
         if(i==bandDropInto){const auto a=Design::Accent::Get();FillBox(t,Design::Radius::r8,D2D1::ColorF(a.r,a.g,a.b,.18f));}   // a drag would file it here (the bar's look)
-        if(item.folder)SideGlyph(Sidebar::Glyph::folder,t,Design::Size::icon,K::glyph);
+        if(item.folder&&item.look.styled)FolderLook(item.look,t,FolderStyle::Size::For(FolderStyle::Size::tile,FolderStyle::Size::tilePlain,item.look));   // #138 boards 2437-0 / 244U-0
+        else if(item.folder)SideGlyph(Sidebar::Glyph::folder,t,Design::Size::icon,K::glyph);
         else if(!DrawSiteImage(item.image,{cx-9,cy-9,cx+9,cy+9}))Icon(item.local?L"file":L"favicon",t,Design::Size::icon,1);
         if(i==bandDrag){const float c=Design::Surface::canvas;FillBox(t,Design::Radius::r8,D2D1::ColorF(c,c,c,1-K::origin));}}   // the dragged tile stays, dimmed (the tab drag's origin look)
     // A grid in its viewport: tiles clipped, the canvas fade at the bottom while more is below, the thin bar (1WRB-0, 1WRC-0).
-    void DrawGridView(const Sidebar::Grid& g,float rest,int hover,int focus,Motion::Time now){namespace C=Sidebar::Complete;
+    // `at` (atelier B): the tiles' presented places while a tab opens a place in the grid (clipped to the view like them).
+    void DrawGridView(const Sidebar::Grid& g,float rest,int hover,int focus,Motion::Time now,const std::vector<Sidebar::Box>* at=nullptr){namespace C=Sidebar::Complete;
         target->PushAxisAlignedClip(R(g.view),D2D1_ANTIALIAS_MODE_ALIASED);
-        for(int i=0;i<(int)g.tiles.size();++i){const auto& t=g.tiles[i];if(t.bottom<=g.view.top||t.top>=g.view.bottom)continue;DrawBookmarkTile(i,Morph(BookmarkBase+i,t,now),rest,hover,focus,now);}
+        for(int i=0;i<(int)g.tiles.size();++i){const auto& t=at&&i<(int)at->size()?(*at)[i]:g.tiles[i];if(t.bottom<=g.view.top||t.top>=g.view.bottom)continue;DrawBookmarkTile(i,at&&i<(int)at->size()?R(t):Morph(BookmarkBase+i,t,now),rest,hover,focus,now);}
+        if(at&&gridSlotKnown)DrawGridPlace(now);
         if(g.Scrolls()&&g.scroll<g.maxScroll-.5f)DrawVerticalFade(g.view.left,g.view.bottom,g.view.right,g.view.bottom-C::fade,false);
         target->PopAxisAlignedClip();
         if(!g.bar.Empty())FillBox(R(g.bar),2,D2D1::ColorF(1,1,1,C::barAlpha));}
+    // Atelier B: the new favorite's place in the grid, board 08's hollow slot on a tile's shape (#FFFFFF0A, a 1 DIP inner
+    // #FFFFFF1F, the tile's radius 8), fading in and out with the tab over the grid.
+    void DrawGridPlace(Motion::Time now){const float glow=std::clamp(gridTabGlow.Value(now),0.f,1.f);if(glow<=.001f)return;const auto r=R(MorphAt(gridSlot,now));if(r.right-r.left<1||r.bottom-r.top<1)return;
+        FillBox(r,Design::Radius::r8,D2D1::ColorF(1,1,1,10/255.f*glow));brush->SetColor(D2D1::ColorF(1,1,1,31/255.f*glow));target->DrawRoundedRectangle(D2D1::RoundedRect({r.left+.5f,r.top+.5f,r.right-.5f,r.bottom-.5f},Design::Radius::r8-.5f,Design::Radius::r8-.5f),brush,1);}
+    // Atelier B: a tab over the column's grid. No zone highlight (Val, 26 nov.: no blue): the tiles step aside around the
+    // place it would take (DrawGridPlace).
     void PaintSideGrid(const Sidebar::Layout& L,int hover,int focus,Motion::Time now,float labels){
-        namespace SB=Sidebar;namespace K=SB::Look;namespace C=SB::Complete;const bool full=L.mode==SB::Mode::Complete;
         if(L.gridBlock.Empty())return;
+        std::vector<Sidebar::Box> at;const bool column=&L==&side||&L==&sideOver;if(column)GridTabFrame(L,now,at);
+        const bool full=L.mode==Sidebar::Mode::Complete;const auto accent=Design::Accent::Get();
+        PaintSideGridTiles(L,hover,focus,now,labels,at.empty()?nullptr:&at);
+        if(L.emptyGrid&&column&&gridSlotKnown)DrawGridPlace(now);   // « Toujours » with no bookmark: the place is the empty tile
+        if(gridTab.on&&gridTab.toOverflow){const Sidebar::Box o=full?L.gridToggle:L.more?L.tiles.back():Sidebar::Box{};if(!o.Empty())FillBox(R(o),full?Design::Radius::control:Design::Radius::r8,D2D1::ColorF(accent.r,accent.g,accent.b,.18f));}   // it goes behind « Tous les favoris » / « » »
+    }
+    void PaintSideGridTiles(const Sidebar::Layout& L,int hover,int focus,Motion::Time now,float labels,const std::vector<Sidebar::Box>* at){
+        namespace SB=Sidebar;namespace K=SB::Look;namespace C=SB::Complete;const bool full=L.mode==SB::Mode::Complete;
         if(L.emptyGrid){const auto box=R(L.tiles.front());const float hv=Hovered('E',hover,now);White(box,Design::Radius::r8,(full?K::tileRest:K::compactTile)+(K::tileHover-(full?K::tileRest:K::compactTile))*hv);if(focus=='E')FocusRing(box,Design::Radius::r8);
             const float cy=(box.top+box.bottom)/2;if(!full){Icon(L"star",box,16,1);return;}
             // « Toujours » with no bookmark: the bar's empty way in, full width (answer 3).
@@ -1568,7 +1697,7 @@ public:
             Text(TR(chrome_bookmarks_add_page),{box.left+30,box.top,std::min(box.right,box.left+30+tw+2),box.bottom},Design::Type::label.size,(Design::Text::secondary+.5f*hv)*labels,false,true,Design::Type::label.tracking);
             float x=box.left+30+tw+16;for(const wchar_t* key:{L"Ctrl",L"D"}){const float w=TextWidth(key,14,false,true)+12;if(x+w>box.right-4)break;FillBox({x,cy-10,x+w,cy+10},4,D2D1::ColorF(1,1,1,.06f*labels));keycap=true;Text(key,{x+5,cy-10,x+w,cy+10},14,Design::Text::disabled*labels,true);keycap=false;x+=w+2;}
             return;}
-        if(full){DrawGridView(L.grid,K::tileRest,hover,focus,now);
+        if(full){DrawGridView(L.grid,K::tileRest,hover,focus,now,at);
             if(!L.gridToggle.Empty()){   // « Tous les favoris (N) » ⌄ / « Réduire » ⌃ (1WKW-0 / 1WRD-0)
                 const auto r=R(L.gridToggle);const float hv=Hovered(SidebarGridToggleId,hover,now);if(hv>0)White(r,Design::Radius::control,K::toolHover*hv);if(focus==SidebarGridToggleId)FocusRing(r,Design::Radius::control);
                 const D2D1_RECT_F caret{r.right-C::togglePad-C::toggleGlyph,r.top,r.right-C::togglePad,r.bottom};
@@ -1577,7 +1706,13 @@ public:
             if(!L.manage.Empty())PaintManageRow(R(L.manage),false,hover,focus,now,labels);
             return;}
         // Compact: the first tiles, then « » » (#FFFFFF0A, caret-double-right 70 %; open: #FFFFFF1F, white).
-        const int shown=SideBookmarkTiles(L);for(int i=0;i<shown;++i)DrawBookmarkTile(i,Morph(BookmarkBase+i,L.tiles[i],now),K::compactTile,sidebarPopover?0:hover,focus,now);
+        const int shown=SideBookmarkTiles(L);
+        if(at){   // atelier B: the tiles step down to open the place; the one pushed past the block slides under its end (or « » »)
+            const float bottom=L.more?L.tiles.back().top-SB::Compact::tileGap:L.gridBlock.bottom;target->PushAxisAlignedClip(R(SB::Box{L.gridBlock.left,L.gridBlock.top,L.gridBlock.right,bottom}),D2D1_ANTIALIAS_MODE_ALIASED);
+            for(int i=0;i<shown;++i)DrawBookmarkTile(i,i<(int)at->size()?R((*at)[i]):R(L.tiles[i]),K::compactTile,0,focus,now);
+            if(gridSlotKnown)DrawGridPlace(now);
+            target->PopAxisAlignedClip();}
+        else for(int i=0;i<shown;++i)DrawBookmarkTile(i,Morph(BookmarkBase+i,L.tiles[i],now),K::compactTile,sidebarPopover?0:hover,focus,now);
         if(L.more){const auto t=R(L.tiles.back());const float hv=Hovered(SidebarMoreId,hover,now);const bool open=sidebarPopover;
             White(t,Design::Radius::r8,open?K::moreOpen:K::moreRest+(K::tileHover-K::moreRest)*hv);if(focus==SidebarMoreId)FocusRing(t,Design::Radius::r8);SideGlyph(SB::Glyph::more,t,Design::Size::icon,open?1.f:K::glyph);}}
     // The compact popover (« compact, 40 » 1WSC-0): canvas card, 1 DIP #FFFFFF0F border, radius 8, the unfolded grid.
@@ -1604,8 +1739,8 @@ public:
         Drop(g);Drop(stops);}
     // A column text cut by its slot (Sidebar::Complete::textFade): its glyphs fade over the slot's last 12 DIP (an opacity
     // layer, whatever the row's fill under it); a text that fits is drawn as is.
-    void FadedText(const std::wstring& value,D2D1_RECT_F slot,float size,float opacity,bool tabular=false,bool medium=false,float tracking=0){
-        const float fade=Sidebar::Complete::textFade;const float full=value.empty()?0.f:TextWidth(value,size,medium,tabular,tracking);
+    void FadedText(const std::wstring& value,D2D1_RECT_F slot,float size,float opacity,bool tabular=false,bool medium=false,float tracking=0,float fadeWidth=0){
+        const float fade=fadeWidth>0?fadeWidth:Sidebar::Complete::textFade;const float full=value.empty()?0.f:TextWidth(value,size,medium,tabular,tracking);
         if(value.empty()||slot.right-slot.left<=fade||full<=slot.right-slot.left+.5f){Text(value,slot,size,opacity,tabular,medium,tracking);return;}
         ID2D1GradientStopCollection* stops=nullptr;ID2D1LinearGradientBrush* g=nullptr;ID2D1Layer* layer=nullptr;
         D2D1_GRADIENT_STOP s[]={{0,D2D1::ColorF(0,0,0,1)},{1,D2D1::ColorF(0,0,0,0)}};
@@ -1891,6 +2026,33 @@ public:
             Drop(cpu);Drop(dc);Drop(bitmap);Drop(bt);
         }
         panel=savedPanel;origin=savedOrigin;return ok;
+    }
+    // Mode Focus entry / exit (src/main.cpp « Mode Focus transition », Designer's spec 2026-11-25): the NORMAL top bar
+    // (tab row, toolbar, bookmarks band, its lower hairline) drawn alone into opaque BGRA pixels, the client's width,
+    // 0 .. barHeight DIP: the picture that slides up and fades (entry) or comes down (exit). In the side layouts (#127) the
+    // whole normal chrome over the client (barHeight: the window's height): the docked column and the window bar right of
+    // it, the page's place left as canvas; the host clips it into the column (it slides left) and the window bar (up, fading).
+    // The chrome must be in its normal layout (not floating, the column docked); `out` row-major, w x h device pixels.
+    // False without Direct2D 1.1.
+    bool RenderBar(const std::vector<std::wstring>& titles,int selected,bool editing,int hover,int focus,Motion::Time now,float barHeight,std::vector<uint32_t>& out,UINT& w,UINT& h){
+        if(floating||(sidebar&&sideHidden)||!target||!brush||contentOnly||barHeight<=0)return false;
+        ++textPass;Build((int)titles.size(),selected,&titles,now);
+        const float s=dpi/96.f;w=(UINT)std::lround(width*s);h=(UINT)std::lround(barHeight*s);
+        bool ok=false;ID2D1BitmapRenderTarget* bt=nullptr;
+        if(w&&h&&SUCCEEDED(target->CreateCompatibleRenderTarget(D2D1::SizeF(w/s,h/s),D2D1::SizeU(w,h),D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED),D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_NONE,&bt))&&bt){
+            bt->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+            const float c=Design::Surface::canvas;auto* main=SwapTarget(bt);bt->BeginDraw();bt->Clear(D2D1::ColorF(c,c,c,1));
+            if(sidebar)PaintSidebar(titles,selected,editing,hover,focus,now);else DrawChrome(titles,selected,editing,hover,focus,nullptr,now,true);
+            const HRESULT hr=bt->EndDraw();SwapTarget(main);
+            ID2D1Bitmap* bitmap=nullptr;ID2D1DeviceContext* dc=nullptr;ID2D1Bitmap1* cpu=nullptr;
+            if(SUCCEEDED(hr)&&SUCCEEDED(bt->GetBitmap(&bitmap))&&bitmap&&SUCCEEDED(bt->QueryInterface(__uuidof(ID2D1DeviceContext),reinterpret_cast<void**>(&dc)))&&dc){
+                const D2D1_BITMAP_PROPERTIES1 props=D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_CPU_READ|D2D1_BITMAP_OPTIONS_CANNOT_DRAW,D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,D2D1_ALPHA_MODE_PREMULTIPLIED),(float)dpi,(float)dpi);
+                if(SUCCEEDED(dc->CreateBitmap(D2D1::SizeU(w,h),nullptr,0,&props,&cpu))&&cpu&&SUCCEEDED(cpu->CopyFromBitmap(nullptr,bitmap,nullptr))){
+                    D2D1_MAPPED_RECT m{};if(SUCCEEDED(cpu->Map(D2D1_MAP_OPTIONS_READ,&m))){out.resize((size_t)w*h);for(UINT y=0;y<h;++y)memcpy(&out[(size_t)y*w],m.bits+(size_t)y*m.pitch,(size_t)w*4);cpu->Unmap();ok=true;}}
+            }
+            Drop(cpu);Drop(dc);Drop(bitmap);Drop(bt);
+        }
+        return ok;
     }
     // Mode Focus in the side layouts: the column at rest drawn alone into premultiplied BGRA pixels (its width + the 1 DIP
     // border, from its top to the window's bottom): the picture the host slides over the page (src/main.cpp « #127 ×

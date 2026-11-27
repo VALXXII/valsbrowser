@@ -22,18 +22,35 @@ Expected (« Conserver », src/main.cpp KeepHeldDownload / WaitEnginePass / Watc
   - keep-read:       another program reads the held file across the cancel without allowing its deletion: the engine's
                      removal fails, the file stays at its path; at exit the row points at a whole file, nothing of ours left;
   - keep-then-discard: « Supprimer » 300 ms after « Conserver » is no longer offered (the row is finished), the file is kept;
-  - keep-then-close: the window closed right after « Conserver »: the row points at a whole, visible file: its own path when
-                     the engine's removal was seen and undone (its pass over), else a name the engine never knew; nothing of ours left;
+  - keep-then-close: the window closed right after « Conserver »: the row points at a whole, visible file at its own path
+                     (the engine's end awaited when its removal was still to come), never a second name; nothing of ours left;
   - keep-early-cancel (A): the cancel forced while the engine's pass on a 40 MB file still runs (test hook
                      BROWSER_TEST_KEEP_CAP_MS=0): its late removal is seen and undone, the file ends kept as above;
   - keep-save-removes (B): the attachment services pass removes the kept file without a verdict (test hook
                      BROWSER_TEST_KEEP_SAVE=remove): it is given back from our name, the file ends kept;
-  - keep-then-kill:  the browser and its engine killed right after « Conserver », then started again on the same profile:
-                     the start-up sweep leaves the file whole at its path, nothing in kept-downloads;
+  - keep-then-kill (x --kill-repeat): the browser and its engine killed right after « Conserver », then started again on
+                     the same profile: the file still whole at its path 60 s after that start (the restarted engine's own
+                     clean-up of its unfinished download: measured ~8 s after a kill), and our watched leftover gone in the end;
+  - keep-held-then-kill (x --kill-repeat): the same with the download still held at the kill (test hook
+                     BROWSER_TEST_KEEP_NO_CANCEL=1): the file in place at the restart, removed by the restarted engine, given back;
+  - keep-then-restart: a keep settled, the browser closed and started again: the file still whole 60 s after that start;
+  - keep-held-then-close: the window closed while the keep still waits for the engine (test hook BROWSER_TEST_KEEP_NO_CANCEL=1):
+                     the engine's end awaited (5 s at most): right after the browser is gone the file whole at its path,
+                     nothing of ours left, no second name; started again, the file still whole 30 s later;
+  - keep-held-second-window: the same with a second window of the same profile keeping the engine up: the first window
+                     exits after the 5 s bound with our name and its note left; the second closed and the browser started
+                     again: the file whole at its path, nothing of ours left in the end;
   - keep-blocked:    our name cannot be made (a folder sits at it): « Échec · Erreur de fichier » with « Retirer », no dead
                      « Conserver », the engine's held file deleted, the folder left alone, nothing else left;
   - discard:         UIA Invoke on « Supprimer » → the file is gone and the row with it;
   - control:         a plain .bin completes as before and is never held.
+  - card-slow-check: an .exe while the reputation service never answers (SmartScreen hosts on a silent local socket in this
+                     test's engine): no « À confirmer » card, the engine completes it by itself;
+  - card-plain-big:  a 300 MB .bin: no card, completes;
+  - card-slow-check also reads the checking row (UIA): Cancel there, no Pause;
+  - card-cancel-checking: « Annuler » on that checking row: the row stays cancelled, the engine's file goes, nothing is left;
+  - card-real-hold:  a fresh unsigned .exe (a real SmartScreen hold): the card, promptly (seconds after the start recorded);
+  - card-never-marked: no zone mark can come (test hook): the card after the fallback, « Conserver » keeps the file.
   Every keep case records the download folder's events (ReadDirectoryChangesW, timed). Engine facts behind the design:
   tests/downloads/download_engine_probe.py --observe (the engine removes a cancelled held file by name when its own pass on
   the file, the one that writes the zone mark, ends: at once when it was over, seconds later when it still ran).
@@ -263,9 +280,29 @@ class Browser:
         (app / 'session').write_text(f'browser-session-2\n0\n1\n"{base}/page"\n0\n', encoding='utf-8', newline='\n')
         (app / 'settings').write_text('browser-settings 1\nrestore-tabs=1\nconfirm-close-tabs=0\n'
                                       f'download-folder={downloads}\nask-where-to-save=0\n', encoding='utf-8', newline='\n')
-        self.job = Job(); self.sockets = []
-        self.pi = desk.start(str(app / 'browser.exe'), None, str(app), sealed_env(app, extra_args, self.port, extra_env), self.job)
+        self.job = Job(); self.sockets = []; self.env = sealed_env(app, extra_args, self.port, extra_env)
+        self.pi = desk.start(str(app / 'browser.exe'), None, str(app), self.env, self.job)
         self.pid = self.pi.dwProcessId
+
+    def open_window(self):
+        """A second window of the same profile (browser.exe started again beside the first, same environment, same job):
+        a window process of its own on the same engine."""
+        return self.desk.start(str(self.app / 'browser.exe'), None, str(self.app), self.env, self.job)
+
+    def close_window(self, pi=None):
+        """WM_CLOSE to one window process (the first by default); waits for that process only. Seconds it took."""
+        pi = pi or self.pi; t0 = time.monotonic()
+        for h in self.desk.run(lambda: windows_of(pi.dwProcessId, 'LisiereBrowser')) or []:
+            u32.PostMessageW(h, WM_CLOSE, 0, 0)
+        k32.WaitForSingleObject(pi.hProcess, 30000)
+        return round(time.monotonic() - t0, 1)
+
+    def finish(self, *others):
+        """After close_window: the engine given time to exit by itself, then what is left stopped through the job."""
+        left = self.job.drain(25)
+        for pi in (self.pi,) + others:
+            k32.CloseHandle(pi.hProcess); k32.CloseHandle(pi.hThread)
+        return left
 
     targets = dn.Browser.targets
     connect = dn.Browser.connect
@@ -315,17 +352,35 @@ def main() -> int:
     ap = argparse.ArgumentParser(); ap.add_argument('--app', required=True); ap.add_argument('--out', required=True)
     ap.add_argument('--only', default=''); ap.add_argument('--desktop', choices=('hidden', 'visible'), default='hidden')
     ap.add_argument('--repeat', type=int, default=3, help='runs of the plain keep case (the engine\'s late removal is a race)')
+    ap.add_argument('--kill-repeat', type=int, default=1, help='runs of keep-then-kill (a race with the restarted engine\'s clean-up)')
     a = ap.parse_args()
     src, out = Path(a.app).resolve(), Path(a.out).resolve()
     shutil.rmtree(out, ignore_errors=True); out.mkdir(parents=True)
     work = out / 'work'; work.mkdir()
     uia = work / 'uia.ps1'; uia.write_text(UIA, encoding='utf-8')
     keeps = ['keep'] + [f'keep-r{n}' for n in range(2, a.repeat + 1)]
-    for tag in keeps + ['keep-again', 'keep-late-removal', 'keep-read', 'keep-then-discard', 'keep-then-close', 'keep-then-kill', 'keep-insecure', 'keep-blocked',
+    kills = ['keep-then-kill'] + [f'keep-then-kill-r{n}' for n in range(2, a.kill_repeat + 1)]
+    helds = ['keep-held-then-kill'] + [f'keep-held-then-kill-r{n}' for n in range(2, a.kill_repeat + 1)]
+    for tag in keeps + kills + helds + ['keep-held-then-close', 'keep-held-second-window', 'keep-again', 'keep-late-removal', 'keep-read', 'keep-then-discard', 'keep-then-close', 'keep-then-restart', 'keep-insecure', 'keep-blocked',
                         'keep-early-cancel', 'keep-save-removes', 'discard']:
         FILES[tag + '.exe'] = (fresh_exe(work, tag.replace('-', '_')), f'held-{tag}.exe')
     FILES['keep-early-cancel.exe'] = (FILES['keep-early-cancel.exe'][0] + os.urandom(150 << 20), 'held-keep-early-cancel.exe')   # a long scan
     FILES['plain.bin'] = (os.urandom(150000), 'plain-control.bin')
+    for tag in ('card-slow-check', 'card-real-hold', 'card-never-marked', 'card-cancel-checking'):
+        FILES[tag + '.exe'] = (fresh_exe(work, tag.replace('-', '_')), f'{tag}.exe')
+    FILES['card-plain-big.bin'] = (os.urandom(300 << 20), 'card-plain-big.bin')
+    # A reputation service that never answers (SmartScreen behind a VPN / proxy that swallows it): this test's engine maps
+    # the SmartScreen hosts to a local socket that accepts and never replies. Nothing outside the test's engine changes.
+    import socket
+    blackhole = socket.socket(); blackhole.bind(('127.0.0.1', 0)); blackhole.listen(64); swallowed = []
+    def swallow():
+        while True:
+            try:
+                swallowed.append(blackhole.accept()[0])
+            except OSError:
+                return
+    threading.Thread(target=swallow, daemon=True).start()
+    slow_reputation = f'--host-resolver-rules="MAP *smartscreen* 127.0.0.1:{blackhole.getsockname()[1]}"'
     srv = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Fixture); port = srv.server_port; base = f'http://127.0.0.1:{port}'
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     secure = None   # the fixture page over https (throwaway self-signed certificate made by Git's openssl, nothing installed)
@@ -413,24 +468,89 @@ def main() -> int:
             stamp(watch, f'UIA Invoke « Conserver » x{times}' + (', then « Supprimer » 300 ms later' if then == 'discard' else ''))
             r = b.uia(uia, 'DownloadKeep', times=times, then_id='DownloadDiscard' if then == 'discard' else '', then_ms=300)
             stamp(watch, 'UIA Invoke returned: ' + r)
-            if then == 'kill':   # killed right after « Conserver », then started again on the same profile: the start-up sweep
-                left = b.kill(); closed = True; stamp(watch, 'browser and engine killed')
-                left_over = ours(); mark2 = len(b.log())
+            if then in ('kill', 'restart'):
+                # kill: stopped right after « Conserver » (browser and engine, as a crash); restart: the keep settled (our name
+                # gone after its guard), then the browser closed normally. Started again on the same profile, the file must
+                # still be whole at its path 60 s later (the restarted engine cleans its unfinished downloads by name: measured
+                # ~8 s after a kill), and, once the watch of an adopted leftover is over, nothing of ours left.
+                if then == 'restart':
+                    dn.wait(lambda: any(s in b.log()[mark:] for s in ('DOWNLOAD kept file handed to attachment services', 'attachment services refused',
+                                                                      "marked and checked by the engine's own pass")), 150)
+                    left = b.close(); closed = True; stamp(watch, 'browser and engine closed (the keep settled)')
+                else:
+                    left = b.kill(); closed = True; stamp(watch, 'browser and engine killed')
+                left_over = ours(); mark2 = len(b.log()); restarted = time.monotonic()
                 b2 = Browser(b.app, page, downloads, desk, extra_args, extra_env)
-                swept = dn.wait(lambda: 'DOWNLOAD kept leftover' in b2.log()[mark2:] or not ours(), 60)
-                time.sleep(2); text = b2.log()[mark2:]; b2.close()
+                stamp(watch, 'started again on the same profile')
+                gone_at = None
+                while time.monotonic() - restarted < 65:
+                    if gone_at is None and not target.exists():
+                        gone_at = round(time.monotonic() - restarted, 1); stamp(watch, 'the file is not at its path')
+                    time.sleep(.2)
+                whole_60 = target.exists() and target.stat().st_size == size
+                settled = dn.wait(lambda: not ours(), 60) if left_over else True   # an adopted leftover's watch: 60 s from the engine's start
+                text = b2.log()[mark2:]; b2.close()
                 size_ok = target.exists() and target.stat().st_size == size
-                check(f'{name}: killed during the keep: at the next start the file is whole at its path, nothing of ours left',
-                      r.startswith('invoked') and bool(left_over) and size_ok and not hidden(target) and not ours(),
-                      invoke=r, ours_after_kill=left_over, swept=bool(swept), file_whole=size_ok, ours_left=ours(), folder=sorted(x.name for x in downloads.iterdir()),
-                      next_start=[l for l in text.splitlines() if l.startswith('DOWNLOAD')], folder_events=events())
+                check(f'{name}: {"killed during the keep" if then == "kill" else "restarted after the keep"}: the file whole at its path 60 s after the next start, nothing of ours left in the end',
+                      r.startswith('invoked') and whole_60 and size_ok and not hidden(target) and not ours(),
+                      invoke=r, ours_after_stop=left_over, file_whole_60s_after_start=whole_60, ever_missing_after_start_s=gone_at, file_whole_at_the_end=size_ok,
+                      ours_left=ours(), folder=sorted(x.name for x in downloads.iterdir()), next_start=[l for l in text.splitlines() if l.startswith('DOWNLOAD')], folder_events=events())
+                return
+            if then in ('close-pending', 'second-window'):
+                # The window closed while the keep still waits for the engine (test hook: « Conserver » never lets it go).
+                kept = dn.wait(lambda: 'DOWNLOAD kept by the user' in b.log()[mark:], 20)
+                second = None
+                if then == 'second-window':   # a second window of the same profile keeps the engine up
+                    before = len(b.targets()); second = b.open_window(); stamp(watch, 'a second window of the same profile started')
+                    up = dn.wait(lambda: len(b.targets()) > before, 60); time.sleep(2)
+                took = b.close_window(); stamp(watch, f"the first window's process ended {took} s after WM_CLOSE")
+                gone = {'file_whole': target.exists() and target.stat().st_size == size, 'ours': ours(), 'folder': sorted(x.name for x in downloads.iterdir())}
+                text = b.log()[mark:]
+                if then == 'close-pending':
+                    left = b.finish(); closed = True
+                    ok = r.startswith('invoked') and bool(kept) and gone['file_whole'] and not gone['ours'] and gone['folder'] == [target.name] \
+                         and 'DOWNLOAD keep at exit: the engine ended' in text and took < 15
+                    check(f'{name}: window closed with the keep waiting for the engine: right after the browser is gone the file whole at its path, nothing of ours, no second name',
+                          ok, invoke=r, exit_s=took, at_browser_gone=gone, engine_processes_left_after_25s=left, log=lines(b, mark), folder_events=events())
+                    mark2 = len(b.log()); b2 = Browser(b.app, page, downloads, desk, extra_args, extra_env); stamp(watch, 'started again on the same profile')
+                    t0 = time.monotonic(); missing = None
+                    while time.monotonic() - t0 < 30:
+                        if missing is None and not target.exists():
+                            missing = round(time.monotonic() - t0, 1); stamp(watch, 'the file is not at its path')
+                        time.sleep(.2)
+                    text2 = b2.log()[mark2:]; b2.close()
+                    whole = target.exists() and target.stat().st_size == size
+                    check(f'{name}: started again: the file still whole 30 s later, nothing of ours', whole and missing is None and not ours(),
+                          ever_missing_after_start_s=missing, file_whole=whole, ours_left=ours(), next_start=[l for l in text2.splitlines() if l.startswith('DOWNLOAD')], folder_events=events())
+                    return
+                # second window: the first window exits after the bound, our name and its note stay; the second closes
+                still = 'DOWNLOAD keep at exit: the engine still runs' in text
+                ok1 = r.startswith('invoked') and bool(kept) and bool(up) and still and len(gone['ours']) == 2 and 4 <= took < 15 and not any('(1)' in n for n in gone['folder'])
+                check(f'{name}: the engine kept up by a second window: the first window exits after the 5 s bound, our name and its note left for the next start',
+                      ok1, invoke=r, second_window_up=bool(up), exit_s=took, at_first_gone=gone, log=lines(b, mark))
+                took2 = b.close_window(second); left = b.finish(second); closed = True
+                stamp(watch, f'the second window closed ({took2} s), the engine exited')
+                after = {'file_whole': target.exists() and target.stat().st_size == size, 'ours': ours()}
+                mark2 = len(b.log()); b2 = Browser(b.app, page, downloads, desk, extra_args, extra_env); stamp(watch, 'started again on the same profile')
+                t0 = time.monotonic(); missing = None
+                while time.monotonic() - t0 < 65:
+                    if missing is None and not target.exists():
+                        missing = round(time.monotonic() - t0, 1); stamp(watch, 'the file is not at its path')
+                    time.sleep(.2)
+                whole_60 = target.exists() and target.stat().st_size == size
+                dn.wait(lambda: not ours(), 60)
+                text2 = b2.log()[mark2:]; b2.close()
+                whole = target.exists() and target.stat().st_size == size
+                check(f'{name}: the next start gives the file back: whole at its path 60 s after it, nothing of ours left in the end',
+                      whole_60 and whole and not ours() and not hidden(target) and not any('(1)' in x.name for x in downloads.iterdir()),
+                      second_exit_s=took2, after_second_closed=after, file_whole_60s_after_start=whole_60, ever_missing_after_start_s=missing, ours_left=ours(),
+                      folder=sorted(x.name for x in downloads.iterdir()), next_start=[l for l in text2.splitlines() if l.startswith('DOWNLOAD')], folder_events=events())
                 return
             if then == 'close':
                 left = b.close(); closed = True; stamp(watch, 'browser and engine exited')
                 f, row = row_file(b, target.name); size_ok = bool(f) and f.exists() and f.stat().st_size == size
-                common = 'DOWNLOAD kept file given back at its path' in b.log()[mark:] and '(its pass on the file is over)' in b.log()[mark:]
                 check(f'{name}: window closed during the keep: the row points at the whole file, visible, nothing left of ours',
-                      r.startswith('invoked') and row.startswith('C\t') and size_ok and not hidden(f) and not ours() and (not common or f == target),
+                      r.startswith('invoked') and row.startswith('C\t') and size_ok and not hidden(f) and not ours() and f == target,
                       invoke=r, row_file=str(f.name) if f else None, file_whole=size_ok, hidden=bool(f) and hidden(f), ours_left=ours(),
                       folder=sorted(p.name for p in downloads.iterdir()), log=lines(b, mark), folder_events=events())
                 return
@@ -444,6 +564,8 @@ def main() -> int:
             row_now = dn.wait(lambda: row_of(b, target.name) if row_of(b, target.name).startswith('C\t') else '', 10) or row_of(b, target.name)   # read again: the history file is rewritten atomically
             settled = dn.wait(lambda: any(s in b.log()[mark:] for s in ('DOWNLOAD kept file handed to attachment services', 'attachment services refused',
                                                                        "marked and checked by the engine's own pass")), 150) if not reader_ms else False
+            if settled:   # the settle line is logged just before our name is dropped
+                dn.wait(lambda: not ours(), 5)
             if reader_ms:   # the engine's removal failed: never seen, the file stays at its path and our name holds the bytes until exit
                 dn.wait(lambda: 'DOWNLOAD keep: the engine is let go' in b.log()[mark:], 40)   # no zone mark while the reader holds it: the cap
                 time.sleep(8)
@@ -467,13 +589,76 @@ def main() -> int:
             if not closed:
                 left = b.close()
             watch.close()
-        if then in ('close', 'kill'):
+        if then in ('close', 'kill', 'restart', 'close-pending', 'second-window'):
             return
         f, row = row_file(b, target.name); size_ok = bool(f) and f.exists() and f.stat().st_size == size
         check(f'{name}: kept_file_survives_exit', size_ok and row.startswith('C\t') and not ours(), row_file=str(f.name) if f else None, file_whole=size_ok,
               engine_processes_left_after_25s=left, ours_left=ours(), folder=sorted(p.name for p in downloads.iterdir()))
 
     try:
+        def card_case(name, file_key, expect_card, expect_complete, wait_s, extra_args='', extra_env=None, keep=False, probe_checking=False, cancel=False):
+            """Whether, and how long after the download's start, the « À confirmer » card comes (log « DOWNLOAD held by the
+            engine »), and whether the engine completes the download by itself. keep: « Conserver » on the card, then the
+            file must be a finished download, whole, surviving the exit."""
+            b, op, downloads = launch(name, base, extra_args, extra_env); fname = FILES[file_key][1]; target = downloads / fname; size = len(FILES[file_key][0])
+            try:
+                mark = len(b.log()); t0 = time.monotonic(); dn.ev(op, f"location.href='{base}/{file_key}'")
+                card_at = done_at = None; end = t0 + wait_s; checking = None; cancelled = None
+                while time.monotonic() < end and not (done_at and (card_at or not expect_card)):
+                    text = b.log()[mark:]
+                    if (probe_checking or cancel) and checking is None and 'DOWNLOAD checking' in text and 'DOWNLOAD state=2' not in text:
+                        # the checking row: « Vérification… », Cancel kept, no Pause (UIA, while the engine still checks)
+                        checking = {'pause': b.uia(uia, 'DownloadPause', True), 'cancel': b.uia(uia, 'DownloadCancel', True),
+                                    'still_checking': 'DOWNLOAD state=2' not in b.log()[mark:] and 'DOWNLOAD held' not in b.log()[mark:]}
+                        if cancel:
+                            cancelled = b.uia(uia, 'DownloadCancel'); break
+                    if card_at is None and 'DOWNLOAD held by the engine' in text:
+                        card_at = round(time.monotonic() - t0, 1)
+                    if done_at is None and f'DOWNLOAD state=2 {fname}' in text:
+                        done_at = round(time.monotonic() - t0, 1)
+                    if card_at is not None and expect_card and not expect_complete:
+                        break
+                    time.sleep(.1)
+                kept = None
+                if keep and card_at is not None:
+                    r = b.uia(uia, 'DownloadKeep'); kept = dn.wait(lambda: row_of(b, fname).startswith('C\t'), 30)
+                    kept = bool(kept) and r.startswith('invoked')
+                if cancel:   # « Annuler » during the engine's check: the row stays cancelled, the engine's file goes (late, by name), nothing left
+                    gone = dn.wait(lambda: not any(downloads.iterdir()), 60); time.sleep(5)
+                    row = row_of(b, fname); text = b.log()[mark:]
+                    ok = bool(checking) and checking['still_checking'] and checking['pause'] == 'missing' and checking['cancel'] == 'found' and str(cancelled).startswith('invoked') \
+                         and bool(gone) and not any(downloads.iterdir()) and row.startswith('X\t') and 'DOWNLOAD held' not in text and f'DOWNLOAD state=2 {fname}' not in text
+                    check(f'{name}: « Annuler » while checking: cancelled, the file gone, nothing left, the row does not come back', ok,
+                          checking_row=checking, cancel=cancelled, folder=sorted(x.name for x in downloads.iterdir()), history_row=row[:2], log=lines(b, mark))
+                    return
+                ok = (card_at is not None) == expect_card and (done_at is not None) == expect_complete and (kept is not False)
+                if probe_checking:
+                    ok = ok and bool(checking) and (not checking['still_checking'] or (checking['pause'] == 'missing' and checking['cancel'] == 'found'))
+                check(f'{name}: card {"shown" if expect_card else "not shown"}{", completes by itself" if expect_complete else ""}', ok,
+                      card_after_s=card_at, completed_after_s=done_at, kept=kept, checking_row=checking, log=lines(b, mark))
+            finally:
+                b.close()
+            if keep:
+                kept_dir = b.app / 'kept-downloads'; ours = sorted(x.name for x in kept_dir.iterdir()) if kept_dir.exists() else []
+                check(f'{name}: kept file survives exit: whole at its path, nothing of ours, no second name',
+                      target.exists() and target.stat().st_size == size and not ours and sorted(x.name for x in downloads.iterdir()) == [fname],
+                      folder=sorted(x.name for x in downloads.iterdir()), ours_left=ours, exit_log=[l for l in b.log().splitlines() if l.startswith('DOWNLOAD keep')])
+        if not only or 'card-slow-check' in only:
+            # The reputation service never answers: the engine completes the .exe by itself ~16 s after the last byte
+            # (measured). No card: a slow check is not a risk verdict.
+            card_case('card-slow-check', 'card-slow-check.exe', False, True, 60, extra_args=slow_reputation, probe_checking=True)
+        if not only or 'card-cancel-checking' in only:
+            # « Annuler » on the checking row while the engine's check runs (reputation never answering): measured, the engine
+            # removes a file cancelled during its pass late, by name; the row must stay cancelled and no file be left behind.
+            card_case('card-cancel-checking', 'card-cancel-checking.exe', False, False, 60, extra_args=slow_reputation, cancel=True)
+        if not only or 'card-plain-big' in only:
+            card_case('card-plain-big', 'card-plain-big.bin', False, True, 60)
+        if not only or 'card-real-hold' in only:
+            card_case('card-real-hold', 'card-real-hold.exe', True, False, 40)
+        if not only or 'card-never-marked' in only:
+            # Where no zone mark can come (a volume without streams, zone information off by policy; test hook
+            # BROWSER_TEST_HELD_UNMARKABLE=1): the card after the fallback, and « Conserver » still keeps the file.
+            card_case('card-never-marked', 'card-never-marked.exe', True, False, 60, extra_env={'BROWSER_TEST_HELD_UNMARKABLE': '1'}, keep=True)
         if not only or 'keep' in only:
             for name in keeps:
                 keep_case(name)
@@ -499,7 +684,22 @@ def main() -> int:
             if not res['checks'].get('keep-save-removes: keep_finishes_the_download', {}).get('exercised'):
                 check('keep-save-removes: the attachment services removal was undone', False, error='the hook did not act')
         if not only or 'keep-then-kill' in only:
-            keep_case('keep-then-kill', then='kill')
+            for name in kills:
+                keep_case(name, then='kill')
+        if not only or 'keep-held-then-kill' in only:
+            # The night run's exact path: the download still HELD at the kill (test hook: « Conserver » never lets the engine
+            # go), the file in place at the restart; measured, the restarted engine removes it ~1 s after its start. Our adopted
+            # leftover gives it back and watches it.
+            for name in helds:
+                keep_case(name, then='kill', extra_env={'BROWSER_TEST_KEEP_NO_CANCEL': '1'})
+        if not only or 'keep-then-restart' in only:
+            keep_case('keep-then-restart', then='restart')
+        if not only or 'keep-held-then-close' in only:
+            # (b) the window closed while the keep waits for the engine: its end awaited (5 s at most), the file given back.
+            keep_case('keep-held-then-close', then='close-pending', extra_env={'BROWSER_TEST_KEEP_NO_CANCEL': '1'})
+        if not only or 'keep-held-second-window' in only:
+            # (b) the engine kept up by a second window of the same profile: the bound, then the next start's sweep.
+            keep_case('keep-held-second-window', then='second-window', extra_env={'BROWSER_TEST_KEEP_NO_CANCEL': '1'})
         if not only or 'keep-then-close' in only:
             keep_case('keep-then-close', then='close')
         if (not only or 'keep-insecure' in only) and secure:

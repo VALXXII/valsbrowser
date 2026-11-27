@@ -78,10 +78,11 @@ NativeChrome::Design::Rgb Mix(NativeChrome::Design::Rgb a,NativeChrome::Design::
 void AnnotationAccentChanged();
 // The address field's selection run (Accent::Selection) repaints with the accent, same steps, no clock of its own.
 void AddressSelectionChanged();
+void UpdateToastAccentChanged(); // the update card's background follows the ink (src/main.cpp)
 void SetAccents(unsigned long fill,unsigned long ink,unsigned long selection,bool animate){
     namespace A=NativeChrome::Design::Accent;
     A::SettledCurrent()=RgbOf(fill);
-    if(!animate||ReducedMotionPreferred()){A::Current()=RgbOf(fill);A::InkCurrent()=RgbOf(ink);A::SelectionCurrent()=RgbOf(selection);accentTween.active=false;AnnotationAccentChanged();AddressSelectionChanged();return;}
+    if(!animate||ReducedMotionPreferred()){A::Current()=RgbOf(fill);A::InkCurrent()=RgbOf(ink);A::SelectionCurrent()=RgbOf(selection);accentTween.active=false;AnnotationAccentChanged();AddressSelectionChanged();UpdateToastAccentChanged();return;}
     accentTween.fromFill=A::Get();accentTween.fromInk=A::Ink();accentTween.toFill=RgbOf(fill);accentTween.toInk=RgbOf(ink);
     accentTween.fromSelection=A::SelectionCurrent();accentTween.toSelection=RgbOf(selection);
     accentTween.start=GetTickCount64();accentTween.active=true;if(window)SetTimer(window,ProfileAnimTimerId,15,nullptr);
@@ -94,7 +95,7 @@ void ProfileAnimTick(){
         A::Current()=Mix(accentTween.fromFill,accentTween.toFill,t);A::InkCurrent()=Mix(accentTween.fromInk,accentTween.toInk,t);
         A::SelectionCurrent()=Mix(accentTween.fromSelection,accentTween.toSelection,t);
         if(u>=1)accentTween.active=false;
-        AnnotationAccentChanged();AddressSelectionChanged();
+        AnnotationAccentChanged();AddressSelectionChanged();UpdateToastAccentChanged();
     }
     const bool button=chrome.ProfileButtonAnimating(NativeChrome::Motion::Now());
     InvalidateChrome();
@@ -160,7 +161,7 @@ PM::Model ProfileMenuModel(){
     }
     return m;
 }
-RECT ProfileButtonScreen(){FocusAnchor(L"profile menu"); /* i18n-exempt: log tag. Mode Focus: the profile menu (Ctrl+Maj+M too) opens under the panel at rest */const auto p=NativeChrome::Design::ProfileButton::Plate();RECT r=ChromePx({p.left,p.top,p.right,p.bottom});MapWindowPoints(window,nullptr,(POINT*)&r,2);return r;}
+RECT ProfileButtonScreen(){FocusAnchor(L"profile menu"); /* i18n-exempt: log tag. Mode Focus: the profile menu (Ctrl+Maj+M too) opens under the panel at rest */if(chrome.sidebar){const RECT c=RegionScreen(900);if(c.right>c.left)return c;} /* the side layouts: the column's profile button (in Focus, the column back at rest) */const auto p=NativeChrome::Design::ProfileButton::Plate();RECT r=ChromePx({p.left,p.top,p.right,p.bottom});MapWindowPoints(window,nullptr,(POINT*)&r,2);return r;}
 void OpenProfileDialog(bool keyboard);
 void OpenTabIn(const std::wstring& id,const std::wstring& session,int tab){
     if(id==profileId&&session==windowId){Select(tab);return;}

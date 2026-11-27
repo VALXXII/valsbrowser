@@ -58,6 +58,7 @@ struct Hooks {
     std::function<std::vector<std::tuple<unsigned, int, std::wstring>>(unsigned id)> folders; // refreshed list (excluding id's subtree)
     std::function<int(const std::vector<ContextMenu::Item>&, RECT, bool)> choose; // native menu under a screen rect
     std::function<void(bool keyboard)> closed;
+    std::function<FolderStyle::Look(unsigned id)> look;  // #138: a folder's icon and colour (the Dossier field and its list)
     std::function<void(const std::wstring&)> announce;
 };
 
@@ -164,7 +165,7 @@ class Popover {
         for (size_t i = 0; i < folders.size(); ++i) {
             const auto& [id, depth, name] = folders[i];
             auto item = ContextMenu::Command(static_cast<int>(i) + 1, std::wstring(static_cast<size_t>(std::max(0, depth)) * 2, L' ') + NativeUI::EscapeMenuText(name), L"", true, id == parent_);
-            item.icon = L"folder-closed"; items.push_back(item);
+            item.icon = L"folder-closed"; if (hooks_.look) item.look = hooks_.look(id); item.folderName = true; items.push_back(item);
         }
         items.push_back(ContextMenu::Separator());
         auto add = ContextMenu::Command(100000, TR(bookmark_new_folder_menu)); add.icon = L"folder-plus"; items.push_back(add);
@@ -309,7 +310,8 @@ class Popover {
             chrome_.Round(box, Design::Radius::control, Design::Surface::raised + (Design::Surface::hover - Design::Surface::raised) * v.hover);
             if (focus_ == FolderHit && GetFocus() == hwnd_) chrome_.FocusRing(box, Design::Radius::control);
             const float cy = (box.top + box.bottom) / 2;
-            chrome_.Icon(L"folder-closed", {box.left + 10, cy - 8, box.left + 26, cy + 8}, 16, 1);
+            const auto look = hooks_.look ? hooks_.look(parent_) : FolderStyle::Look{}; const D2D1_RECT_F icon{box.left + 10, cy - 8, box.left + 26, cy + 8};
+            if (look.styled) chrome_.FolderLook(look, icon, FolderStyle::Size::For(FolderStyle::Size::menu, FolderStyle::Size::menuPlain, look)); else chrome_.Icon(L"folder-closed", icon, 16, 1);   // #138
             chrome_.Text(parentName_, {box.left + 34, box.top, box.right - 34, box.bottom}, 14, 1, false, true, -.28f);
             chrome_.Icon(L"caret", {box.right - 26, cy - 8, box.right - 10, cy + 8}, 16, 1);
         }

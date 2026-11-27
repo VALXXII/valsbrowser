@@ -8,6 +8,13 @@
 #include "update-types.h"
 
 namespace BrowserUpdate {
+// « Plus tard » (Val, 2026-11-26, choice B): the host remembers, for this session only, the version that was put off;
+// the card shows nothing for it while the engine keeps its offer (nothing saved, so it comes back at the next start).
+// Any other view — a newer version, a download, the manual check's result once the host forgot it — passes through.
+inline View CardView(const View& v, const std::wstring& laterVersion) {
+    if (v.phase == Phase::Available && !laterVersion.empty() && v.version == laterVersion) return View{};
+    return v;
+}
 struct ToastOptions {
     float edgeInset = 14;              // DIP from the owner client's left and bottom edges (Paper)
     float topReserve = 81;             // DIP of chrome the card must never cover (121 with the bookmarks band)
@@ -35,6 +42,8 @@ public:
     void SetTopReserve(float dip);
     bool Focus();
     void SetFocusReleaseHandler(std::function<void()> handler);
+    // The window's profile ink changed (NativeChrome::Design::Accent::Ink): the background follows on the next frame.
+    void AccentChanged();
     void Close();
     HWND Window() const;
     bool Shown() const;

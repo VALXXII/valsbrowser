@@ -22,11 +22,18 @@ Public installer: browser-<version>-win-x64-setup.exe (package.py: setup stub + 
 byte for byte) is REQUIRED exactly like the ZIP: local size/SHA-256 vs release-info and SHA256SUMS,
 server digest on the draft and on an existing release, anonymous versioned download hash after
 publishing. The release notes lead with it; the ZIP stays as the portable alternative.
+Signed releases (design/installer-signing-options.md): `--require-signer <name>` refuses to publish anything that
+package.py did not sign and check with that signer (release-info.json), a test signature, or files without a
+certificate table (the setup, the uninstaller it carries, every .exe of the ZIP). This job cannot run Windows' own
+signature check (it runs on Linux): the cryptographic check is package.py's, on Windows, before these files exist.
+Without the option nothing changes: unsigned releases are published as before.
 `--dry-run` performs only read-only queries and prints the plan.
 """
 from __future__ import annotations
-import argparse, hashlib, json, os, re, subprocess, sys, time, urllib.error, urllib.request
+import argparse, hashlib, json, os, re, subprocess, sys, time, urllib.error, urllib.request, zipfile
 from pathlib import Path
+
+import package as K   # the setup's layout (same directory; standard library only)
 
 VERSION_RE = re.compile(r'^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$')
 REPO_RE = re.compile(r'^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$')
@@ -130,12 +137,25 @@ def verify_dist(dist: Path, info: dict, source_commit: str) -> tuple:
     if (setup.stat().st_size != info.get('setupSize') or setup.stat().st_size > MAX_SETUP
             or sha256(setup) != info.get('setupSha256')):
         raise SystemExit('setup changed since packaging')
-    # The setup must carry exactly this package (trailer layout of src/setup-payload.h, offline check).
+    # The setup must carry exactly this package (layout of src/setup-payload.h, with or without a signature; offline).
     data, pkg = setup.read_bytes(), package.read_bytes()
-    if (len(data) < len(pkg) + 128 or data[-128:-112] != b'BROWSER-SETUP 1\0' or data[-8:] != b'BRSETUP!'
-            or data[-128 - len(pkg):-128] != pkg or data[-64:-32] != hashlib.sha256(pkg).digest()
-            or int.from_bytes(data[-72:-64], 'little') != len(pkg)):
+    lay = K.setup_layout(data)
+    offset, size = lay['package']
+    if (lay['version'] != version or size != len(pkg) or data[offset:offset + size] != pkg
+            or lay['sha256'] != hashlib.sha256(pkg).digest()):
         raise SystemExit('setup does not embed exactly the package')
+    # What release-info says about signing must be what the files are (structure; see --require-signer).
+    u_offset, u_size = lay['uninstaller']
+    exes = {}
+    with zipfile.ZipFile(archive) as z:
+        for name in z.namelist():
+            if name.lower().endswith('.exe'):
+                exes[name] = has_certificate_table(z.read(name))
+    said = bool(info.get('signed'))
+    if said != lay['signed'] or said != bool(u_size) or (exes and said != all(exes.values())) or (not said and any(exes.values())):
+        raise SystemExit('release-info "signed" does not match the files (setup, embedded uninstaller, executables of the ZIP)')
+    if said and (not K.pe_overlay(data[u_offset:u_offset + u_size])[2] or not info.get('signer')):
+        raise SystemExit('signed release without a signed uninstaller or without a signer name')
     sums = (dist / SUMS).read_bytes().decode('ascii')
     expected = ''.join(f'{sha256(f)}  {f.name}\n' for f in (package, manifest, archive, setup))
     if sums != expected:
@@ -201,12 +221,33 @@ def verify_public(repo: str, tag: str, manifest: Path, archive: Path, setup: Pat
     raise SystemExit(f'Published, but the public {missing} does not match (check feed manually).')
 
 
+def has_certificate_table(data: bytes) -> bool:
+    """True when a PE file carries an Authenticode certificate table (structure only)."""
+    try:
+        return K.pe_overlay(data)[2]
+    except SystemExit:
+        return False
+
+
+def require_signer(info: dict, name: str) -> None:
+    """--require-signer: only a release that package.py signed and checked with this signer may be published."""
+    if not name.strip():
+        raise SystemExit('--require-signer needs the signer name')
+    if not info.get('signed'):
+        raise SystemExit('this release is not signed: refused (--require-signer)')
+    if info.get('testSignature') is not False:
+        raise SystemExit('this release carries a TEST signature: refused (--require-signer)')
+    if name.strip().lower() not in str(info.get('signer', '')).lower():
+        raise SystemExit('this release is not signed by the required signer: refused (--require-signer)')
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--repo', required=True, help='public releases repository owner/name')
     p.add_argument('--dist', required=True)
     p.add_argument('--source-commit', required=True)
     p.add_argument('--dry-run', action='store_true')
+    p.add_argument('--require-signer', help='refuse a release that is not signed by this name (default: not required)')
     a = p.parse_args(argv)
     if not REPO_RE.match(a.repo):
         raise SystemExit('bad --repo')
@@ -215,6 +256,8 @@ def main(argv: list[str] | None = None) -> int:
     dist = Path(a.dist)
     info = json.loads((dist / 'release-info.json').read_text(encoding='utf-8'))
     tag, ours, package, manifest, archive, setup = verify_dist(dist, info, a.source_commit)
+    if a.require_signer is not None:
+        require_signer(info, a.require_signer)
     if not a.dry_run and not os.environ.get('GH_TOKEN'):
         raise SystemExit('GH_TOKEN (UPDATES_RELEASE_TOKEN) is required to publish')
 

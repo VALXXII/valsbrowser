@@ -19,6 +19,15 @@
    version/commit/channel of version.json) || the .lsrupd above, byte for byte || a 128-byte
    trailer (src/setup-payload.h), then re-reads it (overlay bounds, trailer, embedded bytes).
 6. Writes SHA256SUMS.txt (package, manifest, ZIP, setup) and release-info.json.
+
+Signing (design/installer-signing-options.md) is OFF unless --sign-name or --sign-pfx is given. When it is on:
+  a. every executable of the STAGED payload is signed before it is packed (the .lsrupd, the ZIP and the setup then
+     carry the same signed bytes); one that already has a signature (WebView2Loader.dll, Microsoft) must be valid;
+  b. the setup stub is signed on its own: it is the uninstaller the setup writes (a signature over the whole setup
+     does not cover that smaller file), embedded after the package;
+  c. the setup is signed last, then re-read (same layout with or without a signature);
+  d. every signature is checked (tools/release/sign.py) before SHA256SUMS.txt and release-info.json are written, and
+     release-info.json records "signed" and "signer". The <app> directory itself is never modified.
 """
 from __future__ import annotations
 import argparse, hashlib, json, os, re, shutil, stat, subprocess, sys, zipfile
@@ -179,12 +188,19 @@ def verify_zip(archive: Path, staging: Path, files: list[str], top: str) -> None
 
 # ---------------------------------------------------------------- setup (design/windows-setup-plan.md)
 # browser-<version>-win-x64-setup.exe = setup stub (built by build.py into <app>-setup/) || the .lsrupd, byte for
-# byte || a 128-byte trailer. Same layout as src/setup-payload.h (LocateOverlay / ParseTrailer).
+# byte || [the signed uninstaller] || 0-7 zero bytes || a 128-byte trailer starting on an 8-byte boundary of the file
+# (an Authenticode signature then adds nothing before its certificate table). Same layout as src/setup-payload.h
+# (LocateOverlay / ParseTrailer / IsSignedCopyOfImage).
 SETUP_MAGIC = b'BROWSER-SETUP 1\0'
 SETUP_END = b'BRSETUP!'
 SETUP_TRAILER = 128
 SETUP_STUB_NAME = 'browser-setup.exe'
 MAX_PACKAGE = 512 * 1024 * 1024  # UpdatePackage::MaxPackageBytes
+MAX_UNINSTALLER = 64 * 1024 * 1024  # SetupPayload::MaxUninstallerBytes
+
+
+def align8(n: int) -> int:
+    return (n + 7) & ~7
 
 
 def setup_name(version: str) -> str:
@@ -255,17 +271,46 @@ def check_setup_stub(stub: bytes, info: dict) -> None:
             raise SystemExit(f'setup stub is a test build ({marker})')
 
 
-def setup_trailer(version: str, offset: int, package: bytes) -> bytes:
+def setup_trailer(version: str, offset: int, package: bytes, uninstaller_size: int = 0) -> bytes:
     v = version.encode('ascii')
     if len(v) > 32:
         raise SystemExit('version too long for the setup trailer')
+    uninstaller_offset = offset + len(package) if uninstaller_size else 0
     t = SETUP_MAGIC + v.ljust(32, b'\0') + offset.to_bytes(8, 'little') + len(package).to_bytes(8, 'little') \
-        + hashlib.sha256(package).digest() + b'\0' * 24 + SETUP_END
+        + hashlib.sha256(package).digest() + uninstaller_offset.to_bytes(8, 'little') \
+        + uninstaller_size.to_bytes(8, 'little') + b'\0' * 8 + SETUP_END
     assert len(t) == SETUP_TRAILER
     return t
 
 
-def write_setup(stub_path: Path, package: Path, info: dict, out: Path) -> None:
+def unsigned_image(image: bytes) -> bytes:
+    """`image` with the two header fields a signature rewrites (CheckSum, certificate directory) zeroed."""
+    pe = int.from_bytes(image[0x3C:0x40], 'little')
+    opt = pe + 24
+    b = bytearray(image)
+    b[opt + 64:opt + 68] = b'\0' * 4
+    b[opt + 144:opt + 152] = b'\0' * 8
+    return bytes(b)
+
+
+def check_signed_stub(stub: bytes, uninstaller: bytes) -> None:
+    """The embedded uninstaller must be exactly this stub plus its own certificate table (IsSignedCopyOfImage)."""
+    if not len(stub) < len(uninstaller) <= MAX_UNINSTALLER:
+        raise SystemExit('signed uninstaller: bad size')
+    start, end, signed = pe_overlay(uninstaller)
+    if not signed or start != len(stub) or end != len(stub):
+        raise SystemExit('signed uninstaller: not the stub followed by a certificate table')
+    if unsigned_image(uninstaller[:len(stub)]) != unsigned_image(stub):
+        raise SystemExit("signed uninstaller: not this setup's stub")
+
+
+def setup_bytes(stub: bytes, package: bytes, version: str, uninstaller: bytes = b'') -> bytes:
+    """The whole setup file: stub, package, optional signed uninstaller, zeros up to an 8-byte boundary, trailer."""
+    body = stub + package + uninstaller
+    return body + b'\0' * (align8(len(body)) - len(body)) + setup_trailer(version, len(stub), package, len(uninstaller))
+
+
+def write_setup(stub_path: Path, package: Path, info: dict, out: Path, uninstaller: bytes = b'') -> None:
     if out.exists():
         raise SystemExit(f'Refusing to overwrite {out}')
     if is_reparse(stub_path) or not stub_path.is_file():
@@ -274,28 +319,61 @@ def write_setup(stub_path: Path, package: Path, info: dict, out: Path) -> None:
     check_setup_stub(stub, info)
     if not 0 < len(pkg) <= MAX_PACKAGE:
         raise SystemExit('package size out of range for the setup')
+    if uninstaller:
+        check_signed_stub(stub, uninstaller)
     with out.open('xb') as f:
-        f.write(stub + pkg + setup_trailer(info['version'], len(stub), pkg))
+        f.write(setup_bytes(stub, pkg, info['version'], uninstaller))
 
 
-def verify_setup(setup: Path, package: Path, info: dict) -> None:
-    """Re-reads the setup: overlay bounds, trailer fields, embedded bytes == the .lsrupd, stub identity."""
-    data, pkg = setup.read_bytes(), package.read_bytes()
-    start, end, _ = pe_overlay(data)
+def setup_layout(data: bytes) -> dict:
+    """Structure of a setup file, with or without a signature (SetupPayload::Open): where the stub, the package, the
+    embedded uninstaller and the trailer are. Raises SystemExit on anything but the one valid layout."""
+    start, end, has_table = pe_overlay(data)
     if end - start < SETUP_TRAILER:
         raise SystemExit('setup has no embedded package')
-    t = data[end - SETUP_TRAILER:end]
-    if t[:16] != SETUP_MAGIC or t[120:] != SETUP_END or any(t[96:120]):
+    trailer_start = end - SETUP_TRAILER
+    t = data[trailer_start:end]
+    if t[:16] != SETUP_MAGIC or t[120:] != SETUP_END or any(t[112:120]):
         raise SystemExit('setup trailer magic/padding invalid')
     version = t[16:48].rstrip(b'\0')
-    if b'\0' in version or version.decode('ascii') != info['version']:
-        raise SystemExit('setup trailer version differs')
+    if b'\0' in version:
+        raise SystemExit('setup trailer version invalid')
     offset, size = int.from_bytes(t[48:56], 'little'), int.from_bytes(t[56:64], 'little')
-    if offset != start or offset + size + SETUP_TRAILER != end or size != len(pkg):
+    u_offset, u_size = int.from_bytes(t[96:104], 'little'), int.from_bytes(t[104:112], 'little')
+    if offset != start or not 0 < size <= MAX_PACKAGE or offset + size > trailer_start:
         raise SystemExit('setup trailer offsets do not match the overlay')
-    if t[64:96] != hashlib.sha256(pkg).digest() or data[offset:offset + size] != pkg:
+    data_end = offset + size
+    if u_size:
+        if u_offset != data_end or u_size > MAX_UNINSTALLER or u_size > trailer_start - data_end:
+            raise SystemExit('setup trailer: the uninstaller does not follow the package')
+        data_end += u_size
+    elif u_offset:
+        raise SystemExit('setup trailer: uninstaller offset without a size')
+    if align8(data_end) != trailer_start or any(data[data_end:trailer_start]):
+        raise SystemExit('setup trailer does not start on the 8-byte boundary after the embedded data')
+    return {'stub': start, 'package': (offset, size), 'uninstaller': (data_end - u_size, u_size), 'trailer': trailer_start,
+            'end': end, 'signed': has_table, 'version': version.decode('ascii'), 'sha256': t[64:96]}
+
+
+def verify_setup(setup: Path, package: Path, info: dict, uninstaller: bytes = b'', signed: bool | None = None) -> None:
+    """Re-reads the setup: overlay bounds, trailer fields, embedded bytes == the .lsrupd, stub identity; the embedded
+    uninstaller is exactly `uninstaller` (none by default). `signed`: the setup itself must (True) or must not (False)
+    carry a certificate table; None accepts both. The layout is the same in both cases."""
+    data, pkg = setup.read_bytes(), package.read_bytes()
+    lay = setup_layout(data)
+    if signed is not None and lay['signed'] != signed:
+        raise SystemExit('setup is signed' if lay['signed'] else 'setup is not signed')
+    if lay['version'] != info['version']:
+        raise SystemExit('setup trailer version differs')
+    (offset, size), (u_offset, u_size), start = lay['package'], lay['uninstaller'], lay['stub']
+    if size != len(pkg) or lay['sha256'] != hashlib.sha256(pkg).digest() or data[offset:offset + size] != pkg:
         raise SystemExit('setup does not embed exactly the .lsrupd')
-    check_setup_stub(data[:start], info)
+    stub = unsigned_image(data[:start]) if lay['signed'] else data[:start]
+    if data[u_offset:u_offset + u_size] != uninstaller:
+        raise SystemExit('setup does not embed exactly the expected uninstaller')
+    if u_size:
+        check_signed_stub(stub, uninstaller)
+    check_setup_stub(stub, info)
 
 
 def read_manifest(path: Path) -> dict:
@@ -320,6 +398,11 @@ def main() -> int:
     p.add_argument('--app', required=True, help='built application directory')
     p.add_argument('--out', required=True, help='release asset directory (recreated)')
     p.add_argument('--setup-stub', help=f'setup stub built by build.py (default: <app>-setup/{SETUP_STUB_NAME})')
+    p.add_argument('--sign-name', help='sign with the certificate of the current user store that has this subject name '
+                                       '(a cloud key: the session with the provider must be open). Default: no signing')
+    p.add_argument('--sign-pfx', help='sign with this TEST certificate file (dry runs only; refused for a release build)')
+    p.add_argument('--sign-expect', help='text the signer subject must contain (default: --sign-name)')
+    p.add_argument('--timestamp-url', help='RFC 3161 timestamp service (default: tools/release/sign.py)')
     a = p.parse_args()
     app, out = (ROOT / a.app).resolve(), (ROOT / a.out).resolve()
     stub = (ROOT / a.setup_stub).resolve() if a.setup_stub else app.parent / (app.name + '-setup') / SETUP_STUB_NAME
@@ -333,8 +416,27 @@ def main() -> int:
     if not stub.is_file() or is_reparse(stub):
         raise SystemExit(f'setup stub missing: {stub} (built by tools/release/build.py)')
     check_setup_stub(stub.read_bytes(), info)
+    signer = None
+    if a.sign_name or a.sign_pfx:
+        import sign as S   # only when signing is asked for: the default path never loads it
+        if a.sign_pfx and info.get('channel') == 'release':
+            raise SystemExit('a test certificate never signs a release-channel build')
+        signer = S.Signer(name=a.sign_name, pfx=(ROOT / a.sign_pfx).resolve() if a.sign_pfx else None, expect=a.sign_expect,
+                          **({'timestamp_url': a.timestamp_url} if a.timestamp_url else {}))
+    elif a.sign_expect or a.timestamp_url:
+        raise SystemExit('--sign-expect / --timestamp-url need --sign-name or --sign-pfx')
     staging = out.parent / (out.name + '-payload')
     files = stage(app, staging)
+    signed_files, foreign = [], []
+    if signer:   # the staged copies only: <app> is never modified
+        for rel in files:
+            if not S.is_pe_name(rel):
+                continue
+            if S.has_signature(staging / rel):
+                foreign.append(rel)   # signed by its own publisher (WebView2Loader.dll): kept, must be trusted
+            else:
+                signer.sign(staging / rel)
+                signed_files.append(rel)
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
@@ -356,8 +458,32 @@ def main() -> int:
     verify_zip(archive, staging, files, top)
     zip_sha = sha256(archive)
     setup = out / setup_name(version)
-    write_setup(stub, package, info, setup)
-    verify_setup(setup, package, info)
+    uninstaller, signing = b'', {'signed': False}
+    if signer:
+        work = out.parent / (out.name + '-signing')
+        if work.exists():
+            shutil.rmtree(work)
+        work.mkdir(parents=True)
+        shutil.copyfile(stub, work / 'uninstall.exe')   # the stub alone = the uninstaller the setup writes
+        signer.sign(work / 'uninstall.exe')
+        uninstaller = (work / 'uninstall.exe').read_bytes()
+    write_setup(stub, package, info, setup, uninstaller)
+    if signer:
+        signer.sign(setup)
+    verify_setup(setup, package, info, uninstaller, signed=bool(signer))
+    if signer:
+        ours = [staging / rel for rel in signed_files] + [work / 'uninstall.exe', setup]
+        facts = signer.check(ours)
+        for rel in foreign:   # never ours: its own publisher, fully trusted, whatever our mode
+            fact = signer.check([staging / rel], expect='Microsoft Corporation')[0]
+            print(f'Signature kept: {rel} ({fact["signer"]})')
+        signing = {'signed': True, 'signer': facts[-1]['signer'], 'signerThumbprint': facts[-1]['thumbprint'],
+                   'testSignature': signer.test, 'timestampUrl': signer.timestamp_url,
+                   'signedFiles': [*signed_files, 'uninstall.exe (embedded in the setup)', setup.name],
+                   'signedByOthers': foreign}
+        if len({f['thumbprint'] for f in facts}) != 1:
+            raise SystemExit('the release files are not all signed by the same certificate')
+        shutil.rmtree(work)
     setup_sha = sha256(setup)
     (out / 'SHA256SUMS.txt').write_text(
         ''.join(f'{sha256(f)}  {f.name}\n' for f in (package, manifest, archive, setup)), encoding='ascii', newline='\n')
@@ -365,10 +491,13 @@ def main() -> int:
         'packageSize': package.stat().st_size, 'packageSha256': expected['sha256'],
         'zip': archive.name, 'zipSize': archive.stat().st_size, 'zipSha256': zip_sha,
         'setup': setup.name, 'setupSize': setup.stat().st_size, 'setupSha256': setup_sha,
-        'files': len(files)}, indent=2) + '\n', encoding='utf-8', newline='\n')
+        'files': len(files), **signing}, indent=2) + '\n', encoding='utf-8', newline='\n')
     print(f'Package OK: {package.name} {expected["size"]} bytes sha256 {expected["sha256"]} ({len(files)} files)')
     print(f'ZIP OK: {archive.name} {archive.stat().st_size} bytes sha256 {zip_sha} (top folder {top}/)')
     print(f'Setup OK: {setup.name} {setup.stat().st_size} bytes sha256 {setup_sha} (embeds {package.name})')
+    if signer:
+        kind = 'TEST certificate (not trusted by Windows)' if signer.test else 'trusted certificate'
+        print(f'Signed OK: {len(signing["signedFiles"])} files by {signing["signer"]} [{kind}], timestamp {signer.timestamp_url}')
     return 0
 
 

@@ -490,7 +490,8 @@ int main(){
     }
     // A8 destinations: the public releases repository (notes of the running version, issues).
     Expect(ReleaseNotesUrl(L"0.3.132")==L"https://github.com/VALXXII/browser-releases/releases/tag/v0.3.132"&&ReleaseNotesUrl(L"dev")==L"https://github.com/VALXXII/browser-releases/releases","about: release notes of the running version");
-    Expect(std::wstring(IssuesUrl)==L"https://github.com/VALXXII/browser-releases/issues/new","about: report a problem on the public issues");
+    Expect(std::wstring(IssuesUrl)==L"https://github.com/VALXXII/valsbrowser/issues/new","about: report a problem on the public repository's issues");
+    Expect(std::wstring(SourceUrl)==L"https://github.com/VALXXII/valsbrowser"&&std::wstring(WebsiteUrl)==L"https://valsbrowser.com","about: « Code source » opens the public repository, « Site web » valsbrowser.com");
     // A9 private window: the app writes nothing at all (session, history, downloads, settings, bookmarks, log).
     {
         const std::wstring dir=L"build/elements-integration/private-fixture";std::error_code ec;std::filesystem::remove_all(dir,ec);std::filesystem::create_directories(dir,ec);

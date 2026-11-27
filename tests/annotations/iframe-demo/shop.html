@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>Boutique — démo iframes (cas 2)</title>
+<style>
+  body { margin: 0; font: 15px/1.4 "Segoe UI", system-ui, sans-serif; background: #F4F4F2; color: #1D1D1F; }
+  header { padding: 18px 32px; font-weight: 600; font-size: 18px; }
+  main { padding: 0 32px 40px; display: grid; grid-template-columns: 300px 300px; gap: 32px; align-items: start; }
+  .col h2 { font-size: 15px; margin: 0 0 10px; }
+  .note { font-size: 13px; color: #6B6B6B; margin-top: 8px; }
+  iframe { display: block; background: #fff; border: 1px dashed #9A9A9A; border-radius: 8px; }
+  #pay { width: 300px; height: 250px; }
+  #ship { width: 300px; height: 180px; border-style: solid; }
+  #map { position: absolute; right: 24px; top: 470px; width: 260px; height: 150px; }
+  .tall { height: 1200px; }
+</style></head>
+<body>
+<header>Boutique</header>
+<main>
+  <div class="col">
+    <h2>Paiement</h2>
+    <iframe id="pay" src="{{OTHER}}/paiement.html" title="Paiement sécurisé"></iframe>
+    <div class="note">iframe d'un autre site (127.0.0.1) : un seul cadre, la carte apparaît dessous.</div>
+  </div>
+  <div class="col">
+    <h2>Livraison</h2>
+    <iframe id="ship" src="/livraison.html" title="Livraison"></iframe>
+    <div class="note">iframe du même site (localhost) : ses éléments se visent un par un, pas de carte.</div>
+  </div>
+</main>
+<iframe id="map" src="{{OTHER}}/carte.html" title="Carte"></iframe>
+<div class="tall"></div>
+</body></html>

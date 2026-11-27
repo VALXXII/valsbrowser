@@ -96,7 +96,9 @@ public:
     // (persisted next-check reached: 6 h after success, 1 h..24 h back-off after failure), no worker is
     // running, the view is Hidden (never during Checking/Available/Downloading/Ready/Installing/Installed/
     // Error) and the build is enabled. Results follow the automatic rules: offline/no release stay Hidden,
-    // a dismissed or already-notified version is not shown again. Returns true if a check was started.
+    // a dismissed version (or an already-offered ready one) is not shown again. Returns true if a check was started.
+    // At a browser start inside the 6 h window, the saved result of the last check (a newer version that was not
+    // dismissed) is offered again without any request.
     bool AutoCheck();
     // Milliseconds until AutoCheck should next be tried: time to the persisted next-check, clamped to
     // [AutoCheckMinMs, AutoCheckMaxMs]; 0 when updates are disabled/shut down (do not arm). The host keeps
@@ -114,12 +116,19 @@ private:
     struct State {
         std::int64_t nextCheck = 0;
         std::uint32_t failures = 0;
-        std::string notified;  // "available:<v>" or "ready:<v>"
+        // "ready:<v>": that staged version was offered once. Released builds also wrote "available:<v>" here when
+        // a card was merely SHOWN; that old value is never read as a refusal (it no longer hides anything).
+        std::string notified;
+        // The last network check's newer version ("" = none): shown again at the next browser start, no request.
+        std::string available;
+        std::uint64_t availableSize = 0;
+        std::string dismissed;  // "available:<v>": the person refused that version (Ignorer); never offered again by itself
     };
-    void Launch(Op op, bool manual, bool startup);
+    void Launch(Op op, bool manual, bool startup, bool thenDownload = false);
     void StopWorker();
     void Finished();
-    void RunCheck(std::uint64_t gen, bool manual, bool startup);
+    void RunCheck(std::uint64_t gen, bool manual, bool startup, bool thenDownload);
+    bool ShowSaved(std::uint64_t gen, const State& state);
     void RunDownload(std::uint64_t gen, UpdatePackage::Manifest manifest);
     bool Publish(std::uint64_t gen, const BrowserUpdate::View& view);
     void Post();

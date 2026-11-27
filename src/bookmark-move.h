@@ -77,7 +77,7 @@ inline Result Commit(const std::wstring& dataDir, const std::wstring& file, BM::
         BM::Store merged = BM::Store::Merge(b, m, t, &r.remap);
         Apply(merged, q, r.remap, r);   // a retry runs this again: Apply resets the ids
         return merged;
-    }, timeoutMs, {"browser-bookmarks 1"});
+    }, timeoutMs, Bookmarks::Headers());
     if (r.store != ProfileStore::Result::Written && r.store != ProfileStore::Result::Unchanged) { r.outcome = Outcome::SaveFailed; r.id = r.from = r.to = BM::NoId; }
     return r;
 }

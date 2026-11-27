@@ -21,12 +21,32 @@ static void HeldChecks() {
     Expect(MapEngineState(Interrupted, ReasonUserPaused, false) == State::Paused && MapEngineState(Interrupted, ReasonUserCanceled, false) == State::Cancelled, "engine interrupts: paused, cancelled");
     Expect(MapEngineState(Interrupted, 10, false) == State::Failed && MapEngineState(Interrupted, 1, false) == State::Failed, "engine interrupts: anything else fails (blocked reasons keep the B07 path)");
     const std::int64_t mb = 57430695;
-    Expect(!HeldForDecision(InProgress, mb, mb, false, -1) && !HeldForDecision(InProgress, mb, mb, false, HoldGraceMs - 1), "every byte in: not held before the grace");
-    Expect(HeldForDecision(InProgress, mb, mb, false, HoldGraceMs) && HeldForDecision(InProgress, mb, mb, false, 240000), "every byte in, still in progress past the grace: held (measured: no event ever follows)");
-    Expect(!HeldForDecision(Completed, mb, mb, false, 240000) && !HeldForDecision(Interrupted, mb, mb, false, 240000), "a completed or interrupted download is never held");
-    Expect(!HeldForDecision(InProgress, mb - 1, mb, false, 240000) && !HeldForDecision(InProgress, 5, 0, false, 240000) && !HeldForDecision(InProgress, mb, mb, true, 240000), "missing bytes, unknown size or a user pause: never held");
+    // The card only on a real hold (the false « À confirmer » for every download on a slow machine was the bug).
+    // H(full since, marked since, insecure, markable): every byte in, in progress, not paused.
+    auto H = [&](std::int64_t full, std::int64_t marked, bool insecure, bool markable) { return HeldReason(InProgress, mb, mb, false, full, marked, insecure, markable); };
+    Expect(H(-1, -1, false, true) == HeldBy::None && H(MarkedFallbackMs - 1, -1, false, true) == HeldBy::None, "no zone mark yet, the engine's pass still runs: no card, however long below the fallback (measured: a slow reputation completes by itself at 16 s)");
+    Expect(H(2500, MarkGraceMs - 1, false, true) == HeldBy::None && H(2500, MarkGraceMs, false, true) == HeldBy::Mark && H(240000, 200000, false, true) == HeldBy::Mark, "the zone mark there (its pass over) and still in progress past the grace: a real hold (measured: a finished download completes within 15 ms of its mark)");
+    Expect(H(HoldGraceMs - 1, -1, true, true) == HeldBy::None && H(HoldGraceMs, -1, true, true) == HeldBy::Insecure, "an insecure source in progress past the grace: a real hold at once (measured: never a mark)");
+    Expect(H(UnmarkedFallbackMs - 1, -1, false, false) == HeldBy::None && H(UnmarkedFallbackMs, -1, false, false) == HeldBy::Fallback, "no mark can ever come (no streams, policy): the card after the fallback");
+    Expect(H(MarkedFallbackMs, -1, false, true) == HeldBy::Fallback && UnmarkedFallbackMs > 16000 && MarkedFallbackMs > UnmarkedFallbackMs, "a mark could come but never did: the card after the long fallback (never a row stuck at 100 %); both past the 16 s reputation timeout");
+    Expect(HeldReason(Completed, mb, mb, false, 240000, 200000, true, true) == HeldBy::None && HeldReason(Interrupted, mb, mb, false, 240000, 200000, true, true) == HeldBy::None, "a completed or interrupted download is never held");
+    Expect(HeldReason(InProgress, mb - 1, mb, false, 240000, 200000, true, true) == HeldBy::None && HeldReason(InProgress, 5, 0, false, 240000, 200000, true, true) == HeldBy::None && HeldReason(InProgress, mb, mb, true, 240000, 200000, true, true) == HeldBy::None, "missing bytes, unknown size or a user pause: never held");
+    Expect(HeldForDecision(InProgress, mb, mb, false, 2500, 1500, false, true) && !HeldForDecision(InProgress, mb, mb, false, 2500, -1, false, true), "HeldForDecision is HeldReason != None");
     Item held; held.state = State::InProgress; held.held = true;
     Expect(ActionsFor(held).first == Action::Discard && ActionsFor(held).second == Action::Keep, "held actions: Supprimer, Conserver");
+    // The Designer's states (2026-11-26): each hold kind has its sentence; checking: « Vérification… », Cancel without Pause.
+    Expect(HeldBodyId(HeldBy::Mark) == I18n::Id::downloads_held_body && HeldBodyId(HeldBy::None) == I18n::Id::downloads_held_body, "SmartScreen's hold (the zone mark) keeps its sentence");
+    Expect(HeldBodyId(HeldBy::Insecure) == I18n::Id::downloads_held_body_insecure && HeldBodyId(HeldBy::Fallback) == I18n::Id::downloads_held_body_unchecked, "an insecure hold and the fallback hold have their own sentences");
+    Item insecure = held; insecure.heldBy = HeldBy::Insecure; insecure.total = insecure.received = 2048; Item unchecked = insecure; unchecked.heldBy = HeldBy::Fallback;
+    Expect(DownloadsUI::AccessibleStatus(insecure) == TRF(downloads_held_status, Bytes(2048, 0)) + L". " + TR(downloads_held_body_insecure), "accessible status of an insecure hold: « status. its sentence »");
+    Expect(DownloadsUI::AccessibleStatus(unchecked).find(TR(downloads_held_body_unchecked)) != std::wstring::npos && DownloadsUI::AccessibleStatus(unchecked).find(TR(downloads_held_body)) == std::wstring::npos, "accessible status of the fallback hold: its own sentence, never SmartScreen's");
+    Item checking; checking.state = State::InProgress; checking.checking = true; checking.received = checking.total = 2048;
+    Expect(ActionsFor(checking).first == Action::None && ActionsFor(checking).second == Action::Cancel, "checking: no Pause, Cancel kept in its place");
+    Expect(DownloadsUI::AccessibleStatus(checking) == TR(downloads_state_checking) && std::wcscmp(TR(downloads_state_checking), L"Checking…") == 0, "checking: the row reads « Checking… » (English process)");
+    Item both = checking; both.held = true;
+    Expect(ActionsFor(both).first == Action::Discard && ActionsFor(both).second == Action::Keep, "a held row is never shown as checking");
+    Item receiving; receiving.state = State::InProgress; receiving.received = 1024; receiving.total = 2048;
+    Expect(ActionsFor(receiving).first == Action::Pause && ActionsFor(receiving).second == Action::Cancel && DownloadsUI::AccessibleStatus(receiving) == Bytes(1024, 2048), "receiving bytes: unchanged (Pause, Cancel, the bytes)");
     Expect(std::wcscmp(IconFor(Action::Discard), L"trash") == 0 && std::wcscmp(IconFor(Action::Keep), L"check") == 0, "held actions' drawer glyphs");
     // Popover: the card takes its row's place, 20 from neighbouring tiles; « View all » 16 under the last element.
     std::vector<Item> list(3); list[1].state = State::InProgress; list[1].held = true;
@@ -62,6 +82,11 @@ static void KeepChecks() {
     Expect(GuardMs(true) == GuardMarkedMs && GuardMs(false) == GuardForcedMs && GuardMarkedMs >= 60000 && GuardForcedMs > GuardMarkedMs, "keep: 60 s of guard, longer when the cap forced the cancel");
     Expect(LookAfterMs(1) == StepMs && LookAfterMs(600) == 1000, "keep: looked at every 100 ms, then once a second after a minute");
     Expect(EngineStub(0, 49667) && !EngineStub(0, 0) && !EngineStub(10, 49667) && !EngineStub(-1, 49667), "keep: only an empty file where our bytes are not empty is the engine's leftover (never a file with content)");
+    Expect(AtExit(false, At::Gone, false) == Exit::NextStart && AtExit(false, At::Left, false) == Exit::NextStart && AtExit(false, At::Left, true) == Exit::NextStart, "keep at exit: the engine still up (another window of this profile) or crashed: our name stays for the next start, whatever the path");
+    Expect(AtExit(true, At::Gone, false) == Exit::GiveBackThenSettle && AtExit(true, At::Left, true) == Exit::GiveBackThenSettle, "keep at exit: the engine ended cleanly, its file removed (or an empty file left): given back from our name, then settled");
+    Expect(AtExit(true, At::Left, false) == Exit::Settle, "keep at exit: the engine ended cleanly, the file in place (its removal undone, or never possible): settled");
+    Expect(AtExit(true, At::Pending, false) == Exit::NextStart, "keep at exit: a removal pending at the path: the next start's sweep");
+    Expect(ExitWaitMs == 5000, "keep at exit: the engine's end waited for 5 s at most");
     Expect(InsecureSource(L"http://insecure.test:8080/a.exe") && InsecureSource(L"HTTP://Example.org/x") && InsecureSource(L"http://user@files.example/x.bin"), "keep: a plain http file from another host is an insecure-download hold");
     Expect(!InsecureSource(L"https://example.org/a.exe") && !InsecureSource(L"http://127.0.0.1:5000/a.exe") && !InsecureSource(L"http://localhost/a.exe") && !InsecureSource(L"http://[::1]:80/a") && !InsecureSource(L"blob:https://x/1") && !InsecureSource(L"http://"), "keep: https, this computer, other schemes: not insecure");
     Item held; held.state = State::InProgress; held.held = true;
@@ -204,14 +229,16 @@ struct Fixture {
         DownloadsUI::Scene scene; scene.viewBottom = height - Panel::padding / 2;
         return Paint(name, dpi, height, rows, hovered, DownloadsUI::PopoverSlots(rows), entrance, focus, scene);
     }
+    int lastCardLines = 0;   // the body's line count of the last card rendered by Held()
     // Popover with a held download's card (Paper B07b « A · Ambre »), height measured like the app.
     bool Held(const wchar_t* name, UINT dpi, std::vector<Item>& rows, int focus = 0, std::map<int, int> hovered = {}) {
-        float card = 0;
-        { Chrome measure; if (FAILED(measure.InitOffscreen(root, dpi, Panel::width, 200))) return false; DownloadsUI::View v(measure); card = v.CardHeight(); v.Release(); measure.Dispose(); }
+        float card = 0; int lines = 0; Item first; for (const auto& r : rows) if (r.held) { first = r; break; }
+        { Chrome measure; if (FAILED(measure.InitOffscreen(root, dpi, Panel::width, 200))) return false; DownloadsUI::View v(measure); card = v.CardHeight(first); lines = v.BodyLines(HeldBody(first)); v.Release(); measure.Dispose(); }
         if (card <= 0) { std::fprintf(stderr, "held card not measured\n"); return false; }
         auto slots = DownloadsUI::PopoverSlots(rows, card); const float height = DownloadsUI::PopoverHeight(slots);
         DownloadsUI::Scene scene; scene.viewBottom = height - Panel::padding / 2;
-        std::printf("held card: %.0f DIP high, popover %.0f DIP\n", card, height);
+        lastCardLines = lines;
+        std::printf("held card (%s): %d body line(s), %.0f DIP high, popover %.0f DIP\n", first.heldBy == HeldBy::Insecure ? "insecure" : first.heldBy == HeldBy::Fallback ? "fallback" : "SmartScreen", lines, card, height);
         return Paint(name, dpi, height, rows, hovered, slots, 1, focus, scene);
     }
     bool HeldDrawer(const wchar_t* name, UINT dpi, std::vector<Item>& rows) {
@@ -665,6 +692,24 @@ int wmain(int argc, wchar_t** argv) {
             Expect(f.Held(L"held-card-fr-focus.png", 192, held, DownloadsUI::ActionHit(1, 1)), "render held card focus");
             I18n::SetForProcess(I18n::Locale::En);
             Expect(f.Held(L"held-card-en-96.png", 96, held), "render held card (en)");
+            // The Designer's sentences (2026-11-26): the insecure hold and the fallback hold, in the card's 212 DIP; never
+            // more lines than SmartScreen's sentence (the card's height known from Paper B07b).
+            for (auto lang : {I18n::Locale::Fr, I18n::Locale::En}) {
+                I18n::SetForProcess(lang); const std::wstring l = lang == I18n::Locale::En ? L"en" : L"fr";
+                Expect(f.Held((L"held-card-smartscreen-" + l + L"-96.png").c_str(), 96, held), "render SmartScreen card"); const int smartscreen = f.lastCardLines;
+                for (auto kind : {HeldBy::Insecure, HeldBy::Fallback}) {
+                    held[0].heldBy = kind; const std::wstring k = kind == HeldBy::Insecure ? L"insecure" : L"fallback";
+                    for (UINT dpi : {96u, 192u}) Expect(f.Held((L"held-card-" + k + L"-" + l + L"-" + std::to_wstring(dpi) + L".png").c_str(), dpi, held), "render the new held card");
+                    Expect(f.lastCardLines > 0 && f.lastCardLines <= smartscreen, "the new sentence fits the card in no more lines than SmartScreen's");
+                }
+                held[0].heldBy = HeldBy::None;
+            }
+            // The checking row: « Vérification… » / « Checking… », Cancel only (French and English).
+            std::vector<Item> checking(3, held[1]); checking[0] = held[0]; checking[0].held = false; checking[0].checking = true; checking[2] = held[2];
+            for (auto lang : {I18n::Locale::Fr, I18n::Locale::En}) {
+                I18n::SetForProcess(lang);
+                Expect(f.Render(lang == I18n::Locale::En ? L"checking-row-en.png" : L"checking-row-fr.png", 96, {{1, -1}}, 1, 0, &checking), "render the checking row (actions revealed)");
+            }
         }
         // Real toolbar (Chrome::Paint) with the animated icon, cropped to the button.
         {

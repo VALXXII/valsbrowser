@@ -13,3 +13,8 @@ New-Item -ItemType Directory -Force $out | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Bookmarks test compilation failed.' }
 & "$out/bookmarks_test.exe"
 if ($LASTEXITCODE -ne 0) { throw 'Bookmarks tests failed.' }
+# A folder's icon and colour (#138, src/bookmark-folder-style.h): palette, icons, picker geometry and keyboard model.
+& $Compiler -std=c++17 -Wall -Wextra -Werror -static tests/folder_style_test.cpp -o "$out/folder_style_test.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Folder style test compilation failed.' }
+& "$out/folder_style_test.exe"
+if ($LASTEXITCODE -ne 0) { throw 'Folder style tests failed.' }

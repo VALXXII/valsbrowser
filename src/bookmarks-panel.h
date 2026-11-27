@@ -5,7 +5,9 @@
 // field (type anywhere to filter: every word in the title or the address), then the
 // tree: "Barre de favoris" and "Autres favoris" and their folders, folding on their
 // chevron, 16 DIP of indent per level, 48 DIP rows (32 DIP tile + title + detail).
-// Hovered or focused rows show their actions ("+" new tab, "×" remove).
+// Hovered or focused rows show their actions ("+" new tab, "×" remove; a folder: "×" and its palette, #138).
+// #138 A folder's palette button unfolds the picker under its row (Paper « #138 — Dossiers de favoris », board « C
+// finale (validée) » 23EO-0): colours and icons apply at once; Tab and arrows move, Enter chooses, Escape folds it.
 // It is also the complete accessible path to every folder: a UIA List whose items
 // carry name, address, level, position and an expand/collapse state.
 // Keyboard: Up/Down rows, Right/Left unfold/fold (or go to the parent), Enter open
@@ -27,6 +29,7 @@
 #include "bookmarks.h"
 #include "accessibility.h"
 #include "bookmark-drag.h"
+#include "bookmark-folder-style.h"
 
 namespace NativeChrome {
 namespace BookmarksUI {
@@ -35,17 +38,24 @@ namespace DrawerMotion = Downloads::DrawerMotion;
 using Downloads::Lane;
 namespace Layout {
 inline constexpr float width = Panel::width, indent = 16, firstRow = HistoryView::Layout::viewTop + 12; // 96
+// #138 The folder picker spans the board's row box, 9..259 (250 = 268 less the board drawer's 1 border and 8 padding a
+// side), whatever the level's indent: its 8 x 26 grid and its hint's line breaks need that width (board 23F4-0).
+inline constexpr float pickerLeft = 9, pickerRight = width - 9;
 inline constexpr float top = Downloads::DrawerLayout::top;
 }
 constexpr int CloseHit = 1, SearchHit = 2, ClearHit = 3, RowBase = 1000;
 inline int RowHit(int i) { return RowBase + i * 3; }
 inline bool IsRowPart(int hit) { return hit >= RowBase; }
 inline int HitIndex(int hit) { return (hit - RowBase) / 3; }
-inline int HitPart(int hit) { return (hit - RowBase) % 3; } // 0 row, 1 first action, 2 second action
+inline int HitPart(int hit) { return (hit - RowBase) % 3; } // 0 row, 1 first action, 2 second action (a folder: 1 remove, 2 its palette)
+// #138 The folder picker unfolded under a row: its focus stops (swatches 0..6, cells 7..30) are hits PickerBase + stop.
+constexpr int PickerBase = 100;
+inline bool IsPickerHit(int hit) { return hit >= PickerBase && hit < PickerBase + FolderStyle::Picker::count; }
 
 struct Row {
     Bookmarks::Id id = 0; int level = 0; bool folder = false, open = false, local = false;
     std::wstring title, detail, site, url; std::size_t count = 0;
+    std::string icon, color; FolderStyle::Look look;   // #138: a folder's look (keys as stored, resolved)
 };
 
 class Drawer {
@@ -67,6 +77,10 @@ public:
         // Drag a row (src/bookmark-drag.h): past the system threshold the drawer releases its capture and hands the
         // bookmark to the owner's drag controller (the button is still down). Absent: rows are not draggable.
         std::function<void(Bookmarks::Id, POINT)> dragStart;
+        // #138 A folder's look chosen in its picker (keys, empty = none), applied at once by the owner. `customizing`: the
+        // picker opened on a folder (its id) or closed (0): the owner makes one undo step of a whole visit.
+        std::function<void(Bookmarks::Id, const std::string&, const std::string&)> restyle;
+        std::function<void(Bookmarks::Id)> customizing;
     };
 private:
     HWND hwnd_ = nullptr, owner_ = nullptr;
@@ -79,15 +93,25 @@ private:
     Bookmarks::Id renaming_ = 0;   // its title is drawn by the owner's in-place editor
     POINT pressAt_{};              // screen point of the left press (row drag threshold)
     int dropRow_ = -1; BookmarkDrag::Mark dropMark_ = BookmarkDrag::Mark::None;   // drop feedback while the owner drags over the drawer
+    // #138 The picker: the folder it customizes (0: folded), that folder's row, the choice and keyboard stop, the hint's lines.
+    Bookmarks::Id picking_ = 0; int pickerRow_ = -1; FolderStyle::Picker::Model picker_; std::vector<std::wstring> hintLines_;
+    Tooltip::Tools tip_;   // « Personnaliser » on a folder's palette button (board 23E0-0; the app's C5 tip)
+    static constexpr float pickerLeft = Layout::pickerLeft, pickerRight = Layout::pickerRight;
+    float PickerHeight() const { return FolderStyle::Picker::DrawerHeight(hintLines_.size() * FolderStyle::Picker::hintLine); }
+    float PickerTop(float scroll) const { return RowTop(pickerRow_, scroll) + Panel::tile + (Panel::pitch - Panel::tile) / 2; }   // 8 under the tile, 8 above the next
+    float StopsLeft() const { return pickerLeft + FolderStyle::Picker::padding; }
+    float StopsTop(float scroll) const { return PickerTop(scroll) + FolderStyle::Picker::padding; }
+    float GridTop(float scroll) const { return StopsTop(scroll) + FolderStyle::Picker::swatch + FolderStyle::Picker::gap; }
     float Dpi() const { return static_cast<float>(GetDpiForWindow(hwnd_ ? hwnd_ : owner_)); }
     int Px(float dip) const { return static_cast<int>(std::lround(dip * Dpi() / 96.f)); }
     int OwnerPx(float dip) const { return static_cast<int>(std::lround(dip * GetDpiForWindow(owner_) / 96.f)); }
-    float Height() const { RECT r{}; if (hwnd_) GetClientRect(hwnd_, &r); return r.bottom * 96.f / Dpi(); }
+    float Height() const { if (testHeight_ > 0) return testHeight_; RECT r{}; if (hwnd_) GetClientRect(hwnd_, &r); return r.bottom * 96.f / Dpi(); }
+    Chrome* surface_ = nullptr; float testHeight_ = 0; int testFocused_ = -1;   // RenderForTest: offscreen target, its height, focus forced
     RECT OwnerClient() const { RECT r{}; GetClientRect(owner_, &r); MapWindowPoints(owner_, nullptr, reinterpret_cast<POINT*>(&r), 2); return r; }
     bool Reduced() const { return motion_.ReducedMotion(); }
-    float RowTop(int i, float scroll) const { return Layout::firstRow + i * Panel::pitch - scroll; }
+    float RowTop(int i, float scroll) const { return Layout::firstRow + i * Panel::pitch - scroll + (pickerRow_ >= 0 && i > pickerRow_ ? PickerHeight() : 0.f); }
     float Indent(const Row& r) const { return r.level * Layout::indent; }
-    float MaxScroll() const { return std::max(0.f, Layout::firstRow + rows_.size() * Panel::pitch + Panel::padding - Height()); }
+    float MaxScroll() const { return std::max(0.f, Layout::firstRow + rows_.size() * Panel::pitch + (pickerRow_ >= 0 ? PickerHeight() : 0.f) + Panel::padding - Height()); }
     static std::wstring Path(const Bookmarks::Store& s, Bookmarks::Id id) {
         std::wstring path; const auto* n = s.Find(id); int guard = 0;
         while (n && n->parent && guard++ < 16) { const auto* p = s.Find(n->parent); if (!p) break; path = path.empty() ? p->title : p->title + L" › " + path; n = p; }
@@ -106,7 +130,7 @@ private:
     }
     Row MakeRow(const Bookmarks::Node& n, int level) const {
         Row r; r.id = n.id; r.level = level; r.folder = n.kind == Bookmarks::Kind::Folder; r.title = Bookmarks::DisplayTitle(n); r.url = n.url;
-        if (r.folder) { r.count = store_->CountLinks(n.id); r.open = open_.count(n.id) > 0; r.detail = r.count == 0 ? std::wstring(TR(bookmarks_folder_empty)) : TRP(bookmarks_count, r.count); }
+        if (r.folder) { r.count = store_->CountLinks(n.id); r.open = open_.count(n.id) > 0; r.detail = r.count == 0 ? std::wstring(TR(bookmarks_folder_empty)) : TRP(bookmarks_count, r.count); r.icon = n.icon; r.color = n.color; r.look = FolderStyle::Resolve(n.icon, n.color); }
         else { AddressBar::Parts p; r.local = AddressBar::Split(n.url, p) && p.scheme == L"file"; r.detail = HistoryView::HostOf(n.url); r.site = AddressBar::SiteOf(n.url); }
         if (r.title.empty()) r.title = r.folder ? std::wstring(TR(bookmarks_unnamed_folder)) : n.url;
         return r;
@@ -134,13 +158,18 @@ private:
             }
         }
         if (keep) { for (size_t i = 0; i < rows_.size(); ++i) if (rows_[i].id == keep) { focus_ = RowHit(static_cast<int>(i)) + HitPart(focus_); break; } }
+        // #138 The picker follows its folder's row (and its look, which another window may have changed); gone: folded.
+        pickerRow_ = -1;
+        if (picking_) { for (size_t i = 0; i < rows_.size(); ++i) if (rows_[i].id == picking_ && rows_[i].folder && rows_[i].level > 0) { pickerRow_ = static_cast<int>(i); break; }
+            if (pickerRow_ < 0) { picking_ = 0; if (IsPickerHit(focus_)) focus_ = SearchHit; if (hooks_.customizing) hooks_.customizing(0); }
+            else { picker_.color = FolderStyle::ColorIndex(rows_[pickerRow_].color); picker_.icon = FolderStyle::IconIndex(rows_[pickerRow_].icon); } }
         if (IsRowPart(focus_) && HitIndex(focus_) >= static_cast<int>(rows_.size())) focus_ = rows_.empty() ? SearchHit : RowHit(static_cast<int>(rows_.size()) - 1);
     }
     // ---- Geometry of a row's parts -------------------------------------------------
     D2D1_RECT_F Tile(const Row& r, float top) const { const float x = Panel::padding + Indent(r); return {x, top, x + Panel::tile, top + Panel::tile}; }
     D2D1_RECT_F Action(float top, int slot) const { auto b = Panel::ActionBox(top, slot); return {b.left, b.top, b.right, b.bottom}; }
     D2D1_RECT_F Caret(float top) const { auto b = Panel::ActionBox(top, 1); return {b.left, b.top, b.right, b.bottom}; }
-    int Actions(const Row& r) const { return r.folder ? (r.level == 0 ? 0 : 1) : 2; }
+    int Actions(const Row& r) const { return r.folder && r.level == 0 ? 0 : 2; }   // a folder: remove, then its palette (#138)
     int Hit(float x, float y) const {
         x -= OffsetDip();   // window DIP -> content DIP while it slides
         auto in = [&](Design::Box b) { return x >= b.left && x < b.right && y >= b.top && y < b.bottom; };
@@ -149,6 +178,10 @@ private:
         if (in(HistoryView::Layout::Search())) return SearchHit;
         if (y < HistoryView::Layout::viewTop) return 0;
         const float scroll = scroll_.Value(Motion::Now());
+        if (picking_ && pickerRow_ >= 0) {   // #138: the picker's stops; the rest of its block is inert
+            const int stop = FolderStyle::Picker::HitStop(x, y, StopsLeft(), StopsTop(scroll), GridTop(scroll)); if (stop >= 0) return PickerBase + stop;
+            const float top = PickerTop(scroll); if (y >= top && y < top + PickerHeight() && x >= pickerLeft && x < pickerRight) return 0;
+        }
         for (int i = 0; i < static_cast<int>(rows_.size()); ++i) {
             const float top = RowTop(i, scroll); auto band = Panel::Hover(top); if (y < band.top || y >= band.bottom) continue;
             const Row& r = rows_[i]; const int n = Actions(r);
@@ -158,11 +191,21 @@ private:
         return 0;
     }
     std::vector<int> Order() const { std::vector<int> o{CloseHit, SearchHit}; if (!query_.empty()) o.push_back(ClearHit); for (int i = 0; i < static_cast<int>(rows_.size()); ++i) o.push_back(RowHit(i)); return o; }
-    void Interact(int hover, int pressed) { hover_ = hover; pressed_ = pressed; auto now = Motion::Now(); motion_.SetInteraction(hover_, pressed_ == hover_ ? pressed_ : 0, now); Invalidate(); if (hooks_.schedule) hooks_.schedule(now); }
+    void Interact(int hover, int pressed) { hover_ = hover; pressed_ = pressed; auto now = Motion::Now(); motion_.SetInteraction(hover_, pressed_ == hover_ ? pressed_ : 0, now); RefreshTip(); Invalidate(); if (hooks_.schedule) hooks_.schedule(now); }
+    // #138 « Personnaliser » over the hovered folder's palette button (the C5 tip: 600 ms, centred under it).
+    void RefreshTip() {
+        if (!tip_) return; tip_.Clear();
+        const int i = IsRowPart(hover_) ? HitIndex(hover_) : -1;
+        if (i < 0 || i >= static_cast<int>(rows_.size()) || !rows_[i].folder || rows_[i].level == 0) return;
+        const auto b = Action(RowTop(i, scroll_.Value(Motion::Now())), 1); const float lead = OffsetDip();   // content DIP -> window DIP while it slides (#143: either side)
+        tip_.Add(1, {Px(b.left + lead), Px(b.top), Px(b.right + lead), Px(b.bottom)}, TR(folder_customize));
+    }
     void Reveal(int hit) {
-        if (!IsRowPart(hit)) return; const int i = HitIndex(hit); auto now = Motion::Now();
-        const float top = Layout::firstRow + i * Panel::pitch, scroll = scroll_.Target(), viewTop = HistoryView::Layout::viewTop + 8, viewBottom = Height() - Panel::pitch;
-        float target = scroll; if (top - scroll < viewTop) target = top - viewTop; else if (top + Panel::tile - scroll > viewBottom) target = top + Panel::tile - viewBottom;
+        const bool picker = IsPickerHit(hit) && pickerRow_ >= 0;
+        if (!IsRowPart(hit) && !picker) return; auto now = Motion::Now();
+        const float top = picker ? PickerTop(0) : RowTop(HitIndex(hit), 0), bottom = picker ? top + PickerHeight() : top + Panel::tile;
+        const float scroll = scroll_.Target(), viewTop = HistoryView::Layout::viewTop + 8, viewBottom = Height() - Panel::pitch;
+        float target = scroll; if (top - scroll < viewTop) target = top - viewTop; else if (bottom - scroll > viewBottom) target = bottom - viewBottom;
         target = std::clamp(target, 0.f, MaxScroll());
         if (target != scroll) { scroll_.Set(target, now, Motion::Milliseconds(0), Reduced() ? Motion::Milliseconds(0) : DrawerMotion::scroll); if (hooks_.schedule) hooks_.schedule(now); }
     }
@@ -175,11 +218,12 @@ private:
         focus_ = hit; Reveal(hit); Interact(hover_, pressed_);
         if (uia_.Listening()) uia_.Raise(Key(hit), UIA_AutomationFocusChangedEventId);
         if (!hooks_.announce || !keyboard_) return;
-        if (hit == SearchHit) hooks_.announce(query_.empty() ? std::wstring(TR(bookmarks_search)) : TRF(bookmarks_search_query, query_));
+        if (IsPickerHit(hit)) hooks_.announce(StopName(hit - PickerBase));
+        else if (hit == SearchHit) hooks_.announce(query_.empty() ? std::wstring(TR(bookmarks_search)) : TRF(bookmarks_search_query, query_));
         else if (hit == CloseHit) hooks_.announce(TR(bookmarks_close));
         else if (IsRowPart(hit) && HitIndex(hit) < static_cast<int>(rows_.size())) {
             const int part = HitPart(hit); const Row& r = rows_[HitIndex(hit)];
-            hooks_.announce(part == 0 ? Spoken(HitIndex(hit)) : r.folder || part == 2 ? std::wstring(TR(common_delete)) : std::wstring(TR(history_open_new_tab)));
+            hooks_.announce(part == 0 ? Spoken(HitIndex(hit)) : r.folder && part == 2 ? std::wstring(TR(folder_customize)) : r.folder || part == 2 ? std::wstring(TR(common_delete)) : std::wstring(TR(history_open_new_tab)));
         }
     }
     void SetQuery(std::wstring q) { if (q == query_) return; query_ = std::move(q); if (IsRowPart(focus_)) focus_ = SearchHit; scroll_.Snap(0); Rebuild(); Invalidate(); if (uia_.Listening()) uia_.ChildrenChanged(ListKey); if (hooks_.announce) hooks_.announce(rows_.empty() ? EmptyText() : TRP(bookmarks_results, rows_.size())); }
@@ -192,15 +236,81 @@ private:
         if (uia_.Listening()) { uia_.ChildrenChanged(ListKey); uia_.Raise(Key(RowHit(i)), UIA_ExpandCollapseExpandCollapseStatePropertyId); }
         if (hooks_.announce) hooks_.announce(open ? TRF(common_section_expanded, rows_[i].title) : TRF(common_section_collapsed, rows_[i].title));
     }
+    // ---- #138 The folder picker -------------------------------------------------------------------
+    static std::wstring StopName(int stop) {
+        namespace P = FolderStyle::Picker;
+        if (stop < 0 || stop >= P::count) return L"";
+        if (stop < P::swatches) return stop == 0 ? std::wstring(TR(folder_color_none)) : std::wstring(FolderStyle::colors[stop - 1].label);
+        return std::wstring(FolderStyle::icons[stop - P::swatches].label);
+    }
+    void SyncHint() { hintLines_ = chrome_.WrapWords(picker_.color < 0 ? TR(folder_picker_hint_none) : TR(folder_picker_hint_keys), pickerRight - FolderStyle::Picker::padding - StopsLeft(), FolderStyle::Picker::hintSize); }
+    void OpenPicker(int i, bool keyboard) {
+        if (i < 0 || i >= static_cast<int>(rows_.size()) || !rows_[i].folder || rows_[i].level == 0 || !query_.empty()) return;
+        const Row& r = rows_[i]; picking_ = r.id; pickerRow_ = i;
+        picker_ = {}; picker_.color = FolderStyle::ColorIndex(r.color); picker_.icon = FolderStyle::IconIndex(r.icon); SyncHint();
+        if (hooks_.customizing) hooks_.customizing(r.id);
+        if (uia_.Listening()) uia_.ChildrenChanged(ListKey);
+        if (keyboard) { keyboard_ = true; picker_.FocusChosen(); SetFocusHit(PickerBase + picker_.focus); }
+        else { Reveal(PickerBase); Invalidate(); }
+    }
+    void ClosePicker(bool keyboard) {
+        if (!picking_) return; const int row = pickerRow_; const bool inside = IsPickerHit(focus_);
+        picking_ = 0; pickerRow_ = -1; picker_ = {};
+        scroll_.Snap(std::clamp(scroll_.Target(), 0.f, MaxScroll()));
+        if (hooks_.customizing) hooks_.customizing(0);
+        if (uia_.Listening()) uia_.ChildrenChanged(ListKey);
+        if (inside || keyboard) { if (row >= 0 && row < static_cast<int>(rows_.size())) { if (keyboard) SetFocusHit(RowHit(row) + 2); else focus_ = RowHit(row) + 2; } else focus_ = SearchHit; }
+        Invalidate();
+    }
+    void TogglePicker(int i, bool keyboard) { if (picking_ && i == pickerRow_) { ClosePicker(keyboard); return; } ClosePicker(false); OpenPicker(i, keyboard); }
+    void ChoosePicker(int stop, bool keyboard) {
+        if (!picking_) return; const auto id = picking_;
+        const auto out = picker_.Choose(stop); if (keyboard) { keyboard_ = true; focus_ = PickerBase + picker_.focus; }
+        if (out == FolderStyle::Picker::Outcome::Chosen) {
+            SyncHint();
+            if (hooks_.restyle) hooks_.restyle(id, FolderStyle::IconKey(picker_.icon), FolderStyle::ColorKey(picker_.color));   // the owner saves, then Changed()
+            if (hooks_.announce) hooks_.announce(stop < FolderStyle::Picker::swatches ? TRF(folder_announce_color, StopName(stop)) : TRF(folder_announce_icon, StopName(stop)));
+        }
+        if (uia_.Listening()) uia_.Raise(Key(PickerBase + stop), UIA_SelectionItemIsSelectedPropertyId);
+        Invalidate();
+    }
+    // Keys while a picker stop has the focus (the model of src/bookmark-folder-style.h). True when handled.
+    bool PickerKey(WPARAM w, bool shift) {
+        using K = FolderStyle::Picker::Key; K k;
+        switch (w) {
+        case VK_TAB: k = shift ? K::BackTab : K::Tab; break;
+        case VK_LEFT: k = K::Left; break; case VK_RIGHT: k = K::Right; break; case VK_UP: k = K::Up; break; case VK_DOWN: k = K::Down; break;
+        case VK_HOME: k = K::Home; break; case VK_END: k = K::End; break;
+        case VK_RETURN: case VK_SPACE: k = K::Choose; break;
+        case VK_ESCAPE: k = K::Close; break;
+        default: return false;
+        }
+        if (k == K::Close) { ClosePicker(true); return true; }
+        if (k == K::Choose) { ChoosePicker(focus_ - PickerBase, true); return true; }
+        picker_.focus = focus_ - PickerBase;
+        if (picker_.Press(k) == FolderStyle::Picker::Outcome::Moved) SetFocusHit(PickerBase + picker_.focus);
+        return true;
+    }
+    void PaintPicker(Chrome& chrome_, float scroll, bool focused, Motion::Time now) {
+        namespace P = FolderStyle::Picker; const float top = PickerTop(scroll), h = PickerHeight();
+        chrome_.FillBox({pickerLeft, top, pickerRight, top + h}, P::cellRadius, Chrome::Rgb(P::surface));   // #1E1E1E, radius 6
+        const int focusStop = focused && keyboard_ && IsPickerHit(focus_) ? focus_ - PickerBase : -1;
+        chrome_.PaintFolderPicker(StopsLeft(), StopsTop(scroll), P::gap, picker_, [&](int stop) { return motion_.Visual(PickerBase + stop, now).hover; }, focusStop);
+        float y = GridTop(scroll) + P::gridHeight + P::gap; chrome_.ink = Chrome::Rgb(P::hint);
+        for (const auto& line : hintLines_) { chrome_.Text(line, {StopsLeft(), y, pickerRight - P::padding, y + P::hintLine}, P::hintSize, 1); y += P::hintLine; }
+        chrome_.ink = D2D1::ColorF(1, 1, 1, 1);
+    }
     RECT RowScreen(int i) const { const float top = RowTop(i, scroll_.Value(Motion::Now())); RECT r{Px(Panel::padding - 6), Px(top - 6), Px(Layout::width - Panel::padding + 6), Px(top + Panel::tile + 6)}; MapWindowPoints(hwnd_, nullptr, reinterpret_cast<POINT*>(&r), 2); return r; }
     void Activate(int hit, bool keyboard, bool newTab = false) {
         if (hit == CloseHit) { Hide(keyboard, true); return; }
         if (hit == SearchHit) { focus_ = SearchHit; Invalidate(); return; }
         if (hit == ClearHit) { SetQuery(L""); focus_ = SearchHit; Invalidate(); return; }
+        if (IsPickerHit(hit)) { ChoosePicker(hit - PickerBase, keyboard); return; }
         if (!IsRowPart(hit)) return;
         const int i = HitIndex(hit), part = HitPart(hit); if (i >= static_cast<int>(rows_.size())) return;
         const Row r = rows_[i];
         if (part == 0) { if (r.folder) Toggle(i); else if (hooks_.open) hooks_.open(r.url, newTab); return; }
+        if (r.folder && part == 2) { TogglePicker(i, keyboard); return; }   // #138: its palette
         const bool remove = r.folder || part == 2;
         if (!remove) { if (hooks_.open) hooks_.open(r.url, true); return; }
         if (hooks_.remove) hooks_.remove(r.id);
@@ -209,6 +319,8 @@ private:
     void KeyDown(WPARAM w) {
         const bool ctrl = GetKeyState(VK_CONTROL) < 0, shift = GetKeyState(VK_SHIFT) < 0, alt = GetKeyState(VK_MENU) < 0;
         keyboard_ = true;
+        if (picking_ && IsPickerHit(focus_) && PickerKey(w, shift)) return;   // #138: the picker's stops
+        if (w == VK_ESCAPE && picking_) { ClosePicker(true); return; }        // Escape folds an open picker first
         if (w == VK_ESCAPE) { if (!query_.empty()) { SetQuery(L""); SetFocusHit(SearchHit); } else Hide(true, true); return; }
         const int i = IsRowPart(focus_) ? HitIndex(focus_) : -1;
         if (alt && (w == VK_UP || w == VK_DOWN) && i >= 0 && hooks_.move && query_.empty() && rows_[i].level > 0) { hooks_.move(rows_[i].id, w == VK_UP ? -1 : 1); return; }
@@ -230,7 +342,7 @@ private:
             if (w == VK_LEFT && HitPart(focus_) == 0 && r.level > 0) { for (int k = i - 1; k >= 0; --k) if (rows_[k].level < r.level) { SetFocusHit(RowHit(k)); return; } }
             const int n = Actions(r); const int part = std::clamp(HitPart(focus_) + (w == VK_RIGHT ? 1 : -1), 0, n); SetFocusHit(RowHit(i) + part); return;
         }
-        if (w == VK_DELETE && i >= 0 && Actions(rows_[i]) > 0) { Activate(RowHit(i) + Actions(rows_[i]), true); return; }
+        if (w == VK_DELETE && i >= 0 && Actions(rows_[i]) > 0) { Activate(RowHit(i) + (rows_[i].folder ? 1 : 2), true); return; }   // a folder's remove is its first action
         if (w == VK_F2 && i >= 0 && rows_[i].level > 0 && hooks_.edit) { hooks_.edit(rows_[i].id, RowScreen(i)); return; }
         if ((w == VK_APPS || (w == VK_F10 && shift)) && i >= 0 && hooks_.context) { const RECT r = RowScreen(i); hooks_.context(rows_[i].id, {r.left + Px(8), r.bottom}, true); return; }
         if (w == VK_RETURN) { if (focus_ == SearchHit) { for (int k = 0; k < static_cast<int>(rows_.size()); ++k) if (!rows_[k].folder) { Activate(RowHit(k), true, shift || ctrl); return; } return; } if (focus_) Activate(focus_, true, shift || ctrl); return; }
@@ -245,10 +357,11 @@ private:
     }
     // ---- Paint ----------------------------------------------------------------------
     void Paint() {
+        Chrome& chrome_ = surface_ ? *surface_ : this->chrome_;   // RenderForTest draws offscreen
         if (!chrome_.RenderTarget()) chrome_.Resize();
         auto* t = chrome_.RenderTarget(); if (!t || !chrome_.SolidBrush()) return;
         const auto now = Motion::Now(); const float c = Design::Surface::canvas, h = Height(), scroll = scroll_.Value(now);
-        const bool focused = GetFocus() == hwnd_;
+        const bool focused = testFocused_ >= 0 ? testFocused_ == 1 : GetFocus() == hwnd_;
         t->BeginDraw(); t->Clear(D2D1::ColorF(c, c, c, 1)); t->SetTransform(D2D1::Matrix3x2F::Translation(OffsetDip(), 0)); chrome_.keyboardModality = keyboard_;
         auto R = [](Design::Box b) { return D2D1_RECT_F{b.left, b.top, b.right, b.bottom}; };
         chrome_.Text(TR(bookmarks_title), R(Panel::Title()), Panel::line, Design::Text::muted, false, true, -.16f);
@@ -279,32 +392,42 @@ private:
             const float top = RowTop(i, scroll); if (top + Panel::tile < HistoryView::Layout::viewTop - 8 || top > h) continue;
             const Row& r = rows_[i]; const int row = RowHit(i);
             const auto v = motion_.Visual(row, now);
-            const bool shown = (IsRowPart(hover_) && HitIndex(hover_) == i) || (focused && IsRowPart(focus_) && HitIndex(focus_) == i);
+            const bool shown = (IsRowPart(hover_) && HitIndex(hover_) == i) || (focused && IsRowPart(focus_) && HitIndex(focus_) == i) || (picking_ && i == pickerRow_);
             const auto tile = Tile(r, top);
             if (r.level == 0 && r.folder) {
                 // Root sections: a label like the drawers' period headers, folding on the caret.
                 chrome_.Text(r.title, {tile.left, top + 4, Layout::width - 60, top + 24}, Panel::line, Design::Text::muted, false, true, -.16f);
             } else {
                 chrome_.Round(tile, Design::Radius::control, Design::Surface::raised);
-                if (r.folder) chrome_.FolderGlyph(tile, Design::Size::icon, 1, r.open ? 1.f : 0.f, Reduced());
+                if (r.folder && r.look.styled) chrome_.FolderLook(r.look, tile, FolderStyle::Size::For(FolderStyle::Size::drawer, FolderStyle::Size::drawerPlain, r.look));   // #138 board 245I-0
+                else if (r.folder) chrome_.FolderGlyph(tile, Design::Size::icon, 1, r.open ? 1.f : 0.f, Reduced());
                 else if (!chrome_.DrawSiteImage(hooks_.icon && !r.site.empty() ? hooks_.icon(r.site) : nullptr, tile)) chrome_.Icon(r.local ? L"file" : L"favicon", tile, Design::Size::icon, 1);
                 const float textLeft = tile.right + Design::Space::md, textRight = shown ? Action(top, Actions(r) == 2 ? 0 : (r.folder ? 0 : 1)).left - 6 : Layout::width - Panel::padding - (r.folder ? 30 : 0);
                 const float titleOpacity = (Design::Text::muted + (.78f - Design::Text::muted) * std::max(v.hover, shown ? 1.f : 0.f)) * (1 - .25f * v.press);
-                if (r.id != renaming_) chrome_.Text(r.title, {textLeft, top - Panel::nameRaise, textRight, top + Panel::line - Panel::nameRaise}, Panel::line, titleOpacity, false, true, -.16f);
+                if (r.id != renaming_ && r.folder) chrome_.FadedText(r.title, {textLeft, top - Panel::nameRaise, textRight, top + Panel::line - Panel::nameRaise}, Panel::line, titleOpacity, false, true, -.16f, FolderStyle::nameFade);   // #138 board 2423-0: never « … »
+                else if (r.id != renaming_) chrome_.Text(r.title, {textLeft, top - Panel::nameRaise, textRight, top + Panel::line - Panel::nameRaise}, Panel::line, titleOpacity, false, true, -.16f);
                 chrome_.Text(r.detail, {textLeft, top + Panel::line, textRight, top + 2 * Panel::line}, Panel::detailText, Design::Text::muted, true, false, -.14f);
             }
             if (r.folder) {   // chevron: points right folded, down open
                 const auto box = Caret(top); D2D1_MATRIX_3X2_F base; t->GetTransform(&base);
-                if (!(shown && Actions(r) == 1) || r.level == 0) { t->SetTransform(D2D1::Matrix3x2F::Rotation(r.open ? 0.f : -90.f, {(box.left + box.right) / 2, (box.top + box.bottom) / 2}) * base); chrome_.Icon(L"caret", box, 16, query_.empty() ? 1.f : .4f); t->SetTransform(base); }
+                if (!(shown && Actions(r) >= 1) || r.level == 0) { t->SetTransform(D2D1::Matrix3x2F::Rotation(r.open ? 0.f : -90.f, {(box.left + box.right) / 2, (box.top + box.bottom) / 2}) * base); chrome_.Icon(L"caret", box, 16, query_.empty() ? 1.f : .4f); t->SetTransform(base); }
             }
             if (shown) {
                 const int n = Actions(r);
                 for (int s = 0; s < n; ++s) {
                     const int slot = n == 1 ? 0 : s; const int hit = row + 1 + s; const auto av = motion_.Visual(hit, now);
+                    if (r.folder && s == 1) {   // #138 its palette (board 23DD-0): 24, #333333 on hover and while its picker is open, glyph 14 #E6E6E6
+                        const bool open = picking_ == r.id; const auto box = Action(top, slot);
+                        const auto st = Design::Resolve(Design::ButtonVariant::Ghost, {open ? 1.f : av.hover, av.press, false, focused && focus_ == hit});
+                        if (st.fill) chrome_.Round(box, st.radius, st.surface); if (st.focus) chrome_.FocusRing(box, st.radius);
+                        chrome_.PathGlyph(FolderStyle::PalettePath(), box, 14, Chrome::Rgb(0xE6E6E6));
+                        continue;
+                    }
                     chrome_.DrawButton(r.folder || s == 1 ? L"close" : L"plus", Action(top, slot), Design::ButtonVariant::Ghost, {av.hover, av.press, false, focused && focus_ == hit});
                 }
             }
             if (focused && focus_ == row) chrome_.FocusRing({tile.left - 6, top - 6, Layout::width - Panel::padding + 6, top + Panel::tile + 6}, Design::Radius::control + 6);
+            if (picking_ && i == pickerRow_) PaintPicker(chrome_, scroll, focused, now);   // #138: unfolded under its row
         }
         if (dropRow_ >= 0 && dropRow_ < static_cast<int>(rows_.size())) {   // drop feedback (owner's drag): accent tint into a folder, line before/after
             const Row& r = rows_[dropRow_]; const float top = RowTop(dropRow_, scroll); const auto tile = Tile(r, top); const auto a = Design::Accent::Get();
@@ -318,7 +441,7 @@ private:
         t->PopAxisAlignedClip();
         const float px = t->GetSize().width / std::max(1.f, static_cast<float>(t->GetPixelSize().width)), edge = left_ ? t->GetSize().width - px : 0.f;   // #143: the page's side
         chrome_.Color(1, DownloadsUI::Popup::border); t->FillRectangle(D2D1::RectF(edge, 0, edge + px, h), chrome_.SolidBrush());
-        t->SetTransform(D2D1::Matrix3x2F::Identity()); chrome_.KeyOut(LeadDip(), left_); KeyCorners();
+        t->SetTransform(D2D1::Matrix3x2F::Identity()); chrome_.KeyOut(LeadDip(), left_); if (!surface_) KeyCorners();
         if (t->EndDraw() == D2DERR_RECREATE_TARGET) chrome_.RecreateTarget();
     }
     // The window never moves while sliding (NativeUI::KeyedDrawer): a slide step is one present, the content drawn
@@ -364,10 +487,13 @@ private:
     void Finish() { closing_ = false; visible_ = false; appliedVisible_ = -1; corners_.Hide(); ShowWindow(hwnd_, SW_HIDE); }
     // ---- UI Automation -----------------------------------------------------------------
     static constexpr long long SearchKey = 2, CloseKey = 1, ListKey = 3;
-    long long Key(int hit) const { if (hit == SearchHit) return SearchKey; if (hit == CloseHit) return CloseKey; if (hit == ClearHit) return 4; if (IsRowPart(hit) && HitIndex(hit) < static_cast<int>(rows_.size())) { const auto id = rows_[HitIndex(hit)].id; return (static_cast<long long>(1 + HitPart(hit)) << 32) | id; } return 0; }
+    // #138 The picker: its group and stops, keyed (2000 + stop + 1) << 32 | folder id (the group: stop -1).
+    long long PickerKeyOf(int stop) const { return (static_cast<long long>(2001 + stop) << 32) | picking_; }
+    long long Key(int hit) const { if (IsPickerHit(hit) && picking_) return PickerKeyOf(hit - PickerBase); if (hit == SearchHit) return SearchKey; if (hit == CloseHit) return CloseKey; if (hit == ClearHit) return 4; if (IsRowPart(hit) && HitIndex(hit) < static_cast<int>(rows_.size())) { const auto id = rows_[HitIndex(hit)].id; return (static_cast<long long>(1 + HitPart(hit)) << 32) | id; } return 0; }
     int HitOf(long long key) const {
         if (key == SearchKey) return SearchHit; if (key == CloseKey) return CloseHit; if (key == 4) return ClearHit;
         const int part = static_cast<int>(key >> 32) - 1; const auto id = static_cast<Bookmarks::Id>(key & 0xffffffff);
+        if (part >= 2000) { const int stop = part - 2000; return picking_ && id == picking_ && stop >= 0 && stop < FolderStyle::Picker::count ? PickerBase + stop : 0; }
         for (int i = 0; i < static_cast<int>(rows_.size()); ++i) if (rows_[i].id == id) return RowHit(i) + std::max(0, part);
         return 0;
     }
@@ -386,6 +512,22 @@ private:
             n.selected = IsRowPart(focus_) && HitIndex(focus_) == i; if (r.folder && query_.empty()) n.expand = r.open ? 2 : 1;
             n.offscreen = top + Panel::tile < HistoryView::Layout::viewTop || top > h; n.bounds = screen({Panel::padding, top, Layout::width - Panel::padding, top + Panel::tile});
             nodes.push_back(n);
+            if (r.folder && r.level > 0) {   // #138: its palette button
+                Accessibility::Node p; p.key = Key(RowHit(i) + 2); p.parent = ListKey; p.role = Accessibility::Role::Button; p.name = TR(folder_customize); p.help = r.title;
+                p.automationId = L"BookmarkCustomize." + std::to_wstring(r.id); p.expand = picking_ == r.id ? 2 : 1; const auto b = Action(top, 1); p.bounds = screen(b); p.offscreen = n.offscreen; nodes.push_back(p);
+            }
+            if (picking_ && i == pickerRow_) {   // #138: the picker as a group of buttons, the chosen ones selected
+                namespace P = FolderStyle::Picker; const float ptop = PickerTop(scroll);
+                Accessibility::Node g; g.key = PickerKeyOf(-1); g.parent = ListKey; g.role = Accessibility::Role::Group; g.name = TRF(folder_customize_named, r.title); g.help = picker_.color < 0 ? TR(folder_picker_hint_none) : TR(folder_picker_hint_keys);
+                g.automationId = L"FolderPicker"; g.focusable = false; g.bounds = screen({pickerLeft, ptop, pickerRight, ptop + PickerHeight()}); nodes.push_back(g);
+                for (int s = 0; s < P::count; ++s) {
+                    const auto b = P::Stop(s, StopsLeft(), StopsTop(scroll), GridTop(scroll)); const bool swatch = s < P::swatches;
+                    Accessibility::Node c; c.key = PickerKeyOf(s); c.parent = g.key; c.role = Accessibility::Role::Button; c.name = StopName(s);
+                    c.help = swatch ? TR(folder_picker_colors) : TR(folder_picker_icons); c.selected = swatch ? s - 1 == picker_.color : s - P::swatches == picker_.icon;
+                    c.automationId = swatch ? L"FolderPicker.Color." + std::wstring(s == 0 ? L"none" : FolderStyle::WideKey(FolderStyle::colors[s - 1].key)) : L"FolderPicker.Icon." + FolderStyle::WideKey(FolderStyle::icons[s - P::swatches].key);
+                    c.position = swatch ? s + 1 : s - P::swatches + 1; c.count = swatch ? P::swatches : P::cells; c.bounds = screen({b.left, b.top, b.right, b.bottom}); nodes.push_back(c);
+                }
+            }
         }
         return nodes;
     }
@@ -414,7 +556,7 @@ private:
             if ((w & MK_LBUTTON) && hooks_.dragStart && IsRowPart(pressed_) && HitPart(pressed_) == 0 && !renaming_) {
                 const int i = HitIndex(pressed_); POINT p{GET_X_LPARAM(l), GET_Y_LPARAM(l)}; ClientToScreen(h, &p);
                 if (i < static_cast<int>(rows_.size()) && rows_[i].level > 0 && (std::abs(p.x - pressAt_.x) > GetSystemMetrics(SM_CXDRAG) || std::abs(p.y - pressAt_.y) > GetSystemMetrics(SM_CYDRAG))) {
-                    const Bookmarks::Id id = rows_[i].id; if (GetCapture() == h) ReleaseCapture(); Interact(0, 0); hooks_.dragStart(id, p); return 0;
+                    const Bookmarks::Id id = rows_[i].id; if (GetCapture() == h) ReleaseCapture(); ClosePicker(false); Interact(0, 0); hooks_.dragStart(id, p); return 0;
                 }
             }
             if (!tracking_) { TRACKMOUSEEVENT t{sizeof(t), TME_LEAVE, h, 0}; TrackMouseEvent(&t); tracking_ = true; } const int hit = Hit(GET_X_LPARAM(l) * s, GET_Y_LPARAM(l) * s); if (hit != hover_) Interact(hit, pressed_); return 0; }
@@ -440,7 +582,7 @@ public:
         // The window may outlive this object (a scope's end, the owner destroying it later): its messages
         // then go to DefWindowProc, never to freed memory.
         if (hwnd_) SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0);
-        uia_.Detach(); chrome_.Dispose(); hwnd_ = nullptr; visible_ = false;
+        tip_.Dispose(); uia_.Detach(); chrome_.Dispose(); hwnd_ = nullptr; visible_ = false;
     }
     bool Create(HINSTANCE instance, HWND owner, const std::wstring& root, const Bookmarks::Store* store, Hooks hooks) {
         owner_ = owner; store_ = store; hooks_ = std::move(hooks); motion_.EnablePolish(); chrome_.SetMotion(&motion_); chrome_.textCacheLimit = 1024;
@@ -461,7 +603,9 @@ public:
         // The in-place rename EDIT on a row (a child HWND): named like the popover's field.
         host.label = [this](HWND child, Accessibility::Node& node) { if (!child || !renaming_ || GetParent(child) != hwnd_ || child == hwnd_) return false; node.name = TR(bookmark_field_name); node.automationId = L"BookmarkRename" /* i18n-exempt: UIA id */; return true; };
         uia_.Attach(std::move(host));
-        return SUCCEEDED(chrome_.Init(hwnd_, root));
+        const bool ok = SUCCEEDED(chrome_.Init(hwnd_, root));
+        tip_.Create(instance, hwnd_, root);   // after the window's own procedure: the tip reads the hover it settled
+        return ok;
     }
     HWND Window() const { return hwnd_; }
     UINT RenderDpiForTest() const { return chrome_.dpi; }   // the DPI the drawer is drawn at (tests/ui/address_popup_dpi_test.cpp)
@@ -476,7 +620,7 @@ public:
     void Show(bool keyboard) {
         if (!hwnd_) return;
         motion_.SetReducedMotion(Motion::PreferredReducedMotion()); auto now = Motion::Now();
-        if (!visible_) { slide_.Snap(0); scroll_.Snap(0); query_.clear(); motion_.ClearInteractions(); hover_ = pressed_ = 0; appliedVisible_ = -1; appliedOwner_ = {}; }
+        if (!visible_) { slide_.Snap(0); scroll_.Snap(0); query_.clear(); motion_.ClearInteractions(); hover_ = pressed_ = 0; appliedVisible_ = -1; appliedOwner_ = {}; picking_ = 0; pickerRow_ = -1; }
         Rebuild(); focus_ = SearchHit; keyboard_ = keyboard;
         slide_.Set(1, now, Motion::Milliseconds(0), Reduced() ? Motion::Milliseconds(0) : DrawerMotion::enter, DrawerMotion::enterSpring);
         closing_ = false; visible_ = true; ApplyGeometry(now, true);
@@ -490,6 +634,7 @@ public:
     void Hide(bool keyboard, bool animate) {
         if (!visible_ || closing_) { if (visible_ && !animate) Finish(); return; }
         hiddenAt = GetTickCount64(); if (GetCapture() == hwnd_) ReleaseCapture(); motion_.ClearInteractions(); hover_ = pressed_ = 0;
+        if (picking_) { picking_ = 0; pickerRow_ = -1; if (hooks_.customizing) hooks_.customizing(0); }
         auto now = Motion::Now(); closing_ = true;
         slide_.Set(0, now, Motion::Milliseconds(0), animate && !Reduced() ? DrawerMotion::exit : Motion::Milliseconds(0), DrawerMotion::exitSpring);
         if (!slide_.Moving(now)) Finish();
@@ -546,6 +691,31 @@ public:
     }
     void SetDropMarker(int row, BookmarkDrag::Mark mark) { if (row == dropRow_ && mark == dropMark_) return; dropRow_ = row; dropMark_ = mark; Invalidate(); }
     void FocusBookmark(Bookmarks::Id id) { for (int i = 0; i < static_cast<int>(rows_.size()); ++i) if (rows_[i].id == id) { keyboard_ = true; SetFocusHit(RowHit(i)); return; } }
+    // #138 « Personnaliser… » from a drawer row's menu: unfolds that folder's picker. False when its row is not shown.
+    bool CustomizeFolder(Bookmarks::Id id, bool keyboard) {
+        if (!visible_ || closing_ || !query_.empty()) return false;
+        for (int i = 0; i < static_cast<int>(rows_.size()); ++i) if (rows_[i].id == id && rows_[i].folder && rows_[i].level > 0) { if (picking_ != id) { ClosePicker(false); OpenPicker(i, keyboard); } else if (keyboard) { picker_.FocusChosen(); SetFocusHit(PickerBase + picker_.focus); } return true; }
+        return false;
+    }
+    Bookmarks::Id Picking() const { return picking_; }
+    const FolderStyle::Picker::Model& PickerForTest() const { return picker_; }
+    const std::vector<std::wstring>& PickerHintForTest() const { return hintLines_; }
+    void HoverForTest(int hit) { Interact(hit, 0); }
+    void ActivateForTest(int hit, bool keyboard) { Activate(hit, keyboard); }
+    float RowTopForTest(int i) const { return RowTop(i, scroll_.Value(Motion::Now())); }
+    float PickerTopForTest() const { return pickerRow_ >= 0 ? PickerTop(scroll_.Value(Motion::Now())) : -1; }
+    void ScrollForTest(float to) { scroll_.Snap(std::clamp(to, 0.f, MaxScroll())); Invalidate(); }
+    // Windowless use (fixtures): the rows built as if it had opened, the window never shown.
+    void OpenForTest() { visible_ = true; closing_ = false; Rebuild(); focus_ = SearchHit; }
+    void FocusForTest(int hit, bool keyboard) { keyboard_ = keyboard; focus_ = hit; if (IsPickerHit(hit)) picker_.focus = hit - PickerBase; }
+    // The drawer as it paints now, offscreen at `dpi`, `height` DIP high, to `png` (`focused`: as if it held the keyboard).
+    bool RenderForTest(const std::wstring& root, const wchar_t* png, UINT dpi, float height, bool focused) {
+        Chrome off; if (FAILED(off.InitOffscreen(root, dpi, Layout::width, height))) return false;
+        off.SetMotion(&motion_); off.textCacheLimit = 1024; surface_ = &off; testHeight_ = height; testFocused_ = focused ? 1 : 0;
+        const int keepLead = lead_; lead_ = 0; Paint(); lead_ = keepLead;
+        surface_ = nullptr; testHeight_ = 0; testFocused_ = -1;
+        const bool ok = SUCCEEDED(off.SavePng(png)); off.Dispose(); return ok;
+    }
     Motion::Wake NextWake(Motion::Time now) const {
         if (!visible_) return {};
         const bool moving = slide_.Moving(now) || scroll_.Moving(now);

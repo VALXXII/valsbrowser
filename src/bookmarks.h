@@ -13,6 +13,11 @@
 // Roots are never written. Titles and URLs escape `\` `\t` `\n` `\r` as `\\` `\t`
 // `\n` `\r` and lone UTF-16 surrogates as `\uXXXX`, so every title round-trips
 // exactly. A parent always precedes its children, so no cycle can be loaded.
+// #138 (a folder's icon and colour): once a folder carries one, the file is written as
+// `browser-bookmarks 2`, each line with two more fields `\t<icon>\t<color>` (keys of
+// src/bookmark-folder-style.h, empty = none; always empty for a link). A file where no
+// folder has a look stays `browser-bookmarks 1`, byte for byte as before; both read.
+// An older build never overwrites a version 2 file (ProfileStore: unknown format).
 #include <algorithm>
 #include <cstdint>
 #include <istream>
@@ -42,7 +47,8 @@ struct Node {
     std::wstring url;                     // empty for a folder
     std::int64_t added = 0;               // Unix ms
     std::vector<Id> children;             // display order (folders only)
-    bool operator==(const Node& o) const { return id == o.id && parent == o.parent && kind == o.kind && title == o.title && url == o.url && added == o.added && children == o.children; }
+    std::string icon, color;              // folders only (#138): style keys, empty = the grey folder; unknown keys kept as read
+    bool operator==(const Node& o) const { return id == o.id && parent == o.parent && kind == o.kind && title == o.title && url == o.url && added == o.added && children == o.children && icon == o.icon && color == o.color; }
     bool operator!=(const Node& o) const { return !(*this == o); }
 };
 // Undo snapshot of a removed subtree.
@@ -56,6 +62,15 @@ struct Removed {
 inline bool Admissible(const std::wstring& url) { return AddressBar::Recordable(url); }
 // Comparison key for "is this page bookmarked" (scheme/host case-insensitive, "/" root = none, fragment counts).
 inline std::wstring UrlKey(const std::wstring& url) { return AddressBar::Key(url); }
+// The header lines this build reads (ProfileStore's `known` list): version 2 adds a folder's look (#138).
+inline const std::vector<std::string>& Headers() { static const std::vector<std::string> h{"browser-bookmarks 1", "browser-bookmarks 2"}; return h; }
+// A style key as stored: empty (none) or 1-32 of a-z, 0-9, '-'. A key this build does not know (a later
+// palette or icon set) is still a valid key: kept and written back, shown as the grey folder.
+inline bool StyleKey(const std::string& key) {
+    if (key.size() > 32) return false;
+    for (char c : key) if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) return false;
+    return true;
+}
 // What the bar and menus show for a node: its title, or its readable address when untitled.
 inline std::wstring DisplayTitle(const Node& n) {
     if (!n.title.empty() || n.kind == Kind::Folder) return n.title;
@@ -119,8 +134,8 @@ public:
     static constexpr std::size_t TitleMax = 1024; // UTF-16 units
 
     Store() {
-        nodes_[BarRoot] = Node{BarRoot, NoId, Kind::Folder, TR(bookmarks_bar_root), L"", 0, {}};   // roots are never written: named in the process language
-        nodes_[OtherRoot] = Node{OtherRoot, NoId, Kind::Folder, TR(bookmarks_other_root), L"", 0, {}};
+        nodes_[BarRoot] = Node{BarRoot, NoId, Kind::Folder, TR(bookmarks_bar_root), L"", 0, {}, {}, {}};   // roots are never written: named in the process language
+        nodes_[OtherRoot] = Node{OtherRoot, NoId, Kind::Folder, TR(bookmarks_other_root), L"", 0, {}, {}, {}};
     }
 
     // ---- Queries -------------------------------------------------------------
@@ -231,6 +246,15 @@ public:
         n->url = url;
         return true;
     }
+    // A folder's look (#138): icon and colour keys, empty = none. Roots and links have none.
+    bool SetStyle(Id id, const std::string& icon, const std::string& color) {
+        auto* n = Mutable(id);
+        if (!n || IsRoot(id) || n->kind != Kind::Folder || !StyleKey(icon) || !StyleKey(color)) return false;
+        n->icon = icon; n->color = color;
+        return true;
+    }
+    // Whether a folder carries a look (the file is then written as version 2).
+    bool Styled() const { for (const auto& [id, n] : nodes_) if (!n.icon.empty() || !n.color.empty()) return true; return false; }
     // `index` is the final position among newParent's children (clamped; End appends).
     bool Move(Id id, Id newParent, std::size_t index) {
         Node* n = Mutable(id);
@@ -294,11 +318,14 @@ public:
 
     // ---- Persistence -----------------------------------------------------------
     void Write(std::ostream& out) const {
-        out << "browser-bookmarks 1\n";
+        const bool v2 = Styled();   // no look anywhere: the version 1 file, unchanged
+        out << (v2 ? "browser-bookmarks 2\n" : "browser-bookmarks 1\n");
         std::size_t count = 0;
         for (Id root : {BarRoot, OtherRoot}) for (Id top : nodes_.at(root).children) for (Id id : Subtree(top)) {
             const Node& n = nodes_.at(id);
-            out << n.id << '\t' << n.parent << '\t' << (n.kind == Kind::Folder ? 'F' : 'L') << '\t' << n.added << '\t' << Escape(n.title) << '\t' << Escape(n.url) << '\n';
+            out << n.id << '\t' << n.parent << '\t' << (n.kind == Kind::Folder ? 'F' : 'L') << '\t' << n.added << '\t' << Escape(n.title) << '\t' << Escape(n.url);
+            if (v2) out << '\t' << n.icon << '\t' << n.color;
+            out << '\n';
             ++count;
         }
         out << "end\t" << count << '\n';
@@ -318,7 +345,8 @@ public:
         for (std::size_t nl; (nl = text.find('\n', start)) != std::string::npos; start = nl + 1) lines.push_back(text.substr(start, nl - start));
         if (start < text.size()) bad = true; // last line cut before its newline: dropped
         for (auto& l : lines) if (!l.empty() && l.back() == '\r') l.pop_back();
-        if (lines.empty() || lines[0] != "browser-bookmarks 1") { if (damaged) *damaged = true; return s; }
+        const int version = lines.empty() ? 0 : lines[0] == "browser-bookmarks 2" ? 2 : lines[0] == "browser-bookmarks 1" ? 1 : 0;
+        if (!version) { if (damaged) *damaged = true; return s; }
         bool ended = false; std::size_t nodeLines = 0;
         for (std::size_t i = 1; i < lines.size(); ++i) {
             const std::string& line = lines[i];
@@ -330,7 +358,7 @@ public:
             }
             ++nodeLines;
             if (s.Size() >= Limit) { bad = true; continue; }
-            if (!s.ReadLine(line)) bad = true;
+            if (!s.ReadLine(line, version)) bad = true;
         }
         if (!ended) bad = true;
         if (damaged) *damaged = bad;
@@ -377,6 +405,8 @@ public:
                 if (!same(rn, bn)) continue;   // deleted or replaced elsewhere: this edit has nothing to apply to
                 if (mn.title != bn->title) rn->title = mn.title;
                 if (mn.url != bn->url) rn->url = mn.url;
+                if (mn.icon != bn->icon) rn->icon = mn.icon;      // #138: a look changed here wins; one changed elsewhere stays
+                if (mn.color != bn->color) rn->color = mn.color;
                 if (mn.parent != bn->parent || previous(mine, id) != previous(base, id)) {
                     std::size_t at = position();
                     if (r.Find(id)->parent == parent && r.IndexOf(id) < at) --at;
@@ -386,7 +416,7 @@ public:
                 if (r.Size() >= Limit) continue;
                 if (mn.kind == Kind::Folder && static_cast<std::size_t>(r.Depth(parent)) + 1 > MaxDepth) parent = OtherRoot;
                 const Id nid = mapped(id); const std::size_t at = position();
-                r.nodes_[nid] = Node{nid, parent, mn.kind, mn.title, mn.url, mn.added, {}};
+                r.nodes_[nid] = Node{nid, parent, mn.kind, mn.title, mn.url, mn.added, {}, mn.icon, mn.color};
                 r.Attach(parent, at, nid);
                 if (nid >= r.next_) r.next_ = nid + 1;
             }
@@ -416,7 +446,7 @@ private:
     }
     Id Insert(Id parent, std::size_t index, Kind kind, std::wstring title, std::wstring url, std::int64_t now) {
         const Id id = next_++;
-        nodes_[id] = Node{id, parent, kind, std::move(title), std::move(url), now, {}};
+        nodes_[id] = Node{id, parent, kind, std::move(title), std::move(url), now, {}, {}, {}};
         Attach(parent, index, id);
         return id;
     }
@@ -441,12 +471,12 @@ private:
         out = negative ? -static_cast<std::int64_t>(v) : static_cast<std::int64_t>(v);
         return true;
     }
-    // One node line. False when the line was dropped or repaired.
-    bool ReadLine(const std::string& line) {
+    // One node line (version 1: 6 fields; version 2: 8, the folder's look last). False when the line was dropped or repaired.
+    bool ReadLine(const std::string& line, int version = 1) {
         std::vector<std::string> f; std::size_t start = 0;
         for (std::size_t tab; (tab = line.find('\t', start)) != std::string::npos; start = tab + 1) f.push_back(line.substr(start, tab - start));
         f.push_back(line.substr(start));
-        if (f.size() != 6 || f[2].size() != 1 || (f[2][0] != 'L' && f[2][0] != 'F')) return false;
+        if (f.size() != (version == 2 ? 8u : 6u) || f[2].size() != 1 || (f[2][0] != 'L' && f[2][0] != 'F')) return false;
         std::uint64_t id = 0, parent = 0; std::int64_t added = 0;
         if (!ParseUnsigned(f[0], id) || !ParseUnsigned(f[1], parent) || !ParseSigned(f[3], added)) return false;
         if (id < FirstUserId || id >= std::numeric_limits<Id>::max() || parent > std::numeric_limits<Id>::max() || Find(static_cast<Id>(id))) return false;
@@ -455,6 +485,9 @@ private:
         if (n.kind == Kind::Link ? !Admissible(n.url) : !n.url.empty()) return false;
         bool clean = true;
         if (n.title.size() > TitleMax) { n.title = Clip(std::move(n.title)); clean = false; }
+        if (version == 2 && (!f[6].empty() || !f[7].empty())) {   // a look: folders only, well-formed keys; else the line loads without it
+            if (n.kind == Kind::Folder && StyleKey(f[6]) && StyleKey(f[7])) { n.icon = f[6]; n.color = f[7]; } else clean = false;
+        }
         n.parent = static_cast<Id>(parent);
         // A parent must already be loaded (pre-order): cycles cannot load.
         if (!CanHold(n.parent) || (n.kind == Kind::Folder && static_cast<std::size_t>(Depth(n.parent)) + 1 > MaxDepth)) { n.parent = OtherRoot; clean = false; }

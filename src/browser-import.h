@@ -1484,7 +1484,7 @@ inline Committed CommitBookmarks(const std::wstring& dataDir, const std::wstring
         map = before; theirs = t;   // the merge may run again: start from the file's map each time
         c.counts = ApplyBookmarks(r, src, roots, now, &map);
         return r;
-    }, timeoutMs, {"browser-bookmarks 1"}, true, [&](const BM::Store& merged) {
+    }, timeoutMs, Bookmarks::Headers(), true, [&](const BM::Store& merged) {
         // Pre-write step: the identities first. A failure here writes nothing at all.
         map.Prune(merged, theirs);
         if (!map.Fits()) { mapFull = true; return false; }   // over the reader's bounds: nothing written at all
@@ -1507,7 +1507,7 @@ inline Committed CommitBookmarks(const std::wstring& dataDir, const std::wstring
         BM::Store r = BM::Store::Merge(b, m, t, &ids);
         c.counts = ApplyBookmarks(r, folderTitle, roots, now);
         return r;
-    }, timeoutMs, {"browser-bookmarks 1"});
+    }, timeoutMs, Bookmarks::Headers());
     if (remap) *remap = ids;
     if (!c.Saved()) c.counts = Counts{};
     return c;

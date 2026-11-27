@@ -60,6 +60,8 @@ def existing_fixtures() -> None:
     fixture('session_test', [*STRICT, 'tests/session_test.cpp'])
     # Mode Focus (src/focus-mode.h, design/focus-mode-plan.md): panel geometry, hit box, slide timing, easing, hole spans.
     fixture('focus_mode_test', [*STRICT, 'tests/focus_mode_test.cpp'])
+    # Its entry / exit motion (src/focus-motion.h, design/focus-motion-report.md): spring 1.0 / 0.3 s, interruption, fades, glued layout.
+    fixture('focus_motion_test', [*STRICT, 'tests/focus_motion_test.cpp'])
     # Its drawers' antialiased top corners (src/drawer-corners.h): coverage, region cut, layered corner windows.
     fixture('drawer_corners_test', [*STRICT, '-municode', 'tests/drawer_corners_test.cpp', '-lgdi32', '-luser32'])
     # #143: the drawers on the tab panel's side (pure geometry at 4 DPI, then src/main.cpp's real drawers, side Focus and the
@@ -83,6 +85,11 @@ def existing_fixtures() -> None:
     fixture('adblock_folder_test', [*STRICT, 'tests/adblock_folder_test.cpp'])
     # browser.log: origins only in release builds, capped at 1 MiB, erased with the browsing data (src/log-privacy.h, SEC-05).
     fixture('log_privacy_test', [*STRICT, 'tests/log_privacy_test.cpp'])
+    # « Conserver »: what a browser stopped in the middle of a keep leaves in kept-downloads goes back to the user at the next
+    # start (src/kept-downloads.h). Windowless, temporary folders under the output folder.
+    kept_work = OUT / 'kept-downloads-work'
+    kept_work.mkdir(parents=True, exist_ok=True)
+    fixture('kept_downloads_test', [*STRICT, '-municode', 'tests/downloads/kept_downloads_test.cpp'], [kept_work])
     # Directory loops that never throw (src/fs-safe.h, SEC-27): an unlistable sub-folder ends the loop, not the process.
     fixture('fs_safe_test', [*STRICT, 'tests/fs_safe_test.cpp', '-ladvapi32'])
     # One taskbar identity for every installed version (src/taskbar-identity.h; e2e: tests/e2e/taskbar_identity_e2e.py).
@@ -100,6 +107,24 @@ def existing_fixtures() -> None:
     about_evidence.mkdir(parents=True, exist_ok=True)
     fixture('settings_about_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/settings_about_test.cpp', 'src/native-lottie.cpp', THORVG,
             *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt'], [ROOT, about_evidence])
+    # Réglages' root footer: the layout switch (one setting with « Position des onglets ») and the « BETA » chip (Val's
+    # « Atelier » boards « 01 · Réglages — racine »). Windowless; pictures for tests/atelier-a/compose.py.
+    switch_evidence = ROOT / 'build/atelier-a-qa/switch'
+    switch_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('settings_layout_switch_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/settings_layout_switch_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt'], [ROOT, switch_evidence])
+    # Réglages stays open when it changes the layout (Val 2026-11-26): src/main.cpp on a desktop of its own, never displayed.
+    keep_evidence = ROOT / 'build/atelier-a-qa/layout-keep'
+    keep_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('settings_layout_keep_test', [*LOOSE, '-municode', *TVG, WV2, 'tests/atelier-a/settings_layout_keep_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32'], [ROOT, keep_evidence])
+    # The « À propos de Browser » B window it opens (src/modal.h Kind::About, src/about-icons.h; Paper 257B-0): layout
+    # values, the six update states, tile actions, Tab order, focus styles, FR/EN, profile colours. Screen-free: laid out
+    # with ShowHiddenForTest (never shown nor activated), pictures drawn off screen.
+    about_window_evidence = ROOT / 'build/about-window/captures'
+    about_window_evidence.mkdir(parents=True, exist_ok=True)
+    fixture('about_window_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/about_window_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32', '-lmsimg32', '-lbcrypt'], [ROOT, about_window_evidence])
     language_evidence = ROOT / 'build/browser-languages/captures/settings'
     language_evidence.mkdir(parents=True, exist_ok=True)
     fixture('language_settings_test', [*LOOSE, '-Werror', '-municode', *TVG, WV2, 'tests/language_settings_test.cpp', 'src/native-lottie.cpp', THORVG,
@@ -158,10 +183,24 @@ def existing_fixtures() -> None:
     # tests/downloads/download_navigation_e2e.py)
     fixture('download_navigation_test', [*STRICT, 'tests/download_navigation_test.cpp'])
     fixture('tab_drag_test', [*LOOSE, *TVG, WV2, 'tests/ui/tab_drag_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
+    # Atelier B: a tab dropped on the favorites (rules, then the real window procedure on a never-shown window +
+    # offscreen renders, the 3 layouts; its throwaway data folder lives under the output).
+    fixture('tab_favorite_drop_test', [*STRICT, 'tests/tab_favorite_drop_test.cpp'])
+    fixture('tab_favorite_lastrow_test', [*STRICT, 'tests/tab_favorite_lastrow_test.cpp'])   # the grey place = the grid with one more tile (last row too)
+    favorites_drag = OUT / 'tab-favorite-drag'
+    favorites_drag.mkdir(parents=True, exist_ok=True)
+    fixture('tab_favorite_drag_test', [*LOOSE, '-municode', *TVG, WV2, 'tests/ui/tab_favorite_drag_test.cpp', 'src/native-lottie.cpp', THORVG,
+            *UI_LIBS, '-loleaut32', '-lshell32'], [ROOT, favorites_drag])
     # Split view: pure model (zones, capacity, rails, springs) and host behaviour through WndProc
     fixture('split_view_test', [*STRICT, 'tests/split-view/split_view_test.cpp'])
     fixture('site_name_test', [*STRICT, 'tests/split-view/site_name_test.cpp'])
     fixture('split_ui_test', [*LOOSE, *TVG, WV2, 'tests/ui/split_ui_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])
+    # Split view hover frames (Val's « Atelier » boards « Fenêtre »): the pure state machine and geometry, then the host
+    # (réduire / fermer through the real split view, the layered windows under a never-shown window, renders).
+    fixture('split_frames_test', [*STRICT, 'tests/split-view/split_frames_test.cpp'])
+    frames_manifest = OUT / 'split_frames_manifest.o'
+    run('windres split_frames_ui_test.rc', [BIN / 'windres.exe', 'tests/ui/split_frames_ui_test.rc', '-O', 'coff', '-o', frames_manifest])
+    fixture('split_frames_ui_test', [*LOOSE, *TVG, WV2, 'tests/ui/split_frames_ui_test.cpp', frames_manifest, 'src/native-lottie.cpp', THORVG, *UI_LIBS])
     # Window title / icon changes never hide the page, even for an instant (the canvas flashed in place of the page on
     # clicks in a site); the same title is not sent again on each page event. Screen-free: a DWM-cloaked window.
     fixture('window_title_test', [*LOOSE, '-Werror', *TVG, WV2, 'tests/ui/window_title_test.cpp', 'src/native-lottie.cpp', THORVG, *UI_LIBS])

@@ -23,7 +23,7 @@ static Case Setup(const std::wstring& name, const BM::Store& seed) {
 }
 static ProfileStore::Result Save(Case& c) {
     std::map<BM::Id, BM::Id> remap;
-    return ProfileStore::Commit<BM::Store>(c.data, c.file, c.base, c.mine, [&](const BM::Store& b, const BM::Store& m, const BM::Store& t) { return BM::Store::Merge(b, m, t, &remap); }, 5000, {"browser-bookmarks 1"});
+    return ProfileStore::Commit<BM::Store>(c.data, c.file, c.base, c.mine, [&](const BM::Store& b, const BM::Store& m, const BM::Store& t) { return BM::Store::Merge(b, m, t, &remap); }, 5000, Bookmarks::Headers());
 }
 // The host's undo step for a Moved result (main.cpp BookmarkStep::Moved), then its generic save.
 static ProfileStore::Result UndoAndSave(Case& c, const MV::Result& r) { c.mine.Move(r.id, r.from, r.fromIndex); return Save(c); }

@@ -225,7 +225,7 @@ int main() {
         // Missing file (empty stream): empty, not damaged.
         CHECK(Parse("", &damaged) == Store{} && !damaged);
         // Foreign or future header: empty and damaged (the host keeps a .damaged copy).
-        for (const char* bad : {"garbage\n", "browser-bookmarks 2\n3\t1\tL\t0\tx\thttps://x.example/\nend\t1\n", "browser-history 1\n", "\xEF\xBB\xBF" "browser-bookmarks 1\nend\t0\n", "browser-bookmarks 1"}) {
+        for (const char* bad : {"garbage\n", "browser-bookmarks 3\n3\t1\tL\t0\tx\thttps://x.example/\nend\t1\n", "browser-history 1\n", "\xEF\xBB\xBF" "browser-bookmarks 1\nend\t0\n", "browser-bookmarks 1"}) {
             damaged = false; CHECK(Parse(bad, &damaged) == Store{} && damaged);
         }
         // Reference file.
@@ -318,6 +318,49 @@ int main() {
         // Ids keep growing past the largest one read.
         Store grow = Parse("browser-bookmarks 1\n500\t1\tL\t0\tx\thttps://x.example/\nend\t1\n", &damaged);
         CHECK(!damaged && grow.NextId() == 501 && grow.Add(BarRoot, End, L"y", L"https://y.example/", 0) == 501);
+    }
+
+    // ---- #138 A folder's look: icon + colour, file version 2, old files, merge --------------------
+    {
+        Store s;
+        const Id f = s.AddFolder(BarRoot, End, L"Veille", 1);
+        const Id g = s.AddFolder(f, End, L"Lectures", 2);
+        const Id a = s.Add(f, End, L"a", L"https://a.example/", 3);
+        // No look anywhere: the file is version 1, byte for byte the pre-#138 text.
+        CHECK(!s.Styled() && Text(s) == "browser-bookmarks 1\n" "3\t1\tF\t1\tVeille\t\n" "4\t3\tF\t2\tLectures\t\n" "5\t3\tL\t3\ta\thttps://a.example/\n" "end\t3\n");
+        // Only folders (not roots, not links) take a look; keys are a-z 0-9 '-', at most 32.
+        CHECK(!s.SetStyle(BarRoot, "newspaper", "ambre") && !s.SetStyle(a, "newspaper", "ambre") && !s.SetStyle(99, "x", "y"));
+        CHECK(!s.SetStyle(f, "News Paper", "ambre") && !s.SetStyle(f, "newspaper", std::string(33, 'a')) && !s.SetStyle(f, "a\tb", ""));
+        CHECK(s.SetStyle(f, "newspaper", "ambre") && s.SetStyle(g, "book-open", "") && s.Styled());
+        CHECK(s.Find(f)->icon == "newspaper" && s.Find(f)->color == "ambre" && s.Find(g)->icon == "book-open" && s.Find(g)->color.empty());
+        // Version 2: two more fields per line, empty for links and plain folders; round trip exact, not damaged.
+        const std::string v2 = Text(s);
+        CHECK(v2 == "browser-bookmarks 2\n" "3\t1\tF\t1\tVeille\t\tnewspaper\tambre\n" "4\t3\tF\t2\tLectures\t\tbook-open\t\n" "5\t3\tL\t3\ta\thttps://a.example/\t\t\n" "end\t3\n");
+        bool damaged = true; Store back = RoundTrip(s, &damaged);
+        CHECK(!damaged && back == s && back.Find(f)->color == "ambre" && back.Find(g)->icon == "book-open");
+        // Unknown keys (a later palette) load and are written back unchanged.
+        Store later = Parse("browser-bookmarks 2\n3\t1\tF\t1\tX\t\tunicorn-2\tturquoise\nend\t1\n", &damaged);
+        CHECK(!damaged && later.Find(3)->icon == "unicorn-2" && later.Find(3)->color == "turquoise" && Text(later) == "browser-bookmarks 2\n3\t1\tF\t1\tX\t\tunicorn-2\tturquoise\nend\t1\n");
+        // Clearing every look writes version 1 again.
+        Store plain = back; CHECK(plain.SetStyle(f, "", "") && plain.SetStyle(g, "", "") && !plain.Styled() && Text(plain).rfind("browser-bookmarks 1\n", 0) == 0);
+        // A pre-#138 file (version 1) loads clean: every folder grey (no look).
+        Store old = Parse("browser-bookmarks 1\n3\t1\tF\t1\tTravail\t\n4\t3\tL\t2\tx\thttps://x.example/\nend\t2\n", &damaged);
+        CHECK(!damaged && old.Size() == 2 && old.Find(3)->icon.empty() && old.Find(3)->color.empty() && !old.Styled());
+        // Damaged version 2 lines: a look on a link or a bad key drops the look only (damaged); a 6-field line is dropped.
+        Store bad = Parse("browser-bookmarks 2\n3\t1\tL\t1\tx\thttps://x.example/\tstar\tvert\n4\t1\tF\t2\tF\t\tSTAR\tvert\n5\t1\tF\t3\tG\t\nend\t3\n", &damaged);
+        CHECK(damaged && bad.Size() == 2 && bad.Find(3)->icon.empty() && bad.Find(4)->icon.empty() && bad.Find(4)->color.empty() && !bad.Find(5));
+        // Remove + Restore (undo of a removal) and a copy keep the look.
+        Store r = back; auto removed = r.Remove(f); CHECK(removed && !r.Find(f) && r.Restore(*removed) && r.Find(f)->color == "ambre" && r.Find(g)->icon == "book-open");
+        // Merge (another window): a look changed here wins, one changed elsewhere stays; a new folder keeps its look.
+        Store base = back, mine = back, theirs = back;
+        CHECK(mine.SetStyle(f, "rocket", "vert"));                      // here: Veille → vert / rocket
+        CHECK(theirs.SetStyle(g, "book-open", "rose"));                  // elsewhere: Lectures gets a colour
+        const Id n = mine.AddFolder(BarRoot, End, L"Cuisine", 9); CHECK(mine.SetStyle(n, "coffee", "rose"));
+        Store merged = Store::Merge(base, mine, theirs);
+        CHECK(merged.Find(f)->icon == "rocket" && merged.Find(f)->color == "vert" && merged.Find(g)->color == "rose" && merged.Find(g)->icon == "book-open");
+        CHECK(merged.Find(n) && merged.Find(n)->icon == "coffee" && merged.Find(n)->color == "rose");
+        // Both headers are known to the profile store; nothing else is.
+        CHECK(Headers().size() == 2 && Headers()[0] == "browser-bookmarks 1" && Headers()[1] == "browser-bookmarks 2");
     }
 
     std::puts("bookmarks tests passed");

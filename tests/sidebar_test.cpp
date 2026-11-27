@@ -83,15 +83,18 @@ int main() {
         Check(S::Columns(204) == 4 && S::Columns(279) == 5 && S::Columns(280) == 6 && S::Columns(344) == 7 && S::Columns(345) == 7, "4 at 220, 6 from 296, 7 at 360 (1Y82-0, 1XWT-0, 1Y0T-0)");
     }
     {   // Val 25 nov. (« like Dia »): the tiles fill the row edge to edge with the address field's margins; fewer bookmarks than a
-        // row holds share it (3 in 232: no empty slots on the right); a last row that is not full keeps the rows' tile width,
-        // left-aligned. Every panel width a drag can give at 100 / 125 / 150 / 175 / 200 % (a device pixel at a time, 220 ..
-        // 360 DIP), folded and unfolded (grid B), 1 to 21 bookmarks.
+        // row holds share it (3 in 232: no empty slots on the right); a last row that is not full shares the whole width too
+        // (Val 26 nov., capture: 6 at 4 per row = 4 then 2 of half the width; it kept the rows' width on the left before).
+        // Every panel width a drag can give at 100 / 125 / 150 / 175 / 200 % (a device pixel at a time, 220 .. 360 DIP),
+        // folded and unfolded (grid B), 1 to 21 bookmarks: each row's tiles share [8, width - 8] with 6 DIP gaps, 40 high.
         const auto L3 = S::Compute(Complete(3));
         Check(L3.grid.columns == 3 && L3.grid.tiles.size() == 3 && Same(L3.grid.tiles[0], 8, 92, 8 + 220 / 3.f, 132) && Same(L3.grid.tiles[2], 240 - 220 / 3.f, 92, 240, 132), "3 bookmarks in 248: three tiles of 73.3 share the row (owner's capture)");
         const auto L1 = S::Compute(Complete(1));
         Check(L1.grid.columns == 1 && Same(L1.grid.tiles[0], 8, 92, 240, 132) && Same(L1.gridBlock, 8, 92, 240, 132), "1 bookmark: the whole row");
         const auto L6 = S::Compute(Complete(6));
-        Check(L6.grid.columns == 5 && Same(L6.grid.tiles[5], 8, 138, 49.6f, 178) && Near(L6.grid.tiles[5].Width(), L6.grid.tiles[0].Width()), "6 in 248: 5 + 1, the last one keeps the width, on the left");
+        Check(L6.grid.columns == 5 && Same(L6.grid.tiles[4], 240 - 41.6f, 92, 240, 132) && Same(L6.grid.tiles[5], 8, 138, 240, 178), "6 in 248: 5, then the sixth alone takes the whole row");
+        { auto in = Complete(6); in.panel = 220; const auto L4 = S::Compute(in);   // the owner's capture: 4 per row
+          Check(L4.grid.columns == 4 && Same(L4.grid.tiles[3], 212 - 46.5f, 92, 212, 132) && Same(L4.grid.tiles[4], 8, 138, 107, 178) && Same(L4.grid.tiles[5], 113, 138, 212, 178), "6 at 220 (4 per row): row 2 = 2 tiles of half the width (99), gap 6"); }
         int cases = 0, bad = 0, lastColumns = 0; const float scales[] = {1, 1.25f, 1.5f, 1.75f, 2};
         for (float s : scales) {
             lastColumns = 0;
@@ -104,11 +107,11 @@ int main() {
                     const int count = shown ? n : 2 * fit;
                     bool ok = L.grid.columns == cols && static_cast<int>(L.grid.tiles.size()) == count && L.gridOpen == (folds && open) && L.gridToggle.Empty() == !folds && L.manage.Empty() == !(folds && open);
                     ok = ok && Near(l, 8) && Near(r, px / s - 8) && Near(L.grid.view.left, l) && Near(L.grid.view.right, r);
-                    const float tw = (w - 6 * (cols - 1)) / cols;
                     for (int i = 0; ok && i < count; ++i) {
-                        const S::Box& t = L.grid.tiles[i]; const int c = i % cols, row = i / cols;
+                        const S::Box& t = L.grid.tiles[i]; const int c = i % cols, row = i / cols, inRow = std::min(cols, count - row * cols);
+                        const float tw = (w - 6 * (inRow - 1)) / inRow;   // this row's tiles share the width (the last one too)
                         ok = Near(t.Width(), tw, 1e-3f) && Near(t.Height(), 40) && Near(t.left, l + c * (tw + 6), 1e-3f) && Near(t.top + L.grid.scroll, L.grid.view.top + row * 46, 1e-3f);
-                        if (c == cols - 1) ok = ok && Near(t.right, r, 1e-3f) && std::lround(t.right * s) == std::lround(r * s);   // edge to edge, in device pixels too
+                        if (c == inRow - 1) ok = ok && Near(t.right, r, 1e-3f) && std::lround(t.right * s) == std::lround(r * s);   // edge to edge, in device pixels too
                         if (c == 0) ok = ok && std::lround(t.left * s) == std::lround(l * s);
                     }
                     if (fit < lastColumns) ok = false;   // a wider panel never holds fewer per row
@@ -117,18 +120,19 @@ int main() {
                 }
         }
         std::printf("grid fill: %d layouts checked (220 .. 360 at 100 .. 200 %%, 1 .. 21 bookmarks, folded / unfolded)\n", cases);
-        Check(bad == 0, "the grid fills the row at every width and scale; a short last row keeps the tile width");
+        Check(bad == 0, "the grid fills every row at every width and scale, a short last row too");
         for (int n : {20, 9}) for (float panel : {220.f, 280.f, 360.f}) {   // expand / collapse (variant B) at the three widths
             auto in = Complete(n); in.panel = panel; const auto F = S::Compute(in); in.gridOpen = true; const auto O = S::Compute(in);
             const int cols = S::Columns(panel - 16), folds = n > 2 * cols;
             bool ok = F.grid.columns == std::min(cols, n) && O.grid.columns == F.grid.columns && !F.gridOpen && F.gridToggle.Empty() == !folds;
-            if (folds) ok = ok && static_cast<int>(F.grid.tiles.size()) == 2 * cols && O.gridOpen && static_cast<int>(O.grid.tiles.size()) == n && !O.manage.Empty() && Near(O.grid.tiles.back().left, 8 + ((n - 1) % cols) * (O.grid.tiles[0].Width() + 6)) && Near(O.grid.tiles.back().Width(), F.grid.tiles[0].Width()) && O.gridBlock.bottom > F.gridBlock.bottom;
+            if (folds) ok = ok && static_cast<int>(F.grid.tiles.size()) == 2 * cols && O.gridOpen && static_cast<int>(O.grid.tiles.size()) == n && !O.manage.Empty() && Near(O.grid.tiles.back().right, panel - 8) && Near(O.grid.tiles[static_cast<std::size_t>((n - 1) / cols * cols)].left, 8) && Near(O.grid.tiles[0].Width(), F.grid.tiles[0].Width()) && O.gridBlock.bottom > F.gridBlock.bottom;
             else ok = ok && static_cast<int>(O.grid.tiles.size()) == n && !O.gridOpen && Same(O.gridBlock, F.gridBlock.left, F.gridBlock.top, F.gridBlock.right, F.gridBlock.bottom);
             char what[120]; std::snprintf(what, sizeof what, "%d bookmarks at %.0f: fold / unfold keeps %d per row", n, panel, std::min(cols, n));
             Check(ok, what);
         }
         // The compact column does not change: icons only, 40 x 36 tiles, gap 4, whatever the count and the stored width; its
-        // « » » popover keeps five per row (a sixth bookmark starts a second row at the same width).
+        // « » » popover keeps five per row, and like the unfolded panel its short last row shares the whole width (Designer
+        // 26 nov.): 6 = 5 + one tile of 230, 7 = 5 + two of 112.
         bool compactOk = true;
         for (int n = 1; n <= 9; ++n) for (float panel : {220.f, 280.f, 360.f}) {
             auto in = Compact(n); in.panel = panel; const auto K = S::Compute(in);
@@ -136,7 +140,21 @@ int main() {
             for (int i = 0; compactOk && i < static_cast<int>(K.tiles.size()); ++i) compactOk = Same(K.tiles[i], 0, 76 + i * 40.f, 40, 112 + i * 40.f);
         }
         const auto P6 = S::ComputePopover(40, S::Box{0, 236, 40, 272}, 6, 0, 738);
-        Check(compactOk && P6.grid.columns == 5 && P6.grid.tiles.size() == 6 && Near(P6.grid.tiles[5].left, P6.grid.tiles[0].left) && Near(P6.grid.tiles[5].Width(), (230 - 4 * 6) / 5.f), "compact unchanged (1WDI-0) and its popover keeps five per row");
+        Check(compactOk && P6.grid.columns == 5 && P6.grid.tiles.size() == 6 && Near(P6.grid.tiles[5].left, P6.grid.tiles[0].left) && Near(P6.grid.tiles[5].Width(), 230) && Near(P6.grid.tiles[4].right, P6.grid.view.right), "compact unchanged (1WDI-0); its popover: five per row, the sixth alone takes the whole row");
+        {   // The popover, 6 .. 40 bookmarks (it opens beyond five): five per row, every row sharing its 230 with 6 DIP gaps (the last
+            // one too), 40 high; 5 rows then scrolling (224), the same as before.
+            bool ok = true;
+            for (int n = 6; n <= 40; ++n) {
+                const auto P = S::ComputePopover(40, S::Box{0, 236, 40, 272}, n, 0, 738); const auto& g = P.grid;
+                ok = ok && g.columns == 5 && static_cast<int>(g.tiles.size()) == n && Near(g.view.Width(), 230) && Near(g.view.Height(), std::min(5, (n + 4) / 5) * 46 - 6.f) && g.Scrolls() == (n > 25);
+                for (int i = 0; ok && i < n; ++i) {
+                    const int row = i / 5, c = i % 5, inRow = std::min(5, n - row * 5); const float tw = (230 - 6.f * (inRow - 1)) / inRow; const auto& t = g.tiles[static_cast<std::size_t>(i)];
+                    ok = Near(t.Width(), tw, 1e-3f) && Near(t.Height(), 40) && Near(t.left, g.view.left + c * (tw + 6), 1e-3f) && (c != inRow - 1 || Near(t.right, g.view.right, 1e-3f));
+                }
+            }
+            const auto P7 = S::ComputePopover(40, S::Box{0, 236, 40, 272}, 7, 0, 738);
+            Check(ok && Near(P7.grid.tiles[5].Width(), 112) && Near(P7.grid.tiles[6].left, P7.grid.view.left + 118), "popover 6 .. 40: five per row, every row (the last one too) shares 230; 5 rows then scrolling");
+        }
     }
     {   // #143 (Val 25 nov., capture: the page over the panel's right edge). The host's chain for an edge drag, every device
         // pixel from 0 to 420 DIP at 100 / 125 / 150 %, started complete or compact: Resize::Dragging -> the presented width
