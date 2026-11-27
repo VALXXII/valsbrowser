@@ -1158,6 +1158,35 @@ class Workflow(unittest.TestCase):
         self.assertLess(text.index('run_all.py'), text.index('package.py'))
 
 
+class SignatureCheck(unittest.TestCase):
+    """tools/release/sign.py reads signatures with Windows PowerShell: also when a PowerShell 7 shell started us."""
+
+    def test_signature_info_survives_a_powershell_7_module_path(self):
+        if os.name != 'nt':
+            self.skipTest('Windows only')
+        import sign as S
+        with tempfile.TemporaryDirectory() as tmp:
+            # What PowerShell 7 leaves in PSModulePath for its children: a Microsoft.PowerShell.Security that Windows
+            # PowerShell 5.1 finds first and cannot load (the release run of 27 Nov 2026).
+            module = Path(tmp) / 'Modules' / 'Microsoft.PowerShell.Security'
+            module.mkdir(parents=True)
+            (module / 'Microsoft.PowerShell.Security.psd1').write_text(
+                "@{ ModuleVersion='7.0.0.0'; GUID='a94c8c7e-9810-47c0-b8af-65089c13a35a'; CompatiblePSEditions=@('Core');"
+                " PowerShellVersion='7.0'; CmdletsToExport=@('Get-AuthenticodeSignature') }", encoding='utf-8')
+            target = Path(tmp) / 'unsigned.exe'
+            target.write_bytes(fake_setup_stub())
+            poisoned = str(module.parent) + os.pathsep + os.environ.get('PSModulePath', '')
+            with mock.patch.dict(os.environ, {'PSModulePath': poisoned}):
+                raw = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command',
+                                      f"(Get-AuthenticodeSignature -LiteralPath '{target}').Status"], capture_output=True, text=True)
+                if raw.returncode == 0 and 'could not be loaded' not in (raw.stdout + raw.stderr):
+                    self.skipTest('this machine does not reproduce the PowerShell 7 module path problem')
+                facts = S.signature_info([target])   # must not raise: its own Windows PowerShell environment
+            self.assertEqual(len(facts), 1)
+            self.assertEqual(facts[0]['status'], 'NotSigned')
+            self.assertEqual(facts[0]['signer'], '')
+
+
 class SigningSession(unittest.TestCase):
     """tools/release/simplysign_session.ps1: the parts that can be proven without an account."""
     SCRIPT = ROOT / 'tools/release/simplysign_session.ps1'

@@ -105,13 +105,26 @@ _INFO_SCRIPT = (
     "ConvertTo-Json -Compress -InputObject $r")
 
 
+def windows_powershell() -> tuple[str, dict]:
+    """(powershell.exe of Windows PowerShell 5.1 by its full path, an environment for it).
+
+    The environment drops PSModulePath: started from PowerShell 7 (the shell of the release workflow's steps), Windows
+    PowerShell inherits a module path that puts PowerShell 7's modules first, and then cannot load its own
+    Microsoft.PowerShell.Security (« The 'Get-AuthenticodeSignature' command was found in the module …, but the module
+    could not be loaded »: the release run of 27 Nov 2026). Without the variable it computes its own default path."""
+    exe = os.path.join(os.environ.get('SystemRoot', r'C:\Windows'), 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    env = {k: v for k, v in os.environ.items() if k.upper() != 'PSMODULEPATH'}
+    return (exe if os.path.isfile(exe) else 'powershell'), env
+
+
 def signature_info(paths: list[Path]) -> list[dict]:
     """Signer subject, thumbprint and timestamp authority of each file (Get-AuthenticodeSignature)."""
     if not paths:
         return []
-    r = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
+    powershell, env = windows_powershell()
+    r = subprocess.run([powershell, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
                         '& {' + _INFO_SCRIPT + '} ' + ' '.join("'" + str(p).replace("'", "''") + "'" for p in paths)],
-                       capture_output=True, text=True, encoding='utf-8', errors='replace')
+                       capture_output=True, text=True, encoding='utf-8', errors='replace', env=env)
     if r.returncode:
         raise SystemExit('Get-AuthenticodeSignature failed: ' + (r.stderr or r.stdout).strip()[:400])
     return json.loads(r.stdout)

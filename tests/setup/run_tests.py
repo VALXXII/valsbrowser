@@ -142,8 +142,9 @@ def test_signer():
         return None
     pfx = OUT / 'test-signing.pfx'
     pfx.unlink(missing_ok=True)
-    r = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
-                        '& {' + _PFX_SCRIPT + "} '" + str(pfx) + "'"], capture_output=True, text=True)
+    powershell, env = S.windows_powershell()   # Windows PowerShell with its own module path, whatever shell started us
+    r = subprocess.run([powershell, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
+                        '& {' + _PFX_SCRIPT + "} '" + str(pfx) + "'"], capture_output=True, text=True, env=env)
     if r.returncode or not pfx.is_file():
         sys.exit('test certificate could not be made: ' + (r.stderr or r.stdout)[:400])
     return S.Signer(pfx=pfx, expect=TEST_SUBJECT, timestamp_url=None)
