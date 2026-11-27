@@ -72,7 +72,8 @@ LOG_LAUNCH_REFUSED = 'CHAT agent launch refused (test)'
 # The browser's agent states (src/agent-install.cpp: « AGENTS <cli>: <state> [version] »): ready / installing / signing
 # in, or a prepare / download, mean it found or set up an agent of THIS computer (2026-11-26: « AGENTS claude: ready
 # 2.1.330 » at every start of browsers launched without BROWSER_ANNOTATIONS_TEST). A test browser with no agent logs only
-# « notInstalled ». Not part of scan_log: a real trial by hand (real_env) logs them on purpose.
+# « notInstalled »; one given the fake agent logs « ready » without a version for it, so this rule is for tests that name
+# no agent at all. Not part of scan_log: a real trial by hand (real_env) logs them on purpose.
 AGENTS_ACTIVE = re.compile(r'^AGENTS [^:\r\n]+: (ready|installing|needsSignIn|signingIn)\b|^AGENTS .*(prepar|download)', re.I | re.M)
 
 
