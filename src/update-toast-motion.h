@@ -297,6 +297,21 @@ inline float TrackDim(int ringFrame) {
     return 1 - Settle(std::min(1.f, (ringFrame - DI::FillEnd) / (float)DI::Out));
 }
 
+// The background's frames (src/update-toast.cpp Shade): a new one when there is none for this target / size / colours,
+// then, while it loops, one per 33 ms at most (30 a second, the Réglages card's cadence; 3 ms early is allowed for a
+// timer that fires a little early). A frame that costs more than SlowMs twice in a row stops the loop until the card
+// leaves: the background is then a still frame, never a load on the browser's thread.
+namespace GrainFrames {
+inline constexpr Ms interval{33};
+inline constexpr double SlowMs = 12;
+inline constexpr int SlowStrikes = 2;
+inline bool Due(bool current, bool loops, Time shaded, Time now) {
+    if (!current) return true;
+    if (!loops) return false;
+    return shaded == Time{} || std::chrono::duration<double, std::milli>(now - shaded).count() >= interval.count() - 3;
+}
+} // namespace GrainFrames
+
 struct Layer { Content content; Geometry geometry; Channel opacity; unsigned id = 0; };
 struct LayerFrame { const Content* content = nullptr; const Geometry* geometry = nullptr; float opacity = 0; };
 // What the 53 DIP icon box shows.

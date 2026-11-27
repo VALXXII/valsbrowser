@@ -14,7 +14,10 @@ using namespace BrowserUpdate::ToastModel;
 namespace M = NativeChrome::Motion;
 
 static int failures = 0, checks = 0;
-#define CHECK(cond) do { ++checks; if (!(cond)) { ++failures; std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); } } while (0)
+// The first failed check stops the run at once (#158 release: a failure left a message loop running for 10 minutes):
+// it unwinds to wmain, which closes the card, its windows and timers, the GPU device and the desktop, and returns 1.
+struct CheckFailed {};
+#define CHECK(cond) do { ++checks; if (!(cond)) { ++failures; std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); std::fflush(stderr); throw CheckFailed{}; } } while (0)
 static bool Near(double a, double b, double eps = 1e-4) { return std::fabs(a - b) <= eps; }
 static M::Time T0() { return M::Time{} + std::chrono::hours(1); }
 static M::Time At(double ms) { return T0() + std::chrono::duration_cast<M::Clock::duration>(std::chrono::duration<double, std::milli>(ms)); }
@@ -308,6 +311,23 @@ static void MotionTests() {
     }
 }
 
+// The background's frame decision on a simulated clock (exact; no GPU, no timer, no wall clock).
+static void GrainCadenceTests() {
+    auto frames = [](double stepMs, double totalMs, bool loops, double jitterMs = 0) {
+        int n = 0; M::Time shaded{};
+        for (double t = 0, k = 0; t <= totalMs; t += stepMs + (std::fmod(k++, 2) ? jitterMs : -jitterMs))
+            if (GrainFrames::Due(true, loops, shaded, At(t))) { ++n; shaded = At(t); }
+        return n;
+    };
+    CHECK(frames(33, 1000, true) >= 30 && frames(33, 1000, true) <= 31);          // the 33 ms timer: every tick
+    CHECK(frames(33, 1000, true, 2) >= 28);                                       // a timer that jitters ±2 ms: still every tick
+    CHECK(frames(16, 1000, true) >= 30 && frames(16, 1000, true) <= 32);          // vsync while the card moves: 30 a second
+    CHECK(frames(1, 1000, true) <= 34);                                           // asked 1000 times: still about 30 (throttled)
+    CHECK(frames(16, 1000, false) == 0);                                          // not looping, frame current: none (still frame)
+    CHECK(GrainFrames::Due(false, false, At(0), At(1)));                          // no frame for this target yet: always
+    CHECK(!GrainFrames::Due(true, true, At(0), At(20)) && GrainFrames::Due(true, true, At(0), At(30)));
+}
+
 static void ClickAndDwellTests() {
     auto a = Describe(V(Phase::Available)); auto d = Describe(V(Phase::Downloading, 1, 2));
     Clicks c;
@@ -557,7 +577,8 @@ static void Pump(int ms) {
     const DWORD end = GetTickCount() + ms;
     MSG msg;
     while ((int)(end - GetTickCount()) > 0) {
-        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
+        // Bounded: a queue that never empties (a timer whose handler outlasts its period) cannot hold the test here.
+        while ((int)(end - GetTickCount()) > 0 && PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
         MsgWaitForMultipleObjects(0, nullptr, FALSE, 5, QS_ALLINPUT);
     }
 }
@@ -568,7 +589,8 @@ static void WindowTests() {
     const UINT sys = GetDpiForSystem();
     HWND owner = CreateWindowExW(0, wc.lpszClassName, L"toast test owner (native, mock)", WS_OVERLAPPEDWINDOW,
                                  40, 40, MulDiv(900, sys, 96), MulDiv(640, sys, 96), nullptr, nullptr, wc.hInstance, nullptr);
-    CHECK(owner != nullptr); if (!owner) return;
+    CHECK(owner != nullptr);
+    struct OwnerGuard { HWND h; ~OwnerGuard() { if (h && IsWindow(h)) DestroyWindow(h); } } ownerGuard{owner};
     ShowWindow(owner, SW_SHOWNORMAL); UpdateWindow(owner); SetForegroundWindow(owner); SetFocus(owner);
     Pump(100);
     HWND foreground = GetForegroundWindow();
@@ -603,11 +625,18 @@ static void WindowTests() {
     // At rest: no vsync frame; the background alone moves at 30 a second on a timer (with a hardware device).
     const auto posted = impl->clock.Stats() ? impl->clock.Stats()->posted.load() : 0;
     CHECK(posted > statsBefore);
+    // The background in real time (its frame decision is checked exactly by GrainCadenceTests, on a simulated clock): on a
+    // GPU it moves on its 33 ms timer — some frames in a second (« the timer never runs » gives none) and never more than
+    // the timer allows (« unthrottled » gives hundreds); on a CPU rasteriser, or once two frames cost too much, it is a
+    // still frame: no timer, no new frame. Wide bounds: a shared runner may lag, never by an order of magnitude.
     const auto rendersBefore = impl->grainRenders;
-    Pump(500);
+    Pump(1000);
     CHECK((impl->clock.Stats() ? impl->clock.Stats()->posted.load() : 0) == posted && !impl->fallbackFrames);
-    if (impl->gpu.Animated()) CHECK(impl->grainTimer && impl->grainRenders >= rendersBefore + 8 && impl->grainRenders <= rendersBefore + 20);
-    else CHECK(!impl->grainTimer && impl->grainRenders == rendersBefore);
+    const auto rendered = impl->grainRenders - rendersBefore;
+    std::printf("background: %s, %llu frames in 1 s%s\n", impl->gpu.Animated() ? "GPU" : "CPU rasteriser or none (still frame)", rendered, impl->grainSlow ? " (slow: stopped)" : "");
+    if (impl->gpu.Animated() && !impl->grainSlow) CHECK(impl->grainTimer && rendered >= 5 && rendered <= 40);
+    else if (impl->grainSlow) CHECK(!impl->grainTimer && rendered <= 2 + GrainFrames::SlowStrikes);
+    else CHECK(!impl->grainTimer && rendered == 0);
     // Hit testing: card inside = client, rounded corner / outside = transparent.
     auto hit = [&](int x, int y) { return SendMessageW(popup, WM_NCHITTEST, 0, MAKELPARAM(x, y)); };
     CHECK(hit((pr.left + pr.right) / 2, (pr.top + pr.bottom) / 2) == HTCLIENT);
@@ -715,7 +744,40 @@ static void WindowTests() {
     Pump(50);
 }
 
+// A GPU-less machine (GitHub's runners, VMs): the card's background on the CPU rasteriser is one still frame, with no
+// timer and no further frame, and nothing keeps a message loop busy (#158 release).
+static void SoftwareWindowTests() {
+    WNDCLASSW wc{}; wc.lpfnWndProc = OwnerProc; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"ToastTestOwnerSoftware";
+    RegisterClassW(&wc);
+    const UINT sys = GetDpiForSystem();
+    HWND owner = CreateWindowExW(0, wc.lpszClassName, L"toast test owner (CPU rasteriser)", WS_OVERLAPPEDWINDOW, 40, 40, MulDiv(900, sys, 96), MulDiv(640, sys, 96), nullptr, nullptr, wc.hInstance, nullptr);
+    CHECK(owner != nullptr);
+    struct OwnerGuard { HWND h; ~OwnerGuard() { if (h && IsWindow(h)) DestroyWindow(h); } } ownerGuard{owner};
+    ShowWindow(owner, SW_SHOWNORMAL); Pump(100);
+    Toast toast; ToastOptions opt; opt.forceReducedMotion = 0;
+    CHECK(toast.Init(owner, repo + L"\\assets", [](Action) {}, opt));
+    auto* impl = reinterpret_cast<Toast::Impl*>(GetWindowLongPtrW(toast.Window(), GWLP_USERDATA));
+    // What the card's first frame would create on a GPU-less machine: the software rasteriser.
+    impl->gpuTried = true;
+    Onboarding::Shaders::Image noise;
+    CHECK(impl->gpu.Init(true) && Onboarding::Shaders::LoadPng(wic, repo + L"\\assets\\onboarding\\noise.png", noise) && impl->gpu.SetInput(Onboarding::Shaders::Kind::GrainGradient, noise));
+    CHECK(!impl->gpu.Animated());
+    toast.SetView(V(Phase::Available));
+    const DWORD start = GetTickCount();
+    Pump(700);
+    CHECK(toast.Shown() && impl->grainRenders >= 1 && !impl->grainTimer);   // one still frame
+    const auto before = impl->grainRenders;
+    Pump(1000);
+    std::printf("CPU rasteriser: %llu background frame(s), %llu more in 1 s, timer %s\n", before, impl->grainRenders - before, impl->grainTimer ? "on" : "off");
+    CHECK(impl->grainRenders == before && !impl->grainTimer);
+    CHECK(GetTickCount() - start < 3000);                                   // the pumps returned on time
+    toast.Close();
+}
+
 int wmain(int argc, wchar_t** argv) {
+    setvbuf(stdout, nullptr, _IONBF, 0);   // every line reaches the log, even if the run is killed
+    // Watchdog: a run that hangs anyway ends itself in 4 minutes with a clear line (the suite takes about one).
+    CreateThread(nullptr, 0, [](LPVOID) -> DWORD { Sleep(240000); std::fprintf(stderr, "FAIL watchdog: toast-tests still running after 240 s\n"); std::fflush(stderr); ExitProcess(124); }, nullptr, 0, nullptr);
     // Every window of this run lives on a desktop of its own that is never displayed (before any window exists).
     wchar_t deskName[64]; std::swprintf(deskName, 64, L"update-card-tests-%lu", GetCurrentProcessId());
     HDESK desk = CreateDesktopW(deskName, nullptr, nullptr, 0, GENERIC_ALL, nullptr);
@@ -725,32 +787,41 @@ int wmain(int argc, wchar_t** argv) {
     repo = argc > 1 ? argv[1] : L".";
     snapshots = argc > 2 ? argv[2] : repo + L"\\build\\update-toast\\snapshots";
     CreateDirectoryW(snapshots.c_str(), nullptr);
-    FrenchModelTests();
-    LaterTests();
-    ProfileColorTests();
-    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)))) { std::fprintf(stderr, "WIC unavailable\n"); return 2; }
-    {
-        Onboarding::Shaders::Image noise;
-        if (gpu.Init() && Onboarding::Shaders::LoadPng(wic, repo + L"\\assets\\onboarding\\noise.png", noise)) gpu.SetInput(Onboarding::Shaders::Kind::GrainGradient, noise);
-        std::printf("background shader: %s\n", gpu.Animated() ? "hardware" : gpu.Ready() ? "software (still frame)" : "unavailable");
-        Painter painter;
-        if (FAILED(painter.Init(repo + L"\\assets"))) { std::fprintf(stderr, "painter init failed\n"); return 2; }
-        SnapshotTests(painter);   // French renders (Val's texts), compared with the preview by compare.py
-        // Model, motion and the remaining checks in English: pinned explicitly, never the OS language.
-        I18n::SetForProcess(I18n::Locale::En);
-        ModelTests();
-        MotionTests();
-        ClickAndDwellTests();
-        painter.ClearCache();
-        PainterTests(painter);
+    int code = 0;
+    try {
+        FrenchModelTests();
+        LaterTests();
+        ProfileColorTests();
+        if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)))) { std::fprintf(stderr, "WIC unavailable\n"); return 2; }
+        {
+            Onboarding::Shaders::Image noise;
+            if (gpu.Init() && Onboarding::Shaders::LoadPng(wic, repo + L"\\assets\\onboarding\\noise.png", noise)) gpu.SetInput(Onboarding::Shaders::Kind::GrainGradient, noise);
+            std::printf("background shader: %s\n", gpu.Animated() ? "hardware" : gpu.Ready() ? "software (still frame)" : "unavailable");
+            Painter painter;
+            if (FAILED(painter.Init(repo + L"\\assets"))) { std::fprintf(stderr, "painter init failed\n"); return 2; }
+            SnapshotTests(painter);   // French renders (Val's texts), compared with the preview by compare.py
+            // Model, motion and the remaining checks in English: pinned explicitly, never the OS language.
+            I18n::SetForProcess(I18n::Locale::En);
+            ModelTests();
+            MotionTests();
+            ClickAndDwellTests();
+            GrainCadenceTests();
+            painter.ClearCache();
+            PainterTests(painter);
+        }
+        gpu.Dispose();
+        bool windows = true;
+        for (int i = 3; i < argc; ++i) if (std::wstring(argv[i]) == L"--no-window") windows = false;
+        if (windows) { WindowTests(); SoftwareWindowTests(); }
+        Drop(wic);
+        CoUninitialize();
+    } catch (const CheckFailed&) {
+        // Stopped at the first failure: the card, its windows and timers were closed by the unwinding (Toast and the
+        // owner guard); the GPU device, WIC and COM are released here, nothing is left waiting.
+        gpu.Dispose(); Drop(wic); CoUninitialize();
+        code = 1;
     }
-    gpu.Dispose();
-    bool windows = true;
-    for (int i = 3; i < argc; ++i) if (std::wstring(argv[i]) == L"--no-window") windows = false;
-    if (windows) WindowTests();
-    Drop(wic);
-    CoUninitialize();
     std::printf("%d checks, %d failures\n", checks, failures);
     CloseDesktop(desk);
-    return failures ? 1 : 0;
+    return code || failures ? 1 : 0;
 }

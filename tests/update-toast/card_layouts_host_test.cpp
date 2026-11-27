@@ -47,7 +47,7 @@ struct FakeController final : ICoreWebView2Controller {
 
 static void Pump(int ms = 150) {
     const ULONGLONG end = GetTickCount64() + ms; MSG m;
-    do { while (PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&m); DispatchMessageW(&m); } Sleep(5); } while (GetTickCount64() < end);
+    do { while (GetTickCount64() < end && PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&m); DispatchMessageW(&m); } Sleep(5); } while (GetTickCount64() < end);   // bounded
 }
 static void Relayout() { Layout(); SyncUpdateToastReserve(); LayoutUpdateToast(); Pump(700); }
 static RECT Win(HWND h) { RECT r{}; GetWindowRect(h, &r); return r; }
