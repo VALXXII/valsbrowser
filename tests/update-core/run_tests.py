@@ -33,17 +33,11 @@ def run(cmd, label, expect=0, timeout=600):
     return r.returncode
 
 
-COMPILES = []   # (label, command, folder): run at once, or handed to run_all.py's pool (--compile-plan, compile_plan.py)
-
-
 def compile_exe(name, sources, extra=()):
-    COMPILES.append((f"compile {name}", [GXX, *FLAGS, *extra, *sources, "-o", str(OUT / name), *LIBS], ROOT))
+    run([GXX, *FLAGS, *extra, *sources, "-o", str(OUT / name), *LIBS], f"compile {name}")
 
 
 def main():
-    sys.path.insert(0, str(ROOT / "tests" / "update-integration"))
-    import compile_plan as P
-    plan, prebuilt = P.requested(sys.argv), P.prebuilt(sys.argv)
     OUT.mkdir(parents=True, exist_ok=True)
     # Fixture helper: same source, plus test-only fault points (BROWSER_HELPER_FAULT, see src/update-helper.cpp).
     compile_exe("update-helper.exe", ["src/update-helper.cpp", "src/update-package.cpp"], ["-mwindows", "-DUPDATE_HELPER_FAULTS"])
@@ -54,8 +48,8 @@ def main():
                               capture_output=True, text=True, encoding="utf-8").stdout
         (pre / rel).parent.mkdir(parents=True, exist_ok=True)
         (pre / rel).write_text(text, encoding="utf-8", newline="\n")
-    COMPILES.append(("compile update-helper-preB.exe", [GXX, *[f for f in FLAGS if f != "-Isrc"], "-mwindows", f"-I{pre / 'src'}", str(pre / "src/update-helper.cpp"),
-                     str(pre / "src/update-package.cpp"), "-o", str(OUT / "update-helper-preB.exe"), *LIBS], ROOT))
+    run([GXX, *[f for f in FLAGS if f != "-Isrc"], "-mwindows", f"-I{pre / 'src'}", str(pre / "src/update-helper.cpp"),
+         str(pre / "src/update-package.cpp"), "-o", str(OUT / "update-helper-preB.exe"), *LIBS], "compile update-helper-preB.exe")
     # Real MCP bridges (src/mcp-bridge.cpp) with distinct bytes per version: live agent processes in install_test.
     for version in ("0.3.1", "0.3.2", "0.3.3"):
         compile_exe(f"bridge-{version}.exe", ["src/mcp-bridge.cpp", "src/annotations.cpp", *CORE], [f'-DBROWSER_VERSION_TEXT="{version}"'])
@@ -68,11 +62,6 @@ def main():
     compile_exe("update_core_test.exe", ["tests/update-core/update_core_test.cpp", *CORE])
     compile_exe("install_test.exe", ["tests/update-core/install_test.cpp", "src/annotations.cpp", *CORE])
     compile_exe("interop_check.exe", ["tests/update-core/interop_check.cpp", "src/update-package.cpp"])
-    if plan:
-        return P.write(plan, COMPILES)
-    if not prebuilt:
-        for label, command, _cwd in COMPILES:
-            run(command, label)
     if failures:
         return finish()
     run([str(OUT / "update_core_test.exe")], "update_core_test")

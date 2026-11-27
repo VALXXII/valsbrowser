@@ -1,13 +1,8 @@
-"""Native-only fixture runner; never enters browser main or loads WebView2.
---compile-plan <file> / --prebuilt: its compiles join tests/update-integration/run_all.py's pool (compile_plan.py)."""
+"""Native-only fixture runner; never enters browser main or loads WebView2."""
 from pathlib import Path
 import subprocess, sys
 ROOT=Path(__file__).resolve().parent
-sys.path.insert(0,str(ROOT/'tests/update-integration'))
-import compile_plan as P  # noqa: E402
-plan,prebuilt=P.requested(sys.argv),P.prebuilt(sys.argv)
-if not prebuilt:
-    subprocess.run([sys.executable,str(ROOT/'build-lottie.py')],check=True)
+subprocess.run([sys.executable,str(ROOT/'build-lottie.py')],check=True)
 out=ROOT/'build/lottie-polish'
 evidence=out/'evidence'
 evidence.mkdir(parents=True,exist_ok=True)
@@ -19,17 +14,11 @@ fixtures=[('tests/loading_test.cpp','loading-test'),
           ('tests/design-system/design_system_test.cpp','design-system-test'),
           ('tests/ui/hover_favicon_test.cpp','hover-favicon-test'),
           ('tests/ui/ui_test.cpp','ui-test')]
-commands=[]
 for source,name in fixtures:
     flags=['-std=c++17','-O2','-static','-municode','-DTVG_STATIC',
            '-Ideps/thorvg-1.1.3/inc','-Ideps/webview2/build/native/include']
     if name!='clipboard-gate-test': flags+=['-Wall','-Wextra','-Werror','-Wno-missing-field-initializers']
-    commands.append((name,[cc,*flags,source,'src/native-lottie.cpp','build/lottie-backend/src/libthorvg-1.a',
+    subprocess.run([cc,*flags,source,'src/native-lottie.cpp','build/lottie-backend/src/libthorvg-1.a',
                     '-o',str(out/(name+'.exe')),'-lole32','-luuid','-lcomctl32','-lshlwapi',
-                    '-lgdi32','-ld2d1','-ldwrite','-lwindowscodecs','-ldwmapi'],ROOT))
-if plan:
-    sys.exit(P.write(plan,commands))
-for name,command,cwd in commands:
-    if not prebuilt:
-        subprocess.run(command,cwd=cwd,check=True)
+                    '-lgdi32','-ld2d1','-ldwrite','-lwindowscodecs','-ldwmapi'],cwd=ROOT,check=True)
     subprocess.run([str(out/(name+'.exe')),str(ROOT),str(evidence)],cwd=ROOT,check=True)
