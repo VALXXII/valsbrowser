@@ -1207,8 +1207,10 @@ class SigningSession(unittest.TestCase):
                    "$fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-Totp'},$true);"
                    "Invoke-Expression $fn.Extent.Text;"
                    + ''.join(f"Get-Totp '{secret}' {at};" for secret, at, _ in cases))
-        r = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', '& {' + program + "} '" + str(self.SCRIPT) + "'"],
-                           capture_output=True, text=True)
+        import sign as S
+        powershell, env = S.windows_powershell()   # its own module path, whatever shell started the tests
+        r = subprocess.run([powershell, '-NoProfile', '-NonInteractive', '-Command', '& {' + program + "} '" + str(self.SCRIPT) + "'"],
+                           capture_output=True, text=True, env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.split(), [want for _, _, want in cases])
 
