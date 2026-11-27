@@ -22,6 +22,8 @@ import argparse, ctypes, ctypes.wintypes as W, json, os, pathlib, re, shutil, su
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / 'tests' / 'annotations'))
 import sandbox_qa as Q   # noqa: E402  (CDP WebSocket)
+sys.path.insert(0, str(ROOT / 'tests' / 'agent-guard'))
+import agent_guard as G   # noqa: E402  (no agent of this computer: tests/agent-guard)
 
 ap = argparse.ArgumentParser(); ap.add_argument('build'); ap.add_argument('--ports', default='5196,5197,9361')
 ap.add_argument('--layout', choices=('top', 'side', 'compact'), default='top',
@@ -114,12 +116,14 @@ def launch():
             assert not any((d / (n + x)).exists() for x in ('', '.exe', '.cmd')), f'{n} in the sealed home: refused'
     assert pathlib.Path(env['BROWSER_CHAT_FAKE_AGENT'].split('"')[1]).is_absolute() and FAKE.is_file(), 'fake agent path: refused'
     assert env['BROWSER_ANNOTATIONS_TEST'] == '1' and str(AGENTS).startswith(str(ROOT / 'build')), 'test environment: refused'
+    env = G.secure_env(env, work=WORK, exe=APP / 'browser.exe', fake=FAKE)   # the same, through tests/agent-guard
     block = ''.join(f'{k}={v}\0' for k, v in env.items()) + '\0'
     si = SI(); si.cb = ctypes.sizeof(si); si.lpDesktop = 'WinSta0\\' + DESK; si.dwFlags = 1; si.wShowWindow = 1   # normal (1180 x 740 or as restored)
     pi = PI()
     ok = k32.CreateProcessW(str(APP / 'browser.exe'), None, None, None, False, 0x00000400, ctypes.create_unicode_buffer(block), str(APP), ctypes.byref(si), ctypes.byref(pi))
     assert ok, ctypes.get_last_error()
     proc = pi; say(f'>>> browser started (pid {pi.dwProcessId}) on the hidden desktop')
+    G.watch(pi.dwProcessId, env, log=APP / 'prototype.log', work=WORK)   # agent processes and launches; pump_log reads the rest
     end = time.time() + 60
     while time.time() < end and not page_target(): time.sleep(0.2)
     assert page_target(), 'page target never came'

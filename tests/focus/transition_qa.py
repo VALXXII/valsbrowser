@@ -25,6 +25,8 @@ The app runs in a job object (KILL_ON_JOB_CLOSE); the desktop is closed at the e
 from __future__ import annotations
 import argparse, ctypes, ctypes.wintypes as W, http.server, json, os, shutil, sys, threading, time
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'agent-guard'))
+import agent_guard as G   # noqa: E402  (no agent of this computer: tests/agent-guard)
 
 ap = argparse.ArgumentParser()
 ap.add_argument('--app', required=True); ap.add_argument('--out', required=True)
@@ -106,13 +108,16 @@ if a.annotate:   # the « user's » folders point to an empty home under <out> (
     home = out / 'home'
     for sub in ('AppData/Roaming', 'AppData/Local'): (home / sub).mkdir(parents=True, exist_ok=True)
     env.update(BROWSER_ANNOTATIONS_TEST='1', USERPROFILE=str(home), APPDATA=str(home / 'AppData/Roaming'), BROWSER_ANNOTATIONS_CONNECT_ROOT=str(home))
+env = G.secure_env(env, work=out, exe=app / 'browser.exe', agent=False)   # the test switch on, no agent of this computer
 block = ''.join(f'{k}={v}\0' for k, v in env.items()) + '\0'
 si = STARTUPINFO(); si.cb = ctypes.sizeof(si); si.lpDesktop = None if a.screen else f'WinSta0\\{desk_name}'
 pi = PROCESS_INFORMATION()
 cmd = f'"{app / "browser.exe"}"' + (f' --tab-layout={a.layout}' if a.layout != 'top' else '')
 ok = k32.CreateProcessW(None, ctypes.create_unicode_buffer(cmd), None, None, False, 0x4 | 0x400, ctypes.create_unicode_buffer(block), str(app), ctypes.byref(si), ctypes.byref(pi))   # SUSPENDED | UNICODE_ENVIRONMENT
 assert ok, f'CreateProcess failed {ctypes.get_last_error()}'
-k32.AssignProcessToJobObject(job, pi.hProcess); k32.ResumeThread(pi.hThread); k32.CloseHandle(pi.hThread)
+k32.AssignProcessToJobObject(job, pi.hProcess)
+G.watch(pi.dwProcessId, env, log=app / 'prototype.log', work=out)   # before it runs: agent processes, launches, « AGENTS … ready »
+k32.ResumeThread(pi.hThread); k32.CloseHandle(pi.hThread)
 pid = pi.dwProcessId
 
 Shortcut, FocusModeCommand = 0x8000 + 1, 3070

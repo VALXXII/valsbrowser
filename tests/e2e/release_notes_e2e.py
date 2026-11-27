@@ -40,6 +40,8 @@ import ctypes, ctypes.wintypes as wt, json, os, shutil, struct, subprocess, sys,
 sys.stdout.reconfigure(encoding='utf-8')
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(ROOT, 'tests', 'agent-guard'))
+import agent_guard as G   # noqa: E402  (no agent of this computer: tests/agent-guard)
 SRC = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, 'build', 'release-notes-e2e'))
 BASE = os.path.join(ROOT, 'build', 'e2e-release-notes')
 SHOTS = os.path.join(BASE, 'captures')
@@ -219,7 +221,9 @@ def start(fix, root):
     # reads as a fresh install; a real update always finds the older build's data, so it never sees the onboarding.
     env = dict(os.environ, LOCALAPPDATA=os.path.join(fix, 'lad'), BROWSER_NO_ONBOARDING='1')
     exe = os.path.join(root, 'versions', version(), 'browser.exe')
+    env = G.secure_env(env, work=fix, exe=exe, agent=False)   # the test switch on, no agent of this computer
     p = subprocess.Popen([exe], cwd=os.path.dirname(exe), env=env)
+    G.watch(p.pid, env, log=log, work=fix)
     hwnd = 0
     for _ in range(150):
         time.sleep(0.2)

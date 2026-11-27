@@ -212,6 +212,15 @@ def test_classify_and_log():
                        (f'CHAT agent runtime (test): fake agent "{real_claude}"', 'another fake agent')):
         check(G.scan_log(bad, fake)[1], f'log: {label} is caught')
     check(not G.scan_log('CHAT agent runtime (test): every agent refused: x', None, expect_agent=False)[1], 'log: refused is fine when the test needs no agent')
+    seen = 'AGENTS codex: ready 0.166.0\nAGENTS claude: ready 2.1.330\nAGENTS claude: needsSignIn\nAGENTS codex: installing\nAGENTS node: prepare runtime\nAGENTS claude: download 12 MB\n'
+    quiet = 'AGENTS claude: notInstalled\nAGENTS codex: notInstalled\nCHAT agent runtime (test): every agent refused: x\nDOWNLOAD ready to go\n'
+    check(len(G.agents_active(seen)) == 6 and not G.agents_active(quiet), 'log: « AGENTS … ready / installing / signing in / prepare / download » is an agent of this computer; « notInstalled » is quiet', G.agents_active(seen))
+    agents_log = OUT / 'agents.log'; agents_log.write_text(quiet, encoding='utf-8')
+    G.check_agents_quiet(agents_log)
+    agents_log.write_text(quiet + 'AGENTS claude: ready 2.1.330\n', encoding='utf-8')
+    check(raises(lambda: G.check_agents_quiet(agents_log), 'found or prepared'), 'check_agents_quiet: a « ready <version> » line -> refused')
+    check(raises(lambda: G.check_agents_quiet(agents_log, since=len(quiet.encode('utf-8')) - 1), 'found or prepared') and
+          (G.check_agents_quiet(agents_log, since=10**6) is None), 'check_agents_quiet reads from the given offset')
     log = OUT / 'prototype.log'
     log.write_text(ok_log, encoding='utf-8')
     check(G.check_log(log, fake, require_launch=True) == [fake], 'check_log: the fake agent by its full path')
@@ -353,6 +362,8 @@ NEVER_STARTS = {
     'tests/update-integration/old_validator.py': 'validates packages; never runs browser.exe or the bridge (its docstring)',
     'tests/update-integration/run_all.py': 'compiles and runs native fixtures; never launches browser.exe (its docstring)',
     'tests/update-integration/test_release_tools.py': 'packaging tools on synthetic files; browser.exe is only a file name there',
+    'tests/setup/run_tests.py': 'the browser.exe it installs and starts is the update-core fake browser (tests/update-core/fake_browser.cpp, '
+                                'copied in as browser.exe), started through the real update helper; the real browser is never started',
 }
 PENDING = {
     'test-e2e-pin.ps1': ('cba54796132c457c', 'starts the browser through e2e_pin_test.exe (call operator &), not through agent_guard'),
@@ -381,7 +392,6 @@ PENDING = {
     'tests/e2e/private_isolation_e2e.ps1': ('2f51166a82622126', 'starts the browser with Start-Process, not through agent_guard'),
     'tests/e2e/product_markers.ps1': ('9a5a1dc9a3f97bb0', 'starts the browser with Start-Process, not through agent_guard'),
     'tests/e2e/profiles_switch_e2e.ps1': ('a6517a1774922e68', 'starts the browser with Start-Process / the call operator &, not through agent_guard'),
-    'tests/e2e/release_notes_e2e.py': ('542f21c7a4a0c866', 'starts the browser with subprocess.Popen / subprocess.run, not through agent_guard'),
     'tests/e2e/select_all_e2e.ps1': ('bcdd37c598794a0d', 'starts the browser with Start-Process, not through agent_guard'),
     'tests/e2e/taskbar_identity_e2e.py': ('f2c64a5c8f543b96', 'starts the browser with subprocess.Popen / subprocess.run, not through agent_guard'),
     'tests/e2e/tls_page_e2e.ps1': ('7e7cb6ab5f8ba487', 'starts the browser with Start-Process / the call operator &, not through agent_guard'),
@@ -399,8 +409,6 @@ PENDING = {
     'tests/popup/popup_target_e2e.py': ('391a62ddeee75d76', 'starts the browser with subprocess.Popen / subprocess.run, not through agent_guard'),
     'tests/print/print_qa.py': ('1beac2d0d47a90fe', 'starts the browser with subprocess.Popen / subprocess.run, not through agent_guard'),
     'tests/restore-first-load/run.py': ('4a2cfea60b0579d3', 'starts the browser with CreateProcessW, not through agent_guard'),
-    'tests/setup/e2e_real.py': ('21a3ce43403922ab', 'its setup.exe installs and starts the browser (subprocess.Popen), not through agent_guard'),
-    'tests/setup/run_tests.py': ('7f64ceaeff0c4d9b', 'starts the browser with subprocess.Popen / subprocess.run, not through agent_guard'),
     'tests/tooltips/qa.ps1': ('b0372af026b874bd', 'starts the browser with Start-Process, not through agent_guard'),
     'tests/ui/edit_flicker_qa.py': ('4bf4608f82137975', 'starts the browser with subprocess.Popen, not through agent_guard'),
     'tests/ui/title_flash_qa.py': ('3d6c2474cb4c6196', 'starts the browser with subprocess.Popen, not through agent_guard'),

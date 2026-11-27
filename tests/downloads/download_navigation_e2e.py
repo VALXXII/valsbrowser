@@ -32,7 +32,7 @@ from pathlib import Path
 # process, agent launch, or « AGENTS <cli>: ready / installing / signing in / prepare / download » line.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'agent-guard'))
 import agent_guard as ag   # noqa: E402  (one module for every harness: one AgentGuardError)
-AGENT_ACTIVE = re.compile(r'^AGENTS [^:\r\n]+: (ready|installing|needsSignIn|signingIn)\b|^AGENTS .*(prepar|download)', re.I)
+AGENT_ACTIVE = ag.AGENTS_ACTIVE   # the browser's « AGENTS <cli>: ready / installing / signing in / prepare / download » lines
 
 
 def guarded_env(env: dict, app: Path) -> dict:

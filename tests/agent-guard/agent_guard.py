@@ -69,6 +69,28 @@ LOG_FAKE = re.compile(r'CHAT agent runtime \(test\): fake agent "(.*)"\s*$')
 LOG_REFUSED = 'CHAT agent runtime (test): every agent refused'
 LOG_REAL = "CHAT agent runtime (test): this computer's agents"
 LOG_LAUNCH_REFUSED = 'CHAT agent launch refused (test)'
+# The browser's agent states (src/agent-install.cpp: « AGENTS <cli>: <state> [version] »): ready / installing / signing
+# in, or a prepare / download, mean it found or set up an agent of THIS computer (2026-11-26: « AGENTS claude: ready
+# 2.1.330 » at every start of browsers launched without BROWSER_ANNOTATIONS_TEST). A test browser with no agent logs only
+# « notInstalled ». Not part of scan_log: a real trial by hand (real_env) logs them on purpose.
+AGENTS_ACTIVE = re.compile(r'^AGENTS [^:\r\n]+: (ready|installing|needsSignIn|signingIn)\b|^AGENTS .*(prepar|download)', re.I | re.M)
+
+
+def agents_active(text: str) -> list:
+    """The « AGENTS … » lines of a log that show an agent of this computer found or set up."""
+    return [line.strip() for line in text.splitlines() if AGENTS_ACTIVE.search(line)]
+
+
+def check_agents_quiet(log, since: int = 0) -> None:
+    """A browser that must use no agent: its log (from byte `since`) has no « AGENTS … ready / prepare » line."""
+    try:
+        with open(log, 'rb') as f:
+            f.seek(since); text = f.read().decode('utf-8', 'replace')
+    except OSError:
+        text = ''
+    found = agents_active(text)
+    if found:
+        raise AgentGuardError(f'the browser found or prepared an agent of this computer ({log}): ' + ' | '.join(found[:3]))
 
 
 class AgentGuardError(SystemExit):
