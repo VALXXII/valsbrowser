@@ -588,6 +588,7 @@ struct Toast::Impl {
     unsigned long long presents = 0, grainRenders = 0;
     // The GrainGradient: created when the card first shows, released when it has left (no GPU memory while hidden).
     Onboarding::Shaders::Renderer gpu; Onboarding::Shaders::Layer grain; bool gpuTried = false;
+    int slowRenders = 0; bool grainSlow = false;   // GrainFrames::SlowMs guard (reset when the card leaves)
     double grainSeconds = 0; Motion::Time grainTick{};
     IWICImagingFactory* wic = nullptr;
     // The background's colours: from the window's profile ink, re-rendered when they change.
@@ -678,13 +679,13 @@ struct Toast::Impl {
         return FAILED(DwmGetWindowAttribute(owner, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) || !cloaked;
     }
     // The background moves only while it can be seen, motion is allowed and a hardware device draws it.
-    bool GrainLoops() const { return windowShown && !presenter.Reduced() && gpu.Animated() && OwnerSeen(); }
+    bool GrainLoops() const { return windowShown && !presenter.Reduced() && gpu.Animated() && !grainSlow && OwnerSeen(); }
     void ArmGrain(bool on) {
         if (!hwnd || on == grainTimer) return;
         if (on) grainTimer = SetTimer(hwnd, GrainTimer, GrainIntervalMs, nullptr) != 0;
         else { KillTimer(hwnd, GrainTimer); grainTimer = false; }
     }
-    void ReleaseGrain() { ArmGrain(false); grain.Drop(); gpu.Dispose(); gpuTried = false; grainTick = {}; }
+    void ReleaseGrain() { ArmGrain(false); grain.Drop(); gpu.Dispose(); gpuTried = false; grainTick = {}; slowRenders = 0; grainSlow = false; }
     void Tick() {
         const auto now = Motion::Now();
         presenter.Settle(now);
@@ -738,12 +739,17 @@ struct Toast::Impl {
             if (grainTick != Motion::Time{}) grainSeconds += std::min(.25, std::chrono::duration<double>(now - grainTick).count());
             grainTick = now;
         } else grainTick = {};   // paused (hidden, minimised, reduced motion): the wave stays where it is
-        const bool due = !current || (loops && (grain.shaded == Motion::Time{} || std::chrono::duration<float, std::milli>(now - grain.shaded).count() >= GrainIntervalMs - 3));
-        if (!due) return;
+        if (!GrainFrames::Due(current, loops, grain.shaded, now)) return;
         auto hex = [](ProfileColor::Rgb8 c) { return (static_cast<unsigned long>(c.r) << 16) | (static_cast<unsigned long>(c.g) << 8) | c.b; };
         const unsigned long rgb[3] = {hex(colors[0]), hex(colors[1]), hex(colors[2])};
+        const auto started = std::chrono::steady_clock::now();
         if (gpu.Render(Onboarding::Shaders::Kind::GrainGradient, Onboarding::Shaders::UpdateCardGrain(grainSeconds, rgb), cssW, cssH, ow, oh, grain.frame)) {
             grain.Upload(surface); grain.shaded = now; ++grainRenders; grainColors = colors; grainColored = true;
+        }
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+        if (loops) {   // a background that costs too much stops moving (until the card leaves): never a load on the browser's thread
+            slowRenders = ms > GrainFrames::SlowMs ? slowRenders + 1 : 0;
+            if (slowRenders >= GrainFrames::SlowStrikes) { grainSlow = true; ArmGrain(false); }
         }
     }
     ButtonVisual Visual(int i, Motion::Time now) const {

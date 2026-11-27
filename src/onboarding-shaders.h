@@ -22,6 +22,7 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <d3dcommon.h>
+#include <dxgi.h>
 #include <wincodec.h>
 #include <algorithm>
 #include <cmath>
@@ -556,6 +557,15 @@ public:
         Release(down_); Release(vs_); Release(constants_); Release(sampler_); Release(raster_); Release(context_); Release(device_);
         ready_ = false;
     }
+    // The Microsoft Basic Render Driver (vendor 0x1414, device 0x8C): a CPU rasteriser behind a hardware device type.
+    static bool SoftwareAdapter(ID3D11Device* device) {
+        IDXGIDevice* dxgi = nullptr; IDXGIAdapter* adapter = nullptr; DXGI_ADAPTER_DESC d{}; bool software = false;
+        if (device && SUCCEEDED(device->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(&dxgi))) && SUCCEEDED(dxgi->GetAdapter(&adapter)) && SUCCEEDED(adapter->GetDesc(&d)))
+            software = d.VendorId == 0x1414 && d.DeviceId == 0x8C;
+        if (adapter) adapter->Release();
+        if (dxgi) dxgi->Release();
+        return software;
+    }
     // `forceSoftware`: tests of the fallback path.
     bool Init(bool forceSoftware = false) {
         if (ready_) return true;
@@ -568,6 +578,9 @@ public:
         const auto create = d3d ? reinterpret_cast<CreateFn>(reinterpret_cast<void*>(GetProcAddress(d3d, "D3D11CreateDevice"))) : nullptr;
         if (!create) { error_ = "d3d11.dll unavailable"; return false; }
         if (!forceSoftware) { hr = create(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels, 2, D3D11_SDK_VERSION, &device_, nullptr, &context_); hardware_ = SUCCEEDED(hr); }
+        // A machine without a GPU driver (a VM, a remote session, GitHub's runners) still gets a « hardware » device: the
+        // Microsoft Basic Render Driver, which rasterises on the CPU like WARP. Still frames only there too (#158 release).
+        if (hardware_ && SoftwareAdapter(device_)) hardware_ = false;
         if (FAILED(hr)) hr = create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels, 2, D3D11_SDK_VERSION, &device_, nullptr, &context_);
         if (FAILED(hr) || !device_ || !context_) { error_ = "no Direct3D 11 device"; Dispose(); return false; }
         HMODULE compiler = LoadLibraryExW(L"d3dcompiler_47.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
