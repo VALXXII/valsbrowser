@@ -34,8 +34,7 @@ LIBS = ['src/native-lottie.cpp', THORVG, '-ld2d1', '-ldwrite', '-ldwmapi', '-lgd
 # src/main.cpp itself (the card's placement in the browser's three tab layouts): tests/update-toast/card_layouts_host_test.cpp,
 # stamped like a dev build (BROWSER_HAS_BUILD_INFO: main.cpp compiles the update host, the annotation mode and its chat
 # in), exactly as tests/update-integration/e2e_install.py builds its host.
-def host_command(exe):
-    """Its build-info.h written (host-gen), the host's compile command."""
+def build_host(exe):
     sys.path.insert(0, os.path.join(ROOT, 'tools', 'release'))
     import build as B      # noqa: E402  (tools/release/build.py: sources, libraries, build-info.h)
     import version as V    # noqa: E402
@@ -46,13 +45,8 @@ def host_command(exe):
                '-DTVG_STATIC', '-I' + TVG_INCLUDE, f'-I{B.SDK / "include"}', 'tests/update-toast/card_layouts_host_test.cpp',
                'src/native-lottie.cpp', 'src/update-core.cpp', 'src/update-package.cpp', 'src/update-toast.cpp', 'src/annotations.cpp',
                'src/agent-connect.cpp', *B.CHAT_SOURCES, str(B.THORVG), '-o', exe, *B.BROWSER_LIBS, *B.CHAT_LIBS]
-    return [str(c) for c in command]
-
-
-def build_host(exe):
-    command = host_command(exe)
-    print(' '.join(command), flush=True)
-    return subprocess.run(command, cwd=ROOT).returncode
+    print(' '.join(str(c) for c in command), flush=True)
+    return subprocess.run([str(c) for c in command], cwd=ROOT).returncode
 
 
 TARGETS = {
@@ -61,13 +55,10 @@ TARGETS = {
 }
 
 
-def target_commands():
-    return [(name, [GXX] + FLAGS + mode + sources + ['-o', os.path.join(OUT, name)] + LIBS) for name, (sources, mode) in TARGETS.items()]
-
-
 def build():
     os.makedirs(OUT, exist_ok=True)
-    for name, command in target_commands():
+    for name, (sources, mode) in TARGETS.items():
+        command = [GXX] + FLAGS + mode + sources + ['-o', os.path.join(OUT, name)] + LIBS
         print(' '.join(command), flush=True)
         result = subprocess.run(command, cwd=ROOT)
         if result.returncode != 0:
@@ -77,17 +68,7 @@ def build():
 
 
 def main(argv):
-    # --compile-plan <file> / --prebuilt: its compiles join tests/update-integration/run_all.py's pool (compile_plan.py)
-    sys.path.insert(0, os.path.join(ROOT, 'tests', 'update-integration'))
-    import compile_plan as P
-    plan, prebuilt = P.requested(argv), P.prebuilt(argv)
-    if plan:
-        os.makedirs(OUT, exist_ok=True)
-        commands = [(name, command, ROOT) for name, command in target_commands()]
-        if '--no-window' not in argv:
-            commands.append(('card-layouts-host-test.exe (src/main.cpp)', host_command(os.path.join(OUT, 'card-layouts-host-test.exe')), ROOT))
-        return P.write(plan, commands)
-    code = 0 if prebuilt else build()
+    code = build()
     if code or '--build' in argv:
         return code
     snapshots = os.path.join(OUT, 'snapshots')
@@ -100,7 +81,7 @@ def main(argv):
         return result.returncode
     if '--no-window' not in argv:
         host = os.path.join(OUT, 'card-layouts-host-test.exe')
-        if not prebuilt and build_host(host):
+        if build_host(host):
             print('build failed: card-layouts-host-test.exe', file=sys.stderr)
             return 1
         layouts = os.path.join(OUT, 'layouts')
