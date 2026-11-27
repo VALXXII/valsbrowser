@@ -2,6 +2,10 @@
 
 Navigateur pour Windows, écrit en C++ (Win32, Direct2D) sur WebView2. Code sous licence MIT. Projet indépendant : les marques, logos et sites tiers qui y apparaissent ne servent que d'exemples, sans affiliation ni approbation de leur part. Voir [Licence, marques et contenus tiers](#licence-marques-et-contenus-tiers).
 
+Auteur et mainteneur : Valentin Salvador (GitHub VALXXII)
+
+Author and maintainer: Valentin Salvador (GitHub VALXXII)
+
 ## Télécharger (Windows 10/11 x64)
 
 Dernière version publique : https://github.com/VALXXII/browser-releases/releases/latest — télécharger **`browser-<version>-win-x64-setup.exe`** et l'ouvrir : installation pour votre compte Windows dans `%LOCALAPPDATA%\browser`, sans droits administrateur, raccourci dans le menu Démarrer (Bureau en option), ouverture à la fin (case à cocher). Le même fichier met à jour ou répare une installation existante sans toucher aux données ; désinstallation depuis Paramètres > Applications (données conservées sauf case cochée). Le navigateur se met ensuite à jour tout seul. Browser est déclaré à Windows comme navigateur web (pour votre compte seulement) : il apparaît dans Paramètres > Applications > Applications par défaut, et Réglages › « Navigateur par défaut » ouvre cette page ; liens et fichiers donnés à `browser.exe` s'ouvrent dans un nouvel onglet de la fenêtre déjà ouverte. WebView2 requis (proposé au premier démarrage s'il manque). Conception, contrat et vérifications : [design/windows-setup-plan.md](design/windows-setup-plan.md), [design/windows-setup-report.md](design/windows-setup-report.md).
